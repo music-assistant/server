@@ -185,7 +185,9 @@ class TestSmartCrossFadePlanner:
         inc.downbeats = (np.asarray(inc.downbeats, dtype=np.float32) + 33.0).tolist()
         plan = _plan(_analysis(120.0, duration=240.0), inc)
         assert plan.crossfade_duration == pytest.approx(8.0)
-        assert plan.fadein_trim_start == pytest.approx(33.0)
+        # an 8s overlap cannot justify cutting a 33s intro the listener never
+        # hears any part of, so the incoming track plays from its head
+        assert plan.fadein_trim_start is None
 
     def test_valid_entry_too_late_for_the_bars_duration_reduces_the_rungs_too(self) -> None:
         """A found entry point that still overflows the buffer also demotes the candidate."""
@@ -197,7 +199,8 @@ class TestSmartCrossFadePlanner:
         inc.downbeats = [20.0]
         plan = _plan(out, inc)
         assert plan.crossfade_duration == pytest.approx(16.0)
-        assert plan.fadein_trim_start == pytest.approx(20.0)
+        # the 20s cut exceeds the 16s the overlap plays under the outgoing track
+        assert plan.fadein_trim_start is None
 
     def test_entry_fit_uses_the_tempo_compensated_duration(self) -> None:
         """A valid entry is not rejected when tempo compensation makes the overlap fit."""

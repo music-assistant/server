@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from music_assistant.controllers.streams.smart_fades.helpers import (
+    camelot_affinity,
     db_ramp,
     detect_effective_audio_end,
     detect_groove_entry,
@@ -79,6 +80,33 @@ def test_all_nan_rms_returns_buffer_duration() -> None:
     """RMS data without any finite values fails open to the buffer duration."""
     bins = np.full(1800, np.nan, dtype=np.float32)
     assert detect_effective_audio_end(bins, 240.0, 45.0) == 45.0
+
+
+@pytest.mark.parametrize(
+    ("key_a", "mode_a", "key_b", "mode_b", "expected"),
+    [
+        ("C", "major", "C", "major", 1.0),
+        ("C", "major", "G", "major", 0.9),
+        ("C", "major", "D", "major", 0.55),
+        ("C", "major", "A", "minor", 0.9),
+        ("C", "major", "E", "minor", 0.45),
+        ("C", "major", "F#", "major", 0.1),
+    ],
+)
+def test_camelot_affinity(
+    key_a: str,
+    mode_a: str,
+    key_b: str,
+    mode_b: str,
+    expected: float,
+) -> None:
+    """Camelot affinity distinguishes close harmonic moves from clashes."""
+    assert camelot_affinity(key_a, mode_a, key_b, mode_b) == pytest.approx(expected)
+
+
+def test_camelot_affinity_unknown_key_is_neutral() -> None:
+    """Unknown harmonic data is left for the caller to treat neutrally."""
+    assert camelot_affinity(None, None, "C", "major") is None
 
 
 class TestGrooveEntry:
