@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import MethodType
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
@@ -35,6 +36,10 @@ def _make_controller(*, strict_player: bool, item_in_window: bool) -> MagicMock:
     ctrl.logger = Mock()
     ctrl._log_request = Mock()
     ctrl._open_item_streams = {}
+    # bind the real gate helper: the mocked self would silently swallow it otherwise
+    ctrl._raise_if_stale_item_request = MethodType(
+        StreamsController._raise_if_stale_item_request, ctrl
+    )
     ctrl.mass = MagicMock()
 
     queue = MagicMock()
@@ -93,3 +98,26 @@ async def test_relaxed_player_is_served_without_a_window_check() -> None:
 
     assert "No streamdetails" in str(exc.value.reason)
     ctrl.mass.player_queues.is_current_window_item.assert_not_called()
+
+
+async def test_item_falling_out_of_the_window_during_setup_is_refused() -> None:
+    """A queue edit landing while the stream is being set up must still deny the item."""
+    ctrl = _make_controller(strict_player=True, item_in_window=True)
+    # in-window at the first check, out of it by the time the response would start
+    ctrl.mass.player_queues.is_current_window_item.side_effect = [True, False]
+    queue_item = ctrl.mass.player_queues.get_item.return_value
+    queue_item.streamdetails = MagicMock(seek_position=0)
+    queue_item.name = "Track"
+    ctrl.mass.config.get_raw_core_config_value.return_value = 8
+    ctrl.audio.select_pcm_format = AsyncMock(
+        return_value=MagicMock(sample_rate=44100, bit_depth=16)
+    )
+    ctrl.audio.get_output_format = AsyncMock(return_value=MagicMock(output_format_str="flac"))
+    player = ctrl.mass.players.get_player.return_value
+    player.get_config_value.return_value = "default"
+
+    with pytest.raises(web.HTTPNotFound) as exc:
+        await StreamsController.serve_queue_item_stream(ctrl, _make_request())
+
+    assert "not up next" in str(exc.value.reason)
+    assert ctrl.mass.player_queues.is_current_window_item.call_count == 2
