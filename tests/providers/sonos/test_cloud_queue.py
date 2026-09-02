@@ -90,7 +90,7 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     player.connected = True
     player.cloud_queue_id = QUEUE_ID
     player.cloud_queue_version = 1.0
-    player._cloud_queue_item_generation = 0
+    player.cloud_queue_item_generation = 0
     player._announcement_media = None
     return player, queues
 
@@ -282,6 +282,7 @@ async def test_itemwindow_passes_the_speakers_request_through() -> None:
     """Test the sizes and centre the speaker asks for reach the window builder."""
     player = MagicMock(spec=SonosPlayer)
     player.cloud_queue_version = 12.5
+    player.cloud_queue_item_generation = 4
     player.bare_item_id = SonosPlayer.bare_item_id
     player.build_cloud_queue_window = AsyncMock(
         return_value=SonosQueueWindow(includes_beginning=True, includes_end=False)
@@ -311,6 +312,7 @@ async def test_itemwindow_reports_end_of_queue_when_it_cannot_be_described() -> 
     player = MagicMock(spec=SonosPlayer)
     player.display_name = "Kantoor"
     player.cloud_queue_version = 1.0
+    player.cloud_queue_item_generation = 1
     player.build_cloud_queue_window = AsyncMock(side_effect=InvalidDataError("no session"))
     provider = _make_provider()
     request = MagicMock()
@@ -377,7 +379,7 @@ async def test_a_reload_of_the_same_item_gets_a_fresh_wire_id() -> None:
 async def test_window_items_are_served_under_the_loads_wire_id() -> None:
     """The window describes items under the same ids the load command named."""
     player, _ = _make_player([_make_queue_item("track0"), _make_queue_item("track1")])
-    player._cloud_queue_item_generation = 7
+    player.cloud_queue_item_generation = 7
     provider = _make_provider()
     request = MagicMock()
     request.query = {"itemId": player.wire_item_id("track0")}
@@ -387,6 +389,28 @@ async def test_window_items_are_served_under_the_loads_wire_id() -> None:
     body = json.loads(response.text or "{}")
     served = [x["id"] for x in body["items"]]
     assert served == ["track0@7", "track1@7"]
+
+
+async def test_window_ids_stay_on_the_generation_the_request_started_with() -> None:
+    """A load landing mid-request must not relabel the old window's items."""
+    player, _ = _make_player([_make_queue_item("track0")])
+    player.cloud_queue_item_generation = 7
+    provider = _make_provider()
+    request = MagicMock()
+    request.query = {"itemId": player.wire_item_id("track0")}
+
+    async def _bump_mid_build(_player_id: str, media: PlayerMedia) -> str:
+        player.cloud_queue_item_generation = 8
+        return media.uri
+
+    player.mass.streams.resolve_stream_url = AsyncMock(  # type: ignore[method-assign]
+        side_effect=_bump_mid_build
+    )
+
+    response = await provider._handle_sonos_queue_itemwindow(player, request)
+
+    body = json.loads(response.text or "{}")
+    assert [x["id"] for x in body["items"]] == ["track0@7"]
 
 
 async def test_time_played_matches_the_playing_item_through_its_wire_id() -> None:

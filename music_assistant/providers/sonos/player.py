@@ -100,8 +100,10 @@ class SonosPlayer(Player):
         self.cloud_queue_id: str | None = None
         self.cloud_queue_version: float = time.time()
         # advanced on every play_media: item ids are served suffixed with it, so a
-        # reload of the item the speaker is already playing gets a fresh identity
-        self._cloud_queue_item_generation = 0
+        # reload of the item the speaker is already playing gets a fresh identity.
+        # Clock-seeded, so a recreated player never reuses a generation the speaker
+        # may still hold items under
+        self.cloud_queue_item_generation = int(time.time())
         self._announcement_media: PlayerMedia | None = None
 
     @property
@@ -363,7 +365,7 @@ class SonosPlayer(Player):
         # what is playing stays described until its replacement is loaded below: there are
         # awaits in between, and an empty window served in that gap stops the current queue
         self._announcement_media = None
-        self._cloud_queue_item_generation += 1
+        self.cloud_queue_item_generation += 1
         self.bump_cloud_queue_version()
 
         if media.media_type == MediaType.ANNOUNCEMENT:
@@ -471,11 +473,13 @@ class SonosPlayer(Player):
             self.cloud_queue_id = media.source_id
         await self.refresh_cloud_queue()
 
-    def wire_item_id(self, queue_item_id: str | None) -> str | None:
+    def wire_item_id(self, queue_item_id: str | None, generation: int | None = None) -> str | None:
         """
         Return the id a queue item is served under in the speaker's cloud queue.
 
         :param queue_item_id: The MA queue item id, passed through when empty.
+        :param generation: The load generation to serve under, for a response that
+            must stay on the generation it started with; the current one otherwise.
         """
         # The speaker caches the track it loaded per item id: reloading the item it
         # is already playing under the same id (a seek within the track) leaves it
@@ -483,7 +487,9 @@ class SonosPlayer(Player):
         # A generation suffix makes every reload cut over like a track change.
         if not queue_item_id:
             return queue_item_id
-        return f"{queue_item_id}@{self._cloud_queue_item_generation}"
+        if generation is None:
+            generation = self.cloud_queue_item_generation
+        return f"{queue_item_id}@{generation}"
 
     @staticmethod
     def bare_item_id(item_id: str) -> str:

@@ -304,10 +304,12 @@ class SonosPlayerProvider(PlayerProvider):
         https://docs.sonos.com/reference/itemwindow
         """
         context_version = request.query.get("contextVersion", "1")
-        # read the version before building, so the items and the version we label them with
-        # always come from the same queue: a bump landing in between would tell the speaker
-        # its cache is current while it holds the older window
+        # read the version and the item generation before building, so the items, their ids
+        # and the version we label them with always come from the same queue: a bump landing
+        # in between would tell the speaker its cache is current while it holds the older
+        # window, and a load landing in between would label old items with new-load ids
         queue_version = player.cloud_queue_version
+        wire_generation = player.cloud_queue_item_generation
         # built from the queue as it is right now: the speaker fetches on its own schedule and
         # plays out of what it cached, so only a live answer keeps a track added mid-playback
         # from being played over. The beginning/end flags must be honest - signalling
@@ -334,7 +336,9 @@ class SonosPlayerProvider(PlayerProvider):
             # player's requested version, otherwise a changed queue keeps a stale version
             # label and Sonos never realises it changed.
             "queueVersion": str(queue_version),
-            "items": [self._parse_sonos_queue_item(player, x) for x in window.items],
+            "items": [
+                self._parse_sonos_queue_item(player, x, wire_generation) for x in window.items
+            ],
         }
         return web.json_response(result)
 
@@ -418,13 +422,15 @@ class SonosPlayerProvider(PlayerProvider):
             break
         return web.Response(status=204)
 
-    def _parse_sonos_queue_item(self, player: SonosPlayer, media: PlayerMedia) -> dict[str, Any]:
+    def _parse_sonos_queue_item(
+        self, player: SonosPlayer, media: PlayerMedia, wire_generation: int
+    ) -> dict[str, Any]:
         """Parse MusicAssistant PlayerMedia to a Sonos Media (queue) object."""
         # the speaker tracks its position within the audio we serve, which is
         # shorter than the media item when playback starts at a seek position
         duration = media.stream_duration or media.duration
         return {
-            "id": player.wire_item_id(media.queue_item_id) or media.uri,
+            "id": player.wire_item_id(media.queue_item_id, wire_generation) or media.uri,
             "track": {
                 "type": "track",
                 "mediaUrl": media.uri,
