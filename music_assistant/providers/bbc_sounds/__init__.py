@@ -780,6 +780,8 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         self.logger.debug("Getting recommendations from API")
         folders: list[RecommendationFolder] = []
         recommendations = await self.client.get_menu(recommendations=MenuRecommendationOptions.ONLY)
+        if not recommendations:
+            return []
         if recommendations.sub_items:
             for recommendation in recommendations.sub_items:
                 # recommendation is a RecommendedMenuItem
