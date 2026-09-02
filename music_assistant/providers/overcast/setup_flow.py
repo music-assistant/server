@@ -183,12 +183,15 @@ async def _poll_until_approved(http_session: aiohttp.ClientSession, token: str, 
             async with http_session.post(
                 QR_VERIFY_URL, data={"token": token, "then": target}
             ) as response:
-                body = await response.text()
+                if not response.ok:
+                    attempts += 1
+                    await asyncio.sleep(_poll_interval(attempts))
+                    continue
+                body = (await response.text()).strip()
         except (TimeoutError, aiohttp.ClientError) as err:
             raise AbortFlow("overcast_unreachable") from err
         if len(body) > UNAPPROVED_BODY_LENGTH:
-            # a longer body is the page to continue to, where the session gets set
-            return await _claim_session_cookie(http_session, body.strip())
+            return await _claim_session_cookie(http_session, body)
         attempts += 1
         await asyncio.sleep(_poll_interval(attempts))
 
