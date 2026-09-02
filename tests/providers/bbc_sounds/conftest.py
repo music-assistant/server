@@ -7,6 +7,7 @@ from unittest.mock import Mock
 import pytest
 
 from music_assistant.providers.bbc_sounds import SUPPORTED_FEATURES, BBCSoundsProvider
+from music_assistant.providers.bbc_sounds.adaptor import Adaptor
 
 
 @pytest.fixture
@@ -24,4 +25,5 @@ def provider() -> BBCSoundsProvider:
     }.get(key, default)
     instance = BBCSoundsProvider(mass, manifest, config, SUPPORTED_FEATURES)
     instance.logged_in = True
+    instance.adaptor = Adaptor(instance)
     return instance
