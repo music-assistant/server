@@ -82,15 +82,17 @@ def test_partial_analysis_has_lower_confidence_than_full_match() -> None:
     assert 0.0 < partial_score < full_score
 
 
-def test_half_and_double_time_are_not_tempo_matches() -> None:
-    """Half/double-time pairs are outside the tempo range Smart Fades can beat match."""
+def test_half_and_double_time_are_discounted_tempo_matches() -> None:
+    """Octave-related pairs are musically coherent but not yet beatmatchable, so they score lower."""
+    same_tempo = _tempo_score(120.0, 120.0)
     half_time = _tempo_score(120.0, 60.0)
     double_time = _tempo_score(120.0, 240.0)
 
-    assert half_time is not None
-    assert half_time < 0.0
-    assert double_time is not None
-    assert double_time < 0.0
+    assert half_time == 0.6
+    assert double_time == 0.6
+    assert same_tempo is not None
+    assert half_time < same_tempo
+    assert double_time < same_tempo
 
 
 def test_outside_stretch_window_scores_negative() -> None:

@@ -51,6 +51,10 @@ _TEMPO_WEIGHT = 0.45
 _KEY_WEIGHT = 0.30
 _ENERGY_WEIGHT = 0.25
 
+# The planner has no half/double-time equivalence yet, so octave matches render as quick
+# fades; keep them adjacent-friendly but below a beatmatchable pair.
+_OCTAVE_TEMPO_FACTOR = 0.6
+
 
 @dataclass(frozen=True, slots=True)
 class _TrackFeatures:
@@ -298,11 +302,15 @@ def _tempo_score(outgoing_bpm: float | None, incoming_bpm: float | None) -> floa
         return None
 
     ratio = incoming_bpm / outgoing_bpm
-    diff_percent = abs(1.0 - ratio) * 100.0
+    same_diff = abs(1.0 - ratio) * 100.0
+    octave_diff = min(abs(1.0 - ratio * 2.0), abs(1.0 - ratio / 2.0)) * 100.0
+    diff_percent = min(same_diff, octave_diff)
     limit = TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD
 
     if diff_percent <= limit:
-        return 1.0 - (diff_percent / limit)
+        score = 1.0 - (diff_percent / limit)
+        # An octave match cannot be beatmatched yet, so it stays below a same-tempo pair.
+        return score * _OCTAVE_TEMPO_FACTOR if octave_diff < same_diff else score
 
     # A tempo clash makes the pair less attractive; it does not remove the track.
     return -min(1.0, (diff_percent - limit) / (limit * 2.0))
