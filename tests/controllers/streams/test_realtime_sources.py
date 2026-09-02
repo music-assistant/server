@@ -1754,13 +1754,17 @@ async def test_single_item_handler_paces_by_player(
 async def test_single_item_handler_ends_a_failed_stream_instead_of_raising(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The response is already sent, so a failed item ends it and is logged once."""
+    """The response is already sent, so a failed item ends it instead of raising."""
     controller, request, _ = _single_item_handler(is_realtime=False, capture_ffmpeg=monkeypatch)
     controller._active_output_streams = 0
 
     async def _failing_stream(**_kwargs: Any) -> AsyncGenerator[bytes]:
         yield b"\x01" * 64
-        raise AudioError("Spotify would not play spotify:track:aaa")
+        # the shape get_ffmpeg_stream really raises: the provider's message
+        # survives only as the cause
+        raise AudioError("Error while feeding audio to FFmpeg") from AudioError(
+            "Spotify would not play spotify:track:aaa"
+        )
 
     monkeypatch.setattr(controller_mod, "get_ffmpeg_stream", _failing_stream)
 
@@ -1769,7 +1773,8 @@ async def test_single_item_handler_ends_a_failed_stream_instead_of_raising(
     queue_item = controller.mass.player_queues.get_item.return_value
     assert queue_item.streamdetails.stream_error is True
     logged = controller.logger.error.call_args
-    assert "would not play" in logged.args[0] % logged.args[1:]
+    assert "Error streaming QueueItem" in logged.args[0]
+    assert queue_item.name in logged.args
 
 
 # -- StreamsAudio.get_stream_details --

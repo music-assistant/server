@@ -135,8 +135,8 @@ _MAX_LEAD_TRIM_S: Final[float] = 0.5
 # within moments; reported durations are approximate)
 _SHORT_DELIVERY_TOLERANCE_MS: Final[int] = 10000
 # A refusal is the engine reporting the item as playing, rendering a moment of
-# audio and then ending the run itself. Below this much audio a short delivery
-# is that refusal rather than a stream that starved part-way through.
+# audio and then ending the run cleanly. Below this much audio, and only on that
+# clean exit, a short delivery is that refusal rather than a starved or crashed run.
 _REFUSED_DELIVERY_MS: Final[int] = 1000
 # The elastic cushion between the paced FIFO reader and the consumer. A full
 # cushion suspends the capture sink, which pauses the engine: the FIFO itself
@@ -836,7 +836,7 @@ class _SingleTrackRun:
         Raise when the engine ended the item long before its own duration.
 
         Crediting a run that stopped short as a completed stream would mark the
-        track as played and hide the cause. An engine that ends the run itself
+        track as played and hide the cause. An engine that ends the run cleanly
         having played nothing refused the item, and is reported as that.
         """
         if self._stopped or self._duration_ms is None:
@@ -845,7 +845,15 @@ class _SingleTrackRun:
         delivered_ms = played_ms + self._seek_target_ms
         if delivered_ms >= self._duration_ms - _SHORT_DELIVERY_TOLERANCE_MS:
             return
-        if self._engine_exited and played_ms <= _REFUSED_DELIVERY_MS:
+        proc = self._proc
+        # the exit code separates a refusal from a crash: both end the run early,
+        # but only the refusal is the engine deciding it has nothing to play
+        if (
+            self._engine_exited
+            and proc is not None
+            and proc.returncode == 0
+            and played_ms <= _REFUSED_DELIVERY_MS
+        ):
             # Spotify would not serve this item to this session. The cause is
             # logged here because it is lost on the way out: the ffmpeg stage
             # between the provider and the player replaces the message.

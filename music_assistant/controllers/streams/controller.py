@@ -959,7 +959,6 @@ class StreamsController(CoreController):
                 )
             first_chunk_received = False
             bytes_sent = 0
-            stream_failure: AudioError | None = None
             # Mark this player as actively streaming so audio analysis yields CPU to playback
             # for the duration of the transfer (see audio_analysis.playback_active).
             self._active_output_streams += 1
@@ -1021,18 +1020,19 @@ class StreamsController(CoreController):
                 # The response is already being written, so a failed item has to
                 # end it here. Raising instead answers a response that is long
                 # gone, which aiohttp reports as two unhandled tracebacks for
-                # what is an ordinary playback failure.
+                # what is an ordinary playback failure. The message is only worth
+                # debug: the layer that knows the cause has already logged it,
+                # and what arrives here is the ffmpeg stage's replacement.
                 queue_item.streamdetails.stream_error = True
-                stream_failure = err
+                self.logger.debug("Stream of %s ended with an error: %s", queue_item.name, err)
             finally:
                 self._active_output_streams -= 1
             if queue_item.streamdetails.stream_error:
                 self.logger.error(
-                    "Error streaming QueueItem %s (%s) to %s%s",
+                    "Error streaming QueueItem %s (%s) to %s",
                     queue_item.name,
                     queue_item.uri,
                     queue.display_name,
-                    f": {stream_failure}" if stream_failure is not None else "",
                 )
             elif (
                 bytes_sent > 0

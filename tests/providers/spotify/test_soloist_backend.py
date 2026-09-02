@@ -443,9 +443,10 @@ async def test_short_delivery_is_rejected_as_incomplete(tmp_path: Path) -> None:
 
 
 async def test_a_refused_item_is_reported_as_a_refusal(tmp_path: Path) -> None:
-    """An engine that plays nothing and ends the run itself was refused the item."""
+    """An engine that plays nothing and ends the run cleanly was refused the item."""
     run = _make_run(tmp_path, duration=152)
     run._engine_exited = True
+    run._proc = MagicMock(returncode=0)
     run._chunks.put_nowait(b"\x01" * _FRAME_BYTES)
     run._finish_delivery()
     with pytest.raises(AudioError, match="would not play"):
@@ -457,10 +458,22 @@ async def test_a_refused_item_is_reported_as_a_refusal(tmp_path: Path) -> None:
     assert TRACK_A in logger.warning.call_args.args[0]
 
 
-async def test_a_starved_run_is_still_reported_as_incomplete(tmp_path: Path) -> None:
-    """A run that played most of its item and then died is a fault, not a refusal."""
+async def test_a_crashed_run_is_not_reported_as_a_refusal(tmp_path: Path) -> None:
+    """An engine that died on its own item is a fault, whatever it managed to play."""
     run = _make_run(tmp_path, duration=152)
     run._engine_exited = True
+    run._proc = MagicMock(returncode=1)
+    run._chunks.put_nowait(b"\x01" * _FRAME_BYTES)
+    run._finish_delivery()
+    with pytest.raises(AudioError, match="incomplete"):
+        await _collect(run)
+
+
+async def test_a_starved_run_is_still_reported_as_incomplete(tmp_path: Path) -> None:
+    """A run that played most of its item and then stopped is a fault, not a refusal."""
+    run = _make_run(tmp_path, duration=152)
+    run._engine_exited = True
+    run._proc = MagicMock(returncode=0)
     run._chunks.put_nowait(b"\x01" * (100 * _BYTES_PER_SECOND))
     run._finish_delivery()
     with pytest.raises(AudioError, match="incomplete"):
@@ -471,6 +484,7 @@ async def test_a_seek_to_the_items_end_is_not_read_as_a_refusal(tmp_path: Path) 
     """Audio the seek skipped counts, so a near-complete delivery ends cleanly."""
     run = _make_run(tmp_path, duration=152, seek_ms=151_000)
     run._engine_exited = True
+    run._proc = MagicMock(returncode=0)
     run._chunks.put_nowait(b"\x01" * _FRAME_BYTES)
     run._finish_delivery()
     await _collect(run)
