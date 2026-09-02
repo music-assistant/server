@@ -1586,6 +1586,11 @@ class _FakeStreamResponse:
     def __init__(self, **_kwargs: Any) -> None:
         self.content_type: str | None = None
         self.content_length: int | None = None
+        self.closed = False
+
+    def force_close(self) -> None:
+        """Record that the connection was ended."""
+        self.closed = True
 
     def enable_chunked_encoding(self) -> None:
         """Accept the chunked-profile branch."""
@@ -1768,13 +1773,16 @@ async def test_single_item_handler_ends_a_failed_stream_instead_of_raising(
 
     monkeypatch.setattr(controller_mod, "get_ffmpeg_stream", _failing_stream)
 
-    await controller.serve_queue_item_stream(request)
+    resp = await controller.serve_queue_item_stream(request)
 
     queue_item = controller.mass.player_queues.get_item.return_value
     assert queue_item.streamdetails.stream_error is True
     logged = controller.logger.error.call_args
     assert "Error streaming QueueItem" in logged.args[0]
     assert queue_item.name in logged.args
+    # a body that stops short of an announced content length leaves the player
+    # waiting unless the connection is ended for it
+    assert resp.closed is True
 
 
 # -- StreamsAudio.get_stream_details --

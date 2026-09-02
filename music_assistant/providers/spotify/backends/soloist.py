@@ -131,8 +131,7 @@ _SEEK_TOLERANCE_MS: Final[int] = 2000
 # what an intro can lose while still covering the measured pre-roll (~140 ms).
 _MAX_LEAD_TRIM_S: Final[float] = 0.5
 # how far short of an item's duration its delivered PCM may end before it is
-# rejected as incomplete (an engine that refuses an unavailable item exits
-# within moments; reported durations are approximate)
+# rejected as incomplete (reported durations are approximate)
 _SHORT_DELIVERY_TOLERANCE_MS: Final[int] = 10000
 # A refusal is the engine reporting the item as playing, rendering a moment of
 # audio and then ending the run cleanly. Below this much audio, and only on that

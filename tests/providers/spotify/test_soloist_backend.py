@@ -434,7 +434,7 @@ async def test_a_failed_run_surfaces_its_error_to_the_stream(tmp_path: Path) -> 
 
 
 async def test_short_delivery_is_rejected_as_incomplete(tmp_path: Path) -> None:
-    """An engine that refuses an item must not read as a completed stream."""
+    """A run still going that stops delivering must not read as a completed stream."""
     run = _make_run(tmp_path, duration=152)
     run._chunks.put_nowait(b"\x01" * _FRAME_BYTES)
     run._finish_delivery()

@@ -1034,6 +1034,12 @@ class StreamsController(CoreController):
                     queue_item.uri,
                     queue.display_name,
                 )
+                # The body stops short of the content length announced for a
+                # forced_content_length player, and aiohttp derives keep-alive from
+                # the request, so the 'Connection: close' we advertise is relayed but
+                # never applied. Without this the player waits out a stream that has
+                # already ended instead of moving on (same reason as the flow route).
+                resp.force_close()
             elif (
                 bytes_sent > 0
                 and queue_item.streamdetails
