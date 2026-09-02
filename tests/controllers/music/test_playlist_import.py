@@ -60,7 +60,7 @@ async def test_import_without_match_policy_skips_background_task() -> None:
     ctrl = _make_controller()
     ctrl_any = cast("Any", ctrl)
     builtin_prov = _make_builtin_provider_mock()
-    builtin_prov.import_playlist = AsyncMock(return_value=_make_playlist())
+    builtin_prov.import_playlist = AsyncMock(return_value=(_make_playlist(), 1))
     ctrl_any.mass.get_provider = MagicMock(return_value=builtin_prov)
     ctrl_any.add_item_to_library = AsyncMock(return_value=_make_playlist())
 
@@ -76,7 +76,7 @@ async def test_import_with_match_policy_snapshots_allowed_providers() -> None:
     ctrl = _make_controller()
     ctrl_any = cast("Any", ctrl)
     builtin_prov = _make_builtin_provider_mock()
-    builtin_prov.import_playlist = AsyncMock(return_value=_make_playlist())
+    builtin_prov.import_playlist = AsyncMock(return_value=(_make_playlist(), 1))
     builtin_prov.match_imported_playlist_tracks = AsyncMock()
     ctrl_any.mass.get_provider = MagicMock(return_value=builtin_prov)
     ctrl_any.add_item_to_library = AsyncMock(return_value=_make_playlist())
@@ -110,10 +110,44 @@ async def test_import_with_match_policy_snapshots_allowed_providers() -> None:
     await call_kwargs["handler"]()
     builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
         "playlist_1",
+        1,
         PlaylistMatchPolicy.SAME_RECORDING,
         (("builtin", "builtin"), ("qobuz--1", "qobuz"), ("spotify--1", "spotify")),
         ("qobuz--1", "spotify--1"),
     )
+
+
+async def test_import_schedules_match_with_import_generation() -> None:
+    """
+    The scheduled task is given the exact generation import_playlist returned.
+
+    A distinct, non-default value (not the ``1`` used by every other test here)
+    proves this is threaded through from the actual return value rather than a
+    coincidental default matching what the background task expects.
+    """
+    ctrl = _make_controller()
+    ctrl_any = cast("Any", ctrl)
+    builtin_prov = _make_builtin_provider_mock()
+    builtin_prov.import_playlist = AsyncMock(return_value=(_make_playlist(), 7))
+    builtin_prov.match_imported_playlist_tracks = AsyncMock()
+    ctrl_any.mass.get_provider = MagicMock(return_value=builtin_prov)
+    ctrl_any.add_item_to_library = AsyncMock(return_value=_make_playlist())
+    ctrl_any.mass.music.providers = []
+    ctrl_any.mass.config.get_provider_configs = AsyncMock(return_value=[])
+
+    with (
+        patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
+        patch(
+            "music_assistant.controllers.music.media.playlists.get_current_user",
+            return_value=None,
+        ),
+    ):
+        await ctrl.import_playlist("#EXTM3U\n", match_policy=PlaylistMatchPolicy.BEST_EFFORT)
+
+    call_kwargs = ctrl_any.mass.tasks.run_background_task.call_args.kwargs
+    await call_kwargs["handler"]()
+    args = builtin_prov.match_imported_playlist_tracks.await_args.args
+    assert args[1] == 7
 
 
 async def test_import_with_library_matching_true_defaults_to_best_effort() -> None:
@@ -121,7 +155,7 @@ async def test_import_with_library_matching_true_defaults_to_best_effort() -> No
     ctrl = _make_controller()
     ctrl_any = cast("Any", ctrl)
     builtin_prov = _make_builtin_provider_mock()
-    builtin_prov.import_playlist = AsyncMock(return_value=_make_playlist())
+    builtin_prov.import_playlist = AsyncMock(return_value=(_make_playlist(), 1))
     builtin_prov.match_imported_playlist_tracks = AsyncMock()
     ctrl_any.mass.get_provider = MagicMock(return_value=builtin_prov)
     ctrl_any.add_item_to_library = AsyncMock(return_value=_make_playlist())
@@ -145,6 +179,7 @@ async def test_import_with_library_matching_true_defaults_to_best_effort() -> No
     await call_kwargs["handler"]()
     builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
         "playlist_1",
+        1,
         PlaylistMatchPolicy.BEST_EFFORT,
         (("builtin", "builtin"), ("qobuz--1", "qobuz")),
         ("qobuz--1",),
@@ -156,7 +191,7 @@ async def test_import_with_explicit_match_policy_overrides_library_matching() ->
     ctrl = _make_controller()
     ctrl_any = cast("Any", ctrl)
     builtin_prov = _make_builtin_provider_mock()
-    builtin_prov.import_playlist = AsyncMock(return_value=_make_playlist())
+    builtin_prov.import_playlist = AsyncMock(return_value=(_make_playlist(), 1))
     builtin_prov.match_imported_playlist_tracks = AsyncMock()
     ctrl_any.mass.get_provider = MagicMock(return_value=builtin_prov)
     ctrl_any.add_item_to_library = AsyncMock(return_value=_make_playlist())
@@ -185,7 +220,7 @@ async def test_import_with_match_providers_narrows_search_only() -> None:
     ctrl = _make_controller()
     ctrl_any = cast("Any", ctrl)
     builtin_prov = _make_builtin_provider_mock()
-    builtin_prov.import_playlist = AsyncMock(return_value=_make_playlist())
+    builtin_prov.import_playlist = AsyncMock(return_value=(_make_playlist(), 1))
     builtin_prov.match_imported_playlist_tracks = AsyncMock()
     ctrl_any.mass.get_provider = MagicMock(return_value=builtin_prov)
     ctrl_any.add_item_to_library = AsyncMock(return_value=_make_playlist())
@@ -220,6 +255,7 @@ async def test_import_with_match_providers_narrows_search_only() -> None:
     # search target set is narrowed to the requested provider
     builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
         "playlist_1",
+        1,
         PlaylistMatchPolicy.BEST_EFFORT,
         (("builtin", "builtin"), ("qobuz--1", "qobuz"), ("spotify--1", "spotify")),
         ("qobuz--1",),
@@ -231,7 +267,7 @@ async def test_import_with_empty_match_providers_narrows_search_to_nothing() -> 
     ctrl = _make_controller()
     ctrl_any = cast("Any", ctrl)
     builtin_prov = _make_builtin_provider_mock()
-    builtin_prov.import_playlist = AsyncMock(return_value=_make_playlist())
+    builtin_prov.import_playlist = AsyncMock(return_value=(_make_playlist(), 1))
     builtin_prov.match_imported_playlist_tracks = AsyncMock()
     ctrl_any.mass.get_provider = MagicMock(return_value=builtin_prov)
     ctrl_any.add_item_to_library = AsyncMock(return_value=_make_playlist())
@@ -265,6 +301,7 @@ async def test_import_with_empty_match_providers_narrows_search_to_nothing() -> 
     # while source validation still keeps the user's full snapshot
     builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
         "playlist_1",
+        1,
         PlaylistMatchPolicy.BEST_EFFORT,
         (("builtin", "builtin"), ("qobuz--1", "qobuz"), ("spotify--1", "spotify")),
         (),
@@ -276,7 +313,7 @@ async def test_import_source_validation_includes_configured_but_unloaded_provide
     ctrl = _make_controller()
     ctrl_any = cast("Any", ctrl)
     builtin_prov = _make_builtin_provider_mock()
-    builtin_prov.import_playlist = AsyncMock(return_value=_make_playlist())
+    builtin_prov.import_playlist = AsyncMock(return_value=(_make_playlist(), 1))
     builtin_prov.match_imported_playlist_tracks = AsyncMock()
     ctrl_any.mass.get_provider = MagicMock(return_value=builtin_prov)
     ctrl_any.add_item_to_library = AsyncMock(return_value=_make_playlist())
@@ -306,6 +343,7 @@ async def test_import_source_validation_includes_configured_but_unloaded_provide
     # since nothing can be searched on a provider that isn't loaded
     builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
         "playlist_1",
+        1,
         PlaylistMatchPolicy.BEST_EFFORT,
         (("builtin", "builtin"), ("qobuz--1", "qobuz"), ("spotify--1", "spotify")),
         ("qobuz--1",),
@@ -317,7 +355,7 @@ async def test_import_source_validation_excludes_disabled_provider() -> None:
     ctrl = _make_controller()
     ctrl_any = cast("Any", ctrl)
     builtin_prov = _make_builtin_provider_mock()
-    builtin_prov.import_playlist = AsyncMock(return_value=_make_playlist())
+    builtin_prov.import_playlist = AsyncMock(return_value=(_make_playlist(), 1))
     builtin_prov.match_imported_playlist_tracks = AsyncMock()
     ctrl_any.mass.get_provider = MagicMock(return_value=builtin_prov)
     ctrl_any.add_item_to_library = AsyncMock(return_value=_make_playlist())
@@ -342,6 +380,7 @@ async def test_import_source_validation_excludes_disabled_provider() -> None:
     await call_kwargs["handler"]()
     builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
         "playlist_1",
+        1,
         PlaylistMatchPolicy.BEST_EFFORT,
         (("builtin", "builtin"), ("qobuz--1", "qobuz")),
         ("qobuz--1",),
@@ -357,7 +396,7 @@ async def test_import_source_validation_respects_user_provider_filter() -> None:
     ctrl = _make_controller()
     ctrl_any = cast("Any", ctrl)
     builtin_prov = _make_builtin_provider_mock()
-    builtin_prov.import_playlist = AsyncMock(return_value=_make_playlist())
+    builtin_prov.import_playlist = AsyncMock(return_value=(_make_playlist(), 1))
     builtin_prov.match_imported_playlist_tracks = AsyncMock()
     ctrl_any.mass.get_provider = MagicMock(return_value=builtin_prov)
     ctrl_any.add_item_to_library = AsyncMock(return_value=_make_playlist())
@@ -393,6 +432,7 @@ async def test_import_source_validation_respects_user_provider_filter() -> None:
     # unfiltered
     builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
         "playlist_1",
+        1,
         PlaylistMatchPolicy.BEST_EFFORT,
         (("builtin", "builtin"), ("qobuz--1", "qobuz")),
         ("qobuz--1", "spotify--1"),
@@ -410,7 +450,7 @@ async def test_import_source_validation_always_includes_builtin() -> None:
     ctrl = _make_controller()
     ctrl_any = cast("Any", ctrl)
     builtin_prov = _make_builtin_provider_mock()
-    builtin_prov.import_playlist = AsyncMock(return_value=_make_playlist())
+    builtin_prov.import_playlist = AsyncMock(return_value=(_make_playlist(), 1))
     builtin_prov.match_imported_playlist_tracks = AsyncMock()
     ctrl_any.mass.get_provider = MagicMock(return_value=builtin_prov)
     ctrl_any.add_item_to_library = AsyncMock(return_value=_make_playlist())
@@ -436,6 +476,7 @@ async def test_import_source_validation_always_includes_builtin() -> None:
     await call_kwargs["handler"]()
     builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
         "playlist_1",
+        1,
         PlaylistMatchPolicy.BEST_EFFORT,
         (("builtin", "builtin"), ("qobuz--1", "qobuz")),
         ("qobuz--1",),

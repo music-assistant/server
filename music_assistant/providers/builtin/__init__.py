@@ -589,16 +589,22 @@ class BuiltinProvider(MusicProvider):
 
         The playlist name is used as the filename (sanitized for filesystem safety).
         """
-        playlist_id = await self._reserve_playlist_file(name, [])
+        playlist_id, _generation = await self._reserve_playlist_file(name, [])
         return await self.get_playlist(playlist_id)
 
-    async def import_playlist(self, m3u_data: str) -> Playlist:
+    async def import_playlist(self, m3u_data: str) -> tuple[Playlist, int]:
         """
         Import a playlist from M3U8 format.
 
         Creates a new playlist and populates it with items from the M3U data.
         Items with valid MA URIs are added directly. Plain URLs or unresolvable
         URIs are stored as-is for later matching.
+
+        Also returns the created playlist's creation generation, so a caller that
+        schedules a deferred background match against it can snapshot exactly which
+        playlist instance that task is for, not merely its id - letting the match
+        detect a delete-and-recreate under the same id that happens before the
+        (possibly queued) task actually starts.
 
         :param m3u_data: The M3U8 playlist data as a string.
         """
@@ -614,14 +620,15 @@ class BuiltinProvider(MusicProvider):
         # reserving the id and writing its final content in the same locked step,
         # never exposes an intermediate empty playlist that a concurrent add/remove
         # on the same (predictable) id could race against
-        playlist_id = await self._reserve_playlist_file(
+        playlist_id, generation = await self._reserve_playlist_file(
             playlist_name, parsed_items, playlist_image_url
         )
-        return await self.get_playlist(playlist_id)
+        return await self.get_playlist(playlist_id), generation
 
     async def match_imported_playlist_tracks(
         self,
         prov_playlist_id: str,
+        expected_generation: int,
         match_policy: PlaylistMatchPolicy,
         allowed_provider_instances: tuple[tuple[str, str], ...],
         search_provider_instances: tuple[str, ...] | None = None,
@@ -637,6 +644,11 @@ class BuiltinProvider(MusicProvider):
         in-place so the playlist keeps its original order and duplicates.
 
         :param prov_playlist_id: The provider-side playlist ID of the playlist to match.
+        :param expected_generation: The creation generation of the playlist this task was
+            scheduled for, snapshotted at import time. This task itself may sit queued for
+            a while before it actually runs; if the playlist is deleted and an unrelated
+            one is created that reuses the same ID before that happens, its generation no
+            longer matches and this call is a no-op instead of matching that replacement.
         :param match_policy: Lowest track-match confidence accepted for a substitute.
         :param allowed_provider_instances: (instance_id, domain) pairs snapshotted from the
             user that requested the import, used to validate whether an entry's original
@@ -665,6 +677,13 @@ class BuiltinProvider(MusicProvider):
             # writing stale matches into an unrelated playlist that merely happens to
             # share its ID
             original_generation = await self._get_playlist_generation(prov_playlist_id)
+            if original_generation != expected_generation:
+                # this task itself was scheduled for a playlist that no longer exists
+                # under this ID - it was deleted and replaced before this (possibly
+                # queued) task could even start, so what is here now is an unrelated
+                # playlist that must not be matched under a policy that was never
+                # meant for it
+                return
 
         minimum_confidence = match_policy_minimum_confidence(match_policy)
         allowed_provider_instance_map = dict(allowed_provider_instances)
@@ -1731,7 +1750,7 @@ class BuiltinProvider(MusicProvider):
         name: str,
         entries: list[PlaylistItem],
         playlist_image_url: str | None = None,
-    ) -> str:
+    ) -> tuple[str, int]:
         """
         Reserve a unique playlist ID and write its initial M3U file with given content.
 
@@ -1742,6 +1761,10 @@ class BuiltinProvider(MusicProvider):
         starting from an empty file - also means the file never appears on disk in an
         intermediate state that a concurrent add/remove on the same (predictable) id
         could observe or silently overwrite.
+
+        Returns the reserved ID together with its creation generation, so a caller
+        that defers work against this exact playlist instance can detect a later
+        delete-and-recreate under the same ID.
 
         :param name: The playlist's display name, used to derive its sanitized id.
         :param entries: The initial playlist items to write.
@@ -1760,11 +1783,11 @@ class BuiltinProvider(MusicProvider):
             # recreation under the same sanitized ID must be distinguishable from an
             # in-place rewrite of the same playlist, even if the filesystem happens to
             # reuse the freed inode for the new file
-            self._playlist_generations[playlist_id] = (
+            generation = self._playlist_generations[playlist_id] = (
                 self._playlist_generations.get(playlist_id, 0) + 1
             )
             await self._write_m3u_file_locked(playlist_id, name, entries, playlist_image_url)
-        return playlist_id
+        return playlist_id, generation
 
     async def _write_m3u_file(
         self,

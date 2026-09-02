@@ -375,7 +375,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if not provider or not isinstance(provider, MusicProvider):
             raise ProviderUnavailableError("Builtin provider is not available")
         builtin_prov = cast("BuiltinProvider", provider)
-        playlist = await builtin_prov.import_playlist(m3u_data)
+        playlist, playlist_generation = await builtin_prov.import_playlist(m3u_data)
         for prov_mapping in playlist.provider_mappings:
             prov_mapping.in_library = True
         db_playlist = await self.add_item_to_library(playlist, False)
@@ -425,6 +425,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 name=f"Import playlist {db_playlist.name}",
                 handler=lambda: builtin_prov.match_imported_playlist_tracks(
                     prov_playlist_id,
+                    playlist_generation,
                     effective_match_policy,
                     tuple(sorted(allowed_provider_instances.items())),
                     tuple(sorted(search_provider_instances)),
