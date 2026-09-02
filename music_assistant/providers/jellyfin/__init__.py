@@ -143,7 +143,7 @@ class JellyfinProvider(MusicProvider):
         )
         tracks = []
         for item in resultset["Items"]:
-            tracks.append(parse_track(self.logger, self.instance_id, self._client, item))
+            tracks.append(parse_track(self.mass, self.logger, self.instance_id, self._client, item))
         return tracks
 
     async def _search_album(self, search_query: str, limit: int) -> list[Album]:
@@ -265,12 +265,12 @@ class JellyfinProvider(MusicProvider):
                 .stream(100)
             )
             async for track in stream:
-                if not len(track[ITEM_KEY_MEDIA_STREAMS]):
+                if not len(track.get(ITEM_KEY_MEDIA_STREAMS, [])):
                     self.logger.warning(
                         "Invalid track %s: Does not have any media streams", track[ITEM_KEY_NAME]
                     )
                     continue
-                yield parse_track(self.logger, self.instance_id, self._client, track)
+                yield parse_track(self.mass, self.logger, self.instance_id, self._client, track)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from the provider."""
@@ -306,7 +306,9 @@ class JellyfinProvider(MusicProvider):
             .request()
         )
         return [
-            parse_track(self.logger, self.instance_id, self._client, jellyfin_album_track)
+            parse_track(
+                self.mass, self.logger, self.instance_id, self._client, jellyfin_album_track
+            )
             for jellyfin_album_track in jellyfin_album_tracks["Items"]
         ]
 
@@ -342,7 +344,7 @@ class JellyfinProvider(MusicProvider):
             track = await self._client.get_track(prov_track_id)
         except NotFound:
             raise MediaNotFoundError(f"Item {prov_track_id} not found")
-        return parse_track(self.logger, self.instance_id, self._client, track)
+        return parse_track(self.mass, self.logger, self.instance_id, self._client, track)
 
     @use_cache(60 * 15)  # Cache for 15 minutes
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
@@ -369,7 +371,7 @@ class JellyfinProvider(MusicProvider):
             pos = (page * 100) + index
             try:
                 if track := parse_track(
-                    self.logger, self.instance_id, self._client, jellyfin_track
+                    self.mass, self.logger, self.instance_id, self._client, jellyfin_track
                 ):
                     track.position = pos
                     result.append(track)
@@ -425,7 +427,7 @@ class JellyfinProvider(MusicProvider):
             prov_track_id, limit=limit, fields=TRACK_FIELDS
         )
         return [
-            parse_track(self.logger, self.instance_id, self._client, track)
+            parse_track(self.mass, self.logger, self.instance_id, self._client, track)
             for track in resp["Items"]
         ]
 
