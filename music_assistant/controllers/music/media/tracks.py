@@ -1026,8 +1026,12 @@ class TracksController(MediaControllerBase[Track]):
                     OSError,
                     TimeoutError,
                 ):
-                    if candidates:
-                        return candidates
+                    # unlike a search-request failure (which only loses queries not
+                    # yet attempted), a failed hydration mid-loop still leaves
+                    # unseen candidates - possibly stronger or ambiguity-triggering
+                    # ones - among the already-fetched search results; propagate so
+                    # the caller reports this provider as failed rather than
+                    # silently accepting an incomplete candidate set
                     raise
                 confidence, base_album = await self._get_match_confidence(
                     base_track,

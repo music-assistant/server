@@ -972,10 +972,17 @@ async def test_find_provider_match_keeps_fallback_after_later_timeout(
     assert search_provider.await_count == 2
 
 
-async def test_find_provider_match_keeps_fallback_after_later_hydration_failure(
+async def test_find_provider_match_raises_on_later_hydration_failure(
     music: MusicController,
 ) -> None:
-    """A later hydration failure does not discard an acceptable candidate."""
+    """
+    A hydration failure mid-loop must propagate rather than silently truncate.
+
+    Unlike a search-request failure (which only loses queries not yet attempted),
+    a failed hydration still leaves unseen candidates - possibly stronger or
+    ambiguity-triggering ones - among the already-fetched search results, so an
+    already-accepted candidate must not be returned as if evaluation completed.
+    """
     base = create_track("spotify_1", "base")
     candidate = create_track("qobuz_1", "candidate")
     failing_candidate = create_track("qobuz_1", "failing")
@@ -999,15 +1006,14 @@ async def test_find_provider_match_keeps_fallback_after_later_hydration_failure(
         ),
         patch.object(music.tracks, "get_provider_item", get_provider_item),
         patch.object(music.tracks, "_get_full_track_album", AsyncMock(return_value=None)),
+        pytest.raises(ResourceTemporarilyUnavailable),
     ):
-        result = await music.tracks.find_provider_match(
+        await music.tracks.find_provider_match(
             base,
             provider,
             minimum_confidence=TrackMatchConfidence.LIKELY,
         )
 
-    assert result.match is not None
-    assert result.match.track.item_id == candidate.item_id
     assert get_provider_item.await_count == 2
 
 
