@@ -19,6 +19,7 @@ from music_assistant.providers.ai_radio.constants import (
     ATTR_STATION_ID,
 )
 from music_assistant.providers.ai_radio.media import AIRadioMediaMixin
+from music_assistant.providers.ai_radio.queue_dj import AIRadioQueueDJMixin
 from music_assistant.providers.ai_radio.runtime import AIRadioRuntimeMixin
 from music_assistant.providers.ai_radio.storage import AIRadioStorageMixin
 
@@ -34,8 +35,8 @@ STATION = {
 }
 
 
-class _Media(AIRadioMediaMixin):
-    """Bare mixin harness."""
+class _Media(AIRadioQueueDJMixin, AIRadioMediaMixin):
+    """Bare media harness; the queue DJ mixin only supplies its queue item reads."""
 
     def __init__(self, stations: dict[str, dict[str, Any]]) -> None:
         """Stamp the attrs AIRadioMediaMixin reads, skipping real provider init."""
@@ -139,8 +140,8 @@ def _track(item_id: str) -> Track:
         provider_mappings={
             ProviderMapping(
                 item_id=item_id,
-                provider_domain="library",
-                provider_instance="library",
+                provider_domain="filesystem_local",
+                provider_instance="filesystem_local",
             )
         },
     )
@@ -181,27 +182,44 @@ def _stub_source_tracks[MediaT: _Media](media: MediaT, track_count: int) -> Medi
         )
     )
     media.mass.player_queues.all = MagicMock(return_value=[])
+    media.mass.player_queues.items = MagicMock(return_value=[])
     return media
 
 
-def _attach_show_queue(
-    media: _Media,
+def _show_queue(
+    queue_id: str = "q1",
     uri: str = "ai_radio://radio/morning_show",
     items: int = 0,
-    current_index: int | None = None,
+    ended: bool = False,
 ) -> SimpleNamespace:
-    """Register a fake queue playing the show, in a consuming state by default."""
-    queue = SimpleNamespace(
-        queue_id="q1",
-        sources=[SimpleNamespace(uri=uri)],
-        items=items,
-        current_index=current_index,
+    """Build a fake queue sourcing the show, empty and live by default."""
+    return SimpleNamespace(
+        queue_id=queue_id, sources=[SimpleNamespace(uri=uri)], items=items, ended=ended
     )
-    media.mass.player_queues.all = MagicMock(return_value=[queue])
+
+
+def _attach_show_queues(media: _Media, *queues: SimpleNamespace) -> None:
+    """Register the given fake queues, in that order, on the harness's player_queues."""
+    media.mass.player_queues.all = MagicMock(return_value=list(queues))
     media.mass.player_queues.get = MagicMock(
-        side_effect=lambda queue_id: queue if queue_id == queue.queue_id else None
+        side_effect=lambda queue_id: next((q for q in queues if q.queue_id == queue_id), None)
     )
+
+
+def _attach_show_queue(
+    media: _Media, uri: str = "ai_radio://radio/morning_show"
+) -> SimpleNamespace:
+    """Register one fake queue playing the show, in a consuming state."""
+    queue = _show_queue(uri=uri)
+    _attach_show_queues(media, queue)
     return queue
+
+
+def _queued(media: _Media, *uris: str) -> None:
+    """Stub the harness's queue item reads to return items with the given uris."""
+    media.mass.player_queues.items = MagicMock(
+        return_value=[SimpleNamespace(uri=uri) for uri in uris]
+    )
 
 
 async def test_first_call_starts_a_run_and_pages() -> None:
@@ -266,6 +284,64 @@ async def test_run_binds_to_a_queue_sourcing_the_provider_uri() -> None:
 
     assert len(page) == 3
     assert media._show_runs["morning_show"].queue_id == "q1"
+
+
+async def test_run_skips_an_ended_queue_that_still_sources_the_show() -> None:
+    """A persisted ended queue keeps its sources; the queue starting the show wins the run."""
+    media = _media_with_show(track_count=3)
+    _attach_show_queues(
+        media, _show_queue(queue_id="q_ended", ended=True), _show_queue(queue_id="q_live")
+    )
+
+    await media.get_dynamic_radio_tracks("morning_show")
+
+    assert media._show_runs["morning_show"].queue_id == "q_live"
+
+
+async def test_run_prefers_the_queue_being_filled() -> None:
+    """Among live queues sourcing the show, the emptied one is the one fetching its pool."""
+    media = _media_with_show(track_count=3)
+    _attach_show_queues(
+        media, _show_queue(queue_id="q_playing", items=25), _show_queue(queue_id="q_filling")
+    )
+
+    await media.get_dynamic_radio_tracks("morning_show")
+
+    assert media._show_runs["morning_show"].queue_id == "q_filling"
+
+
+async def test_only_an_ended_queue_serves_a_one_off_batch() -> None:
+    """With only an ended queue sourcing the show there is nothing live to bind a run to."""
+    media = _media_with_show(track_count=3)
+    _attach_show_queues(media, _show_queue(ended=True))
+
+    assert len(await media.get_dynamic_radio_tracks("morning_show")) == 3
+    assert media._show_runs == {}
+
+
+async def test_queue_vanishing_during_the_snapshot_binds_no_run() -> None:
+    """A queue cleared while the snapshot is fetched must not end up bound to a run."""
+    media = _media_with_show(track_count=30)
+    _attach_show_queue(media)
+
+    async def _fetch_source_tracks(
+        _station: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], str]:
+        _attach_show_queues(media)
+        return (
+            [
+                {"index": i, "item_id": f"t{i}", "duration": 210, "media_item": _track(f"t{i}")}
+                for i in range(30)
+            ],
+            "My Playlist",
+        )
+
+    media._fetch_source_tracks = AsyncMock(  # type: ignore[method-assign]
+        side_effect=_fetch_source_tracks
+    )
+
+    assert len(await media.get_dynamic_radio_tracks("morning_show")) == 20
+    assert media._show_runs == {}
 
 
 async def test_run_end_allows_a_fresh_run() -> None:
@@ -360,6 +436,34 @@ async def test_first_page_of_a_consume_opens_with_the_intro() -> None:
     # the rest of the show pages on as before
     assert len(await media.get_dynamic_radio_tracks("morning_show")) == 11
     assert await media.get_dynamic_radio_tracks("morning_show") == []
+
+
+async def test_a_queue_already_holding_show_tracks_resumes_without_an_intro() -> None:
+    """After a restart the restored queue holds the show: no second intro, no repeats."""
+    media = _show_media(30)
+    _attach_show_queues(media, _show_queue(items=6))
+    _queued(media, *(f"library://track/t{i}" for i in range(5)), "library://track/other")
+
+    page = await media.get_dynamic_radio_tracks("morning_show")
+
+    assert all(isinstance(item, Track) for item in page)
+    assert media._feed_clip_contracts == {}
+    run = media._show_runs["morning_show"]
+    assert run.clip_ids == []
+    assert len(run.tracks) == 25
+    assert not {item.uri for item in run.tracks} & {f"library://track/t{i}" for i in range(5)}
+
+
+async def test_a_queue_holding_only_unrelated_items_gets_a_fresh_show() -> None:
+    """Items of anything but this show leave the run fresh: intro first, full snapshot."""
+    media = _show_media(3)
+    _attach_show_queues(media, _show_queue(items=2))
+    _queued(media, "library://track/other1", "library://track/other2")
+
+    page = await media.get_dynamic_radio_tracks("morning_show")
+
+    assert isinstance(page[0], SoundEffect)
+    assert len(page) == 4
 
 
 async def test_a_sample_carries_no_intro() -> None:

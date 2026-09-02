@@ -23,6 +23,9 @@ from music_assistant_models.media_items import (
 from .constants import FALLBACK_TRACK_SECONDS, SHOW_FEED_PAGE_SIZE
 
 if TYPE_CHECKING:
+    from music_assistant_models.player_queue import PlayerQueue
+    from music_assistant_models.queue_item import QueueItem
+
     from music_assistant.constants import DynamicFeedItem
     from music_assistant.mass import MusicAssistant
 
@@ -33,7 +36,7 @@ if TYPE_CHECKING:
 class _ShowRun:
     """One in-flight play-through of a show: its feed snapshot and cursor."""
 
-    # the show's tracks, led by the intro clip(s) planned for this run
+    # the tracks this run still has to feed, led by the intro clip(s) when the run is fresh
     tracks: list[DynamicFeedItem]
     # the queue playing this run: a run only ever exists for a queue that sources the show
     queue_id: str
@@ -86,6 +89,7 @@ class AIRadioMediaMixin:
             self, session_id: str, program: dict[str, Any], section: PlannedSection
         ) -> dict[str, Any]: ...
         def _cached_weather_tokens(self) -> dict[str, str] | None: ...
+        def _dj_queue_items(self, queue_id: str) -> list[QueueItem]: ...
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """
@@ -105,9 +109,10 @@ class AIRadioMediaMixin:
         Return the next feed page for a playing show, or a preview batch for a sample.
 
         The consume path pages through a run bound to the queue playing the show (the
-        first call starts it, and its first page opens with the show's intro clip); the
-        empty batch after the last page is what ends the show's feed. A sample gets a
-        fresh preview slice of the music that consumes nothing.
+        first call starts it, and its first page opens with the show's intro clip, or
+        resumes it behind the show tracks the queue already holds); the empty batch after
+        the last page is what ends the show's feed. A sample gets a fresh preview slice of
+        the music that consumes nothing.
 
         :param prov_radio_id: The station id of the show.
         :param sample: True returns a preview batch that must not mutate any
@@ -125,15 +130,15 @@ class AIRadioMediaMixin:
         async with self._show_runs_lock:
             run = self._show_runs.get(prov_radio_id)
             if run is None:
-                queue_id = self._find_show_queue(prov_radio_id)
-                if queue_id is None:
+                tracks = await self._snapshot_show_tracks(station)
+                # resolved after the snapshot: a queue found before it could have been
+                # cleared or removed while the fetch was in flight
+                queue = self._find_show_queue(prov_radio_id)
+                if queue is None:
                     # a stray fetch with no queue sourcing the show: serve a one-off
                     # batch, since there is no queue to bind a run to
-                    tracks = await self._snapshot_show_tracks(station)
                     return _media_items(tracks[:SHOW_FEED_PAGE_SIZE])
-                run = self._start_show_run(
-                    station, await self._snapshot_show_tracks(station), queue_id
-                )
+                run = self._start_show_run(station, tracks, queue)
                 self._show_runs[prov_radio_id] = run
             page = run.tracks[run.cursor : run.cursor + SHOW_FEED_PAGE_SIZE]
             run.cursor += len(page)
@@ -206,15 +211,30 @@ class AIRadioMediaMixin:
         for clip_id in run.clip_ids:
             self._feed_clip_contracts.pop(clip_id, None)
 
-    def _find_show_queue(self, station_id: str) -> str | None:
-        """Return the queue currently playing this show, identified by its sources."""
-        for queue in self.mass.player_queues.all():
-            if any(
+    def _find_show_queue(self, station_id: str) -> PlayerQueue | None:
+        """
+        Return the live queue sourcing this show, preferring the one being filled right now.
+
+        A show has one run at a time, so when two queues play the same show at once the
+        second queue shares the first one's feed instead of getting a run of its own.
+        """
+        # an ended queue keeps its sources, so a persisted one must not shadow the queue
+        # that is starting the show now
+        candidates = [
+            queue
+            for queue in self.mass.player_queues.all()
+            if not queue.ended
+            and any(
                 self._station_id_from_source_uri(source.uri) == station_id
                 for source in queue.sources
-            ):
-                return queue.queue_id
-        return None
+            )
+        ]
+        # a queue's first pool fetch happens on an emptied queue, so among several live
+        # ones the empty one is the requester
+        return next(
+            (queue for queue in candidates if queue.items == 0),
+            candidates[0] if candidates else None,
+        )
 
     def _station_id_from_source_uri(self, uri: str | None) -> str | None:
         """Return the station id a queue source uri points at, if it is one of our shows."""
@@ -242,16 +262,23 @@ class AIRadioMediaMixin:
         return [track for track in source_tracks if track.get("media_item") is not None]
 
     def _start_show_run(
-        self, station: dict[str, Any], tracks: list[dict[str, Any]], queue_id: str
+        self, station: dict[str, Any], tracks: list[dict[str, Any]], queue: PlayerQueue
     ) -> _ShowRun:
-        """Bind a fresh run to the queue, with the show's intro clip(s) leading its feed."""
-        run = _ShowRun(tracks=[], queue_id=queue_id)
-        # the intro rides the feed's first page: the queue starts playing that page in the
-        # very call that loads it, so nothing planned afterwards could still land in front
-        for clip, contract in self._plan_show_intro(station, tracks):
-            self._feed_clip_contracts[clip.item_id] = contract
-            run.clip_ids.append(clip.item_id)
-            run.tracks.append(clip)
+        """Bind a run to the queue: fresh with the intro first, or resumed behind what it holds."""
+        run = _ShowRun(tracks=[], queue_id=queue.queue_id)
+        queued_uris = {item.uri for item in self._dj_queue_items(queue.queue_id)}
+        if any(track["media_item"].uri in queued_uris for track in tracks):
+            # runs live in memory only, so a queue already holding tracks of this show is
+            # resuming it (a restart mid-show): no second intro, and the tracks it holds
+            # are not fed again
+            tracks = [track for track in tracks if track["media_item"].uri not in queued_uris]
+        else:
+            # the intro rides the feed's first page: the queue starts playing that page in
+            # the very call that loads it, so nothing planned afterwards could land in front
+            for clip, contract in self._plan_show_intro(station, tracks):
+                self._feed_clip_contracts[clip.item_id] = contract
+                run.clip_ids.append(clip.item_id)
+                run.tracks.append(clip)
         run.tracks.extend(_media_items(tracks))
         return run
 
