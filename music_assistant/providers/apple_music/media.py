@@ -186,6 +186,56 @@ class AppleMusicMediaManager:
                 attributes = catalog_data[0].get("attributes") or {}
         return format_artwork_url(attributes)
 
+    @use_cache(3600 * 24 * 7, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True)
+    async def get_track_by_external_id(
+        self, external_id: str, external_id_type: str
+    ) -> Track | None:
+        """Retrieve track by external ID (ISRC)."""
+        if external_id_type.upper() != "ISRC":
+            return None
+
+        endpoint = f"catalog/{self.provider._storefront}/songs"
+        try:
+            response = await self.api.get_data(endpoint, **{"filter[isrc]": external_id})
+            if not response.get("data"):
+                return None
+            track_data = response["data"][0]
+            track_ids = [track_data["id"]]
+            rating_response = await self.api.get_ratings(track_ids, MediaType.TRACK)
+            return parse_track(self.provider, track_data, rating_response.get(track_data["id"]))
+        except (MediaNotFoundError, KeyError, IndexError):  # fmt: skip
+            return None
+
+    @use_cache(3600 * 24 * 7, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True)
+    async def get_album_by_external_id(
+        self, external_id: str, external_id_type: str
+    ) -> Album | None:
+        """Retrieve album by external ID (UPC/Barcode)."""
+        if external_id_type.upper() not in ("UPC", "BARCODE"):
+            return None
+
+        # Apple Music stores UPC with leading zero stripped (EAN-13 -> UPC-12), so normalize it
+        normalized_upc = (
+            external_id[1:]
+            if len(external_id) == 13 and external_id.startswith("0")
+            else external_id
+        )
+
+        endpoint = f"catalog/{self.provider._storefront}/albums"
+        try:
+            response = await self.api.get_data(endpoint, **{"filter[upc]": normalized_upc})
+            if not response.get("data"):
+                return None
+            album_data = response["data"][0]
+            album_ids = [album_data["id"]]
+            rating_response = await self.api.get_ratings(album_ids, MediaType.ALBUM)
+            return cast(
+                "Album | None",
+                parse_album(self.provider, album_data, rating_response.get(album_data["id"])),
+            )
+        except (MediaNotFoundError, KeyError, IndexError):  # fmt: skip
+            return None
+
     @use_cache(cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
     async def _get_regular_playlist(
         self,
