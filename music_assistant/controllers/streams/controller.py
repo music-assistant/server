@@ -1019,14 +1019,15 @@ class StreamsController(CoreController):
                             break
             except AudioError as err:
                 # the response is already being written: raising answers one that is
-                # long gone, which aiohttp logs as two unhandled tracebacks
-                queue_item.streamdetails.stream_error = True
+                # long gone, which aiohttp logs as two unhandled tracebacks. Whose
+                # failure it is stays with the layer that knows, which has already
+                # flagged the item when the audio was this item's own.
                 stream_failure = err
             finally:
                 self._active_output_streams -= 1
-            if queue_item.streamdetails.stream_error:
-                # the encode ffmpeg puts its log tail in the error it raises, and
-                # nothing else logs it
+            if stream_failure is not None or queue_item.streamdetails.stream_error:
+                # an unclean encode ffmpeg puts its log tail in the error it raises,
+                # and nothing else logs that
                 self.logger.error(
                     "Error streaming QueueItem %s (%s) to %s: %s",
                     queue_item.name,

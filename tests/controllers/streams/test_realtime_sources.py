@@ -1586,11 +1586,11 @@ class _FakeStreamResponse:
     def __init__(self, **_kwargs: Any) -> None:
         self.content_type: str | None = None
         self.content_length: int | None = None
-        self.closed = False
+        self.force_closed = False
 
     def force_close(self) -> None:
         """Record that the connection was ended."""
-        self.closed = True
+        self.force_closed = True
 
     def enable_chunked_encoding(self) -> None:
         """Accept the chunked-profile branch."""
@@ -1775,14 +1775,16 @@ async def test_single_item_handler_ends_a_failed_stream_instead_of_raising(
     resp = await controller.serve_queue_item_stream(request)
 
     queue_item = controller.mass.player_queues.get_item.return_value
-    assert queue_item.streamdetails.stream_error is True
+    # a mix that fails after this item played in full raises here too, so flagging
+    # the item from here would cost a complete play its report
+    assert not queue_item.streamdetails.stream_error
     logged = controller.logger.error.call_args
     assert "Error streaming QueueItem" in logged.args[0]
     assert queue_item.name in logged.args
     # the encode ffmpeg's log tail arrives as this message and is logged nowhere else
     assert "Error while feeding audio to FFmpeg" in str(logged.args[-1])
     # a body short of its announced length leaves the player waiting on the socket
-    assert resp.closed is True
+    assert resp.force_closed is True
 
 
 # -- StreamsAudio.get_stream_details --
