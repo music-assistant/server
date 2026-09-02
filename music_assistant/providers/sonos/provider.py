@@ -314,8 +314,9 @@ class SonosPlayerProvider(PlayerProvider):
         # end-of-queue is what makes Sonos drop items it cached past our window, so a queue
         # rewrite (replace_next) does not resurrect stale tracks.
         try:
+            wire_center = request.query.get("itemId")
             window = await player.build_cloud_queue_window(
-                request.query.get("itemId") or None,
+                player.bare_item_id(wire_center) if wire_center else None,
                 max_previous=_requested_max(request.query.get("previousWindowSize")),
                 max_upcoming=_requested_max(request.query.get("upcomingWindowSize")),
             )
@@ -333,7 +334,7 @@ class SonosPlayerProvider(PlayerProvider):
             # player's requested version, otherwise a changed queue keeps a stale version
             # label and Sonos never realises it changed.
             "queueVersion": str(queue_version),
-            "items": [self._parse_sonos_queue_item(x) for x in window.items],
+            "items": [self._parse_sonos_queue_item(player, x) for x in window.items],
         }
         return web.json_response(result)
 
@@ -410,18 +411,20 @@ class SonosPlayerProvider(PlayerProvider):
                 continue
             if "positionMillis" not in item:
                 continue
-            if player.current_media and player.current_media.queue_item_id == item["id"]:
+            if player.current_media and player.current_media.queue_item_id == player.bare_item_id(
+                item["id"]
+            ):
                 player.update_elapsed_time(item["positionMillis"] / 1000)
             break
         return web.Response(status=204)
 
-    def _parse_sonos_queue_item(self, media: PlayerMedia) -> dict[str, Any]:
+    def _parse_sonos_queue_item(self, player: SonosPlayer, media: PlayerMedia) -> dict[str, Any]:
         """Parse MusicAssistant PlayerMedia to a Sonos Media (queue) object."""
         # the speaker tracks its position within the audio we serve, which is
         # shorter than the media item when playback starts at a seek position
         duration = media.stream_duration or media.duration
         return {
-            "id": media.queue_item_id or media.uri,
+            "id": player.wire_item_id(media.queue_item_id) or media.uri,
             "track": {
                 "type": "track",
                 "mediaUrl": media.uri,

@@ -90,6 +90,7 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     player.connected = True
     player.cloud_queue_id = QUEUE_ID
     player.cloud_queue_version = 1.0
+    player._cloud_queue_item_generation = 0
     player._announcement_media = None
     return player, queues
 
@@ -281,13 +282,14 @@ async def test_itemwindow_passes_the_speakers_request_through() -> None:
     """Test the sizes and centre the speaker asks for reach the window builder."""
     player = MagicMock(spec=SonosPlayer)
     player.cloud_queue_version = 12.5
+    player.bare_item_id = SonosPlayer.bare_item_id
     player.build_cloud_queue_window = AsyncMock(
         return_value=SonosQueueWindow(includes_beginning=True, includes_end=False)
     )
     provider = _make_provider()
     request = MagicMock()
     request.query = {
-        "itemId": "track7",
+        "itemId": "track7@4",
         "previousWindowSize": "9",
         "upcomingWindowSize": "10",
         "contextVersion": "3",
@@ -336,6 +338,55 @@ async def test_upcoming_is_capped_by_what_the_speaker_allows(
     window = await player.build_cloud_queue_window("track0", max_upcoming=_requested_max(requested))
 
     assert [x.queue_item_id for x in window.items] == ["track0", *expected_upcoming]
+
+
+async def test_a_reload_of_the_same_item_gets_a_fresh_wire_id() -> None:
+    """
+    A seek reloads the item the speaker is already playing.
+
+    Under its old id the speaker keeps waiting out its stale stream; a fresh id
+    per load makes the reload cut over like a track change.
+    """
+    player, _ = _make_player([_make_queue_item("track0")])
+    client = MagicMock()
+    client.player.is_passive = False
+    loaded_ids: list[str] = []
+
+    async def _play_cloud_queue(*_args: object, item_id: str = "", **_kwargs: object) -> None:
+        loaded_ids.append(item_id)
+
+    client.player.group.play_cloud_queue = _play_cloud_queue
+    player.client = client
+    media = PlayerMedia(
+        uri="library://track/1",
+        media_type=MediaType.TRACK,
+        source_id=QUEUE_ID,
+        queue_item_id="track0",
+    )
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(SonosPlayer, "flow_mode", property(lambda _self: False))
+        await player.play_media(media)
+        await player.play_media(media)
+
+    assert len(loaded_ids) == 2
+    assert loaded_ids[0] != loaded_ids[1]
+    assert [SonosPlayer.bare_item_id(x) for x in loaded_ids] == ["track0", "track0"]
+
+
+async def test_window_items_are_served_under_the_loads_wire_id() -> None:
+    """The window describes items under the same ids the load command named."""
+    player, _ = _make_player([_make_queue_item("track0"), _make_queue_item("track1")])
+    player._cloud_queue_item_generation = 7
+    provider = _make_provider()
+    request = MagicMock()
+    request.query = {"itemId": player.wire_item_id("track0")}
+
+    response = await provider._handle_sonos_queue_itemwindow(player, request)
+
+    body = json.loads(response.text or "{}")
+    served = [x["id"] for x in body["items"]]
+    assert served == ["track0@7", "track1@7"]
 
 
 async def test_play_media_keeps_describing_the_queue_until_the_new_one_is_loaded() -> None:

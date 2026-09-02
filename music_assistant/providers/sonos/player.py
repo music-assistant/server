@@ -99,6 +99,9 @@ class SonosPlayer(Player):
         # compares against to decide whether its cached copy is still valid
         self.cloud_queue_id: str | None = None
         self.cloud_queue_version: float = time.time()
+        # advanced on every play_media: item ids are served suffixed with it, so a
+        # reload of the item the speaker is already playing gets a fresh identity
+        self._cloud_queue_item_generation = 0
         self._announcement_media: PlayerMedia | None = None
 
     @property
@@ -360,6 +363,7 @@ class SonosPlayer(Player):
         # what is playing stays described until its replacement is loaded below: there are
         # awaits in between, and an empty window served in that gap stops the current queue
         self._announcement_media = None
+        self._cloud_queue_item_generation += 1
         self.bump_cloud_queue_version()
 
         if media.media_type == MediaType.ANNOUNCEMENT:
@@ -372,7 +376,7 @@ class SonosPlayer(Player):
             try:
                 await self.group_controller.play_cloud_queue(
                     cloud_queue_url,
-                    item_id=media.queue_item_id,
+                    item_id=self.wire_item_id(media.queue_item_id),
                 )
             except Exception:
                 # the speaker never got the queue, so describing one is worse than
@@ -389,7 +393,7 @@ class SonosPlayer(Player):
             try:
                 await self.group_controller.play_cloud_queue(
                     cloud_queue_url,
-                    item_id=media.queue_item_id,
+                    item_id=self.wire_item_id(media.queue_item_id),
                 )
             except Exception:
                 # the speaker never got the queue, so describing one is worse than
@@ -466,6 +470,29 @@ class SonosPlayer(Player):
         if media.source_id:
             self.cloud_queue_id = media.source_id
         await self.refresh_cloud_queue()
+
+    def wire_item_id(self, queue_item_id: str | None) -> str | None:
+        """
+        Return the id a queue item is served under in the speaker's cloud queue.
+
+        :param queue_item_id: The MA queue item id, passed through when empty.
+        """
+        # The speaker caches the track it loaded per item id: reloading the item it
+        # is already playing under the same id (a seek within the track) leaves it
+        # waiting out its stale stream for seconds before it fetches the new one.
+        # A generation suffix makes every reload cut over like a track change.
+        if not queue_item_id:
+            return queue_item_id
+        return f"{queue_item_id}@{self._cloud_queue_item_generation}"
+
+    @staticmethod
+    def bare_item_id(item_id: str) -> str:
+        """
+        Return the MA queue item id behind an id the speaker echoes back.
+
+        :param item_id: The id as served to the speaker, tolerating unsuffixed ids.
+        """
+        return item_id.rsplit("@", 1)[0]
 
     def bump_cloud_queue_version(self) -> None:
         """
@@ -761,7 +788,7 @@ class SonosPlayer(Player):
             )
             if active_service == MusicService.MUSIC_ASSISTANT:
                 current_media.source_id = self._attr_active_source
-                current_media.queue_item_id = current_item["id"]
+                current_media.queue_item_id = self.bare_item_id(current_item["id"])
         # radio stream info
         if container and container.get("name") and active_group.playback_metadata.get("streamInfo"):
             images = container.get("images", [])
