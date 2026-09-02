@@ -80,13 +80,31 @@ def test_expected_next_track_is_a_window_item() -> None:
     assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3))
 
 
-def test_buffered_track_and_its_successor_are_window_items() -> None:
-    """A player buffered one ahead may fetch the buffered track's successor already."""
+def test_crossfade_preload_does_not_widen_the_window() -> None:
+    """
+    Refuse the item after the buffered track.
+
+    The crossfade preload moves index_in_buffer to the next track while the current one
+    still plays; the buffered track passes, but the item after it must not (after a
+    play-next move that is exactly the stale previously-next track).
+    """
     ctrl = _controller(current_index=1, index_in_buffer=2)
 
     assert ctrl.is_current_window_item("q1", _item_id_at(ctrl, 2))
-    assert ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3))
+    assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3))
     assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 4))
+
+
+def test_missing_centers_are_tolerated() -> None:
+    """A cleared buffer index (a replace in progress) or unknown playhead cannot crash."""
+    ctrl = _controller(current_index=1, index_in_buffer=None)
+    assert ctrl.is_current_window_item("q1", _item_id_at(ctrl, 1))
+    assert ctrl.is_current_window_item("q1", _item_id_at(ctrl, 2))
+
+    ctrl = _controller(current_index=1, index_in_buffer=1)
+    ctrl._queue_data["q1"].queue.current_index = None
+    assert ctrl.is_current_window_item("q1", _item_id_at(ctrl, 1))
+    assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 2))
 
 
 def test_repeat_all_wraps_the_expected_next_track() -> None:
