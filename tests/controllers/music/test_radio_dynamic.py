@@ -19,6 +19,7 @@ from music_assistant_models.errors import UnsupportedFeaturedException
 from music_assistant_models.media_items import ProviderMapping, Radio, SearchResults, Track
 from music_assistant_models.provider import ProviderManifest
 
+from music_assistant.constants import DynamicFeedItem
 from music_assistant.controllers.music.media.radio import RadioController
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
@@ -81,7 +82,7 @@ class FakeDynamicRadioProvider(MusicProvider):
 
     async def get_dynamic_radio_tracks(
         self, prov_radio_id: str, *, sample: bool = False
-    ) -> list[Track]:
+    ) -> list[DynamicFeedItem]:
         """Return a fixed batch of fake tracks for the dynamic station."""
         self.last_sample_flag = sample
         return [

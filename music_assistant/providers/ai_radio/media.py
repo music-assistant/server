@@ -15,13 +15,13 @@ from music_assistant_models.media_items import (
     MediaItemImage,
     ProviderMapping,
     Radio,
-    Track,
     UniqueList,
 )
 
 from .constants import FALLBACK_TRACK_SECONDS, SHOW_FEED_PAGE_SIZE
 
 if TYPE_CHECKING:
+    from music_assistant.constants import DynamicFeedItem
     from music_assistant.mass import MusicAssistant
 
 
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 class _ShowRun:
     """One in-flight play-through of a show: its track snapshot and feed cursor."""
 
-    tracks: list[Track]
+    tracks: list[DynamicFeedItem]
     # the queue playing this run: a run only ever exists for a queue that sources the show
     queue_id: str
     cursor: int = 0
@@ -71,7 +71,7 @@ class AIRadioMediaMixin:
 
     async def get_dynamic_radio_tracks(
         self, prov_radio_id: str, *, sample: bool = False
-    ) -> list[Track]:
+    ) -> list[DynamicFeedItem]:
         """
         Return the next feed page for a playing show, or a preview batch for a sample.
 
@@ -196,7 +196,7 @@ class AIRadioMediaMixin:
             return self._show_library_ids.get(uri.removeprefix(library_prefix))
         return None
 
-    async def _snapshot_show_tracks(self, station: dict[str, Any]) -> list[Track]:
+    async def _snapshot_show_tracks(self, station: dict[str, Any]) -> list[DynamicFeedItem]:
         """Build one run's track snapshot from the source playlist."""
         source_tracks, _playlist_name = await self._fetch_source_tracks(station)
         if station.get("shuffle_source_tracks", True):

@@ -18,7 +18,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import ProviderMapping, Radio, RadioSummary, Track
 
-from music_assistant.constants import DB_TABLE_RADIOS
+from music_assistant.constants import DB_TABLE_RADIOS, DynamicFeedItem
 from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
     update_current_task_progress_from_index,
@@ -106,11 +106,13 @@ class RadioController(MediaControllerBase[Radio]):
         radio = await self.get_provider_item(item_id, provider_instance_id_or_domain)
         # this is the browse/details sample API: it must never consume from the feed
         # that an actual playback queue pages through
-        return await self.dynamic_tracks(radio, sample=True)
+        batch = await self.dynamic_tracks(radio, sample=True)
+        # a preview lists the music; clips a station weaves into its feed are not part of it
+        return [item for item in batch if isinstance(item, Track)]
 
-    async def dynamic_tracks(self, radio: Radio, *, sample: bool = False) -> list[Track]:
+    async def dynamic_tracks(self, radio: Radio, *, sample: bool = False) -> list[DynamicFeedItem]:
         """
-        Return a fresh batch of tracks for an already resolved dynamic radio station.
+        Return a fresh batch of feed items for an already resolved dynamic radio station.
 
         :param radio: The dynamic station to fetch the next batch for.
         :param sample: True returns a preview batch that must not mutate any

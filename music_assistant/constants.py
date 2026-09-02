@@ -34,6 +34,10 @@ APPLICATION_NAME: Final = "Music Assistant"
 # Type alias for items that can be added to playlists
 PlaylistPlayableItem = Track | Radio | PodcastEpisode | Audiobook | SoundEffect
 
+# Type alias for the items a dynamic source (dynamic playlist, radio station) feeds into a
+# queue: music tracks, plus spoken clips a station may weave into its own feed
+DynamicFeedItem = Track | SoundEffect
+
 # Default number of tracks a music provider may return as a preview sample for a dynamic playlist
 DYNAMIC_PLAYLIST_SAMPLE_SIZE: Final[int] = 25
 

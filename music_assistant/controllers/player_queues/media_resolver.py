@@ -33,7 +33,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from music_assistant.constants import PlaylistPlayableItem
+from music_assistant.constants import DynamicFeedItem, PlaylistPlayableItem
 from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
     CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
@@ -240,9 +240,9 @@ class MediaResolver:
             result.extend(artist_tracks[:5])
         return result
 
-    async def get_dynamic_source_tracks(self, item: MediaItemType) -> list[Track]:
+    async def get_dynamic_source_tracks(self, item: MediaItemType) -> list[DynamicFeedItem]:
         """
-        Return a fresh batch of tracks for a dynamic playlist or radio station.
+        Return a fresh batch of feed items for a dynamic playlist or radio station.
 
         :param item: The dynamic source to fetch the next batch for.
         """

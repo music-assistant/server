@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import random
 from collections import Counter
+from collections.abc import Sequence
 from itertools import groupby
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
+from music_assistant_models.media_items import ItemMapping, ProviderMapping, SoundEffect, Track
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.constants import DynamicFeedItem
 from music_assistant.controllers.music.recency import RecencySnapshot, RecencyWindows, song_keys
 from music_assistant.controllers.player_queues.managed_pool import (
     DynamicFillMode,
@@ -132,12 +134,12 @@ def _snapshot(
     )
 
 
-def _artists(tracks: list[Track]) -> list[str]:
-    return [track.artists[0].name for track in tracks]
+def _artists(items: Sequence[DynamicFeedItem]) -> list[str]:
+    return [item.artists[0].name for item in items if isinstance(item, Track)]
 
 
-def _ids(tracks: list[Track]) -> list[str]:
-    return [track.item_id for track in tracks]
+def _ids(items: Sequence[DynamicFeedItem]) -> list[str]:
+    return [item.item_id for item in items]
 
 
 def test_empty_slots_returns_empty() -> None:
@@ -417,7 +419,7 @@ def test_seam_avoids_preceding_artist() -> None:
         preceding_artists={"a"},
     )
     assert len(result) == 3
-    assert result[0].artists[0].name != "A"
+    assert _artists(result)[0] != "A"
 
 
 def test_artist_recency_deprioritized() -> None:
@@ -483,3 +485,37 @@ async def test_fill_reconciles_after_smart_fade_reordering(
     call = reconcile.await_args
     assert call is not None
     assert call.args[2] == reordered
+
+
+def _sound_effect(item_id: str) -> SoundEffect:
+    """Build a SoundEffect on the 'test' provider, as a station weaves into its own feed."""
+    return SoundEffect(
+        item_id=item_id,
+        provider="test",
+        name=f"Clip {item_id}",
+        provider_mappings={
+            ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
+        },
+    )
+
+
+def test_dynamic_feed_sound_effect_leads_its_batch() -> None:
+    """A sound effect heading a dynamic batch is chosen with the tracks and stays in front."""
+    windows = RecencyWindows(song_seconds=WEEK, artist_seconds=1800)
+    source = DynamicSource(
+        media_item=_track("seed"),
+        multiplicity=1,
+        fill_mode=DynamicFillMode.DYNAMIC,
+        candidates=[_sound_effect("intro"), _artist_track("t1", "A"), _artist_track("t2", "B")],
+    )
+    # the tail's last artist clashes with the first track, which must not pull it in front of
+    # the artist-less clip
+    result = allocate_refill(
+        [source],
+        slots=3,
+        pool_keys=set(),
+        snapshot=_snapshot(artists_played={"A": NOW - 600}),
+        windows=windows,
+        preceding_artists={"a"},
+    )
+    assert _ids(result) == ["intro", "t2", "t1"]

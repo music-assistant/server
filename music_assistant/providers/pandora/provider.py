@@ -46,6 +46,7 @@ from music_assistant.constants import (
     CONF_PASSWORD,
     CONF_SOCKS_URL,
     CONF_USERNAME,
+    DynamicFeedItem,
 )
 from music_assistant.helpers.aiohttp_client import create_clientsession, get_socks5_url
 from music_assistant.helpers.util import parse_title_and_version
@@ -215,7 +216,7 @@ class PandoraProvider(MusicProvider):
 
     async def get_dynamic_radio_tracks(
         self, prov_radio_id: str, *, sample: bool = False
-    ) -> list[Track]:
+    ) -> list[DynamicFeedItem]:
         """
         Get the currently playable tracks for the given station.
 
