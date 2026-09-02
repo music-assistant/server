@@ -862,9 +862,12 @@ class _SingleTrackRun:
             )
             self.logger.warning(message)
             raise AudioError(message)
+        # the exit code is reported because it is what the refusal above is judged
+        # on: a refusal landing here instead names the code to widen that test with
         raise AudioError(
             f"Spotify Soloist delivered incomplete audio for {self.spotify_uri} "
-            f"(reached {int(delivered_ms)}ms of {self._duration_ms}ms)"
+            f"(reached {int(delivered_ms)}ms of {self._duration_ms}ms, engine exit code "
+            f"{proc.returncode if proc is not None else None})"
         )
 
     def _engine_normalization_enabled(self) -> bool:
