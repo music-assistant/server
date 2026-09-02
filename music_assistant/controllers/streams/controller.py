@@ -670,6 +670,18 @@ class StreamsController(CoreController):
         queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
         if not queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {queue_item_id}")
+        if player.strict_queue_item_requests and not self.mass.player_queues.is_current_window_item(
+            queue_id, queue_item_id
+        ):
+            # the player asked for a track out of a stale cached copy of the queue (its
+            # refresh signal can get lost): refusing it makes the player re-read the
+            # queue, where serving it would silently play a track the user moved away
+            self.logger.debug(
+                "Denying stream request from %s for %s: the queue has moved on",
+                player.display_name,
+                queue_item.name,
+            )
+            raise web.HTTPNotFound(reason=f"Queue item is not up next: {queue_item_id}")
 
         is_audio_source = (
             queue_item.media_item is not None
