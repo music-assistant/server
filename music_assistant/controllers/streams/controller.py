@@ -760,7 +760,16 @@ class StreamsController(CoreController):
                 )
                 raise web.HTTPNotFound(reason=str(err))
 
+        # registered before any await below: a session rotation mid-setup must be
+        # able to abort this response too, or a stale request keeps its connection
+        # open (gating some players' cutover) until the player times it out
+        stream_entry = (session_id, cast("web.BaseRequest", request))
+        self._open_item_streams.setdefault(queue_id, []).append(stream_entry)
         try:
+            if pq_data.session_id != session_id:
+                # rotated between the validation above and the registration: the
+                # sweep may already have run, so nothing else catches this one
+                raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
             if not queue_item.streamdetails:
                 try:
                     queue_item.streamdetails = await self.audio.get_stream_details(
@@ -942,8 +951,6 @@ class StreamsController(CoreController):
             # Mark this player as actively streaming so audio analysis yields CPU to playback
             # for the duration of the transfer (see audio_analysis.playback_active).
             self._active_output_streams += 1
-            stream_entry = (session_id, cast("web.BaseRequest", request))
-            self._open_item_streams.setdefault(queue_id, []).append(stream_entry)
             try:
                 # aclosing guarantees the generator (and thus the ffmpeg process chain
                 # behind it) is torn down immediately when the player disconnects
@@ -1000,11 +1007,6 @@ class StreamsController(CoreController):
                             break
             finally:
                 self._active_output_streams -= 1
-                if entries := self._open_item_streams.get(queue_id):
-                    with suppress(ValueError):
-                        entries.remove(stream_entry)
-                    if not entries:
-                        del self._open_item_streams[queue_id]
             if queue_item.streamdetails.stream_error:
                 self.logger.error(
                     "Error streaming QueueItem %s (%s) to %s",
@@ -1031,6 +1033,11 @@ class StreamsController(CoreController):
                 )
             return resp
         finally:
+            if entries := self._open_item_streams.get(queue_id):
+                with suppress(ValueError):
+                    entries.remove(stream_entry)
+                if not entries:
+                    del self._open_item_streams[queue_id]
             # Paired with on_source_selected — fires regardless of how streaming
             # ended (normal completion, client disconnect, exception). Lets
             # NAMED_PIPE plugins release ownership without depending on an

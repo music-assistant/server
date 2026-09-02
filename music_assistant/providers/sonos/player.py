@@ -101,9 +101,9 @@ class SonosPlayer(Player):
         self.cloud_queue_version: float = time.time()
         # advanced on every play_media: item ids are served suffixed with it, so a
         # reload of the item the speaker is already playing gets a fresh identity.
-        # Clock-seeded, so a recreated player never reuses a generation the speaker
-        # may still hold items under
-        self.cloud_queue_item_generation = int(time.time())
+        # Clock-seeded (nanoseconds), so a recreated player never reuses a
+        # generation the speaker may still hold items under
+        self.cloud_queue_item_generation = time.time_ns()
         self._announcement_media: PlayerMedia | None = None
 
     @property

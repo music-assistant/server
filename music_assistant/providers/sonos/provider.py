@@ -415,8 +415,12 @@ class SonosPlayerProvider(PlayerProvider):
                 continue
             if "positionMillis" not in item:
                 continue
-            if player.current_media and player.current_media.queue_item_id == player.bare_item_id(
-                item["id"]
+            # only the current load's wire id (or a legacy bare id) may update the
+            # position: a report from before a same-track reload carries the old
+            # generation and its position, which the reload just seeked away from
+            if player.current_media and item["id"] in (
+                player.current_media.queue_item_id,
+                player.wire_item_id(player.current_media.queue_item_id),
             ):
                 player.update_elapsed_time(item["positionMillis"] / 1000)
             break

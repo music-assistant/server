@@ -414,9 +414,12 @@ async def test_window_ids_stay_on_the_generation_the_request_started_with() -> N
 
 
 async def test_time_played_matches_the_playing_item_through_its_wire_id() -> None:
-    """The speaker reports positions under wire ids; the bare id must still match."""
+    """Only the current load's wire id (or a legacy bare id) may update the position."""
     player = MagicMock(spec=SonosPlayer)
-    player.bare_item_id = SonosPlayer.bare_item_id
+    player.cloud_queue_item_generation = 3
+    player.wire_item_id = lambda item_id, generation=None: SonosPlayer.wire_item_id(
+        player, item_id, generation
+    )
     player.current_media = MagicMock()
     player.current_media.queue_item_id = "track0"
     provider = _make_provider()
@@ -428,6 +431,17 @@ async def test_time_played_matches_the_playing_item_through_its_wire_id() -> Non
     await provider._handle_sonos_queue_time_played(player, request)
 
     player.update_elapsed_time.assert_called_once_with(5.0)
+
+    # a report that raced a same-track reload carries the old generation and its
+    # pre-seek position: it must not win from the position the reload seeked to
+    player.update_elapsed_time.reset_mock()
+    request.json = AsyncMock(
+        return_value={"items": [{"type": "update", "id": "track0@2", "positionMillis": 5000}]}
+    )
+
+    await provider._handle_sonos_queue_time_played(player, request)
+
+    player.update_elapsed_time.assert_not_called()
 
 
 async def test_play_media_keeps_describing_the_queue_until_the_new_one_is_loaded() -> None:
