@@ -880,11 +880,12 @@ class Adaptor:
                 except AttributeError as e:
                     self.logger.error(f"Error converting object: {e!s}")
                     return None
-                if context.force_type:
-                    assert type(result) is context.force_type, (
-                        f"Forced type to {context.force_type} but received {type(result)} "
-                        f"using {type(converter)}"
+                if context.force_type and type(result) is not context.force_type:
+                    msg = (
+                        f"Expected forced type of {context.force_type} but received "
+                        "{type(result)} using {type(converter)}"
                     )
+                    raise ConversionError(msg)
                 self.provider.logger.debug(
                     f"Successfully converted {type(source_obj).__name__}"
                     f" to {type(result).__name__} {result}"
