@@ -268,10 +268,10 @@ class SpotifyProvider(MusicProvider):
         """
         Return how many source streams Music Assistant may run against this provider.
 
-        Two on either playback backend: a Spotify account tolerates two
-        concurrent librespot fetches (main + playback), and on the Soloist
-        backend the item that is ending and the item that continues from the
-        same session are two streams reading it in turn.
+        Two for librespot (a Spotify account tolerates two concurrent fetches).
+        Soloist allows one engine run and enforces that itself: a second request
+        is answered with capacity by the backend, so the framework slot count
+        never has to know which backend is configured.
         """
         # not answered per backend: MusicProvider sizes the stream semaphore from
         # this in __init__, long before the configured backend is created
