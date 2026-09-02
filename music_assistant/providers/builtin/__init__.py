@@ -1212,6 +1212,15 @@ class BuiltinProvider(MusicProvider):
         result: list[Track] = []
         recent_tracks = await self.mass.music.recently_played(100, [MediaType.TRACK])
         for idx, item in enumerate(recent_tracks, 1):
+            # a library-originated play has no provider instance of its own to resolve
+            if item.provider == "library":
+                try:
+                    library_track = await self.mass.music.tracks.get_library_item(item.item_id)
+                except MediaNotFoundError:
+                    continue
+                library_track.position = idx
+                result.append(library_track)
+                continue
             if not (item_provider := self.mass.get_provider(item.provider)):
                 continue
             track = Track(
