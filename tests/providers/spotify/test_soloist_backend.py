@@ -450,12 +450,9 @@ async def test_a_refused_item_is_reported_as_a_refusal(tmp_path: Path) -> None:
     run._proc = MagicMock(returncode=0)
     run._chunks.put_nowait(b"\x01" * _FRAME_BYTES)
     run._finish_delivery()
-    with pytest.raises(AudioError, match="would not play"):
+    # the message travels on the error itself; the queue reports it where it skips
+    with pytest.raises(AudioError, match=f"would not play {TRACK_A}"):
         await _collect(run)
-    # logged where the cause is still known: the ffmpeg stage replaces it
-    logger = cast("MagicMock", run.logger)
-    logger.warning.assert_called_once()
-    assert TRACK_A in logger.warning.call_args.args[0]
 
 
 async def test_a_crashed_run_is_not_reported_as_a_refusal(tmp_path: Path) -> None:

@@ -1077,7 +1077,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     self.logger.error(msg)
                     await self.stop(queue_id)
                     raise MediaNotFoundError(msg) from err
-                self.logger.warning("Skipping unplayable item %s", queue_item.name)
+                self.logger.warning(
+                    "Skipping unplayable item %s: %s",
+                    queue_item.name,
+                    err or "marked unavailable",
+                )
                 index = next_index
             if loaded_item is None:
                 await self.stop(queue_id)
@@ -1388,10 +1392,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             except ProviderStreamLimitError:
                 # transient source capacity, do not burn a playable item over it
                 raise
-            except MediaNotFoundError, AudioError:
+            except (MediaNotFoundError, AudioError) as err:
                 # No stream details found, skip this QueueItem
                 self.logger.warning(
-                    "Skipping unplayable item %s (%s)", queue_item.name, queue_item.uri
+                    "Skipping unplayable item %s (%s): %s", queue_item.name, queue_item.uri, err
                 )
                 queue_item.available = False
                 idx += 1

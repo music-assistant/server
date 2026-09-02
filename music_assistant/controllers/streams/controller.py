@@ -1026,14 +1026,14 @@ class StreamsController(CoreController):
             finally:
                 self._active_output_streams -= 1
             if stream_failure is not None or queue_item.streamdetails.stream_error:
-                # an unclean encode ffmpeg puts its log tail in the error it raises,
-                # and nothing else logs that
+                # every stage in between replaces the message with one of its own, so
+                # the reason worth reporting is the one at the bottom of the chain
                 self.logger.error(
                     "Error streaming QueueItem %s (%s) to %s: %s",
                     queue_item.name,
                     queue_item.uri,
                     queue.display_name,
-                    stream_failure or "see the preceding log for the cause",
+                    _root_cause(stream_failure) if stream_failure else "see the preceding log",
                 )
                 # the body stops short of an announced content length, and aiohttp
                 # relays the 'Connection: close' we advertise without applying it -
@@ -2324,3 +2324,10 @@ class StreamsController(CoreController):
 def _same_ip_family(ip: str, other_ip: str) -> bool:
     """Return whether two addresses belong to the same IP family."""
     return (":" in ip) == (":" in other_ip)
+
+
+def _root_cause(err: BaseException) -> BaseException:
+    """Return the error a chain of re-raises started from."""
+    while err.__cause__ is not None:
+        err = err.__cause__
+    return err

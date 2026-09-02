@@ -214,7 +214,7 @@ async def test_skipping_a_known_dead_item_is_logged() -> None:
     skipped = [
         call.args[1]
         for call in ctrl.logger.warning.call_args_list  # type: ignore[attr-defined]
-        if call.args and call.args[0] == "Skipping unplayable item %s"
+        if call.args and call.args[0] == "Skipping unplayable item %s: %s"
     ]
     assert skipped == ["dead0", "dead1", "dead2"]
 

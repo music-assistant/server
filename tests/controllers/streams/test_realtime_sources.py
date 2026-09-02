@@ -1800,8 +1800,8 @@ async def test_single_item_handler_ends_a_failed_stream_instead_of_raising(
     logged = controller.logger.error.call_args
     assert "Error streaming QueueItem" in logged.args[0]
     assert queue_item.name in logged.args
-    # the encode ffmpeg's log tail arrives as this message and is logged nowhere else
-    assert "Error while feeding audio to FFmpeg" in str(logged.args[-1])
+    # every stage replaces the message, so the line must carry the reason at the bottom
+    assert "Spotify would not play" in str(logged.args[-1])
     # a body short of its announced length leaves the player waiting on the socket
     assert resp.force_closed is True
 

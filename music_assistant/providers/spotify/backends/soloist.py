@@ -853,14 +853,10 @@ class _SingleTrackRun:
             and proc.returncode == 0
             and played_ms <= _REFUSED_DELIVERY_MS
         ):
-            # logged here: the ffmpeg stage between the provider and the player
-            # replaces this message before it reaches the stream handler
-            message = (
+            raise AudioError(
                 f"Spotify would not play {self.spotify_uri}: it is unavailable for this "
                 "account or region, or Spotify refused it for now"
             )
-            self.logger.warning(message)
-            raise AudioError(message)
         # print the exit code: a refusal that exits non-zero lands here
         raise AudioError(
             f"Spotify Soloist delivered incomplete audio for {self.spotify_uri} "
