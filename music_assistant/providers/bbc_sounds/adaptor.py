@@ -526,6 +526,21 @@ class PodcastConverter(BaseConverter):
             uri=episode.stream,
         )
 
+    def _show_is_a_track(self, show: RadioShow) -> bool:
+        """
+        Determine if this should be an track instead of a podcast episode based on duration/context.
+
+        A sensible, but arbitrary duration was picked for this.
+        Track example: latest BBC News, PodcastEpisode: latest episode of a radio show.
+        """
+        duration = self._get_attr(show, "duration.value")
+        container = self._get_attr(show, "container")
+        if self.context.force_type == Track:
+            return True
+        if duration and duration < _Constants.TRACK_DURATION_THRESHOLD:
+            return True
+        return bool(not container)
+
     async def _convert_radio_show(self, show: RadioShow) -> MAPodcastEpisode | Track:
         duration = self._get_attr(show, "duration.value")
         progress_ms = self._get_attr(show, "progress.value")
@@ -534,18 +549,7 @@ class PodcastConverter(BaseConverter):
         if not show or not show.pid:
             raise ConversionError(f"No radio show for {show}")
 
-        # Determine if this should be an episode or track based on duration/context
-        # TODO: picked a sensible default but need to investigate if this makes sense
-        # Track example: latest BBC News, PodcastEpisode: latest episode of a radio show
-        if (
-            self.context.force_type == Track
-            or (
-                not self.context.force_type
-                and duration
-                and duration < _Constants.TRACK_DURATION_THRESHOLD
-            )
-            or (not hasattr(show, "container") or not show.container)
-        ):
+        if self._show_is_a_track(show):
             return Track(
                 item_id=show.pid,
                 name=self._format_show_title(show),
@@ -558,6 +562,7 @@ class PodcastConverter(BaseConverter):
                 ),
                 provider_mappings={self._create_provider_mapping(show.pid)},
             )
+
         # Handle as episode
         podcast = None
         if hasattr(show, "container") and show.container:
