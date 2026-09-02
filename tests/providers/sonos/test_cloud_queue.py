@@ -389,6 +389,23 @@ async def test_window_items_are_served_under_the_loads_wire_id() -> None:
     assert served == ["track0@7", "track1@7"]
 
 
+async def test_time_played_matches_the_playing_item_through_its_wire_id() -> None:
+    """The speaker reports positions under wire ids; the bare id must still match."""
+    player = MagicMock(spec=SonosPlayer)
+    player.bare_item_id = SonosPlayer.bare_item_id
+    player.current_media = MagicMock()
+    player.current_media.queue_item_id = "track0"
+    provider = _make_provider()
+    request = MagicMock()
+    request.json = AsyncMock(
+        return_value={"items": [{"type": "update", "id": "track0@3", "positionMillis": 5000}]}
+    )
+
+    await provider._handle_sonos_queue_time_played(player, request)
+
+    player.update_elapsed_time.assert_called_once_with(5.0)
+
+
 async def test_play_media_keeps_describing_the_queue_until_the_new_one_is_loaded() -> None:
     """Test the still-playing queue is not blanked while its replacement is being loaded."""
     player, _ = _make_player([_make_queue_item("track0")])
