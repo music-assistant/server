@@ -11,7 +11,7 @@ import asyncio
 import logging
 import os
 from collections.abc import AsyncGenerator
-from contextlib import aclosing
+from contextlib import aclosing, suppress
 from math import ceil
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
@@ -237,6 +237,11 @@ class StreamsController(CoreController):
         self.audio = StreamsAudio(mass)
         self.audio_processing = AudioProcessingManager(mass)
         self._audio_analysis = AudioAnalysisController(self)
+        # Open per-item responses by queue, so a session rotation can abort the
+        # stale ones: some players (Sonos) sit out their old stream before they
+        # load the new session, and a response blocked in a write never notices
+        # on its own that its session is gone
+        self._open_item_streams: dict[str, list[tuple[str, web.BaseRequest]]] = {}
         # Number of queue streams (single item or flow) actively serving a player right now,
         # counted for both entry points: the http routes and the raw-PCM get_stream helper.
         # Audio analysis reads this (via audio_analysis.playback_active) to yield CPU while a
@@ -628,6 +633,22 @@ class StreamsController(CoreController):
             f"{self.base_url}/{base_path}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}"
         )
 
+    def close_superseded_item_streams(self, queue_id: str, current_session_id: str | None) -> None:
+        """
+        Abort open per-item responses of sessions the queue has moved past.
+
+        :param queue_id: The queue whose open responses to check.
+        :param current_session_id: The session that owns playback now; every open
+            response of another session is aborted.
+        """
+        for session_id, request in list(self._open_item_streams.get(queue_id) or []):
+            if session_id == current_session_id:
+                continue
+            # aborted rather than closed: a graceful close waits for the very send
+            # buffer the player stopped reading, which is what kept this alive
+            if (transport := request.transport) is not None:
+                transport.abort()
+
     async def serve_queue_item_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: PLR0915
         """Stream single queueitem audio to a player."""
         self._log_request(request)
@@ -921,6 +942,8 @@ class StreamsController(CoreController):
             # Mark this player as actively streaming so audio analysis yields CPU to playback
             # for the duration of the transfer (see audio_analysis.playback_active).
             self._active_output_streams += 1
+            stream_entry = (session_id, cast("web.BaseRequest", request))
+            self._open_item_streams.setdefault(queue_id, []).append(stream_entry)
             try:
                 # aclosing guarantees the generator (and thus the ffmpeg process chain
                 # behind it) is torn down immediately when the player disconnects
@@ -948,7 +971,15 @@ class StreamsController(CoreController):
                                     queue_item.queue_id, queue_item.queue_item_id
                                 )
                         except (BrokenPipeError, ConnectionResetError, ConnectionError) as err:
-                            if (
+                            if pq_data.session_id != session_id:
+                                # deliberately aborted: playback moved on and the stale
+                                # response was closed under the player
+                                self.logger.debug(
+                                    "Ending stream for %s: session %s is no longer current",
+                                    queue_item.name,
+                                    session_id,
+                                )
+                            elif (
                                 first_chunk_received
                                 and not player.stop_called
                                 and queue_item.streamdetails.duration  # ignore for radio streams
@@ -969,6 +1000,11 @@ class StreamsController(CoreController):
                             break
             finally:
                 self._active_output_streams -= 1
+                if entries := self._open_item_streams.get(queue_id):
+                    with suppress(ValueError):
+                        entries.remove(stream_entry)
+                    if not entries:
+                        del self._open_item_streams[queue_id]
             if queue_item.streamdetails.stream_error:
                 self.logger.error(
                     "Error streaming QueueItem %s (%s) to %s",
