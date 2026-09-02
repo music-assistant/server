@@ -1295,6 +1295,11 @@ class StreamsController(CoreController):
             chunk_size=icy_meta_interval if enable_icy else calculate_content_length(output_format),
         )
         client_disconnected = False
+        # same registry as the single-item route: a forced-flow player (overlay)
+        # seeks through the same session rotation and its stale response must be
+        # abortable the same way
+        stream_entry = (session_id, cast("web.BaseRequest", request))
+        self._open_item_streams.setdefault(queue_id, []).append(stream_entry)
         try:
             # aclosing guarantees the flow stream (and thus the ffmpeg process chain
             # behind it) is torn down immediately when the player disconnects
@@ -1335,6 +1340,11 @@ class StreamsController(CoreController):
                     await resp.write(length_b + metadata)
         finally:
             self._active_output_streams -= 1
+            if entries := self._open_item_streams.get(queue_id):
+                with suppress(ValueError):
+                    entries.remove(stream_entry)
+                if not entries:
+                    del self._open_item_streams[queue_id]
 
         if not client_disconnected and http_profile == "forced_content_length":
             await self._finish_flow_stream(resp, queue_id, session_id)
