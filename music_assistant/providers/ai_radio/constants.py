@@ -99,12 +99,6 @@ FALLBACK_TRACK_SECONDS = 210
 # would be dropped silently and never air
 SHOW_FEED_PAGE_SIZE = 20
 
-# a run's next page is only served while its queue has fewer unplayed items than this,
-# i.e. it is actually consuming; other callers (a details view mid-show) get an empty
-# sample instead of silently advancing the cursor. Sits above the pool's refill trigger
-# (<5 unplayed) with headroom for the play_index/settle refill paths (unplayed 0).
-SHOW_FEED_SERVE_THRESHOLD = 8
-
 # spoken clips are handed to MA already decoded, so the filter chain runs once here
 # instead of once per output
 TTS_CLIP_PCM_FORMAT = AudioFormat(

@@ -19,7 +19,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from .constants import FALLBACK_TRACK_SECONDS, SHOW_FEED_PAGE_SIZE, SHOW_FEED_SERVE_THRESHOLD
+from .constants import FALLBACK_TRACK_SECONDS, SHOW_FEED_PAGE_SIZE
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -69,44 +69,40 @@ class AIRadioMediaMixin:
             raise MediaNotFoundError(f"AI Radio show {prov_radio_id} not found")
         return self._station_to_radio(station)
 
-    async def get_dynamic_radio_tracks(self, prov_radio_id: str) -> list[Track]:
+    async def get_dynamic_radio_tracks(
+        self, prov_radio_id: str, *, sample: bool = False
+    ) -> list[Track]:
         """
-        Return the next feed page for a playing show, or a stateless sample otherwise.
+        Return the next feed page for a playing show, or a preview batch for a sample.
 
-        A queue playing the show gets its run's next page (the first call starts the run,
-        bound to that queue); the empty batch after the last page is what ends the show's
-        feed. A caller without such a queue (e.g. a details view) gets a fresh sample
-        slice that consumes nothing.
+        The consume path pages through a run bound to the queue playing the show (the
+        first call starts it); the empty batch after the last page is what ends the
+        show's feed. A sample gets a fresh preview slice that consumes nothing.
 
         :param prov_radio_id: The station id of the show.
+        :param sample: True returns a preview batch that must not mutate any
+            playback state.
         """
         station = self._stations.get(prov_radio_id)
         if station is None:
             raise MediaNotFoundError(f"AI Radio show {prov_radio_id} not found")
+        if sample:
+            # a browse/details preview: never touches the playback run
+            tracks = await self._snapshot_show_tracks(station)
+            return tracks[:SHOW_FEED_PAGE_SIZE]
         # snapshotting awaits, so two concurrent first-calls for the same station
         # must not both pass the "no active run" check and each start their own run
         async with self._show_runs_lock:
-            queue_id = self._find_show_queue(prov_radio_id)
-            if queue_id is None:
-                # a browse/details sample: playback stores the show on the queue's sources
-                # before its first feed call, so a run is only needed when a queue is found
-                tracks = await self._snapshot_show_tracks(station)
-                return tracks[:SHOW_FEED_PAGE_SIZE]
             run = self._show_runs.get(prov_radio_id)
             if run is None:
+                queue_id = self._find_show_queue(prov_radio_id)
+                if queue_id is None:
+                    # a stray fetch with no queue sourcing the show: serve a one-off
+                    # batch, since there is no queue to bind a run to
+                    tracks = await self._snapshot_show_tracks(station)
+                    return tracks[:SHOW_FEED_PAGE_SIZE]
                 run = _ShowRun(tracks=await self._snapshot_show_tracks(station), queue_id=queue_id)
                 self._show_runs[prov_radio_id] = run
-            if run.exhausted:
-                return []
-            queue = self.mass.player_queues.get(run.queue_id)
-            consuming = queue is not None and (
-                queue.items == 0
-                or queue.items - (queue.current_index or 0) < SHOW_FEED_SERVE_THRESHOLD
-            )
-            if not consuming:
-                # a mid-show sample (or stray fetch) must not advance the live run's
-                # cursor; the empty sample while a show plays is the accepted trade-off
-                return []
             page = run.tracks[run.cursor : run.cursor + SHOW_FEED_PAGE_SIZE]
             run.cursor += len(page)
             return page

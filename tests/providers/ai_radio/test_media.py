@@ -217,22 +217,36 @@ async def test_run_end_allows_a_fresh_run() -> None:
 
 
 async def test_sample_without_a_playing_queue_is_stateless() -> None:
-    """A details-view sample serves a page without creating or consuming a run."""
+    """A details-view sample serves a preview without creating or consuming a run."""
     media = _media_with_show(track_count=30)
 
-    assert len(await media.get_dynamic_radio_tracks("morning_show")) == 20
+    assert len(await media.get_dynamic_radio_tracks("morning_show", sample=True)) == 20
     assert media._show_runs == {}
     # a repeated sample snapshots afresh instead of paging through hidden state
-    assert len(await media.get_dynamic_radio_tracks("morning_show")) == 20
+    assert len(await media.get_dynamic_radio_tracks("morning_show", sample=True)) == 20
     assert media._show_runs == {}
     assert media._fetch_source_tracks.await_count == 2  # type: ignore[attr-defined]
+
+
+async def test_sample_during_a_live_show_leaves_the_run_untouched() -> None:
+    """A details-view sample while the show plays must not move the run's cursor."""
+    media = _media_with_show(track_count=30)
+    _attach_show_queue(media)
+    assert len(await media.get_dynamic_radio_tracks("morning_show")) == 20
+    run = media._show_runs["morning_show"]
+    assert run.cursor == 20
+
+    assert len(await media.get_dynamic_radio_tracks("morning_show", sample=True)) == 20
+
+    assert media._show_runs["morning_show"] is run
+    assert run.cursor == 20
 
 
 async def test_playback_after_a_sample_serves_the_full_show() -> None:
     """A sample before pressing play must not eat into the playback run's pages."""
     media = _media_with_show(track_count=30)
     # the user opens the show's details page first: a stateless sample
-    assert len(await media.get_dynamic_radio_tracks("morning_show")) == 20
+    assert len(await media.get_dynamic_radio_tracks("morning_show", sample=True)) == 20
     # then presses play: the queue stores the show as source before the first feed call
     _attach_show_queue(media)
     assert len(await media.get_dynamic_radio_tracks("morning_show")) == 20
@@ -240,30 +254,12 @@ async def test_playback_after_a_sample_serves_the_full_show() -> None:
     assert await media.get_dynamic_radio_tracks("morning_show") == []
 
 
-async def test_mid_show_sample_does_not_advance_the_run() -> None:
-    """A sample while the bound queue still has plenty queued must not move the cursor."""
+async def test_consume_without_a_queue_serves_a_one_off_batch() -> None:
+    """A consume call with no queue sourcing the show serves a batch but binds no run."""
     media = _media_with_show(track_count=30)
-    queue = _attach_show_queue(media)
+
     assert len(await media.get_dynamic_radio_tracks("morning_show")) == 20
-    run = media._show_runs["morning_show"]
-    assert run.cursor == 20
-
-    # plenty of unplayed items: this fetch is a details-view sample, not the queue consuming
-    queue.items = 21
-    queue.current_index = 1
-    assert await media.get_dynamic_radio_tracks("morning_show") == []
-    assert run.cursor == 20
-
-
-async def test_bound_queue_running_low_gets_the_next_page() -> None:
-    """The bound queue nearing its end is served the run's next page."""
-    media = _media_with_show(track_count=30)
-    queue = _attach_show_queue(media)
-    assert len(await media.get_dynamic_radio_tracks("morning_show")) == 20
-
-    queue.items = 20
-    queue.current_index = 15  # 5 remaining, below the serve threshold
-    assert len(await media.get_dynamic_radio_tracks("morning_show")) == 10
+    assert media._show_runs == {}
 
 
 async def test_duration_cap_trims_snapshot() -> None:

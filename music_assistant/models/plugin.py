@@ -494,7 +494,9 @@ class PluginProvider(Provider):
         """
         raise NotImplementedError
 
-    async def get_dynamic_radio_tracks(self, prov_radio_id: str) -> list[Track]:
+    async def get_dynamic_radio_tracks(
+        self, prov_radio_id: str, *, sample: bool = False
+    ) -> list[Track]:
         """
         Return a fresh batch of tracks for a dynamic radio station owned by this plugin.
 
@@ -502,6 +504,8 @@ class PluginProvider(Provider):
         plays out its remaining items and ends.
 
         :param prov_radio_id: Provider-scoped radio id.
+        :param sample: True returns a preview batch that must not mutate any
+            playback state.
         """
         raise NotImplementedError
 

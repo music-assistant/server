@@ -39,6 +39,8 @@ class FakeDynamicRadioProvider(MusicProvider):
     # controls the is_dynamic value get_library_radios reports for TOGGLE_STATION_ID
     toggle_station_is_dynamic: bool = False
     toggle_station_date_added: datetime | None = None
+    # records the sample flag of the last get_dynamic_radio_tracks call
+    last_sample_flag: bool | None = None
 
     async def sync_library(self, media_type: MediaType) -> None:
         """No-op sync implementation for tests."""
@@ -77,8 +79,11 @@ class FakeDynamicRadioProvider(MusicProvider):
             },
         )
 
-    async def get_dynamic_radio_tracks(self, prov_radio_id: str) -> list[Track]:
+    async def get_dynamic_radio_tracks(
+        self, prov_radio_id: str, *, sample: bool = False
+    ) -> list[Track]:
         """Return a fixed batch of fake tracks for the dynamic station."""
+        self.last_sample_flag = sample
         return [
             Track(
                 item_id=f"{prov_radio_id}-t{i}",
@@ -162,21 +167,25 @@ class TestRadioTracks:
             await radio_ctrl.radio_tracks(STATIC_STATION_ID, FAKE_INSTANCE)
 
     async def test_returns_provider_tracks_for_provider_item(
-        self, radio_ctrl: RadioController
+        self, radio_mass: MusicAssistant, radio_ctrl: RadioController
     ) -> None:
-        """A dynamic station's tracks are fetched straight from its provider."""
+        """A dynamic station's tracks are fetched straight from its provider, as a sample."""
         tracks = await radio_ctrl.radio_tracks(DYNAMIC_STATION_ID, FAKE_INSTANCE)
         assert [track.name for track in tracks] == ["Track 0", "Track 1", "Track 2"]
+        # the details-view API is a preview: it must never consume the playback feed
+        provider = cast("FakeDynamicRadioProvider", radio_mass.get_provider(FAKE_INSTANCE))
+        assert provider.last_sample_flag is True
 
     async def test_returns_provider_tracks_for_library_item(
         self, radio_mass: MusicAssistant, radio_ctrl: RadioController
     ) -> None:
         """A library-resolved dynamic station still fetches its tracks from its own provider."""
-        provider = cast("MusicProvider", radio_mass.get_provider(FAKE_INSTANCE))
+        provider = cast("FakeDynamicRadioProvider", radio_mass.get_provider(FAKE_INSTANCE))
         station = await provider.get_radio(DYNAMIC_STATION_ID)
         library_item = await radio_ctrl.add_item_to_library(station)
         tracks = await radio_ctrl.radio_tracks(str(library_item.item_id), "library")
         assert len(tracks) == 3
+        assert provider.last_sample_flag is True
 
 
 class TestAddToLibraryDynamicGuard:
