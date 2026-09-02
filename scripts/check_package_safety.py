@@ -6,7 +6,7 @@ This script checks new or updated Python dependencies for suspicious indicators
 that might suggest supply chain attacks or unmaintained packages.
 """
 
-# ruff: noqa: T201, S310, RUF001, PLR0915
+# ruff: noqa: T201, RUF001, PLR0915
 import json
 import re
 import sys

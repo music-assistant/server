@@ -8,11 +8,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Literal
 
-from music_assistant_models.config_entries import (
-    ConfigEntry,
-    ConfigValueOption,
-    ProviderConfig,
-)
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ProviderConfig
 from music_assistant_models.enums import ConfigEntryType, ImageType, MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
@@ -33,7 +29,6 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from music_assistant_models.unique_list import UniqueList
 from sounds import (
     Container,
-    LiveStation,
     LoginFailedError,
     Menu,
     MenuRecommendationOptions,
@@ -45,7 +40,7 @@ from sounds import (
     exceptions,
 )
 from sounds import PodcastEpisode as SoundsPodcastEpisode
-from sounds.models import MenuItem, Playlist
+from sounds.models import LiveStation, MenuItem, Playlist
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER, CONF_PASSWORD, CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
@@ -56,7 +51,11 @@ from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 from music_assistant.providers.bbc_sounds.adaptor import Adaptor
 from music_assistant.providers.bbc_sounds.constants import _Constants
-from music_assistant.providers.bbc_sounds.metadata import _find_segment, _segment_to_metadata
+from music_assistant.providers.bbc_sounds.metadata import (
+    _find_segment,
+    _segment_to_metadata,
+    _station_programme_display,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
@@ -396,6 +395,14 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         if episode_info.stream_metadata:
             stream_details.stream_metadata = episode_info.stream_metadata
 
+    @use_cache(expiration=_Constants.DYNAMIC_EXPIRATION, base_class=LiveStation)
+    async def _station_current_programme(self, station_id: str) -> LiveStation | None:
+        """Reduce downstream API calls via simple wrapper for caching."""
+        self.logger.debug("Fetching fresh programme result from API")
+        station = await self.client.stations.get_station(station_id)
+        self.logger.debug(station)
+        return station
+
     async def _update_live_stream_metadata(
         self, stream_details: StreamDetails, elapsed_time: int
     ) -> None:
@@ -413,12 +420,10 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             self.logger.debug(f"Now playing for {station_id}: {now_playing}")
             stream_details.stream_metadata = _segment_to_metadata(now_playing)
         else:
-            self.logger.debug(f"No song playing on {station_id}, fetching station info")
-            station = await self.client.stations.get_station(station_id)
-            if station:
-                stream_details.stream_metadata = await self._station_programme_display(
-                    station=station
-                )
+            self.logger.debug(f"No song playing on {station_id}, displaying current programme info")
+            programme = await self._station_current_programme(station_id)
+            if metadata := _station_programme_display(programme):
+                stream_details.stream_metadata = metadata
 
     @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
     async def _vod_programme_display(self, pid: str) -> StreamMetadata | None:
@@ -430,19 +435,12 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         return None
 
     @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
-    async def _station_programme_display(self, station: LiveStation) -> StreamMetadata | None:
-        if station and station.titles:
-            title = f"{station.titles.get('secondary')} • {station.titles.get('primary')}"
-            return StreamMetadata(title=title, artist=None, image_url=station.image_url)
-        return None
-
-    @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
     async def _station_list(self, include_local: bool = False) -> list[Radio]:
         """Get list of stations as Radios."""
         radio_list: list[Radio] = []
         for station in await self.client.stations.get_stations(include_local=include_local):
             if station and station.item_id:
-                station_info = await self._station_programme_display(station=station)
+                station_info = _station_programme_display(station=station)
                 description = station_info.title if station_info else None
                 radio_list.append(
                     Radio(
@@ -686,19 +684,17 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                 if action:
                     try:
                         success = await self.client.streaming.update_play_status(
-                            pid=media_item.item_id, elapsed_time=position, action=action
+                            pid=prov_item_id, elapsed_time=position, action=action
                         )
                         self.logger.debug(f"Updated play status: {success}")
                     except exceptions.APIResponseError as err:
                         self.logger.error(f"Error updating play status: {err}")
 
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
-        """Fetch the experience-menu recommendation folders, with items."""
+        """Fetch the recommendation menu folders, with items."""
         self.logger.debug("Getting recommendations from API")
         folders: list[RecommendationFolder] = []
-        recommendations = await self.client.personal.get_experience_menu(
-            recommendations=MenuRecommendationOptions.ONLY
-        )
+        recommendations = await self.client.get_menu(recommendations=MenuRecommendationOptions.ONLY)
         if recommendations.sub_items:
             for recommendation in recommendations.sub_items:
                 # recommendation is a RecommendedMenuItem

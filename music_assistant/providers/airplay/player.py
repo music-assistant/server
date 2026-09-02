@@ -113,6 +113,14 @@ class AirPlayPlayer(Player):
         super().__init__(provider, player_id)
         self.address = address
         self.stream: AirPlayStream | None = None
+        # Serializes the two paths that can put a cliairplay process on this
+        # receiver (the native stream session and the Sendspin bridge), from the
+        # moment either decides to displace what is published until it publishes
+        # its own stream. Two processes on one receiver reset each other's RTSP
+        # channel and both sessions die. Always taken INSIDE self._lock, never
+        # around it: play_media holds self._lock across the whole session start,
+        # which takes this lock for every member.
+        self.stream_spawn_lock = asyncio.Lock()
         self.last_command_sent = 0.0
         self._volume_reports_ignored_until = 0.0
         self._lock = asyncio.Lock()
@@ -329,7 +337,11 @@ class AirPlayPlayer(Player):
         """Return True if the player is rendering audio an announcement can mix into."""
         if self.playback_state != PlaybackState.PLAYING:
             return False
-        return self.stream is not None and self.stream.running and self.stream.connected
+        if self.stream is None or self.stream.superseded:
+            # A stream handed to a teardown stays published until its process is
+            # off the receiver, and a clip mixed into it dies with it.
+            return False
+        return self.stream.running and self.stream.connected
 
     @property
     def applies_announcement_volume(self) -> bool:
@@ -605,8 +617,14 @@ class AirPlayPlayer(Player):
             if self.stream and self.stream.running and self.stream.session:
                 # Set transitioning flag to ignore stale DACP messages (like prevent-playback)
                 self._transitioning = True
+                stopped_stream = self.stream
                 await self.stream.session.stop()
-                self.stream = None
+                # Only drop what this call stopped: tearing a group session down
+                # awaits every member, and a bridge can publish its own stream
+                # here. Erasing that would leave the start below with nothing to
+                # displace and a live process still on the speaker.
+                if self.stream is stopped_stream:
+                    self.stream = None
 
             # select audio source
             audio_source = self.mass.streams.get_stream(media, session_pcm_format, self.player_id)
@@ -983,10 +1001,14 @@ class AirPlayPlayer(Player):
     def cancel_group_rejoin(self) -> None:
         """Cancel any pending automatic group re-join attempts for this player."""
         rejoin_task = self._rejoin_task
-        self._rejoin_task = None
         # never self-cancel: the re-join attempt itself flows through the same
-        # session (re)start paths that call this to clear stale schedules
-        if rejoin_task and not rejoin_task.done() and rejoin_task is not asyncio.current_task():
+        # session (re)start paths that call this to clear stale schedules. The
+        # handle also survives such a call, so a later user action can still
+        # cancel the retry loop between attempts.
+        if rejoin_task is None or rejoin_task is asyncio.current_task():
+            return
+        self._rejoin_task = None
+        if not rejoin_task.done():
             rejoin_task.cancel()
 
     def on_player_media_updated(self) -> None:
@@ -1399,7 +1421,13 @@ class AirPlayPlayer(Player):
                 if heal_session is not None:
                     await heal_session.add_client(self)
                 else:
-                    await self.mass.players.cmd_group(self.player_id, target.player_id)
+                    # Join through the target's own set_members: both ends are
+                    # players of this provider, so the join never needs the
+                    # visible-player translations of the controller's grouping
+                    # pipeline - and that pipeline's capability gate reflects
+                    # grouping state that is in flux right after a stream loss,
+                    # so it may silently refuse an internal re-join.
+                    await target.set_members(player_ids_to_add=[self.player_id])
             except Exception as err:
                 self.logger.warning(
                     "Automatic re-join of %s to group of %s failed (attempt %d/%d): %s",
@@ -1410,9 +1438,9 @@ class AirPlayPlayer(Player):
                     err,
                 )
                 continue
-            # A failed late-join is swallowed inside the grouping path (the player
-            # then holds group membership without a live stream), so verify the
-            # session actually carries this player before declaring success.
+            # A late-join can also fail without raising (the player then holds
+            # group membership without a live stream), so verify the session
+            # actually carries this player before declaring success.
             if (
                 self.stream
                 and self.stream.running
@@ -1434,7 +1462,16 @@ class AirPlayPlayer(Player):
             if heal_session is None:
                 # undo the group membership this attempt created so a retry (or
                 # a manual regroup) starts from a clean join
-                await self.mass.players.cmd_ungroup(self.player_id)
+                try:
+                    await target.set_members(player_ids_to_remove=[self.player_id])
+                except Exception as err:
+                    # a failed undo leaves the membership for the next attempt,
+                    # which then heals the session instead of joining anew
+                    self.logger.debug(
+                        "Undo of failed re-join attempt for %s failed: %s",
+                        self.display_name,
+                        err,
+                    )
         self.logger.warning(
             "Giving up on automatic group re-join for %s after %d attempt(s); "
             "the player stays idle",

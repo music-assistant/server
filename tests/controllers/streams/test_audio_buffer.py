@@ -304,6 +304,46 @@ async def test_fill_sets_eof() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fill_reports_completion_only_on_a_clean_eof() -> None:
+    """on_complete fires when the source delivered everything, never on a failure."""
+    completed: list[str] = []
+
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    buf.fill(_make_source(2), source_name="test", on_complete=lambda: completed.append("clean"))
+    await asyncio.sleep(0.1)
+    assert buf._eof_received
+    assert completed == ["clean"]
+
+    async def _failing_source() -> AsyncGenerator[bytes]:
+        yield ONE_SECOND_CHUNK
+        msg = "test error"
+        raise RuntimeError(msg)
+
+    failing = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    failing.fill(
+        _failing_source(), source_name="test", on_complete=lambda: completed.append("failed")
+    )
+    await asyncio.sleep(0.1)
+    assert completed == ["clean"]
+
+
+@pytest.mark.asyncio
+async def test_fill_does_not_report_completion_on_cancellation() -> None:
+    """A cancelled fill never claims its source delivered everything."""
+    completed: list[str] = []
+
+    async def _endless_source() -> AsyncGenerator[bytes]:
+        while True:
+            yield ONE_SECOND_CHUNK
+
+    buf = AudioBuffer(TEST_PCM_FORMAT, buffer_size=BufferSize.MINIMAL)
+    buf.fill(_endless_source(), source_name="test", on_complete=lambda: completed.append("x"))
+    await asyncio.sleep(0.05)
+    await buf.clear()
+    assert completed == []
+
+
+@pytest.mark.asyncio
 async def test_fill_error_propagation() -> None:
     """When the source errors after producing data, valid chunks are still delivered."""
 
@@ -524,6 +564,39 @@ async def test_get_buffer_skips_analysis_for_non_analyzed_types(media_type: Medi
 
     assert scheduled_tasks == []
     start_analysis.assert_not_called()
+    await buffer.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_buffer_fill_completion_prepares_the_next_item() -> None:
+    """A realtime track's finished fill frees its slot and starts the next item's fetch."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    streamdetails = _make_stream_details(
+        MediaType.TRACK, duration=180, allow_seek=True, queue_id="queue_a"
+    )
+    streamdetails.is_realtime = True
+
+    buffer = await AudioBuffer.get_buffer(mass, streamdetails, reason="test")
+    await asyncio.sleep(0.1)
+
+    mass.player_queues.prepare_next_audio_buffer.assert_called_once_with("queue_a")
+    await asyncio.gather(*scheduled_tasks)
+    await buffer.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_buffer_fill_completion_is_ignored_for_non_realtime_sources() -> None:
+    """A source that delivers faster than playback frees no slot worth chaining on."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    streamdetails = _make_stream_details(
+        MediaType.TRACK, duration=180, allow_seek=True, queue_id="queue_a"
+    )
+
+    buffer = await AudioBuffer.get_buffer(mass, streamdetails, reason="test")
+    await asyncio.sleep(0.1)
+
+    mass.player_queues.prepare_next_audio_buffer.assert_not_called()
+    await asyncio.gather(*scheduled_tasks)
     await buffer.clear()
 
 
@@ -1084,6 +1157,7 @@ async def mass_minimal(mass_minimal: MusicAssistant) -> MusicAssistant:
     mass_minimal.player_queues = SimpleNamespace(  # type: ignore[assignment]
         get_active_queue=lambda _queue_id: None,
         prepare_next_audio_buffer=lambda _queue_id: None,
+        queue_data_or_none=lambda _queue_id: None,
     )
     mass_minimal.streams = MagicMock()
     return mass_minimal
@@ -1172,10 +1246,16 @@ async def test_audio_source_next_item_is_not_prebuffered(mass_minimal: MusicAssi
 
 
 @pytest.mark.asyncio
-async def test_realtime_source_leaves_the_prebuffer_to_the_source(
+async def test_realtime_source_also_gets_the_fallback_prebuffer_trigger(
     mass_minimal: MusicAssistant,
 ) -> None:
-    """A realtime source triggers the next item itself, so the blind trigger stays quiet."""
+    """
+    A realtime track keeps the read-side trigger as its fallback.
+
+    Its slot usually frees (and prepares the next item) when an earlier fill
+    completes, but once the lead spans a whole item that moment has no next
+    item yet - this trigger is what starts it then.
+    """
     calls: list[str] = []
     mass_minimal.player_queues.prepare_next_audio_buffer = (  # type: ignore[method-assign]
         lambda queue_id: calls.append(queue_id)
@@ -1188,9 +1268,7 @@ async def test_realtime_source_leaves_the_prebuffer_to_the_source(
         is_realtime=True,
     )
 
-    # the next item's audio does not exist yet while this one plays, so triggering here
-    # would only open a source that times out and gets discarded
-    assert calls == []
+    assert calls == ["player_a"]
 
 
 @pytest.mark.asyncio
@@ -1279,3 +1357,6 @@ async def test_audio_source_stream_error_reset_on_retry(mass_minimal: MusicAssis
 
     assert chunks == [ONE_SECOND_CHUNK]
     assert streamdetails.stream_error is False
+
+
+# -- Provider-filled buffers --

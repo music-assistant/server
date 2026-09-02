@@ -464,8 +464,11 @@ the command pipe. `START_UNIX_MS` is a plain unix epoch millisecond meaning
 protocol path (RAOP, AirPlay 2 RAOP-compat and native).
 
 1. Start every CLI and wait until every group member reports connected
-2. Wire each member's ffmpeg into its persistent stdin, begin feeding PCM and
-   wait until every member confirms the feed flowing (`[STATUS] audio`)
+2. Wire each member's ffmpeg into its persistent stdin and begin feeding PCM.
+   The source's own first bytes are waited for first (up to
+   `AIRPLAY_FEED_START_TIMEOUT`, 25 s, because a seek can land seconds ahead of
+   what the source has produced), and only then does each member get its 5 s
+   budget to confirm the feed flowing (`[STATUS] audio`)
 3. Send one shared `START` (now + 400 ms solo / 500 ms warm group / 2500 ms cold
    group, see `AIRPLAY_COLD_GROUP_START_LEAD_MS`) to every member; readiness is
    event-confirmed so a warm anchor covers only the receiver re-anchor, and the
@@ -475,7 +478,12 @@ protocol path (RAOP, AirPlay 2 RAOP-compat and native).
    stdin), sends `ACTION=FLUSH` to every member and awaits `[STATUS] flushed`,
    then feeds a fresh ffmpeg into the same stdin, awaits `[STATUS] audio` and
    sends one shared `START`.
-   Standby keeps each protocol connection alive for the same flush-refill resume
+   Standby keeps each protocol connection alive for the same flush-refill resume.
+   A flow that ends because it is being superseded leaves the stdin open for the
+   replacement rather than closing it, since closing it ends the stream for good.
+   The EOF is sent anyway once the queue stops loading that replacement, or at
+   `AIRPLAY_REPLACEMENT_EOF_TIMEOUT` at the latest, so a transition that failed
+   still lets the binary play out and the player report idle
 5. Sendspin starts ride the same persistent-stdin flush-refill (cold connect +
    `START`, warm `FLUSH` + `START`) instead of a cold reconnect. They anchor as
    a join, so the binary reports the instant it really scheduled and the bridge

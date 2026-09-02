@@ -264,6 +264,11 @@ class AirPlayStream:
         # clock_ready update of this stream session.
         self._clock_stall_warned: bool = False
         self._native_control_failure_warned: bool = False
+        # Set when the Sendspin bridge hands this stream to a teardown, which
+        # leaves it published until that teardown has the process off the
+        # receiver. Native teardowns need no flag: they stop the stream first,
+        # and stop() marks it before it touches the receiver.
+        self.superseded: bool = False
 
     @property
     def running(self) -> bool:
@@ -363,8 +368,13 @@ class AirPlayStream:
             self._metadata_generation += 1
         # Push track metadata before START. Some receivers (notably Sonos) hold
         # back audio rendering until they receive track metadata; deferring it
-        # can keep them silent past the commanded start.
-        await self._send_current_metadata(send_artwork=False)
+        # can keep them silent past the commanded start. Artwork rides the
+        # budgeted bundle so the device rewrites its now-playing once, instead
+        # of a bare replace followed by an artwork replace moments later —
+        # that back-to-back pair intermittently wedges the Apple TV screen. A
+        # render that misses the budget must not hold up the START behind this
+        # connect, so its delivery continues on a background task.
+        await self._send_current_metadata(defer_artwork_followup=True)
         # An AirPlay volume command writes the receiver's own volume and persists there
         # after the session ends, so it is only sent when nothing else owns this output's
         # volume: otherwise the device keeps playing at the level its own app or remote is
@@ -375,7 +385,8 @@ class AirPlayStream:
             # the level when it fires, so it never replays a value that changed since.
             await self._send_current_volume()
             self.mass.call_later(2, self._send_current_volume)
-        # settle artwork and the position on top of the identity push above
+        # settle the position and any artwork that missed the bundle budget
+        # on top of the identity push above
         self.player.on_player_media_updated()
 
     async def stop(self, force: bool = False) -> None:
@@ -756,6 +767,7 @@ class AirPlayStream:
         progress: int | None,
         metadata: PlayerMedia | None,
         send_artwork: bool = True,
+        defer_artwork_followup: bool = False,
     ) -> None:
         """
         Send metadata to player.
@@ -763,6 +775,8 @@ class AirPlayStream:
         :param progress: Current playback position in seconds.
         :param metadata: Media metadata to send.
         :param send_artwork: Whether artwork should be rendered and sent.
+        :param defer_artwork_followup: Deliver artwork that missed the bundle
+            budget from a background task instead of awaiting it here.
         """
         metadata_checksum: str | None = None
         text_checksum: str | None = None
@@ -881,7 +895,18 @@ class AirPlayStream:
                     self._last_progress_sent = progress
 
         if artwork_url is not None:
-            await self._render_and_send_artwork(artwork_url, metadata_generation, artwork_render)
+            if defer_artwork_followup:
+                # The caller sits on the time-critical connect path: the START
+                # must not wait out a render that missed the bundle budget, so
+                # the ARTWORK delivery continues on its own task (superseding
+                # and teardown are handled by the generation and send gates).
+                self.mass.create_task(
+                    self._render_and_send_artwork(artwork_url, metadata_generation, artwork_render)
+                )
+            else:
+                await self._render_and_send_artwork(
+                    artwork_url, metadata_generation, artwork_render
+                )
 
     def _full_media_duration(self, metadata: PlayerMedia) -> int:
         """
@@ -1409,11 +1434,14 @@ class AirPlayStream:
             self._stopped = True
             try:
                 if not self.ended_cleanly:
-                    if player.stream is not self:
-                        # A newer session (native or Sendspin bridge) owns this
-                        # player, so this process's death says nothing about the
-                        # device: ungrouping or scheduling a re-join over it
-                        # would tear down the session that replaced it.
+                    if self.superseded or player.stream is not self:
+                        # This stream is on its way out, or a newer session
+                        # (native or Sendspin bridge) owns the player, so this
+                        # process's death says nothing about the device:
+                        # ungrouping or scheduling a re-join over it would tear
+                        # down the session that replaced it. The teardown flags
+                        # are not consulted here: this branch runs from the
+                        # reader that sets them.
                         logger.debug(
                             "superseded cliairplay process stopped for %s", player.display_name
                         )
@@ -1446,16 +1474,14 @@ class AirPlayStream:
                     # its current state here on purpose: the controller only transfers
                     # leadership while the queue still looks active, and transfer_queue or
                     # dissolve sets the final state.
-                    # One exception: a member that is a STATIC member of an active group
-                    # player must not go through cmd_ungroup - the controller interprets
-                    # unjoining a static member as releasing the whole group (HA unjoin
-                    # semantics), which would silence every room over one dead transport.
-                    # Its membership is configuration; drop only this member from the
-                    # leader's live session instead. The set_members call cannot bounce
-                    # back to the group player: the controller only redirects it when
-                    # the group advertises SET_MEMBERS, which a static group never does.
-                    static_member_of = self._static_group_membership(player)
-                    if static_member_of and player.synced_to:
+                    # A synced member is dropped from its NATIVE sync leader directly:
+                    # cmd_ungroup resolves a linked protocol player to its visible parent
+                    # (handle_player_command) and from there acts at the visible/group
+                    # level, which can remove the member from its (sync)group - or, for a
+                    # static member, release the whole group (HA unjoin semantics) - over
+                    # one dead transport. The device fell out; its membership is intent
+                    # that must survive, so only the leader's live session loses it.
+                    if player.synced_to:
                         self.mass.create_task(
                             self.mass.players.cmd_set_members(
                                 player.synced_to, player_ids_to_remove=[player.player_id]
@@ -1472,16 +1498,6 @@ class AirPlayStream:
                 player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
             finally:
                 await self.commands_pipe.remove()
-
-    def _static_group_membership(self, player: AirPlayPlayer) -> str | None:
-        """Return the active group player id the player is a static member of, if any."""
-        active_group_id = player.state.active_group
-        if not active_group_id:
-            return None
-        group_player = self.mass.players.get_player(active_group_id)
-        if group_player and player.player_id in group_player.static_group_members:
-            return active_group_id
-        return None
 
     def _handle_status_line(self, line: str) -> bool:  # noqa: PLR0915
         """Dispatch one cliairplay status line; True ends the stderr loop."""
@@ -1673,17 +1689,47 @@ class AirPlayStream:
             self.player.logger.debug("Could not prepare artwork: %s", err)
             return None
 
-    async def _send_current_metadata(self, send_artwork: bool = True) -> None:
+    def _current_metadata(self) -> PlayerMedia | None:
+        """Return the media the active stream should push to the device."""
+        metadata = self.session.media if self.session else self.player.current_media
+        # Prefer the state-composed media when it describes the same queue
+        # item: core composes the canonical display text there (title with
+        # version, album fallbacks, live radio tags), while the session media
+        # carries the plain queue-item text. The media-updated pushes send the
+        # state composition, so pushing anything else here flips the metadata
+        # identity checksum back and forth — and every flip is a full
+        # now-playing replace that makes an Apple TV degrade its Now Playing
+        # screen on the next track change.
+        state_media = self.player.state.current_media
+        if (
+            metadata is not None
+            and state_media is not None
+            and state_media.queue_item_id
+            and state_media.queue_item_id == metadata.queue_item_id
+        ):
+            return state_media
+        return metadata
+
+    async def _send_current_metadata(
+        self, send_artwork: bool = True, defer_artwork_followup: bool = False
+    ) -> None:
         """
         Send metadata for the media owned by the active stream.
 
         :param send_artwork: Whether artwork should be rendered and sent.
+        :param defer_artwork_followup: Deliver artwork that missed the bundle
+            budget from a background task instead of awaiting it here.
         """
-        metadata = self.session.media if self.session else self.player.current_media
+        metadata = self._current_metadata()
         if not metadata:
             return
         progress = int(metadata.corrected_elapsed_time or 0)
-        await self.send_metadata(progress, metadata, send_artwork=send_artwork)
+        await self.send_metadata(
+            progress,
+            metadata,
+            send_artwork=send_artwork,
+            defer_artwork_followup=defer_artwork_followup,
+        )
 
     async def _send_current_metadata_without_progress(self) -> None:
         """
@@ -1693,7 +1739,7 @@ class AirPlayStream:
         so the position correction is left to the post-anchor media-updated
         nudge — one settled now-playing refresh on the device instead of two.
         """
-        metadata = self.session.media if self.session else self.player.current_media
+        metadata = self._current_metadata()
         if not metadata:
             return
         await self.send_metadata(None, metadata)
@@ -1899,16 +1945,30 @@ class AirPlayStream:
             # password would otherwise be left demanding one forever.
             self.player.set_password_invalid(True)
 
+    def _describes_the_device(self) -> bool:
+        """
+        Return whether what this stream reports is evidence about the receiver.
+
+        False while the stream is coming up, on its way out, or already replaced
+        on the player: a control channel that drops because the session is going
+        away says nothing about the device, so reporting it would tell the user
+        to go and fix a speaker that is fine.
+        """
+        return (
+            not self.superseded
+            and not self._stopping
+            and not self._stopped
+            and self.player.stream is self
+        )
+
     def _handle_native_control_failure(self) -> None:
         """Warn once that the receiver dropped the native AirPlay 2 control channel."""
         if self._native_control_failure_warned:
             return
-        if self.player.stream is not self:
-            # Not evidence about the device: either a newer session reset the
-            # control channel on the receiver, or this stream is still coming up
-            # and has not been published yet. The binary keeps reporting while
-            # the failure lasts, so leaving the once-only latch unset here keeps
-            # a genuine failure reportable once the stream does own the player.
+        if not self._describes_the_device():
+            # The binary keeps reporting while the failure lasts, so leaving the
+            # once-only latch unset here keeps a genuine failure reportable once
+            # the stream does own the player.
             return
         self._native_control_failure_warned = True
         # Deliberately no automatic streaming-mode change here: the usual cause
@@ -2079,7 +2139,7 @@ class AirPlayStream:
         # taken over: neither its verdict nor its advice describes what the user
         # is hearing. The clock-ready wait below is still resolved, so its own
         # start path is not left hanging on evidence that will not arrive.
-        if stalled and not self._clock_stall_warned and self.player.stream is self:
+        if stalled and not self._clock_stall_warned and self._describes_the_device():
             # The receiver is not slaving to our clock at all, so it renders
             # silence while everything else about the session looks healthy.
             # Deliberately no automatic streaming-mode change: the streaming

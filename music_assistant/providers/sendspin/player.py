@@ -14,7 +14,6 @@ from aiosendspin.models.management import (
     ManagementSetPairingConfigPayload,
     SetDynamicPinConfig,
     SetStaticPinConfig,
-    SetUnpairedAccessConfig,
 )
 from aiosendspin.models.types import PairMethod, PlaybackStateType, PlayerCommand, role_family
 from aiosendspin.models.types import RepeatMode as SendspinRepeatMode
@@ -89,12 +88,8 @@ from .constants import (
     CONF_ACTION_MANAGEMENT_EXIT,
     CONF_ACTION_MANAGEMENT_STATIC_PIN_DISABLE,
     CONF_ACTION_MANAGEMENT_STATIC_PIN_ENABLE,
-    CONF_ACTION_MANAGEMENT_UNPAIRED_DISABLE,
-    CONF_ACTION_MANAGEMENT_UNPAIRED_ENABLE,
-    CONF_ACTION_REVOKE_UNPAIRED,
     CONF_ACTION_UNPAIR,
-    CONF_CAST_AUDIO_UNSUPPORTED,
-    CONF_PAIR_DEVICE,
+    CONF_CONNECT_METHOD,
     CONF_PAIRING_METHOD,
     CONF_PAIRING_PIN,
     CONF_PAIRING_TOKEN,
@@ -102,7 +97,8 @@ from .constants import (
     CONF_SOURCE_APPROVAL_DISMISSED,
     CONF_SOURCE_AUTOSTART_TARGET,
     CONF_SOURCE_INPUT_ACTION,
-    CONF_SOURCE_INPUT_NOTE,
+    CONNECT_METHOD_PAIR,
+    CONNECT_METHOD_UNPAIRED,
     DEFAULT_SENDSPIN_STATIC_DELAY,
     PAIR_METHOD_DYNAMIC_PIN,
     PAIR_METHOD_PIN,
@@ -198,12 +194,6 @@ def format_to_display_string(fmt: SupportedAudioFormat) -> str:
 
 
 _MANAGEMENT_ACTIONS = {
-    CONF_ACTION_MANAGEMENT_UNPAIRED_ENABLE: ManagementSetPairingConfigPayload(
-        unpaired_access=SetUnpairedAccessConfig(enabled=True)
-    ),
-    CONF_ACTION_MANAGEMENT_UNPAIRED_DISABLE: ManagementSetPairingConfigPayload(
-        unpaired_access=SetUnpairedAccessConfig(enabled=False)
-    ),
     CONF_ACTION_MANAGEMENT_STATIC_PIN_ENABLE: ManagementSetPairingConfigPayload(
         static_pin=SetStaticPinConfig(enabled=True)
     ),
@@ -243,16 +233,15 @@ _SECRET_HINT_LABELS = {
         "leaflet": "static_pin_location_leaflet",
         "operator": "static_pin_location_operator",
     },
-    PairMethod.PAIRING_PSK: {
-        "device": "pairing_psk_location_device",
-        "leaflet": "pairing_psk_location_leaflet",
-        "operator": "pairing_psk_location_operator",
-    },
     PairMethod.DYNAMIC_PIN: {
         "display": "dynamic_pin_channel_display",
         "speaker": "dynamic_pin_channel_speaker",
     },
 }
+
+# A device conveying the PIN both ways needs a label naming both, since the operator can use
+# either; every other combination is described well enough by the device's first hint.
+_BOTH_PIN_CHANNELS = "dynamic_pin_channel_display_speaker"
 
 
 def _pin_error_slug(error: Exception | None) -> str:
@@ -387,10 +376,13 @@ class SendspinBasePlayer(Player):
         """
         Whether the device is connected and encrypted but not yet usable for playback.
 
-        An unpaired device that has not been paired or allowed unpaired playback still
-        connects, but the server activates no roles for it. Reporting needs_setup keeps it
-        out of the ready-to-play targets while its settings (and the pairing actions) stay
-        reachable. Legacy unencrypted devices and the built-in web player can play as-is.
+        A device that offers neither guest access nor a completed pairing still connects,
+        but the server activates no roles for it. Reporting needs_setup keeps it out of the
+        ready-to-play targets while its settings (and the pairing actions) stay reachable.
+        A device with an undecided audio input reports it too: guest access never carries a
+        line-in, so the choice between keeping guest access and pairing has to be made once.
+        Legacy unencrypted devices, the built-in web player, and any other device already
+        playing through guest access can play as-is.
         """
         if self._is_bridge_or_web_player:
             return False
@@ -400,15 +392,28 @@ class SendspinBasePlayer(Player):
 
         if self.api.connection_security is None:
             return False
-        # A device with active roles stays usable even while its audio input is
-        # undecided (e.g. granted unpaired access before the input decision
-        # existed): the input can be enabled by pairing from the settings page.
-        return not self.api.active_roles
+        # Deliberately also while the device already plays: the audio input cannot be
+        # split out of the setup state, so the one-time input choice is prompted for here.
+        return not self.api.active_roles or self._source_input_pending
 
     @property
     def setup_reason(self) -> str | None:
         """Return the reason this device needs setup (pairing), or None when it does not."""
         return "pairing_required" if self.needs_setup else None
+
+    @property
+    def setup_flow_available(self) -> bool:
+        """Whether the flow would do anything but abort: pair, decide, or explain a dead end."""
+        if self._is_bridge_or_web_player or self.api.connection_security is None:
+            return False
+        provider = cast("SendspinProvider", self.provider)
+        # needs_setup keeps the flow reachable for a device that offers nothing at all, so
+        # the abort can explain why it cannot be used rather than leaving a bare badge.
+        return (
+            bool(self._pairing_method_options(provider))
+            or self._source_input_pending
+            or self.needs_setup
+        )
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
@@ -451,7 +456,11 @@ class SendspinBasePlayer(Player):
             return
         options = self._pairing_method_options(provider)
         wants_pairing = True
-        if not self.api.active_roles and self._offers_unpaired_consent:
+        if self._offers_unpaired_consent and (
+            not self.api.active_roles or self._source_input_pending
+        ):
+            # Guest access already carries playback, so the only thing left to consent to is
+            # the audio input: finishing keeps guest access and leaves the input off.
             wants_pairing = await self._run_consent_step(
                 session, provider, offer_pairing=bool(options)
             )
@@ -467,7 +476,7 @@ class SendspinBasePlayer(Player):
             await session.finish({})
             return
         if not options:
-            raise AbortFlow("no_pair_methods")
+            raise AbortFlow(self._no_options_abort_reason(provider))
         if len(options) == 1:
             method = options[0]
         else:
@@ -574,27 +583,30 @@ class SendspinBasePlayer(Player):
     async def _run_consent_step(
         self, session: SetupSession, provider: SendspinProvider, *, offer_pairing: bool
     ) -> bool:
-        """Show the one-time consent step; return True when the user opted into pairing."""
+        """Show the one-time consent step; return True when the user chose to pair instead."""
         entries = []
         if offer_pairing:
             entries.append(
                 ConfigEntry(
-                    key=CONF_PAIR_DEVICE,
-                    type=ConfigEntryType.BOOLEAN,
-                    default_value=False,
+                    key=CONF_CONNECT_METHOD,
+                    type=ConfigEntryType.STRING,
+                    required=True,
+                    options=[
+                        ConfigValueOption(value=CONNECT_METHOD_UNPAIRED),
+                        ConfigValueOption(value=CONNECT_METHOD_PAIR),
+                    ],
+                    expanded_options=True,
                 )
             )
-        if self._source_input_pending:
-            # pairing is what enables the audio input, so the consent page carries the
-            # note and a plain allow declines the input (revisable by pairing later)
-            entries.append(ConfigEntry(key=CONF_SOURCE_INPUT_NOTE, type=ConfigEntryType.ALERT))
-        values = await session.form(entries, step_id="approve_device")
-        if offer_pairing and bool(values.get(CONF_PAIR_DEVICE)):
+        # A device with an audio input needs its own wording; the rest of the page is shared.
+        step_id = "approve_device_source" if self._source_input_pending else "approve_device"
+        values = await session.form(entries, step_id=step_id, last_step=True)
+        if offer_pairing and values.get(CONF_CONNECT_METHOD) == CONNECT_METHOD_PAIR:
             return True
-        # record the input decline only once the grant actually took effect
-        declines_input = self._source_input_pending
+        # Connecting unpaired settles the audio input as well, so the device stops asking.
+        input_settled = self._source_input_pending
         await provider.set_trusted_unpaired(self.player_id, enabled=True)
-        if declines_input:
+        if input_settled:
             self.mass.config.set_raw_player_config_value(
                 self.player_id, CONF_SOURCE_APPROVAL_DISMISSED, True
             )
@@ -845,10 +857,14 @@ class SendspinBasePlayer(Player):
         )
         if not trusted_unpaired:
             return None, []
-        return (
-            ConfigEntry(key="security_status_unpaired", type=ConfigEntryType.ALERT),
-            [action_entry(CONF_ACTION_REVOKE_UNPAIRED)],
+        # Whether the device keeps offering guest access is the device's own call, so there is
+        # nothing to revoke here - only the option to upgrade to a pairing, if it offers one.
+        status_key = (
+            "security_status_guest_pairable"
+            if self._pairing_method_options(provider)
+            else "security_status_guest"
         )
+        return ConfigEntry(key=status_key, type=ConfigEntryType.LABEL), []
 
     async def _paired_entries(
         self,
@@ -880,13 +896,6 @@ class SendspinBasePlayer(Player):
         entries: list[ConfigEntry] = [
             ConfigEntry(key="management_status", type=ConfigEntryType.LABEL)
         ]
-        if config.unpaired_access is not None:
-            action = (
-                CONF_ACTION_MANAGEMENT_UNPAIRED_DISABLE
-                if config.unpaired_access.enabled
-                else CONF_ACTION_MANAGEMENT_UNPAIRED_ENABLE
-            )
-            entries.append(action_entry(action))
         entries.extend(
             SendspinBasePlayer._management_pin_method_entries(
                 config.static_pin,
@@ -923,8 +932,6 @@ class SendspinBasePlayer(Player):
         try:
             if action == CONF_ACTION_UNPAIR:
                 await provider.unpair_client(self.player_id)
-            elif action == CONF_ACTION_REVOKE_UNPAIRED:
-                await provider.set_trusted_unpaired(self.player_id, enabled=False)
             elif action == CONF_ACTION_MANAGEMENT_ENTER:
                 provider.enter_management(self.player_id)
                 try:
@@ -967,11 +974,22 @@ class SendspinBasePlayer(Player):
             options.append(PAIR_METHOD_DYNAMIC_PIN if both_pin_methods else PAIR_METHOD_PIN)
             if both_pin_methods:
                 options.append(PAIR_METHOD_STATIC_PIN)
-        elif any(descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods):
-            # Only show the token pairing method in case the client doesn't implement any other one.
-            # token pairing should only be used as a last resort due to the worse UX.
+        if not options and any(
+            descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods
+        ):
+            # Token pairing is machine-to-machine only and must never be user facing
+            # when a proper pairing method (PIN) is available.
             options.append(PAIR_METHOD_TOKEN)
         return options
+
+    def _no_options_abort_reason(self, provider: SendspinProvider) -> str:
+        """Say whether the device offers nothing at all, or only the server-side method."""
+        pair_methods = effective_pair_methods(
+            self.api.info_or_none, provider.pairing_config_snapshot(self.player_id)
+        )
+        if any(descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods):
+            return "token_pairing_only"
+        return "no_pair_methods"
 
     async def _pairing_succeeded(
         self, provider: SendspinProvider, pin_session: PinPairingSession
@@ -1082,6 +1100,32 @@ class SendspinBasePlayer(Player):
             elif provider.get_pin_session(self.player_id) is not None:
                 await provider.cancel_pin_pairing(self.player_id)
 
+    async def _run_token_pairing_flow(
+        self, session: SetupSession, provider: SendspinProvider
+    ) -> None:
+        """Pair via a pasted pairing token, re-rendering the form on a recoverable failure."""
+        errors: dict[str, str] | None = None
+        while True:
+            token_values = await session.form(
+                [ConfigEntry(key=CONF_PAIRING_TOKEN, type=ConfigEntryType.STRING, required=True)],
+                step_id="enter_token",
+                errors=errors,
+            )
+            try:
+                await provider.pair_with_token(
+                    self.player_id, str(token_values[CONF_PAIRING_TOKEN]).strip()
+                )
+            except (
+                SecurityActionError,
+                PairingError,
+                HandshakeAbortedError,
+                TimeoutError,
+                OSError,
+            ) as err:
+                errors = {"base": error_alert(err).key}
+                continue
+            return
+
     async def _await_pin_request(
         self,
         session: SetupSession,
@@ -1106,25 +1150,27 @@ class SendspinBasePlayer(Player):
     def _pin_form_entries(
         self, provider: SendspinProvider, pin_session: PinPairingSession
     ) -> list[ConfigEntry]:
-        """Return the PIN form fields, hinting how the operator gets the PIN."""
-        entries = self._secret_hint_entries(provider, pin_session.method)
+        """Return the PIN form fields, labelled with how the operator gets the PIN."""
         # only a dynamic PIN carries a negotiated length; a static PIN is always
         # exactly 8 digits (enforced by aiosendspin)
         pin_length = pin_session.pin_length if pin_session.pin_length is not None else 8
-        entries.append(
+        return [
             ConfigEntry(
                 key=CONF_PAIRING_PIN,
                 type=ConfigEntryType.PAIRING_CODE,
                 required=True,
                 format=pin_code_format(pin_length),
+                translation_key=self._secret_hint_key(provider, pin_session.method),
             )
-        )
-        return entries
+        ]
 
-    def _secret_hint_entries(
-        self, provider: SendspinProvider, method: PairMethod
-    ) -> list[ConfigEntry]:
-        """Return LABEL entries for the device's hints on obtaining a method's pairing secret."""
+    def _secret_hint_key(self, provider: SendspinProvider, method: PairMethod) -> str | None:
+        """
+        Return the translation slug labelling the field with where the secret comes from.
+
+        None when the device gave no usable hint, which leaves the field on its own
+        generic label.
+        """
         descriptor = pair_method_descriptor(
             effective_pair_methods(
                 self.api.info_or_none, provider.pairing_config_snapshot(self.player_id)
@@ -1132,45 +1178,15 @@ class SendspinBasePlayer(Player):
             method,
         )
         if descriptor is None:
-            return []
+            return None
         hints = (
             descriptor.out_channels if method is PairMethod.DYNAMIC_PIN else descriptor.locations
         )
         labels = _SECRET_HINT_LABELS[method]
-        return [
-            ConfigEntry(key=key, type=ConfigEntryType.LABEL)
-            for hint in hints or []
-            if (key := labels.get(hint)) is not None
-        ]
-
-    async def _run_token_pairing_flow(
-        self, session: SetupSession, provider: SendspinProvider
-    ) -> None:
-        """Pair via a pasted pairing token, re-rendering the form on a recoverable failure."""
-        errors: dict[str, str] | None = None
-        while True:
-            token_values = await session.form(
-                [
-                    *self._secret_hint_entries(provider, PairMethod.PAIRING_PSK),
-                    ConfigEntry(key=CONF_PAIRING_TOKEN, type=ConfigEntryType.STRING, required=True),
-                ],
-                step_id="enter_token",
-                errors=errors,
-            )
-            try:
-                await provider.pair_with_token(
-                    self.player_id, str(token_values[CONF_PAIRING_TOKEN]).strip()
-                )
-            except (
-                SecurityActionError,
-                PairingError,
-                HandshakeAbortedError,
-                TimeoutError,
-                OSError,
-            ) as err:
-                errors = {"base": error_alert(err).key}
-                continue
-            return
+        known = [hint for hint in hints or [] if hint in labels]
+        if method is PairMethod.DYNAMIC_PIN and set(known) >= {"display", "speaker"}:
+            return _BOTH_PIN_CHANNELS
+        return labels[known[0]] if known else None
 
 
 class SendspinPlayer(SendspinBasePlayer):
@@ -1647,17 +1663,6 @@ class SendspinPlayer(SendspinBasePlayer):
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         entries: list[ConfigEntry] = []
-        # Show alert if this Cast device is known to lack AudioContext support
-        if self.mass.config.get_raw_player_config_value(
-            self.player_id, CONF_CAST_AUDIO_UNSUPPORTED
-        ):
-            entries.append(
-                ConfigEntry(
-                    key="cast_audio_unsupported",
-                    type=ConfigEntryType.ALERT,
-                    required=False,
-                )
-            )
         entries.extend(await super().get_config_entries())
         # Build dynamic format options from player's supported formats
         player_role = self._player_role

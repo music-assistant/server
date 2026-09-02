@@ -3,7 +3,7 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 
 Brotli>=1.0.9
-aioaudiobookshelf==0.1.24
+aioaudiobookshelf==0.1.25
 aiodns>=4.0.4
 aiofiles==24.1.0
 aiohttp==3.14.3
@@ -17,14 +17,15 @@ aiosendspin[server]==9.1.1
 aioslimproto==3.1.9
 aiosonos==0.1.12
 aiosqlite==0.22.1
+aiosxm==0.3.0
 aiovban==1.1.0
 alexapy==1.30.0
 async-upnp-client==0.48.0
 audible==0.10.0
-auntie-sounds==2.0.4
+auntie-sounds==2.0.7
 av==16.1.0
 awesomeversion>=24.6.0
-bandcamp-async-api==0.2.2
+bandcamp-async-api==0.2.4
 beat-this==1.1.0
 bidict==0.23.1
 certifi==2025.11.12
@@ -50,8 +51,8 @@ lyricsgenius==3.12.2
 markdownify==1.2.3
 mashumaro==3.20
 modern_colorthief==0.2.1
-music-assistant-frontend==2.17.295
-music-assistant-models==1.1.204
+music-assistant-frontend==2.17.299
+music-assistant-models==1.1.206
 mutagen==1.48.1
 niconico.py-ma==2.1.0.post3
 nnAudio==0.3.4
@@ -74,7 +75,7 @@ PyChromecast==14.0.10
 pycryptodome==3.23.0
 pyheos==1.0.6
 pyjwt[crypto]>=2.10.1
-pylast==7.0.2
+pylast==7.1.0
 python-fullykiosk==0.0.15
 python-google-drive-api==0.1.0
 python-mpd2>=3.1.1
@@ -93,7 +94,6 @@ snapcast==2.3.8
 soco==0.31.2
 soundcloudpy==0.1.4
 soxr==1.1.0
-sxm==0.2.8
 torch==2.13.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
 torch==2.13.0; sys_platform != 'linux' or platform_machine != 'x86_64'
 torchaudio==2.11.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
@@ -106,9 +106,10 @@ websocket-client==1.9.0
 wiim==0.1.7
 xmltodict==1.0.4
 ya-dialogs-api==2.4.0
-ya-passport-auth[ma]==1.8.0
+ya-passport-auth[ma]==2.0.1
 yandex-music==3.0.0
 yappi==1.7.6
+yoto-api==4.3.4
 ytmusicapi==1.12.2
 zeroconf==0.149.16
 zvuk-music[async]==0.6.1
