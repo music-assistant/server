@@ -416,7 +416,8 @@ async def test_a_full_cushion_pauses_the_engine(tmp_path: Path) -> None:
 
 async def test_a_full_cushion_still_ends_the_stream(tmp_path: Path) -> None:
     """The end of delivery survives a cushion with no room left for the sentinel."""
-    run = _make_run(tmp_path, duration=1)
+    # no duration: this covers the cushion, not how much audio arrived
+    run = _make_run(tmp_path, duration=None)
     while not run._chunks.full():
         run._chunks.put_nowait(b"\x01" * 64)
     run._finish_delivery()
@@ -480,6 +481,27 @@ async def test_a_starved_run_is_still_reported_as_incomplete(tmp_path: Path) -> 
     run._finish_delivery()
     with pytest.raises(AudioError, match="incomplete"):
         await _collect(run)
+
+
+async def test_a_short_item_is_still_judged_on_what_arrived(tmp_path: Path) -> None:
+    """An item shorter than the tolerance would otherwise pass however little arrived."""
+    run = _make_run(tmp_path, duration=8)
+    run._engine_exited = True
+    run._proc = MagicMock(returncode=0)
+    run._chunks.put_nowait(b"\x01" * _FRAME_BYTES)
+    run._finish_delivery()
+    with pytest.raises(AudioError, match="would not play"):
+        await _collect(run)
+
+
+async def test_a_short_item_played_in_full_is_accepted(tmp_path: Path) -> None:
+    """The proportional tolerance must not turn a complete short item into a refusal."""
+    run = _make_run(tmp_path, duration=8)
+    run._engine_exited = True
+    run._proc = MagicMock(returncode=0)
+    run._chunks.put_nowait(b"\x01" * (8 * _BYTES_PER_SECOND))
+    run._finish_delivery()
+    await _collect(run)
 
 
 async def test_a_seek_to_the_items_end_is_not_read_as_a_refusal(tmp_path: Path) -> None:

@@ -842,7 +842,10 @@ class _SingleTrackRun:
             return
         played_ms = self._delivered / _BYTES_PER_SECOND * 1000
         delivered_ms = played_ms + self._seek_target_ms
-        if delivered_ms >= self._duration_ms - _SHORT_DELIVERY_TOLERANCE_MS:
+        # the tolerance never swallows an item whole, or an item shorter than it
+        # would pass however little of it arrived
+        tolerance_ms = min(_SHORT_DELIVERY_TOLERANCE_MS, self._duration_ms // 2)
+        if delivered_ms >= self._duration_ms - tolerance_ms:
             return
         proc = self._proc
         # the exit code separates a refusal from a crash: both end the run early,
