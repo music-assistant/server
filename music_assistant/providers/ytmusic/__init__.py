@@ -399,6 +399,27 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         return tracks
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
+    async def get_album_versions(self, prov_album_id: str) -> list[Album]:
+        """
+        Get albums that are related to the given prov_album_id.
+
+        YTM won't surface these variants via search, so we must explicitly grab
+        them out of the other_versions field.
+        """
+        if album_obj := await get_album(
+            headers=self._headers,
+            prov_album_id=prov_album_id,
+            language=self.language,
+            user=self._yt_user,
+        ):
+            return [
+                self._parse_album(album_obj=ov, album_id=ov["browseId"])
+                for ov in album_obj.get("other_versions", [])
+            ]
+        msg = f"Item {prov_album_id} not found"
+        raise MediaNotFoundError(msg)
+
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         if artist_obj := await get_artist(
