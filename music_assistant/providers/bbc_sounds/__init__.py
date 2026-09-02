@@ -162,9 +162,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def loaded_in_mass(self) -> None:
         """Do post-loaded actions."""
-        if not self.menu or (
-            isinstance(self.menu, Menu) and self.menu.sub_items and len(self.menu.sub_items) == 0
-        ):
+        if not self.menu or (isinstance(self.menu, Menu) and not self.menu.sub_items):
             await self._fetch_menu()
 
     @property
