@@ -86,10 +86,10 @@ from music_assistant.controllers.streams.constants import (
     DEFAULT_VOLUME_NORMALIZATION_MODE,
     FLOW_STREAM_LEAD_OUT_SECONDS,
     OUTCOME_ONLY_NORMALIZATION_MODES,
-    SINGLE_ITEM_READRATE,
-    SINGLE_ITEM_READRATE_INITIAL_BURST,
     BufferSize,
+    PacingProfile,
     get_available_buffer_sizes,
+    output_pacing_args,
 )
 from music_assistant.controllers.streams.live_announcements import (
     LIVE_ANNOUNCEMENT_STREAM_PATH,
@@ -901,17 +901,20 @@ class StreamsController(CoreController):
             ):
                 audio_bytes = _wav_passthrough_stream(audio_input, output_format)
             else:
+                pacing: PacingProfile
+                if queue_item.media_type == MediaType.AUDIO_SOURCE:
+                    pacing = "low_latency"
+                elif player.provider.domain == "musiccast":
+                    # the one known exception; more belong in a per-player table, not here
+                    pacing = "gapless_burst"
+                else:
+                    pacing = "default"
                 audio_bytes = get_ffmpeg_stream(
                     audio_input=audio_input,
                     input_format=pcm_format,
                     output_format=output_format,
                     filter_params=filter_params,
-                    extra_input_args=[
-                        "-readrate",
-                        SINGLE_ITEM_READRATE,
-                        "-readrate_initial_burst",
-                        SINGLE_ITEM_READRATE_INITIAL_BURST,
-                    ],
+                    extra_input_args=output_pacing_args(pacing),
                 )
             first_chunk_received = False
             bytes_sent = 0
@@ -1246,8 +1249,7 @@ class StreamsController(CoreController):
             # restarting (or completely failing) the audio stream by keeping the buffer short.
             # this is reported to be an issue especially with Chromecast players.
             # see for example: https://github.com/music-assistant/support/issues/3717
-            # allow buffer ahead of a few seconds and read rest in (near) realtime
-            extra_input_args=["-readrate", "1.05", "-readrate_initial_burst", "5"],
+            extra_input_args=output_pacing_args(),
             chunk_size=icy_meta_interval if enable_icy else calculate_content_length(output_format),
         )
         client_disconnected = False
@@ -1842,12 +1844,7 @@ class StreamsController(CoreController):
             filter_params=filter_params,
             # keep the encode stage from reading further ahead than it needs to: a live
             # source's latency is whatever is buffered between it and the player
-            extra_input_args=[
-                "-readrate",
-                SINGLE_ITEM_READRATE,
-                "-readrate_initial_burst",
-                SINGLE_ITEM_READRATE_INITIAL_BURST,
-            ],
+            extra_input_args=output_pacing_args("low_latency"),
         )
 
     async def _get_audio_source_session_stream(
