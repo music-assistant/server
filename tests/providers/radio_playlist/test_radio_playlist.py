@@ -191,6 +191,21 @@ async def test_artist_seed_uses_top_tracks_not_full_resolution() -> None:
 
 
 @pytest.mark.asyncio
+async def test_artist_seed_without_top_tracks_falls_back() -> None:
+    """An artist whose providers yield no top tracks still seeds via full resolution."""
+    artist_seed = _seed(MediaType.ARTIST, "art1")
+    prov = _make_provider({"art1": [_track("full1")]}, [_track("sim1")])
+    prov.mass.music.artists.top_tracks = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+    result = await prov.get_dynamic_tracks([artist_seed], include_base_tracks=True, target_size=5)
+
+    get_tracks_for_playback = cast("Any", prov.mass.player_queues.get_tracks_for_playback)
+    called_item_ids = [call.args[0].item_id for call in get_tracks_for_playback.await_args_list]
+    assert called_item_ids == ["art1"]
+    assert any(t.item_id == "full1" for t in result)
+
+
+@pytest.mark.asyncio
 async def test_similar_lookup_failure_keeps_base_tracks() -> None:
     """When no provider supports similar tracks, base tracks still carry the playlist."""
     seed = _seed(MediaType.TRACK, "s1")
