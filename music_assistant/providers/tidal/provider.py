@@ -62,6 +62,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_TRACKS,
     ProviderFeature.LIBRARY_PLAYLISTS,
     ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.ARTIST_TRACKS,
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.SEARCH,
     ProviderFeature.LIBRARY_ARTISTS_EDIT,
@@ -200,6 +201,11 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         return await self.media.get_artist_albums(prov_artist_id)
+
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
+    async def get_artist_tracks(self, prov_artist_id: str) -> list[Track]:
+        """Get a list of all tracks for the given artist."""
+        return await self.media.get_artist_tracks(prov_artist_id)
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
