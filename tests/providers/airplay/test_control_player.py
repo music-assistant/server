@@ -666,6 +666,150 @@ def test_mrp_idle_update_clears_external_media() -> None:
     assert player.current_media is None
 
 
+def test_mrp_loading_snapshot_without_playback_stays_idle() -> None:
+    """A Loading snapshot on an idle player maps to idle, not playing."""
+    # HomePods can hold a stale Loading session (with the cached metadata of a
+    # long-dead AirPlay sender) for days; trusting it would show an eternal
+    # "playing" at position 0.
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    device.metadata.app = App("Music", "com.apple.Music")
+    player._mrp_device = device
+    playing = Playing(
+        media_type=PyatvMediaType.Music,
+        device_state=DeviceState.Loading,
+        title="King of Spain",
+        total_time=209,
+        position=0,
+    )
+
+    with patch.object(player, "update_state"):
+        player._handle_playing_update(playing)
+
+    assert player.playback_state == PlaybackState.IDLE
+    assert player.active_source is None
+    assert player.current_media is None
+
+
+def test_mrp_loading_update_during_playback_stays_playing() -> None:
+    """A Loading update while already playing means buffering, so keep playing."""
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    device.metadata.app = App("Music", "com.apple.Music")
+    player._mrp_device = device
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_active_source = "com.apple.Music"
+
+    with patch.object(player, "update_state"):
+        player._handle_playing_update(Playing(device_state=DeviceState.Loading, title="Next track"))
+
+    assert player.playback_state == PlaybackState.PLAYING
+    assert player.active_source == "com.apple.Music"
+    assert player.current_media is not None
+    assert player.current_media.title == "Next track"
+
+
+async def test_disconnect_control_services_clears_external_state() -> None:
+    """A forced teardown drops the external snapshot owned by the closed MRP link."""
+    # _handle_connection_closed ignores the late close callback for a device
+    # that was already detached, so the teardown itself must clear the snapshot.
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    player._mrp_device = device
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_active_source = "com.apple.Music"
+    player._attr_current_media = MagicMock()
+
+    with patch.object(player, "update_state"):
+        await player._disconnect_control_services()
+
+    assert player.playback_state == PlaybackState.IDLE
+    assert player.active_source is None
+    assert player.current_media is None
+
+
+def test_lost_mrp_connection_clears_external_state() -> None:
+    """Losing MRP playback monitoring clears the last external snapshot."""
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    player._mrp_device = device
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._attr_active_source = "com.netflix.Netflix"
+    player._attr_current_media = MagicMock()
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_schedule_connection") as schedule_connection,
+    ):
+        player._handle_connection_closed("mrp", device)
+
+    assert player.playback_state == PlaybackState.IDLE
+    assert player.active_source is None
+    assert player.current_media is None
+    schedule_connection.assert_called_once()
+
+
+def test_failed_mrp_push_updates_clear_external_state() -> None:
+    """A dropped MRP push updater clears the last external snapshot."""
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    player._mrp_device = device
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._attr_active_source = "com.netflix.Netflix"
+    player._attr_current_media = MagicMock()
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_schedule_connection"),
+    ):
+        player._handle_push_error(device, RuntimeError("push failed"))
+
+    assert player.playback_state == PlaybackState.IDLE
+    assert player.active_source is None
+    assert player.current_media is None
+
+
+def test_lost_mrp_connection_keeps_streaming_state() -> None:
+    """A lost MRP connection never overrules the state owned by our own stream."""
+    player = _make_control_player()
+    player.stream = MagicMock(running=True)
+    device = MagicMock(spec=AppleTV)
+    player._mrp_device = device
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_active_source = "com.netflix.Netflix"
+    media = MagicMock()
+    player._attr_current_media = media
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_schedule_connection"),
+    ):
+        player._handle_connection_closed("mrp", device)
+
+    assert player.playback_state == PlaybackState.PLAYING
+    assert player.active_source == "com.netflix.Netflix"
+    assert player.current_media is media
+
+
+def test_lost_companion_connection_keeps_external_state() -> None:
+    """External playback comes from MRP only, so a Companion drop leaves it alone."""
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    player._companion_device = device
+    player._mrp_device = MagicMock(spec=AppleTV)
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._attr_active_source = "com.netflix.Netflix"
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_schedule_connection"),
+    ):
+        player._handle_connection_closed("companion", device)
+
+    assert player.playback_state == PlaybackState.PAUSED
+    assert player.active_source == "com.netflix.Netflix"
+
+
 async def test_mrp_retry_does_not_recycle_connected_companion() -> None:
     """A failed MRP monitor leaves an active Companion control channel intact."""
     player = _make_control_player()
@@ -1064,6 +1208,9 @@ async def test_late_companion_discovery_never_changes_player_model() -> None:
     provider.config = MagicMock()
     provider.config.instance_id = "airplay"
     provider._companion_info_by_address = {}
+    # a bare provider (built via __new__) lacks the bridge manager that
+    # supported_features consults; a real one exists before any player does
+    provider._bridge_manager = MagicMock(get_bridge=MagicMock(return_value=None))
     generic_player = GenericAirPlayPlayer(
         provider=provider,
         player_id=PLAYER_ID,

@@ -2,9 +2,11 @@
 
 import asyncio
 import logging
+import os
 import pathlib
+import tempfile
 import threading
-from collections.abc import AsyncGenerator, Callable, Generator
+from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 
@@ -18,7 +20,50 @@ from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.tasks import TasksController
 from music_assistant.mass import MusicAssistant
-from tests.common import suppress_auto_loaded_providers, use_ephemeral_server_ports
+from tests.common import (
+    suppress_auto_loaded_providers,
+    suppress_initial_library_sync,
+    use_ephemeral_server_ports,
+    utf8_safe,
+    wait_for_boot_to_settle,
+)
+
+NUMBA_CACHE_DIR = pytest.StashKey[tempfile.TemporaryDirectory[str]]()
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """
+    Give this test process its own numba kernel cache.
+
+    librosa compiles its numba kernels with ``cache=True`` into a directory shared by
+    every process on the machine. numba updates that cache's index non-atomically, so
+    xdist workers filling a cold cache can leave an entry pointing at another
+    signature's machine code — calling it then segfaults the worker.
+    See https://github.com/numba/numba/issues/10128.
+    """
+    cache_dir = tempfile.TemporaryDirectory(prefix="ma-numba-cache-")
+    config.stash[NUMBA_CACHE_DIR] = cache_dir
+    # numba reads this once, when it is imported; nothing here imports it that early.
+    os.environ["NUMBA_CACHE_DIR"] = cache_dir.name
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Drop this test process's numba kernel cache."""
+    if (cache_dir := config.stash.get(NUMBA_CACHE_DIR, None)) is not None:
+        cache_dir.cleanup()
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_report_to_serializable() -> Generator[None, object, object]:
+    """
+    Make serialized test reports strict-UTF-8 safe for pytest-xdist.
+
+    Lone surrogates in a captured report (e.g. undecodable filesystem paths) kill
+    the execnet worker channel. Covers test reports only; other xdist payloads
+    (warnings, log-start nodeids) are serialized outside this hook.
+    """
+    data = yield
+    return utf8_safe(data)
 
 
 @pytest.fixture(autouse=True)
@@ -66,19 +111,30 @@ def _create_mock_zeroconf() -> MagicMock:
 
 
 @pytest.fixture
-async def mass(
-    tmp_path: pathlib.Path,
-    unused_tcp_port_factory: Callable[[], int],
-) -> AsyncGenerator[MusicAssistant]:
+async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
     """
     Start a Music Assistant in test mode.
 
     :param tmp_path: Temporary directory for test data.
     """
+    async with full_mass_context(tmp_path) as mass_instance:
+        yield mass_instance
+
+
+@asynccontextmanager
+async def full_mass_context(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
+    """
+    Boot a full server on the given temporary directory.
+
+    Exposed next to the ``mass`` fixture so a test that needs to seed ``data/settings.json``
+    (or the cache) before the boot can prepare the directory itself and boot it here.
+
+    :param tmp_path: Temporary directory for test data.
+    """
     storage_path = tmp_path / "data"
     cache_path = tmp_path / "cache"
-    storage_path.mkdir(parents=True)
-    cache_path.mkdir(parents=True)
+    storage_path.mkdir(parents=True, exist_ok=True)
+    cache_path.mkdir(parents=True, exist_ok=True)
 
     logging.getLogger("aiosqlite").level = logging.INFO
 
@@ -89,7 +145,7 @@ async def mass(
     mock_browser = NonCallableMagicMock()  # Use NonCallable to avoid api_cmd issues
 
     with (
-        use_ephemeral_server_ports(unused_tcp_port_factory),
+        use_ephemeral_server_ports(),
         patch(
             "music_assistant.controllers.discovery.controller.AsyncZeroconf",
             return_value=mock_zc,
@@ -104,15 +160,21 @@ async def mass(
             "music_assistant.controllers.streams.controller.check_ffmpeg_version",
             new=AsyncMock(),
         ),
-        # keep the fixture isolated from the developer's machine: no auto-loaded device
-        # providers and no local_audio bridging the host's sound devices as players
+        # keep the fixture isolated from the developer's machine: no auto-loaded
+        # device providers
         suppress_auto_loaded_providers(),
+        # keep the booted instance quiet: no library sync firing into a running test
+        suppress_initial_library_sync(),
     ):
-        await mass_instance.start()
-
         try:
+            await mass_instance.start()
+            await wait_for_boot_to_settle(mass_instance)
             yield mass_instance
         finally:
+            # also stop after a failed boot: pytest holds on to the setup traceback,
+            # which keeps the half-started server (and the non-daemon threads of its
+            # open database connections) alive until the interpreter exits, where
+            # joining those threads then hangs the whole test process
             await mass_instance.stop()
 
 

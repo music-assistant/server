@@ -37,10 +37,12 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.countries import get_country_codes
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
-    get_podcastparser_dict,
-    get_stream_url_from_episode,
+    find_episode_stream_url,
+    get_cached_podcast,
+    get_episode_positions,
     parse_podcast,
     parse_podcast_episode,
+    refresh_cached_podcast,
 )
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.models.music_provider import MusicProvider
@@ -66,7 +68,7 @@ CONF_NUM_EPISODES = "num_episodes"
 # store to search when the server's language has no matching iTunes storefront
 DEFAULT_LOCALE = "us"
 
-CACHE_CATEGORY_PODCASTS = 0
+# category 0 holds the parsed podcast feeds, see CACHE_CATEGORY_PODCAST_FEED
 CACHE_CATEGORY_RECOMMENDATIONS = 1
 CACHE_KEY_TOP_PODCASTS = "top-podcasts"
 RECOMMENDATION_ROW_TOP_PODCASTS = "itunes-top-podcasts"
@@ -99,6 +101,11 @@ class ITunesPodcastsProvider(MusicProvider):
     """ITunesPodcastsProvider."""
 
     throttler: ThrottlerManager
+
+    @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
@@ -278,12 +285,13 @@ class ITunesPodcastsProvider(MusicProvider):
             feed_url = our_provider_mapping.item_id
             parsed_podcast: dict[str, Any] | None = None
             try:
-                parsed_podcast = await get_podcastparser_dict(
-                    session=self.mass.http_session,
+                parsed_podcast = await refresh_cached_podcast(
+                    mass=self.mass,
+                    provider_instance_id=self.instance_id,
                     feed_url=feed_url,
                     max_episodes=self.max_episodes,
+                    cache_expiration=self._get_cache_expiration(),
                 )
-                await self._cache_set_podcast(feed_url=feed_url, parsed_podcast=parsed_podcast)
                 self.logger.debug("Synced podcast %s.", podcast.name)
             except MediaNotFoundError:
                 # If we are not able to refresh the podcast, we must prevent the sync
@@ -318,11 +326,12 @@ class ITunesPodcastsProvider(MusicProvider):
         podcast = await self._cache_get_podcast(prov_podcast_id)
         podcast_cover = podcast.get("cover_url")
         episodes = podcast.get("episodes", [])
-        for cnt, episode in enumerate(episodes):
+        positions = get_episode_positions(episodes)
+        for position, episode in zip(positions, episodes, strict=True):
             if mass_episode := parse_podcast_episode(
                 episode=episode,
                 prov_podcast_id=prov_podcast_id,
-                episode_cnt=cnt,
+                position=position,
                 podcast_cover=podcast_cover,
                 podcast_name=podcast.get("title"),
                 domain=self.domain,
@@ -335,11 +344,13 @@ class ITunesPodcastsProvider(MusicProvider):
         podcast_id, guid_or_stream_url = prov_episode_id.split(" ")
         podcast = await self._cache_get_podcast(podcast_id)
         podcast_cover = podcast.get("cover_url")
-        for cnt, episode in enumerate(podcast.get("episodes", [])):
+        episodes = podcast.get("episodes", [])
+        positions = get_episode_positions(episodes)
+        for position, episode in zip(positions, episodes, strict=True):
             mass_episode = parse_podcast_episode(
                 episode=episode,
                 prov_podcast_id=podcast_id,
-                episode_cnt=cnt,
+                position=position,
                 podcast_cover=podcast_cover,
                 podcast_name=podcast.get("title"),
                 domain=self.domain,
@@ -359,22 +370,10 @@ class ITunesPodcastsProvider(MusicProvider):
         raise MediaNotFoundError("Episode not found")
 
     async def _get_episode_stream_url(self, podcast_id: str, guid_or_stream_url: str) -> str | None:
-        podcast = await self._cache_get_podcast(podcast_id)
-        episodes = podcast.get("episodes", [])
-        for episode in episodes:
-            stream_url = get_stream_url_from_episode(episode=episode)
-            if stream_url is None:
-                # episode without a playable enclosure carries no stream; skip it instead of
-                # aborting the lookup for the (potentially later) requested episode
-                continue
-            guid = episode.get("guid")
-            if guid is not None and len(guid.split(" ")) == 1:
-                _guid_or_stream_url_compare = guid
-            else:
-                _guid_or_stream_url_compare = stream_url
-            if guid_or_stream_url == _guid_or_stream_url_compare:
-                return stream_url
-        return None
+        parsed_podcast = await self._cache_get_podcast(podcast_id)
+        return find_episode_stream_url(
+            parsed_feed=parsed_podcast, guid_or_stream_url=guid_or_stream_url
+        )
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for item."""
@@ -415,44 +414,27 @@ class ITunesPodcastsProvider(MusicProvider):
         return search_results.results[0]
 
     async def _cache_get_podcast(self, prov_podcast_id: str) -> dict[str, Any]:
-        parsed_podcast = await self.mass.cache.get(
-            key=prov_podcast_id,
-            provider=self.instance_id,
-            category=CACHE_CATEGORY_PODCASTS,
-            default=None,
+        # raises MediaNotFoundError if the feed is gone or invalid
+        return await get_cached_podcast(
+            mass=self.mass,
+            provider_instance_id=self.instance_id,
+            feed_url=prov_podcast_id,
+            max_episodes=self.max_episodes,
+            cache_expiration=self._get_cache_expiration(),
         )
-        if parsed_podcast is None:
-            # get_podcastparser_dict raises MediaNotFoundError if data is invalid
-            parsed_podcast = await get_podcastparser_dict(
-                session=self.mass.http_session,
-                feed_url=prov_podcast_id,
-                max_episodes=self.max_episodes,
-            )
-            await self._cache_set_podcast(feed_url=prov_podcast_id, parsed_podcast=parsed_podcast)
 
-        # this is a dictionary from podcastparser
-        return parsed_podcast  # type: ignore[no-any-return]
-
-    async def _cache_set_podcast(self, feed_url: str, parsed_podcast: dict[str, Any]) -> None:
+    def _get_cache_expiration(self) -> int:
         # Cache slightly longer than the effective sync interval to avoid fetching
         # the same podcast feed repeatedly during recurring library sync.
         schedule = self.mass.music.get_provider_sync_schedule(self.instance_id, MediaType.PODCAST)
         library_sync_enabled = bool(self.config.get_value("library_sync_podcasts"))
         if not library_sync_enabled or schedule is None or not schedule.enabled:
-            cache_time = 60 * 60 * 12  # 12h
-        elif schedule.type == TaskScheduleType.HOURLY and schedule.every is not None:
-            cache_time = schedule.every * 60 * 60 + 600  # 10 minutes extra cache
-        elif schedule.type == TaskScheduleType.DAILY and schedule.every is not None:
-            cache_time = schedule.every * 24 * 60 * 60 + 600
-        else:
-            cache_time = 60 * 60 * 12  # 12h
-        await self.mass.cache.set(
-            key=feed_url,
-            provider=self.instance_id,
-            category=CACHE_CATEGORY_PODCASTS,
-            data=parsed_podcast,
-            expiration=cache_time,
-        )
+            return 60 * 60 * 12  # 12h
+        if schedule.type == TaskScheduleType.HOURLY and schedule.every is not None:
+            return schedule.every * 60 * 60 + 600  # 10 minutes extra cache
+        if schedule.type == TaskScheduleType.DAILY and schedule.every is not None:
+            return schedule.every * 24 * 60 * 60 + 600
+        return 60 * 60 * 12  # 12h
 
     async def _cache_set_top_podcasts(self, top_podcast_helper: TopPodcastsHelper) -> None:
         await self.mass.cache.set(

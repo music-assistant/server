@@ -17,10 +17,12 @@ from uuid import uuid4
 import pytest
 from music_assistant_models.enums import AlbumType, MediaType
 from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
     Genre,
+    GenreSummary,
     Podcast,
     ProviderMapping,
     Track,
@@ -42,7 +44,6 @@ from music_assistant.constants import (
     DEFAULT_PODCAST_GENRE_MAPPING,
 )
 from music_assistant.controllers.music.media.genres import GenreController
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.mass import MusicAssistant
 
 # ---------------------------------------------------------------------------
@@ -293,6 +294,19 @@ class TestGenreCRUD:
         items = await genre_ctrl.library_items(hide_empty=False)
         names = {g.name for g in items}
         assert {"Alpha", "Beta", "Gamma"}.issubset(names)
+
+    async def test_library_items_summary_includes_alias_count(
+        self, genre_ctrl: GenreController
+    ) -> None:
+        """Summary items carry the mapped alias count, not the aliases themselves."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("AliasSummaryGenre"))
+        await genre_ctrl.add_alias(genre.item_id, "Alias Summary Rock")
+        items = await genre_ctrl.library_items(hide_empty=False)
+        item = next(g for g in items if g.name == "AliasSummaryGenre")
+        assert isinstance(item, GenreSummary)
+        # the genre's own name is stored as an alias but must not be counted
+        assert item.genre_alias_count == 1
+        assert item.genre_aliases is None
 
     async def test_library_items_search(self, genre_ctrl: GenreController) -> None:
         """Search 'country' returns Country genre but not unrelated ones like Metal."""

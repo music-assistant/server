@@ -25,10 +25,16 @@ from music_assistant_models.media_items import (
 if TYPE_CHECKING:
     import aiohttp
 
+    from music_assistant.mass import MusicAssistant
+
 LOGGER = logging.getLogger(__name__)
 
 # best-effort enrichment must never stall episode resolution, so cap the chapter fetch
 _CHAPTERS_FETCH_TIMEOUT = ClientTimeout(total=10)
+
+# defaults for the parsed-feed cache shared by the podcast providers
+CACHE_CATEGORY_PODCAST_FEED = 0
+PODCAST_FEED_CACHE_EXPIRATION = 24 * 3600
 
 
 async def get_podcastparser_dict(
@@ -39,30 +45,106 @@ async def get_podcastparser_dict(
 
     max_episodes = 0 does not limit the returned episodes.
     """
-    response: aiohttp.ClientResponse | None = None
+    feed_data: bytes | None = None
     # without user agent, some feeds can not be retrieved
     # https://github.com/music-assistant/support/issues/3596
     # but, reports on discord show, that also the opposite may be true
     for headers in [{"User-Agent": "Mozilla/5.0"}, {}]:
         # raises ClientError on status failure
         # ClientError is the base class of all possible Error, i.e. not authorized,
-        # url doesn't exist etc.
+        # url doesn't exist etc. The body is read inside the context manager, so a
+        # connection is never left open when a feed fails midway.
         try:
-            response = await session.get(feed_url, headers=headers, raise_for_status=True)
+            async with session.get(feed_url, headers=headers, raise_for_status=True) as response:
+                feed_data = await response.read()
         except ClientError:
             continue
         break
-    if response is None:
+    if feed_data is None:
         # we did not get a single acceptable response
         raise MediaNotFoundError(
             f"Did not get acceptable response while trying to access {feed_url}."
         )
-    feed_data = await response.read()
     feed_stream = BytesIO(feed_data)
     try:
         return podcastparser.parse(feed_url, feed_stream, max_episodes=max_episodes)  # type: ignore[no-any-return]
     except podcastparser.FeedParseError:
         raise MediaNotFoundError(f"The url at {feed_url} returns invalid RSS data.")
+
+
+async def get_cached_podcast(
+    *,
+    mass: MusicAssistant,
+    provider_instance_id: str,
+    feed_url: str,
+    max_episodes: int = 0,
+    cache_category: int = CACHE_CATEGORY_PODCAST_FEED,
+    cache_expiration: int = PODCAST_FEED_CACHE_EXPIRATION,
+) -> dict[str, Any]:
+    """
+    Return a podcast's parsed feed, retrieving and caching it when not cached yet.
+
+    :param mass: The MusicAssistant instance holding the cache.
+    :param provider_instance_id: Provider instance the cache entry belongs to.
+    :param feed_url: The podcast's feed url, also used as the cache key.
+    :param max_episodes: Maximum number of episodes to parse, 0 for unlimited.
+    :param cache_category: Cache category to store the parsed feed under.
+    :param cache_expiration: Time in seconds the cached feed stays valid.
+    :raises MediaNotFoundError: If the feed could not be retrieved or parsed.
+    """
+    parsed_feed = await mass.cache.get(
+        key=feed_url,
+        provider=provider_instance_id,
+        category=cache_category,
+        default=None,
+    )
+    if parsed_feed is None:
+        return await refresh_cached_podcast(
+            mass=mass,
+            provider_instance_id=provider_instance_id,
+            feed_url=feed_url,
+            max_episodes=max_episodes,
+            cache_category=cache_category,
+            cache_expiration=cache_expiration,
+        )
+    # this is a dictionary from podcastparser
+    return parsed_feed  # type: ignore[no-any-return]
+
+
+async def refresh_cached_podcast(
+    *,
+    mass: MusicAssistant,
+    provider_instance_id: str,
+    feed_url: str,
+    max_episodes: int = 0,
+    cache_category: int = CACHE_CATEGORY_PODCAST_FEED,
+    cache_expiration: int = PODCAST_FEED_CACHE_EXPIRATION,
+) -> dict[str, Any]:
+    """
+    Retrieve a podcast's feed and store it in the cache, replacing any cached copy.
+
+    Use this on the library sync path: the sync must always refresh the cached feed,
+    regardless of whether a (still valid) cache entry exists.
+
+    :param mass: The MusicAssistant instance holding the cache.
+    :param provider_instance_id: Provider instance the cache entry belongs to.
+    :param feed_url: The podcast's feed url, also used as the cache key.
+    :param max_episodes: Maximum number of episodes to parse, 0 for unlimited.
+    :param cache_category: Cache category to store the parsed feed under.
+    :param cache_expiration: Time in seconds the cached feed stays valid.
+    :raises MediaNotFoundError: If the feed could not be retrieved or parsed.
+    """
+    parsed_feed = await get_podcastparser_dict(
+        session=mass.http_session, feed_url=feed_url, max_episodes=max_episodes
+    )
+    await mass.cache.set(
+        key=feed_url,
+        provider=provider_instance_id,
+        category=cache_category,
+        data=parsed_feed,
+        expiration=cache_expiration,
+    )
+    return parsed_feed
 
 
 def parse_podcast(
@@ -164,11 +246,72 @@ def get_stream_url_and_guid_from_episode(*, episode: dict[str, Any]) -> tuple[st
     return stream_url, guid
 
 
+def find_episode_stream_url(*, parsed_feed: dict[str, Any], guid_or_stream_url: str) -> str | None:
+    """
+    Return the stream url of the episode identified by the item_id's episode part.
+
+    :param parsed_feed: The podcastparser dict of the feed holding the episode.
+    :param guid_or_stream_url: Episode part of the item_id, see parse_podcast_episode.
+    """
+    for episode in parsed_feed.get("episodes", []):
+        try:
+            stream_url, guid = get_stream_url_and_guid_from_episode(episode=episode)
+        except ValueError:
+            # episode without a playable enclosure carries no stream; skip it instead of
+            # aborting the lookup for the (potentially later) requested episode
+            continue
+        # only a guid rejected as unusable (None) falls back to the stream url, so an
+        # empty guid resolves the same way it was turned into an item_id
+        if guid_or_stream_url == (stream_url if guid is None else guid):
+            return stream_url
+    return None
+
+
+def rank_episodes_by_date(dates: list[Any]) -> list[int]:
+    """
+    Return the position of every episode, in the order the provider lists them.
+
+    Positions run oldest to newest, so the newest episode has the highest one. Episodes
+    without a date rank as the oldest, and when none of them has one the provider is
+    assumed to list its episodes newest-first.
+
+    :param dates: The publication dates in listing order, None where an episode has none.
+        Any comparable type will do as long as the provider reports them all the same way.
+    """
+    total = len(dates)
+    dated = [idx for idx, date in enumerate(dates) if date is not None]
+    if not dated:
+        return [total - idx for idx in range(total)]
+    undated = [idx for idx, date in enumerate(dates) if date is None]
+    positions = [0] * total
+    for position, idx in enumerate(undated + sorted(dated, key=lambda idx: dates[idx]), 1):
+        positions[idx] = position
+    return positions
+
+
+def get_episode_positions(episodes: list[dict[str, Any]]) -> list[int]:
+    """
+    Return the position of every episode, in the order the feed lists them.
+
+    Positions run oldest to newest, so the newest episode has the highest one.
+
+    :param episodes: The episodes of a single feed, as parsed by podcastparser.
+    """
+    # a feed that numbers only part of its episodes, or restarts its numbering every
+    # season, mixes incompatible scales, so its numbers are only used when unique
+    numbered = all(isinstance(ep.get("number"), int) and ep["number"] > 0 for ep in episodes)
+    if numbered and len({ep.get("season") or 0 for ep in episodes}) == 1:
+        return [ep["number"] for ep in episodes]
+    # podcastparser lists serial feeds oldest-first and all others newest-first,
+    # so rank on the publication date instead of the feed order
+    return rank_episodes_by_date([ep.get("published") or None for ep in episodes])
+
+
 def parse_podcast_episode(
     *,
     episode: dict[str, Any],
     prov_podcast_id: str,
-    episode_cnt: int,
+    position: int,
     podcast_cover: str | None = None,
     podcast_name: str | None = None,
     instance_id: str,
@@ -184,6 +327,8 @@ def parse_podcast_episode(
 
     The function returns None, if the episode enclosure is missing, i.e. there is no stream
     information present.
+
+    :param position: The episode's listing position, oldest to newest.
     """
     episode_duration = episode.get("total_time", 0.0)
     episode_title = episode.get("title", "NO_EPISODE_TITLE")
@@ -193,13 +338,6 @@ def parse_podcast_episode(
     episode_published: int | None = episode.get("published")
     if episode_published == 0:
         episode_published = None
-
-    # prefer the explicit itunes:episode number for ordering (parity with podcast_index);
-    # fall back to the feed enumeration order when the feed omits it
-    episode_number = episode.get("number")
-    episode_position = (
-        episode_number if isinstance(episode_number, int) and episode_number > 0 else episode_cnt
-    )
 
     try:
         stream_url, guid = get_stream_url_and_guid_from_episode(episode=episode)
@@ -216,7 +354,7 @@ def parse_podcast_episode(
         provider=instance_id,
         name=episode_title,
         duration=int(episode_duration),
-        position=episode_position,
+        position=position,
         podcast=ItemMapping(
             item_id=prov_podcast_id,
             provider=instance_id,

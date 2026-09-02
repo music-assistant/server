@@ -16,7 +16,8 @@ import pytest
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.controllers.streams.smart_fades.filters import CrossfadeFilter
+from music_assistant.controllers.streams.smart_fades.filters import StreamingCrossfadeFilter
+from music_assistant.controllers.streams.smart_fades.mixer import SmartFadesMixer
 from music_assistant.controllers.streams.smart_fades.models import (
     TransitionPlan,
     TransitionStrategy,
@@ -71,6 +72,7 @@ def _analysis(
 def _vocal_probabilities(
     duration: float,
     active_windows: list[tuple[float, float]],
+    level: float = 0.9,
 ) -> list[float]:
     """Build a probability timeline that is quiet except inside ``active_windows``."""
     n_frames = 1800
@@ -80,18 +82,19 @@ def _vocal_probabilities(
         start_index = max(0, int(start / frame_duration))
         end_index = min(n_frames, int(end / frame_duration) + 1)
         for i in range(start_index, end_index):
-            probabilities[i] = 0.9
+            probabilities[i] = level
     return probabilities
 
 
 def _with_vocal_activity(
     analysis: AudioAnalysisData,
     active_windows: list[tuple[float, float]],
+    level: float = 0.9,
 ) -> AudioAnalysisData:
     """Attach a valid vocal_activity list, active only inside ``active_windows``."""
     assert analysis.duration is not None
     analysis.extra_data = {
-        "vocal_activity": _vocal_probabilities(analysis.duration, active_windows)
+        "vocal_activity": _vocal_probabilities(analysis.duration, active_windows, level)
     }
     return analysis
 
@@ -205,7 +208,7 @@ class TestShortVocalHandoff:
         assert eq.mid_in is None
 
     def test_handoff_still_uses_the_qsin_crossfade_filter(self) -> None:
-        """The handoff plan renders through the same equal-power CrossfadeFilter as any other."""
+        """The handoff plan renders through the same equal-power StreamingCrossfadeFilter as any other."""
         out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(200.0, 239.9)])
         inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 40.0)])
         plan = _plan(out, inc)
@@ -217,7 +220,7 @@ class TestShortVocalHandoff:
         filters, _timing = TransitionRenderer(LOGGER).render(
             plan, pcm_format, fade_in_bytes_len=int(45.0 * pcm_format.pcm_sample_size)
         )
-        crossfade_filters = [f for f in filters if isinstance(f, CrossfadeFilter)]
+        crossfade_filters = [f for f in filters if isinstance(f, StreamingCrossfadeFilter)]
         assert len(crossfade_filters) == 1
 
 
@@ -269,6 +272,29 @@ class TestOutgoingVocalRetention:
 
         plan = _plan(out, inc, 45.0)
         assert plan.fade_out_window <= probe_ctx.audio_end + 1e-6
+
+    def test_retention_bytes_counts_a_weak_trailing_run(self) -> None:
+        """
+        A trailing run too weak for the planner's veto gate still protects retention.
+
+        The gate exists so a spurious window can't veto an entire blend; here a
+        window only decides how much outgoing audio survives silence removal, so
+        a weak-but-real run (peak and mean both below the planner's confidence
+        floors) must still count instead of yielding zero retention.
+        """
+        duration = 200.0
+        bpm = 100.0
+        buffer_seconds = 45.0
+        out = _analysis(bpm, duration, rms_energy=_rms_with_silence(duration, 190.3))
+        out = _with_vocal_activity(out, [(185.0, 187.0)], level=0.6)
+
+        pcm_format = AudioFormat(
+            content_type=ContentType.PCM_S16LE, sample_rate=44100, bit_depth=16, channels=2
+        )
+        fade_out_bytes_len = int(buffer_seconds * pcm_format.pcm_sample_size)
+
+        retention = SmartFadesMixer._get_vocal_retention_bytes(out, fade_out_bytes_len, pcm_format)
+        assert retention > 0
 
 
 class TestScheduleRecomputationAfterAnchorMovement:

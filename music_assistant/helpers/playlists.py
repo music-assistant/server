@@ -6,7 +6,7 @@ import configparser
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 from urllib.parse import urlparse
 
 from aiohttp import ClientTimeout, client_exceptions
@@ -30,15 +30,28 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.helpers.aiohttp_client import encoded_request_url
+from music_assistant.helpers.uri import BUILTIN_URL_SCHEMES
 from music_assistant.helpers.util import detect_charset, try_parse_int
 
 if TYPE_CHECKING:
+    from aiohttp import StreamReader
+
     from music_assistant.mass import MusicAssistant
 
 
 LOGGER = logging.getLogger(__name__)
 HLS_CONTENT_TYPES = ("application/vnd.apple.mpegurl",)
+PLAYLIST_CONTENT_TYPES = ("audio/x-mpegurl", "audio/x-scpls")
 FIELD_SEPARATOR = "||"
+# every character str.splitlines() treats as a line boundary: one of these inside a
+# title, name or path splits the entry over two lines, and the tail is read back as a
+# separate (bogus) playlist entry that can never be resolved
+_LINE_BREAK_CHARS: Final[str] = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+_LINE_BREAK_TABLE: Final = str.maketrans(dict.fromkeys(_LINE_BREAK_CHARS, " "))
+# playlists are small text files: cap the read so a stream served under a
+# playlist content-type does not pull an endless body into memory
+MAX_PLAYLIST_SIZE = 64 * 1024
+PLAYLIST_READ_TIMEOUT = 5
 
 
 class IsHLSPlaylist(InvalidDataError):
@@ -291,30 +304,40 @@ def parse_pls(pls_data: str) -> list[PlaylistItem]:
     return playlist
 
 
-async def fetch_playlist(
-    mass: MusicAssistant, url: str, raise_on_hls: bool = True
+async def read_playlist_body(content: StreamReader) -> bytes:
+    """
+    Read a playlist body, up to MAX_PLAYLIST_SIZE bytes.
+
+    :param content: Response body to read from.
+    """
+    # a single read returns whatever happens to be buffered, so a playlist spread over
+    # several chunks would otherwise be parsed truncated
+    raw_data = bytearray()
+    while len(raw_data) < MAX_PLAYLIST_SIZE:
+        chunk = await content.read(MAX_PLAYLIST_SIZE - len(raw_data))
+        if not chunk:
+            break
+        raw_data += chunk
+    return bytes(raw_data)
+
+
+async def parse_playlist_data(
+    url: str, raw_data: bytes, charset: str | None = None, raise_on_hls: bool = True
 ) -> list[PlaylistItem]:
-    """Fetch and parse a remote M3U or PLS playlist."""
-    try:
-        async with mass.http_session.get(
-            encoded_request_url(url), allow_redirects=True, timeout=ClientTimeout(total=5)
-        ) as resp:
-            try:
-                raw_data = await resp.content.read(64 * 1024)
-                encoding = resp.charset or await detect_charset(raw_data)
-                playlist_data = raw_data.decode(encoding, errors="replace")
-            except (ValueError, UnicodeDecodeError) as err:
-                msg = f"Could not decode playlist {url}"
-                raise InvalidDataError(msg) from err
-    except TimeoutError as err:
-        msg = f"Timeout while fetching playlist {url}"
-        raise InvalidDataError(msg) from err
-    except client_exceptions.ClientError as err:
-        msg = f"Error while fetching playlist {url}"
-        raise InvalidDataError(msg) from err
+    """
+    Parse the raw body of an M3U or PLS playlist into entries.
+
+    :param url: URL the body was fetched from, used to pick the playlist flavour.
+    :param raw_data: Raw (undecoded) playlist body.
+    :param charset: Charset declared by the server, if any.
+    :param raise_on_hls: Raise IsHLSPlaylist for an HLS media playlist.
+    """
+    encoding = await detect_charset(raw_data, preferred=charset)
+    playlist_data = raw_data.decode(encoding, errors="replace")
 
     if (
-        raise_on_hls and "#EXT-X-VERSION:" in playlist_data
+        raise_on_hls
+        and ("#EXT-X-VERSION:" in playlist_data or "#EXT-X-TARGETDURATION:" in playlist_data)
     ) or "#EXT-X-STREAM-INF:" in playlist_data:
         raise IsHLSPlaylist
 
@@ -330,9 +353,42 @@ async def fetch_playlist(
     return playlist
 
 
+async def fetch_playlist(
+    mass: MusicAssistant, url: str, raise_on_hls: bool = True
+) -> list[PlaylistItem]:
+    """Fetch and parse a remote M3U or PLS playlist."""
+    try:
+        async with mass.http_session.get(
+            encoded_request_url(url),
+            allow_redirects=True,
+            timeout=ClientTimeout(total=PLAYLIST_READ_TIMEOUT),
+        ) as resp:
+            # an error page is still a body: its markup would otherwise parse into entries
+            resp.raise_for_status()
+            raw_data = await read_playlist_body(resp.content)
+            charset = resp.charset
+    except TimeoutError as err:
+        msg = f"Timeout while fetching playlist {url}"
+        raise InvalidDataError(msg) from err
+    except client_exceptions.ClientError as err:
+        msg = f"Error while fetching playlist {url}"
+        raise InvalidDataError(msg) from err
+
+    return await parse_playlist_data(url, raw_data, charset, raise_on_hls)
+
+
 # --------------------------------------------------------------------------- #
 #  Generation                                                                  #
 # --------------------------------------------------------------------------- #
+
+
+def sanitize_m3u_value(value: str) -> str:
+    """
+    Replace line breaks in a value so it stays on a single line in an M3U file.
+
+    :param value: Raw value (name, title, path or URL) about to be written to an M3U line.
+    """
+    return value.translate(_LINE_BREAK_TABLE)
 
 
 def generate_m3u(
@@ -347,54 +403,66 @@ def generate_m3u(
     :param items: Entries to write. Only fields that are set are emitted.
     :param playlist_image_url: Optional playlist cover image URL.
     """
+    # every value goes through sanitize_m3u_value: a line break inside a title or name
+    # (they do occur in provider metadata and file tags) would otherwise split the entry
+    # over two lines, and the tail would be read back as an unresolvable entry
+    clean = sanitize_m3u_value
     # Playlist-level image using #EXTIMG directive (de facto standard for playlist covers)
     lines: list[str] = ["#EXTM3U"]
     if playlist_image_url:
-        lines.append(f"#EXTIMG:{playlist_image_url}")
-    lines.append(f"#PLAYLIST:{playlist_name}")
+        lines.append(f"#EXTIMG:{clean(playlist_image_url)}")
+    lines.append(f"#PLAYLIST:{clean(playlist_name)}")
     sep = FIELD_SEPARATOR
     for item in items:
         if item.metadata:
-            pairs = sep.join(f"{k}={v}" for k, v in item.metadata.items())
+            pairs = sep.join(f"{clean(k)}={clean(v)}" for k, v in item.metadata.items())
             lines.append(f"#EXTMA:{pairs}")
         for prov in item.providers:
             fields = [
-                prov.domain,
-                prov.item_id,
-                prov.instance_id,
-                prov.content_type,
+                clean(prov.domain),
+                clean(prov.item_id),
+                clean(prov.instance_id),
+                clean(prov.content_type),
                 str(prov.sample_rate),
                 str(prov.bit_depth),
                 str(prov.bit_rate),
             ]
             lines.append(f"#EXTPROV:{sep.join(fields)}")
         for artist in item.artists:
-            fields = [artist.name, artist.provider_domain, artist.item_id, artist.provider_instance]
+            fields = [
+                clean(artist.name),
+                clean(artist.provider_domain),
+                clean(artist.item_id),
+                clean(artist.provider_instance),
+            ]
             lines.append(f"#EXTARTIST:{sep.join(fields)}")
         if item.album:
             fields = [
-                item.album.name,
-                item.album.provider_domain,
-                item.album.item_id,
-                item.album.provider_instance,
-                item.album.version,
+                clean(item.album.name),
+                clean(item.album.provider_domain),
+                clean(item.album.item_id),
+                clean(item.album.provider_instance),
+                clean(item.album.version),
             ]
             lines.append(f"#EXTALBUM:{sep.join(fields)}")
         if item.podcast:
             fields = [
-                item.podcast.name,
-                item.podcast.provider_domain,
-                item.podcast.item_id,
-                item.podcast.provider_instance,
+                clean(item.podcast.name),
+                clean(item.podcast.provider_domain),
+                clean(item.podcast.item_id),
+                clean(item.podcast.provider_instance),
             ]
             lines.append(f"#EXTPODCAST:{sep.join(fields)}")
         for img in item.images:
             remotely = "true" if img.remotely_accessible else "false"
-            fields = [img.type, img.path, img.provider, remotely]
+            fields = [clean(img.type), clean(img.path), clean(img.provider), remotely]
             lines.append(f"#EXTIMG:{sep.join(fields)}")
-        if item.title is not None and item.length is not None:
-            lines.append(f"#EXTINF:{item.length},{item.title}")
-        lines.append(item.path)
+        if item.title is not None:
+            # -1 is the M3U convention for unknown length; without it an entry without
+            # duration (such as a radio station) loses its title on every rewrite
+            length = item.length if item.length is not None else -1
+            lines.append(f"#EXTINF:{length},{clean(item.title)}")
+        lines.append(clean(item.path))
     return "\n".join(lines) + "\n"
 
 
@@ -406,6 +474,7 @@ def generate_m3u(
 def construct_media_item_from_playlist_item(
     item: PlaylistItem,
     mass: MusicAssistant,
+    default_media_type: MediaType = MediaType.TRACK,
 ) -> MediaItemType | None:
     """
     Construct a MediaItem from a PlaylistItem's stored metadata.
@@ -415,24 +484,38 @@ def construct_media_item_from_playlist_item(
 
     :param item: Parsed PlaylistItem with metadata, providers, and images.
     :param mass: MusicAssistant instance for provider resolution.
+    :param default_media_type: Media type to build when the entry's #EXTMA metadata
+        holds no usable media_type.
     """
     metadata = item.metadata or {}
     try:
-        media_type = MediaType(metadata.get("media_type", "track"))
+        media_type = MediaType(metadata.get("media_type", default_media_type.value))
     except ValueError:
-        media_type = MediaType.TRACK
+        media_type = default_media_type
     name = metadata.get("name") or item.title or item.path
     duration = try_parse_int(item.length, default=None) if item.length else None
 
     provider_mappings = _resolve_provider_mappings(item, mass)
+    if not provider_mappings and item.path.startswith(BUILTIN_URL_SCHEMES):
+        # an item without any mapping never reaches library_add, leaving an unplayable
+        # library entry, so a plain stream URL is mapped to the provider that serves it
+        provider_mappings = _builtin_fallback_mappings(item.path, mass)
     external_ids = _collect_external_ids(metadata)
 
+    # a set has no order, so sort to keep the chosen mapping stable across runs
+    sorted_mappings = sorted(provider_mappings, key=lambda pm: (pm.provider_instance, pm.item_id))
     first_provider = next(
-        (pm for pm in provider_mappings if pm.available),
-        next(iter(provider_mappings), None),
+        (pm for pm in sorted_mappings if pm.available),
+        next(iter(sorted_mappings), None),
     )
-    item_provider = first_provider.provider_domain if first_provider else "builtin"
-    item_id = first_provider.item_id if first_provider else item.path.rsplit("/", 1)[-1]
+    # prefer the instance over the domain: a domain resolves to whichever instance of it
+    # happens to be loaded first, which is the wrong one when several are configured
+    item_provider = (
+        (first_provider.provider_instance or first_provider.provider_domain)
+        if first_provider
+        else "builtin"
+    )
+    item_id = first_provider.item_id if first_provider else item.path
 
     media_item: MediaItemType
     if media_type == MediaType.SOUND_EFFECT:
@@ -544,6 +627,19 @@ def _resolve_provider_mappings(item: PlaylistItem, mass: MusicAssistant) -> set[
             )
         )
     return provider_mappings
+
+
+def _builtin_fallback_mappings(path: str, mass: MusicAssistant) -> set[ProviderMapping]:
+    """Return the builtin mapping for a stream URL, which builtin takes as its item_id."""
+    prov = mass.get_provider("builtin")
+    return {
+        ProviderMapping(
+            item_id=path,
+            provider_domain="builtin",
+            provider_instance=prov.instance_id if prov else "builtin",
+            available=prov is not None,
+        )
+    }
 
 
 def _collect_external_ids(metadata: dict[str, str]) -> set[tuple[ExternalID, str]]:

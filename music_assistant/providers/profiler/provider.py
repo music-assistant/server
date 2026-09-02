@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 import psutil
 import yappi
 from music_assistant_models.auth import Scope
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigActionResult, ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.helpers.datetime import utc
@@ -112,11 +112,13 @@ class ProfilerProvider(PluginProvider):
             ),
         )
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
-        """Handle a one-shot config action button press and re-render the entries."""
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
+        """Handle a one-shot config action button press."""
         if action == CONF_ACTION_RUN_CPU_PROFILE:
             self.start_cpu_profile()
-            return await self.get_config_entries()
+            return None
         return await super().handle_config_action(action)
 
     async def handle_async_init(self) -> None:
@@ -290,7 +292,11 @@ class ProfilerProvider(PluginProvider):
             self.mass.music.audiobooks,
             self.mass.music.podcasts,
         ):
-            counts[controller.media_type.value] = await controller.library_count()
+            # raw table sizes: a profiler report needs true totals, not the filtered
+            # subset visible to the (admin) user who requested it
+            counts[controller.media_type.value] = await self.mass.music.database.get_count(
+                controller.db_table
+            )
         return counts
 
     def _on_mass_event(self, event: MassEvent) -> None:

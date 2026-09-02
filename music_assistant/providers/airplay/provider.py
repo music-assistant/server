@@ -6,21 +6,29 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import socket
 import time
 from contextlib import suppress
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import TYPE_CHECKING, Final, cast
 
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, PlaybackState
 from music_assistant_models.errors import MediaNotFoundError
 from zeroconf import NonUniqueNameException, ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import (
     CONF_LOG_LEVEL,
+    CONF_PLAYERS,
     CONF_PROVIDERS,
     VERBOSE_LOG_LEVEL,
+)
+from music_assistant.helpers.config_entries import (
+    CONF_CONNECTED_PLAYERS,
+    CONF_PUBLISH_NAME_TEMPLATE,
+    resolve_publish_name,
 )
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import SerializableType
@@ -36,14 +44,23 @@ from music_assistant.models.player_provider import PlayerProvider
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_VOLUME_MUTE,
+    CLI_PROBLEM_MARKERS,
     COMPANION_DISCOVERY_TYPE,
-    CONF_IGNORE_VOLUME,
+    CONF_COMPAT_PINS_REVIEWED,
+    CONF_PASSWORD_INVALID,
+    CONF_PASSWORD_MARKERS_REVIEWED,
     CONF_STORED_VOLUME,
+    CONF_STREAMING_MODE,
+    CONF_VERBOSE_PTP_LOGGING,
     DACP_DISCOVERY_TYPE,
     EXTERNAL_ARTWORK_PATH_PREFIX,
     FALLBACK_VOLUME,
     MRP_DISCOVERY_TYPE,
+    PTP_DAEMON_WARN_BURST,
+    PTP_DAEMON_WARN_WINDOW,
     RAOP_DISCOVERY_TYPE,
+    STREAMING_MODE_AP2_COMPAT,
+    STREAMING_MODE_AUTO,
     AirPlayRemoteCommand,
     StreamingProtocol,
 )
@@ -60,7 +77,7 @@ from .player import AirPlayPlayer, GenericAirPlayPlayer
 from .sendspin_bridge import SendspinBridgeManager
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
 
 # Marker the `cliairplay --ptp-daemon` process prints once it has bound the
 # privileged PTP ports (UDP 319/320) and opened its control channel. Until this
@@ -75,11 +92,15 @@ PTP_DAEMON_READY_TIMEOUT: Final[float] = 3.0
 # Grace period after broadcasting a goodbye for a stale DACP registration before
 # re-registering the (name-stable) service, letting the cache flush the old record.
 DACP_RECLAIM_DELAY: Final[float] = 1.0
+# Opt-in for pyatv's own debug logging. Set to any non-empty value to trace the
+# pyatv protocol traffic itself.
+ENV_PYATV_DEBUG: Final[str] = "MASS_PYATV_DEBUG"
 
 
 class AirPlayProvider(PlayerProvider):
     """Player provider for AirPlay based players."""
 
+    reload_on_streams_network_change = True
     _dacp_server: asyncio.Server
     _dacp_info: AsyncServiceInfo
     _bridge_manager: SendspinBridgeManager
@@ -93,6 +114,11 @@ class AirPlayProvider(PlayerProvider):
     # control channel; created/cleared per daemon start so a crash+restart
     # re-gates readiness. None until the daemon is first started.
     _ptp_daemon_ready: asyncio.Event | None = None
+    # Rate-limit state for daemon lines promoted to WARNING (see
+    # PTP_DAEMON_WARN_BURST).
+    _ptp_daemon_warn_window_start: float | None = None
+    _ptp_daemon_warns_in_window: int = 0
+    _ptp_daemon_warns_suppressed: int = 0
 
     @property
     def bridge_manager(self) -> SendspinBridgeManager:
@@ -105,14 +131,30 @@ class AirPlayProvider(PlayerProvider):
         Return if the shared PTP clock daemon process is alive.
 
         This reflects process liveness only (spawned, not closed, still
-        running) for status/diagnostics. The streaming timing decision must use
-        :meth:`wait_ptp_daemon_ready`, which also waits for the daemon to have
-        actually bound its ports and opened its control channel.
+        running). It says nothing about whether streams can use it: a daemon
+        that never bound its ports stays alive and reports True here while every
+        group silently degrades to NTP. Use :attr:`ptp_daemon_ready` for the
+        real state, or :meth:`wait_ptp_daemon_ready` to wait for it.
         """
         return (
             self._ptp_daemon is not None
             and not self._ptp_daemon.closed
             and self._ptp_daemon.returncode is None
+        )
+
+    @property
+    def ptp_daemon_ready(self) -> bool:
+        """
+        Return whether the shared PTP clock daemon is serving streams right now.
+
+        This is the condition a session actually gates on: the daemon has bound
+        the privileged PTP ports (UDP 319/320), opened its control channel, and
+        is still alive.
+        """
+        return (
+            self.ptp_daemon_running
+            and self._ptp_daemon_ready is not None
+            and self._ptp_daemon_ready.is_set()
         )
 
     async def wait_ptp_daemon_ready(self, timeout: float = PTP_DAEMON_READY_TIMEOUT) -> bool:
@@ -177,13 +219,30 @@ class AirPlayProvider(PlayerProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
-        return ()
+        return (
+            ConfigEntry(
+                key=CONF_VERBOSE_PTP_LOGGING,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+                advanced=True,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._set_pyatv_log_level()
+        self._drop_unverified_password_markers()
+        self._reset_auto_pinned_compat_modes()
         self._companion_info_by_address: dict[str, AsyncServiceInfo] = {}
         self._mrp_info_by_address: dict[str, AsyncServiceInfo] = {}
+        # Shared audible instants for in-flight announcements, keyed by
+        # (group-or-leader player id, render key) -> unix ms. The controller
+        # forwards a group-entity announcement to every member concurrently;
+        # each call arms its own member and reuses the instant the first call
+        # planned, so all rooms render the clip in sync (managed by
+        # announce.py, pruned as plans pass).
+        self._announce_plans: dict[tuple[str, str], int] = {}
 
         # Initialize Sendspin bridge manager for protocol linking
         self._bridge_manager = SendspinBridgeManager(self)
@@ -203,7 +262,7 @@ class AirPlayProvider(PlayerProvider):
         self._dacp_info = AsyncServiceInfo(
             DACP_DISCOVERY_TYPE,
             name=server_id,
-            addresses=[await get_ip_pton(str(self.mass.streams.publish_ip))],
+            addresses=[await get_ip_pton(self.mass.streams.publish_ip)],
             port=dacp_port,
             properties={
                 "txtvers": "1",
@@ -309,16 +368,26 @@ class AirPlayProvider(PlayerProvider):
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
         streams_by_type: dict[str, int] = {}
+        streams_by_route: dict[str, int] = {}
         for player in self.get_players():
             if not (player.stream and player.stream.running):
                 continue
             stream_type = "airplay2" if player.protocol == StreamingProtocol.AIRPLAY2 else "raop"
             streams_by_type[stream_type] = streams_by_type.get(stream_type, 0) + 1
+            # The route the binary resolved names the timing source each stream
+            # really got (PTP or NTP), which the daemon flags cannot: a daemon
+            # can be alive and every stream still be running on NTP. A process
+            # that has not reported its route yet is counted apart rather than
+            # folded into either.
+            route = player.stream.active_route or "unreported"
+            streams_by_route[route] = streams_by_route.get(route, 0) + 1
         return {
             "dacp_server_running": self._dacp_server.is_serving(),
             "ptp_daemon_running": self.ptp_daemon_running,
+            "ptp_daemon_ready": self.ptp_daemon_ready,
             "active_streams": sum(streams_by_type.values()),
             "streams_by_type": streams_by_type,
+            "streams_by_route": streams_by_route,
         }
 
     def get_players(self) -> list[AirPlayPlayer]:
@@ -351,14 +420,16 @@ class AirPlayProvider(PlayerProvider):
         return await player.async_get_external_artwork(artwork_id)
 
     def _set_pyatv_log_level(self) -> None:
-        """Keep pyatv's (very chatty) logging quiet unless verbose logging is enabled."""
-        # pyatv is extremely chatty at debug level (it logs every protocol
-        # message and heartbeat of each control connection), so only pass
-        # through its debug logging when verbose logging is enabled
-        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+        """Keep pyatv's (very chatty) logging quiet unless it is explicitly asked for."""
+        # pyatv logs every protocol message, HTTP exchange and encrypted payload of
+        # each control connection at debug level, which buries our own logging and
+        # rotates the log file within minutes. Its debug output is therefore held
+        # back even on verbose sessions, which are meant to surface our own deep
+        # diagnostics (the cliairplay [STATUS] and PTP traces) rather than pyatv's.
+        if os.environ.get(ENV_PYATV_DEBUG):
             logging.getLogger("pyatv").setLevel(logging.DEBUG)
         else:
-            logging.getLogger("pyatv").setLevel(self.logger.level + 10)
+            logging.getLogger("pyatv").setLevel(max(self.logger.level + 10, logging.INFO))
 
     async def _setup_player(
         self, player_id: str, display_name: str, discovery_info: AsyncServiceInfo
@@ -522,9 +593,7 @@ class AirPlayProvider(PlayerProvider):
         :param discovery_info: The mdns service info that triggered the discovery.
         """
         from music_assistant.providers.airplay_receiver import (  # noqa: PLC0415
-            CONF_AIRPLAY_NAME,
-            DEFAULT_AIRPLAY_NAME,
-            airplay_receiver_port,
+            airplay_receiver_ports,
         )
 
         # Collect the advertised names and ports of all configured AirPlay Receiver
@@ -537,18 +606,27 @@ class AirPlayProvider(PlayerProvider):
                 continue
             if not raw_conf.get("enabled", True):
                 continue
-            setup_name = self.mass.config.get_provider_setup_value(
-                str(instance_id), CONF_AIRPLAY_NAME
-            )
             values = raw_conf.get("values")
-            legacy_name = values.get(CONF_AIRPLAY_NAME) if isinstance(values, dict) else None
-            airplay_name = setup_name or legacy_name
-            receiver_names.add(str(airplay_name) if airplay_name else DEFAULT_AIRPLAY_NAME)
-            receiver_ports.add(airplay_receiver_port(str(instance_id)))
+            values = values if isinstance(values, dict) else {}
+            player_ids = [str(player_id) for player_id in values.get(CONF_CONNECTED_PLAYERS) or []]
+            receiver_ports.update(airplay_receiver_ports(str(instance_id), player_ids).values())
+            template = values.get(CONF_PUBLISH_NAME_TEMPLATE)
+            for player_id in player_ids:
+                # best effort: a registered player's live name, else its stored config
+                # name; when neither resolves the port match stays the strong signal
+                if player := self.mass.players.get_player(player_id):
+                    player_name: str | None = player.display_name
+                else:
+                    stored_name = self.mass.config.get_raw_player_config_value(
+                        player_id, "name"
+                    ) or self.mass.config.get_raw_player_config_value(player_id, "default_name")
+                    player_name = str(stored_name) if stored_name else None
+                if player_name:
+                    receiver_names.add(resolve_publish_name(template, player_name))
         # running instances are authoritative for the actual daemon ports
         for prov in self.mass.get_provider_instances("airplay_receiver"):
-            if (port := getattr(prov, "airplay_port", None)) is not None:
-                receiver_ports.add(port)
+            if ports := getattr(prov, "airplay_ports", None):
+                receiver_ports.update(ports)
         if not receiver_names and not receiver_ports:
             return False
 
@@ -759,14 +837,21 @@ class AirPlayProvider(PlayerProvider):
         # (which derive their PTP clock id from --dacp), so receivers see one
         # consistent clock whether the daemon or an in-process engine serves it.
         args = [cli_binary, "--ptp-daemon", "--dacp", self.dacp_id]
-        bind_ip = str(self.mass.streams.bind_ip)
-        if bind_ip not in ("0.0.0.0", "::", ""):
-            args += ["--if", bind_ip]
-        # The daemon runs quiet by default; only a verbose session turns on its
-        # per-packet PTP tracing (Announce/Sync/Delay_Req), so a normal debug
-        # session does not flood the log with timing chatter.
-        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+        if_arg = await self.mass.streams.get_source_ip()
+        if if_arg:
+            args += ["--if", if_arg]
+        # The daemon runs quiet by default: its per-packet PTP tracing
+        # (Announce/Sync/Delay_Req, ~10 lines/s) needs BOTH verbose logging and
+        # the dedicated opt-in, so ordinary verbose sessions are not flooded
+        # with timing chatter that only matters for clock-sync debugging.
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) and self.config.get_value(
+            CONF_VERBOSE_PTP_LOGGING
+        ):
             args += ["--debug", "10"]
+        # The binding the daemon ends up with is the first thing needed when triaging
+        # timing issues from a user's log, and it is invisible otherwise: --if is left
+        # out entirely for a default bind ip.
+        self.logger.debug("Starting shared PTP clock daemon: if=%s", if_arg or "<all interfaces>")
         daemon = AsyncProcess(args, stdout=True, stderr=True, name="cliairplay-ptp-daemon")
         # (Re)gate readiness for this daemon instance: not ready until a reader
         # sees the "daemon up" line (a restart clears any previous readiness).
@@ -774,6 +859,7 @@ class AirPlayProvider(PlayerProvider):
             self._ptp_daemon_ready = asyncio.Event()
         else:
             self._ptp_daemon_ready.clear()
+        self._reset_ptp_daemon_warn_budget()
         await daemon.start()
         self._ptp_daemon = daemon
         self._ptp_daemon_started = time.monotonic()
@@ -800,11 +886,9 @@ class AirPlayProvider(PlayerProvider):
         """Log a PTP daemon output line and detect its readiness signal."""
         # Routine daemon output is verbose-only so it never floods a user's log
         # (the per-packet timing trace only runs at verbose in the first place).
-        # The daemon tags no log levels, so a genuine problem is recognised by
-        # keyword and promoted to a warning that stays visible at normal levels.
         lowered = line.lower()
-        if any(marker in lowered for marker in ("error", "cannot", "failed", "unable")):
-            self.logger.warning("PTP daemon: %s", line)
+        if any(marker in lowered for marker in CLI_PROBLEM_MARKERS):
+            self._warn_ptp_daemon_line(line)
         else:
             self.logger.log(VERBOSE_LOG_LEVEL, "PTP daemon: %s", line)
         # The readiness marker is matched on either pipe: the daemon's diagnostic
@@ -817,6 +901,63 @@ class AirPlayProvider(PlayerProvider):
         ):
             self.logger.debug("Shared PTP clock daemon reported ready")
             event.set()
+
+    def _reset_ptp_daemon_warn_budget(self) -> None:
+        """
+        Give a newly spawned daemon a full warning budget of its own.
+
+        The budget is per daemon, not per provider: a daemon that spent it
+        before crashing would otherwise have its replacement's startup failure -
+        the one line worth reading - suppressed for the rest of the window.
+        Whatever the old daemon had held back is reported on the way out rather
+        than dropped.
+        """
+        if self._ptp_daemon_warns_suppressed:
+            self.logger.warning(
+                "PTP daemon: %d further problem line(s) from the previous daemon were "
+                "suppressed; enable verbose logging to see them all",
+                self._ptp_daemon_warns_suppressed,
+            )
+        self._ptp_daemon_warn_window_start = None
+        self._ptp_daemon_warns_in_window = 0
+        self._ptp_daemon_warns_suppressed = 0
+
+    def _warn_ptp_daemon_line(self, line: str) -> None:
+        """
+        Warn about a daemon line that reads like a problem, at a bounded rate.
+
+        The markers are broad by design, and "error" is ordinary vocabulary in
+        clock telemetry (offset error, path delay error), so one matching line
+        in the daemon's per-packet trace would fill a user's log with warnings.
+        A burst still gets through - which is what a real one-shot daemon
+        failure looks like - and the rest of the window is counted and reported
+        once instead. Suppressed lines still reach the verbose log.
+
+        :param line: The daemon output line that matched a problem marker.
+        """
+        now = time.monotonic()
+        window_start = self._ptp_daemon_warn_window_start
+        # None means no window is open yet, which is not the same as one that
+        # started at monotonic zero: time.monotonic() counts from boot on Linux,
+        # so a server started in the first minute of uptime would otherwise get
+        # a first window shorter than the rest.
+        if window_start is None or now - window_start >= PTP_DAEMON_WARN_WINDOW:
+            if self._ptp_daemon_warns_suppressed:
+                self.logger.warning(
+                    "PTP daemon: %d further problem line(s) were suppressed over the last "
+                    "%.0fs; enable verbose logging to see them all",
+                    self._ptp_daemon_warns_suppressed,
+                    PTP_DAEMON_WARN_WINDOW,
+                )
+            self._ptp_daemon_warn_window_start = now
+            self._ptp_daemon_warns_in_window = 0
+            self._ptp_daemon_warns_suppressed = 0
+        if self._ptp_daemon_warns_in_window < PTP_DAEMON_WARN_BURST:
+            self._ptp_daemon_warns_in_window += 1
+            self.logger.warning("PTP daemon: %s", line)
+            return
+        self._ptp_daemon_warns_suppressed += 1
+        self.logger.log(VERBOSE_LOG_LEVEL, "PTP daemon: %s", line)
 
     async def _ptp_daemon_monitor(self, daemon: AsyncProcess) -> None:
         """Watch the PTP daemon process and restart it once if it crashes."""
@@ -924,10 +1065,6 @@ class AirPlayProvider(PlayerProvider):
                 parent_player = player
 
             player_id = player.player_id
-            ignore_volume_report = (
-                self.mass.config.get_raw_player_config_value(player_id, CONF_IGNORE_VOLUME, False)
-                or player.device_info.manufacturer.lower() == "apple"
-            )
             if path == "/ctrl-int/1/nextitem":
                 self.handle_remote_command(player, AirPlayRemoteCommand.NEXT)
             elif path == "/ctrl-int/1/previtem":
@@ -964,7 +1101,7 @@ class AirPlayProvider(PlayerProvider):
                         player_id,
                         task_id=f"debounced_pause_{player_id}",
                     )
-            elif "dmcp.device-volume=" in path and not ignore_volume_report:
+            elif "dmcp.device-volume=" in path and not player.ignore_volume_reports:
                 # This is a bit annoying as this can be either the device confirming a new volume
                 # we've sent or the device requesting a new volume itself.
                 # In case of a small rounding difference, we ignore this,
@@ -1050,3 +1187,71 @@ class AirPlayProvider(PlayerProvider):
             writer.close()
             with suppress(Exception):
                 await writer.wait_closed()
+
+    def _drop_unverified_password_markers(self) -> None:
+        """
+        Clear the stored "password rejected" verdicts left by earlier releases, once.
+
+        Those releases marked a player whenever the binary reported an auth-shaped
+        rejection, without separating a password challenge from a device that
+        refused the handshake outright. The refusals put players that have no
+        password at all into a setup flow only a password could leave, so the
+        verdicts are dropped and left to be earned again on the next connect.
+        """
+        if self.mass.config.get_raw_provider_config_value(
+            self.instance_id, CONF_PASSWORD_MARKERS_REVIEWED, False
+        ):
+            return
+        # walks the stored configs rather than get_player_configs(), which drops
+        # every protocol player - the type each non-Apple receiver is registered
+        # as - and only lists the ones discovered so far
+        for player_id, raw_conf in self.mass.config.get(CONF_PLAYERS, {}).items():
+            if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
+                continue
+            if not self.mass.config.get_raw_player_config_value(
+                player_id, CONF_PASSWORD_INVALID, False
+            ):
+                continue
+            self.logger.info("Clearing the unverified password marker on %s", player_id)
+            self.mass.config.set_raw_player_config_value(player_id, CONF_PASSWORD_INVALID, False)
+        # last, so a failure part-way through leaves the review to be retried on
+        # the next load instead of stranding the players it never reached
+        self.mass.config.set_raw_provider_config_value(
+            self.instance_id, CONF_PASSWORD_MARKERS_REVIEWED, True
+        )
+
+    def _reset_auto_pinned_compat_modes(self) -> None:
+        """
+        Reset the compatibility-mode pins left by earlier releases, once.
+
+        Those releases switched a player's streaming mode to compatibility mode
+        themselves when its native control channel failed, which a network
+        dropout of the device also triggers. The pin outlived the dropout and
+        put the player on a lane many devices reject outright, so the
+        machine-written values are returned to Automatic; a user who wants
+        compatibility mode can simply pin it again.
+        """
+        if self.mass.config.get_raw_provider_config_value(
+            self.instance_id, CONF_COMPAT_PINS_REVIEWED, False
+        ):
+            return
+        # walks the stored configs rather than get_player_configs(), which drops
+        # every protocol player - the type each non-Apple receiver is registered
+        # as - and only lists the ones discovered so far
+        for player_id, raw_conf in self.mass.config.get(CONF_PLAYERS, {}).items():
+            if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
+                continue
+            if (
+                self.mass.config.get_raw_player_config_value(player_id, CONF_STREAMING_MODE)
+                != STREAMING_MODE_AP2_COMPAT
+            ):
+                continue
+            self.logger.info("Resetting the streaming mode of %s back to Automatic", player_id)
+            self.mass.config.set_raw_player_config_value(
+                player_id, CONF_STREAMING_MODE, STREAMING_MODE_AUTO
+            )
+        # last, so a failure part-way through leaves the reset to be retried on
+        # the next load instead of stranding the players it never reached
+        self.mass.config.set_raw_provider_config_value(
+            self.instance_id, CONF_COMPAT_PINS_REVIEWED, True
+        )

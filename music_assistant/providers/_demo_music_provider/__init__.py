@@ -67,7 +67,11 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import (
+        ConfigActionResult,
+        ConfigEntry,
+        ProviderConfig,
+    )
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -143,13 +147,17 @@ class MyDemoMusicprovider(MusicProvider):
         """
         return ()
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
         """
         Handle a one-shot ACTION button press from the options page.
 
         Run the side effect for the pressed ``action`` (the ``action`` id of one of the
-        ``ConfigEntryType.ACTION`` entries returned by ``get_config_entries``), then
-        return the (possibly refreshed) config entries so the options page re-renders.
+        ``ConfigEntryType.ACTION`` entries returned by ``get_config_entries``) and return
+        None: the action is a one-off, with nothing to re-render. Raise (typically
+        ``ActionUnavailable``) to report that the action could not run. Return config
+        entries only when the options page must re-render with different entries.
         Delegate unknown actions to ``super()`` (which raises ``ActionUnavailable``).
 
         Remove this method entirely when your provider declares no ACTION entries.
@@ -191,6 +199,19 @@ class MyDemoMusicprovider(MusicProvider):
         """
         # For streaming providers return True here but for local file based providers return False.
         return True
+
+    @property
+    def supported_media_types(self) -> set[MediaType]:
+        """
+        Return the media types this provider can serve.
+
+        Defaults to the media types the provider declares library support for.
+        Override for providers that can serve (search/stream) media types they
+        cannot list as library items, so they are eligible for search-based
+        lookups such as cross-provider matching and versions.
+        """
+        # OPTIONAL - the default (derived from the LIBRARY_* features) is usually correct.
+        return super().supported_media_types
 
     async def search(  # type: ignore[empty-body]
         self,

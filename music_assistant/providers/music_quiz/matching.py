@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from music_assistant.helpers.compare import compare_strings, create_safe_string
+from music_assistant_models.helpers import create_safe_string
+
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.util import parse_title_and_version
 
 

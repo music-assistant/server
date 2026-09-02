@@ -61,6 +61,7 @@ from .constants import (
     CONF_STORED_VOLUME,
     EXTERNAL_ARTWORK_PATH_PREFIX,
     FALLBACK_VOLUME,
+    PAIRING_PIN_FORMAT,
 )
 from .helpers import (
     get_decoded_property,
@@ -626,6 +627,10 @@ class AirPlayControlPlayer(AirPlayPlayer):
                 if mrp_device.push_updater.active:
                     mrp_device.push_updater.stop()
             mrp_device.close()
+            # _handle_connection_closed skips its cleanup for this device because
+            # _mrp_device was already detached above, so drop the external playback
+            # snapshot here or it survives forced reconnects indefinitely.
+            self._clear_external_state()
         if companion_device:
             companion_device.close()
         self._disconnecting = False
@@ -678,7 +683,26 @@ class AirPlayControlPlayer(AirPlayPlayer):
     @property
     def _stream_active(self) -> bool:
         """Return whether Music Assistant is actively streaming to this device."""
-        return bool((stream := getattr(self, "stream", None)) and stream.running)
+        active = bool((stream := getattr(self, "stream", None)) and stream.running)
+        if active:
+            self._stream_last_active = time.monotonic()
+        return active
+
+    @property
+    def _external_state_blocked(self) -> bool:
+        """
+        Return whether externally observed playback state must be ignored.
+
+        While Music Assistant streams to this device, the stream is the SOLE
+        authority on player state. The check extends a grace period past a
+        stream's end because a warm-to-cold fallback briefly tears the stream
+        down mid-playback: a Companion/MRP update slipping through that window
+        applies the device's view of our own dying session as an "external
+        source", freezing the UI on a stale snapshot.
+        """
+        if self._stream_active:
+            return True
+        return time.monotonic() - getattr(self, "_stream_last_active", 0.0) < 15.0
 
     @property
     def _mrp_endpoint(self) -> tuple[AsyncServiceInfo, Protocol] | None:
@@ -835,9 +859,10 @@ class AirPlayControlPlayer(AirPlayPlayer):
                     [
                         ConfigEntry(
                             key=CONF_COMPANION_PAIRING_PIN,
-                            type=ConfigEntryType.STRING,
+                            type=ConfigEntryType.PAIRING_CODE,
                             required=True,
                             category="protocol_generic",
+                            format=PAIRING_PIN_FORMAT,
                         )
                     ],
                     step_id="pair_companion",
@@ -880,9 +905,10 @@ class AirPlayControlPlayer(AirPlayPlayer):
                     [
                         ConfigEntry(
                             key=CONF_MRP_PAIRING_PIN,
-                            type=ConfigEntryType.STRING,
+                            type=ConfigEntryType.PAIRING_CODE,
                             required=True,
                             category="protocol_generic",
+                            format=PAIRING_PIN_FORMAT,
                         )
                     ],
                     step_id="pair_mrp",
@@ -1052,15 +1078,24 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     def _handle_playing_update(self, playing: Playing) -> None:
         """Apply external playback state received over the MRP tunnel."""
-        if self._stream_active:
+        if self._external_state_blocked:
             return
         app = self._mrp_device.metadata.app if self._mrp_device else None
         playback_state = {
             DeviceState.Playing: PlaybackState.PLAYING,
-            DeviceState.Loading: PlaybackState.PLAYING,
             DeviceState.Seeking: PlaybackState.PLAYING,
             DeviceState.Paused: PlaybackState.PAUSED,
         }.get(playing.device_state, PlaybackState.IDLE)
+        # Loading only means "about to play" while playback is already going on
+        # (buffering between tracks). HomePods can get stuck in a perpetual
+        # Loading state carrying the cached metadata of a long-dead session, so
+        # a Loading snapshot on a player that is not already playing must map
+        # to idle (matching Home Assistant's apple_tv handling), not playing.
+        if (
+            playing.device_state == DeviceState.Loading
+            and self._attr_playback_state == PlaybackState.PLAYING
+        ):
+            playback_state = PlaybackState.PLAYING
         # Many tvOS apps (e.g. Netflix) report Idle rather than Paused when
         # paused. While the same app stays the active source, keep it paused
         # instead of going idle so transport controls resume the app itself
@@ -1111,6 +1146,11 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     def _ensure_source(self, source_id: str, source_name: str) -> None:
         """Add a passive source reported by MRP playback monitoring."""
+        # Track external ids so the stream can reclaim the device state from a
+        # leaked external snapshot (see AirPlayPlayer.set_state_from_stream).
+        if not hasattr(self, "_external_source_ids"):
+            self._external_source_ids: set[str] = set()
+        self._external_source_ids.add(source_id)
         can_play_pause = bool(
             self._device_for_feature(FeatureName.Play)
             or self._device_for_feature(FeatureName.Pause)
@@ -1163,6 +1203,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
             self._mrp_device = None
             self._mrp_state_listener = None
             self._mrp_push_listener = None
+            self._clear_external_state()
         else:
             return
         if exception:
@@ -1182,7 +1223,18 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._mrp_state_listener = None
         self._mrp_push_listener = None
         device.close()
+        self._clear_external_state()
         self._schedule_connection()
+
+    def _clear_external_state(self) -> None:
+        """Drop the playback snapshot observed over a closed MRP connection."""
+        if self._external_state_blocked or self._attr_active_source is None:
+            return
+        # Without a live connection the snapshot can no longer be updated, and the
+        # last one is typically an app held at paused: leaving it in place keeps
+        # transport commands aimed at that app instead of the Music Assistant queue.
+        self.mark_external_source_ended()
+        self.update_state()
 
     def _notify_companion_state_change(self) -> None:
         """Notify a wired-up observer that the Companion connection state changed."""

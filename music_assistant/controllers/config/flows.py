@@ -12,7 +12,13 @@ from uuid import uuid4
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType, EventType, FlowStepType
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    EventType,
+    FlowStepType,
+    MediaType,
+    ProviderStage,
+)
 from music_assistant_models.errors import (
     ActionUnavailable,
     InsufficientPermissions,
@@ -129,6 +135,10 @@ class SetupFlowMixin:
             raise KeyError(msg)
         owner = f"provider.{provider_domain}"
         # fail fast on conditions that would otherwise only surface at save
+        if manifest.stage == ProviderStage.DEPRECATED:
+            # a retired provider can never be set up again; its own strings explain
+            # what to use instead
+            return self._synthesized_step(FlowStepType.ABORT, owner, reason="provider_retired")
         existing = await self.get_provider_configs(provider_domain=provider_domain)
         if existing and not manifest.multi_instance:
             return self._synthesized_step(FlowStepType.ABORT, owner, reason="already_configured")
@@ -144,7 +154,10 @@ class SetupFlowMixin:
             # as an (already) finished flow
             config = await self._create_provider_instance(provider_domain, {})
             return self._synthesized_step(
-                FlowStepType.FINISH, owner, result={"instance_id": config.instance_id}
+                FlowStepType.FINISH,
+                owner,
+                step_id=self._provider_finish_step_id(config.instance_id),
+                result={"instance_id": config.instance_id},
             )
         context = SetupFlowContext(kind="setup", reason="user", domain=provider_domain)
         return await self._start_flow(
@@ -357,6 +370,7 @@ class SetupFlowMixin:
             session=session, target_key=target_key, required_scope=required_scope
         )
         self._setup_flows[flow_id] = flow
+        LOGGER.debug("Starting setup flow %s for %s", flow_id, target_key)
         flow.task = self.mass.create_task(self._run_flow(flow, flow_coro))
         self._schedule_flow_sweep()
         if session.current_step is None:
@@ -394,6 +408,7 @@ class SetupFlowMixin:
                 )
                 session.publish_abort("internal_error")
         finally:
+            LOGGER.debug("Setup flow %s ended", session.flow_id)
             session.close()
             self._pop_flow(flow)
 
@@ -442,6 +457,7 @@ class SetupFlowMixin:
                 str(err) or err.__class__.__name__,
                 translation_key=getattr(err, "translation_key", None),
             ) from err
+        session.finish_step_id = self._provider_finish_step_id(config.instance_id)
         return {"instance_id": config.instance_id}
 
     async def _finish_provider_reconfigure(
@@ -518,7 +534,7 @@ class SetupFlowMixin:
         self, player: Player, *, needing_only: bool
     ) -> list[Player]:
         """
-        Return the player's protocol child players that implement a setup flow.
+        Return the player's protocol child players whose setup flow is available.
 
         Covers the wrapper case: a universal player, or a native player wrapping
         protocol children, whose own setup is a no-op but whose linked protocol
@@ -535,7 +551,7 @@ class SetupFlowMixin:
                 continue
             seen.add(child_id)
             child = self.mass.players.get_player(child_id)
-            if child is None or not child.implements_setup_flow:
+            if child is None or not child.has_setup_flow:
                 continue
             if needing_only and not child.needs_setup:
                 continue
@@ -638,18 +654,45 @@ class SetupFlowMixin:
         step_type: FlowStepType,
         translation_owner: str,
         *,
+        step_id: str | None = None,
         result: dict[str, str] | None = None,
         reason: str | None = None,
     ) -> SetupFlowStep:
-        """Return a terminal step for a flow that ended before a session was needed."""
+        """
+        Return a terminal step for a flow that ended before a session was needed.
+
+        :param step_type: The terminal step type (FINISH or ABORT).
+        :param translation_owner: The namespace the step's strings resolve under.
+        :param step_id: Slug to serve the step's strings under; defaults to the one
+            implied by the step type.
+        :param result: Reference to the created/updated object (FINISH).
+        :param reason: Slug describing why the flow was aborted (ABORT).
+        """
+        default_step_id = "finish" if step_type == FlowStepType.FINISH else "abort"
         return SetupFlowStep(
             flow_id=uuid4().hex,
-            step_id="finish" if step_type == FlowStepType.FINISH else "abort",
+            step_id=step_id or default_step_id,
             type=step_type,
             result=result,
             reason=reason,
             translation_owner=translation_owner,
         )
+
+    def _provider_finish_step_id(self, instance_id: str) -> str:
+        """
+        Return the i18n slug of the FINISH step for a newly set up provider instance.
+
+        :param instance_id: The provider instance the flow just created.
+        """
+        # a provider that imports a library gets the variant explaining that the first import
+        # runs in the background, so a library that still looks empty right after setup does
+        # not read as a failed setup
+        provider = self.mass.get_provider(instance_id, return_unavailable=True)
+        if provider is not None and any(
+            self.mass.music.library_supported(provider, media_type) for media_type in MediaType.ALL
+        ):
+            return "finish_library_sync"
+        return "finish"
 
     def _reconfigure_reason(self, last_error: Any) -> FlowReason:
         """Derive the reconfigure flow reason from the provider's stored last_error."""

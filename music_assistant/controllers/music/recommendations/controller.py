@@ -16,8 +16,7 @@ from music_assistant.controllers.music.constants import (
     RECOMMENDATIONS_ITEMS_TIMEOUT,
     RECOMMENDATIONS_ROWS_TIMEOUT,
 )
-
-from .library import library_items, library_rows
+from music_assistant.providers.recommendations import LibraryRecommendationsProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import (
@@ -57,7 +56,6 @@ class RecommendationsController:
             self.mass.get_providers_supporting_feature(ProviderFeature.RECOMMENDATIONS)
         )
         rows_per_source: list[list[RecommendationFolder]] = [
-            library_rows(),
             *await asyncio.gather(
                 *[
                     self._provider_rows(
@@ -71,17 +69,18 @@ class RecommendationsController:
         return [item for sublist in zip_longest(*rows_per_source) for item in sublist if item]
 
     async def get_recommendation_items(
-        self, provider: str, item_id: str
+        self, provider: str, item_id: str, providers: list[str] | None = None
     ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
         """
         Get the items for a single recommendation row.
 
-        :param provider: The provider instance id owning the row, or "library" for builtin rows.
+        :param provider: The provider instance id owning the row.
         :param item_id: The item_id of the row, as returned by the recommendations listing.
+        :param providers: Restrict items to those reachable through one of these provider
+            instance ids (OR semantics). Only honored on rows that advertise
+            `supports_provider_filter`; ignored on other rows for backwards compatibility.
         """
         try:
-            if provider == "library":
-                return await library_items(self.mass, item_id)
             prov = self.mass.get_provider(provider)
             # re-apply the user provider filter the rows listing applies, so a user
             # can not fetch items from a music provider an admin has restricted them from
@@ -92,6 +91,10 @@ class RecommendationsController:
                 # providers declaring the feature, matching the rows listing
                 return UniqueList()
             async with asyncio.timeout(RECOMMENDATIONS_ITEMS_TIMEOUT):
+                if isinstance(prov, LibraryRecommendationsProvider):
+                    return await prov.get_recommendation_items(item_id, providers=providers)
+                # external provider rows don't support provider filtering: their SPI
+                # signature is unchanged, so `providers` is silently ignored here
                 return await cast(
                     "MusicProvider | MetadataProvider | PluginProvider", prov
                 ).get_recommendation_items(item_id)

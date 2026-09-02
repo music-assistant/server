@@ -219,6 +219,9 @@ class QueueCommandsMixin:
                 queue_id=player_id,
                 media=source_media,
                 option=QueueOption.REPLACE,
+                # the deferred task below applies MA's shuffle; loading the source already
+                # shuffled would leave the queue's own order out of step with the Plex one
+                shuffle=False,
             )
             if offset > 0:
                 await self._seek_to_offset_after_playback(player_id, offset)
@@ -325,6 +328,10 @@ class QueueCommandsMixin:
                         queue_id=player_id,
                         media=first_track,
                         option=QueueOption.REPLACE,
+                        # Plex owns the order and a shuffled play queue already arrives
+                        # shuffled, so the remaining tracks must be appended to an unshuffled
+                        # queue; _load_remaining_queue_tracks sets the flag once they landed
+                        shuffle=False,
                     )
 
                     if offset > 0:
@@ -341,8 +348,8 @@ class QueueCommandsMixin:
                         )
                     )
 
-                except Exception as e:
-                    LOGGER.exception(f"Error starting playback with first track: {e}")
+                except Exception:
+                    LOGGER.exception("Error starting playback with first track")
                     if starting_key:
                         await self._play_single_track(player_id, starting_key)
             else:
@@ -350,8 +357,8 @@ class QueueCommandsMixin:
                 if starting_key:
                     await self._play_single_track(player_id, starting_key)
 
-        except Exception as e:
-            LOGGER.exception(f"Error playing from queue: {e}")
+        except Exception:
+            LOGGER.exception("Error playing from queue")
             if starting_key:
                 await self._play_single_track(player_id, starting_key)
 
@@ -402,6 +409,7 @@ class QueueCommandsMixin:
                         queue_id=player_id,
                         media=media,
                         option=QueueOption.REPLACE,
+                        shuffle=shuffle,
                     )
             elif container_key:
                 self.play_queue_id = None
@@ -411,6 +419,7 @@ class QueueCommandsMixin:
                     queue_id=player_id,
                     media=media_to_play,
                     option=QueueOption.REPLACE,
+                    shuffle=shuffle,
                 )
             else:
                 self.play_queue_id = None
@@ -420,6 +429,7 @@ class QueueCommandsMixin:
                     queue_id=player_id,
                     media=media,
                     option=QueueOption.REPLACE,
+                    shuffle=shuffle,
                 )
 
             # Always sync shuffle state so that a previously enabled MA shuffle
@@ -432,8 +442,8 @@ class QueueCommandsMixin:
             await self._broadcast_timeline()
             return web.Response(status=200)
 
-        except Exception as e:
-            LOGGER.exception(f"Error handling playMedia: {e}")
+        except Exception:
+            LOGGER.exception("Error handling playMedia")
             return web.Response(status=500, text="Internal error")
         finally:
             self._updating_from_plex = False
@@ -506,6 +516,8 @@ class QueueCommandsMixin:
                         queue_id=player_id,
                         media=first_track,
                         option=QueueOption.REPLACE,
+                        # as above: the tracks that follow are appended in Plex's order
+                        shuffle=False,
                     )
 
                     if len(playqueue.items) > 1:
@@ -516,15 +528,15 @@ class QueueCommandsMixin:
                     await self._broadcast_timeline()
                     return web.Response(status=200)
 
-                except Exception as e:
-                    LOGGER.exception(f"Error starting playback with first track: {e}")
+                except Exception:
+                    LOGGER.exception("Error starting playback with first track")
                     return web.Response(status=500, text="Failed to start playback")
             else:
                 LOGGER.error("Failed to create play queue or queue is empty")
                 return web.Response(status=500, text="Failed to create play queue")
 
-        except Exception as e:
-            LOGGER.exception(f"Error handling createPlayQueue: {e}")
+        except Exception:
+            LOGGER.exception("Error handling createPlayQueue")
             return web.Response(status=500, text="Internal error")
         finally:
             self._updating_from_plex = False
@@ -611,8 +623,8 @@ class QueueCommandsMixin:
 
             return web.Response(status=200)
 
-        except Exception as e:
-            LOGGER.exception(f"Error handling refreshPlayQueue: {e}")
+        except Exception:
+            LOGGER.exception("Error handling refreshPlayQueue")
             return web.Response(status=500, text="Internal error")
         finally:
             self._updating_from_plex = False

@@ -5,12 +5,14 @@ from __future__ import annotations
 import time
 from unittest.mock import AsyncMock, MagicMock, Mock
 
+import pytest
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 QUEUE_ID = "q1"
 STALE_ELAPSED = 43_217.7
@@ -77,6 +79,30 @@ async def test_play_index_sets_elapsed_to_seek_position() -> None:
     assert all(elapsed == 30 for item_id, elapsed in signals if item_id == "new"), signals
 
 
+async def test_seek_publishes_target_before_restarting_stream() -> None:
+    """A seek publishes its target before play_index starts rebuilding the stream."""
+    ctrl, queue, _signals = _controller_with_stale_queue()
+    events: list[tuple[str, float]] = []
+    before = time.time()
+
+    def _record_signal(_queue_id: str, items_changed: bool = False) -> None:  # noqa: ARG001
+        events.append(("signal", queue.elapsed_time))
+
+    async def _record_restart(*_args: object, **_kwargs: object) -> None:
+        events.append(("restart", queue.elapsed_time))
+
+    ctrl.signal_update = Mock(side_effect=_record_signal)  # type: ignore[method-assign]
+    play_index = AsyncMock(side_effect=_record_restart)
+    ctrl.play_index = play_index  # type: ignore[method-assign]
+
+    await ctrl.seek(QUEUE_ID, 30)
+
+    play_index.assert_awaited_once_with(QUEUE_ID, 0, seek_position=30)
+    assert events == [("signal", 30), ("restart", 30)]
+    assert queue.elapsed_time == 30
+    assert queue.elapsed_time_last_updated >= before
+
+
 async def test_play_index_retry_fallback_discards_failed_items_seek_position() -> None:
     """Falling back to another item after a load failure zeroes elapsed_time, not seek_position."""
     ctrl, queue, signals = _controller_with_stale_queue()
@@ -93,3 +119,26 @@ async def test_play_index_retry_fallback_discards_failed_items_seek_position() -
     assert queue.current_item.queue_item_id == "fallback"
     assert queue.elapsed_time == 0
     assert all(elapsed == 0 for item_id, elapsed in signals if item_id == "fallback"), signals
+
+
+async def test_play_index_stops_and_reports_a_source_capacity_failure() -> None:
+    """Exhausted source capacity stops the queue instead of skipping to another item."""
+    ctrl, _queue, _signals = _controller_with_stale_queue()
+    queue_item = ctrl._queue_data[QUEUE_ID].items[1]
+    provider = MagicMock(spec=MusicProvider)
+    provider.max_concurrent_streams = 1
+    provider.name = "Limited"
+    provider.instance_id = "limited--1"
+    ctrl._load_item = AsyncMock(  # type: ignore[method-assign]
+        side_effect=ProviderStreamLimitError(provider, 15)
+    )
+    # another item is available, so a skip would otherwise be attempted
+    ctrl._get_next_index = Mock(return_value=0)  # type: ignore[method-assign]
+    ctrl.stop = AsyncMock()  # type: ignore[method-assign]
+
+    with pytest.raises(ProviderStreamLimitError):
+        await ctrl.play_index(QUEUE_ID, 1)
+
+    assert queue_item.available
+    assert ctrl._load_item.await_count == 1
+    ctrl.stop.assert_awaited_once_with(QUEUE_ID)

@@ -16,7 +16,7 @@ import asyncio
 import os
 import shutil
 import sqlite3
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from music_assistant_models.errors import MusicAssistantError
 
@@ -59,9 +59,14 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.controllers.music.media.albums import AlbumsController
     from music_assistant.controllers.music.media.artists import ArtistsController
+    from music_assistant.controllers.music.media.audiobooks import AudiobooksController
     from music_assistant.controllers.music.media.playlists import PlaylistController
+    from music_assistant.controllers.music.media.podcasts import PodcastsController
     from music_assistant.controllers.music.media.radio import RadioController
     from music_assistant.controllers.music.media.tracks import TracksController
+
+# the playlog's unique constraint: one row per item, per media type, per user
+PLAYLOG_CONFLICT_KEYS: Final[tuple[str, ...]] = ("item_id", "provider", "media_type", "userid")
 
 
 class MusicDatabaseSetupMixin:
@@ -76,7 +81,8 @@ class MusicDatabaseSetupMixin:
     - mass: MusicAssistant instance
     - logger: logging.Logger instance
     - database: the active DatabaseConnection
-    - the per-media-type controllers (albums, artists, tracks, playlists, radio, genres)
+    - the per-media-type controllers (albums, artists, tracks, playlists, radio,
+      podcasts, audiobooks, genres)
     - close() and start_sync() methods
     """
 
@@ -90,6 +96,8 @@ class MusicDatabaseSetupMixin:
         tracks: TracksController
         playlists: PlaylistController
         radio: RadioController
+        podcasts: PodcastsController
+        audiobooks: AudiobooksController
         genres: GenreController
 
         @property
@@ -118,6 +126,8 @@ class MusicDatabaseSetupMixin:
             self.tracks,
             self.playlists,
             self.radio,
+            self.podcasts,
+            self.audiobooks,
         ):
             update_current_task_progress_text(f"Cleaning {ctrl.media_type.value} library records")
             # Provider mappings where the db item is removed
@@ -144,6 +154,23 @@ class MusicDatabaseSetupMixin:
                 f"AND item_id not in (select item_id from {ctrl.db_table})"
             )
             await self.mass.music.database.delete_where_query(DB_TABLE_PLAYLOG, where_clause)
+        update_current_task_progress_text("Cleaning orphaned relations")
+        # A relation row can outlive the item on either of its ends: the item deletions above
+        # leave one behind, and so do the removal paths that only delete their own side of the
+        # relation. Sweep them here rather than rely on foreign keys, which sqlite has off.
+        for table, column, parent_table in (
+            (DB_TABLE_ALBUM_ARTISTS, "album_id", DB_TABLE_ALBUMS),
+            (DB_TABLE_ALBUM_ARTISTS, "artist_id", DB_TABLE_ARTISTS),
+            (DB_TABLE_ALBUM_TRACKS, "album_id", DB_TABLE_ALBUMS),
+            (DB_TABLE_ALBUM_TRACKS, "track_id", DB_TABLE_TRACKS),
+            (DB_TABLE_AUDIOBOOK_ARTISTS, "artist_id", DB_TABLE_ARTISTS),
+            (DB_TABLE_AUDIOBOOK_ARTISTS, "audiobook_id", DB_TABLE_AUDIOBOOKS),
+            (DB_TABLE_TRACK_ARTISTS, "artist_id", DB_TABLE_ARTISTS),
+            (DB_TABLE_TRACK_ARTISTS, "track_id", DB_TABLE_TRACKS),
+        ):
+            await self.database.delete_where_query(
+                table, f"{column} not in (SELECT item_id from {parent_table})"
+            )
         update_current_task_progress_text("Database cleanup finished")
         self.logger.debug("Database cleanup done")
 
@@ -187,7 +214,7 @@ class MusicDatabaseSetupMixin:
                     "a full rescan will be performed, this can take a while!",
                 )
                 if not isinstance(err, MusicAssistantError):
-                    self.logger.exception(err)
+                    self.logger.exception("Unexpected error during database migration")
 
                 await self._database.close()
                 await asyncio.to_thread(os.remove, db_path)
@@ -349,7 +376,8 @@ class MusicDatabaseSetupMixin:
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
             [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
-            [search_sort_name] TEXT NOT NULL
+            [search_sort_name] TEXT NOT NULL,
+            [is_dynamic] BOOLEAN NOT NULL DEFAULT 0
             );"""
         )
         await self.database.execute(
@@ -681,6 +709,13 @@ class MusicDatabaseSetupMixin:
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAYLOG}_userid_timestamp_idx "
             f"on {DB_TABLE_PLAYLOG}(userid,timestamp);"
+        )
+        # serves the podcast episode resume lookup, which no existing index can: they all
+        # lead with item_id or userid, neither of which that query filters on. Column order
+        # matches its filter, so with a userid it needs no sort for the ORDER BY either
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAYLOG}_provider_media_type_idx "
+            f"on {DB_TABLE_PLAYLOG}(provider,media_type,userid,timestamp);"
         )
         await self.database.commit()
 

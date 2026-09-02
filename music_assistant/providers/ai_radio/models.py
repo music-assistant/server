@@ -26,6 +26,7 @@ class PlannedSection:
     """A section that should be generated for a run."""
 
     order: int
+    clip_id: str
     section_id: str
     section_name: str
     when: str
@@ -33,30 +34,32 @@ class PlannedSection:
     prompt: str
     max_chars: int
     web_search_mode: str
+    # when true, a failed weather fetch skips the clip instead of airing it without a forecast
+    weather_required: bool = False
+    # the guard history events this plan claimed, as (section_id, (song, minute)). a caller
+    # that drops the plan can drop these too, so a clip that never aired carries no weight
+    history_events: list[tuple[str, tuple[int, float]]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
-class GeneratedSection:
-    """A generated section with final text."""
+class DJQueueState:
+    """State container for one sticky queue DJ."""
 
-    order: int
-    section_id: str
-    section_name: str
-    when: str
-    insert_at_index: int
-    text: str
-
-
-@dataclass(slots=True)
-class AudioSection:
-    """Audio artifact for a generated section."""
-
-    order: int
-    section_id: str
-    section_name: str
-    insert_at_index: int
-    uri: str
-    duration: int = 0
+    queue_id: str
+    host_id: str
+    dj_session_id: str
+    clip_counter: int = 0
+    songs_before_window: int = 0
+    minutes_before_window: float = 0.0
+    # queue_item_ids of the tracks whose preceding gap this session already settled, by
+    # injecting a clip, by leaving it empty on purpose or because it became unusable
+    decided_gap_ids: set[str] = field(default_factory=set)
+    history: dict[str, list[tuple[int, float]]] = field(default_factory=dict)
+    # a freshly armed state may only plan once the previous host's clips are cleared
+    ready: bool = False
+    replan_pending: bool = False
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
+    task: asyncio.Task[Any] | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(slots=True)
@@ -65,7 +68,6 @@ class SessionState:
 
     session_id: str
     station_id: str
-    mode: str
     status: str = "running"
     created_at: str = field(default_factory=lambda: utc().isoformat())
     started_at: str | None = None
@@ -73,6 +75,8 @@ class SessionState:
     progress: dict[str, Any] = field(default_factory=dict)
     result: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
+    skipped_sections: int = 0
+    last_render_error: str | None = None
     task: asyncio.Task[Any] | None = field(default=None, repr=False, compare=False)
     queue_id: str | None = field(default=None, repr=False, compare=False)
 
@@ -81,7 +85,7 @@ class SessionState:
         return {
             "session_id": self.session_id,
             "station_id": self.station_id,
-            "mode": self.mode,
+            "queue_id": self.queue_id,
             "status": self.status,
             "created_at": self.created_at,
             "started_at": self.started_at,
@@ -89,4 +93,6 @@ class SessionState:
             "progress": self.progress,
             "result": self.result,
             "error": self.error,
+            "skipped_sections": self.skipped_sections,
+            "last_render_error": self.last_render_error,
         }

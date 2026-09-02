@@ -2,7 +2,7 @@
 # Private methods must live at the bottom of the class (see AGENTS.md).
 # Regenerate with: uv run -m scripts.check_method_order --update-baseline
 music_assistant/models/music_provider.py	5
-music_assistant/models/player.py	58
+music_assistant/models/player.py	10
 music_assistant/providers/_demo_audio_analysis_provider/__init__.py	3
 music_assistant/providers/alexa/__init__.py	1
 music_assistant/providers/apple_music/api_client.py	8
@@ -23,7 +23,6 @@ music_assistant/providers/deezer/media.py	27
 music_assistant/providers/deezer/streaming.py	2
 music_assistant/providers/digitally_incorporated/__init__.py	2
 music_assistant/providers/emby/__init__.py	16
-music_assistant/providers/filesystem_nfs/provider.py	1
 music_assistant/providers/gpodder/client.py	4
 music_assistant/providers/heos/player.py	11
 music_assistant/providers/heos/provider.py	5
@@ -48,9 +47,7 @@ music_assistant/providers/nicovideo/converters/track.py	1
 music_assistant/providers/nicovideo/helpers/hls_seek_optimizer.py	1
 music_assistant/providers/nicovideo/services/search.py	1
 music_assistant/providers/nugs/__init__.py	2
-music_assistant/providers/opensubsonic/sonic_provider.py	27
 music_assistant/providers/orf_radiothek/__init__.py	9
-music_assistant/providers/pandora/provider.py	6
 music_assistant/providers/party/__init__.py	4
 music_assistant/providers/phishin/provider.py	4
 music_assistant/providers/plex_connect/gdm.py	2
@@ -60,7 +57,6 @@ music_assistant/providers/plex_connect/server.py	8
 music_assistant/providers/qqmusic/__init__.py	21
 music_assistant/providers/samsung_wam/features/grouping/coordinator.py	1
 music_assistant/providers/samsung_wam/features/state_sync/handler.py	8
-music_assistant/providers/sendspin/player.py	11
 music_assistant/providers/smart_playlist/__init__.py	8
 music_assistant/providers/snapcast/control.py	1
 music_assistant/providers/snapcast/player.py	5
@@ -69,17 +65,9 @@ music_assistant/providers/sonic_analysis/vendored_clap/clap_wrapper.py	4
 music_assistant/providers/sonic_analysis/vendored_clap/models/htsat.py	7
 music_assistant/providers/sonic_similarity/provider.py	1
 music_assistant/providers/soundcloud/__init__.py	7
-music_assistant/providers/tidal/api_client.py	1
-music_assistant/providers/tidal/media.py	5
-music_assistant/providers/tidal/provider.py	25
 music_assistant/providers/tidal/tidal_page_parser.py	2
 music_assistant/providers/tunein/__init__.py	2
 music_assistant/providers/vban_receiver/stats.py	2
 music_assistant/providers/webdav/provider.py	4
-music_assistant/providers/yandex_music/api_client.py	49
-music_assistant/providers/yandex_music/provider.py	36
-music_assistant/providers/yandex_music/streaming.py	2
 music_assistant/providers/yousee/auth_manager.py	1
 music_assistant/providers/yousee/media.py	5
-music_assistant/providers/zvuk_music/api_client.py	32
-music_assistant/providers/zvuk_music/provider.py	15

@@ -287,7 +287,7 @@ def build_queue_server(  # noqa: PLR0915 -- one sub-server registers all queue t
             valid = ", ".join(f"``{e.value}``" for e in RepeatMode if e is not RepeatMode.UNKNOWN)
             raise ToolError(f"Invalid repeat_mode {repeat_mode!r}. Valid options: {valid}")
 
-        mass.player_queues.set_repeat(queue_id, mode)
+        await mass.player_queues.set_repeat(queue_id, mode)
 
     @sub.tool(
         tags={Tag.DELETE_QUEUE},
@@ -448,8 +448,8 @@ def build_queue_server(  # noqa: PLR0915 -- one sub-server registers all queue t
         :param item_id: ``item_id`` from ``QueueItemBrief`` returned by
             ``get_active_queue``.
         :param pos_shift: Relative move — ``-1`` up one slot, ``+1`` down one
-            slot (default), ``0`` to insert after the currently playing item
-            (play next).
+            slot (default), ``0`` to insert at the front of the upcoming items
+            (play next), which while playing is behind ``index_in_buffer``.
         :param include_items: How many items to materialise in the returned
             brief. Clamped to the ``[0, 500]`` range.
         """

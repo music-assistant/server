@@ -22,8 +22,9 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, SetupFailedError
 
-from music_assistant.controllers.player_queues.helpers import build_queue_item
+from music_assistant.controllers.player_queues.helpers import build_queue_item, committed_index
 from music_assistant.helpers import guest_access
+from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
 from music_assistant.models.plugin import PluginProvider
 
@@ -63,12 +64,10 @@ CONF_ANTI_BURN_IN = "anti_burn_in"
 # Custom party settings
 CONF_PARTY_NAME = "party_name"
 CONF_PARTY_QR_TEXT = "qr_text"
+CONF_PARTY_DURATION = "party_duration"
 CONF_HIDE_BACK_BUTTON = "hide_back_button"
 CONF_SHOW_PROGRESS_BAR = "show_progress_bar"
 CONF_PREVENT_DUPLICATE_TRACKS = "prevent_duplicate_tracks"
-# Actions
-CONF_ACTION_ENABLE_GUEST_ACCESS = "action_enable_guest_access"
-CONF_ACTION_DISABLE_GUEST_ACCESS = "action_disable_guest_access"
 
 # Color options for badges (name, hex value)
 # Green and Orange are listed first as they are the defaults
@@ -177,6 +176,7 @@ class PartyPlugin(PluginProvider):
                             self.mass.players.all_players(False, False),
                             key=lambda p: p.display_name.lower(),
                         )
+                        if player.type in PLAYBACK_TARGET_TYPES
                     ],
                 ],
             ),
@@ -187,10 +187,16 @@ class PartyPlugin(PluginProvider):
                 required=False,
             ),
             ConfigEntry(
+                key=CONF_PARTY_DURATION,
+                type=ConfigEntryType.INTEGER,
+                default_value=guest_access.DEFAULT_JOIN_CODE_EXPIRY_HOURS,
+                range=(1, 168),
+                advanced=True,
+            ),
+            ConfigEntry(
                 key=CONF_ENABLE_GUEST_ACCESS,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
-                hidden=True,
                 immediate_apply=True,
             ),
             # Guest access disabled state
@@ -200,26 +206,12 @@ class PartyPlugin(PluginProvider):
                 required=False,
                 hidden=guest_access_enabled,
             ),
-            ConfigEntry(
-                key=CONF_ACTION_ENABLE_GUEST_ACCESS,
-                type=ConfigEntryType.ACTION,
-                action=CONF_ACTION_ENABLE_GUEST_ACCESS,
-                hidden=guest_access_enabled,
-                immediate_apply=True,
-            ),
             # Guest access enabled state
             ConfigEntry(
                 key="guest_enabled_note",
                 type=ConfigEntryType.ALERT,
                 required=False,
                 hidden=not guest_access_enabled,
-            ),
-            ConfigEntry(
-                key=CONF_ACTION_DISABLE_GUEST_ACCESS,
-                type=ConfigEntryType.ACTION,
-                action=CONF_ACTION_DISABLE_GUEST_ACCESS,
-                hidden=not guest_access_enabled,
-                immediate_apply=True,
             ),
             ConfigEntry(
                 key=CONF_PARTY_QR_TEXT,
@@ -291,7 +283,7 @@ class PartyPlugin(PluginProvider):
                 type=ConfigEntryType.INTEGER,
                 default_value=10,
                 depends_on=CONF_ENABLE_ADD_QUEUE,
-                range=(5, 50),
+                range=(1, 50),
                 advanced=True,
                 category="guest_features",
             ),
@@ -300,7 +292,7 @@ class PartyPlugin(PluginProvider):
                 type=ConfigEntryType.INTEGER,
                 default_value=2,
                 depends_on=CONF_ENABLE_ADD_QUEUE,
-                range=(1, 30),
+                range=(1, 60),
                 advanced=True,
                 category="guest_features",
             ),
@@ -380,20 +372,6 @@ class PartyPlugin(PluginProvider):
                 advanced=True,
             ),
         )
-
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
-        """Handle a guest-access toggle button press and re-render the entries."""
-        if action == CONF_ACTION_ENABLE_GUEST_ACCESS:
-            await self.mass.config.save_provider_config(
-                self.domain, {CONF_ENABLE_GUEST_ACCESS: True}, instance_id=self.instance_id
-            )
-            return await self.get_config_entries()
-        if action == CONF_ACTION_DISABLE_GUEST_ACCESS:
-            await self.mass.config.save_provider_config(
-                self.domain, {CONF_ENABLE_GUEST_ACCESS: False}, instance_id=self.instance_id
-            )
-            return await self.get_config_entries()
-        return await super().handle_config_action(action)
 
     def __init__(
         self,
@@ -487,9 +465,12 @@ class PartyPlugin(PluginProvider):
         # 1. The plugin is being removed entirely (is_removed=True)
         # 2. Guest access is disabled in config (provider reload with disabled setting)
         # This ensures guests are immediately disconnected when access is revoked
-        # Note: We read the LIVE config value since self.config is a snapshot from init
+        # Note: We read the LIVE stored value, which also covers reloads that are triggered
+        # outside of a config save. The default must match the config entry's default_value:
+        # only values that differ from their default are persisted, so switching guest access
+        # off drops the key entirely.
         guest_access_enabled = self.mass.config.get_raw_provider_config_value(
-            self.instance_id, CONF_ENABLE_GUEST_ACCESS, default=True
+            self.instance_id, CONF_ENABLE_GUEST_ACCESS, default=False
         )
         if is_removed or not guest_access_enabled:
             self.logger.debug("Revoking guest tokens...")
@@ -515,7 +496,10 @@ class PartyPlugin(PluginProvider):
             self.mass, PARTY_GUEST_USER, PARTY_GUEST_DISPLAY_NAME
         )
         code = await guest_access.get_or_create_join_code(
-            self.mass, guest_user, device_name="Party Guest"
+            self.mass,
+            guest_user,
+            device_name="Party Guest",
+            expires_in_hours=cast("int", self.config.get_value(CONF_PARTY_DURATION)),
         )
         return guest_access.build_join_url(self.mass, code)
 
@@ -529,10 +513,10 @@ class PartyPlugin(PluginProvider):
 
         :returns: The queue ID for party, or None if no player available.
         """
-        if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
-            return None
-
         if self.config.get_value(CONF_PARTY_MODE) == SharedPlaybackMode.REMOTE.value:
+            # remote mode plays on the guest session's virtual player, which needs guest access
+            if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
+                return None
             session = await self._get_session()
             return session.queue_id if session else None
 
@@ -726,12 +710,9 @@ class PartyPlugin(PluginProvider):
                 raise InvalidDataError("This item is already boosted")
 
             if queue.state == PlaybackState.PLAYING:
-                # Use index_in_buffer to avoid moving already-buffered items
-                current_index = (
-                    queue.index_in_buffer
-                    if queue.index_in_buffer is not None
-                    else (queue.current_index if queue.current_index is not None else 0)
-                )
+                # Use the boundary to avoid moving already-buffered items
+                boundary_index = committed_index(queue)
+                current_index = boundary_index if boundary_index is not None else 0
 
                 if item_index <= current_index:
                     raise InvalidDataError(
@@ -832,11 +813,8 @@ class PartyPlugin(PluginProvider):
             # Use index_in_buffer when playing to avoid inserting before an already-buffered
             # track, which would cause the newly added song to be skipped
             if queue and queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
-                current_index = (
-                    queue.index_in_buffer
-                    if queue.index_in_buffer is not None
-                    else (queue.current_index if queue.current_index is not None else 0)
-                )
+                boundary_index = committed_index(queue)
+                current_index = boundary_index if boundary_index is not None else 0
             else:
                 current_index = queue.current_index or 0 if queue else 0
 

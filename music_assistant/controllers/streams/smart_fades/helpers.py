@@ -11,9 +11,9 @@ if TYPE_CHECKING:
 # Buffer size in seconds for crossfade analysis
 SMART_CROSSFADE_DURATION = 45
 
-# Below this many seconds of audible tail, a smart crossfade is pointless;
-# the caller should fall back to a standard fade (which strips silence).
-MIN_EFFECTIVE_FADE_BUFFER = 10.0
+# Below this many seconds of audible tail there is no room to place a musical
+# blend; the planner degrades such a boundary to a standard fade.
+MIN_EFFECTIVE_FADE_BUFFER = 8.0
 
 # Fraction of sustained (median-active) energy below which the outro no longer
 # carries the groove; the crossfade should end at or before this point.
@@ -366,6 +366,38 @@ def db_ramp(
         (start + (i / n_steps) * duration, from_db + (to_db - from_db) * (i / n_steps))
         for i in range(n_steps + 1)
     ]
+
+
+def camelot_affinity(
+    key_a: str | None, mode_a: str | None, key_b: str | None, mode_b: str | None
+) -> float | None:
+    """
+    Return a graded harmonic affinity between two keys on the Camelot wheel.
+
+    1.0 same key, 0.9 one step or relative major/minor, 0.55 two steps in the
+    same mode (energy boost), 0.45 one step with a mode switch, 0.1 for a clash.
+    Returns None when either key is unknown so callers pick their own neutral.
+    """
+    a = _camelot_code(key_a, mode_a)
+    b = _camelot_code(key_b, mode_b)
+    if a is None or b is None:
+        return None
+    num_a, major_a = a
+    num_b, major_b = b
+    steps = min((num_a - num_b) % 12, (num_b - num_a) % 12)
+    if major_a == major_b:
+        if steps == 0:
+            return 1.0
+        if steps == 1:
+            return 0.9
+        if steps == 2:
+            return 0.55
+        return 0.1
+    if steps == 0:
+        return 0.9
+    if steps == 1:
+        return 0.45
+    return 0.1
 
 
 def keys_compatible(

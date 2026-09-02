@@ -9,19 +9,16 @@ import os
 import os.path
 import posixpath
 import urllib.parse
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Iterator, Sequence
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
-from xml.parsers.expat import ExpatError
 
 import aiofiles
 import shortuuid
-import xmltodict
 from aiofiles.os import wrap
-from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     EventType,
     ExternalID,
@@ -36,6 +33,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     SetupFailedError,
 )
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -70,16 +68,19 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_NAME,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.cache import BYPASS_CACHE
 from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
     update_current_task_progress_from_index,
     update_current_task_progress_text,
 )
 from music_assistant.helpers import lyrics
-from music_assistant.helpers.compare import compare_strings, create_safe_string
+from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.cue_sheet import CueSheet
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
-from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid, split_items
+from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid
+from music_assistant.helpers.uri import create_uri
 from music_assistant.helpers.util import (
     TaskManager,
     detect_charset,
@@ -90,13 +91,17 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     AUDIOBOOK_EXTENSIONS,
+    AVAILABILITY_PROBE_INTERVAL,
     CACHE_CATEGORY_ALBUM_INFO,
     CACHE_CATEGORY_ARTIST_INFO,
     CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
     CACHE_CATEGORY_FOLDER_IMAGES,
+    CACHE_CATEGORY_METADATA_FILE,
+    CACHE_CATEGORY_PODCAST_EPISODES,
     CACHE_CATEGORY_PODCAST_METADATA,
     CACHE_CATEGORY_SOUND_EFFECTS,
     CONF_CONTENT_TYPE,
+    CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
@@ -107,32 +112,44 @@ from .constants import (
     CUE_EXTENSIONS,
     DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     IMAGE_EXTENSIONS,
+    METADATA_FILE_CACHE_EXPIRATION,
+    METADATA_FILE_EXTENSIONS,
+    NFO_FILENAMES,
+    PARTIAL_LISTING_CACHE_EXPIRATION,
     PLAYLIST_EXTENSIONS,
     PODCAST_EPISODE_EXTENSIONS,
     SOUND_EFFECT_EXTENSIONS,
-    SUPPORTED_EXTENSIONS,
     TRACK_EXTENSIONS,
+    WALK_EXTENSIONS,
     IsChapterFile,
+    content_type_config_entry,
 )
 from .cue import (
     CueSheetHandler,
+    cue_metadata_checksum,
     cue_referenced_audio_stem,
     make_cue_track_id,
     parse_cue_track_id,
 )
 from .helpers import (
     FileSystemItem,
+    ScanErrors,
     get_absolute_path,
     get_album_dir,
     get_artist_dir,
+    get_folder_signature,
     get_relative_path,
+    is_disc_dir,
+    is_image_file,
+    is_metadata_file,
+    parse_nfo_root,
     recursive_iter,
     sorted_scandir,
 )
-from .parsers import parse_album_nfo
+from .parsers import parse_album_nfo, parse_artist_nfo
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -145,12 +162,39 @@ isfile = wrap(os.path.isfile)
 ismount = wrap(os.path.ismount)
 exists = wrap(os.path.exists)
 makedirs = wrap(os.makedirs)
-scandir = wrap(os.scandir)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
 }
+
+# task-local memo of on-demand folder listings (NFO files only) for one outermost parse, so
+# overlapping lookups for the same candidate folder list it only once; unset outside such a
+# scope, and unused entirely once the sync's own NFO index is ready
+_ONDEMAND_NFO_ITEMS: ContextVar[dict[str, dict[str, FileSystemItem]] | None] = ContextVar(
+    "ondemand_nfo_items", default=None
+)
+
+# every field parse_album_nfo/parse_artist_nfo reads; each, if present, must be a plain scalar
+# (not a repeated/nested XML element) or the NFO is not trusted as folder identity
+_ALBUM_NFO_FIELDS = (
+    "title",
+    "name",
+    "sortname",
+    "review",
+    "year",
+    "genre",
+    "musicbrainzalbumid",
+    "musicbrainzreleasegroupid",
+    "musicbrainzalbumartistid",
+)
+_ARTIST_NFO_FIELDS = ("title", "name", "sortname", "biography", "genre", "musicbrainzartistid")
+# fields whose consumer (split_items) explicitly also accepts a list/tuple of scalars, since
+# xmltodict yields a list for a repeated element (e.g. multiple <genre> tags)
+_LIST_ALLOWED_NFO_FIELDS = ("genre",)
+# the MusicBrainz id fields among the above: if present at all, must also be a valid UUID
+_ALBUM_MBID_FIELDS = ("musicbrainzalbumid", "musicbrainzreleasegroupid", "musicbrainzalbumartistid")
+_ARTIST_MBID_FIELDS = ("musicbrainzartistid",)
 
 
 async def setup(
@@ -171,6 +215,8 @@ class LocalFileSystemProvider(MusicProvider):
 
     # parallel workers per sync; subclasses lower this for slower transports
     _SYNC_CONCURRENCY: ClassVar[int] = 16
+    _sync_tracks: bool = True
+    _sync_playlists: bool = True
 
     def __init__(
         self,
@@ -188,18 +234,28 @@ class LocalFileSystemProvider(MusicProvider):
         )
         self.write_access: bool = False
         self.sync_running: bool = False
-        self._sync_tracks: bool = True
-        self._sync_playlists: bool = True
-        self.media_content_type = cast("str", self.get_setup_value(CONF_CONTENT_TYPE))
+        self.media_content_type = cast(
+            "str", self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
         self._cue = CueSheetHandler(self)
+        # sync-scoped index of this sync's walked album.nfo/artist.nfo, keyed by parent
+        # directory; an O(1) lookup for the NFO-resolution fallback instead of a filesystem
+        # probe per candidate folder. Ephemeral: built after the walk, cleared in _run_sync.
+        self._sync_nfo_by_dir: dict[str, dict[str, FileSystemItem]] = {}
+        # True only once _sync_nfo_by_dir reflects a completed walk; `sync_running` alone
+        # is not enough, since a concurrent on-demand parse could otherwise start consulting
+        # the index for the entire (potentially long) walk before it is actually populated
+        self._sync_nfo_index_ready: bool = False
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         # content type and path are collected by the setup flow; surface the (immutable)
         # content type read-only so the sync options' depends_on chains still resolve
-        content_type = str(self.get_setup_value(CONF_CONTENT_TYPE, "music"))
+        content_type = str(
+            self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
         return (
-            ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
+            content_type_config_entry(content_type),
             CONF_ENTRY_MISSING_ALBUM_ARTIST,
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
             CONF_ENTRY_LIBRARY_SYNC_TRACKS,
@@ -240,7 +296,7 @@ class LocalFileSystemProvider(MusicProvider):
     @property
     def instance_name_postfix(self) -> str | None:
         """Return a (default) instance name postfix for this provider instance."""
-        return self.base_path.split(os.sep)[-1]
+        return Path(self.base_path).name
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -253,6 +309,13 @@ class LocalFileSystemProvider(MusicProvider):
                 translation_args=[self.base_path],
             )
         await self.check_write_access()
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        self._cancel_availability_probe()
+        # a check that already started runs as a task under the same id, and it would
+        # otherwise keep talking to storage this unload is in the middle of tearing down
+        self.mass.cancel_task(self._availability_probe_id)
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
@@ -453,12 +516,12 @@ class LocalFileSystemProvider(MusicProvider):
         for db_row in await self.mass.music.database.get_rows_from_query(query, limit=0):
             file_checksums[db_row["provider_item_id"]] = str(db_row["details"])
         # provider_mappings stores synthetic per-track ids for CUE sheets, not the
-        # CUE path, so derive a path-keyed checksum map for the scan classifier
-        cue_file_checksums: dict[str, str] = {}
+        # CUE path, so collect every track checksum per path for the scan classifier
+        cue_file_checksums: dict[str, set[str]] = {}
         for prov_item_id, checksum in file_checksums.items():
             parsed = parse_cue_track_id(prov_item_id)
             if parsed is not None:
-                cue_file_checksums[parsed[0]] = checksum
+                cue_file_checksums.setdefault(parsed[0], set()).add(checksum)
         # find all supported files in the base directory and all subfolders
         # we work bottom up, as-in we derive all info from the tracks
         cur_filenames: set[str] = set()
@@ -469,11 +532,19 @@ class LocalFileSystemProvider(MusicProvider):
         # absolute paths of every CUE sheet in this scan with the ".cue" stripped,
         # used for O(1) companion-CUE lookups per audio file
         cue_stems: set[str] = set()
-        # populated only when the provider root itself is unreadable;
-        # per-subdirectory failures are logged and skipped
-        root_scan_errors: list[OSError] = []
+        # local metadata files (NFO/images) collected by the walk alongside normal media;
+        # never imported themselves, only used to detect a change worth reparsing their
+        # registered representative track
+        metadata_files: list[FileSystemItem] = []
+        # relative_path of every representative queued because of a metadata-file change
+        force_refresh_tracks: set[str] = set()
+        # collects the errors raised while walking the tree; any error means the
+        # scan is incomplete, a fatal one means the provider is unreachable
+        scan_errors = ScanErrors()
 
         self.sync_running = True
+        self._sync_nfo_by_dir = {}
+        self._sync_nfo_index_ready = False
         try:
             await self._enumerate_files_for_sync(
                 file_checksums=file_checksums,
@@ -482,8 +553,32 @@ class LocalFileSystemProvider(MusicProvider):
                 items_to_process=items_to_process,
                 unchanged_cue_items=unchanged_cue_items,
                 cue_stems=cue_stems,
-                root_scan_errors=root_scan_errors,
+                scan_errors=scan_errors,
+                metadata_files=metadata_files,
             )
+            if scan_errors.fatal:
+                # the storage is gone, so reading the files collected before it went
+                # away would only add a timeout each
+                self.logger.error("Aborting sync for %s: %s", self.name, scan_errors.fatal)
+                report_current_task_failure("Sync aborted: filesystem unavailable during scan")
+                self._set_available(False)
+                return
+            self._sync_nfo_by_dir = self._build_nfo_index(metadata_files)
+            # an incomplete scan (some folders/files failed to read) may be missing NFOs
+            # that do exist on disk; treating this partial index as authoritative could
+            # make a changed track wrongly resolve to a synthetic identity. Leave it
+            # unready so lookups fall back to listing each folder directly instead
+            self._sync_nfo_index_ready = not scan_errors.incomplete
+            if metadata_files:
+                await self._queue_changed_metadata_files(
+                    metadata_files,
+                    file_checksums,
+                    cue_file_checksums,
+                    items_to_process,
+                    force_refresh_tracks,
+                )
+            if force_refresh_tracks:
+                await self._drop_stale_album_artist_caches()
             # a CUE may name an audio file other than its own; hide that companion too
             if self.media_content_type == "music":
                 for cue_item in (
@@ -530,7 +625,9 @@ class LocalFileSystemProvider(MusicProvider):
 
             async def _process(item: FileSystemItem, prev_checksum: str | None) -> None:
                 nonlocal processed_count
-                if await self._process_item_async(item, prev_checksum, cur_filenames, cue_stems):
+                if await self._process_item_async(
+                    item, prev_checksum, cur_filenames, cue_stems, prev_filenames
+                ):
                     cur_filenames.add(item.relative_path)
                 processed_count += 1
                 if processed_count % 50 == 0 or processed_count == total_items:
@@ -540,22 +637,14 @@ class LocalFileSystemProvider(MusicProvider):
                         f"Processed {processed_count}/{total_items} files",
                     )
 
-            async with TaskManager(self.mass, self._SYNC_CONCURRENCY) as tm:
-                for item, prev_checksum in items_to_process:
-                    await tm.create_task_with_limit(_process(item, prev_checksum))
+            with self._ondemand_listing_scope():
+                async with TaskManager(self.mass, self._SYNC_CONCURRENCY) as tm:
+                    for item, prev_checksum in items_to_process:
+                        await tm.create_task_with_limit(_process(item, prev_checksum))
         finally:
             self.sync_running = False
-
-        # do not run deletions if the root base path could not be scanned
-        if root_scan_errors:
-            self.logger.error(
-                "Aborting sync for %s: %d root scan error(s)",
-                self.name,
-                len(root_scan_errors),
-            )
-            report_current_task_failure("Sync aborted: filesystem unavailable during scan")
-            self._set_available(False)
-            return
+            self._sync_nfo_by_dir = {}
+            self._sync_nfo_index_ready = False
 
         # do not run deletions on a clean but empty scan of a previously non-empty library
         # (wrong share mounted, empty backup mount, ...)
@@ -571,9 +660,16 @@ class LocalFileSystemProvider(MusicProvider):
             )
             return
 
-        deleted_files = prev_filenames - cur_filenames
-        await self._process_deletions(deleted_files)
-        await self._process_orphaned_albums_and_artists()
+        # a scan that skipped folders or files is incomplete: what it missed is still
+        # there, so deleting it from the library would throw away valid content
+        if scan_errors.incomplete:
+            summary = scan_errors.describe()
+            self.logger.warning("Skipping deletions for %s: %s", self.name, summary)
+            report_current_task_failure(f"Deletions skipped: {summary}")
+        else:
+            deleted_files = prev_filenames - cur_filenames
+            await self._process_deletions(deleted_files)
+            await self._process_orphaned_albums_and_artists()
 
         # flag provider as available again if an earlier sync had marked it down
         self._set_available(True)
@@ -584,10 +680,42 @@ class LocalFileSystemProvider(MusicProvider):
             prov_artist_id, self.instance_id
         )
         if not db_artist:
-            # this may happen if the artist is not in the db yet
-            # e.g. when browsing the filesystem
+            # no db item yet (e.g. browsing, or a manual refresh's second fetch after a
+            # normal/NFO match resolved a new path before its mapping was persisted).
+            # Recover identity from that path instead of falling back to its basename
             if await self.exists(prov_artist_id):
-                return await self._parse_artist(prov_artist_id, artist_path=prov_artist_id)
+                with self._ondemand_listing_scope():
+                    name = Path(prov_artist_id).name
+                    sort_name: str | None = None
+                    mbid: str | None = None
+                    if nfo_item := await self._nfo_item_for(prov_artist_id, "artist.nfo"):
+                        nfo_root = await self._load_nfo_root(nfo_item, "artist")
+                        if nfo_root and (
+                            nfo_mbid := clean_mbid(
+                                nfo_root.get("musicbrainzartistid"), nfo_item.relative_path
+                            )
+                        ):
+                            mbid = nfo_mbid
+                            if library_artist := (
+                                await self.mass.music.artists.get_library_item_by_external_id(
+                                    mbid, ExternalID.MB_ARTIST
+                                )
+                            ):
+                                name = library_artist.name
+                                sort_name = library_artist.sort_name
+                    if not mbid and (
+                        library_artist := await self._find_artist_by_folder_name(name)
+                    ):
+                        # no MBID to resolve by (this path was matched via a normal
+                        # folder/sort-name-alias match, not an artist.nfo): recover the
+                        # one already-known library artist this path belongs to instead
+                        # of renaming it to the folder's own basename
+                        name = library_artist.name
+                        sort_name = library_artist.sort_name
+                        mbid = library_artist.mbid
+                    return await self._parse_artist(
+                        name, sort_name=sort_name, mbid=mbid, artist_path=prov_artist_id
+                    )
             return await self._parse_artist(prov_artist_id)
 
         # prov_artist_id is either an actual (relative) path or a name (as fallback)
@@ -604,38 +732,60 @@ class LocalFileSystemProvider(MusicProvider):
                     artist_path = prov_mapping.url
                     break
             else:
-                # this is an artist without an actual path on disk
-                # return the info we already have in the db
+                # no path of its own: anchor a bounded artist.nfo attempt on one of its own
+                # tracks instead of giving up, so adding an artist.nfo and refreshing can
+                # still resolve it
+                representative_track = await self._resolve_artist_representative_track(db_artist)
+                if representative_track:
+                    with self._ondemand_listing_scope():
+                        return await self._parse_artist(
+                            db_artist.name,
+                            sort_name=db_artist.sort_name,
+                            mbid=db_artist.mbid,
+                            album_dir=os.path.dirname(representative_track),
+                            representative_track=representative_track,
+                        )
                 return db_artist
         return await self._parse_artist(
             db_artist.name,
             sort_name=db_artist.sort_name,
             mbid=db_artist.mbid,
             artist_path=artist_path,
+            representative_track=await self._resolve_artist_representative_track(db_artist),
         )
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         parsed_cue_paths: set[str] = set()
-        for track in await self.get_album_tracks(prov_album_id):
-            for prov_mapping in track.provider_mappings:
-                if prov_mapping.provider_instance != self.instance_id:
-                    continue
-                if parsed := parse_cue_track_id(prov_mapping.item_id):
-                    # every track from the same CUE shares the same album; only parse once
-                    if parsed[0] in parsed_cue_paths:
+        # early returns below stop iterating this generator before it's exhausted; without an
+        # explicit aclose() that leaves its _ondemand_listing_scope() cleanup (a ContextVar
+        # reset) to whenever the event loop's async-generator finalizer happens to run, instead
+        # of deterministically, right here
+        async with contextlib.aclosing(self._iter_album_tracks(prov_album_id)) as tracks:
+            async for track in tracks:
+                if isinstance(track.album, Album):
+                    # already a fully parsed album: the folder-scan fallback (used when this id
+                    # has no library mapping yet) yields these directly, so re-resolving and
+                    # re-parsing the same file below would only repeat the same tag/NFO work
+                    return track.album
+                for prov_mapping in track.provider_mappings:
+                    if prov_mapping.provider_instance != self.instance_id:
                         continue
-                    parsed_cue_paths.add(parsed[0])
-                    cue_item = await self.resolve(parsed[0])
-                    for cue_track in await self._cue.parse_tracks(cue_item):
-                        if isinstance(cue_track.album, Album):
-                            return cue_track.album
-                    continue
-                file_item = await self.resolve(prov_mapping.item_id)
-                tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
-                full_track = await self._parse_track(file_item, tags)
-                assert isinstance(full_track.album, Album)
-                return full_track.album
+                    if parsed := parse_cue_track_id(prov_mapping.item_id):
+                        # every track from the same CUE shares the same album; only parse once
+                        if parsed[0] in parsed_cue_paths:
+                            continue
+                        parsed_cue_paths.add(parsed[0])
+                        cue_item = await self.resolve(parsed[0])
+                        for cue_track in await self._cue.parse_tracks(cue_item):
+                            if isinstance(cue_track.album, Album):
+                                return cue_track.album
+                        continue
+                    file_item = await self.resolve(prov_mapping.item_id)
+                    tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+                    full_track = await self._parse_track(file_item, tags)
+                    assert isinstance(full_track.album, Album)
+                    return full_track.album
         msg = f"Album not found: {prov_album_id}"
         raise MediaNotFoundError(msg)
 
@@ -744,19 +894,15 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
-        # filesystem items are always stored in db so we can query the database
+        tracks = [track async for track in self._iter_album_tracks(prov_album_id)]
         db_album = await self.mass.music.albums.get_library_item_by_prov_id(
             prov_album_id, self.instance_id
         )
         if db_album is None:
-            msg = f"Album not found: {prov_album_id}"
-            raise MediaNotFoundError(msg)
-        album_tracks = await self.mass.music.albums.get_library_album_tracks(db_album.item_id)
-        return [
-            track
-            for track in album_tracks
-            if any(x.provider_instance == self.instance_id for x in track.provider_mappings)
-        ]
+            # mappingless result: folder listing order (WebDAV/cloud listings are not
+            # guaranteed ordered) would otherwise be returned to the caller as-is
+            tracks.sort(key=lambda track: (track.disc_number, track.track_number))
+        return tracks
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
@@ -826,28 +972,75 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get podcast episodes for given podcast id."""
-        episodes: list[PodcastEpisode] = []
+        folder_items = [item for item in await self._scandir(prov_podcast_id) if not item.is_dir]
+        episode_files = [x for x in folder_items if x.ext in PODCAST_EPISODE_EXTENSIONS]
+        # artwork and metadata.json count towards the signature too, because the parse embeds
+        # them into every episode. Case-insensitive, matching _get_podcast_metadata's exists()
+        signature_files = [
+            x
+            for x in folder_items
+            if x.ext in PODCAST_EPISODE_EXTENSIONS
+            or x.ext in IMAGE_EXTENSIONS
+            or x.filename.lower() == "metadata.json"
+        ]
+        cache_key = f"podcast_episodes.{prov_podcast_id}"
+        cache_checksum = get_folder_signature(signature_files)
+        if (
+            cached_episodes := await self.mass.cache.get(
+                cache_key,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_PODCAST_EPISODES,
+                checksum=cache_checksum,
+                base_class=PodcastEpisode,
+            )
+        ) is not None:
+            for episode in cached_episodes:
+                yield episode
+            return
 
-        async def _process_podcast_episode(item: FileSystemItem) -> None:
-            tags = await async_parse_tags(item.absolute_path, item.file_size)
+        # these caches have no checksum of their own, so drop them before parsing or the new
+        # entry gets the values the signature just invalidated. Refill once, or every parse
+        # task below misses at the same time and repeats the same scandir and file read
+        for stale_category in (CACHE_CATEGORY_FOLDER_IMAGES, CACHE_CATEGORY_PODCAST_METADATA):
+            await self.mass.cache.delete(
+                prov_podcast_id, category=stale_category, provider=self.instance_id
+            )
+        await self._get_local_images(prov_podcast_id)
+        await self._get_podcast_metadata(prov_podcast_id)
+
+        # collected by index so the listing keeps scandir order, not parse completion order
+        parsed: list[PodcastEpisode | None] = [None] * len(episode_files)
+
+        async def _process_podcast_episode(index: int, item: FileSystemItem) -> None:
             try:
-                episode = await self._parse_podcast_episode(item, tags)
+                tags = await async_parse_tags(item.absolute_path, item.file_size)
+                parsed[index] = await self._parse_podcast_episode(item, tags)
             except MusicAssistantError as err:
                 self.logger.warning(
                     "Could not parse uri/file %s to podcast episode: %s",
                     item.relative_path,
                     str(err),
                 )
-            else:
-                episodes.append(episode)
 
-        async with TaskManager(self.mass, 25) as tm:
-            for item in await self._scandir(prov_podcast_id):
-                if "." not in item.relative_path or item.is_dir:
-                    continue
-                if item.ext not in PODCAST_EPISODE_EXTENSIONS:
-                    continue
-                tm.create_task(_process_podcast_episode(item))
+        # reuse the per-sync worker limit: the slowest filesystems to parse are exactly the
+        # ones that lower it
+        async with TaskManager(self.mass, self._SYNC_CONCURRENCY) as tm:
+            for index, item in enumerate(episode_files):
+                await tm.create_task_with_limit(_process_podcast_episode(index, item))
+
+        episodes = [episode for episode in parsed if episode is not None]
+        # cache an incomplete listing briefly rather than not at all, so one unreadable file
+        # cannot make every request re-parse the whole folder
+        complete = len(episodes) == len(episode_files)
+        await self.mass.cache.set(
+            key=cache_key,
+            data=[episode.to_dict() for episode in episodes],
+            # a complete listing is invalidated by the folder signature instead
+            expiration=3600 * 24 * 365 if complete else PARTIAL_LISTING_CACHE_EXPIRATION,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_PODCAST_EPISODES,
+            checksum=cache_checksum,
+        )
 
         for episode in episodes:
             yield episode
@@ -947,6 +1140,10 @@ class LocalFileSystemProvider(MusicProvider):
             # the referenced image file was removed from disk; surface a typed
             # not-found so the image layer treats it as a missing image
             raise MediaNotFoundError(f"Image not found: {path}") from err
+        if file_item.is_dir:
+            # handing the path back would have the image layer run an ffmpeg
+            # embedded-artwork extraction on the directory before giving up
+            raise MediaNotFoundError(f"Image path is a directory: {path}")
         return file_item.absolute_path
 
     async def check_write_access(self) -> None:
@@ -967,7 +1164,7 @@ class LocalFileSystemProvider(MusicProvider):
         absolute_path = self.get_absolute_path(file_path)
 
         def _create_item() -> FileSystemItem:
-            if os.path.isdir(absolute_path):
+            if Path(absolute_path).is_dir():
                 return FileSystemItem(
                     filename=Path(file_path).name,
                     relative_path=get_relative_path(self.base_path, file_path),
@@ -982,6 +1179,7 @@ class LocalFileSystemProvider(MusicProvider):
                 is_dir=False,
                 checksum=str(int(stat_info.st_mtime)),
                 file_size=stat_info.st_size,
+                metadata_token=str(stat_info.st_mtime_ns),
             )
 
         return await asyncio.to_thread(_create_item)
@@ -1005,28 +1203,30 @@ class LocalFileSystemProvider(MusicProvider):
         self,
         *,
         file_checksums: dict[str, str],
-        cue_file_checksums: dict[str, str],
+        cue_file_checksums: dict[str, set[str]],
         cur_filenames: set[str],
         items_to_process: list[tuple[FileSystemItem, str | None]],
         unchanged_cue_items: list[FileSystemItem],
         cue_stems: set[str],
-        root_scan_errors: list[OSError],
+        scan_errors: ScanErrors,
+        metadata_files: list[FileSystemItem],
     ) -> None:
         """
         Walk every supported file under the provider root and populate the sync buckets.
 
         Override in subclasses that cannot use a local ``os.scandir`` walk.
         Implementations must route each discovered file through
-        :meth:`_classify_scan_item` and append to ``root_scan_errors`` only
-        when the provider root itself is unreadable.
+        :meth:`_classify_scan_item`, report every unreadable directory to
+        ``scan_errors`` and stop the walk once it reports ``aborted``.
 
         :param file_checksums: Previously stored checksum per provider item id.
-        :param cue_file_checksums: Previously stored checksum keyed by CUE relative_path.
+        :param cue_file_checksums: Previously stored track checksums keyed by CUE relative_path.
         :param cur_filenames: Receives the ids/paths present in this scan.
         :param items_to_process: Receives changed or new items to process.
         :param unchanged_cue_items: Receives CUE sheets whose checksum matches.
         :param cue_stems: Receives absolute paths (minus extension) of CUE sheets.
-        :param root_scan_errors: Receives errors that indicate the root is unreadable.
+        :param scan_errors: Receives the errors raised while walking the tree.
+        :param metadata_files: Receives local metadata files (NFO/images) found in the walk.
         """
         ignore_album_playlists = self.media_content_type == "music" and bool(
             self.config.get_value(CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS.key)
@@ -1037,9 +1237,9 @@ class LocalFileSystemProvider(MusicProvider):
                 recursive_iter(
                     self.base_path,
                     self.base_path,
-                    SUPPORTED_EXTENSIONS,
+                    WALK_EXTENSIONS,
                     self.logger,
-                    scan_errors=root_scan_errors,
+                    scan_errors=scan_errors,
                 ),
                 start=1,
             ):
@@ -1054,6 +1254,7 @@ class LocalFileSystemProvider(MusicProvider):
                     unchanged_cue_items=unchanged_cue_items,
                     cue_stems=cue_stems,
                     ignore_album_playlists=ignore_album_playlists,
+                    metadata_files=metadata_files,
                 )
 
         await asyncio.to_thread(_walk)
@@ -1063,26 +1264,46 @@ class LocalFileSystemProvider(MusicProvider):
         item: FileSystemItem,
         *,
         file_checksums: dict[str, str],
-        cue_file_checksums: dict[str, str],
+        cue_file_checksums: dict[str, set[str]],
         cur_filenames: set[str],
         items_to_process: list[tuple[FileSystemItem, str | None]],
         unchanged_cue_items: list[FileSystemItem],
         cue_stems: set[str],
         ignore_album_playlists: bool,
+        metadata_files: list[FileSystemItem],
     ) -> None:
         """
         Route a single scanned file into the correct sync bucket.
 
         :param item: The file to classify.
         :param file_checksums: Previously stored checksum per provider item id.
-        :param cue_file_checksums: Previously stored checksum keyed by CUE relative_path.
+        :param cue_file_checksums: Previously stored track checksums keyed by CUE relative_path.
         :param cur_filenames: Receives the ids/paths present in this scan.
         :param items_to_process: Receives changed or new items to process.
         :param unchanged_cue_items: Receives CUE sheets whose checksum matches.
         :param cue_stems: Receives absolute paths (minus extension) of CUE sheets.
         :param ignore_album_playlists: When True, skip playlists nested inside
             album directories.
+        :param metadata_files: Receives local metadata files (NFO/images) found in the walk.
         """
+        if is_metadata_file(item):
+            # a local metadata file is never imported media: it carries no provider mapping
+            # and is never deleted, only checked (after the walk) for a change worth
+            # reparsing its registered representative track
+            metadata_files.append(item)
+            return
+        if not item.is_dir and item.ext and item.ext.lower() in METADATA_FILE_EXTENSIONS:
+            # an nfo/image extension is walked only to catch a recognized metadata file above;
+            # an unrecognized one (wrong filename) must stay as invisible to the scan as before
+            # this feature widened the walk beyond SUPPORTED_EXTENSIONS, or a stray image/nfo
+            # on a wrong/empty mount could satisfy the "not empty" check below and silently
+            # bypass the safeguard against deleting an entire library
+            return
+        # a file this provider never imports gets no mapping, so it would flag as
+        # changed on every sync; it is still on disk, so record it as present
+        if not self._is_imported_file(item):
+            cur_filenames.add(item.relative_path)
+            return
         # skip playlists in album directories if configured
         if (
             item.ext in PLAYLIST_EXTENSIONS
@@ -1091,12 +1312,17 @@ class LocalFileSystemProvider(MusicProvider):
         ):
             return
         is_cue = item.ext in CUE_EXTENSIONS and self.media_content_type == "music"
+        item_checksum = item.checksum
         if is_cue:
             cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
-            prev_checksum = cue_file_checksums.get(item.relative_path)
+            item_checksum = cue_metadata_checksum(item.checksum)
+            prev_checksums = cue_file_checksums.get(item.relative_path, set())
+            prev_checksum = min(prev_checksums, default=None)
+            checksum_matches = prev_checksums == {item_checksum}
         else:
             prev_checksum = file_checksums.get(item.relative_path)
-        if item.checksum == prev_checksum:
+            checksum_matches = item_checksum == prev_checksum
+        if checksum_matches:
             # unchanged, just record it as still present
             cur_filenames.add(item.relative_path)
             if is_cue:
@@ -1104,12 +1330,770 @@ class LocalFileSystemProvider(MusicProvider):
         else:
             items_to_process.append((item, prev_checksum))
 
+    def _is_imported_file(self, item: FileSystemItem) -> bool:
+        """Return True when this provider imports the given file into the library."""
+        if self.media_content_type == "music":
+            if item.ext in CUE_EXTENSIONS:
+                return True
+            if item.ext in TRACK_EXTENSIONS:
+                return self._sync_tracks
+            if item.ext in PLAYLIST_EXTENSIONS:
+                return self._sync_playlists
+            return False
+        if self.media_content_type == "audiobooks":
+            return item.ext in AUDIOBOOK_EXTENSIONS
+        if self.media_content_type == "podcasts":
+            return item.ext in PODCAST_EPISODE_EXTENSIONS
+        return False
+
+    async def _root_artist_path(self, name: str) -> str | None:
+        """
+        Return a root-level artist folder matching this exact name, if any.
+
+        Tries the plain name and its filesystem-safe variant, so a root-level folder that
+        differs only in punctuation (e.g. "AC/DC" stored as "ACDC") still resolves.
+
+        :param name: The artist name (or a sort-name alias) to match against a root folder.
+        """
+        if await self.exists(name):
+            return name
+        safe_name = create_safe_string(name, lowercase=False, replace_space=False)
+        if await self.exists(safe_name):
+            return safe_name
+        return None
+
+    async def _find_artist_path(
+        self, candidate_name: str, album_dir: str | None, *, exact_only: bool = False
+    ) -> str | None:
+        """
+        Return an artist folder for one name candidate: a root, ancestor, or known item's path.
+
+        :param candidate_name: The artist name (or a sort-name alias) to match against a folder.
+        :param album_dir: The album directory whose ancestors are searched, if any.
+        :param exact_only: Only accept an exact (normalized) match, skipping the relaxed
+            (fuzzy) fallback built into the ancestor search.
+        """
+        if artist_path := await self._root_artist_path(candidate_name):
+            return artist_path
+        if album_dir and (
+            artist_path := get_artist_dir(
+                candidate_name, album_dir=album_dir, exact_only=exact_only
+            )
+        ):
+            return artist_path
+        # check if we have an existing item to retrieve the artist path
+        async for item in self.mass.music.artists.iter_library_items(
+            search=candidate_name, provider=self.instance_id
+        ):
+            if not compare_strings(candidate_name, item.name):
+                continue
+            for prov_mapping in item.provider_mappings:
+                if prov_mapping.provider_instance == self.instance_id and prov_mapping.url:
+                    return prov_mapping.url
+        return None
+
+    async def _resolve_artist_representative_track(self, artist: Artist) -> str | None:
+        """
+        Return one of this artist's own track paths, to register a metadata-file baseline.
+
+        Needed for a manual "Refresh item", which doesn't go through `_parse_track`/
+        `_parse_album` and would otherwise leave a freshly read artist.nfo/image
+        unregistered. Falls back to an album-only artist's own albums (e.g. credited only
+        as ALBUMARTIST, never as a track artist) - a bounded, first-success lookup; not
+        optimized further since this only runs for a one-off manual refresh.
+
+        :param artist: The library artist whose own tracks are searched.
+        """
+        for track in await self.mass.music.artists.get_library_artist_tracks(
+            artist.item_id, provider_filter=self.instance_id
+        ):
+            if path := self._track_representative_path(track):
+                return path
+        for album in await self.mass.music.artists.get_library_artist_albums(
+            artist.item_id, provider_filter=self.instance_id
+        ):
+            for track in await self.mass.music.albums.get_library_album_tracks(
+                album.item_id, provider_filter=[self.instance_id]
+            ):
+                if path := self._track_representative_path(track):
+                    return path
+        return None
+
+    def _track_representative_path(self, track: Track) -> str | None:
+        """Return this instance's own resolvable path (or CUE sheet path) for one track."""
+        for prov_mapping in track.provider_mappings:
+            if prov_mapping.provider_instance != self.instance_id or not prov_mapping.available:
+                # an unavailable mapping is a stale library row, not a resolvable path: using
+                # it anyway could point the caller's next `_scandir`/`exists` at an already
+                # removed folder instead of trying another candidate track
+                continue
+            # a CUE-derived track's mapping is a synthetic "<cue path>::<track>" id, not
+            # itself a resolvable path; its CUE sheet is, and reprocessing that sheet
+            # already refreshes every track (and this artist) it describes
+            if parsed := parse_cue_track_id(prov_mapping.item_id):
+                return parsed[0]
+            return prov_mapping.item_id
+        return None
+
+    async def _find_artist_by_folder_name(self, folder_name: str) -> Artist | None:
+        """
+        Return the one library artist (on this provider) whose name or sort-name matches.
+
+        Used to recover a synthetic artist's identity on the second, not-yet-persisted
+        fetch of a path a normal folder/sort-name-alias match just resolved onto.
+
+        :param folder_name: The resolved folder's own basename.
+        """
+        matches = [
+            item
+            async for item in self.mass.music.artists.iter_library_items(provider=self.instance_id)
+            if compare_strings(folder_name, item.name)
+            or (item.sort_name and compare_strings(folder_name, item.sort_name))
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    async def _drop_stale_album_artist_caches(self) -> None:
+        """
+        Drop this provider's own short-lived album/artist/folder-image caches.
+
+        Called once, before this sync's batch starts processing, whenever at least one
+        metadata-file change queued a representative for reparsing. A queued representative's
+        reparse must see that change, not a stale object left by a read within the last 120
+        seconds; without this, a concurrent parse of the same folder (whether the queued
+        representative itself or an unrelated sibling track reprocessed for another reason in
+        this same batch) could read - or worse, write back to the database - the pre-change
+        data, silently undoing the refresh.
+        """
+        for stale_category in (
+            CACHE_CATEGORY_ALBUM_INFO,
+            CACHE_CATEGORY_ARTIST_INFO,
+            CACHE_CATEGORY_FOLDER_IMAGES,
+        ):
+            await self.cache.delete(key=None, category=stale_category, provider=self.instance_id)
+
+    async def _queue_changed_metadata_files(
+        self,
+        metadata_files: list[FileSystemItem],
+        file_checksums: dict[str, str],
+        cue_file_checksums: dict[str, set[str]],
+        items_to_process: list[tuple[FileSystemItem, str | None]],
+        force_refresh_tracks: set[str],
+    ) -> None:
+        """
+        Queue the representative track of each changed local metadata file for reparsing.
+
+        A metadata file (NFO or recognized folder image) with no registered cache entry is a
+        new or never-parsed file and is ignored here; a full reparse (a manual refresh, or the
+        next time its representative track changes for any other reason) registers it. A
+        registered file whose token is unchanged is also ignored. Only a registered file whose
+        token changed queues its representative track, deduplicated against tracks already
+        queued by this sync (whether from another changed metadata file or their own change).
+
+        This never writes the metadata-file cache itself: only actually reparsing the
+        representative track (which re-reads the file) advances its registered token, so a
+        failed parse is retried next sync instead of being silently marked as handled. A
+        changed recognized image also has its own image cache invalidated unconditionally,
+        even when its representative reparse itself is deduplicated away.
+
+        :param metadata_files: Local metadata files collected by this sync's walk.
+        :param file_checksums: Previously stored checksum per provider item id.
+        :param cue_file_checksums: Previously stored track checksums keyed by CUE relative_path.
+        :param items_to_process: The sync's changed/new items; receives queued representatives.
+        :param force_refresh_tracks: Receives the relative_path of every representative that
+            was actually queued (new or deduplicated against one already queued); a non-empty
+            result tells the caller to drop this provider's own short-lived album/artist/
+            folder-image caches before processing, so a concurrent parse of the same folder
+            cannot hand back or write back the pre-change data. Left empty when nothing was
+            actually queued (e.g. every representative failed to resolve).
+        """
+        # one bulk load instead of one query per metadata file, which otherwise would mean
+        # thousands of sequential cache reads on a large library every single sync
+        registrations = await self.cache.get_all(
+            provider=self.instance_id, category=CACHE_CATEGORY_METADATA_FILE
+        )
+        queued_tracks = {item.relative_path for item, _ in items_to_process}
+        for meta_item in metadata_files:
+            cached = registrations.get(meta_item.relative_path)
+            if not cached:
+                continue
+            if cached.get("token") == meta_item.metadata_change_token:
+                continue
+            track_path = cached.get("track")
+            if not track_path:
+                continue
+            if is_image_file(meta_item):
+                # invalidate unconditionally, even when the representative reparse below is
+                # deduplicated away (e.g. the track itself also changed, or another metadata
+                # file already queued it this sync): the image keeps the same (provider, path)
+                # identity, so skipping this here would leave its old bytes cached regardless
+                await self.mass.metadata.invalidate_image_cache(
+                    self.instance_id, meta_item.relative_path
+                )
+            if track_path in queued_tracks:
+                # already queued for another reason (its own content changed, or another
+                # metadata file got here first): still needs the stale-cache drop below, since
+                # that reparse must see this change too
+                force_refresh_tracks.add(track_path)
+                continue
+            try:
+                track_item = await self.resolve(track_path)
+            except MediaNotFoundError, OSError:
+                # the representative no longer resolves: leave the old token in place so a
+                # future sync (once a fresh representative registers) or a manual refresh
+                # can recover; this change is deferred, not lost - and since nothing is
+                # actually queued, the stale-cache drop below is not needed either
+                continue
+            if track_item.is_dir:
+                continue
+            queued_tracks.add(track_path)
+            force_refresh_tracks.add(track_path)
+            if track_item.ext in CUE_EXTENSIONS:
+                # a CUE sheet's own checksum is not tracked under its path in file_checksums,
+                # only the synthetic per-track ids it expands into are
+                prev_checksum = min(cue_file_checksums.get(track_path, set()), default=None)
+            else:
+                prev_checksum = file_checksums.get(track_path)
+            items_to_process.append((track_item, prev_checksum))
+
+    async def _register_metadata_file(
+        self, item: FileSystemItem, representative_track: str | None
+    ) -> None:
+        """
+        Remember a local metadata file's current token and its representative track.
+
+        Called whenever album/artist parsing reads an NFO file or enumerates a recognized
+        folder image, so a later sync can detect the file changing on disk and reparse just
+        that one representative track. This cache is derivative, not authoritative: it is
+        never consulted by parsing itself, only by the sync walk's change detection.
+
+        :param item: The metadata file (NFO or recognized folder image) that was just read.
+        :param representative_track: The track whose reparse rebuilds this item; skipped when
+            falsy, since there is then nothing useful to reparse later.
+        """
+        if not representative_track:
+            return
+        await self.cache.set(
+            key=item.relative_path,
+            data={"token": item.metadata_change_token, "track": representative_track},
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_METADATA_FILE,
+            expiration=METADATA_FILE_CACHE_EXPIRATION,
+            # this is functional registration data the feature depends on, not a disposable
+            # cache: keep it out of a generic "clear cache" action
+            persistent=True,
+        )
+
+    @staticmethod
+    def _add_nfo_candidate(by_name: dict[str, FileSystemItem], item: FileSystemItem) -> None:
+        """
+        Add one recognized NFO file to a per-directory candidate map, order-independently.
+
+        Two files differing only in case (e.g. ``album.nfo`` and ``ALBUM.NFO`` in the same
+        directory - an unusual layout, but possible on a case-sensitive filesystem) must resolve
+        to the same one regardless of directory-listing order, so the sync's walk and an
+        on-demand listing never disagree: the lexicographically first literal filename always
+        wins, deterministically.
+        """
+        name = item.filename.lower()
+        if name not in NFO_FILENAMES:
+            return
+        existing = by_name.get(name)
+        if existing is None or item.filename < existing.filename:
+            by_name[name] = item
+
+    @staticmethod
+    def _build_nfo_index(
+        metadata_files: list[FileSystemItem],
+    ) -> dict[str, dict[str, FileSystemItem]]:
+        """Group this sync's walked album.nfo/artist.nfo by parent directory."""
+        index: dict[str, dict[str, FileSystemItem]] = {}
+        for item in metadata_files:
+            # metadata_files also carries folder artwork; skip those before creating a
+            # per-directory entry, or every image-bearing folder would get an empty one
+            if item.filename.lower() not in NFO_FILENAMES:
+                continue
+            LocalFileSystemProvider._add_nfo_candidate(
+                index.setdefault(item.relative_parent_path, {}), item
+            )
+        return index
+
+    @contextlib.contextmanager
+    def _ondemand_listing_scope(self) -> Iterator[None]:
+        """
+        Memoize on-demand folder listings for one outermost parse.
+
+        A no-op once the sync's own NFO index is ready (lookups are already O(1) from it) or
+        when already inside an outer scope, so nested album/artist resolution within one
+        parse shares a single memo and reuses a folder's already-completed listing - though
+        two concurrent lookups racing the very first listing of a folder can still both list
+        it, bounded by concurrency - including for a track processed while the sync's walk is
+        still in progress, or the whole batch of tracks processed while an incomplete scan
+        left that index unready. A forced refresh never takes that index shortcut regardless
+        (see :meth:`_nfo_item_for`),
+        so it still needs - and gets - its own memo here.
+        """
+        if (self._sync_nfo_index_ready and not BYPASS_CACHE.get()) or (
+            _ONDEMAND_NFO_ITEMS.get() is not None
+        ):
+            yield
+            return
+        items_token = _ONDEMAND_NFO_ITEMS.set({})
+        try:
+            yield
+        finally:
+            _ONDEMAND_NFO_ITEMS.reset(items_token)
+
+    async def _nfo_item_for(self, folder: str, filename: str) -> FileSystemItem | None:
+        """
+        Return a folder's named NFO file, from the sync index or a listing on demand.
+
+        Listing (not a direct path probe) matches the sync's own case-insensitive NFO
+        recognition. A forced refresh (``BYPASS_CACHE``) always lists directly, even during
+        a concurrent background sync, since that sync's index is a provider-wide snapshot
+        that could otherwise still serve the stale listing the refresh was meant to bypass.
+        Outside that index (before it is built, or an incomplete scan left it unready), the
+        per-parse on-demand memo below still applies, since `sync_library` wraps its whole
+        batch in one shared :meth:`_ondemand_listing_scope`, not a scope per track.
+
+        :param folder: The candidate directory to look in.
+        :param filename: ``album.nfo`` or ``artist.nfo``.
+        """
+        if self._sync_nfo_index_ready and not BYPASS_CACHE.get():
+            return self._sync_nfo_by_dir.get(folder, {}).get(filename)
+        memo = _ONDEMAND_NFO_ITEMS.get()
+        if memo is not None:
+            if folder not in memo:
+                memo[folder] = await self._list_nfo_candidates(folder)
+            candidates = memo[folder]
+        else:
+            candidates = await self._list_nfo_candidates(folder)
+        return candidates.get(filename)
+
+    async def _list_nfo_candidates(self, folder: str) -> dict[str, FileSystemItem]:
+        """
+        Return a folder's recognized NFO files, keyed by lowercase filename.
+
+        A listing failure is not caught here: every bounded candidate directory is either the
+        track's own directory or an ancestor of it, so it necessarily exists; a raised error is
+        therefore a genuine transient storage failure and must propagate just like a `_read_file`
+        failure, so the caller (and, during a sync, `_process_item_async`) can defer and retry
+        instead of silently treating the folder as having no NFO.
+        """
+        # bypass a cloud-backed provider's own short-lived listing cache during an explicit
+        # "Refresh item", so an NFO just added to disk is seen right away instead of only
+        # after that cache naturally expires
+        items = await self._scandir(folder, use_cache=not BYPASS_CACHE.get())
+        by_name: dict[str, FileSystemItem] = {}
+        for item in items:
+            if not item.is_dir:
+                self._add_nfo_candidate(by_name, item)
+        return by_name
+
+    async def _load_nfo_root(
+        self, nfo_item: FileSystemItem, root_tag: str
+    ) -> dict[str, Any] | None:
+        """
+        Read and parse one NFO file, returning its root element or None when malformed.
+
+        :param nfo_item: The NFO file to read.
+        :param root_tag: The expected root element name (``album`` or ``artist``).
+        """
+        raw = await self._read_file(nfo_item.relative_path)
+        return await asyncio.to_thread(parse_nfo_root, raw, root_tag)
+
+    def _nfo_applies_cleanly(self, root: dict[str, Any], kind: str) -> bool:
+        """
+        Return True when an NFO root's consumed fields are well-shaped and apply without error.
+
+        Used before trusting an NFO as folder identity, so a title/id that happens to match but
+        carries an invalid field never resolves a directory that enrichment would then reject
+        anyway. Every field ``parse_album_nfo``/``parse_artist_nfo`` reads must be a plain scalar
+        (not a repeated/nested XML element reaching a string-only assignment or helper without
+        raising), and a present MusicBrainz id must actually be a valid UUID, not merely absent.
+
+        :param root: The parsed NFO root.
+        :param kind: ``album`` or ``artist``.
+        """
+        fields, mbid_fields = (
+            (_ALBUM_NFO_FIELDS, _ALBUM_MBID_FIELDS)
+            if kind == "album"
+            else (_ARTIST_NFO_FIELDS, _ARTIST_MBID_FIELDS)
+        )
+        for field in fields:
+            value = root.get(field)
+            if value is None:
+                continue
+            if field in _LIST_ALLOWED_NFO_FIELDS:
+                if not isinstance(value, str) and not (
+                    isinstance(value, list | tuple) and all(isinstance(v, str) for v in value)
+                ):
+                    return False
+            elif not isinstance(value, str):
+                return False
+        for field in mbid_fields:
+            raw = root.get(field)
+            if isinstance(raw, str) and raw.strip() and clean_mbid(raw) is None:
+                return False
+        try:
+            if kind == "album":
+                scratch_album = Album(
+                    item_id="", provider=self.instance_id, name="", provider_mappings=set()
+                )
+                parse_album_nfo(scratch_album, root)
+            else:
+                scratch_artist = Artist(
+                    item_id="", provider=self.instance_id, name="", provider_mappings=set()
+                )
+                parse_artist_nfo(scratch_artist, root)
+        except ValueError, TypeError, AttributeError:
+            # AttributeError covers a non-scalar field shape (e.g. a repeated/nested XML
+            # element) reaching a string-only helper such as split_items
+            return False
+        return True
+
+    async def _resolve_album_dir_via_nfo(
+        self, track_dir: str, tags: AudioTags, rejected: set[str] | None = None
+    ) -> tuple[str, FileSystemItem, dict[str, Any]] | None:
+        """
+        Return ``(album_dir, nfo_item, root)`` resolved from a validated album.nfo, or None.
+
+        Bounded to ``track_dir`` and its immediate parent: a recognized disc subfolder's own
+        album.nfo is never trusted as identity, only its parent's is, and the provider's own
+        root is never a candidate either (like the normal, non-NFO folder match, it can never
+        identify one specific album out of the many the root may contain). ``track_dir`` itself
+        is tried first - it is the nearer, more specific candidate - before falling back to the
+        parent, so a same-title album.nfo one level up (e.g. a stray leftover from a prior,
+        flatter layout) can never outrank the track's own, definitively correct one. A
+        candidate's album.nfo must positively match this track's MusicBrainz album/release-
+        group id or its album title, and apply cleanly, before it is trusted; a malformed or
+        non-matching NFO leaves the album unresolved (synthetic, tag-only).
+
+        :param track_dir: The directory the track file lives in.
+        :param tags: The track's audio tags, matched against a candidate NFO.
+        :param rejected: When given, every folder whose own album.nfo exists but fails to
+            positively identify this album is added here, so a later relaxed (fuzzy/layout/
+            date-prefix) match landing on that same folder knows not to trust that same
+            rejected file.
+        """
+        album_id = clean_mbid(tags.musicbrainz_albumid, tags.filename)
+        rg_id = clean_mbid(tags.musicbrainz_releasegroupid, tags.filename)
+        album_name, album_version = (
+            parse_title_and_version(tags.album) if tags.album else (None, "")
+        )
+        album_artist_ids = tuple(
+            cleaned
+            for raw_id in tags.musicbrainz_albumartistids
+            if (cleaned := clean_mbid(raw_id, tags.filename))
+        )
+        candidates: list[str] = []
+        if track_dir and not is_disc_dir(Path(track_dir).name):
+            candidates.append(track_dir)
+        candidates.extend(d for d in (os.path.dirname(track_dir),) if d)
+        for folder in candidates:
+            nfo_item = await self._nfo_item_for(folder, "album.nfo")
+            if nfo_item is None:
+                continue
+            root = await self._load_nfo_root(nfo_item, "album")
+            if (
+                root is not None
+                and self._album_nfo_matches(
+                    root, album_id, rg_id, album_name, album_artist_ids, album_version
+                )
+                and self._nfo_applies_cleanly(root, "album")
+            ):
+                return folder, nfo_item, root
+            if root is not None and rejected is not None:
+                rejected.add(folder)
+        return None
+
+    @staticmethod
+    def _album_nfo_matches(
+        root: dict[str, Any],
+        album_id: str | None,
+        rg_id: str | None,
+        album_name: str | None,
+        album_artist_ids: tuple[str, ...] = (),
+        album_version: str = "",
+    ) -> bool:
+        """Return True when an album.nfo positively identifies this track's album."""
+        nfo_artist_id = clean_mbid(root.get("musicbrainzalbumartistid"), "musicbrainzalbumartistid")
+        if nfo_artist_id and album_artist_ids and nfo_artist_id not in album_artist_ids:
+            # the NFO names a different album artist than this track's tags: reject even a
+            # matching title or album id, since it may belong to another artist's same-named
+            # or same-catalog-numbered album
+            return False
+        comparisons: list[bool] = []
+        for field, tag_id in (
+            ("musicbrainzalbumid", album_id),
+            ("musicbrainzreleasegroupid", rg_id),
+        ):
+            if not tag_id:
+                continue
+            nfo_id = clean_mbid(root.get(field), field)
+            if nfo_id:
+                comparisons.append(nfo_id == tag_id)
+        if comparisons:
+            # every comparable id must agree; one mismatch rejects even if another id matched
+            return all(comparisons)
+        if not album_name:
+            return False
+        nfo_title = root.get("title") or root.get("name")
+        if not nfo_title:
+            return False
+        # strip the NFO title's own edition/version suffix the same way the track's tag-derived
+        # album name already was (matching how parse_album_nfo treats the title once applied),
+        # so e.g. "Album (Deluxe Edition)" compares as "Album" on both sides
+        nfo_name, nfo_version = parse_title_and_version(str(nfo_title))
+        if album_version and nfo_version and not compare_strings(album_version, nfo_version, False):
+            # both sides name a specific edition (e.g. "Live" vs "Remix"): never a match on
+            # the base title alone, even though it is otherwise identical on both sides
+            return False
+        # strict comparison: folder identity must not be granted on a fuzzy/near match (e.g.
+        # "Album 1" vs "Album 2"), only an (almost) exact one after normalization
+        return compare_strings(nfo_name, album_name)
+
+    async def _resolve_artist_dir_via_nfo(
+        self, album_dir: str, name: str, mbid: str | None, rejected: set[str] | None = None
+    ) -> tuple[str, FileSystemItem, dict[str, Any]] | None:
+        """
+        Return ``(artist_path, nfo_item, root)`` resolved from a validated artist.nfo, or None.
+
+        Walks the same bounded ancestor levels as the normal folder-name lookup, from the album
+        directory's parent upward, but never as far as the provider's own root: like the normal
+        folder-name match, an artist.nfo there could not identify one specific artist out of the
+        many the root may contain. The first ancestor whose artist.nfo positively matches this
+        artist's MusicBrainz id or name - and applies cleanly - is trusted; a mismatching,
+        malformed or marker-only (no id or name) NFO is skipped and the walk continues.
+
+        :param album_dir: The album directory whose ancestors are searched.
+        :param name: The artist name to match.
+        :param mbid: The artist's cleaned MusicBrainz id, if any.
+        :param rejected: When given, every folder whose own artist.nfo exists but fails to
+            positively identify this artist is added here, so a later relaxed (fuzzy/alias)
+            match landing on that same folder knows not to trust that same rejected file.
+        """
+        parentdir = os.path.dirname(album_dir)
+        for _ in range(3):
+            if not parentdir:
+                break
+            nfo_item = await self._nfo_item_for(parentdir, "artist.nfo")
+            if nfo_item is not None:
+                root = await self._load_nfo_root(nfo_item, "artist")
+                if (
+                    root is not None
+                    and self._artist_nfo_matches(root, name, mbid)
+                    and self._nfo_applies_cleanly(root, "artist")
+                ):
+                    return parentdir, nfo_item, root
+                if rejected is not None:
+                    rejected.add(parentdir)
+            parentdir = os.path.dirname(parentdir)
+        return None
+
+    @staticmethod
+    def _artist_nfo_matches(root: dict[str, Any], name: str, mbid: str | None) -> bool:
+        """Return True when an artist.nfo positively identifies this artist by id or name."""
+        if mbid:
+            nfo_mbid = clean_mbid(root.get("musicbrainzartistid"), "artist.nfo")
+            if nfo_mbid:
+                return nfo_mbid == mbid
+        nfo_name = root.get("title") or root.get("name")
+        # strict comparison: folder identity must not be granted on a fuzzy/near match (e.g.
+        # "Artist 1" vs "Artist 2"), only an (almost) exact one after normalization
+        return bool(nfo_name) and compare_strings(str(nfo_name), name)
+
+    async def _iter_album_tracks(self, prov_album_id: str) -> AsyncGenerator[Track]:
+        """
+        Yield an album's tracks, lazily, so a caller needing only the first can stop early.
+
+        Served from the database when this id is already mapped; otherwise (the second,
+        id-changed fetch of a manual "Refresh item" that has just resolved a previously
+        synthetic album onto its real folder, before that mapping is persisted) the folder's
+        own tracks are parsed directly, so the refresh still succeeds instead of raising on a
+        mapping that is only about to exist.
+
+        :param prov_album_id: This provider's album id (a path, once resolved).
+        """
+        db_album = await self.mass.music.albums.get_library_item_by_prov_id(
+            prov_album_id, self.instance_id
+        )
+        if db_album is not None:
+            album_tracks = await self.mass.music.albums.get_library_album_tracks(db_album.item_id)
+            for track in album_tracks:
+                if any(x.provider_instance == self.instance_id for x in track.provider_mappings):
+                    yield track
+            return
+        if not await self.exists(prov_album_id):
+            msg = f"Album not found: {prov_album_id}"
+            raise MediaNotFoundError(msg)
+        # one shared scope for the whole scan, not one per track: every _parse_track call below
+        # would otherwise open and close its own scope, re-listing the same candidate ancestor
+        # folders once per track instead of once for the album
+        with self._ondemand_listing_scope():
+            async for track in self._scan_folder_tracks(prov_album_id):
+                yield track
+
+    async def _scan_folder_tracks(self, folder: str) -> AsyncIterator[Track]:
+        """
+        Yield every parseable track under a folder or one of its immediate child directories.
+
+        The folder itself is scanned first; a child directory is only listed if the caller
+        needs more than the folder alone provided, so a single-track lookup (:meth:`get_album`)
+        skips subfolder listings entirely on a cloud/WebDAV backend. Every child is tried, not
+        only regex-recognized disc folders, since the album may live in an arbitrarily named
+        subfolder; the ``track.album.item_id == folder`` filter keeps only tracks belonging to
+        this exact folder.
+
+        :param folder: The folder to scan; also every one of its immediate child directories.
+        """
+        # shared across this folder and every child directory below, so a single CUE sheet
+        # naming a child folder's companion audio file (e.g. one CUE covering the whole
+        # album, split across "Disc 1"/"Disc 2" subfolders) still excludes that companion
+        # once its own subfolder is scanned, instead of parsing it again as a duplicate track
+        cue_stems: set[str] = set()
+        entries = await self._scandir(folder)
+        async for track in self._yield_scanned_tracks(folder, entries, cue_stems):
+            yield track
+        for entry in entries:
+            if entry.is_dir:
+                child_entries = await self._scandir(entry.relative_path)
+                async for track in self._yield_scanned_tracks(folder, child_entries, cue_stems):
+                    yield track
+
+    async def _yield_scanned_tracks(
+        self, folder: str, items: list[FileSystemItem], cue_stems: set[str]
+    ) -> AsyncIterator[Track]:
+        """
+        Yield every parseable track among one directory's own (already listed) items.
+
+        A CUE's own file and the companion audio file it names are never yielded separately -
+        only the CUE's own segmented tracks represent them, mirroring the sync/browse paths'
+        CUE-stem exclusion. A missing companion audio file or unparsable CUE sheet is checked
+        explicitly before constructing the CUE's album, and only that is treated as "this file
+        is unreadable" and skipped. A failure past that point (constructing the album via this
+        same NFO resolution) propagates instead, since a cloud/WebDAV `_read_file` also raises
+        `MediaNotFoundError` for a transient read failure, not only a genuinely missing file.
+        Used only by :meth:`_scan_folder_tracks`.
+
+        :param folder: The top-level folder this album resolved to, matched against each
+            parsed track's own album identity.
+        :param items: One directory's own listed entries (never a nested listing).
+        :param cue_stems: Companion-audio stems already absorbed by a CUE sheet found in this
+            folder or an earlier one in this same scan; grown here with this folder's own
+            CUEs and still shared with every directory scanned afterwards.
+        """
+        cue_sheets: dict[str, CueSheet] = {}
+        for item in items:
+            if item.is_dir or item.ext not in CUE_EXTENSIONS:
+                continue
+            try:
+                cue_sheet = await self._cue.load_cue_sheet(item)
+            except InvalidDataError:
+                continue
+            if not cue_sheet.tracks:
+                # parses cleanly but names no tracks (e.g. truncated/malformed content):
+                # excluding its same-named companion here would lose that otherwise
+                # playable file entirely, since this CUE itself yields nothing below
+                continue
+            cue_stems.add(item.absolute_path.rsplit(".", 1)[0])
+            cue_sheets[item.relative_path] = cue_sheet
+            if companion_stem := cue_referenced_audio_stem(item, cue_sheet):
+                cue_stems.add(companion_stem)
+        for item in items:
+            if item.is_dir:
+                continue
+            if item.ext in CUE_EXTENSIONS:
+                loaded_cue_sheet = cue_sheets.get(item.relative_path)
+                if loaded_cue_sheet is None:
+                    self.logger.warning("Skipping unreadable CUE sheet %s", item.relative_path)
+                    continue
+                if await self._cue.find_audio_file(item, loaded_cue_sheet) is None:
+                    self.logger.warning(
+                        "Skipping CUE sheet with missing companion audio file: %s",
+                        item.relative_path,
+                    )
+                    continue
+                try:
+                    # InvalidDataError here covers the audio file's own unreadable/corrupt
+                    # tags (e.g. no determinable duration); a MediaNotFoundError past this
+                    # point can only come from constructing this CUE's album (this call's own
+                    # NFO resolution reading an NFO file) or a similarly transient storage
+                    # failure, and must propagate instead of being mistaken for a bad CUE
+                    cue_tracks = await self._cue.parse_tracks(item)
+                except InvalidDataError as err:
+                    self.logger.warning(
+                        "Skipping unreadable CUE sheet %s: %s", item.relative_path, err
+                    )
+                    continue
+                for track in cue_tracks:
+                    if isinstance(track.album, Album) and track.album.item_id == folder:
+                        yield track
+            elif item.ext in TRACK_EXTENSIONS:
+                if item.absolute_path.rsplit(".", 1)[0] in cue_stems:
+                    continue  # absorbed into its CUE sheet's own segmented tracks
+                try:
+                    tags = await async_parse_tags(item.absolute_path, item.file_size)
+                except InvalidDataError as err:
+                    self.logger.warning("Skipping unreadable track %s: %s", item.relative_path, err)
+                    continue
+                track = await self._parse_track(item, tags)
+                if isinstance(track.album, Album) and track.album.item_id == folder:
+                    yield track
+
     def _set_available(self, available: bool) -> None:
         """Update the provider availability and notify listeners on change."""
         if self.available == available:
             return
         self.available = available
+        if available:
+            self._cancel_availability_probe()
+        else:
+            self._schedule_availability_probe()
         self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
+
+    async def _is_reachable(self) -> bool:
+        """Return whether the storage backing this provider can be read."""
+        return bool(await isdir(self.base_path))
+
+    @property
+    def _availability_probe_id(self) -> str:
+        """Return the timer id of this provider's reachability checks."""
+        return f"filesystem_availability_probe_{self.instance_id}"
+
+    def _schedule_availability_probe(self) -> None:
+        """Arm the next reachability check."""
+        self.mass.call_later(
+            AVAILABILITY_PROBE_INTERVAL,
+            self._probe_availability,
+            task_id=self._availability_probe_id,
+        )
+
+    def _cancel_availability_probe(self) -> None:
+        """Stop checking for the storage coming back."""
+        self.mass.cancel_timer(self._availability_probe_id)
+
+    async def _probe_availability(self) -> None:
+        """Mark the provider available again once its storage can be read."""
+        try:
+            reachable = await self._is_reachable()
+        except MusicAssistantError as err:
+            # storage that is simply still gone, which is what this loop waits for
+            self.logger.debug("%s is still unreachable: %s", self.name, err)
+            reachable = False
+        except Exception:
+            # an unexpected failure must not end the loop, since it is what brings the
+            # provider back, but it is a defect rather than an outage so it is logged loudly
+            self.logger.exception("Reachability check for %s failed", self.name)
+            reachable = False
+        if self.unloading:
+            # the provider was torn down while this check was running; re-arming here
+            # would leave a timer firing against an instance nothing owns anymore
+            return
+        if reachable:
+            self.logger.info("%s is reachable again", self.name)
+            self._set_available(True)
+            return
+        self._schedule_availability_probe()
 
     async def _process_item_async(
         self,
@@ -1117,6 +2101,7 @@ class LocalFileSystemProvider(MusicProvider):
         prev_checksum: str | None,
         cur_filenames: set[str] | None = None,
         cue_stems: set[str] | None = None,
+        prev_filenames: set[str] | None = None,
     ) -> bool:
         """
         Process a single item asynchronously.
@@ -1126,6 +2111,8 @@ class LocalFileSystemProvider(MusicProvider):
         :param cur_filenames: Set of current filenames being tracked (for CUE track IDs).
         :param cue_stems: Absolute paths (without extension) of CUE sheets in this scan,
             used to detect companion-CUE audio files without a filesystem stat.
+        :param prev_filenames: The ids/paths the previous scan found, used to keep the
+            ids of a CUE sheet that fails to parse.
         """
         try:
             self.logger.log(VERBOSE_LOG_LEVEL, "Processing: %s", item.relative_path)
@@ -1204,7 +2191,40 @@ class LocalFileSystemProvider(MusicProvider):
                 exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
             )
             report_current_task_failure(f"Failed to process {item.relative_path}: {err}")
+            # the file is still on the storage, so keep it in the scan result:
+            # leaving it out makes the deletion step treat it as removed
+            self._keep_failed_item(item, cur_filenames, prev_filenames)
         return False
+
+    def _keep_failed_item(
+        self,
+        item: FileSystemItem,
+        cur_filenames: set[str] | None,
+        prev_filenames: set[str] | None,
+    ) -> None:
+        """
+        Keep an item that could not be processed in the scan result.
+
+        :param item: The item that failed to process.
+        :param cur_filenames: Receives the ids/paths present in this scan.
+        :param prev_filenames: The ids/paths the previous scan found.
+        """
+        if cur_filenames is None:
+            return
+        cur_filenames.add(item.relative_path)
+        if (
+            item.ext not in CUE_EXTENSIONS
+            or self.media_content_type != "music"
+            or not prev_filenames
+        ):
+            return
+        # a CUE sheet stands in for one id per track it describes and those cannot be
+        # rebuilt without parsing it, so carry over the ids of the previous scan
+        cur_filenames.update(
+            item_id
+            for item_id in prev_filenames
+            if (parsed := parse_cue_track_id(item_id)) and parsed[0] == item.relative_path
+        )
 
     async def _process_orphaned_albums_and_artists(self) -> None:
         """Process deletion of orphaned albums and artists."""
@@ -1341,12 +2361,10 @@ class LocalFileSystemProvider(MusicProvider):
                     normalized = posixpath.normpath(f"{playlist_path}/{_line}")
                     with contextlib.suppress(FileNotFoundError, MediaNotFoundError):
                         file_item = await self.resolve(normalized)
-                        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
-                        return await self._parse_track(file_item, tags)
+                        return await self._get_playlist_line_track(file_item)
                 with contextlib.suppress(FileNotFoundError, MediaNotFoundError):
                     file_item = await self.resolve(_line)
-                    tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
-                    return await self._parse_track(file_item, tags)
+                    return await self._get_playlist_line_track(file_item)
             # all attempts failed
             raise MediaNotFoundError("Invalid path/uri")
 
@@ -1355,6 +2373,38 @@ class LocalFileSystemProvider(MusicProvider):
 
         return None
 
+    async def _get_playlist_line_track(self, file_item: FileSystemItem) -> Track:
+        """
+        Return the track for a resolved playlist entry.
+
+        :param file_item: The resolved file the playlist entry points at.
+        """
+        # filesystem tracks are synced into the library, so prefer the database over
+        # (expensive) tag parsing - this keeps loading large playlists fast
+        library_track = await self.mass.music.tracks.get_library_item_by_prov_id(
+            file_item.relative_path, self.instance_id
+        )
+        # only trust the library item if its mapping for this file is available: the file
+        # just resolved, so an unavailable mapping is stale (e.g. the file was missing
+        # during the last scan) and would wrongly exclude the track from playback
+        if library_track is not None and any(
+            mapping.provider_instance == self.instance_id
+            and mapping.item_id == file_item.relative_path
+            and mapping.available
+            for mapping in library_track.provider_mappings
+        ):
+            # callers expect the provider item identity here (not the library one),
+            # e.g. for duplicate detection when editing the playlist
+            library_track.item_id = file_item.relative_path
+            library_track.provider = self.instance_id
+            library_track.uri = create_uri(
+                MediaType.TRACK, self.instance_id, file_item.relative_path
+            )
+            return library_track
+        # not (yet) in the library: parse the file tags
+        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+        return await self._parse_track(file_item, tags)
+
     @staticmethod
     def _versioned_image_path(relative_path: str, checksum: str | None) -> str:
         """Append the file checksum so the image cache busts when the file is replaced."""
@@ -1362,10 +2412,25 @@ class LocalFileSystemProvider(MusicProvider):
             return f"{relative_path}?cs={checksum}"
         return relative_path
 
+    @staticmethod
+    def _codec_type_from_tags(tags: AudioTags) -> ContentType:
+        """Return the audio codec detected by ffprobe, if any."""
+        if tags.raw and (streams := tags.raw.get("streams")):
+            if codec_name := streams[0].get("codec_name"):
+                return ContentType.try_parse(codec_name)
+        return ContentType.UNKNOWN
+
     async def _parse_track(
         self, file_item: FileSystemItem, tags: AudioTags, full_album_metadata: bool = False
     ) -> Track:
         """Parse full track details from file tags."""
+        with self._ondemand_listing_scope():
+            return await self._parse_track_impl(file_item, tags, full_album_metadata)
+
+    async def _parse_track_impl(
+        self, file_item: FileSystemItem, tags: AudioTags, full_album_metadata: bool = False
+    ) -> Track:
+        """Parse full track details from file tags (implementation, see :meth:`_parse_track`)."""
         # ruff: noqa: PLR0915
         name, version = parse_title_and_version(tags.title, tags.version)
         track = Track(
@@ -1381,6 +2446,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.try_parse(file_item.ext or tags.format),
+                        codec_type=self._codec_type_from_tags(tags),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -1429,7 +2495,9 @@ class LocalFileSystemProvider(MusicProvider):
             if album_artist_match := self._match_album_artist(album, name, mbid):
                 track.artists.append(album_artist_match)
                 continue
-            artist = await self._parse_artist(name, sort_name=sort_name, mbid=mbid)
+            artist = await self._parse_artist(
+                name, sort_name=sort_name, mbid=mbid, representative_track=file_item.relative_path
+            )
             track.artists.append(artist)
 
         # handle embedded cover image
@@ -1600,33 +2668,37 @@ class LocalFileSystemProvider(MusicProvider):
         sort_name: str | None = None,
         mbid: str | None = None,
         artist_path: str | None = None,
+        representative_track: str | None = None,
     ) -> Artist:
         """Parse full (album) Artist."""
+        nfo_item: FileSystemItem | None = None
+        nfo_root: dict[str, Any] | None = None
+        # folders whose own artist.nfo was already read and rejected by the validated NFO
+        # tier below; a later relaxed/fuzzy match landing on one of these must not blindly
+        # trust that same rejected file during enrichment further down
+        rejected_nfo_folders: set[str] = set()
+        cleaned_mbid = clean_mbid(mbid, f"tags of artist {name}")
         if not artist_path:
-            # we need to hunt for the artist (metadata) path on disk
-            # this can either be relative to the album path or at root level
-            # check if we have an artist folder for this artist at root level
-            safe_artist_name = create_safe_string(name, lowercase=False, replace_space=False)
-            if await self.exists(name):
-                artist_path = name
-            elif await self.exists(safe_artist_name):
-                artist_path = safe_artist_name
-            elif album_dir and (foldermatch := get_artist_dir(name, album_dir=album_dir)):
-                # try to find (album)artist folder based on album path
-                artist_path = foldermatch
-            else:
-                # check if we have an existing item to retrieve the artist path
-                async for item in self.mass.music.artists.iter_library_items(
-                    search=name, provider=self.instance_id
-                ):
-                    if not compare_strings(name, item.name):
-                        continue
-                    for prov_mapping in item.provider_mappings:
-                        if prov_mapping.provider_instance != self.instance_id:
-                            continue
-                        if prov_mapping.url:
-                            artist_path = prov_mapping.url
-                            break
+            # exact tier: an already-known mapped identity or an exact (normalized) plain-name
+            # match at a root/ancestor folder always wins - a validated artist.nfo (below)
+            # still outranks a *relaxed* (fuzzy or sort-name-alias) match, but never this
+            artist_path = await self._find_artist_path(name, album_dir, exact_only=True)
+            if not artist_path and album_dir:
+                # exact matching found nothing at all: fall back to a bounded validated
+                # artist.nfo before trying any relaxed heuristic
+                for candidate_name in (n for n in (name, sort_name) if n):
+                    resolved = await self._resolve_artist_dir_via_nfo(
+                        album_dir, candidate_name, cleaned_mbid, rejected_nfo_folders
+                    )
+                    if resolved:
+                        artist_path, nfo_item, nfo_root = resolved
+                        break
+            if not artist_path:
+                # relaxed tier: plain name is tried at every location before the sort-name
+                # alias is tried anywhere - a sort-name match must never outrank a (relaxed)
+                # plain-name match found elsewhere
+                for candidate_name in (n for n in (name, sort_name) if n):
+                    artist_path = await self._find_artist_path(candidate_name, album_dir)
                     if artist_path:
                         break
 
@@ -1657,37 +2729,37 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             },
         )
-        if mbid := clean_mbid(mbid, f"tags of artist {name}"):
-            artist.mbid = mbid
+        if cleaned_mbid:
+            artist.mbid = cleaned_mbid
         if not artist_path or not await self.exists(artist_path):
             return artist
 
         # grab additional metadata within the Artist's folder
-        nfo_file = os.path.join(artist_path, "artist.nfo")
-        if await self.exists(nfo_file):
-            # found NFO file with metadata
-            # https://kodi.wiki/view/NFO_files/Artists
-            try:
-                data = (await self._read_file(nfo_file)).decode("utf-8")
-                info = await asyncio.to_thread(xmltodict.parse, data)
-                info = info["artist"]
-                artist.name = info.get("title", info.get("name", name))
-                if sort_name := info.get("sortname"):
-                    artist.sort_name = sort_name
-                if mbid := clean_mbid(info.get("musicbrainzartistid"), nfo_file):
-                    artist.mbid = mbid
-                if description := info.get("biography"):
-                    artist.metadata.description = description
-                if genre := info.get("genre"):
-                    artist.metadata.genres = set(split_items(genre))
-            except (ExpatError, KeyError) as err:
+        if nfo_item is not None and nfo_root is not None:
+            # already read and validated while resolving this artist's folder above
+            parse_artist_nfo(artist, nfo_root, nfo_item.relative_path)
+            await self._register_metadata_file(nfo_item, representative_track)
+        elif artist_path not in rejected_nfo_folders and (
+            read_nfo_item := await self._nfo_item_for(artist_path, "artist.nfo")
+        ):
+            # found NFO file with metadata; read and parse it. Skipped when this folder's
+            # own artist.nfo was already read and rejected by the validated NFO tier above,
+            # so a relaxed (fuzzy/sort-name-alias) match landing here can't silently trust
+            # that same rejected file
+            if read_root := await self._load_nfo_root(read_nfo_item, "artist"):
+                parse_artist_nfo(artist, read_root, read_nfo_item.relative_path)
+                # only a successful parse counts as having read this NFO: registering on a
+                # malformed file would advance its token and treat the bad edit as handled,
+                # permanently masking it (until unrelated changes trigger a full reparse)
+                await self._register_metadata_file(read_nfo_item, representative_track)
+            else:
                 self.logger.warning(
-                    "Failed to parse artist NFO file %s: %s",
-                    nfo_file,
-                    str(err),
+                    "Failed to parse artist NFO file %s", read_nfo_item.relative_path
                 )
         # find local images
-        if images := await self._get_local_images(artist_path, extra_thumb_names=("artist",)):
+        if images := await self._get_local_images(
+            artist_path, extra_thumb_names=("artist",), representative_track=representative_track
+        ):
             artist.metadata.images = UniqueList(images)
 
         await self.cache.set(
@@ -1757,6 +2829,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.try_parse(file_item.ext or tags.format),
+                        codec_type=self._codec_type_from_tags(tags),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -1856,6 +2929,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.try_parse(file_item.ext or tags.format),
+                        codec_type=self._codec_type_from_tags(tags),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -1980,6 +3054,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.try_parse(file_item.ext or tags.format),
+                        codec_type=self._codec_type_from_tags(tags),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -2031,7 +3106,11 @@ class LocalFileSystemProvider(MusicProvider):
         return sound_effect
 
     async def _parse_album(
-        self, track_path: str, track_tags: AudioTags, track_created_at: int | None = None
+        self,
+        track_path: str,
+        track_tags: AudioTags,
+        track_created_at: int | None = None,
+        representative_track: str | None = None,
     ) -> Album:
         """
         Parse Album metadata from Track tags.
@@ -2039,14 +3118,40 @@ class LocalFileSystemProvider(MusicProvider):
         :param track_path: Path to the track file.
         :param track_tags: Audio tags from the track.
         :param track_created_at: Creation timestamp of the track file (Unix epoch).
+        :param representative_track: The path to register for metadata-file change detection,
+            when it differs from `track_path` itself (a CUE sheet's tracks are parsed from their
+            companion audio file, but that companion is not a synced item on its own, so the CUE
+            sheet's own path is the one that must be re-queued when the album/artist folder's
+            NFO or images change). Defaults to `track_path`.
         """
         assert track_tags.album
+        representative_track = representative_track or track_path
         # work out if we have an album and/or disc folder
         # track_dir is the folder level where the tracks are located
         # this may be a separate disc folder (Disc 1, Disc 2 etc) underneath the album folder
         # or this is an album folder with the disc attached
         track_dir = os.path.dirname(track_path)
-        album_dir = get_album_dir(track_dir, track_tags.album)
+        # exact tier: an exact (normalized) plain-name folder match always wins, so a
+        # validated album.nfo elsewhere never displaces an already-obvious folder
+        album_dir = get_album_dir(track_dir, track_tags.album, exact_only=True)
+        nfo_item: FileSystemItem | None = None
+        nfo_root: dict[str, Any] | None = None
+        # folders whose own album.nfo was already read and rejected by the validated NFO
+        # tier below; a later relaxed/fuzzy match landing on one of these must not blindly
+        # trust that same rejected file during enrichment further down
+        rejected_nfo_folders: set[str] = set()
+        if not album_dir:
+            # exact matching found nothing: fall back to a bounded validated album.nfo
+            # (the immediate parent, and the track directory itself unless it is a disc
+            # subfolder, whose own album.nfo is never trusted as identity) before trying
+            # any relaxed (fuzzy/layout-variant/date-prefixed/sort-name-alias) heuristic
+            resolved = await self._resolve_album_dir_via_nfo(
+                track_dir, track_tags, rejected_nfo_folders
+            )
+            if resolved:
+                album_dir, nfo_item, nfo_root = resolved
+        if not album_dir:
+            album_dir = get_album_dir(track_dir, track_tags.album, track_tags.album_sort)
 
         if album_dir and (
             cache := await self.cache.get(
@@ -2059,6 +3164,9 @@ class LocalFileSystemProvider(MusicProvider):
             return cache  # type: ignore[no-any-return]
 
         # album artist(s)
+        # anchor the artist lookup on the track's own directory when the album itself never
+        # resolved (e.g. no matching album.nfo), so the artist can still be found independently
+        artist_lookup_dir = album_dir or track_dir
         album_artists: UniqueList[Artist | ItemMapping] = UniqueList()
         if track_tags.album_artists:
             resolved_album_artists = await self._resolve_artists_with_mbids(
@@ -2069,7 +3177,11 @@ class LocalFileSystemProvider(MusicProvider):
             )
             for name, mbid, sort_name in resolved_album_artists:
                 artist = await self._parse_artist(
-                    name, album_dir=album_dir, sort_name=sort_name, mbid=mbid
+                    name,
+                    album_dir=artist_lookup_dir,
+                    sort_name=sort_name,
+                    mbid=mbid,
+                    representative_track=representative_track,
                 )
                 album_artists.append(artist)
         else:
@@ -2082,9 +3194,15 @@ class LocalFileSystemProvider(MusicProvider):
                     track_path,
                     possible_artist_folder,
                 )
-                album_artist_str = possible_artist_folder.rsplit(os.sep)[-1]
+                album_artist_str = Path(possible_artist_folder).name
                 album_artists = UniqueList(
-                    [await self._parse_artist(name=album_artist_str, album_dir=album_dir)]
+                    [
+                        await self._parse_artist(
+                            name=album_artist_str,
+                            album_dir=album_dir,
+                            representative_track=representative_track,
+                        )
+                    ]
                 )
             # fallback to track artists (if defined by user)
             elif fallback_action == "track_artist":
@@ -2094,7 +3212,11 @@ class LocalFileSystemProvider(MusicProvider):
                 )
                 album_artists = UniqueList(
                     [
-                        await self._parse_artist(name=track_artist_str, album_dir=album_dir)
+                        await self._parse_artist(
+                            name=track_artist_str,
+                            album_dir=artist_lookup_dir,
+                            representative_track=representative_track,
+                        )
                         for track_artist_str in track_tags.artists
                     ]
                 )
@@ -2106,7 +3228,13 @@ class LocalFileSystemProvider(MusicProvider):
                     VARIOUS_ARTISTS_NAME,
                 )
                 album_artists = UniqueList(
-                    [await self._parse_artist(name=VARIOUS_ARTISTS_NAME, mbid=VARIOUS_ARTISTS_MBID)]
+                    [
+                        await self._parse_artist(
+                            name=VARIOUS_ARTISTS_NAME,
+                            mbid=VARIOUS_ARTISTS_MBID,
+                            representative_track=representative_track,
+                        )
+                    ]
                 )
 
         if album_dir:  # noqa: SIM108
@@ -2154,26 +3282,41 @@ class LocalFileSystemProvider(MusicProvider):
         if not album_dir:
             return album
 
-        for folder_path in (track_dir, album_dir):
+        for folder_path in dict.fromkeys((track_dir, album_dir)):
             if not folder_path or not await self.exists(folder_path):
                 continue
-            nfo_file = os.path.join(folder_path, "album.nfo")
-            if await self.exists(nfo_file):
-                # found NFO file with metadata
-                # https://kodi.wiki/view/NFO_files/Artists
-                try:
-                    data = (await self._read_file(nfo_file)).decode("utf-8")
-                    info = await asyncio.to_thread(xmltodict.parse, data)
-                    parse_album_nfo(album, info["album"], nfo_file)
-                except (ExpatError, KeyError) as err:
+            if nfo_item is not None and nfo_root is not None:
+                # identity was established through the bounded, validated NFO resolution
+                # fallback above: only that one winning NFO ever applies. An unrelated
+                # album.nfo the other candidate folder (track_dir or album_dir) happens to
+                # also have was never validated against this track and must not silently
+                # overwrite the resolved album's metadata.
+                if folder_path == nfo_item.relative_parent_path:
+                    parse_album_nfo(album, nfo_root, nfo_item.relative_path)
+                    await self._register_metadata_file(nfo_item, representative_track)
+            elif folder_path not in rejected_nfo_folders and (
+                read_nfo_item := await self._nfo_item_for(folder_path, "album.nfo")
+            ):
+                # found NFO file with metadata; read and parse it. Skipped when this folder's
+                # own album.nfo was already read and rejected by the validated NFO tier above,
+                # so a relaxed (fuzzy/layout/date-prefix) match landing here can't silently
+                # trust that same rejected file
+                if read_root := await self._load_nfo_root(read_nfo_item, "album"):
+                    parse_album_nfo(album, read_root, read_nfo_item.relative_path)
+                    # only a successful parse counts as having read this NFO: registering on
+                    # a malformed file would advance its token and treat the bad edit as
+                    # handled, permanently masking it (until unrelated changes trigger a full
+                    # reparse)
+                    await self._register_metadata_file(read_nfo_item, representative_track)
+                else:
                     self.logger.warning(
-                        "Failed to parse album NFO file %s: %s",
-                        nfo_file,
-                        str(err),
+                        "Failed to parse album NFO file %s", read_nfo_item.relative_path
                     )
 
             # find local images
-            if images := await self._get_local_images(folder_path, extra_thumb_names=("album",)):
+            if images := await self._get_local_images(
+                folder_path, extra_thumb_names=("album",), representative_track=representative_track
+            ):
                 if album.metadata.images is None:
                     album.metadata.images = UniqueList(images)
                 else:
@@ -2189,9 +3332,20 @@ class LocalFileSystemProvider(MusicProvider):
         return album
 
     async def _get_local_images(
-        self, folder: str, extra_thumb_names: tuple[str, ...] | None = None
+        self,
+        folder: str,
+        extra_thumb_names: tuple[str, ...] | None = None,
+        representative_track: str | None = None,
     ) -> UniqueList[MediaItemImage]:
-        """Return local images found in a given folderpath."""
+        """
+        Return local images found in a given folderpath.
+
+        :param folder: The folder to look for images in.
+        :param extra_thumb_names: Extra image stems (besides folder/cover) treated as a thumbnail.
+        :param representative_track: The track whose reparse rebuilds an album/artist that reads
+            this folder, so each recognized image found here can register itself for change
+            detection. Omit for folders unrelated to that (e.g. podcast folders).
+        """
         if (
             cache := await self.cache.get(
                 key=folder,
@@ -2220,6 +3374,7 @@ class LocalFileSystemProvider(MusicProvider):
                         remotely_accessible=False,
                     )
                 )
+                await self._register_metadata_file(item, representative_track)
 
         # try alternative names for thumbs
         extra_thumb_names = ("folder", "cover", *extra_thumb_names)
@@ -2238,6 +3393,7 @@ class LocalFileSystemProvider(MusicProvider):
                     remotely_accessible=False,
                 )
             )
+            await self._register_metadata_file(item, representative_track)
 
         await self.cache.set(
             key=folder,
@@ -2291,6 +3447,7 @@ class LocalFileSystemProvider(MusicProvider):
             item_id=item_id,
             audio_format=AudioFormat(
                 content_type=ContentType.try_parse(file_item.ext or tags.format),
+                codec_type=self._codec_type_from_tags(tags),
                 sample_rate=tags.sample_rate,
                 bit_depth=tags.bits_per_sample,
                 channels=tags.channels,
@@ -2532,8 +3689,15 @@ class LocalFileSystemProvider(MusicProvider):
         )
         return data
 
-    async def _scandir(self, path: str) -> list[FileSystemItem]:
-        """List directory contents in natural sort order."""
+    async def _scandir(self, path: str, use_cache: bool = True) -> list[FileSystemItem]:
+        """
+        List directory contents in natural sort order.
+
+        :param use_cache: Unused for local disk (a read is always fresh); accepted so shared,
+            cache-sensitive callers (e.g. on-demand NFO/image lookups honoring a manual "Refresh
+            item") can request a bypass the same way regardless of which subclass overrides
+            this, since a cloud-backed provider serves its own short-lived listing cache here.
+        """
         # raw scandir order depends on the underlying filesystem (e.g. hash order
         # on ext4) so sort to make browse and folder playback order deterministic
         abs_path = self.get_absolute_path(path)

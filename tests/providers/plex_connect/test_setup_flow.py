@@ -8,7 +8,7 @@ from typing import Any
 from unittest import mock
 
 import pytest
-from music_assistant_models.enums import FlowStepType
+from music_assistant_models.enums import FlowStepType, PlayerType
 
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowContext, SetupSession
 from music_assistant.providers.plex_connect import CONF_MASS_PLAYER_ID, CONF_PLEX_PROVIDER_ID
@@ -23,11 +23,14 @@ def _provider(instance_id: str, name: str) -> mock.Mock:
     return provider
 
 
-def _player(player_id: str, display_name: str) -> mock.Mock:
+def _player(
+    player_id: str, display_name: str, player_type: PlayerType = PlayerType.PLAYER
+) -> mock.Mock:
     """Build a stand-in for a Music Assistant player."""
     player = mock.Mock()
     player.player_id = player_id
     player.display_name = display_name
+    player.type = player_type
     return player
 
 
@@ -90,11 +93,16 @@ async def test_collects_plex_provider_and_player() -> None:
     session = _make_session(
         finish,
         plex_providers=[_provider("plex--1", "Plex"), _provider("plex--2", "Plex Audiobooks")],
-        players=[_player("player2", "living room"), _player("player1", "Kitchen")],
+        players=[
+            _player("player2", "living room"),
+            _player("player1", "Kitchen"),
+            _player("turntable", "Turntable", PlayerType.SOURCE),
+        ],
     )
     task = asyncio.create_task(pc_flow.run_setup(session))
     step = await _await_user_form(session)
-    # players are offered sorted case-insensitively by display name
+    # players are offered sorted case-insensitively by display name;
+    # capture-only source players are not offered as a playback target
     assert [option.value for option in step.entries[1].options] == ["player1", "player2"]
     session.handle_submit({CONF_PLEX_PROVIDER_ID: "plex--2", CONF_MASS_PLAYER_ID: "player2"})
     await _wait_for_finish(session)

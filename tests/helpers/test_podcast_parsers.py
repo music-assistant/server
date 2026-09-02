@@ -9,15 +9,23 @@ from music_assistant_models.enums import LinkType
 
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
+    find_episode_stream_url,
+    get_cached_podcast,
+    get_episode_positions,
+    get_podcastparser_dict,
     get_stream_url_from_episode,
     parse_chapters_from_json,
     parse_podcast_episode,
     parse_podcast_persons,
+    rank_episodes_by_date,
+    refresh_cached_podcast,
 )
 
 if TYPE_CHECKING:
     import aiohttp
     from music_assistant_models.media_items import PodcastEpisode
+
+    from music_assistant.mass import MusicAssistant
 
 
 def _episode(**overrides: Any) -> dict[str, Any]:
@@ -35,7 +43,7 @@ def _parse(episode: dict[str, Any]) -> PodcastEpisode | None:
     return parse_podcast_episode(
         episode=episode,
         prov_podcast_id="podcast-1",
-        episode_cnt=1,
+        position=1,
         instance_id="podcastfeed--test",
         domain="podcastfeed",
     )
@@ -186,7 +194,7 @@ def test_podcast_reference_uses_podcast_name() -> None:
     mass_episode = parse_podcast_episode(
         episode=_episode(title="Episode 1"),
         prov_podcast_id="podcast-1",
-        episode_cnt=1,
+        position=1,
         podcast_name="My Show",
         instance_id="podcastfeed--test",
         domain="podcastfeed",
@@ -203,21 +211,97 @@ def test_podcast_reference_falls_back_to_episode_title() -> None:
     assert mass_episode.podcast.name == "Some Episode"
 
 
-# --- episode position (itunes:episode number) -----------------------------------------------
+# --- episode position -----------------------------------------------------------------------
 
 
-def test_episode_position_uses_itunes_episode_number() -> None:
-    """A declared itunes:episode number drives the episode position over the feed order."""
-    mass_episode = _parse(_episode(number=5))
+def test_episode_position_uses_caller_supplied_position() -> None:
+    """The episode position is determined by the caller."""
+    mass_episode = parse_podcast_episode(
+        episode=_episode(),
+        prov_podcast_id="podcast-1",
+        position=5,
+        instance_id="podcastfeed--test",
+        domain="podcastfeed",
+    )
     assert mass_episode is not None
     assert mass_episode.position == 5
 
 
-def test_episode_position_falls_back_to_feed_order() -> None:
-    """Without an episode number, position falls back to the feed enumeration order (cnt=1)."""
-    mass_episode = _parse(_episode())
-    assert mass_episode is not None
-    assert mass_episode.position == 1
+def test_positions_use_episode_numbers_when_all_numbered() -> None:
+    """A fully numbered feed keeps its own itunes:episode numbers."""
+    episodes = [_episode(number=3), _episode(number=1), _episode(number=2)]
+    assert get_episode_positions(episodes) == [3, 1, 2]
+
+
+def test_positions_ignore_partial_numbering() -> None:
+    """A feed that numbers only some episodes has all of its numbers ignored."""
+    episodes = [
+        _episode(number=1, published=300),
+        _episode(published=100),
+        _episode(number=3, published=200),
+    ]
+    assert get_episode_positions(episodes) == [3, 1, 2]
+
+
+def test_positions_rank_newest_highest_by_published() -> None:
+    """Dated feeds are ranked oldest to newest regardless of the order they are listed in."""
+    episodes = [_episode(published=300), _episode(published=100), _episode(published=200)]
+    assert get_episode_positions(episodes) == [3, 1, 2]
+
+
+def test_positions_rank_serial_feeds_oldest_first() -> None:
+    """An oldest-first (itunes:type=serial) feed still gives the newest episode the top spot."""
+    episodes = [_episode(published=100), _episode(published=200), _episode(published=300)]
+    assert get_episode_positions(episodes) == [1, 2, 3]
+
+
+def test_positions_ignore_numbering_that_restarts_each_season() -> None:
+    """Seasoned feeds restart their numbering, so the dates decide instead."""
+    episodes = [
+        _episode(number=1, season=2, published=300),
+        _episode(number=2, season=1, published=100),
+        _episode(number=1, season=1, published=200),
+    ]
+    assert get_episode_positions(episodes) == [3, 1, 2]
+
+
+def test_positions_use_numbers_for_a_single_season() -> None:
+    """A feed that declares one season keeps its own episode numbers."""
+    episodes = [_episode(number=2, season=1), _episode(number=1, season=1)]
+    assert get_episode_positions(episodes) == [2, 1]
+
+
+def test_positions_prefer_numbers_over_dates() -> None:
+    """Episode numbers win over the publication dates when the feed carries both."""
+    episodes = [_episode(number=7, published=100), _episode(number=9, published=200)]
+    assert get_episode_positions(episodes) == [7, 9]
+
+
+def test_rank_by_date_keeps_feed_order_among_undated() -> None:
+    """Undated episodes rank oldest and hold their listing order between themselves."""
+    assert rank_episodes_by_date([None, 300, None, 100]) == [1, 4, 2, 3]
+
+
+def test_rank_by_date_accepts_string_dates() -> None:
+    """Providers reporting dates as sortable strings are ranked the same way."""
+    assert rank_episodes_by_date(["2026-03-01", "2024-01-01", "2025-02-01"]) == [3, 1, 2]
+
+
+def test_positions_rank_undated_episodes_as_oldest() -> None:
+    """Episodes missing a publication date rank below every dated one."""
+    episodes = [_episode(published=200), _episode(), _episode(published=100)]
+    assert get_episode_positions(episodes) == [3, 1, 2]
+
+
+def test_positions_assume_newest_first_without_dates() -> None:
+    """Without publication dates the feed order is assumed to be newest-first."""
+    episodes = [_episode(), _episode(), _episode()]
+    assert get_episode_positions(episodes) == [3, 2, 1]
+
+
+def test_positions_empty_feed() -> None:
+    """An empty feed yields no positions."""
+    assert get_episode_positions([]) == []
 
 
 # --- inline (Podlove Simple Chapters) --------------------------------------------------------
@@ -466,3 +550,174 @@ def test_parse_podcast_persons_non_list_returns_empty() -> None:
     """Any non-list input yields no names, so callers need not guard."""
     assert parse_podcast_persons(None) == []
     assert parse_podcast_persons("nope") == []
+
+
+# --- find_episode_stream_url -----------------------------------------------------------------
+
+
+def test_find_episode_stream_url_matches_guid() -> None:
+    """An episode with a usable guid is found by that guid."""
+    feed = {"episodes": [_episode(guid="ep-1"), _episode(guid="ep-2", enclosures=[{"url": "b"}])]}
+    assert find_episode_stream_url(parsed_feed=feed, guid_or_stream_url="ep-2") == "b"
+
+
+def test_find_episode_stream_url_falls_back_to_stream_url() -> None:
+    """A guid containing a space is unusable as an id, so the stream url identifies it."""
+    feed = {"episodes": [_episode(guid="not a guid")]}
+    assert (
+        find_episode_stream_url(parsed_feed=feed, guid_or_stream_url="https://example.com/ep1.mp3")
+        == "https://example.com/ep1.mp3"
+    )
+    # the unusable guid must not match
+    assert find_episode_stream_url(parsed_feed=feed, guid_or_stream_url="not a guid") is None
+
+
+def test_find_episode_stream_url_skips_episodes_without_enclosure() -> None:
+    """An episode without a playable enclosure does not stop the search."""
+    feed = {"episodes": [{"title": "no audio"}, _episode(guid="ep-2", enclosures=[{"url": "b"}])]}
+    assert find_episode_stream_url(parsed_feed=feed, guid_or_stream_url="ep-2") == "b"
+
+
+def test_find_episode_stream_url_unknown_returns_none() -> None:
+    """An unknown identifier yields None rather than raising."""
+    assert find_episode_stream_url(parsed_feed={"episodes": []}, guid_or_stream_url="x") is None
+
+
+# --- feed retrieval and caching ----------------------------------------------------------------
+
+
+FEED_URL = "https://example.com/feed.xml"
+FEED_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+<title>Feed One</title>
+<item>
+<title>Episode 1</title>
+<guid>ep-1</guid>
+<enclosure url="https://example.com/ep1.mp3" type="audio/mpeg" length="1"/>
+</item>
+</channel></rss>
+"""
+
+
+class _FakeFeedResponse:
+    """Minimal stand-in for an aiohttp response yielding raw feed bytes."""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    async def read(self) -> bytes:
+        return self._body
+
+
+class _FakeFeedGetContext:
+    """Request context manager recording whether the response was released again."""
+
+    def __init__(self, session: _FakeFeedSession) -> None:
+        self._session = session
+
+    async def __aenter__(self) -> _FakeFeedResponse:
+        error = self._session.errors.pop(0) if self._session.errors else None
+        if error is not None:
+            raise error
+        return _FakeFeedResponse(self._session.body)
+
+    async def __aexit__(self, *exc_info: object) -> bool:
+        self._session.released += 1
+        return False
+
+
+class _FakeFeedSession:
+    """Session stand-in serving a fixed feed body, optionally failing the first attempts."""
+
+    def __init__(self, *, body: bytes = FEED_XML, errors: list[Exception] | None = None) -> None:
+        self.body = body
+        self.errors = errors or []
+        self.calls = 0
+        self.released = 0
+        self.headers: list[dict[str, str]] = []
+
+    def get(self, url: str, headers: dict[str, str], **kwargs: Any) -> _FakeFeedGetContext:
+        self.calls += 1
+        self.headers.append(headers)
+        return _FakeFeedGetContext(self)
+
+
+class _FakeCache:
+    """In-memory stand-in for the cache controller, keyed like the real one."""
+
+    def __init__(self) -> None:
+        self.store: dict[tuple[str, str, int], Any] = {}
+        self.sets = 0
+
+    async def get(self, key: str, provider: str, category: int, default: Any = None) -> Any:
+        return self.store.get((key, provider, category), default)
+
+    async def set(self, key: str, provider: str, category: int, data: Any, expiration: int) -> None:
+        self.sets += 1
+        self.store[(key, provider, category)] = data
+
+
+class _FakeMass:
+    """Stand-in exposing only what the podcast cache helpers use."""
+
+    def __init__(self, session: _FakeFeedSession) -> None:
+        self.http_session = session
+        self.cache = _FakeCache()
+
+
+def _fake_mass(session: _FakeFeedSession) -> MusicAssistant:
+    return cast("MusicAssistant", _FakeMass(session))
+
+
+async def test_get_podcastparser_dict_releases_the_response() -> None:
+    """The feed response is released again, on the retry path as well."""
+    session = _FakeFeedSession(errors=[ClientError("no user agent allowed")])
+    parsed_feed = await get_podcastparser_dict(
+        session=cast("aiohttp.ClientSession", session), feed_url=FEED_URL
+    )
+    assert parsed_feed["title"] == "Feed One"
+    # the first attempt failed on entering the context, so only the second one is released
+    assert session.calls == 2
+    assert session.released == 1
+    assert session.headers[0] == {"User-Agent": "Mozilla/5.0"}
+
+
+async def test_get_cached_podcast_stores_and_reuses_the_feed() -> None:
+    """A miss retrieves and caches the feed, a subsequent call is served from the cache."""
+    session = _FakeFeedSession()
+    mass = _fake_mass(session)
+    parsed_feed = await get_cached_podcast(
+        mass=mass, provider_instance_id="podcastfeed--test", feed_url=FEED_URL
+    )
+    assert parsed_feed["title"] == "Feed One"
+    assert session.calls == 1
+    await get_cached_podcast(mass=mass, provider_instance_id="podcastfeed--test", feed_url=FEED_URL)
+    assert session.calls == 1
+
+
+async def test_refresh_cached_podcast_always_updates_the_cache() -> None:
+    """A sync must refresh the cached feed, also when a valid entry exists."""
+    session = _FakeFeedSession()
+    mass = _fake_mass(session)
+    await get_cached_podcast(mass=mass, provider_instance_id="podcastfeed--test", feed_url=FEED_URL)
+    assert session.calls == 1
+    session.body = FEED_XML.replace(b"Feed One", b"Feed Renamed")
+    parsed_feed = await refresh_cached_podcast(
+        mass=mass, provider_instance_id="podcastfeed--test", feed_url=FEED_URL
+    )
+    assert session.calls == 2
+    assert parsed_feed["title"] == "Feed Renamed"
+    # the refreshed feed is what subsequent (cached) reads see
+    cached_feed = await get_cached_podcast(
+        mass=mass, provider_instance_id="podcastfeed--test", feed_url=FEED_URL
+    )
+    assert cached_feed["title"] == "Feed Renamed"
+    assert session.calls == 2
+
+
+def test_find_episode_stream_url_matches_empty_guid() -> None:
+    """An empty guid is used as episode id by the parser, so it must resolve as one."""
+    feed = {"episodes": [_episode(guid=""), _episode(guid="ep-2", enclosures=[{"url": "b"}])]}
+    assert find_episode_stream_url(parsed_feed=feed, guid_or_stream_url="") == (
+        "https://example.com/ep1.mp3"
+    )
