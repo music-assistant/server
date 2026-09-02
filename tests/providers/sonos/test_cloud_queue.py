@@ -374,6 +374,8 @@ async def test_a_forced_flow_load_also_releases_the_replaced_sessions_streams() 
     client.player.is_passive = False
     client.player.group.play_stream_url = AsyncMock()
     player.client = client
+    player._provider = MagicMock()
+    player._provider.mass = player.mass
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(SonosPlayer, "flow_mode", property(lambda _self: True))
@@ -399,6 +401,8 @@ async def test_a_failed_forced_flow_load_keeps_the_old_sessions_streams_alive() 
     client.player.is_passive = False
     client.player.group.play_stream_url = AsyncMock(side_effect=FailedCommand("no can do"))
     player.client = client
+    player._provider = MagicMock()
+    player._provider.mass = player.mass
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(SonosPlayer, "flow_mode", property(lambda _self: True))
