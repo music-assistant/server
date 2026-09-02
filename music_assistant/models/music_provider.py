@@ -659,6 +659,24 @@ class MusicProvider(Provider):
         """
         raise NotImplementedError
 
+    async def get_track_by_external_id(
+        self, external_id: str, external_id_type: str
+    ) -> Track | None:
+        """Retrieve track by external ID (ISRC, MusicBrainz, etc.)."""
+        raise NotImplementedError
+
+    async def get_album_by_external_id(
+        self, external_id: str, external_id_type: str
+    ) -> Album | None:
+        """Retrieve album by external ID (MusicBrainz, Discogs, etc.)."""
+        raise NotImplementedError
+
+    async def get_artist_by_external_id(
+        self, external_id: str, external_id_type: str
+    ) -> Artist | None:
+        """Retrieve artist by external ID (MusicBrainz, etc.)."""
+        raise NotImplementedError
+
     async def get_resume_position(
         self, item_id: str, media_type: MediaType
     ) -> tuple[bool, int, datetime | None]:

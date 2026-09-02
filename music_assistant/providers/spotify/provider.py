@@ -495,6 +495,52 @@ class SpotifyProvider(MusicProvider):
         track_obj = await self._get_data(f"tracks/{prov_track_id}")
         return parse_track(track_obj, self)
 
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
+    async def get_track_by_external_id(
+        self, external_id: str, external_id_type: str
+    ) -> Track | None:
+        """Retrieve track by external ID (ISRC)."""
+        if external_id_type.upper() != "ISRC":
+            return None
+
+        try:
+            result = await self._get_data("search", q=f"isrc:{external_id}", type="track", limit=1)
+            if not result.get("tracks", {}).get("items"):
+                return None
+            track_obj = result["tracks"]["items"][0]
+            return parse_track(track_obj, self)
+        except (MediaNotFoundError, KeyError, IndexError):  # fmt: skip
+            return None
+
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
+    async def get_album_by_external_id(
+        self, external_id: str, external_id_type: str
+    ) -> Album | None:
+        """Retrieve album by external ID (UPC/Barcode)."""
+        if external_id_type.upper() not in ("UPC", "BARCODE"):
+            return None
+
+        try:
+            result = await self._get_data("search", q=f"upc:{external_id}", type="album", limit=1)
+
+            # If BARCODE search failed and code starts with 0, try without leading 0 (EAN-13 -> UPC-12)
+            if (
+                not result.get("albums", {}).get("items")
+                and external_id_type.upper() == "BARCODE"
+                and len(external_id) == 13
+                and external_id.startswith("0")
+            ):
+                result = await self._get_data(
+                    "search", q=f"upc:{external_id[1:]}", type="album", limit=1
+                )
+
+            if not result.get("albums", {}).get("items"):
+                return None
+            album_obj = result["albums"]["items"][0]
+            return parse_album(album_obj, self)
+        except (MediaNotFoundError, KeyError, IndexError):  # fmt: skip
+            return None
+
     @use_cache()
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
