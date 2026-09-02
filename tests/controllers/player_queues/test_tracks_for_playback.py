@@ -90,22 +90,24 @@ async def test_genre_samples_artists_via_top_tracks() -> None:
 
 @pytest.mark.asyncio
 async def test_genre_artist_without_top_tracks_falls_back() -> None:
-    """An empty top tracks listing falls back to the full artist-tracks resolution."""
+    """An empty top tracks listing falls back to the plain, preference-independent listing."""
     resolver = MediaResolver.__new__(MediaResolver)
     resolver.mass = MagicMock()
     resolver.logger = MagicMock()
-    resolver.get_artist_tracks = AsyncMock(return_value=[_trk("full1")])  # type: ignore[method-assign]
+    resolver.get_artist_tracks = AsyncMock()  # type: ignore[method-assign]
     artist = MagicMock()
     artist.item_id = "a1"
     artist.provider = "test"
     resolver.mass.music.genres.mapped_media = AsyncMock(return_value=([], [], [artist]))
     resolver.mass.music.artists.top_tracks = AsyncMock(return_value=[])
+    resolver.mass.music.artists.tracks = AsyncMock(return_value=[_trk("full1")])
     genre = MagicMock()
     genre.name = "Rock"
 
     result = await resolver.get_genre_tracks(genre, None)
 
-    resolver.get_artist_tracks.assert_awaited_once_with(artist)
+    resolver.mass.music.artists.tracks.assert_awaited_once_with("a1", "test")
+    resolver.get_artist_tracks.assert_not_awaited()
     assert {t.item_id for t in result} == {"full1"}
 
 

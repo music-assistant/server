@@ -240,8 +240,11 @@ class MediaResolver:
                 artist.item_id, artist.provider
             )
             if not artist_tracks:
-                # no provider with a top tracks listing (e.g. local library only)
-                artist_tracks = await self.get_artist_tracks(artist)
+                # no provider with a top tracks listing (e.g. local library only):
+                # use the plain tracks listing, independent of the enqueue preference
+                artist_tracks = await self.mass.music.artists.tracks(
+                    artist.item_id, artist.provider
+                )
             random.shuffle(artist_tracks)
             result.extend(artist_tracks[:5])
         return result

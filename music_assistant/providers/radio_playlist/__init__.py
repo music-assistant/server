@@ -136,11 +136,13 @@ class RadioPlaylistProvider(PluginProvider):
         available_base_tracks: list[Track] = []
         for seed in random.sample(seeds, len(seeds)):
             # artist seeds only feed the base-track sample, so the bounded top tracks suffice;
-            # an empty listing (no provider with top tracks) falls back to full resolution
-            seed_tracks: list[Track] = []
+            # an empty listing (no provider with top tracks) falls back to the plain tracks
+            # listing, independent of the enqueue preference
             if seed.media_type == MediaType.ARTIST:
                 seed_tracks = await self.mass.music.artists.top_tracks(seed.item_id, seed.provider)
-            if not seed_tracks:
+                if not seed_tracks:
+                    seed_tracks = await self.mass.music.artists.tracks(seed.item_id, seed.provider)
+            else:
                 seed_tracks = await self.mass.player_queues.get_tracks_for_playback(seed)
             for track in seed_tracks:
                 if track not in seen:
