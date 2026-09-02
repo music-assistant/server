@@ -493,9 +493,6 @@ class SonosPlayer(Player):
         # is already playing under the same id (a seek within the track) leaves it
         # waiting out its stale stream for seconds before it fetches the new one.
         # A generation suffix makes every reload cut over like a track change.
-        # TEMP EXPERIMENT (do not merge): serve bare ids to isolate whether the
-        # supersede-abort alone keeps seeks fast, or the id cache also needs busting
-        return queue_item_id
         if not queue_item_id:
             return queue_item_id
         if generation is None:
