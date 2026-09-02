@@ -228,12 +228,18 @@ def build_transition_context(
     )
     # a saturated pair is either a detector false positive or material where no
     # placement avoids the overlap anyway; either way the guard has nothing to
-    # discriminate on and vetoing every candidate would only degrade the fade
+    # discriminate on and vetoing every candidate would only degrade the fade.
+    # The head span follows the incoming track when it is shorter than the
+    # buffered head, so a short track's wall-to-wall mask still reads saturated
+    head_span = min(
+        float(SMART_CROSSFADE_DURATION),
+        fade_in_analysis.duration or float(SMART_CROSSFADE_DURATION),
+    )
     vocal_collision_reliable = not (
         vocal_out_placement is not None
         and vocal_in_placement is not None
         and mask_saturated(vocal_out_placement, audio_end)
-        and mask_saturated(vocal_in_placement, float(SMART_CROSSFADE_DURATION))
+        and mask_saturated(vocal_in_placement, head_span)
     )
     if not vocal_collision_reliable:
         logger.debug("both decks read near-continuous vocal; the collision guard abstains")

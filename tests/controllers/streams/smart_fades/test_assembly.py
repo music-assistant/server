@@ -338,6 +338,19 @@ class TestFallbackCrossfadeOnUnreliableMasks:
         assert plan.metrics.collision_seconds >= 2 * COLLISION_SECONDS_LIMIT
         assert plan.eq_plan.mid_out is None
         assert plan.eq_plan.mid_in is None
+        assert plan.fadeout_curve == "qsin"
+
+    def test_fallback_inside_a_mastered_fade_uses_nofade(self) -> None:
+        """A fallback overlap sitting entirely inside a detected mastered fade skips the qsin curve."""
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(196.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 41.0)])
+        ctx = replace(_ctx(out, inc), fade_onset=30.0)
+        factory = CandidateFactory(ctx, LOGGER)
+
+        plan = FallbackCrossfadeFactory(ctx, factory, LOGGER).build()
+
+        assert plan is not None
+        assert plan.fadeout_curve == "nofade"
 
 
 class TestEmergencyHandoff:

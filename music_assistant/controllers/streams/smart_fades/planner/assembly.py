@@ -143,7 +143,7 @@ class PlanAssembler:
         return replace(
             candidate.plan,
             eq_plan=self._choose_eq(candidate.plan, candidate.spec.strategy),
-            fadeout_curve=self._choose_fadeout_curve(candidate.plan),
+            fadeout_curve=_choose_fadeout_curve(self._ctx, candidate.plan),
             metrics=candidate.metrics,
         )
 
@@ -557,20 +557,6 @@ class PlanAssembler:
                 max_drop_db = max(max_drop_db, 10.0 * float(np.log10(running_max / power)))
         return max_drop_db
 
-    def _choose_fadeout_curve(self, plan: TransitionPlan) -> str:
-        """Pick ``nofade`` when the overlap sits entirely inside a detected mastered fade."""
-        ctx = self._ctx
-        if ctx.fade_onset is None:
-            return "qsin"
-        crossfade_start = plan.fade_out_window - plan.crossfade_duration
-        if crossfade_start < ctx.fade_onset:
-            return "qsin"
-        bar_out = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
-        if plan.fade_out_window < ctx.audio_end - bar_out:
-            return "qsin"
-        # the record already fades itself here; don't double it with a second curve
-        return "nofade"
-
 
 class FallbackCrossfadeFactory:
     """Builds the plain equal-power FALLBACK_CROSSFADE plan tried before the emergency handoff."""
@@ -648,7 +634,7 @@ class FallbackCrossfadeFactory:
             metrics.weighted_collision_seconds,
             duck,
         )
-        return replace(plan, metrics=metrics)
+        return replace(plan, fadeout_curve=_choose_fadeout_curve(ctx, plan), metrics=metrics)
 
     def _duck_eq_plan(self, plan: TransitionPlan) -> EqPlan:
         """Mid-band duck on the outgoing deck so its colliding vocal steps back."""
@@ -800,6 +786,20 @@ def _extend_protective_anchor(
     rebuilt = factory.build(spec)
     assert rebuilt is not None  # the 1-bar rung always yields a candidate
     return spec, rebuilt
+
+
+def _choose_fadeout_curve(ctx: TransitionContext, plan: TransitionPlan) -> str:
+    """Pick ``nofade`` when the overlap sits entirely inside a detected mastered fade."""
+    if ctx.fade_onset is None:
+        return "qsin"
+    crossfade_start = plan.fade_out_window - plan.crossfade_duration
+    if crossfade_start < ctx.fade_onset:
+        return "qsin"
+    bar_out = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
+    if plan.fade_out_window < ctx.audio_end - bar_out:
+        return "qsin"
+    # the record already fades itself here; don't double it with a second curve
+    return "nofade"
 
 
 def _band_gain(

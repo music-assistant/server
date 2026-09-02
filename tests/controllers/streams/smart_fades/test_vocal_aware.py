@@ -253,6 +253,14 @@ class TestSaturatedVocalAbstention:
         ctx = build_transition_context(out, inc, 45.0, LOGGER)
         assert ctx.vocal_collision_reliable
 
+    def test_short_incoming_track_saturates_over_its_own_span(self) -> None:
+        """A wall-to-wall mask on a sub-45s incoming track still reads saturated."""
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(196.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=30.0), [(0.0, 30.0)])
+
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        assert not ctx.vocal_collision_reliable
+
 
 class TestOutgoingVocalRetention:
     """The outgoing track's own vocal is never truncated, even at the cost of a longer tail."""
