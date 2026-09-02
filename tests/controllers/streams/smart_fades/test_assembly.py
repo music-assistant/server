@@ -8,10 +8,14 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from music_assistant.controllers.streams.smart_fades.models import TransitionStrategy
+from music_assistant.controllers.streams.smart_fades.models import (
+    TransitionStrategy,
+    TransitionTier,
+)
 from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
 from music_assistant.controllers.streams.smart_fades.planner.assembly import (
     EmergencyHandoffFactory,
+    FallbackCrossfadeFactory,
     PlanAssembler,
 )
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
@@ -264,6 +268,72 @@ class TestFinalizeDipGuardBehavior:
             assert new_plan.eq_plan.low_out.steps == pytest.approx(
                 reference_plan.eq_plan.low_out.steps
             )
+
+
+class TestIncomingAudibilityFloor:
+    """A bass-dominant incoming intro keeps enough broadband level under its entry shelf."""
+
+    def test_bass_dominant_incoming_shallows_its_entry_shelf(self) -> None:
+        """An 85% low-band incoming entry window floors the kill near the analytic -9.2dB."""
+        out, inc = _bands_pair(0.4, 0.85)
+
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
+
+        assert plan.eq_plan.low_in is not None
+        # analytic floor: 10*log10((10**-0.6 - 0.15) / 0.85)
+        assert plan.eq_plan.low_in.steps[0][1] == pytest.approx(-9.24, abs=0.05)
+        assert plan.eq_plan.low_in.steps[-1][1] == pytest.approx(0.0)
+        # the outgoing deck's post-swap kill is the handover gesture: untouched
+        assert plan.eq_plan.low_out is not None
+        assert plan.eq_plan.low_out.steps[-1][1] == pytest.approx(-26.0)
+
+    def test_bass_balanced_incoming_keeps_the_gated_depth(self) -> None:
+        """A ~30% low-band incoming window can never fall below the floor: full kill kept."""
+        out, inc = _bands_pair(0.4, 0.3)
+
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
+
+        assert plan.eq_plan.low_in is not None
+        assert plan.eq_plan.low_in.steps[0][1] == pytest.approx(-26.0)
+
+
+class TestQuickFadeSkipsEq:
+    """A quick fade is a pure volume fade: no bass/high/mid handover shelves at all."""
+
+    def test_quick_fade_plans_a_neutral_eq(self) -> None:
+        """A tempo-incompatible bass-heavy pair ships a QUICK_FADE without any shelf."""
+        out, inc = _bands_pair(0.6, 0.6)
+        inc.bpm = 150.0
+
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
+
+        assert plan.tier is TransitionTier.QUICK_FADE
+        eq = plan.eq_plan
+        assert eq.low_out is None
+        assert eq.low_in is None
+        assert eq.high_out is None
+        assert eq.high_in is None
+        assert eq.mid_out is None
+        assert eq.mid_in is None
+
+
+class TestFallbackCrossfadeOnUnreliableMasks:
+    """Saturated (unreliable) masks never push the fallback into deferral or a duck."""
+
+    def test_unreliable_masks_ship_the_fallback_without_a_duck(self) -> None:
+        """Wall-to-wall masks read as severe collision, yet the fallback ships duck-free."""
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(196.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 41.0)])
+        ctx = _ctx(out, inc)
+        assert not ctx.vocal_collision_reliable
+        factory = CandidateFactory(ctx, LOGGER)
+
+        plan = FallbackCrossfadeFactory(ctx, factory, LOGGER).build()
+
+        assert plan is not None
+        assert plan.metrics.strategy is TransitionStrategy.FALLBACK_CROSSFADE
+        assert plan.eq_plan.mid_out is None
+        assert plan.eq_plan.mid_in is None
 
 
 class TestEmergencyHandoff:
