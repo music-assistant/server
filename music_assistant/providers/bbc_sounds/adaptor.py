@@ -357,16 +357,16 @@ class PodcastConverter(BaseConverter):
         if show.start and show.titles:
             return self.SCHEDULE_ITEM_FORMAT.format(
                 start=_to_time(show.start),
-                show_name=show.titles["primary"],
-                show_title=show.titles["secondary"],
+                show_name=self._get_attr(show.titles, "primary"),
+                show_title=self._get_attr(show.titles, "secondary"),
                 date=_to_date(show.start),
             )
         if show.titles:
             # TODO: when getting a schedule listing, we have a broadcast time
             # when we fetch the streaming details later we lose that from the new API call
             title = self.SCHEDULE_ITEM_DEFAULT_FORMAT.format(
-                show_name=show.titles["primary"],
-                show_title=show.titles["secondary"],
+                show_name=self._get_attr(show.titles, "primary"),
+                show_title=self._get_attr(show.titles, "secondary"),
             )
             date = show.release.get("date") if show.release else None
             if date and isinstance(date, (str, datetime)):
