@@ -1650,6 +1650,7 @@ def _single_item_handler(
     controller = cast("Any", object.__new__(StreamsController))
     controller.mass = mass
     controller.audio = audio
+    controller._open_item_streams = {}
     controller.logger = MagicMock()
     controller._log_request = MagicMock()
     controller.get_crossfade_mode = MagicMock(return_value=CrossfadeMode.SMART_CROSSFADE)
@@ -1691,6 +1692,27 @@ async def test_single_item_handler_keeps_crossfade_for_a_realtime_item() -> None
 
     assert seen["crossfade_enabled"] is True
     controller.get_crossfade_mode.assert_called_once()
+
+
+async def test_single_item_handler_is_abortable_throughout_its_setup() -> None:
+    """The response registers for supersede-abort before any setup await, and unregisters."""
+    controller, request, _seen = _single_item_handler(is_realtime=False)
+    registered_during_setup: list[str] = []
+    original_select = controller.audio.select_pcm_format
+
+    async def _spy(**kwargs: Any) -> Any:
+        registered_during_setup.extend(
+            session_id for session_id, _ in controller._open_item_streams.get("queue-1") or []
+        )
+        return await original_select(**kwargs)
+
+    controller.audio.select_pcm_format = _spy
+
+    with pytest.raises(_PcmFormatRequested):
+        await controller.serve_queue_item_stream(request)
+
+    assert registered_during_setup == ["session-1"]
+    assert controller._open_item_streams == {}
 
 
 async def test_single_item_handler_keeps_crossfade_for_a_buffered_item() -> None:
