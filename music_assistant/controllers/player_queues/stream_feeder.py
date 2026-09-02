@@ -301,7 +301,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
             playing session claimed is left alone; everything else is released, including
             what sessions that ended earlier left behind. None clears every buffer.
         """
-        self.mass.streams.audio.clear_crossfade_data(queue_id)
+        self.mass.streams.audio.clear_crossfade_handover(queue_id)
 
         queue_data = self._queue_data.get(queue_id)
         queue_items = queue_data.items if queue_data else []
