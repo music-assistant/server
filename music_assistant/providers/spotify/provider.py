@@ -144,7 +144,7 @@ class SpotifyProvider(MusicProvider):
                 required=False,
                 # librespot hands over Spotify's own file untouched, so there is
                 # nothing on that backend to normalize with
-                hidden=self.get_setup_value(CONF_PLAYBACK_BACKEND) != BACKEND_SOLOIST,
+                hidden=not self._soloist_configured,
             ),
             ConfigEntry(
                 key=CONF_AUDIO_QUALITY,
@@ -154,7 +154,7 @@ class SpotifyProvider(MusicProvider):
                 options=AUDIO_QUALITY_OPTIONS,
                 # librespot streams Spotify's own file untouched, so there is
                 # nothing to choose there
-                hidden=self.get_setup_value(CONF_PLAYBACK_BACKEND) != BACKEND_SOLOIST,
+                hidden=not self._soloist_configured,
             ),
             ConfigEntry(
                 key=CONF_SYNC_PODCAST_PROGRESS,
@@ -273,7 +273,7 @@ class SpotifyProvider(MusicProvider):
         """
         # read from the stored setup choice: MusicProvider sizes the stream
         # semaphore from this in __init__, before the backend object exists
-        if self.get_setup_value(CONF_PLAYBACK_BACKEND) == BACKEND_SOLOIST:
+        if self._soloist_configured:
             return 1
         return 3
 
@@ -1230,7 +1230,7 @@ class SpotifyProvider(MusicProvider):
 
     def _create_backend(self) -> SpotifyPlaybackBackend:
         """Return the playback backend selected by this instance's configuration."""
-        if self.get_setup_value(CONF_PLAYBACK_BACKEND) == BACKEND_SOLOIST:
+        if self._soloist_configured:
             return SoloistBackend(self)
         return LibrespotBackend(self)
 
@@ -1265,6 +1265,16 @@ class SpotifyProvider(MusicProvider):
                 self.logger.warning("Failed to remove %s: %s", failed, err)
 
         shutil.rmtree(path, onexc=_report)
+
+    @property
+    def _soloist_configured(self) -> bool:
+        """
+        Return True if this instance is set up to play through the soloist backend.
+
+        Answers from the stored setup choice, so it is also valid before the
+        backend object exists.
+        """
+        return self.get_setup_value(CONF_PLAYBACK_BACKEND) == BACKEND_SOLOIST
 
     @property
     def _soloist_backend(self) -> SoloistBackend | None:

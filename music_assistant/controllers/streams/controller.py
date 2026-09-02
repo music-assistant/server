@@ -670,6 +670,10 @@ class StreamsController(CoreController):
         queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
         if not queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {queue_item_id}")
+        # the player may be asking for a track out of a stale cached copy of the queue
+        # (its refresh signal can get lost): refusing it makes the player re-read the
+        # queue, where serving it would silently play a track the user moved away
+        self._raise_if_stale_item_request(player, queue_id, queue_item)
 
         is_audio_source = (
             queue_item.media_item is not None
@@ -859,6 +863,10 @@ class StreamsController(CoreController):
                 )
             elif http_profile == "chunked":
                 resp.enable_chunked_encoding()
+
+            # re-check right before audio is handed out: a queue edit landing during
+            # the awaited setup above must not hand the player a stale track after all
+            self._raise_if_stale_item_request(player, queue_id, queue_item)
 
             await resp.prepare(request)
 
@@ -2197,6 +2205,21 @@ class StreamsController(CoreController):
         # advertise is relayed to the player but never applied to the response itself.
         # Without this the player is left waiting on a stream that already ended.
         resp.force_close()
+
+    def _raise_if_stale_item_request(
+        self, player: Player, queue_id: str, queue_item: QueueItem
+    ) -> None:
+        """Refuse (404) the request if the item fell out of the queue's playhead window."""
+        if not player.strict_queue_item_requests:
+            return
+        if self.mass.player_queues.is_current_window_item(queue_id, queue_item.queue_item_id):
+            return
+        self.logger.debug(
+            "Denying stream request from %s for %s: the queue has moved on",
+            player.display_name,
+            queue_item.name,
+        )
+        raise web.HTTPNotFound(reason=f"Queue item is not up next: {queue_item.queue_item_id}")
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""
