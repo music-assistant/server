@@ -167,7 +167,7 @@ class AIRadioQueueDJMixin:
                 state.station_id = station_id
             return
         run = self._show_runs.get(station_id)
-        if run is None or run.dj_armed or run.queue_id not in (None, queue_id):
+        if run is None or run.dj_armed or run.queue_id != queue_id:
             # no run yet, already armed once this run (a detach or a manual disable must
             # not be re-armed by a later event), or the run belongs to another queue
             return
@@ -186,8 +186,6 @@ class AIRadioQueueDJMixin:
             return
         state.station_id = station_id
         run.dj_armed = True
-        if run.queue_id is None:
-            run.queue_id = queue_id
 
     async def _maybe_detach_show_dj(self, queue_id: str) -> None:
         """Detach an auto-armed show DJ and end its run once the queue left the show."""

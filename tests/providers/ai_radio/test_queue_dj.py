@@ -189,9 +189,9 @@ def _fake_queue_with_sources(dj: DummyQueueDJ, queue_id: str, source_uris: list[
     return queue
 
 
-def _seed_show_run(dj: DummyQueueDJ, station_id: str) -> _ShowRun:
-    """Register an in-flight, not-yet-armed show run for the given station."""
-    run = _ShowRun(tracks=[])
+def _seed_show_run(dj: DummyQueueDJ, station_id: str, queue_id: str = "q1") -> _ShowRun:
+    """Register an in-flight, not-yet-armed show run bound to the given queue."""
+    run = _ShowRun(tracks=[], queue_id=queue_id)
     dj._show_runs[station_id] = run
     return run
 
@@ -648,8 +648,7 @@ async def test_host_deleted_mid_run_still_ends_the_run_at_queue_end(tmp_path: Pa
 async def test_player_removed_ends_a_bound_run_without_dj_state(tmp_path: Path) -> None:
     """Removing the player behind a run ends it even when no DJ state exists anymore."""
     dj = _dj_harness(tmp_path)
-    run = _seed_show_run(dj, "morning_show")
-    run.queue_id = "q1"
+    _seed_show_run(dj, "morning_show")
 
     await dj._on_dj_queue_event(
         cast("Any", SimpleNamespace(event=EventType.PLAYER_REMOVED, object_id="q1"))
@@ -664,8 +663,7 @@ async def test_orphaned_run_survives_while_its_queue_still_plays_the_show(
     """A run without DJ state is kept as long as its queue still sources the show."""
     dj = _dj_harness(tmp_path)
     _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
-    run = _seed_show_run(dj, "morning_show")
-    run.queue_id = "q1"
+    _seed_show_run(dj, "morning_show")
 
     await dj._on_dj_queue_event(
         cast("Any", SimpleNamespace(event=EventType.QUEUE_ITEMS_UPDATED, object_id="q1"))
@@ -735,7 +733,7 @@ async def test_replan_plans_an_outro_when_the_show_run_is_exhausted(tmp_path: Pa
     dummy = _make_replan_dj(tmp_path, list(tracks), current_index=-1, index_in_buffer=-1, host=host)
     state = dummy._dj_queues["queue-1"]
     state.station_id = "station_a"
-    dummy._show_runs["station_a"] = _ShowRun(tracks=[], cursor=0)
+    dummy._show_runs["station_a"] = _ShowRun(tracks=[], queue_id="queue-1")
 
     await dummy._replan_queue("queue-1")
 
@@ -764,7 +762,7 @@ async def test_replan_splices_both_intro_and_outro_in_one_pass(tmp_path: Path) -
     )
     state = dummy._dj_queues["queue-1"]
     state.station_id = "station_a"
-    dummy._show_runs["station_a"] = _ShowRun(tracks=[], cursor=0)
+    dummy._show_runs["station_a"] = _ShowRun(tracks=[], queue_id="queue-1")
 
     await dummy._replan_queue("queue-1")
 
@@ -793,7 +791,7 @@ def _show_track_item(index: int, uri: str) -> FakeQueueItem:
 def _exhausted_run(track_uris: list[str]) -> _ShowRun:
     """Return a fully served show run whose snapshot holds the given track uris."""
     tracks = cast("Any", [SimpleNamespace(uri=uri) for uri in track_uris])
-    return _ShowRun(tracks=tracks, cursor=len(track_uris))
+    return _ShowRun(tracks=tracks, queue_id="queue-1", cursor=len(track_uris))
 
 
 async def test_outro_is_not_placed_while_the_final_page_is_in_flight(tmp_path: Path) -> None:

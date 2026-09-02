@@ -6,8 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ImageType
@@ -20,7 +19,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from .constants import FALLBACK_TRACK_SECONDS, SHOW_FEED_PAGE_SIZE, SHOW_RUN_UNBOUND_TTL_SECONDS
+from .constants import FALLBACK_TRACK_SECONDS, SHOW_FEED_PAGE_SIZE, SHOW_FEED_SERVE_THRESHOLD
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -31,9 +30,9 @@ class _ShowRun:
     """One in-flight play-through of a show: its track snapshot and feed cursor."""
 
     tracks: list[Track]
+    # the queue playing this run: a run only ever exists for a queue that sources the show
+    queue_id: str
     cursor: int = 0
-    queue_id: str | None = None
-    started: float = field(default_factory=time.time)
     # True once the queue DJ has been auto-armed for this run, so a detach (queue ended, show
     # left the sources) or a manual disable is never immediately re-armed by a later event
     dj_armed: bool = False
@@ -72,11 +71,12 @@ class AIRadioMediaMixin:
 
     async def get_dynamic_radio_tracks(self, prov_radio_id: str) -> list[Track]:
         """
-        Return the next page of a show's track snapshot, or an empty batch when exhausted.
+        Return the next feed page for a playing show, or a stateless sample otherwise.
 
-        The first call for a station starts a run (snapshotting the source playlist);
-        later calls page through it. The empty batch after the last page is what ends the
-        show's feed; a later "endless show" setting only has to keep returning tracks.
+        A queue playing the show gets its run's next page (the first call starts the run,
+        bound to that queue); the empty batch after the last page is what ends the show's
+        feed. A caller without such a queue (e.g. a details view) gets a fresh sample
+        slice that consumes nothing.
 
         :param prov_radio_id: The station id of the show.
         """
@@ -86,13 +86,27 @@ class AIRadioMediaMixin:
         # snapshotting awaits, so two concurrent first-calls for the same station
         # must not both pass the "no active run" check and each start their own run
         async with self._show_runs_lock:
-            self._expire_unbound_runs()
+            queue_id = self._find_show_queue(prov_radio_id)
+            if queue_id is None:
+                # a browse/details sample: playback stores the show on the queue's sources
+                # before its first feed call, so a run is only needed when a queue is found
+                tracks = await self._snapshot_show_tracks(station)
+                return tracks[:SHOW_FEED_PAGE_SIZE]
             run = self._show_runs.get(prov_radio_id)
             if run is None:
-                run = _ShowRun(tracks=await self._snapshot_show_tracks(station))
+                run = _ShowRun(tracks=await self._snapshot_show_tracks(station), queue_id=queue_id)
                 self._show_runs[prov_radio_id] = run
-            if run.queue_id is None:
-                run.queue_id = self._find_show_queue(prov_radio_id)
+            if run.exhausted:
+                return []
+            queue = self.mass.player_queues.get(run.queue_id)
+            consuming = queue is not None and (
+                queue.items == 0
+                or queue.items - (queue.current_index or 0) < SHOW_FEED_SERVE_THRESHOLD
+            )
+            if not consuming:
+                # a mid-show sample (or stray fetch) must not advance the live run's
+                # cursor; the empty sample while a show plays is the accepted trade-off
+                return []
             page = run.tracks[run.cursor : run.cursor + SHOW_FEED_PAGE_SIZE]
             run.cursor += len(page)
             return page
@@ -218,10 +232,3 @@ class AIRadioMediaMixin:
             if total_minutes >= max_minutes:
                 break
         return kept
-
-    def _expire_unbound_runs(self) -> None:
-        """Drop stale runs that never got bound to a queue (their enqueue failed downstream)."""
-        now = time.time()
-        for station_id, run in list(self._show_runs.items()):
-            if run.queue_id is None and now - run.started > SHOW_RUN_UNBOUND_TTL_SECONDS:
-                del self._show_runs[station_id]
