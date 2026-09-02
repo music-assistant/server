@@ -439,6 +439,11 @@ class SonosPlayer(Player):
         if media.image_url:
             container["imageUrl"] = media.image_url
         await self.group_controller.play_stream_url(stream_url, container)
+        # same post-success sweep as the cloud-queue branch: a forced-flow queue
+        # (overlay) streams through here and its replaced session's response must
+        # die now that the speaker accepted the new stream
+        if media.source_id and media.queue_session_id:
+            self.mass.streams.close_superseded_item_streams(media.source_id, media.queue_session_id)
 
     async def select_source(self, source: str) -> None:
         """
