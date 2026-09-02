@@ -1211,8 +1211,7 @@ class BuiltinProvider(MusicProvider):
     async def _get_builtin_playlist_recently_played(self) -> list[Track]:
         result: list[Track] = []
         recent_tracks = await self.mass.music.recently_played(100, [MediaType.TRACK])
-        # a library-originated play has no provider instance of its own to resolve,
-        # so fetch all library rows in one query and look them up by id below
+        # "library" rows have no provider instance to resolve, so read them from the db in one go
         library_ids = [int(x.item_id) for x in recent_tracks if x.provider == "library"]
         library_tracks: dict[str, Track] = {}
         if library_ids:
@@ -1226,8 +1225,7 @@ class BuiltinProvider(MusicProvider):
             }
         for idx, item in enumerate(recent_tracks, 1):
             if item.provider == "library":
-                # a track removed from the library since it was played has no row anymore;
-                # pop so a track played by several users is listed once, at its newest play
+                # pop so a track played by several users is listed once (newest play first)
                 if track := library_tracks.pop(item.item_id, None):
                     track.position = idx
                     result.append(track)
