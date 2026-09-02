@@ -74,6 +74,78 @@ def test_the_buffer_uses_the_source_when_nothing_was_decoded() -> None:
     assert pcm.sample_rate == 48000
 
 
+def test_the_buffer_normalizes_ffmpegs_dsd_decoder_output() -> None:
+    """DSD's byte-rate probe values must not be mistaken for its decoded PCM format."""
+    from music_assistant.controllers.streams.audio_buffer import (  # noqa: PLC0415
+        _buffer_pcm_format,
+    )
+
+    advertised = AudioFormat(
+        content_type=ContentType.DSF,
+        codec_type=ContentType.DSD_LSBF_PLANAR,
+        sample_rate=352800,
+        bit_depth=8,
+        channels=2,
+    )
+
+    pcm = _buffer_pcm_format(_streamdetails(advertised, None))
+
+    assert pcm.content_type == ContentType.PCM_F32LE
+    assert pcm.codec_type == ContentType.PCM_F32LE
+    assert pcm.sample_rate == 352800
+    assert pcm.bit_depth == 32
+    assert pcm.channels == 2
+
+
+def test_the_buffer_recognizes_dst_compressed_dff_by_path() -> None:
+    """DFF/DST needs path-based detection until the shared models expose those types."""
+    from music_assistant.controllers.streams.audio_buffer import (  # noqa: PLC0415
+        _buffer_pcm_format,
+    )
+
+    advertised = AudioFormat(
+        content_type=ContentType.UNKNOWN,
+        codec_type=ContentType.UNKNOWN,
+        sample_rate=705600,
+        bit_depth=16,
+        channels=2,
+    )
+    streamdetails = _streamdetails(advertised, None)
+    streamdetails.path = "/music/album/track.dff"
+
+    pcm = _buffer_pcm_format(streamdetails)
+
+    assert pcm.content_type == ContentType.PCM_F32LE
+    assert pcm.codec_type == ContentType.PCM_F32LE
+    assert pcm.sample_rate == 705600
+    assert pcm.bit_depth == 32
+
+
+def test_the_flow_depth_uses_ffmpegs_decoded_dsd_depth() -> None:
+    """Unprocessed DSD-to-PCM playback carries FFmpeg's float output without narrowing it."""
+    from music_assistant.controllers.streams.audio import StreamsAudio  # noqa: PLC0415
+
+    advertised = AudioFormat(
+        content_type=ContentType.DSF,
+        codec_type=ContentType.DSD_LSBF_PLANAR,
+        sample_rate=352800,
+        bit_depth=8,
+        channels=2,
+    )
+    streamdetails = _streamdetails(advertised, None)
+    streamdetails.volume_normalization_mode = VolumeNormalizationMode.DISABLED
+
+    content_type, bit_depth = StreamsAudio._pick_pcm_bit_depth(
+        cast("StreamsAudio", SimpleNamespace()),
+        players=(),
+        streamdetails=streamdetails,
+        crossfade_enabled=False,
+    )
+
+    assert content_type == ContentType.PCM_F32LE
+    assert bit_depth == 32
+
+
 def test_a_surround_source_is_folded_to_stereo() -> None:
     """The buffer holds the stereo fold, so analysis measures what is played."""
     from music_assistant.controllers.streams.audio_buffer import (  # noqa: PLC0415

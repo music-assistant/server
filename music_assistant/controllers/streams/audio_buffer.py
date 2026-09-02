@@ -19,12 +19,10 @@ from contextlib import aclosing, suppress
 from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.enums import (
-    ContentType,
     MediaType,
     VolumeNormalizationMode,
 )
 from music_assistant_models.errors import AudioError
-from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.constants import (
@@ -37,11 +35,12 @@ from music_assistant.controllers.streams.constants import (
     BufferMode,
     BufferSize,
 )
-from music_assistant.helpers.audio import arriving_audio_format
+from music_assistant.helpers.audio import decoded_pcm_format
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
@@ -905,12 +904,4 @@ def _buffer_pcm_format(streamdetails: StreamDetails) -> AudioFormat:
 
     :param streamdetails: The stream the buffer is for.
     """
-    arriving = arriving_audio_format(streamdetails)
-    return AudioFormat(
-        content_type=ContentType.from_bit_depth(arriving.bit_depth),
-        sample_rate=arriving.sample_rate,
-        bit_depth=arriving.bit_depth,
-        # buffer the stereo fold of a surround source, so audio analysis measures
-        # the same audio that is played back rather than the untouched surround mix
-        channels=min(arriving.channels, 2),
-    )
+    return decoded_pcm_format(streamdetails)
