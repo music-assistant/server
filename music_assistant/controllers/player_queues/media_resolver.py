@@ -240,8 +240,7 @@ class MediaResolver:
                 artist.item_id, artist.provider
             )
             if not artist_tracks:
-                # no provider with a top tracks listing (e.g. local library only):
-                # use the plain tracks listing, independent of the enqueue preference
+                # not get_artist_tracks: a top_tracks preference would repeat the empty lookup
                 artist_tracks = await self.mass.music.artists.tracks(
                     artist.item_id, artist.provider
                 )
