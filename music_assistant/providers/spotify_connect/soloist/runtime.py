@@ -33,7 +33,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Final
 
 import aiofiles
-from aiohttp import ClientError, ClientTimeout, ClientWebSocketResponse, WSMsgType
+from aiohttp import ClientError, ClientTimeout, ClientWebSocketResponse, ClientWSTimeout, WSMsgType
 from mashumaro import DataClassDictMixin
 from mashumaro.exceptions import InvalidFieldValue, MissingField
 from music_assistant_models.errors import MusicAssistantError
@@ -778,7 +778,12 @@ class SoloistClient:
         ws: ClientWebSocketResponse | None = None
         try:
             async with self.mass.http_session.ws_connect(
-                f"ws://{host}:{port}/", heartbeat=_WS_HEARTBEAT
+                f"ws://{host}:{port}/",
+                heartbeat=_WS_HEARTBEAT,
+                # the daemon is often already gone when this closes (a
+                # single-track run exits at its item's end); the default 10s
+                # close-handshake wait would stall every teardown by that much
+                timeout=ClientWSTimeout(ws_close=1.0),
             ) as ws:
                 self._ws = ws
                 self.logger.debug("Connected to the soloist websocket at %s:%s", addr, port)

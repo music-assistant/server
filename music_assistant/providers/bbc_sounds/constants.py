@@ -18,4 +18,5 @@ class _Constants:
     CONF_STREAM_FORMAT_DASH: str = DASH
     DEFAULT_EXPIRATION = 60 * 60 * 24 * 30  # 30 days
     SHORT_EXPIRATION = 60 * 60 * 3  # 3 hours
+    DYNAMIC_EXPIRATION = 60  # 1 minute
     ARTWORK_TIMEOUT = 15
