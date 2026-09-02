@@ -2037,8 +2037,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             return None
 
         # Special fields like RANDOM don't use direction
-        if field in (SortField.RANDOM, SortField.RANDOM_PLAY_COUNT):
+        if field == SortField.RANDOM:
             return sql_field
+        if field == SortField.RANDOM_PLAY_COUNT:
+            return f"RANDOM(), {self.db_table}.play_count"
 
         # Qualify bare column names with table name to avoid ambiguity when JOINs are present
         if "." not in sql_field and "(" not in sql_field:
