@@ -1090,6 +1090,8 @@
   "provider.audiobookshelf.media.recommendations.recent_series.name": "Recent series",
   "provider.audiobookshelf.media.recommendations.recently_added.name": "Recently added",
   "provider.audiobookshelf.media.recommendations.recommended.name": "Recommended",
+  "provider.bandcamp.config_entries.get_lyrics.description": "Fetch song lyrics from Bandcamp. One extra Bandcamp request per album or per standalone track, cached for 30 days.",
+  "provider.bandcamp.config_entries.get_lyrics.label": "Fetch song lyrics",
   "provider.bandcamp.config_entries.identity.description": "Identity token from Bandcamp cookies for account collection access. Log in https://bandcamp.com and extract browser cookie named 'identity'.",
   "provider.bandcamp.config_entries.identity.label": "Identity token",
   "provider.bandcamp.config_entries.top_tracks_limit.description": "Search limit while getting artist top tracks.",
