@@ -186,14 +186,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
     @property
     def max_concurrent_streams(self) -> int:
-        """
-        Return how many source streams Music Assistant may run against this provider.
-
-        Six is the most any YouTube account may stream at once, which is what a family
-        plan allows across its six household members. Individual (one) and two-person
-        (two) plans are stricter, but YouTube enforces those itself by pausing or
-        stalling playback, and the tier is not visible to us.
-        """
+        """A YouTube Music family plan allows up to six simultaneous streams."""
         return 6
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
