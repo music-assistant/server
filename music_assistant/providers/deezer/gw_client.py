@@ -41,15 +41,14 @@ class GWClient:
     _license_expiration_timestamp: int
     _user_id: int
     session: ClientSession
-    formats: ClassVar[list[dict[str, str]]] = [
-        {"cipher": "BF_CBC_STRIPE", "format": "MP3_128"},
-    ]
+    formats: list[dict[str, str]]
     user_country: str
 
     def __init__(self, session: ClientSession, arl_token: str) -> None:
         """Provide an aiohttp ClientSession and the deezer ARL token."""
         self._arl_token = arl_token
         self.session = session
+        self.formats = [{"cipher": "BF_CBC_STRIPE", "format": "MP3_128"}]
 
     async def _set_cookie(self) -> None:
         cookie: Morsel[str] = Morsel()
@@ -75,12 +74,15 @@ class GWClient:
         self._license_expiration_timestamp = user_data["results"]["USER"]["OPTIONS"][
             "expiration_timestamp"
         ]
+        # Rebuilt on every license refresh, so start from the default list
+        formats = [{"cipher": "BF_CBC_STRIPE", "format": "MP3_128"}]
         web_qualities = user_data["results"]["USER"]["OPTIONS"]["web_sound_quality"]
         mobile_qualities = user_data["results"]["USER"]["OPTIONS"]["mobile_sound_quality"]
         if web_qualities["high"] or mobile_qualities["high"]:
-            self.formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "MP3_320"})
+            formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "MP3_320"})
         if web_qualities["lossless"] or mobile_qualities["lossless"]:
-            self.formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "FLAC"})
+            formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "FLAC"})
+        self.formats = formats
 
         self.user_country = user_data["results"]["COUNTRY"]
 

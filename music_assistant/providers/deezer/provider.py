@@ -14,11 +14,13 @@ from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+import aiohttp
 from deezer_python_gql import DeezerGQLClient, GraphQLClientError
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
+from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
@@ -86,6 +88,7 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     Delegates to specialized manager classes for clean separation of concerns.
     """
 
+    http_session: aiohttp.ClientSession
     gql_client: DeezerGQLClient
     gw_client: GWClient
     media_manager: DeezerMediaManager
@@ -101,18 +104,25 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
         """Handle async init of the Deezer provider."""
         arl_token = str(self.get_setup_value(CONF_ARL_TOKEN))
 
+        # Dedicated session with its own cookie jar to support multi-instance
+        # (each instance has its own arl and gw-light session cookie)
+        self.http_session = create_clientsession(self.mass, cookie_jar=aiohttp.CookieJar())
         try:
-            self.gql_client = DeezerGQLClient(arl=arl_token, session=self.mass.http_session)
+            self.gql_client = DeezerGQLClient(arl=arl_token, session=self.http_session)
             logging.getLogger("deezer_python_gql").setLevel(self.logger.level + 10)
             me = await self.gql_client.get_me()
             if not me:
                 msg = "Authentication returned no user data"
                 raise GraphQLClientError(msg)
             self.user_id = me.id
-            self.gw_client = GWClient(self.mass.http_session, arl_token)
+            self.gw_client = GWClient(self.http_session, arl_token)
             await self.gw_client.setup()
         except (GraphQLClientError, DeezerGWError) as err:
+            await self.http_session.close()
             raise LoginFailed("Deezer authentication failed. Please check your ARL token.") from err
+        except Exception:
+            await self.http_session.close()
+            raise
 
         self.media_manager = DeezerMediaManager(self)
         self.browse_manager = DeezerBrowseManager(self)
@@ -121,6 +131,8 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
         await super().unload(is_removed)
+        if not self.http_session.closed:
+            await self.http_session.close()
 
     # -- Library retrieval --
 
