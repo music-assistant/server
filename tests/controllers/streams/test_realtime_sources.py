@@ -262,6 +262,25 @@ async def test_ready_threshold_ladder(
     await buffer.clear()
 
 
+async def test_a_source_that_delivers_nothing_fails_before_any_read() -> None:
+    """Acquisition raises, so a refused item never reaches the no-audio revocation."""
+    mass, _scheduled_tasks, _seek_positions = _make_mass_for_get_buffer()
+
+    def _refused(*_args: Any, **_kwargs: Any) -> AsyncGenerator[bytes]:
+        async def _gen() -> AsyncGenerator[bytes]:
+            for _ in ():  # never yields; only makes this an async generator
+                yield b""
+            raise AudioError("Spotify would not play spotify:track:aaa")
+
+        return _gen()
+
+    mass.streams.audio.get_media_stream = _refused
+    streamdetails = _make_stream_details(MediaType.TRACK, queue_id="queue-1")
+
+    with pytest.raises(AudioError, match="would not play"):
+        await AudioBuffer.get_buffer(mass, streamdetails, wait_ready=True, reason="test")
+
+
 # -- AudioBuffer.get_buffer: seek handling --
 
 
