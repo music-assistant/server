@@ -8,7 +8,7 @@ from typing import Any, Self, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant_models.enums import ExternalID, ImageType, MediaType, PlaylistMatchPolicy
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant_models.errors import InvalidDataError, InvalidProviderID, MediaNotFoundError
 from music_assistant_models.media_items import (
     AudioFormat,
     ItemMapping,
@@ -195,11 +195,10 @@ async def test_import_playlist_preserves_playlist_image() -> None:
     """Test that importing an M3U keeps the playlist-level image."""
     prov = _make_provider()
     prov_any = cast("Any", prov)
-    prov_any.create_playlist = AsyncMock(return_value=_make_playlist("Imported Playlist"))
+    prov_any._reserve_playlist_file = AsyncMock(return_value="playlist_1")
     prov_any.get_playlist = AsyncMock(
         return_value=_make_playlist("Imported Playlist", "https://img.example.com/cover.jpg")
     )
-    prov_any._write_m3u_file = AsyncMock()
 
     m3u_data = generate_m3u(
         "Imported Playlist",
@@ -209,13 +208,59 @@ async def test_import_playlist_preserves_playlist_image() -> None:
 
     result = await prov.import_playlist(m3u_data)
 
-    assert prov_any._write_m3u_file.await_args is not None
-    args = prov_any._write_m3u_file.await_args.args
-    assert args[0] == "playlist_1"
-    assert args[1] == "Imported Playlist"
-    assert args[3] == "https://img.example.com/cover.jpg"
+    assert prov_any._reserve_playlist_file.await_args is not None
+    args = prov_any._reserve_playlist_file.await_args.args
+    assert args[0] == "Imported Playlist"
+    assert args[1][0].path == "spotify://track/abc123"
+    assert args[2] == "https://img.example.com/cover.jpg"
     assert result.image is not None
     assert result.image.path == "https://img.example.com/cover.jpg"
+
+
+async def test_import_playlist_never_exposes_empty_intermediate_file() -> None:
+    """
+    An imported playlist's file must appear on disk already fully populated.
+
+    A concurrent add/remove on the same (predictable) id must never be able to
+    observe or race an intermediate empty file between creation and population.
+    """
+    prov = _make_provider()
+    prov_any = cast("Any", prov)
+    prov_any._playlists_dir = "stubbed-playlists-dir"
+    prov_any._playlist_generations = {}
+    prov_any.get_playlist = AsyncMock(side_effect=lambda pid: _make_playlist(pid))
+    writes: list[str] = []
+
+    class _FakeM3uFile:
+        """Stand-in for aiofiles' write-mode open() that records every write's content."""
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def write(self, content: str) -> None:
+            writes.append(content)
+
+    def fake_open(_path: str, _mode: str = "r", **_kwargs: object) -> _FakeM3uFile:
+        return _FakeM3uFile()
+
+    with (
+        patch("music_assistant.providers.builtin.os.path.isfile", return_value=False),
+        patch("music_assistant.providers.builtin.aiofiles.open", side_effect=fake_open),
+    ):
+        m3u_data = generate_m3u(
+            "Imported Playlist",
+            [PlaylistItem(path="spotify://track/abc123", title="Test", length="120")],
+        )
+        await prov.import_playlist(m3u_data)
+
+    # the file must be written exactly once, and that single write must already
+    # contain the imported track - never an empty file followed by a second,
+    # separately-locked write that a concurrent add/remove could race against
+    assert len(writes) == 1
+    assert "abc123" in writes[0]
 
 
 async def test_remove_playlist_tracks_preserves_playlist_image() -> None:
@@ -613,6 +658,61 @@ async def test_available_provider_with_dead_item_id_is_matched() -> None:
 
     # the configured source must actually be probed authoritatively - it must not be
     # skipped as if it were simply out of scope
+    prov_any.mass.music.tracks.get_provider_item.assert_awaited_once()
+    prov_any._write_m3u_file.assert_awaited_once()
+    report_markdown = set_report.call_args.args[0]
+    assert "| Retained | 0 |" in report_markdown
+    assert "| Exact release | 1 |" in report_markdown
+
+
+async def test_available_provider_with_invalid_provider_id_is_matched() -> None:
+    """A malformed stored item id is treated as terminally dead, not as an aborting error."""
+    prov = _make_provider(
+        loaded_provider_domains={"spotify--1"},
+        get_provider_item=AsyncMock(side_effect=InvalidProviderID("malformed id")),
+    )
+    item = _make_playlist_item(
+        path="spotify://track/abc123",
+        title="Artist - Song",
+        providers=[
+            ProviderMappingInfo(
+                domain="spotify", instance_id="spotify--1", item_id="abc123", content_type=""
+            )
+        ],
+        artists=[ArtistInfo(name="Artist", provider_domain="", item_id="", provider_instance="")],
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+    matched_track = _make_track(
+        "Song",
+        artists=["Artist"],
+        provider_mappings={
+            ProviderMapping(item_id="xyz789", provider_domain="qobuz", provider_instance="qobuz--1")
+        },
+    )
+    enrichment = TrackProviderEnrichment(
+        track=matched_track,
+        matches=(
+            TrackProviderMatch(
+                track=matched_track,
+                mapping=next(iter(matched_track.provider_mappings)),
+                confidence=TrackMatchConfidence.EXACT,
+            ),
+        ),
+        ambiguous_providers=(),
+        failed_providers=(),
+        used_library_item=False,
+    )
+    prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock(return_value=enrichment)
+
+    with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
+        # a malformed id must not raise out of the pass and abort matching for the
+        # rest of the playlist's entries
+        await prov.match_imported_playlist_tracks(
+            "playlist_1",
+            PlaylistMatchPolicy.SAME_RECORDING,
+            _allowed(prov, "spotify--1", "qobuz--1"),
+        )
+
     prov_any.mass.music.tracks.get_provider_item.assert_awaited_once()
     prov_any._write_m3u_file.assert_awaited_once()
     report_markdown = set_report.call_args.args[0]
