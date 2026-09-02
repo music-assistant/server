@@ -402,6 +402,14 @@ class SonosPlayer(Player):
                 # admitting there is none - its session was reset above either way
                 self.cloud_queue_id = None
                 raise
+            # only now that the speaker accepted the load: it keeps playing the old
+            # audio until the cutover, but it will not act on the load while its
+            # current stream connection is still open, and a response blocked in a
+            # write never notices on its own that its session is gone
+            if media.source_id and media.queue_session_id:
+                self.mass.streams.close_superseded_item_streams(
+                    media.source_id, media.queue_session_id
+                )
             return
 
         # play duration-less (long running) radio streams

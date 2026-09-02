@@ -979,9 +979,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue_data.next_item_id_enqueued = None
             # always update session id when we start a new playback session
             queue_data.session_id = shortuuid.random(length=8)
-            # responses of the replaced session die now: a player that waits out
-            # its old stream would otherwise sit on the new session for seconds
-            self.mass.streams.close_superseded_item_streams(queue_id, queue_data.session_id)
             self.mass.streams.audio_processing.start_session(
                 queue_id,
                 queue_data.session_id,
@@ -1848,7 +1845,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 # started while this stop was still waiting on the device
                 if queue_data.session_id == session_id:
                     queue_data.session_id = None
-                    self.mass.streams.close_superseded_item_streams(queue_id, None)
                 self.mass.streams.audio_processing.clear(queue_id, session_id)
                 self.mass.create_task(self._cleanup_queue_audio_data(queue_id, session_id))
 

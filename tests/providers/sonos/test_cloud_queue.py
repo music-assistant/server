@@ -2,6 +2,7 @@
 
 import json
 import logging
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -340,6 +341,54 @@ async def test_upcoming_is_capped_by_what_the_speaker_allows(
     window = await player.build_cloud_queue_window("track0", max_upcoming=_requested_max(requested))
 
     assert [x.queue_item_id for x in window.items] == ["track0", *expected_upcoming]
+
+
+async def test_a_successful_load_releases_the_replaced_sessions_streams() -> None:
+    """The old session's open responses die once the speaker accepted the new load."""
+    player, _ = _make_player([_make_queue_item("track0")])
+    client = MagicMock()
+    client.player.is_passive = False
+    client.player.group.play_cloud_queue = AsyncMock()
+    player.client = client
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(SonosPlayer, "flow_mode", property(lambda _self: False))
+        await player.play_media(
+            PlayerMedia(
+                uri="library://track/1",
+                media_type=MediaType.TRACK,
+                source_id=QUEUE_ID,
+                queue_item_id="track0",
+                queue_session_id="session-2",
+            )
+        )
+
+    close_stale = cast("MagicMock", player.mass.streams.close_superseded_item_streams)
+    close_stale.assert_called_once_with(QUEUE_ID, "session-2")
+
+
+async def test_a_failed_load_keeps_the_old_sessions_streams_alive() -> None:
+    """A load the speaker refused must not cut the audio that is still playing."""
+    player, _ = _make_player([_make_queue_item("track0")])
+    client = MagicMock()
+    client.player.is_passive = False
+    client.player.group.play_cloud_queue = AsyncMock(side_effect=FailedCommand("no can do"))
+    player.client = client
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(SonosPlayer, "flow_mode", property(lambda _self: False))
+        with pytest.raises(FailedCommand):
+            await player.play_media(
+                PlayerMedia(
+                    uri="library://track/1",
+                    media_type=MediaType.TRACK,
+                    source_id=QUEUE_ID,
+                    queue_item_id="track0",
+                    queue_session_id="session-2",
+                )
+            )
+
+    cast("MagicMock", player.mass.streams.close_superseded_item_streams).assert_not_called()
 
 
 async def test_a_reload_of_the_same_item_gets_a_fresh_wire_id() -> None:
