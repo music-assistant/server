@@ -331,6 +331,16 @@ class FFMpeg(AsyncProcess):
             info.bit_rate,
         )
 
+    def _is_expected_task_error(self, err: BaseException) -> bool:
+        """Return whether a helper task error is an expected outcome rather than a failure."""
+        # deferred import: the provider models pull the controller graph in at
+        # import time, which this low-level helper must stay clear of
+        from music_assistant.models.music_provider import ProviderStreamLimitError  # noqa: PLC0415
+
+        # a provider with no free source-stream slot is a normal outcome of a
+        # speculative prefetch: the caller retries once the current stream releases it
+        return isinstance(err, ProviderStreamLimitError)
+
 
 def parse_ffmpeg_stream_info(line: str) -> FFMpegStreamInfo | None:
     """
