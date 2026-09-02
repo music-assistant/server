@@ -148,6 +148,32 @@ async def test_save_section_leaves_the_stations_file_alone(provider: Any, tmp_pa
     assert provider._stations_file.read_text() == "untouched"
 
 
+async def test_station_changes_reconcile_the_library_under_the_station_lock(
+    provider: Any, tmp_path: Path
+) -> None:
+    """The library mirror is rebuilt while the station lock is still held."""
+    provider._stations_file = tmp_path / "stations.json"
+    provider._hosts = {"host_a": {"id": "host_a", "name": "Host A"}}
+    locked_during_sync: list[bool] = []
+
+    async def _sync() -> None:
+        locked_during_sync.append(provider._station_lock.locked())
+
+    provider._sync_show_library_items = _sync
+    station = {
+        "id": "station_a",
+        "name": "Station A",
+        "source_playlist_id": "playlist-1",
+        "source_playlist_provider": "library",
+        "host_id": "host_a",
+    }
+
+    await provider.save_station(station)
+    await provider.delete_station("station_a")
+
+    assert locked_during_sync == [True, True]
+
+
 async def test_delete_host_refuses_when_station_references_it(provider: Any) -> None:
     """Refuse to delete a host that a station still references."""
     saved = await provider.save_host(await provider.host_template())

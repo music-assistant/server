@@ -439,6 +439,23 @@ async def test_ensure_show_dj_never_overwrites_manual_host(tmp_path: Path) -> No
     assert dj._dj_queues["q1"].station_id == "morning_show"
 
 
+async def test_manual_dj_disabled_mid_show_is_not_rearmed(tmp_path: Path) -> None:
+    """Turning off a manually picked DJ mid-show must not bring the show's host in."""
+    dj = _dj_harness(tmp_path)
+    _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+    run = _seed_show_run(dj, "morning_show")
+    state = dj._arm_dj_state("q1", "rick")
+    state.ready = True
+
+    await dj._ensure_show_dj("q1")
+    assert run.dj_armed is True
+
+    await dj.set_queue_dj("q1", None)
+    await dj._ensure_show_dj("q1")
+
+    assert "q1" not in dj._dj_queues
+
+
 async def test_auto_armed_dj_detaches_and_ends_run_when_source_gone(tmp_path: Path) -> None:
     """An auto-armed DJ whose show left the queue's sources is disarmed and its run ended."""
     dj = _dj_harness(tmp_path)

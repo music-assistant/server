@@ -159,14 +159,17 @@ class AIRadioQueueDJMixin:
         if station_id is None:
             return
         state = self._dj_queues.get(queue_id)
+        run = self._show_runs.get(station_id)
         if state is not None:
-            # a DJ is already armed (possibly a manual pick): only restore the binding.
+            # a DJ is already armed (possibly a manual pick): restore the binding.
             # unconditional so a restart, which restores the host from queue_dj.json but
             # not this run-scoped station_id, can always re-derive it
             if not state.station_id:
                 state.station_id = station_id
+            # that DJ counts as this run's arm too, so disabling it mid-show is final
+            if run is not None and run.queue_id == queue_id:
+                run.dj_armed = True
             return
-        run = self._show_runs.get(station_id)
         if run is None or run.dj_armed or run.queue_id != queue_id:
             # no run yet, already armed once this run (a detach or a manual disable must
             # not be re-armed by a later event), or the run belongs to another queue
