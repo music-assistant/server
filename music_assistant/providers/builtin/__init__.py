@@ -1211,15 +1211,26 @@ class BuiltinProvider(MusicProvider):
     async def _get_builtin_playlist_recently_played(self) -> list[Track]:
         result: list[Track] = []
         recent_tracks = await self.mass.music.recently_played(100, [MediaType.TRACK])
+        # a library-originated play has no provider instance of its own to resolve,
+        # so fetch all library rows in one query and look them up by id below
+        library_ids = [int(x.item_id) for x in recent_tracks if x.provider == "library"]
+        library_tracks: dict[str, Track] = {}
+        if library_ids:
+            library_tracks = {
+                track.item_id: track
+                for track in await self.mass.music.tracks.get_library_items_by_query(
+                    extra_query_parts=["tracks.item_id IN :item_ids"],
+                    extra_query_params={"item_ids": library_ids},
+                    in_library_only=False,
+                )
+            }
         for idx, item in enumerate(recent_tracks, 1):
-            # a library-originated play has no provider instance of its own to resolve
             if item.provider == "library":
-                try:
-                    library_track = await self.mass.music.tracks.get_library_item(item.item_id)
-                except MediaNotFoundError:
-                    continue
-                library_track.position = idx
-                result.append(library_track)
+                # a track removed from the library since it was played has no row anymore;
+                # pop so a track played by several users is listed once, at its newest play
+                if track := library_tracks.pop(item.item_id, None):
+                    track.position = idx
+                    result.append(track)
                 continue
             if not (item_provider := self.mass.get_provider(item.provider)):
                 continue
