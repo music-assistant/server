@@ -430,7 +430,7 @@ class PodcastConverter(BaseConverter):
             )
         elif episode and isinstance(episode, Track) and source_obj.stream:
             # Try to work out the best network/series name to display
-            title = None
+            title = ""
             if source_obj.network and source_obj.network.id == "bbc_webonly":
                 title = "BBC News"
             elif source_obj.network:
