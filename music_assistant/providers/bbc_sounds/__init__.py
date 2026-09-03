@@ -51,7 +51,7 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 from music_assistant.providers.bbc_sounds.adaptor import Adaptor
-from music_assistant.providers.bbc_sounds.constants import _Constants
+from music_assistant.providers.bbc_sounds.constants import ValidMenuIDs, _Constants
 from music_assistant.providers.bbc_sounds.metadata import (
     _find_segment,
     _segment_to_metadata,
@@ -287,43 +287,28 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         path_parts = path.split("://", 1)[1].split("/")
         self.logger.debug(f"Path parts: {path_parts}")
 
-        sub_path = path_parts[0] if path_parts else ""
-        sub_sub_path = path_parts[1] if len(path_parts) > 1 else ""
-        sub_sub_sub_path = path_parts[2] if len(path_parts) > 2 else ""
         path_parts = [
             f"{self.domain}:/",
             *[part for part in path_parts if len(part) > 0],
         ]
+        dispatch_menu = path_parts[1] if len(path_parts) > 1 else ""
 
-        # A large part of the menu content is pre-loaded into self.menu
-        # These are the exceptions, so get the extra content
-        if sub_path == "":
-            return await self._get_menu()
-        if sub_path == "listen_live":
-            return await self._station_list(
-                include_local=self.show_local_stations, show_current_programme=True
-            )
+        if dispatch_menu == "listen_live":
+            return await self._browse_live()
         # Categories and collections aren't in the API menus
-        if sub_path == "categories" and sub_sub_path:
-            return await self._get_category(sub_sub_path)
-        if sub_path == "collections" and sub_sub_path:
-            return await self._get_collection(sub_sub_path)
-        # The main menu fetch returns up to the schedule date folders, but no contents
-        # so as not to show out of date information
-        if sub_path == "stations" and sub_sub_path and sub_sub_sub_path:
-            return await self._get_station_schedule_menu(
-                path_parts=path_parts,
-                station_id=sub_sub_path,
-                date=sub_sub_sub_path,
-            )
-        if sub_path == "stations" and sub_sub_path and not sub_sub_sub_path:
-            return await self._get_station_menu(sub_sub_path, path_parts)
-        if sub_path == "stations" and not (sub_sub_path or sub_sub_sub_path):
-            return await self._station_list_as_folders(
-                path_parts=path_parts, include_local=self.show_local_stations
-            )
-        # If no special cases, pass the rest of the path to iterate through
-        return await self._get_subpath_menu(path_parts[1:])
+        if dispatch_menu == "categories":
+            return await self._browse_categories(path_parts)
+        if dispatch_menu == "collections":
+            return await self._browse_collections(path_parts)
+        if dispatch_menu == "stations":
+            return await self._browse_stations(path_parts)
+        if (
+            dispatch_menu != ""
+            and dispatch_menu not in ValidMenuIDs
+            and _Constants.LATEST_NEWS_PLAYLIST_SUFFIX not in dispatch_menu
+        ):
+            raise MusicAssistantError("Invalid browse path")
+        return await self._browse_menu(path_parts)
 
     async def search(
         self, search_query: str, media_types: list[MediaType] | None, limit: int = 5
@@ -379,6 +364,56 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                         self.logger.debug(f"Updated play status: {success}")
                     except exceptions.APIResponseError as err:
                         self.logger.error(f"Error updating play status: {err}")
+
+    async def _browse_menu(
+        self, path_parts: list[str]
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        if len(path_parts) == 1:
+            # bbc_sounds://
+            return await self._get_menu()
+        return await self._get_subpath_menu(path_parts[1:])
+
+    async def _browse_live(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        return await self._station_list(
+            include_local=self.show_local_stations, show_current_programme=True
+        )
+
+    async def _browse_categories(
+        self, path_parts: list[str]
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        if len(path_parts) == 3:
+            # bbc_sounds://categories/<category>
+            return await self._get_category(path_parts[2])
+        # bbc_sounds://categories/
+        return await self._get_subpath_menu(path_parts[1:])
+
+    async def _browse_collections(
+        self, path_parts: list[str]
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        if len(path_parts) == 3:
+            # bbc_sounds://collections/<collection>
+            return await self._get_collection(path_parts[2])
+        # bbc_sounds://collections/
+        return await self._get_subpath_menu(path_parts[1:])
+
+    async def _browse_stations(
+        self, path_parts: list[str]
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        if len(path_parts) == 4:
+            # bbc_sounds://stations/<station_id>/<date>
+            return await self._get_station_schedule_menu(
+                path_parts=path_parts,
+                station_id=path_parts[2],
+                date=path_parts[3],
+            )
+        if len(path_parts) == 3:
+            # bbc_sounds://stations/<station_id>
+            return await self._get_station_menu(path_parts[2], path_parts)
+
+        # bbc_sounds://stations
+        return await self._station_list_as_folders(
+            path_parts=path_parts, include_local=self.show_local_stations
+        )
 
     async def _get_station_menu(
         self,
