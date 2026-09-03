@@ -102,5 +102,10 @@
   },
   "manifest": {
     "description": "Stream Deezer’s full music catalogue in CD-quality (FLAC) audio."
+  },
+  "errors": {
+    "no_subscription": "This Deezer account has no subscription that Music Assistant can stream from. Deezer Free accounts are not supported; check that the subscription on this specific account is still active.",
+    "arl_rejected": "Deezer did not accept the ARL token for this account. It is most likely expired or was copied from a different account -- grab a fresh one and try again.",
+    "auth_failed": "Could not sign in to Deezer. See the Music Assistant log for the reason reported by Deezer."
   }
 }

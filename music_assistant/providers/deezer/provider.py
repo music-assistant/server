@@ -14,7 +14,7 @@ from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from deezer_python_gql import DeezerGQLClient, GraphQLClientError
+from deezer_python_gql import DeezerGQLClient, GraphQLClientAuthError, GraphQLClientError
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed
 
@@ -23,7 +23,12 @@ from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .browse import DeezerBrowseManager
-from .gw_client import DeezerGWError, GWClient
+from .gw_client import (
+    DeezerGWAuthError,
+    DeezerGWError,
+    DeezerGWNoSubscriptionError,
+    GWClient,
+)
 from .media import DeezerMediaManager
 from .streaming import DeezerStreamingManager
 
@@ -111,8 +116,37 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
             self.user_id = me.id
             self.gw_client = GWClient(self.mass.http_session, arl_token)
             await self.gw_client.setup()
+        # Order matters: the specific errors below subclass the generic ones caught last.
+        # Every branch logs the cause, otherwise the reason is lost -- clients only ever
+        # see the translated message, never the exception text.
+        except DeezerGWNoSubscriptionError as err:
+            self.logger.error("Deezer account has no streamable subscription: %s", err)
+            raise LoginFailed(
+                "This Deezer account has no subscription that Music Assistant can stream from.",
+                translation_key="no_subscription",
+                translation_owner=self.translation_owner,
+            ) from err
+        except DeezerGWAuthError as err:
+            self.logger.error("Deezer GW API rejected the ARL token: %s", err)
+            raise LoginFailed(
+                "Deezer did not accept the ARL token.",
+                translation_key="arl_rejected",
+                translation_owner=self.translation_owner,
+            ) from err
+        except GraphQLClientAuthError as err:
+            self.logger.error("Deezer auth service rejected the ARL token: %s", err)
+            raise LoginFailed(
+                "Deezer did not accept the ARL token.",
+                translation_key="arl_rejected",
+                translation_owner=self.translation_owner,
+            ) from err
         except (GraphQLClientError, DeezerGWError) as err:
-            raise LoginFailed("Deezer authentication failed. Please check your ARL token.") from err
+            self.logger.error("Deezer authentication failed: %s", err)
+            raise LoginFailed(
+                "Deezer authentication failed. Please check your ARL token.",
+                translation_key="auth_failed",
+                translation_owner=self.translation_owner,
+            ) from err
 
         self.media_manager = DeezerMediaManager(self)
         self.browse_manager = DeezerBrowseManager(self)

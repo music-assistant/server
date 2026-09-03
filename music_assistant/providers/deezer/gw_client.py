@@ -32,6 +32,14 @@ class DeezerGWError(Exception):
     """Exception type for GWClient related exceptions."""
 
 
+class DeezerGWAuthError(DeezerGWError):
+    """The GW API did not return a user for the supplied ARL."""
+
+
+class DeezerGWNoSubscriptionError(DeezerGWError):
+    """The account authenticated, but has no subscription that MA can stream from."""
+
+
 class GWClient:
     """The GWClient class can be used to perform actions not being of the official API."""
 
@@ -66,11 +74,11 @@ class GWClient:
         user_data = await self._gw_api_call("deezer.getUserData", False)
         if not user_data["results"]["USER"]["USER_ID"]:
             msg = "Failed to authenticate with the GW API. Make sure you set a valid ARL."
-            raise DeezerGWError(msg)
+            raise DeezerGWAuthError(msg)
 
         if not user_data["results"]["OFFER_ID"]:
             msg = "Free subscriptions cannot be used in MA. Make sure you set a valid ARL."
-            raise DeezerGWError(msg)
+            raise DeezerGWNoSubscriptionError(msg)
 
         self._gw_csrf_token = user_data["results"]["checkForm"]
         self._user_id = int(user_data["results"]["USER"]["USER_ID"])
