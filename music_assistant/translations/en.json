@@ -898,7 +898,7 @@
   "core.webserver.errors.ssl_verification_failed": "Certificate verification failed: {0}",
   "core.webserver.manifest.description": "Configuration of the webserver and API",
   "core.webserver.manifest.name": "Webserver",
-  "provider.abc_radio_network.manifest.description": "Stream the live music stations of the Australian ABC Radio network — including triple j, Double J, ABC Classic and ABC Jazz — with live now-playing information.",
+  "provider.abc_radio_network.manifest.description": "Stream the live national stations of the Australian ABC Radio network, including triple j, Double J, ABC Classic, ABC Jazz, ABC Radio National, ABC NewsRadio, and ABC Sport, with now-playing information on the music stations.",
   "provider.acoustid_lookup.config_entries.analyse_streaming.description": "When enabled, also fingerprint and identify tracks played from streaming providers (Spotify, Tidal, Qobuz, …) that are present in your library but lack a MusicBrainz Recording Id.",
   "provider.acoustid_lookup.config_entries.analyse_streaming.label": "Analyse tracks from streaming providers",
   "provider.acoustid_lookup.config_entries.api_key.description": "Optional. Music Assistant ships with a shared AcoustID API key, so this can be left empty. Provide your own free key from https://acoustid.org/api-key if you prefer to use a dedicated one. AcoustID requests that high-traffic deployments notify the project in advance — see https://acoustid.org/webservice for details.",
