@@ -1256,6 +1256,7 @@ class TracksController(MediaControllerBase[Track]):
                 )
             except (
                 InvalidDataError,
+                InvalidProviderID,
                 MediaNotFoundError,
                 ProviderUnavailableError,
                 ResourceTemporarilyUnavailable,
@@ -1263,9 +1264,10 @@ class TracksController(MediaControllerBase[Track]):
                 OSError,
                 TimeoutError,
             ) as err:
-                # this candidate could not supply the album; a missing or unavailable
-                # account must not block a sibling instance of the same domain from
-                # still supplying the release evidence
+                # this candidate could not supply the album; a missing/unavailable
+                # account, or a malformed id (e.g. reconstructed from imported M3U
+                # metadata), must not block a sibling instance of the same domain
+                # from still supplying the release evidence
                 self.logger.debug(
                     "Could not load album details for track %s on %s: %s",
                     track.name,

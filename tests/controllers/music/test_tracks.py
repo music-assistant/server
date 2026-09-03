@@ -735,6 +735,58 @@ async def test_full_track_album_domain_reference_does_not_expand_for_non_streami
     assert result is track.album
 
 
+async def test_full_track_album_domain_only_falls_back_after_invalid_provider_id(
+    music: MusicController,
+) -> None:
+    """A malformed candidate id does not abort the search for a sibling instance."""
+    track = create_track("spotify_1", "track")
+    track.album = ItemMapping(
+        item_id="album",
+        provider="qobuz",
+        name="Album",
+        media_type=MediaType.ALBUM,
+    )
+    qobuz_1 = MagicMock(spec=MusicProvider)
+    qobuz_1.instance_id = "qobuz_1"
+    qobuz_1.domain = "qobuz"
+    qobuz_2 = MagicMock(spec=MusicProvider)
+    qobuz_2.instance_id = "qobuz_2"
+    qobuz_2.domain = "qobuz"
+    providers = {"qobuz": qobuz_1, "qobuz_1": qobuz_1, "qobuz_2": qobuz_2}
+    album = create_album("qobuz_2", "album", name="Album")
+
+    def get_provider(provider_instance_or_domain: str, **_kwargs: Any) -> MusicProvider | None:
+        return providers.get(provider_instance_or_domain)
+
+    async def get_provider_item_side_effect(
+        _item_id: str, instance_id: str, **_kwargs: Any
+    ) -> Album:
+        if instance_id == "qobuz_1":
+            # this id was reconstructed from imported M3U metadata and is malformed
+            # on this instance - qobuz_2 must still be tried, not abort the search
+            raise InvalidProviderID("Malformed id")
+        return album
+
+    with (
+        patch.object(music.mass, "get_provider", side_effect=get_provider),
+        patch.object(music.albums, "get_library_item_by_prov_id", AsyncMock(return_value=None)),
+        patch.object(
+            music.albums,
+            "get_provider_item",
+            AsyncMock(side_effect=get_provider_item_side_effect),
+        ) as get_,
+    ):
+        result = await music.tracks._get_full_track_album(
+            track, allowed_provider_instances={"qobuz_1", "qobuz_2"}
+        )
+
+    assert result is album
+    assert get_.await_args_list == [
+        call("album", "qobuz_1", allow_fallback=False, strict_provider_instance=True),
+        call("album", "qobuz_2", allow_fallback=False, strict_provider_instance=True),
+    ]
+
+
 async def test_find_provider_match_classifies_library_mapping_against_source(
     music: MusicController,
 ) -> None:
