@@ -159,3 +159,22 @@ async def test_a_reset_racing_a_stop_leaves_nothing_running(
     await resetting
     assert device._task is None
     assert device._client is None
+
+
+async def test_a_reset_queued_behind_a_stop_does_not_restart_the_device(
+    tmp_path: Path, session: ClientSession
+) -> None:
+    """
+    Whichever order they land in, teardown wins: stop is terminal for the device.
+
+    Serialising the two is not enough on its own, since a reset that acquires the lock
+    second would otherwise start a reconnect loop the provider no longer tracks.
+    """
+    device = FakeSendspinDevice(SCENARIOS[0], tmp_path, "ws://127.0.0.1:1/sendspin", session)
+    await device.start()
+    stopping = asyncio.create_task(device.stop())
+    await asyncio.sleep(0)
+    await device.reset()
+    await stopping
+    assert device._task is None
+    assert device._client is None

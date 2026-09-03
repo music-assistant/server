@@ -76,6 +76,8 @@ class FakeSendspinDevice:
         # start, stop and reset all suspend; without this they interleave and leak a
         # reconnect loop that no longer belongs to any tracked device
         self._lifecycle = asyncio.Lock()
+        # set by the public stop, so a queued start or reset cannot resurrect the device
+        self._closed = False
         self._client: SendspinClient | None = None
         self._stopped = False
         self._task: asyncio.Task[None] | None = None
@@ -99,16 +101,26 @@ class FakeSendspinDevice:
     async def start(self) -> None:
         """Build the client from the scenario profile and keep it connected."""
         async with self._lifecycle:
+            if self._closed:
+                return
             await self._start()
 
     async def stop(self) -> None:
-        """Disconnect the device and stop its reconnect loop, including one still starting."""
+        """
+        Disconnect the device for good, including one still starting.
+
+        Terminal: a ``start`` or ``reset`` still queued behind this does nothing, so a
+        device can never come back up after the provider tore it down.
+        """
         async with self._lifecycle:
+            self._closed = True
             await self._stop()
 
     async def reset(self) -> None:
         """Forget everything this device knows about the server and reconnect as new."""
         async with self._lifecycle:
+            if self._closed:
+                return
             await self._stop()
             self.dynamic_pin = None
             self.awaiting_button = False
