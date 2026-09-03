@@ -134,6 +134,9 @@ _MAX_LEAD_TRIM_S: Final[float] = 0.5
 # below this much audio an item rendered nothing: the engine either refused it
 # (clean exit) or never got going, and anything above it played and was cut short
 _REFUSED_DELIVERY_MS: Final[int] = 1000
+# an item with less than this much to play cannot clear the bar above once the
+# lead trim has taken its cut, so nothing can be concluded from what arrived
+_MIN_EXPECTED_DELIVERY_MS: Final[int] = _REFUSED_DELIVERY_MS + int(_MAX_LEAD_TRIM_S * 1000)
 # The elastic cushion between the paced FIFO reader and the consumer. A full
 # cushion suspends the capture sink, which pauses the engine: the FIFO itself
 # holds well under a second, so the reader must keep draining it whenever the
@@ -829,31 +832,34 @@ class _SingleTrackRun:
 
     def _validate_delivery(self) -> None:
         """
-        Raise when the engine played none of the item it was given.
+        Raise when the engine died on this item, or played none of it.
 
         Audio that arrives and then stops belongs to something ending the item
-        early - a skip, a seek or the account playing elsewhere - so only a run
-        that rendered nothing at all is a failure worth reporting.
+        early - a skip, a seek or the account playing elsewhere - so a partial
+        delivery is only a failure when the engine itself did not end cleanly.
         """
         if self._stopped or self._duration_ms is None:
             return
-        played_ms = self._delivered / _BYTES_PER_SECOND * 1000
-        # a seek can leave an item with almost nothing left to play
-        expected_ms = self._duration_ms - self._seek_target_ms
-        if played_ms > _REFUSED_DELIVERY_MS or expected_ms <= _REFUSED_DELIVERY_MS:
-            return
         proc = self._proc
-        if self._engine_exited and proc is not None and proc.returncode == 0:
+        exit_code = proc.returncode if proc is not None else None
+        if self._engine_exited and exit_code not in (None, 0):
+            # audio may well have arrived first, but the engine did not end the
+            # item: it died on it, whatever the queue got to play
+            raise AudioError(
+                f"Spotify playback stopped unexpectedly (engine exit code {exit_code})"
+            )
+        played_ms = self._delivered / _BYTES_PER_SECOND * 1000
+        # a seek can leave an item with almost nothing left to play, and a complete
+        # delivery arrives short by whatever the lead trim took off its start
+        expected_ms = self._duration_ms - self._seek_target_ms
+        if played_ms > _REFUSED_DELIVERY_MS or expected_ms <= _MIN_EXPECTED_DELIVERY_MS:
+            return
+        if self._engine_exited:
             raise AudioError(
                 "Spotify would not play this track: it is unavailable for this account "
                 "or region, or Spotify refused it for now"
             )
-        # the exit code is named because the clean exit above is what a refusal
-        # is judged on: one landing here shows the value to widen that test with
-        raise AudioError(
-            "Spotify stopped before it played any of this track "
-            f"(engine exit code {proc.returncode if proc is not None else None})"
-        )
+        raise AudioError("Spotify stopped before it played any of this track")
 
     def _engine_normalization_enabled(self) -> bool:
         """

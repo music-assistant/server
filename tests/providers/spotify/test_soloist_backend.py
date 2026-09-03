@@ -477,6 +477,29 @@ async def test_audio_that_arrived_and_stopped_is_not_a_failure(tmp_path: Path) -
     await _collect(run)
 
 
+async def test_a_crash_part_way_through_is_reported(tmp_path: Path) -> None:
+    """Audio arrived, but the engine died on the item rather than ending it."""
+    run = _make_run(tmp_path, duration=152)
+    run._engine_exited = True
+    run._proc = MagicMock(returncode=1)
+    run._chunks.put_nowait(b"\x01" * (30 * _BYTES_PER_SECOND))
+    run._finish_delivery()
+    with pytest.raises(AudioError, match="stopped unexpectedly"):
+        await _collect(run)
+
+
+async def test_a_brief_item_played_in_full_is_accepted(tmp_path: Path) -> None:
+    """The lead trim takes its cut off a complete delivery of a very short item."""
+    run = _make_run(tmp_path, duration=2)
+    run._duration_ms = 1200
+    run._engine_exited = True
+    run._proc = MagicMock(returncode=0)
+    # what a complete 1.2s item arrives as once the trim has taken its budget
+    run._chunks.put_nowait(b"\x01" * int(0.7 * _BYTES_PER_SECOND))
+    run._finish_delivery()
+    await _collect(run)
+
+
 async def test_a_short_item_that_played_nothing_is_still_reported(tmp_path: Path) -> None:
     """A short item is judged the same way: nothing arrived, so nothing played."""
     run = _make_run(tmp_path, duration=8)

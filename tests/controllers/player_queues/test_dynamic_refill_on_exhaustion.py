@@ -6,7 +6,7 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import AudioError, MediaNotFoundError
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
@@ -217,6 +217,34 @@ async def test_skipping_a_known_dead_item_is_logged() -> None:
         if call.args and call.args[0] == "Skipping unplayable item %s: %s"
     ]
     assert skipped == ["dead0", "dead1", "dead2"]
+
+
+async def test_the_reason_an_item_was_skipped_is_logged() -> None:
+    """A provider says why it could not play an item, and that must reach the log."""
+    ctrl, queue_data, _fill = _controller_with_dead_head(dead=1, pre_marked=False)
+    queue_data.queue.is_dynamic = False
+    queue_data.items.append(
+        QueueItem(queue_id=QUEUE_ID, queue_item_id="live", name="live", duration=180)
+    )
+    reason = "Spotify would not play this track: it is unavailable for this account"
+
+    async def _load(item: QueueItem, *args: object, **kwargs: object) -> None:  # noqa: ARG001
+        if item.queue_item_id.startswith("dead"):
+            raise AudioError(reason)
+
+    cast("AsyncMock", ctrl._load_item).side_effect = _load
+
+    await ctrl.play_index(QUEUE_ID, 0)
+
+    skipped = [
+        call.args
+        for call in ctrl.logger.warning.call_args_list  # type: ignore[attr-defined]
+        if call.args and call.args[0] == "Skipping unplayable item %s: %s"
+    ]
+    assert len(skipped) == 1
+    assert str(skipped[0][2]) == reason
+    # an AudioError is not persistent: the item stays available for another try
+    assert queue_data.items[0].available is True
 
 
 async def test_a_seek_position_does_not_leak_onto_a_refilled_track() -> None:
