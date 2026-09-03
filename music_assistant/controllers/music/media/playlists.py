@@ -7,7 +7,12 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import (
+    MediaType,
+    PlaylistMatchPolicy,
+    ProviderFeature,
+    ProviderType,
+)
 from music_assistant_models.errors import (
     InvalidDataError,
     InvalidProviderURI,
@@ -326,34 +331,71 @@ class PlaylistController(MediaControllerBase[Playlist]):
         m3u_data: str,
         library_matching: bool = False,
         match_providers: list[str] | None = None,
+        match_policy: PlaylistMatchPolicy | None = None,
     ) -> Playlist:
         """
         Import a playlist from M3U8 format.
 
-        Creates a new builtin playlist from the provided M3U data.
+        Creates a builtin playlist from the supplied M3U data. When matching is enabled,
+        entries confirmed missing are matched in a background task.
 
         :param m3u_data: The M3U8 playlist data as a string.
-        :param library_matching: When True, attempt to find tracks by searching
-            providers using metadata when the original URI's provider is not
-            available. Defaults to False.
-        :param match_providers: Optional list of provider instance IDs or domains
-            to search when library_matching is enabled.
+        :param library_matching: Deprecated; when True and match_policy is unset, use
+            PlaylistMatchPolicy.BEST_EFFORT.
+        :param match_providers: Provider instances or domains to search when matching runs.
+        :param match_policy: Minimum substitute confidence. Leave unset with
+            ``library_matching=False`` to skip matching.
         """
         provider = self.mass.get_provider("builtin")
         if not provider or not isinstance(provider, MusicProvider):
             raise ProviderUnavailableError("Builtin provider is not available")
         builtin_prov = cast("BuiltinProvider", provider)
-        playlist = await builtin_prov.import_playlist(m3u_data)
+        playlist, playlist_generation = await builtin_prov.import_playlist(m3u_data)
         for prov_mapping in playlist.provider_mappings:
             prov_mapping.in_library = True
         db_playlist = await self.add_item_to_library(playlist, False)
-        if library_matching:
+        effective_match_policy = match_policy or (
+            PlaylistMatchPolicy.BEST_EFFORT if library_matching else None
+        )
+        if effective_match_policy is not None:
             prov_playlist_id = playlist.item_id
             user = get_current_user()
+            # Snapshot the user's enabled music providers for the deferred task,
+            # including unavailable instances and each instance's domain.
+            user_provider_filter = user.provider_filter if user else None
+            configured_providers = await self.mass.config.get_provider_configs(
+                provider_type=ProviderType.MUSIC
+            )
+            allowed_provider_instances = {
+                conf.instance_id: conf.domain
+                for conf in configured_providers
+                if conf.enabled
+                and (not user_provider_filter or conf.instance_id in user_provider_filter)
+            }
+            # Include builtin so bare HTTP/file entries can still be validated.
+            allowed_provider_instances[builtin_prov.instance_id] = builtin_prov.domain
+            # Only narrow substitute search, not original-source validation.
+            # Exclude builtin from search targets.
+            searchable_instances = {
+                instance_id: domain
+                for instance_id, domain in allowed_provider_instances.items()
+                if instance_id != builtin_prov.instance_id
+            }
+            search_provider_instances = set(searchable_instances)
+            if match_providers is not None:
+                search_provider_instances = {
+                    instance_id
+                    for instance_id, domain in searchable_instances.items()
+                    if instance_id in match_providers or domain in match_providers
+                }
             self.mass.tasks.run_background_task(
                 name=f"Import playlist {db_playlist.name}",
                 handler=lambda: builtin_prov.match_imported_playlist_tracks(
-                    prov_playlist_id, match_providers
+                    prov_playlist_id,
+                    playlist_generation,
+                    effective_match_policy,
+                    tuple(sorted(allowed_provider_instances.items())),
+                    tuple(sorted(search_provider_instances)),
                 ),
                 translation_key="import_playlist_matching",
                 translation_owner=self.translation_owner,
@@ -363,6 +405,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     "task_domain": "playlist_import_matching",
                     "playlist_id": str(db_playlist.item_id),
                     "playlist_name": db_playlist.name,
+                    "match_policy": effective_match_policy.value,
                 },
                 allow_retry=True,
                 allow_cancel=True,
