@@ -18,7 +18,7 @@ from music_assistant_models.enums import (
     StreamType,
     VolumeNormalizationMode,
 )
-from music_assistant_models.errors import QueueEmpty
+from music_assistant_models.errors import AudioError, QueueEmpty
 from music_assistant_models.media_items import (
     AudioFormat,
     AudioSource,
@@ -260,6 +260,25 @@ async def test_ready_threshold_ladder(
     assert buffer._ready_threshold == expected_threshold
     await asyncio.gather(*scheduled_tasks)
     await buffer.clear()
+
+
+async def test_a_source_that_delivers_nothing_fails_before_any_read() -> None:
+    """Acquisition raises, so a refused item never reaches the no-audio revocation."""
+    mass, _scheduled_tasks, _seek_positions = _make_mass_for_get_buffer()
+
+    def _refused(*_args: Any, **_kwargs: Any) -> AsyncGenerator[bytes]:
+        async def _gen() -> AsyncGenerator[bytes]:
+            for _ in ():  # never yields; only makes this an async generator
+                yield b""
+            raise AudioError("Spotify would not play spotify:track:aaa")
+
+        return _gen()
+
+    mass.streams.audio.get_media_stream = _refused
+    streamdetails = _make_stream_details(MediaType.TRACK, queue_id="queue-1")
+
+    with pytest.raises(AudioError, match="would not play"):
+        await AudioBuffer.get_buffer(mass, streamdetails, wait_ready=True, reason="test")
 
 
 # -- AudioBuffer.get_buffer: seek handling --
@@ -1586,12 +1605,20 @@ class _FakeStreamResponse:
     def __init__(self, **_kwargs: Any) -> None:
         self.content_type: str | None = None
         self.content_length: int | None = None
+        self.force_closed = False
+
+    def force_close(self) -> None:
+        """Record that the connection was ended."""
+        self.force_closed = True
 
     def enable_chunked_encoding(self) -> None:
         """Accept the chunked-profile branch."""
 
     async def prepare(self, request: Any) -> None:
         """Accept the response start."""
+
+    async def write(self, chunk: bytes) -> None:
+        """Accept a written chunk."""
 
 
 def _single_item_handler(
@@ -1611,6 +1638,7 @@ def _single_item_handler(
         queue_id="queue-1",
         queue_item_id="item-1",
         name="Track",
+        uri="library://track/1",
         duration=180,
         streamdetails=streamdetails,
         media_item=None,
@@ -1745,6 +1773,44 @@ async def test_single_item_handler_paces_by_player(
         await controller.serve_queue_item_stream(request)
 
     assert seen["extra_input_args"] == output_pacing_args(profile)  # type: ignore[arg-type]
+
+
+def test_the_reported_cause_skips_an_empty_link_in_the_chain() -> None:
+    """A bare TimeoutError ends plenty of chains; reporting it would say nothing."""
+    err = AudioError("Timeout connecting to Shoutcast stream")
+    err.__cause__ = TimeoutError()
+    assert str(controller_mod._root_cause(err)) == "Timeout connecting to Shoutcast stream"
+
+
+async def test_single_item_handler_ends_a_failed_stream_instead_of_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The response is already sent, so a failed item ends it instead of raising."""
+    controller, request, _ = _single_item_handler(is_realtime=False, capture_ffmpeg=monkeypatch)
+    controller._active_output_streams = 0
+
+    async def _failing_stream(**_kwargs: Any) -> AsyncGenerator[bytes]:
+        yield b"\x01" * 64
+        # the shape get_ffmpeg_stream really raises: the cause carries the provider
+        raise AudioError("Error while feeding audio to FFmpeg") from AudioError(
+            "Spotify would not play spotify:track:aaa"
+        )
+
+    monkeypatch.setattr(controller_mod, "get_ffmpeg_stream", _failing_stream)
+
+    resp = await controller.serve_queue_item_stream(request)
+
+    queue_item = controller.mass.player_queues.get_item.return_value
+    # a mix that fails after this item played in full raises here too, so flagging
+    # the item from here would cost a complete play its report
+    assert not queue_item.streamdetails.stream_error
+    logged = controller.logger.error.call_args
+    assert "Error streaming QueueItem" in logged.args[0]
+    assert queue_item.name in logged.args
+    # every stage replaces the message, so the line must carry the reason at the bottom
+    assert "Spotify would not play" in str(logged.args[-1])
+    # a body short of its announced length leaves the player waiting on the socket
+    assert resp.force_closed is True
 
 
 # -- StreamsAudio.get_stream_details --
