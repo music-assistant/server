@@ -1164,6 +1164,30 @@ class TracksController(MediaControllerBase[Track]):
             return None
         return replace(domain_mapping, provider_instance=provider.instance_id)
 
+    def _domain_is_streaming(self, domain: str, allowed_provider_instances: set[str]) -> bool:
+        """
+        Return whether providers of this domain share a single portable catalog.
+
+        Every instance of a domain shares the same provider class and therefore the
+        same ``is_streaming_provider`` trait, so any one allowed instance of it is
+        representative. Defaults to ``False`` when no instance of this domain can be
+        resolved at all - unlike liveness checks elsewhere, this gates whether a
+        sibling instance's album is trusted as release evidence, so an unresolvable
+        domain must not be assumed portable.
+
+        :param domain: The provider domain to check.
+        :param allowed_provider_instances: Instance ids to search for a representative
+            instance of this domain.
+        """
+        for allowed_id in allowed_provider_instances:
+            if (
+                allowed_provider := self.mass.get_provider(
+                    allowed_id, return_unavailable=True, provider_type=MusicProvider
+                )
+            ) and allowed_provider.domain == domain:
+                return allowed_provider.is_streaming_provider
+        return False
+
     async def _get_full_track_album(
         self, track: Track, allowed_provider_instances: set[str] | None = None
     ) -> Album | ItemMapping | None:
@@ -1193,18 +1217,26 @@ class TracksController(MediaControllerBase[Track]):
                 # a bare domain resolves to its first registered instance, which may
                 # not be the one this user is allowed to use even though a sibling
                 # instance of the same domain is; try every allowed instance of that
-                # domain instead of giving up on that single, arbitrary first match
+                # domain instead of giving up on that single, arbitrary first match -
+                # but only for a genuinely portable (streaming) catalog, since a
+                # non-streaming domain (e.g. filesystem) mints its own local ids per
+                # instance and a sibling's coincidentally-matching id would supply
+                # false release evidence for an unrelated album
                 domain = provider.domain if provider is not None else provider_instance_id_or_domain
-                candidate_instances = [
-                    allowed_provider.instance_id
-                    for allowed_id in sorted(allowed_provider_instances)
-                    if (
-                        allowed_provider := self.mass.get_provider(
-                            allowed_id, return_unavailable=True
+                candidate_instances = (
+                    [
+                        allowed_provider.instance_id
+                        for allowed_id in sorted(allowed_provider_instances)
+                        if (
+                            allowed_provider := self.mass.get_provider(
+                                allowed_id, return_unavailable=True
+                            )
                         )
-                    )
-                    and allowed_provider.domain == domain
-                ]
+                        and allowed_provider.domain == domain
+                    ]
+                    if self._domain_is_streaming(domain, allowed_provider_instances)
+                    else []
+                )
                 if not candidate_instances:
                     # can't verify this account is one the initiating user has access to
                     return track.album

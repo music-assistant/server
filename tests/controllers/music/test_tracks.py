@@ -687,6 +687,54 @@ async def test_full_track_album_domain_only_falls_back_after_instance_failure(
     ]
 
 
+async def test_full_track_album_domain_reference_does_not_expand_for_non_streaming_provider(
+    music: MusicController,
+) -> None:
+    """A non-streaming domain's ids are instance-local, so siblings must not be tried."""
+    track = create_track("spotify_1", "track")
+    track.album = ItemMapping(
+        # a domain, not an instance id - filesystem item ids are only meaningful
+        # within the instance that minted them, so a same-domain sibling with a
+        # coincidentally-matching id must never be trusted as the same album
+        item_id="album",
+        provider="filesystem",
+        name="Album",
+        media_type=MediaType.ALBUM,
+    )
+    filesystem_1 = MagicMock(spec=MusicProvider)
+    filesystem_1.instance_id = "filesystem_1"
+    filesystem_1.domain = "filesystem"
+    filesystem_1.is_streaming_provider = False
+    filesystem_2 = MagicMock(spec=MusicProvider)
+    filesystem_2.instance_id = "filesystem_2"
+    filesystem_2.domain = "filesystem"
+    filesystem_2.is_streaming_provider = False
+    providers = {
+        "filesystem": filesystem_1,
+        "filesystem_1": filesystem_1,
+        "filesystem_2": filesystem_2,
+    }
+    # a different, unrelated album that happens to share the same instance-local id
+    colliding_album = create_album("filesystem_2", "album", name="Unrelated Album")
+
+    def get_provider(provider_instance_or_domain: str, **_kwargs: Any) -> MusicProvider | None:
+        return providers.get(provider_instance_or_domain)
+
+    with (
+        patch.object(music.mass, "get_provider", side_effect=get_provider),
+        patch.object(music.albums, "get_library_item_by_prov_id", AsyncMock(return_value=None)),
+        patch.object(
+            music.albums, "get_provider_item", AsyncMock(return_value=colliding_album)
+        ) as get_,
+    ):
+        result = await music.tracks._get_full_track_album(
+            track, allowed_provider_instances={"filesystem_2"}
+        )
+
+    get_.assert_not_called()
+    assert result is track.album
+
+
 async def test_find_provider_match_classifies_library_mapping_against_source(
     music: MusicController,
 ) -> None:
