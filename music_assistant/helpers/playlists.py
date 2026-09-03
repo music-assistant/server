@@ -893,7 +893,7 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
     # unavailable ones so an unplayable primary URI is never chosen while a playable
     # sibling mapping exists (in the same or another domain).
     sorted_mappings = sorted(full_item.provider_mappings, key=_provider_mapping_sort_key)
-    mapped_domains = {prov_mapping.provider_domain for prov_mapping in sorted_mappings}
+    mapped_instances = {prov_mapping.provider_instance for prov_mapping in sorted_mappings}
 
     # build EXTMA metadata
     metadata: dict[str, str] = {
@@ -912,15 +912,17 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
         metadata["mbid"] = mbid
     # unlike a recording MBID (shared by every release of the same performance), a
     # track MBID identifies one specific release's track listing entry - a library
-    # item spanning more than one domain merges external ids from whichever provider
-    # contributed them, with no record of which one, so there is no way to confirm
-    # a merged MB_TRACK actually belongs to the release the chosen primary URI (below)
-    # points at; only trust it when every mapping is the same domain's own catalog.
+    # item spanning more than one provider instance merges external ids from
+    # whichever mapping contributed them, with no record of which one, so there is
+    # no way to confirm a merged MB_TRACK actually belongs to the release the chosen
+    # primary URI (below) points at; only trust it when every mapping is the same
+    # single instance's own catalog - two instances of the same domain (e.g. two
+    # accounts on the same streaming service) can still disagree on release.
     # Even multiple raw values agreeing once normalized isn't reliable corroboration:
     # external_ids is a plain set, so identical reports from two providers collapse
     # into one value, while a single provider that just reformatted its own claim
     # over time can supply two distinct raw values - neither is distinguishable here.
-    if len(mapped_domains) <= 1 and (
+    if len(mapped_instances) <= 1 and (
         mb_track := _unambiguous_external_id(full_item, ExternalID.MB_TRACK)
     ):
         metadata["mb_track"] = mb_track

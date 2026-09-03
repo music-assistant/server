@@ -1183,6 +1183,30 @@ def test_media_item_to_playlist_item_omits_multi_domain_mb_track() -> None:
     assert "mb_track" not in playlist_item.metadata
 
 
+def test_media_item_to_playlist_item_omits_multi_instance_same_domain_mb_track() -> None:
+    """Two instances of the same domain can still disagree on release, so MB_TRACK is omitted."""
+    track = Track(
+        item_id="abc123",
+        provider="library",
+        name="Everything In Its Right Place",
+        duration=240,
+        provider_mappings={
+            # two separate accounts of the same streaming service - a single
+            # merged domain must not be mistaken for a single trusted catalog
+            ProviderMapping(item_id="abc123", provider_domain="qobuz", provider_instance="qobuz_1"),
+            ProviderMapping(item_id="xyz789", provider_domain="qobuz", provider_instance="qobuz_2"),
+        },
+        external_ids={
+            (ExternalID.MB_TRACK, "release-track-mbid"),
+        },
+    )
+
+    playlist_item = media_item_to_playlist_item(track)
+
+    assert playlist_item.metadata is not None
+    assert "mb_track" not in playlist_item.metadata
+
+
 def test_import_match_policy_reachability_new_vs_legacy_m3u() -> None:
     """
     EXACT is only reachable when the parsed M3U carries release-track evidence.
