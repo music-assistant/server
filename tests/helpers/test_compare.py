@@ -1402,6 +1402,84 @@ def test_compare_track_evidence_cross_instance_item_id_collision_is_not_exact() 
     assert compare.compare_track_evidence(base, same_instance) == compare.TrackMatchConfidence.EXACT
 
 
+def test_compare_track_evidence_cross_instance_album_id_collision_is_not_same_album() -> None:
+    """A coincidental album item id shared across non-streaming instances is not proof."""
+
+    def _colliding_album(provider_instance: str, name: str) -> media_items.Album:
+        return media_items.Album(
+            item_id="Various/Comp/album.dir",
+            provider=provider_instance,
+            name=name,
+            artists=media_items.UniqueList(
+                [
+                    media_items.Artist(
+                        item_id="artist",
+                        provider=provider_instance,
+                        name="Various Artists",
+                        provider_mappings={
+                            media_items.ProviderMapping(
+                                item_id="artist",
+                                provider_domain="filesystem",
+                                provider_instance=provider_instance,
+                            )
+                        },
+                    )
+                ]
+            ),
+            provider_mappings={
+                media_items.ProviderMapping(
+                    item_id="Various/Comp/album.dir",
+                    provider_domain="filesystem",
+                    provider_instance=provider_instance,
+                )
+            },
+        )
+
+    def _album_track(
+        provider_instance: str, album: media_items.Album, track_number: int
+    ) -> media_items.Track:
+        return media_items.Track(
+            item_id=f"{provider_instance}-track",
+            provider=provider_instance,
+            name="Some Song Title",
+            duration=200,
+            disc_number=1,
+            track_number=track_number,
+            artists=media_items.UniqueList(
+                [
+                    media_items.ItemMapping(
+                        item_id="artist-a",
+                        provider=provider_instance,
+                        name="Some Artist",
+                        media_type=MediaType.ARTIST,
+                    )
+                ]
+            ),
+            album=album,
+            provider_mappings={
+                media_items.ProviderMapping(
+                    item_id=f"{provider_instance}-track",
+                    provider_domain="filesystem",
+                    provider_instance=provider_instance,
+                )
+            },
+        )
+
+    # two unrelated filesystem albums that happen to share the same relative-path
+    # item id on their own (different) instances - each instance mints its own
+    # local ids, so this must not be trusted as evidence they are the same album
+    album_a = _colliding_album("filesystem_1", "Compilation Volume 1")
+    album_b = _colliding_album("filesystem_2", "A Totally Different Compilation")
+    assert compare._same_album(album_a, album_b) is False
+
+    # without the fix, the false "same album" match forces a position-conflict
+    # NO_MATCH despite matching title/artist/duration; it should instead reach a
+    # LIKELY (metadata-corroborated) confidence
+    base = _album_track("filesystem_1", album_a, 3)
+    candidate = _album_track("filesystem_2", album_b, 9)
+    assert compare.compare_track_evidence(base, candidate) == compare.TrackMatchConfidence.LIKELY
+
+
 def test_compare_track_evidence_authoritative_id_overrides_position_drift() -> None:
     """Provider track-number drift does not override an authoritative release-track ID."""
     mb_track = (

@@ -248,6 +248,17 @@ def compare_album_evidence(
         return AlbumMatchEvidence.MATCH
 
     # return early on (un)matched authoritative external id
+    external_id_evidence = _compare_album_external_ids(base_item, compare_item)
+    if external_id_evidence is not None:
+        return external_id_evidence
+
+    return _compare_album_metadata(base_item, compare_item, strict, base_tracks, compare_tracks)
+
+
+def _compare_album_external_ids(
+    base_item: Album | ItemMapping, compare_item: Album | ItemMapping
+) -> AlbumMatchEvidence | None:
+    """Return decisive match evidence from an authoritative external id, if either has one."""
     for ext_id in (
         ExternalID.MB_ALBUM,
         ExternalID.DISCOGS,
@@ -258,7 +269,17 @@ def compare_album_evidence(
         )
         if external_id_match is not None:
             return AlbumMatchEvidence.MATCH if external_id_match else AlbumMatchEvidence.NO_MATCH
+    return None
 
+
+def _compare_album_metadata(
+    base_item: Album | ItemMapping,
+    compare_item: Album | ItemMapping,
+    strict: bool,
+    base_tracks: Sequence[Track] | None,
+    compare_tracks: Sequence[Track] | None,
+) -> AlbumMatchEvidence:
+    """Return match evidence from the albums' own metadata, without any identity checks."""
     # barcode/ASIN are shared across pressings and are non-unique corroboration only,
     # so they are never used on their own, only to resolve a year or edition ambiguity below
     secondary_external_id_match = any(
@@ -526,6 +547,32 @@ def _same_instance_item_match(
     return False
 
 
+def _same_album(
+    base_album: Album | ItemMapping | None,
+    compare_album_item: Album | ItemMapping | None,
+) -> bool:
+    """
+    Return whether two album references used as track evidence are the same album.
+
+    Mirrors ``compare_album(strict=False)`` but never widens shared-item-id identity
+    across sibling instances of a non-streaming provider domain - see
+    ``_same_instance_item_match`` - since a track's album is independently hydrated
+    per instance, and two unrelated albums on different non-streaming instances can
+    otherwise coincidentally share an id.
+    """
+    if base_album is None or compare_album_item is None:
+        return False
+    if _same_instance_item_match(base_album, compare_album_item):
+        return True
+    external_id_evidence = _compare_album_external_ids(base_album, compare_album_item)
+    if external_id_evidence is not None:
+        return external_id_evidence == AlbumMatchEvidence.MATCH
+    return (
+        _compare_album_metadata(base_album, compare_album_item, False, None, None)
+        == AlbumMatchEvidence.MATCH
+    )
+
+
 def _album_has_authoritative_release_evidence(
     base_album: Album | ItemMapping | None, compare_album_item: Album | ItemMapping | None
 ) -> bool:
@@ -604,7 +651,7 @@ def compare_track_evidence(
     same_album = (
         isinstance(base_album, Album)
         and isinstance(compare_album_item, Album)
-        and bool(compare_album(base_album, compare_album_item, strict=False))
+        and _same_album(base_album, compare_album_item)
     )
     if (
         mb_track_match is not False
@@ -1330,7 +1377,7 @@ def _same_album_position_conflicts(
     """Return whether tracks occupy different known positions on the same album."""
     if not isinstance(base_album, Album) or not isinstance(compare_album_item, Album):
         return False
-    if not compare_album(base_album, compare_album_item, strict=False):
+    if not _same_album(base_album, compare_album_item):
         return False
     if not base_track.track_number or not compare_track.track_number:
         return False
