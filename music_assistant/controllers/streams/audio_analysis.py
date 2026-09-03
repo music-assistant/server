@@ -766,17 +766,26 @@ class AudioAnalysisController:
         self,
         aa_provider_domain: str,
         media_type: MediaType = MediaType.TRACK,
+        extra_domain: str | None = None,
     ) -> int:
         """
-        Count audio_analysis rows for a given aa_provider_domain.
+        Count unique tracks with an audio_analysis row for a given aa_provider_domain.
 
         :param aa_provider_domain: Domain of the AA provider whose rows to count.
         :param media_type: The media type to count rows for.
+        :param extra_domain: Optional additional AA domain whose rows also count,
+            deduplicated per track.
         """
         return await self.mass.music.database.get_count_from_query(
-            f"SELECT id FROM {DB_TABLE_AUDIO_ANALYSIS} "
-            f"WHERE aa_provider_domain = :aa_provider_domain AND media_type = :media_type",
-            {"aa_provider_domain": aa_provider_domain, "media_type": media_type.value},
+            f"SELECT DISTINCT item_id, provider FROM {DB_TABLE_AUDIO_ANALYSIS} "
+            f"WHERE (aa_provider_domain = :aa_provider_domain "
+            f"       OR aa_provider_domain = :extra_domain) "
+            f"  AND media_type = :media_type",
+            {
+                "aa_provider_domain": aa_provider_domain,
+                "extra_domain": extra_domain,
+                "media_type": media_type.value,
+            },
         )
 
     async def iter_audio_analysis_rows(
@@ -890,17 +899,28 @@ class AudioAnalysisController:
         if provider is None:
             raise ProviderUnavailableError(f"{aa_domain} is not available")
 
-        analyzed = await self.get_audio_analysis_count(aa_domain)
+        analyzed = await self.get_audio_analysis_count(
+            aa_domain, extra_domain=provider.satisfied_by_aa_domain
+        )
         pending = await self._count_candidates_missing_analysis(
             aa_domain, provider.analysis_version, provider.satisfied_by_aa_domain
         )
         # NULL analysis_version (pre-versioning rows) is treated as stale: SQLite
         # evaluates `NULL < N` as NULL (falsy), so it must be matched explicitly.
+        # Rows whose track has a satisfying-domain row are excluded: the analyzer
+        # will never refresh them, so they are not pending work.
         stale_query = (
-            f"SELECT id FROM {DB_TABLE_AUDIO_ANALYSIS} "
-            f"WHERE aa_provider_domain = :aa_domain "
-            f"  AND media_type = :media_type "
-            f"  AND (analysis_version IS NULL OR analysis_version < :current_version)"
+            f"SELECT id FROM {DB_TABLE_AUDIO_ANALYSIS} aa "
+            f"WHERE aa.aa_provider_domain = :aa_domain "
+            f"  AND aa.media_type = :media_type "
+            f"  AND (aa.analysis_version IS NULL OR aa.analysis_version < :current_version) "
+            f"  AND NOT EXISTS ("
+            f"    SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS} alt "
+            f"    WHERE alt.item_id = aa.item_id "
+            f"      AND alt.provider = aa.provider "
+            f"      AND alt.aa_provider_domain = :satisfied_by_domain "
+            f"      AND alt.media_type = aa.media_type "
+            f"  )"
         )
         stale_version = await self.mass.music.database.get_count_from_query(
             stale_query,
@@ -908,6 +928,7 @@ class AudioAnalysisController:
                 "aa_domain": aa_domain,
                 "media_type": MediaType.TRACK.value,
                 "current_version": provider.analysis_version,
+                "satisfied_by_domain": provider.satisfied_by_aa_domain,
             },
         )
         return AudioAnalysisCoverage(
