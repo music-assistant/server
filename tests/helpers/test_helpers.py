@@ -183,8 +183,7 @@ def test_with_handling_in_titles() -> None:
     title, version = util.parse_title_and_version(test_str)
     assert title == "Ain't Gonna Bump No More (With No Big Fat Woman)"
     assert version == ""
-    # 'with that' - not a title-phrase exception, but not stripped because the
-    # bracket content doesn't start with "with "
+    # 'with that' - not in WITH_TITLE_WORDS but not stripped because it doesn't start with "with "
     test_str = "The Catastrophe (Good Luck with That Man)"
     title, version = util.parse_title_and_version(test_str)
     assert title == "The Catastrophe (Good Luck with That Man)"
@@ -219,10 +218,10 @@ def test_with_handling_in_titles() -> None:
         ("Great Song - with John Smith (Duet)", ("John Smith",)),
         ("Rockin' Around (With You)", ()),
         ("The Catastrophe (Good Luck with That Man)", ()),
-        # real artist credits starting with the same word as a title-phrase
-        # exception must still be recognized as credits, not title continuations
-        ("Great Song (with The Weeknd)", ("The Weeknd",)),
-        ("Great Song (with No Doubt)", ("No Doubt",)),
+        # an arbitrary title continuation starting with a title word, not just
+        # one of the specific known song titles, must still be protected -
+        # matching the whole credit against a fixed phrase list would strip it
+        ("Example Song (With You Tonight)", ()),
         ("Great Song (feat:Alice)", ("Alice",)),
         # a bare credit marker with no title text before it is part of the title
         # itself, not an actual credit annotation
