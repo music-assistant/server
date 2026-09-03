@@ -9,8 +9,8 @@ import pytest
 from music_assistant_models.enums import MediaType, VolumeNormalizationMode
 
 from music_assistant.constants import CONF_LOG_LEVEL
-from music_assistant.helpers.datetime import utc
 from music_assistant.controllers.streams.audio_analysis import PROVIDER_LOUDNESS_DOMAIN
+from music_assistant.helpers.datetime import utc
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import AnalysisSessionData
 from music_assistant.providers.loudness_analysis.provider import (
