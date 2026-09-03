@@ -50,7 +50,7 @@ from sounds.models import (
 
 import music_assistant.helpers.datetime as dt
 from music_assistant.helpers.datetime import LOCAL_TIMEZONE
-from music_assistant.providers.bbc_sounds.constants import _Constants
+from music_assistant.providers.bbc_sounds.constants import ValidMenuIDs, _Constants
 
 if TYPE_CHECKING:
     from music_assistant.providers.bbc_sounds import BBCSoundsProvider
@@ -87,27 +87,26 @@ class ConversionError(MusicAssistantError):
 class ImageProvider:
     """Handles image URL resolution and MediaItemImage creation."""
 
-    # TODO: keeping this in for demo purposes
     ICON_BASE_URL = (
         "https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid"
     )
 
     ICON_MAPPING: ClassVar[dict[str, str]] = {
-        "listen_live": "listen_live",
-        "continue_listening": "continue",
-        "editorial_collection": "editorial",
-        "local_rail": "my_location",
-        "single_item_promo": "featured",
-        "collections": "collections",
-        "categories": "categories",
-        "recommendations": "my_sounds",
-        "unmissable_speech": "speech",
-        "podcasts": "speech",
-        "unmissable_music": "music",
-        "music": "music",
-        "explore": "categories",
-        "stations": "latest",
-        "news": "news",
+        ValidMenuIDs.LISTEN_LIVE: "listen_live",
+        ValidMenuIDs.CONTINUE_LISTENING: "continue",
+        ValidMenuIDs.EDITORIAL_COLLECTION: "editorial",
+        ValidMenuIDs.LOCAL_RAIL: "my_location",
+        ValidMenuIDs.SINGLE_ITEM_PROMO: "featured",
+        ValidMenuIDs.COLLECTIONS: "collections",
+        ValidMenuIDs.CATEGORIES: "categories",
+        ValidMenuIDs.RECOMMENDATIONS: "my_sounds",
+        ValidMenuIDs.UNMISSABLE_SPEECH: "speech",
+        ValidMenuIDs.PODCASTS: "speech",
+        ValidMenuIDs.UNMISSABLE_MUSIC: "music",
+        ValidMenuIDs.MUSIC: "music",
+        ValidMenuIDs.EXPLORE: "categories",
+        ValidMenuIDs.STATIONS: "latest",
+        ValidMenuIDs.NEWS: "news",
     }
 
     @classmethod
