@@ -65,36 +65,44 @@ jobs:
             ].join('\n');
             const REVIEWER = 'copilot-pull-request-reviewer[bot]';
 
+            let failed = false;
             for (const pr of prs) {
-              // Re-verify the finding on THIS PR's latest Copilot review — never trust the detector.
-              const reviews = await github.paginate(github.rest.pulls.listReviews,
-                { owner, repo, pull_number: pr.number, per_page: 100 });
-              const copilot = reviews.filter(r => r.user && r.user.login === REVIEWER);
-              if (copilot.length === 0) continue;
-              const latest = copilot[copilot.length - 1];
-              let critical = (latest.body || '').includes('[CRITICAL]');
-              if (!critical) {
-                const cmts = await github.paginate(github.rest.pulls.listCommentsForReview,
-                  { owner, repo, pull_number: pr.number, review_id: latest.id, per_page: 100 });
-                critical = cmts.some(c => (c.body || '').includes('[CRITICAL]'));
-              }
-              if (!critical) { core.info(`PR #${pr.number}: latest Copilot review has no [CRITICAL].`); continue; }
-
-              // Post the explanation idempotently (hidden marker), independently of draft state.
-              const comments = await github.paginate(github.rest.issues.listComments,
-                { owner, repo, issue_number: pr.number, per_page: 100 });
-              if (!comments.some(c => (c.body || '').includes(MARKER))) {
-                await github.rest.issues.createComment({ owner, repo, issue_number: pr.number, body: BODY });
-              }
-
-              // Draft if not already one (a draft PR can't be merged — the gate).
-              if (pr.draft) { core.info(`PR #${pr.number} already a draft.`); continue; }
               try {
-                await github.graphql(
-                  'mutation($id: ID!) { convertPullRequestToDraft(input: { pullRequestId: $id }) { pullRequest { isDraft } } }',
-                  { id: pr.node_id });
-                core.info(`PR #${pr.number}: drafted on unresolved [CRITICAL].`);
+                // Re-verify the finding on THIS PR's latest Copilot review — never trust the detector.
+                const reviews = await github.paginate(github.rest.pulls.listReviews,
+                  { owner, repo, pull_number: pr.number, per_page: 100 });
+                const copilot = reviews.filter(r => r.user && r.user.login === REVIEWER);
+                if (copilot.length === 0) continue;
+                const latest = copilot[copilot.length - 1];
+                let critical = (latest.body || '').includes('[CRITICAL]');
+                if (!critical) {
+                  const cmts = await github.paginate(github.rest.pulls.listCommentsForReview,
+                    { owner, repo, pull_number: pr.number, review_id: latest.id, per_page: 100 });
+                  critical = cmts.some(c => (c.body || '').includes('[CRITICAL]'));
+                }
+                if (!critical) { core.info(`PR #${pr.number}: latest Copilot review has no [CRITICAL].`); continue; }
+
+                // Draft FIRST — it is the gate. Never swallow a failure here: it must fail the run
+                // (fail closed) rather than leave the PR mergeable while reporting success.
+                if (pr.draft) {
+                  core.info(`PR #${pr.number} already a draft.`);
+                } else {
+                  await github.graphql(
+                    'mutation($id: ID!) { convertPullRequestToDraft(input: { pullRequestId: $id }) { pullRequest { isDraft } } }',
+                    { id: pr.node_id });
+                  core.info(`PR #${pr.number}: drafted on unresolved [CRITICAL].`);
+                }
+
+                // Then the explanation, idempotent (hidden marker) and independent of draft state,
+                // so a run that drafted but failed to comment recovers it on the next run.
+                const comments = await github.paginate(github.rest.issues.listComments,
+                  { owner, repo, issue_number: pr.number, per_page: 100 });
+                if (!comments.some(c => (c.body || '').includes(MARKER))) {
+                  await github.rest.issues.createComment({ owner, repo, issue_number: pr.number, body: BODY });
+                }
               } catch (e) {
-                core.warning(`PR #${pr.number}: could not convert to draft: ${e.message}`);
+                failed = true;
+                core.error(`PR #${pr.number}: enforcement failed: ${e.message}`);
               }
             }
+            if (failed) core.setFailed('One or more PRs could not be gated; see errors above.');
