@@ -1,0 +1,60 @@
+name: Critical review gate (detect)
+
+# Stage 1 of 2. Reacts to Copilot's automated review; if it carries a [CRITICAL] finding, records
+# the PR number as an artifact for the enforce stage to act on. Runs with a READ-only token on
+# purpose: on a fork PR the `pull_request_review` event is unprivileged (GitHub downgrades the token
+# to read-only, exactly like `pull_request`), so this stage cannot and must not write. The draft
+# happens in the trusted `workflow_run` follow-up (critical-gate-enforce.yml), the only context that
+# gets a write token for fork-originated PRs. Checks out no PR code and only substring-matches
+# "[CRITICAL]", so there is no injection surface.
+
+on:  # yamllint disable-line rule:truthy
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    # Only Copilot's reviewer, only while the PR is still open for merge (not a draft), honouring the
+    # maintainer override label.
+    if: >-
+      github.event.review.user.login == 'copilot-pull-request-reviewer[bot]'
+      && github.event.pull_request.draft == false
+      && !contains(github.event.pull_request.labels.*.name, 'override-critical')
+    steps:
+      - name: Scan the review for a [CRITICAL] finding
+        id: scan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          REVIEW_ID: ${{ github.event.review.id }}
+          REVIEW_BODY: ${{ github.event.review.body }}
+        run: |
+          set -euo pipefail
+          # Paginate: a [CRITICAL] can sit past the first 30 inline comments of a large review.
+          comment_hits=$(gh api --paginate --slurp \
+            "repos/$REPO/pulls/$PR/reviews/$REVIEW_ID/comments" \
+            --jq '[.[][] | select((.body // "") | contains("[CRITICAL]"))] | length')
+          body_hits=0
+          case "$REVIEW_BODY" in *"[CRITICAL]"*) body_hits=1 ;; esac
+          if [ "$comment_hits" -eq 0 ] && [ "$body_hits" -eq 0 ]; then
+            echo "No [CRITICAL] finding; nothing to enforce."
+            echo "critical=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Critical finding(s) present (summary=$body_hits, inline=$comment_hits)."
+            echo "critical=true" >> "$GITHUB_OUTPUT"
+            printf '%s' "$PR" > pr-number.txt
+          fi
+
+      - name: Record the enforcement request
+        if: steps.scan.outputs.critical == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: critical-gate-request
+          path: pr-number.txt
+          retention-days: 1
