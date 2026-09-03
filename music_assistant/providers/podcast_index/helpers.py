@@ -76,7 +76,7 @@ async def make_api_request(
         async with mass.http_session.get(url, headers=headers, params=params or {}) as response:
             if response.status >= HTTP_STATUS_ERROR:
                 # the body says why a key was refused, which the bare status never does
-                detail = _response_detail(await response.text())
+                detail = _response_detail(await response.text(), api_key, api_secret)
                 if logger:
                     logger.debug("%s failed with HTTP %s%s", endpoint, response.status, detail)
                 if response.status == HTTP_STATUS_UNAUTHORIZED:
@@ -97,7 +97,11 @@ async def make_api_request(
                 raise InvalidDataError(description)
 
             if logger:
-                logger.debug("%s returned %s items", endpoint, data.get("count", "no"))
+                # the single item endpoints report no count, so do not invent one for them
+                if (count := data.get("count")) is None:
+                    logger.debug("%s succeeded", endpoint)
+                else:
+                    logger.debug("%s returned %s items", endpoint, count)
             return data
 
     except aiohttp.ClientConnectorError as err:
@@ -106,15 +110,19 @@ async def make_api_request(
         raise ProviderUnavailableError(f"Podcast Index API timeout: {err}") from err
 
 
-def _response_detail(body: str) -> str:
+def _response_detail(body: str, *secrets: str) -> str:
     """
     Return an error body condensed into a readable suffix, empty when it says nothing.
 
     :param body: The raw response body.
+    :param secrets: Values to mask, as the body is quoted back to the user.
     """
     detail = " ".join(body.split())
     if not detail:
         return ""
+    for secret in secrets:
+        if secret:
+            detail = detail.replace(secret, "***")
     if len(detail) > MAX_ERROR_DETAIL_LENGTH:
         detail = f"{detail[:MAX_ERROR_DETAIL_LENGTH]}..."
     return f": {detail}"

@@ -437,7 +437,7 @@ class PodcastIndexProvider(MusicProvider):
         """Browse trending podcasts."""
         try:
             return await self._fetch_podcasts("podcasts/trending", {"max": 50})
-        except ProviderUnavailableError, InvalidDataError:
+        except ProviderUnavailableError, InvalidDataError, LoginFailed:
             raise
         except Exception as err:
             self.logger.warning(
@@ -523,7 +523,7 @@ class PodcastIndexProvider(MusicProvider):
 
             return podcasts
 
-        except ProviderUnavailableError, InvalidDataError:
+        except ProviderUnavailableError, InvalidDataError, LoginFailed:
             raise
         except Exception as err:
             self.logger.warning(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import aiohttp
 import pytest
@@ -16,6 +16,7 @@ from music_assistant_models.errors import (
 
 from music_assistant.providers.podcast_index.constants import MAX_ERROR_DETAIL_LENGTH
 from music_assistant.providers.podcast_index.helpers import make_api_request
+from music_assistant.providers.podcast_index.provider import PodcastIndexProvider
 
 API_KEY = "key"
 API_SECRET = "secret"
@@ -115,13 +116,16 @@ async def test_a_failure_is_logged_for_support(caplog: pytest.LogCaptureFixture)
 async def test_credentials_are_never_logged(caplog: pytest.LogCaptureFixture) -> None:
     """The key and secret must stay out of anything a user is asked to share."""
     logger = logging.getLogger("test.podcast_index")
-    response = _FakeResponse(401, body="Invalid authorization header")
+    # the live API names the header rather than the value, but the body is not ours to trust
+    response = _FakeResponse(401, body=f"key {API_KEY} with secret {API_SECRET} was refused")
 
-    with caplog.at_level(logging.DEBUG, logger=logger.name), pytest.raises(LoginFailed):
+    with caplog.at_level(logging.DEBUG, logger=logger.name), pytest.raises(LoginFailed) as err:
         await _request(response, logger=logger)
 
     assert API_KEY not in caplog.text
     assert API_SECRET not in caplog.text
+    assert API_KEY not in str(err.value)
+    assert API_SECRET not in str(err.value)
 
 
 async def test_a_successful_call_is_logged(caplog: pytest.LogCaptureFixture) -> None:
@@ -134,3 +138,45 @@ async def test_a_successful_call_is_logged(caplog: pytest.LogCaptureFixture) -> 
 
     assert data["count"] == 3
     assert "stats/current" in caplog.text
+
+
+async def test_a_single_item_call_is_not_reported_as_empty(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Endpoints returning one item carry no count, which is not the same as returning none."""
+    logger = logging.getLogger("test.podcast_index")
+    response = _FakeResponse(200, payload={"status": "true", "episode": {"id": 1}})
+
+    with caplog.at_level(logging.DEBUG, logger=logger.name):
+        await _request(response, logger=logger)
+
+    assert "no items" not in caplog.text
+    assert "stats/current succeeded" in caplog.text
+
+
+def _browse_provider() -> PodcastIndexProvider:
+    """Create a provider whose API calls can be stubbed out."""
+    provider = object.__new__(PodcastIndexProvider)
+    provider.mass = MagicMock()
+    provider.logger = MagicMock()
+    return provider
+
+
+@pytest.mark.parametrize(
+    ("browse", "args"),
+    [
+        (PodcastIndexProvider._browse_trending, ()),
+        (PodcastIndexProvider._browse_category_podcasts, ("comedy",)),
+    ],
+)
+async def test_browsing_reports_rejected_credentials(browse: Any, args: tuple[Any, ...]) -> None:
+    """A rejected key must surface, not leave the shelf looking empty."""
+    provider = _browse_provider()
+    with (
+        patch.object(PodcastIndexProvider, "_api_request", side_effect=LoginFailed("key refused")),
+        patch.object(
+            PodcastIndexProvider, "_fetch_podcasts", side_effect=LoginFailed("key refused")
+        ),
+        pytest.raises(LoginFailed),
+    ):
+        await browse.__wrapped__(provider, *args)
