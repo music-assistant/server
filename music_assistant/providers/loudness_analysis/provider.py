@@ -12,6 +12,7 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, VolumeNormalizationMode
 
 from music_assistant.constants import LOUDNESS_MEASUREMENT_MIN_LUFS
+from music_assistant.controllers.streams.audio_analysis import PROVIDER_LOUDNESS_DOMAIN
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.tags import write_replaygain_track_gain
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
@@ -193,7 +194,13 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
         )
         # update in-memory streamdetails so subsequent seeks use the measurement
         # instead of dynamic normalization; provider-supplied loudness stays authoritative
-        if session.streamdetails.loudness is None:
+        provider_analysis = await self.mass.streams.audio_analysis.get_audio_analysis(
+            session.streamdetails.item_id,
+            session.streamdetails.provider,
+            media_type=session.streamdetails.media_type,
+            priority=(PROVIDER_LOUDNESS_DOMAIN,),
+        )
+        if provider_analysis is None or provider_analysis.loudness_integrated is None:
             session.streamdetails.loudness = round(loudness, 2)
         self.logger.debug(
             "Loudness measurement for %s: %s LUFS (LRA=%s LU, peak=%s dBTP)",

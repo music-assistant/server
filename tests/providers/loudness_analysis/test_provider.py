@@ -23,6 +23,7 @@ def _make_provider() -> LoudnessAnalysisProvider:
     """Construct a LoudnessAnalysisProvider with mocked MA infrastructure."""
     mass = MagicMock()
     mass.streams.audio_analysis.get_audio_analysis_version = AsyncMock(return_value=None)
+    mass.streams.audio_analysis.get_audio_analysis = AsyncMock(return_value=None)
     mass.streams.audio_analysis.set_audio_analysis = AsyncMock()
     manifest = MagicMock()
     manifest.domain = "loudness_analysis"
@@ -83,7 +84,7 @@ async def test_finalize_returns_analysis_on_success(monkeypatch: pytest.MonkeyPa
 async def test_finalize_keeps_provider_supplied_streamdetails_loudness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """_finalize must not overwrite provider-supplied loudness already on the streamdetails."""
+    """_finalize must not overwrite streamdetails loudness when a provider_loudness row exists."""
     provider = _make_provider()
     session_id = "test-session-provider-loudness"
 
@@ -91,6 +92,9 @@ async def test_finalize_keeps_provider_supplied_streamdetails_loudness(
     session_data.chunks_received = MIN_DURATION_SECONDS + 1
     session_data.eof_sent = True
     streamdetails.loudness = -9.0
+    provider.mass.streams.audio_analysis.get_audio_analysis = AsyncMock(  # type: ignore[method-assign]
+        return_value=AudioAnalysisData(loudness_integrated=-9.0)
+    )
 
     provider._data[session_id] = session_data
     provider._sessions[session_id] = AnalysisSessionData(
@@ -120,6 +124,32 @@ async def test_finalize_sets_streamdetails_loudness_when_unset(
     session_data.chunks_received = MIN_DURATION_SECONDS + 1
     session_data.eof_sent = True
     streamdetails.loudness = None
+
+    provider._data[session_id] = session_data
+    provider._sessions[session_id] = AnalysisSessionData(
+        streamdetails=streamdetails,
+        audio_format=MagicMock(),
+    )
+    monkeypatch.setattr(
+        "music_assistant.providers.loudness_analysis.provider._parse_ebur128_metrics",
+        lambda _log: (-14.5, 7.2, -1.2),
+    )
+
+    await provider._finalize(session_id)
+
+    assert streamdetails.loudness == -14.5
+
+
+@pytest.mark.asyncio
+async def test_finalize_replaces_stale_analyzer_loudness(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_finalize must replace loudness hydrated from an old analyzer row with the new measurement."""
+    provider = _make_provider()
+    session_id = "test-session-stale-loudness"
+
+    session_data, streamdetails = _make_session_data()
+    session_data.chunks_received = MIN_DURATION_SECONDS + 1
+    session_data.eof_sent = True
+    streamdetails.loudness = -12.0
 
     provider._data[session_id] = session_data
     provider._sessions[session_id] = AnalysisSessionData(
