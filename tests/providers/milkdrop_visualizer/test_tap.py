@@ -312,7 +312,7 @@ def test_ring_with_only_future_frames_is_reported_stale() -> None:
 async def test_read_once_realigns_when_requested() -> None:
     """A requested realign drops a pinned-ahead cursor and restarts at the playhead."""
     manager = _manager()
-    manager.provider.config.get_value.return_value = False  # type: ignore[attr-defined]
+    manager.mass.players.get_player = Mock(return_value=None)  # type: ignore[method-assign]
     tap = Tap("player-1")
     queue = Mock(corrected_elapsed_time=100.0, playback_speed=1.0)
     item = Mock(queue_item_id="item-1")
@@ -332,7 +332,7 @@ async def test_read_once_realigns_when_requested() -> None:
 async def test_read_once_ignores_realign_when_playhead_chunk_is_evicted() -> None:
     """A realign past the eviction edge is dropped: healthy viewers keep their frames."""
     manager = _manager()
-    manager.provider.config.get_value.return_value = False  # type: ignore[attr-defined]
+    manager.mass.players.get_player = Mock(return_value=None)  # type: ignore[method-assign]
     tap = Tap("player-1")
     tap.ring.append(b"frame")
     queue = Mock(corrected_elapsed_time=100.0, playback_speed=1.0)

@@ -1401,7 +1401,12 @@ class AuthenticationManager:
 
         # Update preferences if provided
         if preferences is not None:
+            previous_preferences = target_user.preferences
             target_user = await self.update_user_preferences(target_user, preferences)
+            # cast dashboards render with their casting user's preferences; notify viewers
+            self.mass.dashboard.notify_user_preferences_changed(
+                target_user.user_id, previous_preferences, preferences
+            )
 
         # Update player_filter and provider_filter (requires the users.manage scope)
         if player_filter is not None or provider_filter is not None:
