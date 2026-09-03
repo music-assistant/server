@@ -2,17 +2,29 @@
 
 from __future__ import annotations
 
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
+from sounds.client import SoundsClient
 from sounds.models import Menu, MenuItem
+from sounds.schedule import ScheduleService
+from sounds.stations import StationService
 
 from music_assistant.providers.bbc_sounds import SUPPORTED_FEATURES, BBCSoundsProvider
 from music_assistant.providers.bbc_sounds.adaptor import Adaptor
 
 
 @pytest.fixture
-def provider() -> BBCSoundsProvider:
+def client() -> SoundsClient:
+    """Create a mock SoundsClient with mocked dependencies."""
+    client = AsyncMock(spec=SoundsClient)
+    client.stations = AsyncMock(spec=StationService)
+    client.schedules = AsyncMock(spec=ScheduleService)
+    return client
+
+
+@pytest.fixture
+def provider(client: SoundsClient) -> BBCSoundsProvider:
     """Create a real BBCSoundsProvider with mocked dependencies."""
     mass = Mock()
     manifest = Mock()
@@ -27,6 +39,8 @@ def provider() -> BBCSoundsProvider:
     instance = BBCSoundsProvider(mass, manifest, config, SUPPORTED_FEATURES)
     instance.logged_in = True
     instance.adaptor = Adaptor(instance)
+    instance.client = client
+    instance.show_local_stations = False
     return instance
 
 
