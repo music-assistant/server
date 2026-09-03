@@ -266,7 +266,6 @@ VACUUM_MIN_RECLAIM_RATIO: Final[float] = 0.2
 # ebur128 reports ~-70 LUFS when it receives near-silence or very little
 # audio (e.g. when a stream was cancelled early).
 LOUDNESS_MEASUREMENT_MIN_LUFS: Final[float] = -50.0
-LOUDNESS_ANALYSIS_VERSION: Final[int] = 2
 
 
 def load_genre_mapping(mapping_file: pathlib.Path) -> list[dict[str, Any]]:

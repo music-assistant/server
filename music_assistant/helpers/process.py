@@ -587,7 +587,17 @@ class AsyncProcess:
             # retrieving the failure is what keeps asyncio from reporting it as
             # unhandled once the task is collected, so log it here rather than
             # dropping the only trace of it
-            self.logger.warning("The %s task ended with error: %s", description, err)
+            level = logging.DEBUG if self._is_expected_task_error(err) else logging.WARNING
+            self.logger.log(level, "The %s task ended with error: %s", description, err)
+
+    def _is_expected_task_error(self, err: BaseException) -> bool:
+        """
+        Return whether a helper task error is an expected outcome rather than a failure.
+
+        Subclasses override this to keep known-benign errors out of the warning
+        log; such errors are still logged, at debug level.
+        """
+        return False
 
 
 async def check_output(

@@ -1740,6 +1740,39 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return next_item
         return None
 
+    def is_current_window_item(self, queue_id: str, queue_item_id: str) -> bool:
+        """
+        Return whether the item sits at or right around the queue's playhead.
+
+        Players that play upcoming tracks from a cached copy of the queue use this to
+        verify a requested item is still the previous, current, buffered or expected
+        next track.
+
+        :param queue_id: The queue to check against.
+        :param queue_item_id: The queue item id the player asked for.
+        """
+        queue = self.get(queue_id)
+        if queue is None:
+            return False
+        item_index = self.index_by_id(queue_id, queue_item_id)
+        if item_index is None:
+            return False
+        for center in (queue.current_index, queue.index_in_buffer):
+            if center is None:
+                continue
+            if item_index in (center - 1, center):
+                return True
+        if queue.current_index is None:
+            return False
+        # get_next_item accounts for repeat mode and unavailable items, so this is the
+        # item that will really play next rather than whatever sits at the next index.
+        # The expected next is measured from the PLAYING track only: with crossfade,
+        # index_in_buffer already sits on the next track while it preloads for the fade,
+        # and one more hop from there would admit the very stale item this check exists
+        # to refuse
+        next_item = self.get_next_item(queue_id, queue.current_index)
+        return next_item is not None and next_item.queue_item_id == queue_item_id
+
     def store_sources(self, queue: PlayerQueue, items: list[MediaItemType]) -> None:
         """
         Hold the queue's full dynamic-source items server-side and project them onto `sources`.
