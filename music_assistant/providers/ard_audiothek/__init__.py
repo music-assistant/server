@@ -37,6 +37,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_PASSWORD
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import from_utc_timestamp, future_timestamp, utc
+from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.ard_audiothek.database_queries import (
     get_history_query,
@@ -423,6 +424,8 @@ class ARDAudiothek(MusicProvider):
         """Get podcast episodes."""
         await self._update_progress()
         depublished_filter = {"isPublished": {"equalTo": True}}
+        show_title = ""
+        episodes: list[dict[str, Any]] = []
         async with await self.get_client() as session:
             show_length_query.variable_values = {
                 "showId": prov_podcast_id,
@@ -430,7 +433,9 @@ class ARDAudiothek(MusicProvider):
             }
             length = await session.execute(show_length_query)
             length = length["show"]["items"]["totalCount"]
-            step_size = 128
+            # ranking by date needs every page in before anything can be yielded, so pull
+            # them in large chunks. A long running archive costs 6 requests here rather than 21
+            step_size = 512
             for offset in range(0, length, step_size):
                 show_query.variable_values = {
                     "showId": prov_podcast_id,
@@ -439,23 +444,26 @@ class ARDAudiothek(MusicProvider):
                     "filter": depublished_filter,
                 }
                 result = (await session.execute(show_query))["show"]
-                for idx, episode in enumerate(result["items"]["nodes"]):
-                    if len(episode["audioList"]) == 0:
-                        continue
-                    if episode["status"] == "DEPUBLISHED":
-                        continue
-                    episode_id = episode["coreId"]
-
-                    progress = self._get_progress(episode_id)
-                    yield _parse_podcast_episode(
-                        self.domain,
-                        self.instance_id,
-                        episode,
-                        episode_id,
-                        result["title"],
-                        offset + idx,
-                        progress,
-                    )
+                show_title = result["title"]
+                episodes += [
+                    episode
+                    for episode in result["items"]["nodes"]
+                    if episode["audioList"] and episode["status"] != "DEPUBLISHED"
+                ]
+        # the API lists the episodes newest first, so every page has to be in before they can
+        # be ranked oldest to newest
+        positions = rank_episodes_by_date([_publish_date(episode) for episode in episodes])
+        for position, episode in zip(positions, episodes, strict=True):
+            episode_id = episode["coreId"]
+            yield _parse_podcast_episode(
+                self.domain,
+                self.instance_id,
+                episode,
+                episode_id,
+                show_title,
+                position,
+                self._get_progress(episode_id),
+            )
 
     @use_cache(3600 * 24)  # cache for 24 hours
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
@@ -473,7 +481,7 @@ class ARDAudiothek(MusicProvider):
             result,
             result["showId"],
             result["show"]["title"],
-            result["rowId"],
+            0,
             progress,
         )
 
@@ -696,13 +704,23 @@ def _parse_radio(
     return radio
 
 
+def _publish_date(episode: dict[str, Any]) -> datetime | None:
+    """Return the publication date of an episode, or None when it has none we can read."""
+    if not (raw := episode.get("publishDate")):
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
 def _parse_podcast_episode(
     domain: str,
     instance_id: str,
     episode: dict[str, Any],
     podcast_id: str,
     podcast_title: str,
-    idx: int,
+    position: int,
     progress: tuple[bool, int],
 ) -> PodcastEpisode:
     podcast_episode = PodcastEpisode(
@@ -723,7 +741,7 @@ def _parse_podcast_episode(
                 provider_instance=instance_id,
             )
         },
-        position=idx,
+        position=position,
         fully_played=progress[0],
         resume_position_ms=progress[1],
     )
