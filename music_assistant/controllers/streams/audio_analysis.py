@@ -545,8 +545,9 @@ class AudioAnalysisController:
         """
         Get merged audio analysis data for a track.
 
-        Only rows from currently available AA providers are included. Rows that fail
-        to parse are deleted, so the track can be re-analyzed.
+        Only rows from currently available AA providers are included; the virtual
+        provider_loudness domain is always included. Rows that fail to parse are
+        deleted, so the track can be re-analyzed.
 
         :param item_id: Provider-native item ID from streamdetails.item_id.
         :param provider_instance_id_or_domain: Music provider instance ID or domain.

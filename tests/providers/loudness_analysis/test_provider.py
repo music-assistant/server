@@ -80,6 +80,63 @@ async def test_finalize_returns_analysis_on_success(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
+async def test_finalize_keeps_provider_supplied_streamdetails_loudness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_finalize must not overwrite provider-supplied loudness already on the streamdetails."""
+    provider = _make_provider()
+    session_id = "test-session-provider-loudness"
+
+    session_data, streamdetails = _make_session_data()
+    session_data.chunks_received = MIN_DURATION_SECONDS + 1
+    session_data.eof_sent = True
+    streamdetails.loudness = -9.0
+
+    provider._data[session_id] = session_data
+    provider._sessions[session_id] = AnalysisSessionData(
+        streamdetails=streamdetails,
+        audio_format=MagicMock(),
+    )
+    monkeypatch.setattr(
+        "music_assistant.providers.loudness_analysis.provider._parse_ebur128_metrics",
+        lambda _log: (-14.5, 7.2, -1.2),
+    )
+
+    result = await provider._finalize(session_id)
+
+    assert result is not None
+    assert streamdetails.loudness == -9.0
+
+
+@pytest.mark.asyncio
+async def test_finalize_sets_streamdetails_loudness_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_finalize must set the measurement on the streamdetails when no loudness is known yet."""
+    provider = _make_provider()
+    session_id = "test-session-unset-loudness"
+
+    session_data, streamdetails = _make_session_data()
+    session_data.chunks_received = MIN_DURATION_SECONDS + 1
+    session_data.eof_sent = True
+    streamdetails.loudness = None
+
+    provider._data[session_id] = session_data
+    provider._sessions[session_id] = AnalysisSessionData(
+        streamdetails=streamdetails,
+        audio_format=MagicMock(),
+    )
+    monkeypatch.setattr(
+        "music_assistant.providers.loudness_analysis.provider._parse_ebur128_metrics",
+        lambda _log: (-14.5, 7.2, -1.2),
+    )
+
+    await provider._finalize(session_id)
+
+    assert streamdetails.loudness == -14.5
+
+
+@pytest.mark.asyncio
 async def test_finalize_raises_when_below_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
     """_finalize must raise AudioAnalysisError when measured loudness is below the reliability floor."""
     provider = _make_provider()

@@ -192,8 +192,9 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
             true_peak=round(true_peak, 2) if true_peak is not None else None,
         )
         # update in-memory streamdetails so subsequent seeks use the measurement
-        # instead of dynamic normalization
-        session.streamdetails.loudness = round(loudness, 2)
+        # instead of dynamic normalization; provider-supplied loudness stays authoritative
+        if session.streamdetails.loudness is None:
+            session.streamdetails.loudness = round(loudness, 2)
         self.logger.debug(
             "Loudness measurement for %s: %s LUFS (LRA=%s LU, peak=%s dBTP)",
             session.streamdetails.uri,
