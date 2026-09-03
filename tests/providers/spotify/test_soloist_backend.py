@@ -597,6 +597,34 @@ async def test_the_engine_wandering_on_after_delivery_ends_the_run_cleanly(
     run.mass.create_task.assert_called_once()
 
 
+def test_losing_the_device_mid_item_is_reported_as_a_takeover(tmp_path: Path) -> None:
+    """Another player taking the account is what ends this item, and it must say so."""
+    run = _make_run(tmp_path)
+    run.mass.create_task = MagicMock()  # type: ignore[method-assign]
+    run._started.set()
+    run._observe_device_active(active=False)
+    assert run._error is not None
+    assert "already streaming somewhere else" in run._error
+
+
+def test_the_device_report_at_startup_is_not_a_takeover(tmp_path: Path) -> None:
+    """The engine reports itself inactive while a run is still starting up."""
+    run = _make_run(tmp_path)
+    run.mass.create_task = MagicMock()  # type: ignore[method-assign]
+    run._observe_device_active(active=False)
+    assert run._error is None
+
+
+def test_losing_the_device_after_the_item_is_over_is_not_a_takeover(tmp_path: Path) -> None:
+    """The daemon drops the device on its way out; the item already played."""
+    run = _make_run(tmp_path)
+    run.mass.create_task = MagicMock()  # type: ignore[method-assign]
+    run._started.set()
+    run._item_over = True
+    run._observe_device_active(active=False)
+    assert run._error is None
+
+
 def test_the_engine_starting_on_the_wrong_item_fails_the_run(tmp_path: Path) -> None:
     """Before this run's item ever played, a foreign report is not an ending."""
     run = _make_run(tmp_path)

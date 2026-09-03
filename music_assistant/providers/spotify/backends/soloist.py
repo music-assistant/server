@@ -64,6 +64,7 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
     WS_ADDR_FILE,
     WS_PORT_FILE,
     SoloistAuthState,
+    SoloistDeviceChanged,
     SoloistPlaybackState,
     SoloistPositionSync,
     SoloistTrackChanged,
@@ -1177,6 +1178,9 @@ class _SingleTrackRun:
             if data.logged_in is False and not self._unpaired:
                 await self._check_pairing_lost()
             return
+        if isinstance(data, SoloistDeviceChanged):
+            self._observe_device_active(active=data.is_active)
+            return
         if isinstance(data, SoloistTrackChanged):
             if data.item is not None and data.item.uri:
                 self._observe_item(data.item.uri, _decorated_duration_ms(data.item))
@@ -1222,6 +1226,19 @@ class _SingleTrackRun:
         if duration_ms:
             self._duration_ms = duration_ms
         self._started.set()
+
+    def _observe_device_active(self, *, active: bool) -> None:
+        """Fail the run when the account starts playing somewhere else."""
+        # the engine reports itself active as each run starts, and losing it once
+        # the item is over is just the daemon going: only a live item losing the
+        # device means another player or app took the account over. Auth and
+        # playback states carry the same flag but report False during startup too.
+        if active or self._item_over or not self._started.is_set():
+            return
+        self._fail(
+            "Spotify is already streaming somewhere else - an account "
+            "can only play in one place at a time"
+        )
 
     def _observe_position(self, position_ms: int) -> None:
         """Confirm an armed seek once the engine reports at (or past) its target."""
