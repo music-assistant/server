@@ -134,9 +134,8 @@ _MAX_LEAD_TRIM_S: Final[float] = 0.5
 # below this much audio an item rendered nothing: the engine either refused it
 # (clean exit) or never got going, and anything above it played and was cut short
 _REFUSED_DELIVERY_MS: Final[int] = 1000
-# an item with less than this much to play cannot clear the bar above once the
-# lead trim has taken its cut, so nothing can be concluded from what arrived
-_MIN_EXPECTED_DELIVERY_MS: Final[int] = _REFUSED_DELIVERY_MS + int(_MAX_LEAD_TRIM_S * 1000)
+# what the lead trim can take off the start of an otherwise complete delivery
+_MAX_LEAD_TRIM_MS: Final[int] = int(_MAX_LEAD_TRIM_S * 1000)
 # The elastic cushion between the paced FIFO reader and the consumer. A full
 # cushion suspends the capture sink, which pauses the engine: the FIFO itself
 # holds well under a second, so the reader must keep draining it whenever the
@@ -849,10 +848,14 @@ class _SingleTrackRun:
                 f"Spotify playback stopped unexpectedly (engine exit code {exit_code})"
             )
         played_ms = self._delivered / _BYTES_PER_SECOND * 1000
-        # a seek can leave an item with almost nothing left to play, and a complete
-        # delivery arrives short by whatever the lead trim took off its start
         expected_ms = self._duration_ms - self._seek_target_ms
-        if played_ms > _REFUSED_DELIVERY_MS or expected_ms <= _MIN_EXPECTED_DELIVERY_MS:
+        if (
+            played_ms > _REFUSED_DELIVERY_MS
+            # a seek can leave an item with almost nothing left to play
+            or expected_ms <= _REFUSED_DELIVERY_MS
+            # a complete delivery arrives short by what the lead trim took off it
+            or played_ms + _MAX_LEAD_TRIM_MS >= expected_ms
+        ):
             return
         if self._engine_exited:
             raise AudioError(
@@ -1235,11 +1238,11 @@ class _SingleTrackRun:
 
     def _observe_device_active(self, *, active: bool) -> None:
         """Fail the run when the account starts playing somewhere else."""
-        # the engine reports itself active as each run starts, and losing it once
-        # the item is over is just the daemon going: only a live item losing the
-        # device means another player or app took the account over. Auth and
-        # playback states carry the same flag but report False during startup too.
-        if active or self._item_over or not self._started.is_set():
+        # the engine reports itself active as each run starts, and a run whose item
+        # is over or whose daemon has gone is only shedding the device on its way
+        # out: another player took the account over when a LIVE item loses it. Auth
+        # and playback states carry the same flag but report False during startup.
+        if active or self._item_over or self._engine_exited or not self._started.is_set():
             return
         self._fail(
             "Spotify is already streaming somewhere else - an account "

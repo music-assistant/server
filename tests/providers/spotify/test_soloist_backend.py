@@ -488,14 +488,26 @@ async def test_a_crash_part_way_through_is_reported(tmp_path: Path) -> None:
         await _collect(run)
 
 
+async def test_a_brief_item_that_played_nothing_is_still_reported(tmp_path: Path) -> None:
+    """Accepting short items wholesale would let a refused one through unnoticed."""
+    run = _make_run(tmp_path, duration=2)
+    run._duration_ms = 1200
+    run._engine_exited = True
+    run._proc = MagicMock(returncode=0)
+    run._chunks.put_nowait(b"\x01" * _FRAME_BYTES)
+    run._finish_delivery()
+    with pytest.raises(AudioError, match="would not play this track"):
+        await _collect(run)
+
+
 async def test_a_brief_item_played_in_full_is_accepted(tmp_path: Path) -> None:
     """The lead trim takes its cut off a complete delivery of a very short item."""
     run = _make_run(tmp_path, duration=2)
     run._duration_ms = 1200
     run._engine_exited = True
     run._proc = MagicMock(returncode=0)
-    # what a complete 1.2s item arrives as once the trim has taken its budget
-    run._chunks.put_nowait(b"\x01" * int(0.7 * _BYTES_PER_SECOND))
+    # what a complete 1.2s item arrives as once the trim has taken its full budget
+    run._chunks.put_nowait(b"\x01" * (7 * _BYTES_PER_SECOND // 10))
     run._finish_delivery()
     await _collect(run)
 
@@ -634,6 +646,16 @@ def test_the_device_report_at_startup_is_not_a_takeover(tmp_path: Path) -> None:
     """The engine reports itself inactive while a run is still starting up."""
     run = _make_run(tmp_path)
     run.mass.create_task = MagicMock()  # type: ignore[method-assign]
+    run._observe_device_active(active=False)
+    assert run._error is None
+
+
+def test_losing_the_device_once_the_daemon_has_gone_is_not_a_takeover(tmp_path: Path) -> None:
+    """A run that ended on its own sheds the device as it goes; the item still played."""
+    run = _make_run(tmp_path)
+    run.mass.create_task = MagicMock()  # type: ignore[method-assign]
+    run._started.set()
+    run._engine_exited = True
     run._observe_device_active(active=False)
     assert run._error is None
 
