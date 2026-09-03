@@ -70,12 +70,37 @@ class TTSEngine(PluginEngine):
     """An engine that renders speech, invoked through ``PluginProvider.get_tts_message``."""
 
 
+@dataclass(kw_only=True, frozen=True)
+class GuestSession:
+    """
+    An active guest experience exposed by a plugin provider.
+
+    Server-side only: ``join_url`` may contain a credential and must not be serialized
+    to clients without applying the consumer's own access policy.
+    """
+
+    provider: PluginProvider
+    join_url: str
+    name: str | None = None
+    description: str | None = None
+
+
 class PluginProvider(Provider):
     """
     Base representation of a Plugin for Music Assistant.
 
     Plugin Provider implementations should inherit from this base model.
     """
+
+    async def get_active_guest_session(self) -> GuestSession | None:
+        """
+        Return the active guest session exposed by this plugin, if any.
+
+        Override this method when the plugin offers a guest experience that another
+        provider can present without depending on this plugin's domain-specific API.
+        Resolving the session may lazily create or refresh the credential in its join URL.
+        """
+        return None
 
     async def get_audio_sources(self) -> list[AudioSource]:
         """
