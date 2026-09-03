@@ -245,6 +245,8 @@ DB_TABLE_AUDIO_ANALYSIS_FAILURES: Final[str] = "audio_analysis_failures"
 DB_TABLE_GENRES: Final[str] = "genres"
 DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
 DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION: Final[str] = "genre_media_item_exclusion"
+DB_TABLE_WORKS: Final[str] = "works"
+DB_TABLE_WORK_ARRANGEMENTS: Final[str] = "work_arrangements"
 
 # all media item tables, each of which has a search_name column
 # backed by a {table}_fts FTS5 index table

@@ -606,6 +606,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
                 "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
+                "is_classical": bool(getattr(item, "is_classical", False)),
             },
         )
         # update/set external id lookup table
@@ -631,6 +632,11 @@ class AlbumsController(MediaControllerBase[Album]):
         cur_item.external_ids.update(update.external_ids)
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
+        is_classical = bool(
+            getattr(update, "is_classical", False)
+            if overwrite
+            else getattr(cur_item, "is_classical", False) or getattr(update, "is_classical", False)
+        )
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
@@ -650,6 +656,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 "timestamp_added": int(update.date_added.timestamp())
                 if update.date_added
                 else UNSET,
+                "is_classical": is_classical,
             },
         )
         # update/set external id lookup table

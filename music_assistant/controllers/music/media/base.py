@@ -1991,6 +1991,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         db_row_dict = dict(db_row)
         db_row_dict["provider"] = "library"
         db_row_dict["favorite"] = bool(db_row_dict["favorite"])
+        if "is_classical" in db_row_dict:
+            db_row_dict["is_classical"] = bool(db_row_dict["is_classical"])
         db_row_dict["item_id"] = str(db_row_dict["item_id"])
         db_row_dict["date_added"] = datetime.fromtimestamp(
             db_row_dict["timestamp_added"], tz=UTC

@@ -1083,6 +1083,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if item.mbid == VARIOUS_ARTISTS_MBID:
             item.name = VARIOUS_ARTISTS_NAME
         # no existing item matched: insert item
+        period = getattr(item, "period", None)
         db_id = await self.mass.music.database.insert(
             self.db_table,
             {
@@ -1094,6 +1095,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
                 "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
                 "artist_type": item.artist_type,
+                "period": period.value if period else None,
+                "is_classical": bool(getattr(item, "is_classical", False)),
             },
         )
         # update/set external id lookup table
@@ -1127,6 +1130,14 @@ class ArtistsController(MediaControllerBase[Artist]):
 
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
+        cur_period = getattr(cur_item, "period", None)
+        update_period = getattr(update, "period", None)
+        period = update_period if overwrite else (cur_period or update_period)
+        is_classical = bool(
+            getattr(update, "is_classical", False)
+            if overwrite
+            else getattr(cur_item, "is_classical", False) or getattr(update, "is_classical", False)
+        )
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
@@ -1140,6 +1151,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 if update.date_added
                 else UNSET,
                 "artist_type": update.artist_type,
+                "period": period.value if period else None,
+                "is_classical": is_classical,
             },
         )
         self.logger.debug("updated %s in database: %s", update.name, db_id)

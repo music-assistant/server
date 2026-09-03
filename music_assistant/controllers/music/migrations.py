@@ -18,6 +18,7 @@ from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.helpers import create_safe_string
 
 from music_assistant.constants import (
+    DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIO_ANALYSIS,
@@ -32,7 +33,10 @@ from music_assistant.constants import (
     DB_TABLE_PODCASTS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_RADIOS,
+    DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
+    DB_TABLE_WORK_ARRANGEMENTS,
+    DB_TABLE_WORKS,
     DEFAULT_GENRE_MAPPING,
     GENRE_ICONS_DIR_NAME,
     LOUDNESS_MEASUREMENT_MIN_LUFS,
@@ -1015,6 +1019,120 @@ async def migrate_database(  # noqa: PLR0915
             await mass.music.genres.restore_default_genres(full_restore=False)
         except Exception as err:
             logger.warning("Could not seed default podcast/audiobook genres: %s", err)
+
+    if prev_version <= 58:
+        # Stage 2 of classical music support: add works table, work_arrangements
+        # junction, work/movement columns on tracks, role/instrument/position
+        # columns on track_artists / album_artists with backfill to 'main_artist',
+        # and the artists.period + {tracks,albums,artists}.is_classical columns
+        # (populated in stages 4 + 6).
+        for column_sql in (
+            f"ALTER TABLE {DB_TABLE_ARTISTS} ADD COLUMN [period] TEXT",
+            f"ALTER TABLE {DB_TABLE_TRACKS} ADD COLUMN [is_classical] INTEGER NOT NULL DEFAULT 0",
+            f"ALTER TABLE {DB_TABLE_ALBUMS} ADD COLUMN [is_classical] INTEGER NOT NULL DEFAULT 0",
+            f"ALTER TABLE {DB_TABLE_ARTISTS} ADD COLUMN [is_classical] INTEGER NOT NULL DEFAULT 0",
+        ):
+            try:
+                await database.execute(column_sql)
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
+        await database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_WORKS}(
+            [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [name] TEXT NOT NULL,
+            [sort_name] TEXT NOT NULL,
+            [version] TEXT,
+            [favorite] BOOLEAN NOT NULL DEFAULT 0,
+            [composers] json NOT NULL DEFAULT '[]',
+            [catalog_numbers] json NOT NULL DEFAULT '[]',
+            [work_type] TEXT,
+            [parent_work] json,
+            [metadata] json NOT NULL,
+            [external_ids] json NOT NULL,
+            [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
+            [search_name] TEXT NOT NULL,
+            [search_sort_name] TEXT NOT NULL
+            );"""
+        )
+        await database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_WORK_ARRANGEMENTS}(
+            [work_id] INTEGER NOT NULL,
+            [source_work_id] INTEGER NOT NULL,
+            FOREIGN KEY([work_id]) REFERENCES [{DB_TABLE_WORKS}]([item_id]),
+            FOREIGN KEY([source_work_id]) REFERENCES [{DB_TABLE_WORKS}]([item_id]),
+            UNIQUE(work_id, source_work_id)
+            );"""
+        )
+        # add work/movement columns to tracks (FK to works is allowed by the
+        # SQLite ALTER TABLE syntax but not enforced at runtime — controller
+        # layer will guard integrity in Stage 3)
+        for column_sql in (
+            f"ALTER TABLE {DB_TABLE_TRACKS} ADD COLUMN [work_id] "
+            f"INTEGER REFERENCES {DB_TABLE_WORKS}(item_id)",
+            f"ALTER TABLE {DB_TABLE_TRACKS} ADD COLUMN [movement_number] INTEGER",
+            f"ALTER TABLE {DB_TABLE_TRACKS} ADD COLUMN [movement_total] INTEGER",
+            f"ALTER TABLE {DB_TABLE_TRACKS} ADD COLUMN [movement_name] TEXT",
+        ):
+            try:
+                await database.execute(column_sql)
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
+        # recreate track_artists / album_artists with role/instrument/position columns.
+        # SQLite cannot drop or modify a column-level UNIQUE constraint via ALTER,
+        # so use the canonical 12-step recreation pattern. The DEFAULT 'main_artist'
+        # backfills every existing junction row (each was effectively a headline credit).
+        await database.execute("PRAGMA foreign_keys=OFF")
+        for table, owner_col in (
+            (DB_TABLE_TRACK_ARTISTS, "track_id"),
+            (DB_TABLE_ALBUM_ARTISTS, "album_id"),
+        ):
+            ref_table = DB_TABLE_TRACKS if owner_col == "track_id" else DB_TABLE_ALBUMS
+            table_columns = {
+                x["name"]
+                for x in await database.get_rows_from_query(f"PRAGMA table_info({table})", limit=0)
+            }
+            if not table_columns:
+                # guard against (test) databases with stand-in tables
+                continue
+            if "role" in table_columns:
+                # already rebuilt by an earlier run of this migration
+                continue
+            # a previous run may have died between the create and the rename
+            await database.execute(f"DROP TABLE IF EXISTS {table}_new")
+            await database.execute(
+                f"""CREATE TABLE {table}_new(
+                [{owner_col}] INTEGER NOT NULL,
+                [artist_id] INTEGER NOT NULL,
+                [role] TEXT NOT NULL DEFAULT 'main_artist',
+                [instrument] TEXT,
+                [position] INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY([{owner_col}]) REFERENCES [{ref_table}]([item_id]),
+                FOREIGN KEY([artist_id]) REFERENCES [{DB_TABLE_ARTISTS}]([item_id])
+                )"""
+            )
+            await database.execute(
+                f"INSERT INTO {table}_new"
+                f"({owner_col}, artist_id, role, instrument, position) "
+                f"SELECT {owner_col}, artist_id, 'main_artist', NULL, 0 "
+                f"FROM {table}"
+            )
+            # drop old indexes (they don't survive DROP TABLE) — recreated by
+            # __create_database_indexes after migration finishes
+            for old_idx in (
+                f"{table}_{owner_col}_idx",
+                f"{table}_artist_id_idx",
+            ):
+                await database.execute(f"DROP INDEX IF EXISTS {old_idx}")
+            await database.execute(f"DROP TABLE {table}")
+            await database.execute(f"ALTER TABLE {table}_new RENAME TO {table}")
+            await database.execute(
+                f"CREATE UNIQUE INDEX {table}_unique "
+                f"ON {table}({owner_col}, artist_id, role, COALESCE(instrument, ''))"
+            )
+        await database.execute("PRAGMA foreign_keys=ON")
 
     # (re)build the FTS search tables so they are in sync with the content tables;
     # this both populates them on first migration to the FTS-enabled schema and

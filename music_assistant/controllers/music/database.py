@@ -41,6 +41,8 @@ from music_assistant.constants import (
     DB_TABLE_SETTINGS,
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
+    DB_TABLE_WORK_ARRANGEMENTS,
+    DB_TABLE_WORKS,
     MEDIA_ITEM_DB_TABLES,
     VACUUM_MIN_RECLAIM_RATIO,
 )
@@ -303,7 +305,8 @@ class MusicDatabaseSetupMixin:
                     [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
                     [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
                     [search_name] TEXT NOT NULL,
-                    [search_sort_name] TEXT NOT NULL
+                    [search_sort_name] TEXT NOT NULL,
+                    [is_classical] BOOLEAN NOT NULL DEFAULT 0
                 );"""
         )
         await self.database.execute(
@@ -320,7 +323,29 @@ class MusicDatabaseSetupMixin:
             [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL,
-            [artist_type] TEXT NOT NULL
+            [artist_type] TEXT NOT NULL,
+            [period] TEXT,
+            [is_classical] BOOLEAN NOT NULL DEFAULT 0
+            );"""
+        )
+        await self.database.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_WORKS}(
+            [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [name] TEXT NOT NULL,
+            [sort_name] TEXT NOT NULL,
+            [version] TEXT,
+            [favorite] BOOLEAN NOT NULL DEFAULT 0,
+            [composers] json NOT NULL DEFAULT '[]',
+            [catalog_numbers] json NOT NULL DEFAULT '[]',
+            [work_type] TEXT,
+            [parent_work] json,
+            [metadata] json NOT NULL,
+            [external_ids] json NOT NULL,
+            [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
+            [search_name] TEXT NOT NULL,
+            [search_sort_name] TEXT NOT NULL
             );"""
         )
         await self.database.execute(
@@ -338,7 +363,12 @@ class MusicDatabaseSetupMixin:
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
             [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
-            [search_sort_name] TEXT NOT NULL
+            [search_sort_name] TEXT NOT NULL,
+            [work_id] INTEGER REFERENCES {DB_TABLE_WORKS}(item_id),
+            [movement_number] INTEGER,
+            [movement_total] INTEGER,
+            [movement_name] TEXT,
+            [is_classical] BOOLEAN NOT NULL DEFAULT 0
             );"""
         )
         await self.database.execute(
@@ -509,18 +539,31 @@ class MusicDatabaseSetupMixin:
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_TRACK_ARTISTS}(
             [track_id] INTEGER NOT NULL,
             [artist_id] INTEGER NOT NULL,
+            [role] TEXT NOT NULL DEFAULT 'main_artist',
+            [instrument] TEXT,
+            [position] INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY([track_id]) REFERENCES [tracks]([item_id]),
-            FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id]),
-            UNIQUE(track_id, artist_id)
+            FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id])
             );"""
         )
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUM_ARTISTS}(
             [album_id] INTEGER NOT NULL,
             [artist_id] INTEGER NOT NULL,
+            [role] TEXT NOT NULL DEFAULT 'main_artist',
+            [instrument] TEXT,
+            [position] INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY([album_id]) REFERENCES [albums]([item_id]),
-            FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id]),
-            UNIQUE(album_id, artist_id)
+            FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id])
+            );"""
+        )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_WORK_ARRANGEMENTS}(
+            [work_id] INTEGER NOT NULL,
+            [source_work_id] INTEGER NOT NULL,
+            FOREIGN KEY([work_id]) REFERENCES [{DB_TABLE_WORKS}]([item_id]),
+            FOREIGN KEY([source_work_id]) REFERENCES [{DB_TABLE_WORKS}]([item_id]),
+            UNIQUE(work_id, source_work_id)
             );"""
         )
         await self.database.execute(
@@ -673,6 +716,18 @@ class MusicDatabaseSetupMixin:
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_TRACK_ARTISTS}_artist_id_idx "
             f"on {DB_TABLE_TRACK_ARTISTS}(artist_id);"
         )
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_TRACK_ARTISTS}_role_idx "
+            f"on {DB_TABLE_TRACK_ARTISTS}(role);"
+        )
+        # NULL-safe uniqueness on (track, artist, role, instrument):
+        # SQLite treats NULL != NULL in plain UNIQUE constraints, so credits
+        # without an instrument would not be deduped without COALESCE.
+        await self.database.execute(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {DB_TABLE_TRACK_ARTISTS}_unique "
+            f"on {DB_TABLE_TRACK_ARTISTS}"
+            f"(track_id, artist_id, role, COALESCE(instrument, ''));"
+        )
         # indexes on album_artists table
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_ALBUM_ARTISTS}_album_id_idx "
@@ -681,6 +736,51 @@ class MusicDatabaseSetupMixin:
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_ALBUM_ARTISTS}_artist_id_idx "
             f"on {DB_TABLE_ALBUM_ARTISTS}(artist_id);"
+        )
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_ALBUM_ARTISTS}_role_idx "
+            f"on {DB_TABLE_ALBUM_ARTISTS}(role);"
+        )
+        await self.database.execute(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {DB_TABLE_ALBUM_ARTISTS}_unique "
+            f"on {DB_TABLE_ALBUM_ARTISTS}"
+            f"(album_id, artist_id, role, COALESCE(instrument, ''));"
+        )
+        # indexes on works table
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_WORKS}_sort_name_idx "
+            f"on {DB_TABLE_WORKS}(sort_name);"
+        )
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_WORKS}_search_name_idx "
+            f"on {DB_TABLE_WORKS}(search_name);"
+        )
+        # works has the standard browse indexes minus play_count/last_played
+        # (works are compositions, not directly playable)
+        for column in (
+            "favorite",
+            "name",
+            "search_sort_name",
+            "external_ids",
+            "timestamp_added",
+        ):
+            await self.database.execute(
+                f"CREATE INDEX IF NOT EXISTS {DB_TABLE_WORKS}_{column}_idx "
+                f"on {DB_TABLE_WORKS}({column});"
+            )
+        # index on tracks.work_id for the Work detail page query
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_TRACKS}_work_id_idx "
+            f"on {DB_TABLE_TRACKS}(work_id);"
+        )
+        # indexes on work_arrangements junction (bidirectional traversal)
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_WORK_ARRANGEMENTS}_work_id_idx "
+            f"on {DB_TABLE_WORK_ARRANGEMENTS}(work_id);"
+        )
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_WORK_ARRANGEMENTS}_source_work_id_idx "
+            f"on {DB_TABLE_WORK_ARRANGEMENTS}(source_work_id);"
         )
         # indexes on genre_media_item_mapping table
         await self.database.execute(
@@ -722,7 +822,7 @@ class MusicDatabaseSetupMixin:
     async def __create_database_triggers(self) -> None:
         """Create database triggers."""
         # triggers to auto update timestamps
-        for db_table in MEDIA_ITEM_DB_TABLES:
+        for db_table in (*MEDIA_ITEM_DB_TABLES, DB_TABLE_WORKS):
             await self.database.execute(
                 f"""
                 CREATE TRIGGER IF NOT EXISTS update_{db_table}_timestamp
