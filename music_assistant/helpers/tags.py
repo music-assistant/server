@@ -10,6 +10,7 @@ import subprocess
 from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from json import JSONDecodeError
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -39,6 +40,15 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
 # the slash is also a common splitter but causes collisions with
 # artists actually containing a slash in the name, such as AC/DC
 TAG_SPLITTER = ";"
+
+# Date tags in preference order, original before the reissue and full dates before bare years.
+# ffmpeg maps the common date fields onto "date" for us, but has no mapping for the two ID3 frames
+# holding the original release, so TDOR (ID3v2.4) and TORY (ID3v2.3) arrive under their raw names.
+_RELEASE_DATE_TAGS = ("originaldate", "tdor", "originalyear", "tory", "date")
+
+# The album carries the date of the release itself, so the reissue date comes first here and the
+# original release is only a fallback. This is the reverse of the track order above.
+_ALBUM_DATE_TAGS = ("date", "originaldate", "tdor", "originalyear", "tory")
 
 
 def clean_tuple(values: Iterable[str]) -> tuple[str, ...]:
@@ -443,13 +453,18 @@ class AudioTags:
 
     @property
     def year(self) -> int | None:
-        """Return album's year if present, parsed from date."""
-        if tag := self.tags.get("originalyear"):
-            return try_parse_int(tag.split("-")[0], None)
-        if tag := self.tags.get("originaldate"):
-            return try_parse_int(tag.split("-")[0], None)
-        if tag := self.tags.get("date"):
-            return try_parse_int(tag.split("-")[0], None)
+        """Return the year the album was released, if present."""
+        for tag_name in _ALBUM_DATE_TAGS:
+            if (tag := self.tags.get(tag_name)) and (parsed := _parse_release_date(tag)):
+                return parsed.year
+        return None
+
+    @property
+    def release_date(self) -> datetime | None:
+        """Return the date the track was originally released, if present."""
+        for tag_name in _RELEASE_DATE_TAGS:
+            if (tag := self.tags.get(tag_name)) and (parsed := _parse_release_date(tag)):
+                return parsed
         return None
 
     @property
@@ -1779,3 +1794,19 @@ def _apply_artist_mbid_tag(tags: Any, artist_mbids: list[str]) -> bool:
     except Exception as err:
         LOGGER.warning("unexpected failure applying MusicBrainz Artist Id: %s", err)
         return False
+
+
+def _parse_release_date(value: str) -> datetime | None:
+    """Return a date tag as a datetime, or None if it does not hold a date."""
+    value = value.strip()
+    with suppress(ValueError):
+        parsed = datetime.fromisoformat(value)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    # a date can be tagged to the month or to the year alone, which taggers write through as is
+    if len(value) >= 7:
+        with suppress(ValueError):
+            return datetime.strptime(value[:7], "%Y-%m").replace(tzinfo=UTC)
+    if len(value) >= 4 and (year := try_parse_int(value[:4], None)):
+        with suppress(ValueError):
+            return datetime(year, 1, 1, tzinfo=UTC)
+    return None
