@@ -50,6 +50,7 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
     """Audio analysis provider that measures EBU R128 integrated loudness."""
 
     analysis_version: int = 2
+    satisfied_by_aa_domain: str | None = PROVIDER_LOUDNESS_DOMAIN
 
     def __init__(
         self,
@@ -193,15 +194,8 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
             true_peak=round(true_peak, 2) if true_peak is not None else None,
         )
         # update in-memory streamdetails so subsequent seeks use the measurement
-        # instead of dynamic normalization; provider-supplied loudness stays authoritative
-        provider_analysis = await self.mass.streams.audio_analysis.get_audio_analysis(
-            session.streamdetails.item_id,
-            session.streamdetails.provider,
-            media_type=session.streamdetails.media_type,
-            priority=(PROVIDER_LOUDNESS_DOMAIN,),
-        )
-        if provider_analysis is None or provider_analysis.loudness_integrated is None:
-            session.streamdetails.loudness = round(loudness, 2)
+        # instead of dynamic normalization
+        session.streamdetails.loudness = round(loudness, 2)
         self.logger.debug(
             "Loudness measurement for %s: %s LUFS (LRA=%s LU, peak=%s dBTP)",
             session.streamdetails.uri,

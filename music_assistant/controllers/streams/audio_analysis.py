@@ -892,7 +892,7 @@ class AudioAnalysisController:
 
         analyzed = await self.get_audio_analysis_count(aa_domain)
         pending = await self._count_candidates_missing_analysis(
-            aa_domain, provider.analysis_version
+            aa_domain, provider.analysis_version, provider.satisfied_by_aa_domain
         )
         # NULL analysis_version (pre-versioning rows) is treated as stale: SQLite
         # evaluates `NULL < N` as NULL (falsy), so it must be matched explicitly.
@@ -980,7 +980,10 @@ class AudioAnalysisController:
             return
 
         provider_versions = {p.domain: p.analysis_version for p in providers}
-        candidates = await self._find_candidates_missing_analysis(provider_versions, limit=0)
+        satisfied_by_domains = {p.domain: p.satisfied_by_aa_domain for p in providers}
+        candidates = await self._find_candidates_missing_analysis(
+            provider_versions, limit=0, satisfied_by_domains=satisfied_by_domains
+        )
         if not candidates:
             return
 
@@ -1182,6 +1185,7 @@ class AudioAnalysisController:
         self,
         aa_provider_versions: Mapping[str, int],
         limit: int,
+        satisfied_by_domains: Mapping[str, str | None] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Return tracks that need (re)analysis for one or more AA providers.
@@ -1192,11 +1196,15 @@ class AudioAnalysisController:
         blocking failure row exists (a failure at the current-or-newer analysis_version whose
         retry is NULL or still in the future). The version check mirrors the per-track gate in
         AudioAnalysisProvider.start_analysis so a provider bumping its analysis_version triggers
-        a background re-scan.
+        a background re-scan. A domain listed in satisfied_by_domains is also excluded when a
+        row (any version) exists for its satisfying domain, mirroring the same gate.
 
         :param aa_provider_versions: Mapping of AA provider domain to the provider's current
             analysis_version.
         :param limit: Maximum number of candidate rows to return (0 for no limit).
+        :param satisfied_by_domains: Mapping of AA provider domain to the AA domain whose stored
+            row (any version) makes that provider's analysis unnecessary, or None if it has no
+            such domain.
         :returns: Rows {item_id, provider_instance, missing_domains} where missing_domains
             lists the AA provider domains needing analysis.
         """
@@ -1214,7 +1222,8 @@ class AudioAnalysisController:
         aa_domains = list(aa_provider_versions)
         fs_inline = ", ".join(f"'{d}'" for d in filesystem_domains)
         aa_select_terms = " UNION ALL ".join(
-            f"SELECT :aa_{i} AS aa_provider_domain, :ver_{i} AS current_version"
+            f"SELECT :aa_{i} AS aa_provider_domain, :ver_{i} AS current_version, "
+            f":alt_{i} AS satisfied_by_domain"
             for i in range(len(aa_domains))
         )
         params: dict[str, Any] = {
@@ -1222,6 +1231,7 @@ class AudioAnalysisController:
             "now": int(utc_timestamp()),
             **{f"aa_{i}": d for i, d in enumerate(aa_domains)},
             **{f"ver_{i}": aa_provider_versions[d] for i, d in enumerate(aa_domains)},
+            **{f"alt_{i}": (satisfied_by_domains or {}).get(d) for i, d in enumerate(aa_domains)},
         }
         # The NOT EXISTS gate only counts an analysis row as up-to-date when its
         # analysis_version is non-NULL and >= the provider's current version, so
@@ -1252,6 +1262,13 @@ class AudioAnalysisController:
             f"      AND f.analysis_version >= possible.current_version "
             f"      AND (f.next_retry IS NULL OR f.next_retry > :now)"
             f"  ) "
+            f"  AND NOT EXISTS ("
+            f"    SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS} alt "
+            f"    WHERE alt.item_id = pm.provider_item_id "
+            f"      AND alt.provider = pm.provider_instance "
+            f"      AND alt.aa_provider_domain = possible.satisfied_by_domain "
+            f"      AND alt.media_type = :media_type "
+            f"  ) "
             f"GROUP BY pm.provider_item_id, pm.provider_instance"
         )
         rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
@@ -1269,8 +1286,20 @@ class AudioAnalysisController:
             )
         return results
 
-    async def _count_candidates_missing_analysis(self, aa_domain: str, current_version: int) -> int:
-        """Count filesystem candidate tracks lacking a current analysis row or blocking failure."""
+    async def _count_candidates_missing_analysis(
+        self,
+        aa_domain: str,
+        current_version: int,
+        satisfied_by_domain: str | None = None,
+    ) -> int:
+        """
+        Count filesystem candidate tracks lacking a current analysis row or blocking failure.
+
+        :param aa_domain: AA provider domain to count candidates for.
+        :param current_version: The provider's current analysis_version.
+        :param satisfied_by_domain: AA domain whose stored row (any version) makes this
+            provider's analysis unnecessary, or None if it has no such domain.
+        """
         filesystem_domains = self._available_filesystem_domains()
         if not filesystem_domains:
             return 0
@@ -1296,6 +1325,13 @@ class AudioAnalysisController:
             f"      AND f.media_type = :media_type "
             f"      AND f.analysis_version >= :current_version "
             f"      AND (f.next_retry IS NULL OR f.next_retry > :now)"
+            f"  ) "
+            f"  AND NOT EXISTS ("
+            f"    SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS} alt "
+            f"    WHERE alt.item_id = pm.provider_item_id "
+            f"      AND alt.provider = pm.provider_instance "
+            f"      AND alt.aa_provider_domain = :satisfied_by_domain "
+            f"      AND alt.media_type = :media_type "
             f"  )"
         )
         return await self.mass.music.database.get_count_from_query(
@@ -1304,6 +1340,7 @@ class AudioAnalysisController:
                 "media_type": MediaType.TRACK.value,
                 "aa_domain": aa_domain,
                 "current_version": current_version,
+                "satisfied_by_domain": satisfied_by_domain,
                 "now": int(utc_timestamp()),
             },
         )

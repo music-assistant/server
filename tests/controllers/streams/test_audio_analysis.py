@@ -565,6 +565,76 @@ async def test_find_candidates_query_gates_on_current_version(
 
 
 @pytest.mark.asyncio
+async def test_find_candidates_query_gates_on_satisfied_by_domain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The candidate query must exclude tracks with a satisfied-by-domain row of any version."""
+    controller = _make_controller()
+    p1 = _make_aa_provider("prov-1", available=True)
+    p1.domain = "loudness_analysis"
+    monkeypatch.setattr(
+        controller.__class__,
+        "providers",
+        property(lambda _self: [p1]),
+    )
+
+    fs_prov = MagicMock()
+    fs_prov.domain = "filesystem_local"
+    fs_prov.available = True
+    controller.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
+
+    captured: dict[str, Any] = {}
+
+    async def _capture(query: str, params: dict[str, Any], limit: int) -> list[Any]:  # noqa: ARG001
+        captured["query"] = query
+        captured["params"] = params
+        return []
+
+    controller.mass.music.database.get_rows_from_query = AsyncMock(side_effect=_capture)  # type: ignore[method-assign]
+
+    await controller._find_candidates_missing_analysis(
+        {"loudness_analysis": 2}, 0, satisfied_by_domains={"loudness_analysis": "provider_loudness"}
+    )
+
+    sql = captured["query"]
+    assert "aa_provider_domain = possible.satisfied_by_domain" in sql
+    assert captured["params"]["alt_0"] == "provider_loudness"
+
+
+@pytest.mark.asyncio
+async def test_find_candidates_query_binds_none_without_satisfied_by_domains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Omitting satisfied_by_domains must bind alt_0 as None, preserving existing behavior."""
+    controller = _make_controller()
+    p1 = _make_aa_provider("prov-1", available=True)
+    p1.domain = "sonic_analysis"
+    monkeypatch.setattr(
+        controller.__class__,
+        "providers",
+        property(lambda _self: [p1]),
+    )
+
+    fs_prov = MagicMock()
+    fs_prov.domain = "filesystem_local"
+    fs_prov.available = True
+    controller.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
+
+    captured: dict[str, Any] = {}
+
+    async def _capture(query: str, params: dict[str, Any], limit: int) -> list[Any]:  # noqa: ARG001
+        captured["query"] = query
+        captured["params"] = params
+        return []
+
+    controller.mass.music.database.get_rows_from_query = AsyncMock(side_effect=_capture)  # type: ignore[method-assign]
+
+    await controller._find_candidates_missing_analysis({"sonic_analysis": 3}, 0)
+
+    assert captured["params"]["alt_0"] is None
+
+
+@pytest.mark.asyncio
 async def test_run_background_scan_concurrency_semaphore(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
