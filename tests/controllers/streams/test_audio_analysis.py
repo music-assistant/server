@@ -1423,6 +1423,7 @@ async def test_coverage_stale_query_counts_null_analysis_version_as_stale() -> N
         "aa_domain": "sonic_analysis",
         "media_type": MediaType.TRACK.value,
         "current_version": 3,
+        "satisfied_by_domain": None,
     }
 
 
