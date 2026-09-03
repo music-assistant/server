@@ -42,7 +42,7 @@ The mapping from each user need above to the implementing stage(s) appears in th
 | 1 | **Model changes** | `music-assistant-models` | — | New `Work` MediaItem, `ArtistRole` enum, `Credit` type, `Period` enum, additive fields on `Track`/`Album`/`Artist`. Fully non-breaking. *(See `CLASSICAL_MUSIC_STAGE_1_MODELS.md`.)* |
 | 2 | **Database schema & migrations** | `music-assistant/server` | 1 | New `works` table, `work_arrangements` junction, role/instrument/position columns on `track_artists` and `album_artists`, `is_classical` columns, `period` column. |
 | 3 | **Server controllers & API** | `music-assistant/server` | 2 | `WorksController` mirrors per-MediaType controllers; role-typed queries on tracks/albums; classical-scoped views. |
-| 4 | **Local file tag parsing** | `music-assistant/server` | 3 | Picard tag mapping + Roon / Classical Extras fallbacks. Populates credits, work, movement fields. |
+| 4 | **Local file tag parsing** | `music-assistant/server` | 3 | Picard tag mapping + Roon / Classical Extras fallbacks. Populates credits, work, movement fields. Also covers CUE sheet parsing (see PR #3751) — classical fields surface from `REM` lines in the cue file and/or the underlying audio file's own tags. |
 | 5 | **Streaming provider mapping** | `music-assistant/server` | 3 | Per-provider extraction of composer / conductor / performer credits and MB Work IDs where available. |
 | 6 | **MusicBrainz enrichment** | `music-assistant/server` | 3 | Recording-Work links, composer/conductor/orchestra relationships, Work metadata, composer birth/death dates for Period inference. |
 | 7 | **Frontend Classical view** | `music-assistant/frontend` | 3 | New top-level "Classical" entry with three internal tabs: Composers / Works / Performers (Performers carries role-filter chips). Composer detail page (works listed), Work detail page (recordings collapsed under one composition), OTHER VERSIONS reused for unmatched-Work suggestions. **Extended Track credits panel** (structured role-typed credits on Track detail) is **deferred to a future polish stage** — see Decisions log #31. **No search inside the Classical view** — search lives in the global search bar (Stages 8 & 9). |
@@ -244,6 +244,15 @@ MA reads a small set of well-known fallback tag names from other classical tagge
 - **Classical Extras**: `groupheading`, `top_work`, `is_classical`, `movement`, and its trailing-`::`-separator hierarchy convention (stripped during parse).
 
 The parser is permissive (reads all these); the UI is opinionated. We don't *recommend* any of these tools to users (each has its own failure modes), but reading their outputs lets users switch tools going forward without re-tagging existing files. See Decisions log #7 and #13.
+
+### CUE sheet source (Stage 4)
+
+Single-file rips with an accompanying CUE sheet are a first-class source, not an afterthought. The Stage 4 parser handles them alongside individual file tags via the cue sheet parser (PR #3751). Classical fields surface from two places in a CUE-sheet setup:
+
+- **`REM` lines in the cue file** — the parser reads Picard-convention `REM COMPOSER`, `REM CONDUCTOR`, `REM PERFORMER`, `REM WORK`, `REM MOVEMENTNAME`, `REM MOVEMENTNUMBER`, `REM MOVEMENTTOTAL`, `REM MUSICBRAINZ_WORKID` and the other MB IDs. Follows the cue sheet's multi-value convention (repeat the line rather than delimiter-join, aligned by index with `PERFORMER`).
+- **The underlying FLAC or WAV file's own tag block** — anything the audio file's Vorbis / ID3 tags carry is read the same way as a standard tagged file. Used for album-level fields the cue sheet doesn't override.
+
+Track-level classical fields (per-movement composer, per-movement work info) belong in the CUE sheet's per-track `REM` lines, since the single audio file only carries one copy of its own tags and can't vary them per CUE track. Album-level classical fields (composer where an album has one, conductor of a full symphony cycle) can live in either the cue sheet's sheet-level directives or the audio file's tags — the cue sheet wins where both are present.
 
 ## Matching policy
 
