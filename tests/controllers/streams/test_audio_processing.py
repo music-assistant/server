@@ -1530,9 +1530,10 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         **_kwargs: object,
     ) -> AsyncGenerator[bytes]:
         if queue_item is first_item:
-            # warmup worth of audio, then a full crossfade tail
-            yield bytes(pcm_format.pcm_sample_size * 8)
-            yield bytes(pcm_format.pcm_sample_size * 8)
+            # warmup worth of audio, then a full crossfade tail (audible PCM: the
+            # holdback reads zero-filled bytes as trailing silence)
+            yield b"\x10\x20" * (pcm_format.pcm_sample_size * 4)
+            yield b"\x10\x20" * (pcm_format.pcm_sample_size * 4)
         else:
             eager_seek_positions.append(queue_item.streamdetails.seek_position)
 
@@ -1835,6 +1836,7 @@ def _native_stream_handler_context(
     audio.get_player_output_plan.side_effect = _OutputPlanRequested
 
     controller = cast("Any", object.__new__(StreamsController))
+    controller._open_item_streams = {}
     controller.mass = mass
     controller.audio = audio
     controller.logger = MagicMock()

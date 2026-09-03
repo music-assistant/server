@@ -311,12 +311,19 @@ class AudioBuffer:
         ):
             yield chunk
 
-    def fill(self, audio_source: AsyncGenerator[bytes], source_name: str = "unknown") -> None:
+    def fill(
+        self,
+        audio_source: AsyncGenerator[bytes],
+        source_name: str = "unknown",
+        on_complete: Callable[[], None] | None = None,
+    ) -> None:
         """
         Start filling the buffer from an async generator of PCM audio chunks.
 
         :param audio_source: Async generator yielding 1-second PCM audio chunks.
         :param source_name: Name for logging purposes.
+        :param on_complete: Called once the source delivered everything, after its
+            generator (and the stream slot it held) has been released.
         """
         self._fill_started = time.monotonic()
         self._source_name = source_name
@@ -334,6 +341,13 @@ class AudioBuffer:
                         await self._put(chunk)
                         await asyncio.sleep(0)
                 await self._set_eof()
+                if on_complete is not None:
+                    # isolated like the cancel callbacks in clear(): a failing
+                    # callback must not retro-fail a source that delivered fully
+                    try:
+                        on_complete()
+                    except Exception:
+                        LOGGER.exception("Completion callback failed for %s", source_name)
             except asyncio.CancelledError:
                 status = "cancelled"
                 raise
@@ -428,17 +442,6 @@ class AudioBuffer:
         # the producer may spend its source wait before the first byte arrives,
         # so the readiness budget covers that wait on top of the audio itself
         ready_timeout = BUFFER_READY_TIMEOUT + (source_wait_timeout or 0)
-        # determine buffer size from config
-        buffer_size = BufferSize(
-            mass.config.get_raw_core_config_value(
-                "streams", CONF_BUFFER_SIZE, CONF_BUFFER_SIZE_DEFAULT
-            )
-        )
-        mode = (
-            BufferMode.ROLLING
-            if (not streamdetails.duration or not streamdetails.allow_seek)
-            else BufferMode.SEEKABLE
-        )
 
         # reuse existing valid buffer
         existing_buffer: AudioBuffer | None = streamdetails.buffer
@@ -481,94 +484,30 @@ class AudioBuffer:
                     )
                 return existing_buffer
 
-        # convert ms to seconds for get_media_stream (FFmpeg works in seconds)
-        seek_seconds = seek_position_ms // 1000
-
-        # for large seeks without existing buffer, start at seek position.
-        # A realtime source can not produce the skipped audio any faster than playback,
-        # so it always seeks at the source instead of buffering up to the seek point.
-        buffer_seek_seconds = seek_seconds if streamdetails.is_realtime or seek_seconds > 60 else 0
-
-        pcm_format = _buffer_pcm_format(streamdetails)
-
-        # determine ready threshold: how many seconds of audio must be buffered
-        # before signaling ready for playback
-        queue = mass.player_queues.get(streamdetails.queue_id) if streamdetails.queue_id else None
-        crossfade_enabled = bool(
-            queue and queue.crossfade_enabled and streamdetails.media_type == MediaType.TRACK
+        audio_buffer, buffer_seek_seconds = _new_buffer(
+            mass, streamdetails, seek_position_ms, log_prefix
         )
-        dynamic_normalization = (
-            streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC
-        )
-        if streamdetails.is_realtime:
-            # A realtime source fills the buffer at playback pace, so every second of
-            # audio asked for here is a second of extra startup delay - on a seek or a
-            # track change as much as on a start. The queue's crossfade setting buys
-            # nothing for such a source, because its fade streams in as it arrives and
-            # is sized by the tail the outgoing track banked, not by what is resident
-            # here. Only dynamic normalization, which genuinely needs lookahead, raises
-            # this.
-            ready_threshold = 2 if dynamic_normalization else 1
-        elif crossfade_enabled:
-            ready_threshold = 8
-        elif dynamic_normalization:
-            # radio streams are continuous so the normalization will converge quickly,
-            # use a lower threshold to reduce startup latency
-            ready_threshold = 3 if streamdetails.media_type == MediaType.RADIO else 5
-        else:
-            ready_threshold = 2
-
-        # cap threshold at buffer capacity to prevent deadlock
-        max_size = RADIO_BUFFER_SIZE if mode == BufferMode.ROLLING else BUFFER_SIZE_MAP[buffer_size]
-        ready_threshold = min(ready_threshold, max_size)
-
-        LOGGER.debug(
-            "%s: Creating new buffer for %s (mode: %s, size: %s, seek_ms: %s)",
-            log_prefix,
-            streamdetails.uri,
-            mode,
-            buffer_size,
-            seek_position_ms,
-        )
-        audio_buffer = AudioBuffer(
-            pcm_format,
-            buffer_size,
-            mode,
-            ready_threshold=ready_threshold,
-            is_realtime=streamdetails.is_realtime,
-        )
-        # align chunk numbering with the actual stream start position so that
-        # get_raw_stream(seek_position_ms) requests the correct chunk number
-        audio_buffer._discarded_chunks = buffer_seek_seconds
-        # set the chunk number at which the buffer should signal ready,
-        # accounting for seek position so we have enough data past the seek point
-        seek_chunk = seek_position_ms // 1000
-        audio_buffer._ready_at_chunk = seek_chunk + ready_threshold
-        streamdetails.buffer = audio_buffer
-
-        # attach analyze jobs for ahead-of-time processing
-        # skip AudioSource and SoundEffect — they should not feed the long-running analyzer flow
-        # (radio still runs analysis; the analyzer caps it at 10 minutes)
-        if seek_position_ms == 0 and streamdetails.media_type not in (
-            MediaType.AUDIO_SOURCE,
-            MediaType.SOUND_EFFECT,
-        ):
-            # audio analysis providers (loudness, beat tracking, key detection, etc.).
-            # Fire-and-forget: analysis setup — including a possible model (re)load — must never
-            # delay the buffer fill. The analysis worker reads the retained chunks once ready.
-            mass.create_task(
-                mass.streams.audio_analysis.start_analysis(audio_buffer, streamdetails)
-            )
 
         # start filling from the media stream (seek in seconds for FFmpeg)
         audio_source = mass.streams.audio.get_media_stream(
             streamdetails,
-            pcm_format,
+            audio_buffer.pcm_format,
             seek_position=buffer_seek_seconds,
             filter_params=None,
             source_wait_timeout=source_wait_timeout,
         )
-        audio_buffer.fill(audio_source, source_name=streamdetails.uri)
+
+        def _source_complete() -> None:
+            # a realtime source's one stream slot frees the moment this item has
+            # fully arrived: start fetching the next item right away
+            if (
+                streamdetails.is_realtime
+                and streamdetails.media_type == MediaType.TRACK
+                and streamdetails.queue_id
+            ):
+                mass.player_queues.prepare_next_audio_buffer(streamdetails.queue_id)
+
+        audio_buffer.fill(audio_source, source_name=streamdetails.uri, on_complete=_source_complete)
 
         if wait_ready:
             await audio_buffer._wait_until_ready(streamdetails, ready_timeout, log_prefix)
@@ -847,6 +786,112 @@ class AudioBuffer:
             if not self.ready.is_set():
                 self.ready.set()
             self._data_available.notify_all()
+
+
+def _new_buffer(
+    mass: MusicAssistant,
+    streamdetails: StreamDetails,
+    seek_position_ms: int,
+    log_prefix: str,
+) -> tuple[AudioBuffer, int]:
+    """
+    Create the buffer for the given stream details and attach it to them.
+
+    :param mass: The MusicAssistant instance.
+    :param streamdetails: The stream details the buffer belongs to.
+    :param seek_position_ms: Position in milliseconds playback starts from.
+    :param log_prefix: Caller context for logging.
+    :return: The buffer and the position (in seconds) its producer should start at.
+    """
+    # determine buffer size from config
+    buffer_size = BufferSize(
+        mass.config.get_raw_core_config_value("streams", CONF_BUFFER_SIZE, CONF_BUFFER_SIZE_DEFAULT)
+    )
+    mode = (
+        BufferMode.ROLLING
+        if (not streamdetails.duration or not streamdetails.allow_seek)
+        else BufferMode.SEEKABLE
+    )
+
+    # convert ms to seconds for get_media_stream (FFmpeg works in seconds)
+    seek_seconds = seek_position_ms // 1000
+
+    # for large seeks without existing buffer, start at seek position.
+    # A realtime source can not produce the skipped audio any faster than playback,
+    # so it always seeks at the source instead of buffering up to the seek point.
+    buffer_seek_seconds = seek_seconds if streamdetails.is_realtime or seek_seconds > 60 else 0
+
+    pcm_format = _buffer_pcm_format(streamdetails)
+
+    # determine ready threshold: how many seconds of audio must be buffered
+    # before signaling ready for playback
+    queue = mass.player_queues.get(streamdetails.queue_id) if streamdetails.queue_id else None
+    crossfade_enabled = bool(
+        queue and queue.crossfade_enabled and streamdetails.media_type == MediaType.TRACK
+    )
+    dynamic_normalization = (
+        streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC
+    )
+    if streamdetails.is_realtime:
+        # A realtime source fills the buffer at playback pace, so every second of
+        # audio asked for here is a second of extra startup delay - on a seek or a
+        # track change as much as on a start. The queue's crossfade setting buys
+        # nothing for such a source, because its fade streams in as it arrives and
+        # is sized by the tail the outgoing track banked, not by what is resident
+        # here. Only dynamic normalization, which genuinely needs lookahead, raises
+        # this.
+        ready_threshold = 2 if dynamic_normalization else 1
+    elif crossfade_enabled:
+        ready_threshold = 8
+    elif dynamic_normalization:
+        # radio streams are continuous so the normalization will converge quickly,
+        # use a lower threshold to reduce startup latency
+        ready_threshold = 3 if streamdetails.media_type == MediaType.RADIO else 5
+    else:
+        ready_threshold = 2
+
+    # cap threshold at buffer capacity to prevent deadlock
+    max_size = RADIO_BUFFER_SIZE if mode == BufferMode.ROLLING else BUFFER_SIZE_MAP[buffer_size]
+    ready_threshold = min(ready_threshold, max_size)
+
+    LOGGER.debug(
+        "%s: Creating new buffer for %s (mode: %s, size: %s, seek_ms: %s)",
+        log_prefix,
+        streamdetails.uri,
+        mode,
+        buffer_size,
+        seek_position_ms,
+    )
+    audio_buffer = AudioBuffer(
+        pcm_format,
+        buffer_size,
+        mode,
+        ready_threshold=ready_threshold,
+        is_realtime=streamdetails.is_realtime,
+    )
+    # align chunk numbering with the actual stream start position so that
+    # get_raw_stream(seek_position_ms) requests the correct chunk number
+    audio_buffer._discarded_chunks = buffer_seek_seconds
+    # nothing has been read yet, so the source is not ahead of playback here
+    # set the chunk number at which the buffer should signal ready,
+    # accounting for seek position so we have enough data past the seek point
+    seek_chunk = seek_position_ms // 1000
+    audio_buffer._ready_at_chunk = seek_chunk + ready_threshold
+    streamdetails.buffer = audio_buffer
+
+    # attach analyze jobs for ahead-of-time processing
+    # skip AudioSource and SoundEffect — they should not feed the long-running analyzer flow
+    # (radio still runs analysis; the analyzer caps it at 10 minutes)
+    if seek_position_ms == 0 and streamdetails.media_type not in (
+        MediaType.AUDIO_SOURCE,
+        MediaType.SOUND_EFFECT,
+    ):
+        # audio analysis providers (loudness, beat tracking, key detection, etc.).
+        # Fire-and-forget: analysis setup — including a possible model (re)load — must never
+        # delay the buffer fill. The analysis worker reads the retained chunks once ready.
+        mass.create_task(mass.streams.audio_analysis.start_analysis(audio_buffer, streamdetails))
+
+    return audio_buffer, buffer_seek_seconds
 
 
 def _buffer_pcm_format(streamdetails: StreamDetails) -> AudioFormat:

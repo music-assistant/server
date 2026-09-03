@@ -58,10 +58,10 @@ if TYPE_CHECKING:
     from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 
-# media types that never put a queue in the ended state: a live source has no natural end, so it
-# going idle means the source stopped and not that the queue ran out (marking it ended would strand
-# a later resume), and a sound effect is a one-off that leaves the queue as it found it.
-UNENDABLE_MEDIA_TYPES = (MediaType.RADIO, MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT)
+# media types that never put a queue in the ended state: a live source has no natural end,
+# so it going idle means the source stopped and not that the queue ran out (marking it
+# ended would strand a later resume)
+UNENDABLE_MEDIA_TYPES = (MediaType.RADIO, MediaType.AUDIO_SOURCE)
 
 
 class PlaybackTrackerMixin(_PlayerQueuesBase):

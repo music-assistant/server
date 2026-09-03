@@ -121,7 +121,7 @@ Supporting modules in `helpers/`:
 - **Queue streaming**: `get_queue_item_stream`, `get_queue_item_stream_with_smartfade`, `get_queue_flow_stream`
 - **Format selection**: `get_output_format`, `select_pcm_format`, `select_flow_format`
 - **DSP and output plans**: `get_player_output_plan`, `get_player_dsp_details`, `get_stream_dsp_details`
-- **Crossfade management**: `crossfade_allowed`, `clear_crossfade_data`
+- **Crossfade management**: `crossfade_allowed`, `clear_crossfade_handover`
 - **Loudness analysis**: `attach_loudness_analyzer` (via buffer callbacks)
 
 `AudioProcessingManager`, initialized as `self.audio_processing` on the
