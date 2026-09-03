@@ -571,14 +571,17 @@ IGNORE_TITLE_PARTS = (
     "with ",
     "explicit",
 )
-WITH_TITLE_WORDS = (
-    # words that, when following "with", indicate this is part of the song title
-    # not a featuring credit.
-    "someone",
-    "the",
+WITH_TITLE_PHRASES = (
+    # full "with"-credit phrases that are part of the song title itself, not an
+    # artist credit - e.g. Buzzcocks' "Ever Fallen in Love (With Someone You
+    # Shouldn't've)". Matched against the whole credit text rather than just its
+    # first word, so a genuine artist credit that happens to start with the same
+    # word (e.g. "The Weeknd", "No Doubt") is still recognized as a credit.
+    "someone you shouldn't've",
+    "the patent leather face",
+    "no big fat woman",
     "u",
     "you",
-    "no",
 )
 _TITLE_FEATURED_CREDIT_PATTERN = re.compile(
     # a bare (unbracketed) credit marker must have preceding title text before it -
@@ -713,8 +716,8 @@ def extract_title_artist_credits(title: str) -> tuple[str, ...]:
 
 def _is_with_artist_credit(value: str) -> bool:
     """Return whether a with-suffix identifies an artist rather than title words."""
-    first_word = value.split(maxsplit=1)[0].casefold().strip(".,:;!?") if value else ""
-    return bool(first_word) and first_word not in WITH_TITLE_WORDS
+    normalized = value.casefold().strip(".,:;!?") if value else ""
+    return bool(normalized) and normalized not in WITH_TITLE_PHRASES
 
 
 @functools.lru_cache(maxsize=2048)
