@@ -27,13 +27,15 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.streams.audio_analysis import (
     LOUDNESS_ANALYSIS_DOMAIN,
+    LOUDNESS_PROVIDER_PRIORITY,
+    PROVIDER_LOUDNESS_DOMAIN,
     SMART_FADES_ANALYSIS_DOMAIN,
     SONIC_ANALYSIS_DOMAIN,
     AudioAnalysisController,
     _merged_from_rows,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBufferEOF
-from music_assistant.helpers.json import json_dumps
+from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import (
     AudioAnalysisProvider,
@@ -993,6 +995,62 @@ async def test_get_audio_analysis_priority_threads_through_to_merge() -> None:
     )
     assert result is not None
     assert result.loudness_integrated == -7.5
+
+
+@pytest.mark.asyncio
+async def test_set_track_loudness_persists_under_provider_loudness_domain() -> None:
+    """Provider-supplied loudness is stored under provider_loudness, not loudness_analysis."""
+    c, db = _stub_controller()
+    db.insert_or_replace = AsyncMock()
+    music_prov = MagicMock(spec=MusicProvider)
+    music_prov.is_streaming_provider = True
+    music_prov.domain = "test-provider"
+    c.mass.get_provider = MagicMock(return_value=music_prov)  # type: ignore[method-assign]
+
+    await c.set_track_loudness("track-1", "test-provider", -9.0, loudness_album=-8.5)
+
+    db.insert_or_replace.assert_awaited_once()
+    _table, row = db.insert_or_replace.await_args.args
+    assert row["aa_provider_domain"] == PROVIDER_LOUDNESS_DOMAIN
+    assert row["analysis_version"] == 1
+    stored = AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
+    assert stored.loudness_integrated == -9.0
+    assert stored.loudness_album == -8.5
+
+
+@pytest.mark.asyncio
+async def test_get_audio_analysis_merges_provider_loudness_without_aa_providers() -> None:
+    """A provider_loudness row merges even when no AA providers are loaded."""
+    c, db = _stub_controller()
+    db.get_rows = AsyncMock(
+        return_value=[_aa_row(PROVIDER_LOUDNESS_DOMAIN, 1, loudness_integrated=-9.0)]
+    )
+    music_prov = MagicMock(spec=MusicProvider)
+    music_prov.is_streaming_provider = True
+    music_prov.domain = "test-provider"
+    c.mass.get_provider = MagicMock(return_value=music_prov)  # type: ignore[method-assign]
+    c.mass.get_providers = MagicMock(return_value=[])  # type: ignore[method-assign]
+
+    result = await c.get_audio_analysis("track-1", "test-provider")
+
+    assert result is not None
+    assert result.loudness_integrated == -9.0
+
+
+def test_merged_from_rows_hydration_priority_prefers_provider_loudness() -> None:
+    """LOUDNESS_PROVIDER_PRIORITY prefers provider_loudness; falls back per-field to the measurement."""
+    rows = [
+        _aa_row(LOUDNESS_ANALYSIS_DOMAIN, 1, loudness_integrated=-7.5, loudness_album=-8.0),
+        _aa_row(PROVIDER_LOUDNESS_DOMAIN, 2, loudness_integrated=-9.0),
+    ]
+    merged = _merged_from_rows(
+        rows,
+        {PROVIDER_LOUDNESS_DOMAIN, LOUDNESS_ANALYSIS_DOMAIN},
+        priority=LOUDNESS_PROVIDER_PRIORITY,
+    )
+    assert merged is not None
+    assert merged.loudness_integrated == -9.0  # provider-supplied value wins
+    assert merged.loudness_album == -8.0  # falls back to the builtin measurement
 
 
 @pytest.mark.asyncio

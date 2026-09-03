@@ -6,10 +6,11 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import MediaType, VolumeNormalizationMode
 
 from music_assistant.constants import CONF_LOG_LEVEL
 from music_assistant.helpers.datetime import utc
+from music_assistant.controllers.streams.audio_analysis import PROVIDER_LOUDNESS_DOMAIN
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import AnalysisSessionData
 from music_assistant.providers.loudness_analysis.provider import (
@@ -26,6 +27,7 @@ def _make_provider() -> LoudnessAnalysisProvider:
     """Construct a LoudnessAnalysisProvider with mocked MA infrastructure."""
     mass = MagicMock()
     mass.streams.audio_analysis.get_audio_analysis_version = AsyncMock(return_value=None)
+    mass.streams.audio_analysis.get_audio_analysis = AsyncMock(return_value=None)
     mass.streams.audio_analysis.set_audio_analysis = AsyncMock()
     manifest = MagicMock()
     manifest.domain = "loudness_analysis"
@@ -82,6 +84,60 @@ async def test_finalize_returns_analysis_on_success(monkeypatch: pytest.MonkeyPa
 
     assert isinstance(result, AudioAnalysisData)
     assert result.loudness_integrated == -14.5
+
+
+@pytest.mark.asyncio
+async def test_finalize_sets_streamdetails_loudness_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_finalize must set the measurement on the streamdetails when no loudness is known yet."""
+    provider = _make_provider()
+    session_id = "test-session-unset-loudness"
+
+    session_data, streamdetails = _make_session_data()
+    session_data.chunks_received = MIN_DURATION_SECONDS + 1
+    session_data.eof_sent = True
+    streamdetails.loudness = None
+
+    provider._data[session_id] = session_data
+    provider._sessions[session_id] = AnalysisSessionData(
+        streamdetails=streamdetails,
+        audio_format=MagicMock(),
+    )
+    monkeypatch.setattr(
+        "music_assistant.providers.loudness_analysis.provider._parse_ebur128_metrics",
+        lambda _log: (-14.5, 7.2, -1.2),
+    )
+
+    await provider._finalize(session_id)
+
+    assert streamdetails.loudness == -14.5
+
+
+@pytest.mark.asyncio
+async def test_finalize_replaces_stale_analyzer_loudness(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_finalize must replace loudness hydrated from an old analyzer row with the new measurement."""
+    provider = _make_provider()
+    session_id = "test-session-stale-loudness"
+
+    session_data, streamdetails = _make_session_data()
+    session_data.chunks_received = MIN_DURATION_SECONDS + 1
+    session_data.eof_sent = True
+    streamdetails.loudness = -12.0
+
+    provider._data[session_id] = session_data
+    provider._sessions[session_id] = AnalysisSessionData(
+        streamdetails=streamdetails,
+        audio_format=MagicMock(),
+    )
+    monkeypatch.setattr(
+        "music_assistant.providers.loudness_analysis.provider._parse_ebur128_metrics",
+        lambda _log: (-14.5, 7.2, -1.2),
+    )
+
+    await provider._finalize(session_id)
+
+    assert streamdetails.loudness == -14.5
 
 
 @pytest.mark.asyncio
@@ -407,3 +463,52 @@ async def test_start_analysis_requests_peak_measurement(
 
     filter_params = ffmpeg_cls.call_args.kwargs["filter_params"]
     assert any("peak=true" in param for param in filter_params)
+
+
+# ---------------------------------------------------------------------------
+# start_analysis provider_loudness gate tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_analysis_declines_when_provider_loudness_exists() -> None:
+    """_start_analysis must decline the session when a provider_loudness row exists."""
+    provider = _make_provider()
+    provider.mass.streams.audio_analysis.get_audio_analysis = AsyncMock(  # type: ignore[method-assign]
+        return_value=AudioAnalysisData(loudness_integrated=-9.0)
+    )
+    _session_data, streamdetails = _make_session_data()
+    streamdetails.volume_normalization_mode = VolumeNormalizationMode.FALLBACK_DYNAMIC
+
+    result = await provider._start_analysis("session-gate-skip", streamdetails, MagicMock())
+
+    assert result is False
+    assert "session-gate-skip" not in provider._data
+    provider.mass.streams.audio_analysis.get_audio_analysis.assert_awaited_once_with(
+        streamdetails.item_id,
+        streamdetails.provider,
+        media_type=streamdetails.media_type,
+        priority=(PROVIDER_LOUDNESS_DOMAIN,),
+    )
+
+
+@pytest.mark.asyncio
+async def test_start_analysis_proceeds_when_no_provider_loudness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_start_analysis must accept the session when no provider_loudness row exists."""
+    provider = _make_provider()
+    _session_data, streamdetails = _make_session_data()
+    streamdetails.volume_normalization_mode = VolumeNormalizationMode.FALLBACK_DYNAMIC
+
+    fake_ffmpeg = MagicMock()
+    fake_ffmpeg.start = AsyncMock()
+    monkeypatch.setattr(
+        "music_assistant.providers.loudness_analysis.provider.FFMpeg",
+        MagicMock(return_value=fake_ffmpeg),
+    )
+
+    result = await provider._start_analysis("session-gate-proceed", streamdetails, MagicMock())
+
+    assert result is True
+    assert "session-gate-proceed" in provider._data

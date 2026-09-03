@@ -2147,6 +2147,52 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 "Provider %s was not not fully removed from library", provider_instance
             )
 
+    async def cleanup_provider_shortcuts(self, provider_instance: str) -> None:
+        """
+        Clean up sidebar shortcuts after a music provider is removed.
+
+        :param provider_instance: The instance ID of the removed provider.
+        """
+
+        async def _rewrite(uri: str) -> str | None:
+            try:
+                media_type, provider, item_id = await parse_uri(uri)
+            except InvalidProviderURI, InvalidProviderID, KeyError, ValueError:
+                return uri
+            if provider != provider_instance:
+                return uri
+            try:
+                ctrl = self.get_controller(media_type)
+            except NotImplementedError:
+                return None
+            if library_item := await ctrl.get_library_item_by_prov_id(item_id, provider_instance):
+                return f"library://{media_type.value}/{library_item.item_id}"
+            return None
+
+        await self.mass.webserver.auth.cleanup_user_shortcuts(_rewrite)
+
+    async def cleanup_library_shortcuts(self) -> None:
+        """Remove sidebar shortcuts whose library item no longer exists."""
+
+        async def _rewrite(uri: str) -> str | None:
+            try:
+                media_type, provider, item_id = await parse_uri(uri)
+            except InvalidProviderURI, InvalidProviderID, KeyError, ValueError:
+                return uri
+            if provider != "library":
+                return uri
+            try:
+                ctrl = self.get_controller(media_type)
+            except NotImplementedError:
+                return uri
+            try:
+                await ctrl.get_library_item(item_id)
+            except MediaNotFoundError, ValueError:
+                return None
+            return uri
+
+        await self.mass.webserver.auth.cleanup_user_shortcuts(_rewrite)
+
     async def schedule_provider_sync(self, provider_instance_id: str) -> None:
         """Schedule Library sync for given provider."""
         if not (
@@ -2767,6 +2813,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # since rewinding right now would keep re-examining the same prefix forever
         self._set_track_reconciliation_state(self._track_reconciliation_cursor, True)
         self._queue_database_cleanup_task()
+        # prune sidebar shortcuts for library items that no longer exist
+        self.mass.create_task(self.cleanup_library_shortcuts())
 
     def _register_database_cleanup_task(self) -> BackgroundTask:
         """Register the recurring database cleanup background task."""

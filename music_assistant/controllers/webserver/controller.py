@@ -493,7 +493,7 @@ class WebserverController(CoreController):
         :param provider_filter: The new provider filter, or None to leave it untouched.
         """
         for client in list(self.clients):
-            user = client._authenticated_user
+            user = client.authenticated_user
             if user is None or user.user_id != user_id:
                 continue
             # updated in place: the connection's context holds this very object
@@ -517,13 +517,14 @@ class WebserverController(CoreController):
         :param player_id: The sendspin player ID to set.
         """
         for client in list(self.clients):
-            if client._current_token != token:
+            if not client.matches_token(token):
                 continue
-            client._sendspin_player_id = player_id
+            client.bind_sendspin_player(player_id)
+            user = client.authenticated_user
             self.logger.debug(
                 "Set sendspin player %s for websocket client of user %s",
                 player_id,
-                client._authenticated_user.username if client._authenticated_user else "unknown",
+                user.username if user else "unknown",
             )
 
     def set_sendspin_player_for_webrtc_session(self, session_id: str, player_id: str) -> None:
@@ -537,13 +538,10 @@ class WebserverController(CoreController):
         :param player_id: The sendspin player ID to set.
         """
         for client in list(self.clients):
-            if client._webrtc_session_id == session_id:
-                client._sendspin_player_id = player_id
-                username = (
-                    client._authenticated_user.username
-                    if client._authenticated_user
-                    else "unauthenticated"
-                )
+            if client.webrtc_session_id == session_id:
+                client.bind_sendspin_player(player_id)
+                user = client.authenticated_user
+                username = user.username if user else "unauthenticated"
                 self.logger.debug(
                     "Set sendspin player %s for WebRTC session %s (user: %s)",
                     player_id,
