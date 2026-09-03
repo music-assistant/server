@@ -1001,10 +1001,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         :param item_id: Provider item ID.
         :param provider_instance_id_or_domain: Provider instance ID or domain.
-        :param force_refresh: Bypass cached provider details.
-        :param fallback: Preferred fallback when the provider no longer resolves the ID.
-        :param allow_fallback: Return supplied or stored fallback details after a provider miss.
-        :param strict_provider_instance: Do not fall back to another provider instance.
+        :param force_refresh: Force a fresh provider lookup.
+        :param fallback: Details to return if the provider no longer resolves the ID.
+        :param allow_fallback: Allow fallback details after a provider miss.
+        :param strict_provider_instance: Require this exact provider instance.
         """
         if provider_instance_id_or_domain == "library":
             return await self.get_library_item(item_id)

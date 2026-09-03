@@ -659,13 +659,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         allowed_provider_instances: set[str] | None = None,
     ) -> SearchResults:
         """
-        Search one available provider through the cached, timeout-bounded path.
+        Search one provider within the allowed scope.
 
         :param search_query: Search query.
         :param provider_instance_id_or_domain: Provider instance ID or domain.
         :param media_types: Media types to include.
         :param limit: Maximum results per media type.
-        :param allowed_provider_instances: Explicit provider scope for deferred work.
+        :param allowed_provider_instances: Provider instances allowed for this search.
         """
         domain_in_scope = False
         if allowed_provider_instances is not None:
@@ -681,9 +681,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 )
                 and provider.instance_id == provider_instance_id
             ]
-            # a domain is "in scope" once any allowed instance resolves to it, even if
-            # every one of them is currently unavailable - that is a temporary outage
-            # of an account the user actually has, not an absent provider
+            # Treat any allowed sibling of this domain as in scope, even if all are down.
             domain_in_scope = any(
                 provider.domain == provider_instance_id_or_domain for provider in allowed_providers
             )

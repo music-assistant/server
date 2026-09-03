@@ -118,13 +118,7 @@ async def test_import_with_match_policy_snapshots_allowed_providers() -> None:
 
 
 async def test_import_schedules_match_with_import_generation() -> None:
-    """
-    The scheduled task is given the exact generation import_playlist returned.
-
-    A distinct, non-default value (not the ``1`` used by every other test here)
-    proves this is threaded through from the actual return value rather than a
-    coincidental default matching what the background task expects.
-    """
+    """The scheduled task uses the exact generation returned by import_playlist."""
     ctrl = _make_controller()
     ctrl_any = cast("Any", ctrl)
     builtin_prov = _make_builtin_provider_mock()
@@ -388,12 +382,7 @@ async def test_import_source_validation_excludes_disabled_provider() -> None:
 
 
 async def test_import_source_validation_respects_user_provider_filter() -> None:
-    """
-    A provider outside the requesting user's own filter is never part of the snapshot.
-
-    Both source validation and search targets are affected identically - the builtin
-    provider itself always is.
-    """
+    """The provider snapshot respects the requesting user's filter."""
     ctrl = _make_controller()
     ctrl_any = cast("Any", ctrl)
     builtin_prov = _make_builtin_provider_mock()
@@ -421,10 +410,7 @@ async def test_import_source_validation_respects_user_provider_filter() -> None:
 
     call_kwargs = ctrl_any.mass.tasks.run_background_task.call_args.kwargs
     await call_kwargs["handler"]()
-    # both source validation and the search target set are derived from the same
-    # configured-and-enabled snapshot, explicitly narrowed by the user's own filter,
-    # except the builtin provider - which is not an opt-in/opt-out streaming choice
-    # and always stays authoritatively probable, but is never itself a search target
+    # The user filter narrows both snapshots, except for builtin validation.
     builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
         "playlist_1",
         1,
@@ -435,13 +421,7 @@ async def test_import_source_validation_respects_user_provider_filter() -> None:
 
 
 async def test_import_source_validation_always_includes_builtin() -> None:
-    """
-    The builtin provider is always part of the snapshot.
-
-    Even when a restricted user's filter excludes it and it is absent from the configured
-    provider list entirely - it hosts the playlist itself rather than being an
-    opt-in/opt-out streaming source.
-    """
+    """Builtin is always kept in the validation snapshot."""
     ctrl = _make_controller()
     ctrl_any = cast("Any", ctrl)
     builtin_prov = _make_builtin_provider_mock()

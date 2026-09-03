@@ -572,14 +572,7 @@ IGNORE_TITLE_PARTS = (
     "explicit",
 )
 WITH_TITLE_WORDS = (
-    # words that, when following "with", indicate this is part of the song title
-    # not a featuring credit. Matching only the first word is a deliberately
-    # conservative trade-off: it means a genuine artist credit that happens to
-    # start with one of these words (e.g. "The Weeknd", "No Doubt") is kept as
-    # part of the title rather than extracted, but it reliably protects any
-    # title continuation starting with that word (not just a fixed list of
-    # known phrases) from being wrongly stripped as a bogus artist credit -
-    # a false-positive strip risks merging two different songs' titles.
+    # first words after "with" that should stay part of the title, not a credit
     "someone",
     "the",
     "u",
@@ -587,9 +580,7 @@ WITH_TITLE_WORDS = (
     "no",
 )
 _TITLE_FEATURED_CREDIT_PATTERN = re.compile(
-    # a bare (unbracketed) credit marker must have preceding title text before it -
-    # otherwise a title that simply starts with "Featuring"/"Ft" (no credit actually
-    # being annotated) would be treated as an empty title plus a bogus artist credit
+    # require preceding title text so titles starting with "Featuring"/"Ft" stay intact
     r"(?:[(\[]|(?<=\s))\b(?:feat(?:uring)?|ft)(?:(?:\.|:)\s*|\s+)"
     r"(.+?)(?=\s*(?:\(|\[|\)|\]| - |$))",
     re.IGNORECASE,
@@ -751,9 +742,7 @@ def parse_title_and_version(
                 title = f"{title[: match.start()]}{title[match.end() :]}"
         title = _SEARCH_PAREN_PATTERN.sub("", title)
         title = _SEARCH_HYPHEN_PATTERN.sub("", title)
-        # Strip bare featuring credits (not in parentheses), reusing the same
-        # feat/ft pattern used for credit extraction so dot, colon, and space
-        # separator forms (e.g. "feat.", "feat:", "feat ") are all recognized
+        # Strip bare featuring credits with the same pattern used for extraction.
         if bare_credit_match := _TITLE_FEATURED_CREDIT_PATTERN.search(title):
             title = title[: bare_credit_match.start()]
         # Clean up dangling hyphens and extra spaces

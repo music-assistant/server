@@ -651,9 +651,7 @@ def _collect_external_ids(metadata: dict[str, str]) -> set[tuple[ExternalID, str
         external_ids.add((ExternalID.ISRC, isrc))
     if mbid := metadata.get("mbid"):
         external_ids.add((ExternalID.MB_RECORDING, mbid))
-    # the release-track id (as opposed to the recording id) pins a specific release,
-    # which is what lets import matching reach an EXACT confidence instead of merely
-    # the same underlying recording on a possibly different release
+    # MB_TRACK pins a specific release, unlike MB_RECORDING.
     if mb_track := metadata.get("mb_track"):
         external_ids.add((ExternalID.MB_TRACK, mb_track))
     return external_ids
@@ -685,15 +683,8 @@ def _construct_track(
         )
     album_mapping: ItemMapping | None = None
     if item.album:
-        # prefer the exact account this album was captured from over its bare domain -
-        # a domain-only reference expands to every allowed sibling instance downstream
-        # (see TracksController._get_full_track_album), which is only correct for
-        # legacy entries that never captured a specific instance in the first place -
-        # but only when that account actually exists on this server: a playlist
-        # imported from a different Music Assistant install carries instance ids that
-        # are randomly generated per install and will never resolve here, so fall back
-        # to the domain instead, letting that same downstream expansion try every
-        # allowed sibling instance of it rather than an instance id that can never match
+        # Prefer the captured instance when it exists locally; otherwise fall back to
+        # the domain so sibling instances can be tried later.
         album_provider = item.album.provider_instance or item.album.provider_domain or item_provider
         if (
             item.album.provider_instance
@@ -746,13 +737,7 @@ def _select_provider_mapping(
     """
     Pick the mapping to serialize for a related-item reference (album, artist, podcast).
 
-    A set's iteration order is not guaranteed stable, so picking an arbitrary mapping
-    would nondeterministically choose an unrelated sibling account across runs, or -
-    when several mappings happen to share ``preferred_instance`` - an arbitrary one of
-    those. Ranking ``preferred_instance`` as the first tie-break criterion, ahead of the
-    same deterministic ranking used to pick the track's own primary provider, keeps the
-    reference correlated with the account the rest of the entry was captured from while
-    remaining fully deterministic even among same-instance mappings.
+    Prefers ``preferred_instance`` when present and otherwise picks deterministically.
 
     :param provider_mappings: The related item's provider mappings, if any.
     :param preferred_instance: Provider instance to prefer among the mappings.
@@ -772,8 +757,7 @@ def collect_artist_infos(
     Extract artist info from a media item for M3U serialization.
 
     :param full_item: Any MediaItem (Track, Radio, PodcastEpisode, Audiobook, etc.).
-    :param preferred_instance: Provider instance to prefer among each artist's mappings,
-        typically the track's own primary instance.
+    :param preferred_instance: Provider instance to prefer among each artist's mappings.
     """
     artist_infos: list[ArtistInfo] = []
     if not hasattr(full_item, "artists") or not full_item.artists:
@@ -808,9 +792,7 @@ def collect_album_info(
     Extract album info from a media item for M3U serialization.
 
     :param full_item: Any MediaItem (Track, Radio, PodcastEpisode, Audiobook, etc.).
-    :param preferred_instance: Provider instance to prefer among the album's mappings,
-        typically the track's own primary instance, so the serialized album reference
-        stays consistent with the account the rest of the entry was captured from.
+    :param preferred_instance: Provider instance to prefer among the album's mappings.
     """
     if not hasattr(full_item, "album") or not full_item.album:
         return None
@@ -842,8 +824,7 @@ def collect_podcast_info(
     Extract podcast info from a media item for M3U serialization.
 
     :param full_item: Any MediaItem (Track, Radio, PodcastEpisode, Audiobook, etc.).
-    :param preferred_instance: Provider instance to prefer among the podcast's mappings,
-        typically the track's own primary instance.
+    :param preferred_instance: Provider instance to prefer among the podcast's mappings.
     """
     if not hasattr(full_item, "podcast") or not full_item.podcast:
         return None
@@ -871,9 +852,6 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
     """
     Convert a MediaItem to a PlaylistItem with full M3U metadata.
 
-    Pure conversion — takes an already-fetched MediaItem and produces a
-    PlaylistItem suitable for ``generate_m3u``.
-
     :param full_item: Any MediaItem (Track, Radio, PodcastEpisode, Audiobook, etc.).
     """
     # build M3U-compliant EXTINF title
@@ -887,11 +865,7 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
 
     duration = getattr(full_item, "duration", None)
 
-    # provider_mappings is a set, so its iteration order is not guaranteed stable across
-    # runs; tie-break equal-quality mappings by identity so the chosen primary URI is
-    # deterministic instead of process-dependent. Available mappings are ranked before
-    # unavailable ones so an unplayable primary URI is never chosen while a playable
-    # sibling mapping exists (in the same or another domain).
+    # Sort mappings deterministically and prefer available, higher-quality ones.
     sorted_mappings = sorted(full_item.provider_mappings, key=_provider_mapping_sort_key)
     mapped_instances = {prov_mapping.provider_instance for prov_mapping in sorted_mappings}
 
@@ -910,18 +884,8 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
         metadata["isrc"] = isrc
     if mbid := _unambiguous_external_id(full_item, ExternalID.MB_RECORDING):
         metadata["mbid"] = mbid
-    # unlike a recording MBID (shared by every release of the same performance), a
-    # track MBID identifies one specific release's track listing entry - a library
-    # item spanning more than one provider instance merges external ids from
-    # whichever mapping contributed them, with no record of which one, so there is
-    # no way to confirm a merged MB_TRACK actually belongs to the release the chosen
-    # primary URI (below) points at; only trust it when every mapping is the same
-    # single instance's own catalog - two instances of the same domain (e.g. two
-    # accounts on the same streaming service) can still disagree on release.
-    # Even multiple raw values agreeing once normalized isn't reliable corroboration:
-    # external_ids is a plain set, so identical reports from two providers collapse
-    # into one value, while a single provider that just reformatted its own claim
-    # over time can supply two distinct raw values - neither is distinguishable here.
+    # Only export MB_TRACK when every mapping comes from one instance; mixed-instance
+    # external IDs cannot prove the primary URI's exact release.
     if len(mapped_instances) <= 1 and (
         mb_track := _unambiguous_external_id(full_item, ExternalID.MB_TRACK)
     ):
@@ -990,13 +954,7 @@ def _unambiguous_external_id(full_item: MediaItem, external_id_type: ExternalID)
     """
     Return an external ID value only when the item carries exactly one of that type.
 
-    A library item merges external IDs from every matched provider, so more than
-    one distinct *canonical* value for the same type means they disagree about
-    which release the item actually is (e.g. different MB_TRACK release-track
-    pairings) - persisting one arbitrarily would misrepresent it as reliable
-    release evidence on export. Values are canonicalized before comparing so
-    equivalent identifiers in different provider formats (casing, separators,
-    braces) are not mistaken for a genuine conflict.
+    Mixed canonical values are treated as ambiguous and return ``None``.
     """
     canonical_values = {
         normalize_external_id(external_id_type, value)

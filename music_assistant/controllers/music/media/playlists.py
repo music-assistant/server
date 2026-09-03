@@ -336,20 +336,15 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """
         Import a playlist from M3U8 format.
 
-        Creates a new builtin playlist from the provided M3U data. Entries whose original
-        source is confirmed still playable - available and, once probed, still
-        resolvable, or merely unreachable right now - are kept as-is; a background task
-        then searches other providers for a substitute for entries whose original source
-        is confirmed missing, when requested.
+        Creates a builtin playlist from the supplied M3U data. When matching is enabled,
+        entries confirmed missing are matched in a background task.
 
         :param m3u_data: The M3U8 playlist data as a string.
-        :param library_matching: Deprecated, use match_policy instead. When True and
-            match_policy is not set, matching runs at PlaylistMatchPolicy.BEST_EFFORT.
-        :param match_providers: Optional list of provider instance IDs or domains to search
-            when matching runs. Defaults to all providers available to the current user.
-        :param match_policy: Lowest track-match confidence accepted for a substitute when
-            an entry's original source is confirmed missing. Leave unset together with
-            library_matching=False to skip matching and leave those entries unresolved.
+        :param library_matching: Deprecated; when True and match_policy is unset, use
+            PlaylistMatchPolicy.BEST_EFFORT.
+        :param match_providers: Provider instances or domains to search when matching runs.
+        :param match_policy: Minimum substitute confidence. Leave unset with
+            ``library_matching=False`` to skip matching.
         """
         provider = self.mass.get_provider("builtin")
         if not provider or not isinstance(provider, MusicProvider):
@@ -365,18 +360,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if effective_match_policy is not None:
             prov_playlist_id = playlist.item_id
             user = get_current_user()
-            # snapshot the current user's allowed provider instances now: the matching
-            # itself runs later in an unattended background task, without the request's
-            # user context, so provider-instance isolation must be captured up front.
-            # Source ownership is checked against every provider instance the user has
-            # configured and enabled, not just the ones currently loaded, so a provider
-            # that failed setup or is temporarily down is not mistaken for one the user
-            # removed. The same configured-and-enabled snapshot also backs the search
-            # target set below, since the deferred task resolves each instance to a
-            # provider object again once it actually runs.
-            # Each instance is snapshotted together with its domain so a domain-only
-            # reference can also be expanded from this configured set, independent of
-            # whether that instance happens to be loaded right now.
+            # Snapshot the user's enabled music providers for the deferred task,
+            # including unavailable instances and each instance's domain.
             user_provider_filter = user.provider_filter if user else None
             configured_providers = await self.mass.config.get_provider_configs(
                 provider_type=ProviderType.MUSIC
@@ -387,18 +372,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 if conf.enabled
                 and (not user_provider_filter or conf.instance_id in user_provider_filter)
             }
-            # the builtin provider hosts the playlist itself; it is not a streaming
-            # provider choice a restricted user's filter opts in or out of, so a bare
-            # HTTP/file entry's original source must always be authoritatively probable
+            # Include builtin so bare HTTP/file entries can still be validated.
             allowed_provider_instances[builtin_prov.instance_id] = builtin_prov.domain
-            # match_providers only narrows which providers are searched for a substitute;
-            # it must not narrow source validation, or a playable original on a provider
-            # outside that list would look unavailable and get replaced unnecessarily.
-            # An explicit empty list (all providers deselected) must narrow the search
-            # to nothing, so it is checked against None rather than emptiness. The
-            # builtin instance is excluded from the search set - it exists in the
-            # allowed snapshot only to authoritatively validate a bare HTTP/file
-            # original, it is never itself a substitute-search target.
+            # Only narrow substitute search, not original-source validation.
+            # Exclude builtin from search targets.
             searchable_instances = {
                 instance_id: domain
                 for instance_id, domain in allowed_provider_instances.items()

@@ -81,11 +81,7 @@ class TrackProviderMatch:
     track: Track
     mapping: ProviderMapping
     confidence: TrackMatchConfidence
-    # the full hydrated album used to establish this candidate's own confidence,
-    # when album-level release evidence was needed for that; None if confidence
-    # was decided without hydrating an album (e.g. direct item-id/MB_TRACK match),
-    # so a later pairwise compatibility check reuses the same evidence rather than
-    # degrading to the track's raw, unhydrated album reference
+    # Hydrated album evidence, if album-level comparison was needed.
     album: Album | ItemMapping | None = None
 
 
@@ -95,9 +91,7 @@ class TrackProviderMatchResult:
 
     match: TrackProviderMatch | None = None
     ambiguous: bool = False
-    # the confidence tier at which this provider's own candidates could not be told
-    # apart, so a caller resolving several providers together can tell that a weaker
-    # tier from another provider isn't actually a safe, uncontested answer either
+    # Highest confidence tier this provider could not disambiguate.
     ambiguous_confidence: TrackMatchConfidence | None = None
 
 
@@ -704,11 +698,11 @@ class TracksController(MediaControllerBase[Track]):
         :param provider: Target provider.
         :param minimum_confidence: Lowest confidence that may be returned.
         :param base_album: Optional full reference album for release evidence.
-        :param mapping_source: Optional library track whose mappings may be reused as candidates.
-        :param allowed_provider_instances: Provider instances available to the initiating user.
-        :param trust_base_mapping: Treat a direct base-track mapping as exact provider identity.
-        :param known_dead_mappings: ``(instance_id, item_id)`` pairs a caller has already
-            authoritatively confirmed unresolvable, so they are not hydrated again here.
+        :param mapping_source: Optional track whose mappings may be reused as candidates.
+        :param allowed_provider_instances: Provider instances allowed for album evidence.
+        :param trust_base_mapping: Treat a direct base-track mapping as exact identity.
+        :param known_dead_mappings: Exact ``(instance_id, item_id)`` pairs already
+            confirmed unresolvable.
         """
         resolved_base_album = base_album
         mapped_match: TrackProviderMatch | None = None
@@ -725,27 +719,20 @@ class TracksController(MediaControllerBase[Track]):
             if known_dead_mappings and (provider.instance_id, mapping.item_id) in (
                 known_dead_mappings
             ):
-                # a caller already authoritatively confirmed this exact candidate dead
-                # moments ago - hydrating it again here would double its provider
-                # traffic for nothing, so fall through to a fresh search straight away
+                # Skip a candidate the caller already proved dead.
                 mapped_candidate = None
             else:
                 try:
                     mapped_candidate = await self.get_provider_item(
                         mapping.item_id,
                         provider.instance_id,
-                        # an untrusted mapping (trust_base_mapping=False) may have just
-                        # been proven dead by an authoritative caller-side probe - a
-                        # cached hit here must not resurrect it as a confident match,
-                        # so bypass the provider cache the same way that probe did
+                        # Revalidate untrusted mappings against the provider, not cache.
                         force_refresh=not trust_base_mapping,
                         allow_fallback=False,
                         strict_provider_instance=True,
                     )
                 except MediaNotFoundError, InvalidDataError, InvalidProviderID:
-                    # a stale mapping (deleted catalog id, unreadable stream, malformed
-                    # id) is not fatal - fall through to a fresh search below instead
-                    # of aborting
+                    # Ignore stale mappings and fall back to search.
                     mapped_candidate = None
             if mapped_candidate:
                 confidence, resolved_base_album, candidate_album = await self._get_match_confidence(
@@ -792,9 +779,7 @@ class TracksController(MediaControllerBase[Track]):
             (rank, match) for rank, match in candidates if match.confidence == best_confidence
         ]
         if not self._matches_are_compatible([match for _, match in best_matches], best_confidence):
-            # missing source evidence (e.g. no explicitness tag) can let unrelated
-            # candidates tie at the same confidence - checked at every tier, not just
-            # LOOSE, since a quality tie-break would otherwise pick one arbitrarily
+            # Treat tied top-tier candidates as ambiguous, not arbitrary.
             return TrackProviderMatchResult(ambiguous=True, ambiguous_confidence=best_confidence)
         _, best_match = max(
             best_matches,
@@ -823,19 +808,13 @@ class TracksController(MediaControllerBase[Track]):
         :param minimum_confidence: Lowest confidence that may be accepted.
         :param provider_instance_ids: Provider instances to search for a match.
         :param trust_track_mappings: Treat mappings attached to the source track as exact.
-        :param failed_provider_instances: Provider instances unavailable for the migration.
-        :param evidence_provider_instances: Provider instances available to the initiating
-            user, for authorizing release-evidence album hydration. Defaults to
-            ``provider_instance_ids`` when not given separately, so a narrower search scope
-            never also narrows which of the user's own accounts evidence may be hydrated
-            from.
-        :param known_dead_mappings: ``(instance_id, item_id)`` pairs a caller has already
-            authoritatively confirmed unresolvable, so they are not hydrated again here.
-        :param search_non_streaming_without_mapping: Search a non-streaming provider (e.g.
-            filesystem) even without a pre-existing mapping to it. Only safe when
-            ``provider_instance_ids`` is the caller's own deliberate, explicit selection of
-            match targets - otherwise a non-streaming provider is only ever confirmed
-            through a mapping it already carries, never blindly searched.
+        :param failed_provider_instances: Provider instances already known unavailable.
+        :param evidence_provider_instances: Provider instances allowed for album-evidence
+            hydration. Defaults to ``provider_instance_ids``.
+        :param known_dead_mappings: Exact ``(instance_id, item_id)`` pairs already
+            confirmed unresolvable.
+        :param search_non_streaming_without_mapping: Search non-streaming targets even
+            without an existing mapping. Only use with an explicit target set.
         """
         library_track = await self.get_library_match(track)
         enriched_track = deepcopy(track)
@@ -886,10 +865,7 @@ class TracksController(MediaControllerBase[Track]):
         if domain_ambiguous_confidence is not None and (
             ambiguous_confidence is None or domain_ambiguous_confidence > ambiguous_confidence
         ):
-            # a same-domain tie that could not be resolved (e.g. two personal
-            # accounts disagreeing) is evidence just as unresolved as a cross-provider
-            # tie - a weaker tier from another provider must not be quietly accepted
-            # over it either
+            # A same-domain tie blocks weaker matches from other providers too.
             ambiguous_confidence = domain_ambiguous_confidence
         accepted, tier_ambiguous_providers = self._resolve_confident_matches(
             provider_matches, unresolved_confidence=ambiguous_confidence
@@ -999,9 +975,8 @@ class TracksController(MediaControllerBase[Track]):
         """
         Return ranked provider candidates from every credited-artist search query.
 
-        :param known_dead_mappings: ``(instance_id, item_id)`` pairs a caller has
-            already authoritatively confirmed unresolvable, skipped here even if a
-            search result happens to hydrate the same pair from provider caches.
+        :param known_dead_mappings: Exact ``(instance_id, item_id)`` pairs already
+            confirmed unresolvable.
         """
         search_queries = list(
             dict.fromkeys(f"{artist.name} - {base_track.name}" for artist in base_track.artists)
@@ -1031,9 +1006,7 @@ class TracksController(MediaControllerBase[Track]):
                     continue
                 seen_candidates.add(candidate_key)
                 if known_dead_mappings and candidate_key in known_dead_mappings:
-                    # a caller already authoritatively confirmed this exact
-                    # (instance, item id) pair dead moments ago - a stale cached
-                    # hit here must not resurrect it as a confident substitute
+                    # Ignore stale cached hits the caller already proved dead.
                     continue
                 if not compare_track_title(base_track.name, search_result.name):
                     continue
@@ -1045,8 +1018,7 @@ class TracksController(MediaControllerBase[Track]):
                         strict_provider_instance=True,
                     )
                 except MediaNotFoundError, InvalidDataError, InvalidProviderID:
-                    # this hydrated search result is unusable - skip it, other
-                    # candidates from this same search are still worth trying
+                    # Skip unusable results but keep the rest of this search.
                     continue
                 except (
                     ResourceTemporarilyUnavailable,
@@ -1055,12 +1027,8 @@ class TracksController(MediaControllerBase[Track]):
                     OSError,
                     TimeoutError,
                 ):
-                    # unlike a search-request failure (which only loses queries not
-                    # yet attempted), a failed hydration mid-loop still leaves
-                    # unseen candidates - possibly stronger or ambiguity-triggering
-                    # ones - among the already-fetched search results; propagate so
-                    # the caller reports this provider as failed rather than
-                    # silently accepting an incomplete candidate set
+                    # Propagate mid-loop hydration failures so the provider is reported
+                    # as incomplete rather than silently accepted.
                     raise
                 confidence, base_album, candidate_album = await self._get_match_confidence(
                     base_track,
@@ -1091,16 +1059,7 @@ class TracksController(MediaControllerBase[Track]):
         allow_item_id_match: bool = True,
         allowed_provider_instances: set[str] | None = None,
     ) -> tuple[TrackMatchConfidence, Album | ItemMapping | None, Album | ItemMapping | None]:
-        """
-        Return candidate confidence with full album evidence when needed.
-
-        The returned candidate album is the hydrated album actually used to decide
-        the confidence, or ``None`` when no album evidence was needed for the
-        verdict (e.g. a direct item-id/MB_TRACK match) - callers that persist a
-        match should keep this value so a later re-comparison against a sibling
-        candidate reuses the same evidence instead of falling back to the track's
-        raw, unhydrated album reference.
-        """
+        """Return confidence and any hydrated album evidence used to score it."""
         confidence = compare_track_evidence(
             base_track,
             candidate,
@@ -1132,9 +1091,7 @@ class TracksController(MediaControllerBase[Track]):
     def _get_provider_mapping(track: Track, provider: MusicProvider) -> ProviderMapping | None:
         """Return an available mapping suitable for the provider instance."""
         domain_mapping: ProviderMapping | None = None
-        # provider_mappings is a set, so its iteration order is not guaranteed stable
-        # across runs; tie-break equal-quality mappings by identity so the chosen
-        # mapping is deterministic instead of process-dependent
+        # Sort deterministically before picking the best mapping.
         sorted_mappings = sorted(
             track.provider_mappings,
             key=lambda item: (
@@ -1149,10 +1106,7 @@ class TracksController(MediaControllerBase[Track]):
                 continue
             if mapping.provider_instance == provider.instance_id:
                 return mapping
-            # is_unique=None means "use the provider's default", and non-streaming
-            # providers (e.g. filesystem) default to instance-unique - mirror that
-            # same effective-uniqueness rule here, or a falsy-but-unset value could
-            # wrongly expand an instance-unique mapping across a different instance
+            # Treat unset uniqueness like the provider default.
             effective_is_unique = mapping.is_unique or not provider.is_streaming_provider
             if (
                 mapping.provider_domain == provider.domain
@@ -1166,18 +1120,10 @@ class TracksController(MediaControllerBase[Track]):
 
     def _domain_is_streaming(self, domain: str, allowed_provider_instances: set[str]) -> bool:
         """
-        Return whether providers of this domain share a single portable catalog.
-
-        Every instance of a domain shares the same provider class and therefore the
-        same ``is_streaming_provider`` trait, so any one allowed instance of it is
-        representative. Defaults to ``False`` when no instance of this domain can be
-        resolved at all - unlike liveness checks elsewhere, this gates whether a
-        sibling instance's album is trusted as release evidence, so an unresolvable
-        domain must not be assumed portable.
+        Return whether a domain's item ids are portable across its instances.
 
         :param domain: The provider domain to check.
-        :param allowed_provider_instances: Instance ids to search for a representative
-            instance of this domain.
+        :param allowed_provider_instances: Instance ids to search for a representative.
         """
         for allowed_id in allowed_provider_instances:
             if (
@@ -1195,9 +1141,8 @@ class TracksController(MediaControllerBase[Track]):
         Return full album details when they are available.
 
         :param track: Track whose album should be hydrated.
-        :param allowed_provider_instances: Provider instances available to the
-            initiating user. When set, an album on a domain that resolves outside
-            this set is left as the unhydrated mapping instead of being fetched.
+        :param allowed_provider_instances: Provider instances allowed for album
+            hydration. Out-of-scope albums stay as mappings.
         """
         if not track.album or isinstance(track.album, Album):
             return track.album
@@ -1214,14 +1159,8 @@ class TracksController(MediaControllerBase[Track]):
             ):
                 candidate_instances = [provider.instance_id]
             else:
-                # a bare domain resolves to its first registered instance, which may
-                # not be the one this user is allowed to use even though a sibling
-                # instance of the same domain is; try every allowed instance of that
-                # domain instead of giving up on that single, arbitrary first match -
-                # but only for a genuinely portable (streaming) catalog, since a
-                # non-streaming domain (e.g. filesystem) mints its own local ids per
-                # instance and a sibling's coincidentally-matching id would supply
-                # false release evidence for an unrelated album
+                # For a domain-only or foreign instance, try allowed siblings only on
+                # portable domains.
                 domain = provider.domain if provider is not None else provider_instance_id_or_domain
                 candidate_instances = (
                     [
@@ -1238,15 +1177,14 @@ class TracksController(MediaControllerBase[Track]):
                     else []
                 )
                 if not candidate_instances:
-                    # can't verify this account is one the initiating user has access to
+                    # No allowed instance can verify this album.
                     return track.album
         for candidate_instance in candidate_instances:
             try:
                 if library_item := await self.mass.music.albums.get_library_item_by_prov_id(
                     track.album.item_id, candidate_instance
                 ):
-                    # prefer the library's own copy over a fresh provider fetch,
-                    # matching the library-first preference of the shared get()
+                    # Prefer the library copy over a fresh provider fetch.
                     return library_item
                 return await self.mass.music.albums.get_provider_item(
                     track.album.item_id,
@@ -1264,10 +1202,7 @@ class TracksController(MediaControllerBase[Track]):
                 OSError,
                 TimeoutError,
             ) as err:
-                # this candidate could not supply the album; a missing/unavailable
-                # account, or a malformed id (e.g. reconstructed from imported M3U
-                # metadata), must not block a sibling instance of the same domain
-                # from still supplying the release evidence
+                # Keep trying sibling instances of the same domain for album evidence.
                 self.logger.debug(
                     "Could not load album details for track %s on %s: %s",
                     track.name,
@@ -1281,18 +1216,10 @@ class TracksController(MediaControllerBase[Track]):
         matches: list[TrackProviderMatch], tier: TrackMatchConfidence
     ) -> bool:
         """
-        Return whether tied matches at the given confidence tier identify the same release.
+        Return whether tied matches can coexist at this confidence tier.
 
-        An EXACT tier requires every pair to compare as EXACT: a looser recording-level
-        agreement (e.g. matching ISRC but a different MB_TRACK/release) must not tie at
-        EXACT, since that would let the importer persist one candidate's release evidence
-        while the Exact policy is free to later select a conflicting one. Lower tiers only
-        require agreement at LIKELY, since that is already their "same recording" floor.
-
-        Each match's own hydrated album (when one was needed to establish its
-        confidence) is reused for this pairwise check, so two candidates that were
-        individually confirmed EXACT via release evidence do not degrade to a lower
-        tier here for lacking that same evidence against each other.
+        EXACT requires exact release agreement; lower tiers require LIKELY
+        compatibility. Reuses any hydrated album evidence stored on the matches.
         """
         required = (
             TrackMatchConfidence.EXACT
@@ -1319,15 +1246,8 @@ class TracksController(MediaControllerBase[Track]):
         """
         Reduce matches from multiple instances of the same provider domain to one.
 
-        Evaluating every allowed instance can surface more than one acceptable match for
-        the same domain (e.g. two personal accounts on the same service), but only one
-        mapping can be stored per domain. The highest-confidence match is kept; tied
-        top-confidence candidates that disagree with each other are reported as
-        ambiguous, and compatible ties are resolved by mapping quality rather than
-        picked arbitrarily by instance order. The highest confidence tier discarded to
-        an unresolved same-domain tie is also returned, so a caller combining this with
-        cross-provider ambiguity does not let a weaker tier from another domain be
-        quietly accepted over evidence that is itself unresolved at a higher tier.
+        Compatible top-tier ties are resolved by mapping quality; incompatible ones are
+        reported as ambiguous instead of picked arbitrarily.
         """
         best: list[tuple[MusicProvider, TrackProviderMatch]] = []
         ambiguous_providers: list[str] = []
@@ -1356,20 +1276,10 @@ class TracksController(MediaControllerBase[Track]):
         """
         Accept provider matches confidence tier by confidence tier.
 
-        Resolves the highest-confidence candidates first, so a stronger match is
-        preferred over a weaker one that conflicts with it regardless of which
-        provider was visited first, and rejects a whole confidence tier as
-        ambiguous when its own candidates disagree with each other - missing
-        source evidence (e.g. no explicitness tag) can otherwise let unrelated
-        recordings tie and get merged or picked arbitrarily. Resolution stops at
-        the first ambiguous tier: once the strongest remaining evidence can't be
-        told apart, a weaker tier can't settle that disagreement either, so it
-        would be wrong to quietly substitute it in as if it were the answer.
+        Stop at the first ambiguous tier or tier blocked by unresolved stronger
+        evidence.
 
-        :param unresolved_confidence: The highest tier at which some other
-            provider's own candidates already tied ambiguously, if any. A tier at
-            or below it is rejected too rather than accepted, since it cannot be
-            trusted over evidence that is itself unresolved at that level.
+        :param unresolved_confidence: Highest tier already left unresolved elsewhere.
         """
         accepted: list[tuple[MusicProvider, TrackProviderMatch]] = []
         ambiguous_providers: list[str] = []
@@ -1413,13 +1323,7 @@ class TracksController(MediaControllerBase[Track]):
         """
         Query every allowed provider for a match, deferring accept/reject decisions.
 
-        Every allowed instance is queried before any conflict is resolved, so a
-        disagreement (including between two instances of the same domain) is settled
-        by confidence rather than by which instance happened to be visited first.
-        Providers whose own candidates tied ambiguously contribute no match here;
-        the highest such tier is returned separately so a caller resolving several
-        providers together can tell that a weaker, uncontested-looking match from
-        another provider isn't actually a safe answer to that disagreement either.
+        Returns matches plus ambiguous providers and the highest ambiguous tier.
         """
         base_album: Album | ItemMapping | None = None
         base_album_loaded = False
@@ -1501,10 +1405,9 @@ class TracksController(MediaControllerBase[Track]):
         """
         Return the providers to query and any allowed instance that cannot be queried.
 
-        :param provider_instance_ids: Provider instances available to the initiating user,
-            or ``None`` to query every loaded provider.
-        :param failed_provider_instances: Provider instances to skip as already failed,
-            updated in place with any instance found unavailable here.
+        :param provider_instance_ids: Allowed provider instances, or ``None`` for all.
+        :param failed_provider_instances: Instances already known failed; updated in
+            place with any new failures found here.
         """
         if provider_instance_ids is None:
             return list(self.mass.music.providers), []
@@ -1515,9 +1418,7 @@ class TracksController(MediaControllerBase[Track]):
                 failed_provider_instances is not None
                 and provider_instance_id in failed_provider_instances
             ):
-                # already confirmed failed for an earlier entry in this pass - report it
-                # again here too, so a caller building a report attributes every entry
-                # this instance was skipped for, not just the one that first found it down
+                # Keep reporting a known-failed instance for each skipped entry.
                 failed_providers.append(provider_instance_id)
                 continue
             candidate = self.mass.get_provider(provider_instance_id, return_unavailable=True)
@@ -1525,17 +1426,13 @@ class TracksController(MediaControllerBase[Track]):
                 isinstance(candidate, MusicProvider)
                 and candidate.instance_id == provider_instance_id
             ):
-                # the instance has fully unloaded (no provider object left at all) -
-                # report it as failed too, using its instance id as display name,
-                # instead of silently dropping it and letting callers retry it forever
+                # Treat fully missing instances as failed instead of silently dropping them.
                 if failed_provider_instances is not None:
                     failed_provider_instances.add(provider_instance_id)
                 failed_providers.append(provider_instance_id)
                 continue
             if not candidate.available:
-                # allowed but currently unreachable - report it so a caller building a
-                # report can retry, instead of silently treating this as "no candidates
-                # found" for the rest of the pass
+                # Report unavailable instances so callers can retry them.
                 if failed_provider_instances is not None:
                     failed_provider_instances.add(candidate.instance_id)
                 failed_providers.append(candidate.name)

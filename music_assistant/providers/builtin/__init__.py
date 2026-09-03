@@ -176,10 +176,7 @@ class _ImportTrackMatchResult:
     ambiguous_providers: tuple[str, ...] = ()
     failed_providers: tuple[str, ...] = ()
     error: str | None = None
-    # only set when `error` came from a provider communication failure (a caught
-    # exception from enrich_provider_mappings) rather than a local data/validation
-    # issue (e.g. a foreign M3U entry with no structured artist to search with) - the
-    # report's provider issues section must not misattribute the latter to a provider
+    # True when the error came from provider communication, not local validation.
     error_is_provider_issue: bool = False
 
 
@@ -211,9 +208,7 @@ class BuiltinProvider(MusicProvider):
         if not await asyncio.to_thread(os.path.exists, self._playlists_dir):
             await asyncio.to_thread(os.mkdir, self._playlists_dir)
         await super().loaded_in_mass()
-        # run in the background to avoid blocking startup. besides migrating old-style
-        # playlists, this repairs entries whose manually set name or artwork no longer
-        # matches the builtin config, which is not a one-off.
+        # Run in the background: migrate legacy playlists and repair stored metadata drift.
         # TODO: drop the config->M3U migration after MA 2.9, keep the repair pass
         self.mass.tasks.register_scheduled_task(
             task_id="migrate_builtin_playlists",
@@ -421,10 +416,7 @@ class BuiltinProvider(MusicProvider):
         elif media_type == MediaType.PLAYLIST:
             # user-created playlist removal - delete the M3U file
             playlist_file = os.path.join(self._playlists_dir, f"{prov_item_id}.m3u")
-            # both the per-playlist edit lock and the global file-I/O lock used by
-            # _read_m3u_file/_write_m3u_file must be held, and the existence check
-            # itself must happen inside them - otherwise a concurrent read, write or
-            # second delete already in flight on this file could still race the unlink
+            # Hold both locks so the existence check and unlink cannot race other I/O.
             async with self._get_playlist_lock(prov_item_id), self._playlist_lock:
                 if await asyncio.to_thread(os.path.isfile, playlist_file):
                     await asyncio.to_thread(os.remove, playlist_file)
@@ -606,11 +598,8 @@ class BuiltinProvider(MusicProvider):
         Items with valid MA URIs are added directly. Plain URLs or unresolvable
         URIs are stored as-is for later matching.
 
-        Also returns the created playlist's creation generation, so a caller that
-        schedules a deferred background match against it can snapshot exactly which
-        playlist instance that task is for, not merely its id - letting the match
-        detect a delete-and-recreate under the same id that happens before the
-        (possibly queued) task actually starts.
+        Also returns the playlist generation so deferred work can detect a later
+        delete-and-recreate under the same ID.
 
         :param m3u_data: The M3U8 playlist data as a string.
         """
@@ -620,12 +609,7 @@ class BuiltinProvider(MusicProvider):
             raise InvalidDataError(msg)
         playlist_name = parse_m3u_playlist_name(m3u_data) or "Imported Playlist"
         playlist_image_url = parse_m3u_playlist_image(m3u_data)
-        # write the parsed items directly as the initial M3U file content, preserving
-        # all metadata from the source - this avoids re-resolving items that already
-        # have rich metadata (e.g. exported from another MA instance), and, by
-        # reserving the id and writing its final content in the same locked step,
-        # never exposes an intermediate empty playlist that a concurrent add/remove
-        # on the same (predictable) id could race against
+        # Reserve the ID and write the final contents in one step.
         playlist_id, generation = await self._reserve_playlist_file(
             playlist_name, parsed_items, playlist_image_url
         )
@@ -642,53 +626,27 @@ class BuiltinProvider(MusicProvider):
         """
         Match imported playlist tracks against available providers.
 
-        Entries whose original source is confirmed still playable - available and, once
-        probed, still resolvable, or merely unreachable right now - are left untouched.
-        For the remaining entries, whose original source is confirmed missing or
-        genuinely no longer available, other providers are searched for a substitute
-        meeting ``match_policy``'s minimum confidence; matched entries are replaced
-        in-place so the playlist keeps its original order and duplicates.
+        Playable originals are kept. Entries confirmed missing are replaced in place
+        with matches that meet ``match_policy``.
 
         :param prov_playlist_id: The provider-side playlist ID of the playlist to match.
-        :param expected_generation: The creation generation of the playlist this task was
-            scheduled for, snapshotted at import time. This task itself may sit queued for
-            a while before it actually runs; if the playlist is deleted and an unrelated
-            one is created that reuses the same ID before that happens, its generation no
-            longer matches and this call is a no-op instead of matching that replacement.
+        :param expected_generation: Creation generation captured at import time. If the
+            playlist was recreated under the same ID, this call is skipped.
         :param match_policy: Lowest track-match confidence accepted for a substitute.
-        :param allowed_provider_instances: (instance_id, domain) pairs snapshotted from the
-            user that requested the import, used to validate whether an entry's original
-            source is still playable. Always the user's full accessible set, independent
-            of any search narrowing, so a valid original outside that narrowing is never
-            treated as unavailable. Carrying the domain alongside each instance allows a
-            domain-only reference to be expanded from this snapshot directly, without
-            depending on whether the provider is currently loaded.
-        :param search_provider_instances: Provider instances to search for a substitute.
-            Defaults to ``allowed_provider_instances`` when not narrowed by the caller.
+        :param allowed_provider_instances: Snapshotted ``(instance_id, domain)`` pairs
+            used to validate the original source.
+        :param search_provider_instances: Optional subset to search for substitutes.
         """
-        # the initial content read and generation capture must happen atomically under
-        # the per-playlist lock: library_remove takes this same lock before unlinking
-        # the file, so holding it here prevents a delete-and-recreate from landing in
-        # between - which would otherwise pair this pass's old (pre-delete) content
-        # with the *new* playlist's generation, defeating the write-back check below
+        # Read the playlist and capture its generation under the per-playlist lock.
         async with self._get_playlist_lock(prov_playlist_id):
             m3u_data = await self._read_m3u_file(prov_playlist_id)
             parsed_items = parse_m3u(m3u_data)
             if not parsed_items:
                 return
             playlist = await self.get_playlist(prov_playlist_id)
-            # this pass can run for a while; if the playlist is deleted and a new one
-            # is created that reuses the same sanitized ID before it finishes, this
-            # generation lets the later write-back tell the two apart instead of
-            # writing stale matches into an unrelated playlist that merely happens to
-            # share its ID
+            # Distinguish a later delete-and-recreate under the same ID.
             original_generation = await self._get_playlist_generation(prov_playlist_id)
             if original_generation != expected_generation:
-                # this task itself was scheduled for a playlist that no longer exists
-                # under this ID - it was deleted and replaced before this (possibly
-                # queued) task could even start, so what is here now is an unrelated
-                # playlist that must not be matched under a policy that was never
-                # meant for it
                 return
 
         minimum_confidence = match_policy_minimum_confidence(match_policy)
@@ -699,9 +657,7 @@ class BuiltinProvider(MusicProvider):
             else set(search_provider_instances)
         )
         failed_provider_instances: set[str] = set()
-        # a transient (e.g. network) failure verifying an original source instance is
-        # remembered for the rest of this pass, so a large playlist repeating that same
-        # instance doesn't re-probe (and re-time-out on) it once per entry
+        # Cache transient source-verification failures for the rest of this pass.
         failed_source_instances: set[str] = set()
         total = len(parsed_items)
         counts = dict.fromkeys(
@@ -717,22 +673,15 @@ class BuiltinProvider(MusicProvider):
             0,
         )
         substitutions: list[tuple[str, str, str]] = []
-        # (original, replacement) pairs, applied against a freshly re-read playlist below so
-        # edits made elsewhere while this (possibly long-running) pass was searching aren't lost
+        # Apply substitutions against a fresh read so concurrent edits are preserved.
         pending_substitutions: list[tuple[PlaylistItem, PlaylistItem]] = []
-        # confidence-count key for each pending_substitutions entry, same index - lets the
-        # report be reconciled against what _apply_import_substitutions actually wrote
+        # Confidence bucket for each pending substitution.
         substitution_tiers: list[str] = []
-        # retained entries whose bare-URI original carried no #EXTPROV of its own - written
-        # back with the provider mapping confirmed playable during this pass, so they keep
-        # resolving on future loads too, without being reported as substitutions
+        # Retained entries that gained a confirmed provider mapping.
         pending_metadata_updates: list[tuple[PlaylistItem, PlaylistItem]] = []
         unmatched_items: list[tuple[str, str]] = []
         provider_issues: list[tuple[str, str]] = []
-        # results are cached by the entry's full content (not just its path) so a track
-        # that is byte-for-byte duplicated in the playlist is only probed and searched
-        # once, however many times it repeats - entries sharing a path but differing in
-        # any resolution input (title, artists, providers, ...) are resolved independently
+        # Cache results by full entry content so exact duplicates are resolved once.
         resolved_by_entry: dict[str, _ImportTrackMatchResult] = {}
 
         for index, item in enumerate(parsed_items):
@@ -767,9 +716,7 @@ class BuiltinProvider(MusicProvider):
             not_applied = await self._apply_import_substitutions(
                 prov_playlist_id, pending_substitutions, original_generation
             )
-            # the report is built from tallies collected before this write - reconcile any
-            # substitution the playlist no longer had an original for (a concurrent edit)
-            # so counts and detail rows only reflect what was actually applied
+            # Drop substitutions that no longer apply after concurrent edits.
             for entry_index in sorted(not_applied, reverse=True):
                 counts[substitution_tiers[entry_index]] -= 1
                 counts["concurrent_edit"] += 1
@@ -949,24 +896,15 @@ class BuiltinProvider(MusicProvider):
         """
         Write resolved substitutes into the playlist's current contents.
 
-        Matching can take a while, so entries are matched by value against a fresh read of
-        the playlist under its lock rather than overwriting the whole snapshot taken at the
-        start of the pass - this preserves edits made elsewhere while matching was running.
+        Matches originals against a fresh read so concurrent edits are preserved.
 
         :param prov_playlist_id: The provider-side playlist ID to update.
         :param pending_substitutions: (original, replacement) pairs found during matching.
-        :param expected_generation: The playlist's creation generation captured when this
-            pass started, as returned by ``_get_playlist_generation``. If the file's current
-            generation no longer matches, the playlist behind this ID was deleted (and
-            possibly replaced by an unrelated new playlist reusing the same sanitized ID),
-            so nothing is written.
-        :return: Indices into `pending_substitutions` whose original entry was no longer in
-            the playlist (e.g. removed by a concurrent edit, or the playlist was replaced)
-            and so were not applied.
+        :param expected_generation: Playlist generation captured at the start of the
+            pass. If it changed, nothing is written.
+        :return: Indices of substitutions whose original entry was no longer present.
         """
-        # index pending replacements by a stable key with per-key queues, so a playlist
-        # with duplicate entries is still matched in original order without a per-item
-        # linear scan of the (potentially large) remaining list
+        # Queue replacements by entry value so duplicates are applied in order.
         pending_by_key: dict[str, deque[tuple[int, PlaylistItem]]] = defaultdict(deque)
         for index, (original, replacement) in enumerate(pending_substitutions):
             pending_by_key[repr(original)].append((index, replacement))
@@ -1073,9 +1011,7 @@ class BuiltinProvider(MusicProvider):
         failed_source_instances: set[str],
     ) -> _ImportTrackMatchResult:
         """Resolve one imported playlist entry against the allowed providers."""
-        # a bare URI without #EXTMA metadata (e.g. a hand-written or foreign M3U entry)
-        # would otherwise default to Track; a radio:// path (or similar) must still be
-        # recognized as non-Track so it is retained rather than searched/substituted
+        # Bare MA URIs still need their real media type to avoid treating radios as tracks.
         default_media_type = MediaType.TRACK
         with suppress(InvalidProviderURI, InvalidProviderID):
             parsed_media_type, _, _ = await parse_uri(item.path)
@@ -1095,17 +1031,10 @@ class BuiltinProvider(MusicProvider):
             item, allowed_provider_instances, failed_source_instances
         )
         if is_playable:
-            # the original source still resolves, or its provider is merely down right
-            # now - either way there is nothing to substitute
             normalized_entry = None
             if confirmed_mapping is not None:
-                # a bare URI (no #EXTPROV metadata at all), a domain-only reference, or
-                # one pinning an instance id not registered on this server (e.g.
-                # imported from a different Music Assistant install) was just confirmed
-                # playable - persist the resolved mapping so this entry keeps resolving
-                # to the exact same instance on future loads too, instead of leaving one
-                # that can never attach an instance-pinned mapping, or that would repeat
-                # the same fallback, again
+                # Persist a confirmed mapping for bare, domain-only, or foreign-instance
+                # entries so later loads resolve the same instance directly.
                 normalized_entry = replace(
                     item,
                     providers=[
@@ -1122,8 +1051,7 @@ class BuiltinProvider(MusicProvider):
                 )
             return _ImportTrackMatchResult(label=label, retained=True, entry=normalized_entry)
         if not media_item.artists:
-            # foreign M3U8 files only carry a combined "Artist - Title" EXTINF string;
-            # the shared matcher needs a structured artist to search and compare with
+            # Foreign M3U entries may need the artist split from the EXTINF title first.
             split_item = _split_artist_from_title(item)
             if split_item is not item:
                 rebuilt = construct_media_item_from_playlist_item(split_item, self.mass)
@@ -1139,24 +1067,14 @@ class BuiltinProvider(MusicProvider):
                 media_item,
                 minimum_confidence=minimum_confidence,
                 provider_instance_ids=search_provider_instances,
-                # imported metadata comes from outside Music Assistant and is unverified,
-                # so a provider mapping it already carries is not treated as authoritative
+                # Imported playlist metadata is untrusted.
                 trust_track_mappings=False,
                 failed_provider_instances=failed_provider_instances,
-                # the liveness check above already force-refreshed these exact
-                # (instance, item id) pairs and proved them dead - hydrating them again
-                # here would double every stale entry's provider API traffic for nothing
+                # Skip source mappings already force-refreshed and confirmed dead.
                 known_dead_mappings=confirmed_dead_mappings,
-                # release-evidence hydration (e.g. the source's own album) must reach the
-                # user's full allowed snapshot, not just the narrowed search targets, or a
-                # match_providers filter would starve EXACT matching of evidence that is
-                # still on one of the user's own, merely un-searched, accounts
+                # Keep album-evidence hydration scoped to the full allowed set.
                 evidence_provider_instances=set(allowed_provider_instances),
-                # search_provider_instances is the initiating user's own deliberate
-                # selection of fallback targets - a non-streaming provider (e.g.
-                # filesystem) chosen there must actually be searched, not silently
-                # skipped for lacking a mapping no freshly imported track could ever
-                # already carry
+                # Explicit non-streaming fallback targets must still be searched.
                 search_non_streaming_without_mapping=True,
             )
         except (
@@ -1171,10 +1089,7 @@ class BuiltinProvider(MusicProvider):
             message = str(err).strip() or f"Matching failed ({type(err).__name__})"
             return _ImportTrackMatchResult(label=label, error=message, error_is_provider_issue=True)
         if not enrichment.matches:
-            # nothing was actually matched - the track's provider_mappings may still carry
-            # an untrusted, unverified original mapping (trust_track_mappings=False keeps
-            # it around unless a same-domain match displaces it), so branch on the matches
-            # that were actually found rather than on the mapping set itself
+            # Branch on accepted matches, not the raw mapping set.
             return _ImportTrackMatchResult(
                 label=label,
                 ambiguous_providers=enrichment.ambiguous_providers,
@@ -1184,12 +1099,7 @@ class BuiltinProvider(MusicProvider):
         tier_matches = [
             match for match in enrichment.matches if match.confidence == best_confidence
         ]
-        # media_item_to_playlist_item picks its primary playback URI by the same
-        # availability/quality/identity ordering used here, so the primary match must
-        # be selected the same way - otherwise the entry's release evidence (from
-        # whichever match's track happened to be first) could describe a different
-        # release than the mapping the serializer actually ends up exporting as the
-        # playable URI.
+        # Match serializer ordering so exported metadata describes the chosen primary URI.
         primary_match = min(
             tier_matches,
             key=lambda match: (
@@ -1200,11 +1110,7 @@ class BuiltinProvider(MusicProvider):
                 match.mapping.item_id,
             ),
         )
-        # a same-tier sibling from another provider is only safe to keep alongside
-        # the primary match's own release evidence (e.g. MB_TRACK) when it is
-        # confirmed to be that exact same release - a merely LIKELY-compatible
-        # sibling may share the recording but not the release, and combining its
-        # mapping under the primary's metadata would misattribute it as exact
+        # Keep sibling mappings only when they resolve to the same exact release.
         matched_track = replace(
             primary_match.track,
             provider_mappings={
@@ -1232,54 +1138,24 @@ class BuiltinProvider(MusicProvider):
         """
         Check whether an imported entry's original source is still usable.
 
-        Resolves the exact provider instance and item id authoritatively - bypassing
-        cached details and without a stored fallback - instead of trusting the
-        ``available`` flag on a resolved track's provider mappings, which only
-        reflects whether the provider was loaded when the M3U metadata was last
-        written. Candidates are built directly from the entry's own ``#EXTPROV``
-        references (falling back to parsing the raw path for a plain M3U entry that
-        carries a bare Music Assistant URI without one) instead of through the shared
-        library's mapping resolution, which silently substitutes an arbitrary
-        same-domain instance for a domain-only reference. A domain-only or foreign
-        reference can expand to several of the caller's own same-domain instances;
-        one of those being down or otherwise unverifiable right now does not rule
-        out another already-healthy sibling actually confirming the item, so every
-        candidate is tried before falling back to a verdict. Only once every
-        candidate is exhausted does an unresolved one count: a provider that is
-        merely down right now, or is configured but not currently loaded (e.g. it
-        failed setup), counts as still usable, so a transient outage does not
-        trigger a permanent substitution. Candidates are only ever expanded within
-        the initiating user's own provider instances, so a domain-only reference can
-        never reach an inaccessible account.
+        Performs authoritative provider lookups on the entry's own references.
+        Domain-only or foreign-instance references expand only within the caller's
+        allowed instances, and unverifiable providers stay inconclusive rather than
+        being treated as missing.
 
-        Returns the confirmed provider mapping alongside the playable verdict whenever
-        the entry needs it written back to keep resolving on its own next time: a bare
-        Music Assistant provider URI with no ``#EXTPROV`` metadata at all, a
-        domain-only ``#EXTPROV`` reference, or one that pins an instance id not
-        registered on this server (e.g. imported from a different Music Assistant
-        install, where instance ids are randomly generated per install) - each
-        normalized to whichever allowed instance actually confirmed it. A raw builtin
-        stream URL already reconstructs its own mapping from the path alone and needs
-        nothing written back, and an ``#EXTPROV`` reference that already names an
-        exact allowed instance already resolves correctly on its own. Also returns
-        every ``(instance_id, item_id)`` pair that was just authoritatively confirmed
-        dead here, so a subsequent matching pass does not force-refresh the exact same
-        candidate a second time.
+        Returns the normalized mapping to persist for bare, domain-only, or
+        foreign-instance entries, plus any exact ``(instance_id, item_id)`` pairs
+        confirmed dead during this pass.
 
-        :param failed_source_instances: Instances that already failed verification
-            with a transient error earlier this pass, mutated in place - skipped
-            here without probing (and potentially timing out on) them again.
+        :param failed_source_instances: Instances that already failed transiently in
+            this pass and should be skipped here too.
         """
         candidates: list[tuple[str, str, bool]] = []
         seen: set[tuple[str, str]] = set()
         confirmed_dead: set[tuple[str, str]] = set()
         for prov_info in item.providers:
-            # a domain-only reference (no pinned instance id), or a pinned instance id
-            # that is not registered on this server at all (e.g. a playlist imported
-            # from a different Music Assistant install, where instance ids are
-            # randomly generated per install), is not yet tied to one of the caller's
-            # own accounts; once resolved, normalize it to whichever allowed instance
-            # actually confirmed it, so a later load doesn't need this same fallback again
+            # Normalize domain-only or foreign-instance references to the confirming
+            # allowed instance.
             needs_provider_metadata = (
                 not prov_info.instance_id or prov_info.instance_id not in allowed_provider_instances
             )
@@ -1291,45 +1167,28 @@ class BuiltinProvider(MusicProvider):
                     seen.add(key)
                     candidates.append((instance_id, prov_info.item_id, needs_provider_metadata))
         if not item.providers:
-            # only a plain M3U entry with a bare Music Assistant URI and no #EXTPROV
-            # metadata at all needs this path parsed - an entry that does carry
-            # #EXTPROV references is fully handled by the loop above, including its
-            # own domain-based fallback for an unregistered pinned instance
+            # Bare MA URIs without #EXTPROV need path parsing to build candidates.
             with suppress(InvalidProviderURI, InvalidProviderID, IndexError, ValueError):
                 _, provider_instance_or_domain, raw_item_id = await parse_uri(item.path)
-                # a resolved external provider reference - a bare MA URI or a public
-                # share link such as https://open.spotify.com/track/... - has no other
-                # way to attach a provider mapping and must be persisted; a raw builtin
-                # stream URL already reconstructs "builtin" from the path alone on
-                # every future load and needs nothing written back
+                # Raw builtin stream URLs already reconstruct their mapping from the path.
                 needs_provider_metadata = provider_instance_or_domain != "builtin"
-                # a bare URI carries no separate domain field to fall back on, so an
-                # instance id that isn't allowed here (unlike a genuine domain, e.g.
-                # from a public share link) simply yields no candidates below
+                # Bare URIs have no separate domain fallback for disallowed instances.
                 for instance_id in self._allowed_instances_for(
                     provider_instance_or_domain,
                     provider_instance_or_domain,
                     allowed_provider_instances,
                 ):
                     candidates.append((instance_id, raw_item_id, needs_provider_metadata))
-        # tracks whether any candidate could not be authoritatively checked at all
-        # (down/unloaded provider, already-known or fresh transient error) - only
-        # once every candidate is exhausted does this decide the final verdict,
-        # so one unreachable sibling instance never rules out trying another
+        # Track whether any candidate stayed inconclusive.
         any_unverifiable = False
         for provider_instance, provider_item_id, needs_provider_metadata in candidates:
             if provider_instance in failed_source_instances:
-                # a transient error already confirmed this instance unreachable
-                # earlier this pass - skip re-probing (and potentially timing out
-                # on) it again, but still give any other candidate a chance
+                # Skip instances that already failed transiently in this pass.
                 any_unverifiable = True
                 continue
             provider = self.mass.get_provider(provider_instance, return_unavailable=True)
             if provider is None or not provider.available:
-                # every candidate here already passed the allowed-instances snapshot, so
-                # a missing/unavailable provider is a configured source that is merely
-                # down or failed setup right now, not one the user removed - try any
-                # other candidate before treating this alone as inconclusive
+                # Unloaded or unavailable allowed providers are inconclusive, not dead.
                 any_unverifiable = True
                 continue
             try:
@@ -1341,19 +1200,14 @@ class BuiltinProvider(MusicProvider):
                     strict_provider_instance=True,
                 )
             except MediaNotFoundError, InvalidProviderID:
-                # a catalog id genuinely no longer exists on the provider, or is
-                # malformed for it (e.g. an id that no longer matches the provider's
-                # expected format) - either way it will never resolve on retry
+                # Missing or malformed ids are permanently dead for this provider.
                 confirmed_dead.add((provider.instance_id, provider_item_id))
                 continue
             except InvalidDataError:
                 if provider_item_id.startswith(
                     BUILTIN_URL_SCHEMES
                 ) and await self._stream_url_confirmed_gone(provider_item_id):
-                    # a confirmed terminal HTTP status (404/410) proves this stream
-                    # is actually gone - anything else this error can mean (a DNS
-                    # hiccup, a timeout, a 5xx response, or - for a catalog id - a
-                    # provider's own API/HTTP fault) does not prove deletion
+                    # Only a terminal HTTP failure proves a builtin stream URL is gone.
                     confirmed_dead.add((provider.instance_id, provider_item_id))
                     continue
                 any_unverifiable = True
@@ -1365,20 +1219,15 @@ class BuiltinProvider(MusicProvider):
                 OSError,
                 TimeoutError,
             ):
-                # could not verify right now (network blip) - remember this instance
-                # for the rest of the pass so a large playlist doesn't retry (and
-                # re-time-out on) it once per entry, but still try any other
-                # candidate before treating this alone as inconclusive
+                # Cache transient verification failures and keep trying siblings.
                 failed_source_instances.add(provider.instance_id)
                 any_unverifiable = True
                 continue
             else:
                 if not needs_provider_metadata:
                     return True, None, frozenset(confirmed_dead)
-                # a bare URI without #EXTPROV, or a domain-only reference not yet
-                # pinned to one instance, would otherwise stay unresolvable or keep
-                # guessing the wrong account on every future load - persist what was
-                # just confirmed so the entry keeps resolving after this pass
+                # Persist the confirmed mapping for bare, domain-only, or foreign
+                # instance references.
                 own_mapping = next(
                     (
                         pm
@@ -1387,9 +1236,7 @@ class BuiltinProvider(MusicProvider):
                     ),
                     None,
                 )
-                # audio format details are only known when the hydrated item actually
-                # carried its own mapping - otherwise leave them unset rather than
-                # writing a guessed/default format into the persisted metadata
+                # Only persist audio format fields when the provider supplied them.
                 audio_format = own_mapping.audio_format if own_mapping else None
                 return (
                     True,
@@ -1405,8 +1252,7 @@ class BuiltinProvider(MusicProvider):
                     frozenset(confirmed_dead),
                 )
         if any_unverifiable:
-            # at least one candidate couldn't be authoritatively checked, so the
-            # entry cannot be proven dead - never substitute on an unproven verdict
+            # Any inconclusive candidate keeps the entry playable.
             return True, None, frozenset(confirmed_dead)
         return False, None, frozenset(confirmed_dead)
 
@@ -1414,15 +1260,8 @@ class BuiltinProvider(MusicProvider):
         """
         Return whether a stream URL is confirmed to no longer exist.
 
-        ffprobe reports a transient failure (a DNS hiccup, a timeout, a 5xx
-        response) with the same error as a genuinely deleted stream, so only a
-        terminal HTTP status confirms deletion. A scheme this cannot check (e.g.
-        ``rtsp://``/``rtmp://``) is never treated as confirmed gone. A HEAD
-        404/410 is corroborated with a minimal ranged GET before being treated
-        as terminal, since some servers reject HEAD requests they would still
-        serve on GET. A server that explicitly refuses the HEAD method itself
-        (405/501) is also corroborated by that same GET, rather than being
-        treated as inconclusive forever.
+        Only terminal 404/410 responses count; HEAD results are confirmed with a
+        ranged GET.
         """
         if not url.startswith(("http://", "https://")):
             return False
@@ -1453,23 +1292,8 @@ class BuiltinProvider(MusicProvider):
         """
         Expand an entry's provider reference to allowed instance ids.
 
-        An exact instance id is kept as-is when it is in the caller's own snapshot.
-        Otherwise - whether the entry never pinned one at all, or it pins one that is
-        not registered on this server (e.g. a playlist imported from a different
-        Music Assistant install, where instance ids are randomly generated per
-        install) - every one of the caller's allowed instances of the entry's own
-        domain is tried instead, but only when that domain's item ids are actually
-        portable across instances (a shared streaming catalog): the single,
-        arbitrary instance the shared library would otherwise resolve a bare domain
-        to, or silently giving up on a foreign instance id that matches nothing
-        here, would both be wrong. For a non-streaming domain (e.g. filesystem),
-        each instance mints its own local ids, so a foreign or missing instance id
-        cannot be assumed valid on any of the caller's own same-domain instances -
-        expanding it could authoritatively confirm an unrelated file and wrongly
-        mark the true original as still playable. The snapshot maps every instance
-        the caller has configured to its domain, whether or not the instance is
-        currently loaded, so this never depends on the provider's current load
-        state - including for the domain-based expansion.
+        Keeps exact allowed instances. Domain-only or foreign-instance references
+        expand only across allowed streaming instances of the same domain.
         """
         if instance_id and instance_id in allowed_provider_instances:
             return [instance_id]
@@ -1487,16 +1311,10 @@ class BuiltinProvider(MusicProvider):
         """
         Return whether providers of this domain share a single portable catalog.
 
-        Every instance of a domain shares the same provider class and therefore the
-        same ``is_streaming_provider`` trait, so any one allowed instance of it is
-        representative. Defaults to ``True`` when no instance of this domain can be
-        resolved at all, consistent with how an unresolvable provider is treated
-        everywhere else in this matching pass - a missing provider is never treated
-        as reason to force a substitution.
+        Defaults to ``True`` when no allowed instance of the domain can be resolved.
 
         :param domain: The provider domain to check.
-        :param allowed_provider_instances: (instance_id, domain) pairs to search for a
-            representative instance of this domain.
+        :param allowed_provider_instances: ``(instance_id, domain)`` pairs to search.
         """
         for allowed_instance_id, allowed_domain in allowed_provider_instances.items():
             if allowed_domain != domain:
@@ -1806,9 +1624,7 @@ class BuiltinProvider(MusicProvider):
     async def _read_m3u_file(self, playlist_id: str) -> str:
         """Read the raw M3U file content for a playlist."""
         playlist_file = os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
-        # the existence check and the open must happen while holding the same lock a
-        # concurrent delete uses, or a delete slipping in between the two could still
-        # remove the file after it was seen to exist but before it was opened
+        # Hold the same lock delete uses for the existence check and open.
         async with self._playlist_lock:
             if not await asyncio.to_thread(os.path.isfile, playlist_file):
                 return ""
@@ -1820,11 +1636,8 @@ class BuiltinProvider(MusicProvider):
         """
         Return the current creation generation for a playlist's M3U file.
 
-        Bumped by create_playlist every time a new file is created under this sanitized
-        ID, so a delete followed by a recreation under the same ID - even one that, by
-        pure filesystem-level chance, reuses the just-freed inode - is still
-        distinguishable from an in-place rewrite of the same playlist (a rename, edit,
-        or matched substitution). Returns None when the file does not currently exist.
+        Bumped whenever a new file is created under this sanitized ID. Returns
+        ``None`` when the file does not currently exist.
 
         :param playlist_id: The provider-side playlist ID to fingerprint.
         """
@@ -1842,22 +1655,8 @@ class BuiltinProvider(MusicProvider):
         """
         Reserve a unique playlist ID and write its initial M3U file with given content.
 
-        Every candidate ID is checked and, if free, claimed and written while holding
-        its own per-playlist edit lock (in the same outer-then-`_playlist_lock` order
-        `library_remove` uses) - not just `_playlist_lock` alone. Otherwise a
-        concurrent add/remove already mid-flight against that exact ID, having read
-        its old content before releasing its lock, could still overwrite this
-        reservation's freshly written file once it finally does release it: taking
-        the same per-ID lock here means such an edit is either fully finished (and
-        this reservation's existence check already sees its result) or fully blocked
-        until this reservation is done. Writing the given ``entries`` directly -
-        rather than always starting from an empty file - also means the file never
-        appears on disk in an intermediate state that a concurrent add/remove could
-        observe or silently overwrite.
-
-        Returns the reserved ID together with its creation generation, so a caller
-        that defers work against this exact playlist instance can detect a later
-        delete-and-recreate under the same ID.
+        Claims and writes each candidate ID while holding that playlist's edit lock,
+        so concurrent edits cannot overwrite a newly created file.
 
         :param name: The playlist's display name, used to derive its sanitized id.
         :param entries: The initial playlist items to write.
@@ -1871,11 +1670,7 @@ class BuiltinProvider(MusicProvider):
                 if not await asyncio.to_thread(
                     os.path.isfile, os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
                 ):
-                    # bump this ID's generation before creating its file: a delete
-                    # followed by a recreation under the same sanitized ID must be
-                    # distinguishable from an in-place rewrite of the same playlist,
-                    # even if the filesystem happens to reuse the freed inode for the
-                    # new file
+                    # Bump the generation before creating a new file under this ID.
                     generation = self._playlist_generations[playlist_id] = (
                         self._playlist_generations.get(playlist_id, 0) + 1
                     )

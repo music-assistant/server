@@ -821,13 +821,7 @@ def test_compare_album_evidence_blank_vs_remaster_resolves_with_fingerprint() ->
 def test_compare_album_evidence_blank_vs_recording_conflict_is_no_match(
     conflict_version: str,
 ) -> None:
-    """
-    A blank version next to a recording-changing qualifier is a proven conflict.
-
-    Unlike a blank version next to plain packaging wording (remaster, deluxe, ...), a
-    missing version tag can never explain away a recording-altering qualifier on the
-    other side, so this must not be left for a tracklist to resolve.
-    """
+    """A blank version never cancels a recording-changing qualifier."""
     base_item = _album(version="")
     compare_item = _album(item_id="2", provider="test2", version=conflict_version)
 
@@ -1289,9 +1283,7 @@ def test_compare_track_evidence_full_metadata_agreement_without_release_evidence
     base = _provider_track("base", "provider_a")
     candidate = _provider_track("candidate", "provider_b")
 
-    # same nominal album name, same title/artist/version/position - but neither side
-    # carries any release-level identifier (MusicBrainz release, Discogs, TheAudioDB,
-    # or a shared item identity), so this is provider metadata drift risk, not proof
+    # Matching metadata alone is not release-level proof.
     assert compare.compare_track_evidence(base, candidate) == compare.TrackMatchConfidence.LIKELY
 
 
@@ -1349,9 +1341,7 @@ def test_compare_track_evidence_cross_instance_item_id_collision_is_not_exact() 
             )
         },
     )
-    # a second, unrelated filesystem instance happens to mint the same relative
-    # path/item id for an entirely different recording - non-streaming providers
-    # do not share a portable catalog, so this must not be trusted as identity
+    # Non-streaming sibling instances do not share item IDs.
     unrelated = media_items.Track(
         item_id="Artist/Album/01.flac",
         provider="filesystem_2",
@@ -1465,16 +1455,12 @@ def test_compare_track_evidence_cross_instance_album_id_collision_is_not_same_al
             },
         )
 
-    # two unrelated filesystem albums that happen to share the same relative-path
-    # item id on their own (different) instances - each instance mints its own
-    # local ids, so this must not be trusted as evidence they are the same album
+    # Non-streaming sibling instances do not share album IDs either.
     album_a = _colliding_album("filesystem_1", "Compilation Volume 1")
     album_b = _colliding_album("filesystem_2", "A Totally Different Compilation")
     assert compare._same_album(album_a, album_b) is False
 
-    # without the fix, the false "same album" match forces a position-conflict
-    # NO_MATCH despite matching title/artist/duration; it should instead reach a
-    # LIKELY (metadata-corroborated) confidence
+    # The false album match must not force a NO_MATCH here.
     base = _album_track("filesystem_1", album_a, 3)
     candidate = _album_track("filesystem_2", album_b, 9)
     assert compare.compare_track_evidence(base, candidate) == compare.TrackMatchConfidence.LIKELY

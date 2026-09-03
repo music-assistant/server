@@ -727,14 +727,7 @@ def test_media_item_to_playlist_item_track_round_trip_preserves_mb_track() -> No
 
 
 def test_media_item_to_playlist_item_track_round_trip_preserves_album_instance() -> None:
-    """
-    A track's album keeps its exact originating instance, not just its bare domain.
-
-    Reconstructing with only the domain would let matching expand across every allowed
-    sibling instance of that domain instead of the one #EXTALBUM actually captured,
-    letting an unrelated sibling account's same-domain album ID supply release evidence
-    for exact-tier matching.
-    """
+    """A round-tripped album keeps its captured provider instance."""
 
     class DummyProvider:
         def __init__(self, domain: str, instance_id: str) -> None:
@@ -781,22 +774,12 @@ def test_media_item_to_playlist_item_track_round_trip_preserves_album_instance()
 
     assert isinstance(reconstructed, Track)
     assert reconstructed.album is not None
-    # the album was captured on spotify--2, a *different* instance than the track's own
-    # spotify--1 - the reconstructed reference must pin to that exact instance
+    # The album stays pinned to the captured sibling instance.
     assert reconstructed.album.provider == "spotify--2"
 
 
 def test_media_item_to_playlist_item_track_round_trip_falls_back_to_album_domain() -> None:
-    """
-    An album pinned to an instance id unknown on this server falls back to its domain.
-
-    A playlist exported from a different Music Assistant install carries instance ids
-    that are randomly generated per install and will never resolve here; reconstructing
-    with that foreign instance id verbatim would leave the album permanently
-    unhydratable. Falling back to the domain lets downstream hydration
-    (``TracksController._get_full_track_album``) try every allowed sibling instance of
-    it instead.
-    """
+    """An unknown album instance falls back to its domain on round-trip."""
 
     class DummyProvider:
         def __init__(self, domain: str, instance_id: str) -> None:
@@ -804,9 +787,7 @@ def test_media_item_to_playlist_item_track_round_trip_falls_back_to_album_domain
             self.instance_id = instance_id
 
     mass = MagicMock()
-    # spotify--2 (the account this album was originally captured on, on a *different*
-    # Music Assistant install) does not exist on this server at all - only an unrelated
-    # sibling of the same domain does
+    # The captured instance does not exist here; only a same-domain sibling does.
     spotify_9 = DummyProvider("spotify", "spotify--9")
     mass.get_provider.side_effect = lambda ref, **_kwargs: {"spotify--9": spotify_9}.get(ref)
     album = Album(
@@ -841,19 +822,12 @@ def test_media_item_to_playlist_item_track_round_trip_falls_back_to_album_domain
 
     assert isinstance(reconstructed, Track)
     assert reconstructed.album is not None
-    # falls back to the bare domain instead of the foreign, unresolvable instance id
+    # The unresolvable foreign instance falls back to the bare domain.
     assert reconstructed.album.provider == "spotify"
 
 
 def test_media_item_to_playlist_item_album_prefers_track_instance_when_multiple() -> None:
-    """
-    An album with mappings on multiple sibling instances pins to the track's own account.
-
-    Picking an arbitrary album mapping (set iteration order is not guaranteed stable)
-    would let an unrelated sibling account's same-domain album ID nondeterministically
-    become the serialized - and later pinned - album reference; the mapping matching the
-    track's own instance is unambiguous and must win instead.
-    """
+    """Album mapping selection prefers the track's own provider instance."""
     album = Album(
         item_id="alb1",
         provider="spotify--2",
@@ -894,14 +868,7 @@ def test_media_item_to_playlist_item_album_prefers_track_instance_when_multiple(
 
 
 def test_media_item_to_playlist_item_album_deterministic_among_same_instance_mappings() -> None:
-    """
-    Two mappings sharing the track's own instance still resolve to the same one.
-
-    An album can hold more than one mapping for the same account (for example an
-    alternate catalog ID for the same release) - matching by instance alone is not
-    enough to guarantee a single candidate, so the deterministic ranking must still
-    apply among those matches instead of leaving the choice to set iteration order.
-    """
+    """Same-instance album mappings still resolve deterministically."""
     album = Album(
         item_id="alb1",
         provider="spotify--1",
@@ -947,14 +914,7 @@ def test_media_item_to_playlist_item_album_deterministic_among_same_instance_map
 def test_media_item_to_playlist_item_album_mapping_selection_is_deterministic_without_match() -> (
     None
 ):
-    """
-    Without a mapping matching the track's own instance, the choice is still deterministic.
-
-    Falling back to a set's iteration order would let hash-order variance pick a
-    different sibling account across runs; the same ranking used for the track's own
-    primary provider (available, higher quality, then domain/instance/item_id) applies
-    here too, instead of whichever mapping the set happens to iterate first.
-    """
+    """Album mapping selection stays deterministic without an instance match."""
     album = Album(
         item_id="alb1",
         provider="tidal--1",
@@ -988,12 +948,7 @@ def test_media_item_to_playlist_item_album_mapping_selection_is_deterministic_wi
 
 
 def test_media_item_to_playlist_item_album_prefers_available_mapping() -> None:
-    """
-    An available mapping wins over an unavailable one, regardless of iteration order.
-
-    Without a match to the track's own instance, the fallback ranking must still put an
-    available sibling ahead of an unavailable one.
-    """
+    """Available album mappings outrank unavailable ones."""
     album = Album(
         item_id="alb1",
         provider="tidal--2",
@@ -1037,13 +992,7 @@ def test_media_item_to_playlist_item_album_prefers_available_mapping() -> None:
 
 
 def test_media_item_to_playlist_item_track_round_trip_preserves_exact_capable_album() -> None:
-    """
-    An album with several sibling mappings round-trips to the account holding exact evidence.
-
-    Exporting must pick the mapping matching the track's own account (rather than an
-    arbitrary sibling) so the reconstructed reference resolves to the same account that
-    supplied the track, keeping strict Exact-tier evidence available after a round trip.
-    """
+    """Round-tripping keeps the album mapping that preserves exact evidence."""
     mass = MagicMock()
 
     class DummyProvider:
@@ -1088,8 +1037,7 @@ def test_media_item_to_playlist_item_track_round_trip_preserves_exact_capable_al
 
     assert isinstance(reconstructed, Track)
     assert reconstructed.album is not None
-    # the track's own account (tidal--1) holds the album's exact-evidence mapping (alb1a) -
-    # the round trip must resolve to that specific instance, not an arbitrary sibling
+    # The round trip must keep the album mapping from the track's own account.
     assert reconstructed.album.provider == "tidal--1"
     assert reconstructed.album.item_id == "alb1a"
 
@@ -1107,9 +1055,7 @@ def test_media_item_to_playlist_item_omits_conflicting_merged_external_ids() -> 
             ),
             ProviderMapping(item_id="xyz789", provider_domain="qobuz", provider_instance="qobuz_1"),
         },
-        # a library track merges external IDs from every matched provider - two
-        # providers disagreeing on MB_TRACK means they identify different releases,
-        # so neither value is reliable release evidence for the exported entry
+        # Conflicting MB_TRACK values from different providers are not reliable.
         external_ids={
             (ExternalID.ISRC, "USRC17607839"),
             (ExternalID.MB_TRACK, "spotify-release-track-mbid"),
@@ -1138,12 +1084,7 @@ def test_media_item_to_playlist_item_merges_equivalent_external_ids() -> None:
             ),
             ProviderMapping(item_id="xyz789", provider_domain="qobuz", provider_instance="qobuz_1"),
         },
-        # both providers actually agree on the same MusicBrainz recording ID, just
-        # formatted differently (braces + uppercase vs bare lowercase) - this must
-        # still be recognized as the single, unambiguous identifier. Unlike a
-        # release-specific MB_TRACK, a recording MBID is safely shared across every
-        # release of the same performance, so it isn't subject to the same
-        # multi-domain provenance restriction.
+        # Equivalent MB_RECORDING values with different formatting still agree.
         external_ids={
             (ExternalID.MB_RECORDING, "a1b2c3d4-e5f6-7890-abcd-ef1234567890"),
             (ExternalID.MB_RECORDING, "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"),
@@ -1169,9 +1110,7 @@ def test_media_item_to_playlist_item_omits_multi_domain_mb_track() -> None:
             ),
             ProviderMapping(item_id="xyz789", provider_domain="qobuz", provider_instance="qobuz_1"),
         },
-        # external_ids merges whichever provider mapping happened to contribute a
-        # value, with no record of which one - even a single, unambiguous value
-        # cannot be tied to whichever mapping ends up chosen as the primary URI
+        # A merged MB_TRACK cannot be tied back to the chosen primary URI.
         external_ids={
             (ExternalID.MB_TRACK, "release-track-mbid"),
         },
@@ -1191,8 +1130,7 @@ def test_media_item_to_playlist_item_omits_multi_instance_same_domain_mb_track()
         name="Everything In Its Right Place",
         duration=240,
         provider_mappings={
-            # two separate accounts of the same streaming service - a single
-            # merged domain must not be mistaken for a single trusted catalog
+            # Same-domain sibling accounts are still separate sources.
             ProviderMapping(item_id="abc123", provider_domain="qobuz", provider_instance="qobuz_1"),
             ProviderMapping(item_id="xyz789", provider_domain="qobuz", provider_instance="qobuz_2"),
         },
@@ -1208,14 +1146,7 @@ def test_media_item_to_playlist_item_omits_multi_instance_same_domain_mb_track()
 
 
 def test_import_match_policy_reachability_new_vs_legacy_m3u() -> None:
-    """
-    EXACT is only reachable when the parsed M3U carries release-track evidence.
-
-    A new-format export with MB_TRACK reconstructs a track that reaches EXACT confidence
-    against a candidate sharing that release-track id, while a legacy M3U that only ever
-    carried an ISRC caps out at LIKELY (the SAME_RECORDING policy tier), even against a
-    candidate that would otherwise be a plausible substitute.
-    """
+    """Only M3U entries with MB_TRACK can reach EXACT match confidence."""
 
     class DummyProvider:
         def __init__(self, domain: str, instance_id: str) -> None:
@@ -1863,11 +1794,7 @@ async def test_fetch_playlist_client_error() -> None:
 
 @pytest.mark.asyncio
 async def test_fetch_playlist_error_status() -> None:
-    """
-    An error response is rejected instead of parsed.
-
-    Without the status check every markup line of the error page becomes an entry.
-    """
+    """An error response is rejected instead of being parsed as a playlist."""
     error_page = (
         b"<html>\n<head><title>404 Not Found</title></head>\n"
         b"<body>\n<center><h1>404 Not Found</h1></center>\n</body>\n</html>\n"
@@ -1931,8 +1858,7 @@ async def test_fetch_playlist_hls_master_playlist_always_raises() -> None:
 @pytest.mark.asyncio
 async def test_fetch_playlist_pls_by_extension(monkeypatch: pytest.MonkeyPatch) -> None:
     """A .pls url picks the PLS parser on the extension alone."""
-    # every real PLS body carries the marker too, so only a marker-free body can
-    # show which of the two conditions selected the parser
+    # Use marker-free content so the extension alone selects the parser.
     parsed = [PlaylistItem(path="http://stream.example.com/aac")]
     parse_pls_mock = MagicMock(return_value=parsed)
     monkeypatch.setattr(playlists, "parse_pls", parse_pls_mock)
@@ -1980,12 +1906,7 @@ async def test_fetch_playlist_empty() -> None:
 
 @pytest.mark.asyncio
 async def test_fetch_playlist_unknown_charset_falls_back_to_detection() -> None:
-    """
-    A charset the remote server made up must not break the fetch.
-
-    Stations do send names Python has no codec for, which decode() answers with a
-    LookupError that no caller on this path catches.
-    """
+    """An unknown declared charset falls back to content detection."""
     mass = _mass_serving(M3U_PLAYLIST.encode(), charset="utf8mb4")
 
     result = await fetch_playlist(mass, "http://example.com/station.m3u")

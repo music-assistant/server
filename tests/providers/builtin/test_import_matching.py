@@ -48,22 +48,16 @@ def _make_provider(
     """
     Create a minimal BuiltinProvider with a mocked mass.
 
-    :param loaded_provider_domains: Domains/instances that resolve to a loaded, available
-        provider.
-    :param unavailable_provider_domains: Domains/instances that resolve to a provider that
-        is configured but currently unavailable (only returned when ``return_unavailable``
-        is passed).
-    :param get_provider_item: Optional stub for the authoritative
-        ``mass.music.tracks.get_provider_item`` lookup; defaults to one that always
-        succeeds, as if the original track still resolves.
-    :param provider_entries: Optional explicit (domain, instance_id, available) entries, for
-        scenarios with several distinct instances of the same domain.
+    :param loaded_provider_domains: Domains or instances that resolve to an available provider.
+    :param unavailable_provider_domains: Domains or instances that resolve only when
+        ``return_unavailable`` is requested.
+    :param get_provider_item: Optional stub for ``mass.music.tracks.get_provider_item``.
+    :param provider_entries: Optional explicit ``(domain, instance_id, available)`` entries.
     """
     mass = MagicMock()
     loaded = loaded_provider_domains or set()
     unavailable = unavailable_provider_domains or set()
-    # a single shared registry so mass.get_provider, mass.providers and
-    # mass.get_provider_instances all agree on what is actually loaded
+    # Keep every mocked provider lookup backed by the same registry.
     registry = (
         [MagicMock(domain=pid, instance_id=pid, available=True) for pid in loaded]
         + [MagicMock(domain=pid, instance_id=pid, available=False) for pid in unavailable]
@@ -106,11 +100,7 @@ def _allowed(prov: BuiltinProvider, *instance_ids: str) -> tuple[tuple[str, str]
     """
     Build an allowed-instances snapshot for the given instance ids.
 
-    The domain for each id is taken from the provider's mocked registry when it is
-    present there (loaded or unavailable); an id deliberately absent from the registry,
-    simulating one that is configured but did not load at all, keeps its own string as
-    a stand-in domain, which is fine since none of those tests exercise domain-only
-    expansion.
+    Missing registry entries keep their own ID as a stand-in domain.
     """
     domains = {provider.instance_id: provider.domain for provider in prov.mass.providers}
     return tuple(
@@ -190,8 +180,7 @@ def _prepare(prov: BuiltinProvider, m3u_data: str, playlist_name: str = "Importe
     prov_any._read_m3u_file = AsyncMock(return_value=m3u_data)
     prov_any.get_playlist = AsyncMock(return_value=_make_playlist(playlist_name))
     prov_any._write_m3u_file = AsyncMock()
-    # a stable dummy generation: the playlist is the same file throughout the pass
-    # unless a test overrides this to simulate a delete-and-recreate race
+    # Stable default generation unless a test simulates a recreate race.
     prov_any._get_playlist_generation = AsyncMock(return_value=1)
     return prov_any
 
@@ -224,12 +213,7 @@ async def test_import_playlist_preserves_playlist_image() -> None:
 
 
 async def test_import_playlist_never_exposes_empty_intermediate_file() -> None:
-    """
-    An imported playlist's file must appear on disk already fully populated.
-
-    A concurrent add/remove on the same (predictable) id must never be able to
-    observe or race an intermediate empty file between creation and population.
-    """
+    """Imported playlists are written once, never via an empty intermediate file."""
     prov = _make_provider()
     prov_any = cast("Any", prov)
     prov_any._playlists_dir = "stubbed-playlists-dir"
@@ -262,22 +246,13 @@ async def test_import_playlist_never_exposes_empty_intermediate_file() -> None:
         )
         await prov.import_playlist(m3u_data)
 
-    # the file must be written exactly once, and that single write must already
-    # contain the imported track - never an empty file followed by a second,
-    # separately-locked write that a concurrent add/remove could race against
+    # The single write must already contain the imported track.
     assert len(writes) == 1
     assert "abc123" in writes[0]
 
 
 async def test_reserve_playlist_file_waits_for_in_flight_edit_on_same_id() -> None:
-    """
-    A create/import reusing an id must wait for an in-flight edit already holding it.
-
-    Without also taking that same per-playlist edit lock, a create/import could run
-    to completion entirely while a slow add is still resolving new tracks - so once
-    that add finally writes back the entries it built before the create/import ever
-    happened, it would clobber the freshly (re)created file.
-    """
+    """A create or import waits for an in-flight edit on the same playlist ID."""
     prov = _make_provider()
     prov_any = cast("Any", prov)
     prov_any._playlists_dir = "stubbed-playlists-dir"
@@ -311,7 +286,7 @@ async def test_reserve_playlist_file_waits_for_in_flight_edit_on_same_id() -> No
     add_task = asyncio.ensure_future(run_add())
     reserve_task = asyncio.ensure_future(run_reserve())
     await add_resolving.wait()
-    # give reserve every chance to run ahead if it were not actually blocked
+    # Give reserve every chance to run ahead if it is not blocked.
     for _ in range(5):
         await asyncio.sleep(0)
     assert prov_any._write_m3u_file_locked.await_count == 0
@@ -320,8 +295,7 @@ async def test_reserve_playlist_file_waits_for_in_flight_edit_on_same_id() -> No
     await add_task
     await reserve_task
 
-    # the in-flight add must fully finish (and release the lock) before the
-    # create/import reusing its id is allowed to proceed
+    # The in-flight add must release the lock before reserve can proceed.
     assert order == ["add", "reserve"]
 
 
@@ -399,9 +373,7 @@ async def test_bare_uri_without_extprov_is_recognized_as_available() -> None:
             "playlist_1", 1, PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "spotify", "qobuz--1")
         )
 
-    # written back once so the entry keeps resolving to a provider mapping on future
-    # loads too, since a bare URI with no #EXTPROV can otherwise never attach one -
-    # it is still counted and reported as retained though, not as a substitution
+    # Persist the confirmed mapping, but still count the entry as retained.
     prov_any._write_m3u_file.assert_awaited_once()
     written_items = prov_any._write_m3u_file.await_args.args[2]
     assert len(written_items) == 1
@@ -424,8 +396,7 @@ async def test_share_url_without_extprov_is_persisted_as_provider_mapping() -> N
             "playlist_1", 1, PlaylistMatchPolicy.BEST_EFFORT, _allowed(prov, "spotify", "qobuz--1")
         )
 
-    # written back so the entry resolves through Spotify on future loads too, instead
-    # of reconstructing as an unplayable raw builtin web URL
+    # Persist the resolved provider mapping for future loads.
     prov_any._write_m3u_file.assert_awaited_once()
     written_items = prov_any._write_m3u_file.await_args.args[2]
     assert len(written_items) == 1
@@ -444,8 +415,7 @@ async def test_transient_stream_failure_retains_original_without_confirmation() 
     )
     item = PlaylistItem(path="https://example.com/stream.mp3", title="Live Stream", length=None)
     prov_any = _prepare(prov, generate_m3u("Imported", [item]))
-    # a 500 response does not prove the stream is gone - ffprobe wraps both a
-    # transient server error and a genuinely dead stream in the same error
+    # A 500 does not prove the stream is gone.
     prov_any.mass.http_session.head = MagicMock(return_value=_FakeHttpResponse(500))
 
     with patch("music_assistant.providers.builtin.set_current_task_report") as set_report:
@@ -493,8 +463,7 @@ async def test_transient_source_failure_is_not_reprobed_per_entry() -> None:
             _allowed(prov, "builtin", "spotify_1"),
         )
 
-    # the second entry's identical failing instance is skipped outright, sparing it
-    # a second timeout rather than probing (and failing) it again
+    # The second entry skips the same transiently failing instance.
     assert get_provider_item.await_count == 1
     prov_any.mass.music.tracks.enrich_provider_mappings.assert_not_called()
     prov_any._write_m3u_file.assert_not_awaited()
@@ -512,13 +481,11 @@ async def test_domain_only_reference_tries_next_sibling_when_one_is_unavailable(
     )
     prov = _make_provider(
         loaded_provider_domains={"builtin"},
-        # spotify_1 is configured but currently down; spotify_2 is a healthy
-        # sibling account of the very same domain and should still get a chance
+        # spotify_2 should still be tried even if spotify_1 is down.
         provider_entries=[("spotify", "spotify_1", False), ("spotify", "spotify_2", True)],
         get_provider_item=AsyncMock(return_value=hydrated),
     )
-    # a domain-only reference (no pinned instance id) is what triggers the
-    # same-domain sibling widening in the first place
+    # A domain-only reference triggers same-domain sibling widening.
     item = _make_playlist_item(
         path="spotify://track/track_one",
         title="Artist - Song",
@@ -534,9 +501,7 @@ async def test_domain_only_reference_tries_next_sibling_when_one_is_unavailable(
             _allowed(prov, "builtin", "spotify_1", "spotify_2"),
         )
 
-    # the healthy sibling confirmed the item is still there, so it must be
-    # retained and normalized to that instance - never substituted just because
-    # a different sibling account happened to be down
+    # The healthy sibling keeps the entry retained and normalized to that instance.
     prov_any.mass.music.tracks.enrich_provider_mappings.assert_not_called()
     prov_any._write_m3u_file.assert_awaited_once()
     written_items = prov_any._write_m3u_file.await_args.args[2]
@@ -2261,15 +2226,7 @@ async def test_concurrent_deletion_during_matching_is_reflected_in_report() -> N
 
 
 async def test_match_aborts_when_scheduled_generation_already_stale() -> None:
-    """
-    A task whose target was deleted and recreated before it even started is a no-op.
-
-    Unlike the mid-pass recreate races below, here the recreate is already complete
-    by the time this call starts - simulating a task that sat queued behind the
-    tasks controller's concurrency limit long enough for that to happen. The very
-    first generation read must already disagree with what the task was scheduled
-    for, so no substitute is even searched.
-    """
+    """A task is skipped if its target playlist was recreated before it started."""
     prov = _make_provider()
     to_match = _make_playlist_item(
         path="spotify:track:original",
@@ -2278,8 +2235,7 @@ async def test_match_aborts_when_scheduled_generation_already_stale() -> None:
     )
     m3u_data = generate_m3u("Imported", [to_match])
     prov_any = _prepare(prov, m3u_data)
-    # the playlist under this id is already on generation 2 by the time this call
-    # starts - the task was scheduled for generation 1 and sat queued too long
+    # The task was queued for generation 1, but the playlist is already on 2.
     prov_any._get_playlist_generation = AsyncMock(return_value=2)
     prov_any.mass.music.tracks.enrich_provider_mappings = AsyncMock()
 
@@ -2301,10 +2257,7 @@ async def test_playlist_deleted_and_recreated_during_matching_is_not_overwritten
     )
     m3u_data = generate_m3u("Imported", [to_match])
     prov_any = _prepare(prov, m3u_data)
-    # the original playlist was deleted and a new, unrelated playlist was created that
-    # reused the same sanitized ID while this (possibly long-running) pass was still
-    # searching - even though its content happens to look identical, its creation
-    # generation (captured once at the start of the pass) is now different
+    # The reused ID now points to a different playlist generation.
     prov_any._get_playlist_generation = AsyncMock(side_effect=[1, 2])
 
     matched_track = _make_track(
@@ -2341,15 +2294,7 @@ async def test_playlist_deleted_and_recreated_during_matching_is_not_overwritten
 
 
 async def test_match_discards_substitution_when_recreated_between_read_and_capture() -> None:
-    """
-    A recreate landing between the M3U read and generation capture is still caught.
-
-    The initial read and the generation capture happen under the same per-playlist lock
-    that ``library_remove`` takes before unlinking a playlist's file, so a concurrent
-    recreate can only complete *after* that pair has been captured together - closing the
-    narrower race where old content could otherwise be paired with a fresh generation and
-    incorrectly accepted by the write-back check.
-    """
+    """A recreate between read and write-back generation checks is still caught."""
     prov = _make_provider()
     prov_playlist_id = "playlist_1"
     to_match = _make_playlist_item(
@@ -2367,8 +2312,7 @@ async def test_match_discards_substitution_when_recreated_between_read_and_captu
 
     async def read_m3u(_playlist_id: str) -> str:
         content_read.set()
-        # yield control so the concurrent recreate below gets a chance to attempt the
-        # per-playlist lock before this pass's own generation capture happens
+        # Let the concurrent recreate queue for the same playlist lock.
         await asyncio.sleep(0)
         return m3u_data
 
@@ -2376,18 +2320,14 @@ async def test_match_discards_substitution_when_recreated_between_read_and_captu
         nonlocal generation_calls
         generation_calls += 1
         if generation_calls == 2:
-            # this is the write-back's final check - wait for the concurrent recreate
-            # to actually finish so this reads its bumped value deterministically,
-            # rather than depending on incidental task-scheduling order
+            # Wait for the recreate so the final generation check is deterministic.
             await recreated.wait()
         return generation
 
     async def race_recreate() -> None:
         nonlocal generation
         await content_read.wait()
-        # mirrors library_remove, which takes this same per-playlist lock before
-        # unlinking the file - it can only proceed once the read+capture pair below
-        # releases the lock
+        # The recreate must wait for the read-and-capture lock to be released.
         async with prov._get_playlist_lock(prov_playlist_id):
             generation += 1
         recreated.set()
@@ -2424,12 +2364,10 @@ async def test_match_discards_substitution_when_recreated_between_read_and_captu
         )
     await race_task
 
-    # the recreate genuinely raced in and completed - this isn't passing by mere
-    # absence of contention
+    # The recreate actually completed during the test.
     assert recreated.is_set()
     assert generation == 2
-    # the substitution was matched against the pre-recreate content, so it must be
-    # discarded rather than written into the recreated playlist
+    # The stale substitution must not be written into the recreated playlist.
     prov_any._write_m3u_file.assert_not_awaited()
     report_markdown = set_report.call_args.args[0]
     assert "| Skipped (playlist changed during matching) | 1 |" in report_markdown
@@ -2437,15 +2375,7 @@ async def test_match_discards_substitution_when_recreated_between_read_and_captu
 
 
 async def test_create_playlist_generation_survives_inode_reuse(tmp_path: Path) -> None:
-    """
-    A recreate under the same ID gets a new generation, even with the same inode.
-
-    The generation counter is an in-memory value bumped by ``create_playlist``, not a
-    filesystem fingerprint, so it stays reliable even when a delete followed by a
-    same-path create happens to have the filesystem reuse the just-freed inode number -
-    a scenario this test does not need to force, since the implementation never reads
-    inode/device information in the first place.
-    """
+    """Recreating a playlist still bumps its generation, regardless of inode reuse."""
     prov = _make_provider()
     prov_any = cast("Any", prov)
     prov_any._playlists_dir = str(tmp_path)

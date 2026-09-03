@@ -70,10 +70,7 @@ _FEATURED_ARTIST_SPLITTER = re.compile(
     r"\s*(?:,|&|\+|\band\b|\bwith\b)\s*",
     re.IGNORECASE,
 )
-# a comma unambiguously joins a list of independent artist names, unlike an ampersand,
-# "and", or "with", which are just as likely to be part of an official act's own name
-# (e.g. "Earth, Wind & Fire", "Simon & Garfunkel") - used only as a conservative
-# fallback for a structured artist credit, never for a title-embedded feature credit
+# Split structured artist lists conservatively; '&' and 'with' often belong to band names.
 _ARTIST_LIST_SPLITTER = re.compile(r"\s*,\s*")
 
 # retail suffixes a provider (notably Apple Music) appends to an EP/single title.
@@ -126,11 +123,7 @@ class TrackMatchConfidence(IntEnum):
     EXACT = 3
 
 
-# EXACT requires release-track evidence (e.g. a MusicBrainz track/release ID) pinning a
-# specific release, not just the underlying recording. M3U playlists exported by a current
-# Music Assistant persist this evidence when the source track carries it, so imports of
-# those files can reach EXACT; legacy or third-party M3U files typically only carry an ISRC
-# or recording ID and cap out at SAME_RECORDING or BEST_EFFORT.
+# EXACT needs release-level evidence; looser policies accept recording-level matches.
 _MATCH_POLICY_MINIMUM_CONFIDENCE: Final[dict[PlaylistMatchPolicy, TrackMatchConfidence]] = {
     PlaylistMatchPolicy.EXACT: TrackMatchConfidence.EXACT,
     PlaylistMatchPolicy.SAME_RECORDING: TrackMatchConfidence.LIKELY,
@@ -516,13 +509,7 @@ def _same_instance_item_match(
     """
     Return whether two items share the same provider instance and item id.
 
-    Unlike ``compare_item_ids``, this never widens the identity match across sibling
-    instances of the same domain. A shared item id there only proves catalog identity
-    for a genuinely portable (streaming) provider - for a non-streaming one (e.g.
-    filesystem), each instance mints its own local ids, so an id collision is
-    coincidence, not evidence. Confidence tiers built from this check have no way to
-    tell portable domains from non-portable ones here, so they only trust the
-    unambiguous case: the very same provider instance.
+    Unlike ``compare_item_ids``, this does not widen across sibling instances.
     """
     if not base_item.provider or not compare_item.provider:
         return False
@@ -554,11 +541,8 @@ def _same_album(
     """
     Return whether two album references used as track evidence are the same album.
 
-    Mirrors ``compare_album(strict=False)`` but never widens shared-item-id identity
-    across sibling instances of a non-streaming provider domain - see
-    ``_same_instance_item_match`` - since a track's album is independently hydrated
-    per instance, and two unrelated albums on different non-streaming instances can
-    otherwise coincidentally share an id.
+    Unlike ``compare_album(strict=False)``, this does not widen across sibling
+    instances of non-streaming domains.
     """
     if base_album is None or compare_album_item is None:
         return False
@@ -579,11 +563,7 @@ def _album_has_authoritative_release_evidence(
     """
     Return whether two album references share decisive, release-level evidence.
 
-    Mirrors the external ids ``compare_album_evidence`` already treats as decisive on
-    their own (a shared item identity, or a MusicBrainz release id, Discogs, or
-    TheAudioDB match) - as opposed to a barcode/ASIN, which is shared across pressings
-    and only ever corroborates an otherwise ambiguous edition, never release identity
-    by itself.
+    Barcode and ASIN matches do not qualify on their own.
     """
     if base_album is None or compare_album_item is None:
         return False
@@ -661,10 +641,7 @@ def compare_track_evidence(
         and versions_match
         and _same_album_position_matches(base_item, compare_item)
     ):
-        # metadata agreement alone (title/artists/version/position on a nominally
-        # matching album) is provider drift risk, not proof of the same recording;
-        # only decisive release-level evidence earns EXACT here, otherwise this is
-        # still strong corroboration but only to LIKELY
+        # Matching metadata on the same album is only EXACT with release-level evidence.
         return (
             TrackMatchConfidence.EXACT
             if _album_has_authoritative_release_evidence(base_album, compare_album_item)
@@ -703,8 +680,7 @@ def compare_track_evidence(
     if _track_durations_match(base_item, compare_item, _LOOSE_TRACK_DURATION_TOLERANCE):
         return TrackMatchConfidence.LOOSE
     if not _track_durations_conflict(base_item, compare_item, _LOOSE_TRACK_DURATION_TOLERANCE):
-        # title and artist already matched above; a duration that is merely unknown on
-        # one side (e.g. an M3U entry with no #EXTINF length) isn't evidence against it
+        # Unknown duration on one side is not evidence against the match.
         return TrackMatchConfidence.LOOSE
     return TrackMatchConfidence.NO_MATCH
 
@@ -1229,12 +1205,7 @@ def _track_artist_credits_match(base_track: Track, compare_track: Track) -> bool
     """Return whether credited artists agree or one provider omitted credits."""
     if not base_track.artists or not compare_track.artists:
         return False
-    # deliberately not gated on compare_artists: an exact per-artist match there
-    # only proves one credited artist is shared, which the primary-artist check
-    # below already treats as insufficient on its own - the credit-group coverage
-    # comparison is the one that must decide, so it must always run rather than
-    # being preempted by a list-level comparison that splits composite credits
-    # (e.g. "Artist A, Artist B" reconstructed as one M3U artist) differently
+    # Always compare full credit groups; list-level artist matches are too weak here.
     base_credits, base_list_groups = _track_artist_credit_groups(base_track)
     compare_credits, compare_list_groups = _track_artist_credit_groups(compare_track)
     if not (
@@ -1242,9 +1213,7 @@ def _track_artist_credits_match(base_track: Track, compare_track: Track) -> bool
         or _artist_credit_groups_cover(compare_credits, base_credits, compare_list_groups)
     ):
         return False
-    # a shared featured artist alone is not enough to accept the match: each side's
-    # own primary artist must also be represented on the other side, or an unrelated
-    # track that merely happens to share a featured/guest artist could be substituted
+    # Shared featured artists are not enough without matching primary artists.
     return _artist_credited(base_track.artists[0].name, compare_credits) and _artist_credited(
         compare_track.artists[0].name, base_credits
     )
@@ -1256,10 +1225,7 @@ def _track_artist_credit_groups(
     """
     Return normalized structured and title-embedded artist credits.
 
-    Also returns a per-structured-credit comma-only decomposition, keyed by its
-    normal (full-splitter) group, for ``_artist_credit_groups_cover``'s conservative
-    multi-artist fallback - a title-embedded feature credit needs no such entry, since
-    it only ever uses the full splitter it was already extracted with.
+    Also returns comma-only splits for structured credits used by the coverage fallback.
     """
     artist_credits: set[frozenset[str]] = set()
     list_groups: dict[frozenset[str], frozenset[str]] = {}
@@ -1298,12 +1264,8 @@ def _artist_credit_groups_cover(
     """
     Return whether target credits contain every complete source credit.
 
-    A multi-artist source credit with no matching combined group among the targets
-    can still be considered covered when every one of its components is separately
-    credited there - using ``source_list_groups``'s comma-only decomposition for that
-    fallback where available, instead of the same full splitter used for the direct
-    equality check just above, so that an official act's own name is never mistaken
-    for a list of unrelated artists that happen to share its individual words.
+    A combined source credit can also match when all of its comma-split members are
+    credited separately.
     """
     target_singletons = {next(iter(group)) for group in target_groups if len(group) == 1}
     for group in source_groups:
@@ -1321,9 +1283,7 @@ def _artist_credited(name: str, credit_groups: set[frozenset[str]]) -> bool:
     key = _artist_credit_key(name)
     if any(key in group for group in credit_groups):
         return True
-    # a composite band name (e.g. "Simon & Garfunkel") splits into several credited
-    # components; it is still represented when the credits carry that same combined
-    # group, or every one of its components separately
+    # Composite band names still count if their group, or all comma-split parts, appear.
     own_group = _artist_credit_group(name)
     own_list_group = _artist_credit_list_group(name)
     return len(own_group) > 1 and _artist_credit_groups_cover(

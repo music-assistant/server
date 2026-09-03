@@ -218,13 +218,10 @@ def test_with_handling_in_titles() -> None:
         ("Great Song - with John Smith (Duet)", ("John Smith",)),
         ("Rockin' Around (With You)", ()),
         ("The Catastrophe (Good Luck with That Man)", ()),
-        # an arbitrary title continuation starting with a title word, not just
-        # one of the specific known song titles, must still be protected -
-        # matching the whole credit against a fixed phrase list would strip it
+        # Title-word exceptions must protect arbitrary continuations too.
         ("Example Song (With You Tonight)", ()),
         ("Great Song (feat:Alice)", ("Alice",)),
-        # a bare credit marker with no title text before it is part of the title
-        # itself, not an actual credit annotation
+        # Bare leading markers are part of the title, not a credit.
         ("Featuring Alice", ()),
         ("Featuring Bob", ()),
         ("Ft Bob", ()),
@@ -257,7 +254,7 @@ def test_bare_credit_marker_without_leading_title_is_not_stripped() -> None:
         "Featuring Alice",
         strip_for_search=True,
     ) == ("Featuring Alice", "")
-    # two different such titles must not normalize to the same (empty) search title
+    # Distinct leading-marker titles must stay distinct after normalization.
     assert util.parse_title_and_version(
         "Featuring Bob",
         strip_for_search=True,
@@ -305,13 +302,10 @@ async def test_uri_parsing() -> None:
     # test invalid uri
     with pytest.raises(MusicAssistantError):
         await uri.parse_uri("invalid://blah")
-    # test truncated public share url (no path segments to parse out)
     with pytest.raises(MusicAssistantError):
         await uri.parse_uri("https://open.spotify.com")
-    # test truncated public share url with a trailing slash (empty id segment)
     with pytest.raises(MusicAssistantError):
         await uri.parse_uri("https://open.spotify.com/track/")
-    # test truncated Tidal browse url with a trailing slash (empty id segment)
     with pytest.raises(MusicAssistantError):
         await uri.parse_uri("https://tidal.com/browse/track/")
 

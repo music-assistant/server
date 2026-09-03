@@ -416,12 +416,7 @@ async def test_match_confidence_hydrates_album_after_initial_no_match(
 async def test_matches_compatible_reuses_hydrated_album_evidence(
     music: MusicController,
 ) -> None:
-    """
-    Two independently EXACT candidates are compatible via reused album evidence.
-
-    Neither is treated as ambiguous against the other for lacking that same
-    evidence in their raw (unhydrated) track.album references.
-    """
+    """Hydrated album evidence is reused when comparing EXACT candidates."""
     base = create_track("spotify_1", "base", duration=200)
     qobuz_candidate = create_track("qobuz_1", "candidate-q", duration=210)
     deezer_candidate = create_track("deezer_1", "candidate-d", duration=210)
@@ -473,10 +468,7 @@ async def test_matches_compatible_reuses_hydrated_album_evidence(
         album=deezer_match_album,
     )
 
-    # both candidates are the authoritative release on the base track, so they
-    # must also compare as compatible with each other - without the hydrated
-    # album evidence, the tracks' raw (unhydrated) `.album` references alone
-    # cannot prove this and would be falsely reported ambiguous
+    # Reused album evidence keeps the two EXACT candidates compatible.
     assert music.tracks._matches_are_compatible(
         [qobuz_match, deezer_match], TrackMatchConfidence.EXACT
     )
@@ -586,8 +578,7 @@ async def test_full_track_album_domain_reference_expands_past_incidentally_allow
     """A domain reference keeps expanding even when it happens to resolve to an allowed instance."""
     track = create_track("spotify_1", "track")
     track.album = ItemMapping(
-        # a domain, not an instance id - the registry happens to resolve it to an
-        # instance that is itself allowed, which must not stop expansion to siblings
+        # This is a domain reference, so sibling expansion must still happen.
         item_id="album",
         provider="qobuz",
         name="Album",
@@ -609,8 +600,7 @@ async def test_full_track_album_domain_reference_expands_past_incidentally_allow
         _item_id: str, instance_id: str, **_kwargs: Any
     ) -> Album:
         if instance_id == "qobuz_1":
-            # this account no longer has the album - qobuz_2 must still be tried
-            # even though qobuz_1 was itself an allowed instance
+            # A miss on qobuz_1 must not stop qobuz_2 from being tried.
             raise MediaNotFoundError("gone")
         return album
 
@@ -654,8 +644,7 @@ async def test_full_track_album_domain_only_falls_back_after_instance_failure(
     qobuz_3 = MagicMock(spec=MusicProvider)
     qobuz_3.instance_id = "qobuz_3"
     qobuz_3.domain = "qobuz"
-    # the bare "qobuz" domain resolves to an instance the user is not allowed to
-    # use, forcing expansion across the allowed instances of that same domain
+    # The bare domain resolves to a disallowed instance, so allowed siblings must be tried.
     providers = {"qobuz": qobuz_3, "qobuz_1": qobuz_1, "qobuz_2": qobuz_2, "qobuz_3": qobuz_3}
     album = create_album("qobuz_2", "album", name="Album")
 
@@ -664,8 +653,7 @@ async def test_full_track_album_domain_only_falls_back_after_instance_failure(
 
     async def albums_get_side_effect(_item_id: str, instance_id: str, **_kwargs: Any) -> Album:
         if instance_id == "qobuz_1":
-            # this account no longer has the album - a sibling instance must still
-            # be tried instead of falling back to the unhydrated mapping right away
+            # A miss on qobuz_1 must still allow a sibling lookup.
             raise MediaNotFoundError("gone")
         return album
 
@@ -693,9 +681,7 @@ async def test_full_track_album_domain_reference_does_not_expand_for_non_streami
     """A non-streaming domain's ids are instance-local, so siblings must not be tried."""
     track = create_track("spotify_1", "track")
     track.album = ItemMapping(
-        # a domain, not an instance id - filesystem item ids are only meaningful
-        # within the instance that minted them, so a same-domain sibling with a
-        # coincidentally-matching id must never be trusted as the same album
+        # Filesystem item IDs are instance-local, so siblings must not be tried.
         item_id="album",
         provider="filesystem",
         name="Album",
@@ -899,8 +885,7 @@ async def test_library_mapping_does_not_preempt_exact_provider_search(
     assert result.match is not None
     assert result.match.track.item_id == "exact"
     assert result.match.confidence == TrackMatchConfidence.EXACT
-    # the second artist-credit query still runs and fails transiently, but the
-    # already-found exact candidate is kept rather than raising
+    # A later query failure must not discard the earlier EXACT match.
     assert search_provider.await_count == 2
 
 
@@ -1080,9 +1065,7 @@ async def test_find_provider_match_skips_known_dead_search_result(
     )
     base = create_track("spotify_1", "base", isrc="USRC17607839")
     base.external_ids.add(mb_track)
-    # this search result carries the exact (instance, item id) a caller already
-    # authoritatively confirmed dead moments ago - a stale cached hit must not
-    # resurrect it as a confident substitute
+    # A caller-confirmed dead mapping must not be revived by a stale search hit.
     dead = create_track("qobuz_1", "dead", isrc="USRC17607839")
     dead.external_ids.add(mb_track)
     provider = MagicMock()
@@ -1154,8 +1137,7 @@ async def test_find_provider_match_checks_every_artist_credit_query(
                 }[item_id]
             ),
         ),
-        # both candidates independently tie the base track at EXACT confidence, so a
-        # single artist-credit query must not decide the outcome on its own
+        # One artist-credit query alone must not decide between tied EXACT candidates.
         patch.object(
             music.tracks,
             "_get_match_confidence",
@@ -1240,14 +1222,7 @@ async def test_find_provider_match_keeps_fallback_after_later_timeout(
 async def test_find_provider_match_raises_on_later_hydration_failure(
     music: MusicController,
 ) -> None:
-    """
-    A hydration failure mid-loop must propagate rather than silently truncate.
-
-    Unlike a search-request failure (which only loses queries not yet attempted),
-    a failed hydration still leaves unseen candidates - possibly stronger or
-    ambiguity-triggering ones - among the already-fetched search results, so an
-    already-accepted candidate must not be returned as if evaluation completed.
-    """
+    """Mid-loop hydration failures propagate instead of truncating candidate evaluation."""
     base = create_track("spotify_1", "base")
     candidate = create_track("qobuz_1", "candidate")
     failing_candidate = create_track("qobuz_1", "failing")
@@ -2376,9 +2351,7 @@ async def test_enrich_provider_mappings_accepts_stronger_match_despite_weaker_ti
 ) -> None:
     """A confident, strictly stronger match is accepted despite a weaker unresolved tie."""
     source = create_track("spotify_1", "source")
-    # qobuz's own candidates only tied ambiguously at LOOSE, which is weaker evidence
-    # than deezer's confident EXACT match - the stronger, uncontested match should
-    # still be trusted since it isn't the tier that was actually left unresolved
+    # A weaker unresolved tier must not block a stronger uncontested match.
     deezer_track = create_track("deezer_1", "deezer-track")
     deezer_mapping = next(iter(deezer_track.provider_mappings))
     qobuz_provider = MagicMock(spec=MusicProvider)
@@ -2445,8 +2418,7 @@ async def test_enrich_provider_mappings_prefers_higher_confidence_over_visitatio
 ) -> None:
     """A later provider's stronger match wins over an earlier, weaker, conflicting one."""
     source = create_track("spotify_1", "source")
-    # "aaa" is visited first (alphabetically) but only ties at LOOSE, while the
-    # conflicting "zzz" match is visited later yet is a much stronger EXACT hit
+    # Visitation order must not outrank match confidence.
     loose_track = create_track("aaa_1", "loose-track", isrc="LOOSE")
     loose_track.metadata.explicit = True
     loose_mapping = next(iter(loose_track.provider_mappings))
@@ -2519,14 +2491,14 @@ async def test_enrich_provider_mappings_stops_at_ambiguous_top_tier(
 ) -> None:
     """A conflicting top tier blocks a weaker, otherwise-clean, tier from being accepted."""
     source = create_track("spotify_1", "source")
-    # qobuz and deezer tie at the strongest tier (EXACT) but disagree with each other
+    # Qobuz and Deezer disagree at the strongest tier.
     qobuz_track = create_track("qobuz_1", "qobuz-track", isrc="QOBUZ")
     qobuz_track.metadata.explicit = True
     qobuz_mapping = next(iter(qobuz_track.provider_mappings))
     deezer_track = create_track("deezer_1", "deezer-track", isrc="DEEZER")
     deezer_track.metadata.explicit = False
     deezer_mapping = next(iter(deezer_track.provider_mappings))
-    # aaa is a single, internally-consistent match, but only at a weaker tier (LIKELY)
+    # Aaa is clean, but only at a weaker tier.
     aaa_track = create_track("aaa_1", "aaa-track", isrc="AAA")
     aaa_mapping = next(iter(aaa_track.provider_mappings))
     qobuz_provider = MagicMock(spec=MusicProvider)
@@ -2595,8 +2567,7 @@ async def test_enrich_provider_mappings_stops_at_ambiguous_top_tier(
             provider_instance_ids={"qobuz_1", "deezer_1", "aaa_1"},
         )
 
-    # the conflicting EXACT tier can't be resolved, and a weaker LIKELY match doesn't
-    # settle which EXACT candidate was right - it must not be substituted in instead
+    # A weaker LIKELY match cannot break an unresolved EXACT tie.
     assert result.matches == ()
     assert set(result.ambiguous_providers) == {"Qobuz", "Deezer"}
     assert "Aaa" not in result.ambiguous_providers
@@ -2895,13 +2866,7 @@ def test_get_provider_mapping_breaks_quality_ties_deterministically() -> None:
 
 
 def test_get_provider_mapping_non_streaming_default_is_unique() -> None:
-    """
-    A mapping with unset ``is_unique`` from a non-streaming provider is not expanded.
-
-    ``is_unique=None`` means "use the provider's default", and non-streaming
-    providers (filesystem, plex) default to instance-unique - the same effective
-    uniqueness rule ``MusicProvider._check_provider_mappings`` already applies.
-    """
+    """Unset ``is_unique`` stays instance-unique for non-streaming providers."""
     provider = MagicMock(spec=MusicProvider)
     provider.instance_id = "filesystem_2"
     provider.domain = "filesystem"
@@ -2919,8 +2884,7 @@ def test_get_provider_mapping_non_streaming_default_is_unique() -> None:
 
     resolved = TracksController._get_provider_mapping(track, provider)
 
-    # this instance's own filesystem library has no mapping for this track - a
-    # sibling instance's mapping must not be reused as if it were portable
+    # A sibling filesystem mapping must not be reused as portable.
     assert resolved is None
 
 
