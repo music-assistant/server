@@ -1560,8 +1560,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # a user-picked item must stay the one that plays, so hold it out of the shuffle
             pinned = next_items[:1] if pin_first else []
             shuffled = next_items[1:] if pin_first else next_items
+            # Keep MA's protected part of the queue fixed. Only the future part MA
+            # already considers safe to move should be reordered.
+            preceding_item = pinned[-1] if pinned else (prev_items[-1] if prev_items else None)
             if self._smart_shuffle.is_enabled(queue_id):
-                shuffled = await self._smart_shuffle.arrange(queue, shuffled)
+                shuffled = await self._smart_shuffle.arrange(
+                    queue, shuffled, preceding_item=preceding_item
+                )
             else:
                 shuffled = random.sample(shuffled, len(shuffled))
             next_items = pinned + shuffled
@@ -1656,6 +1661,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Return the configured recency windows (a global setting; used for recency-aware gating)."""
         return self._smart_shuffle.windows()
 
+    def smart_fade_ordering_enabled(self, queue: PlayerQueue) -> bool:
+        """Return whether Smart Fades-aware ordering should run for the queue."""
+        if not queue.smart_fades_active:
+            return False
+        return self._smart_shuffle.is_smart_fade_ordering_enabled(queue)
+
     async def player_media_from_queue_item(self, queue_item: QueueItem) -> PlayerMedia:
         """
         Parse PlayerMedia from QueueItem.
@@ -1728,6 +1739,39 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 continue
             return next_item
         return None
+
+    def is_current_window_item(self, queue_id: str, queue_item_id: str) -> bool:
+        """
+        Return whether the item sits at or right around the queue's playhead.
+
+        Players that play upcoming tracks from a cached copy of the queue use this to
+        verify a requested item is still the previous, current, buffered or expected
+        next track.
+
+        :param queue_id: The queue to check against.
+        :param queue_item_id: The queue item id the player asked for.
+        """
+        queue = self.get(queue_id)
+        if queue is None:
+            return False
+        item_index = self.index_by_id(queue_id, queue_item_id)
+        if item_index is None:
+            return False
+        for center in (queue.current_index, queue.index_in_buffer):
+            if center is None:
+                continue
+            if item_index in (center - 1, center):
+                return True
+        if queue.current_index is None:
+            return False
+        # get_next_item accounts for repeat mode and unavailable items, so this is the
+        # item that will really play next rather than whatever sits at the next index.
+        # The expected next is measured from the PLAYING track only: with crossfade,
+        # index_in_buffer already sits on the next track while it preloads for the fade,
+        # and one more hop from there would admit the very stale item this check exists
+        # to refuse
+        next_item = self.get_next_item(queue_id, queue.current_index)
+        return next_item is not None and next_item.queue_item_id == queue_item_id
 
     def store_sources(self, queue: PlayerQueue, items: list[MediaItemType]) -> None:
         """

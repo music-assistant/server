@@ -132,6 +132,10 @@ class TransitionContext:
     vocal_in_scoring: VocalMask | None
     natural_entry: float
     protective_downbeats: tuple[float, ...]
+    # False when both decks read near-continuous vocal over the boundary: such
+    # masks carry no structure to plan around (every candidate would collide),
+    # so collision-based decisions must abstain rather than veto everything
+    vocal_collision_reliable: bool = True
 
 
 def build_transition_context(
@@ -222,6 +226,23 @@ def build_transition_context(
             fade_out_analysis, fade_in_analysis, outgoing, incoming, buffer_offset, audio_end
         )
     )
+    # a saturated pair is either a detector false positive or material where no
+    # placement avoids the overlap anyway; either way the guard has nothing to
+    # discriminate on and vetoing every candidate would only degrade the fade.
+    # The head span follows the incoming track when it is shorter than the
+    # buffered head, so a short track's wall-to-wall mask still reads saturated
+    head_span = min(
+        float(SMART_CROSSFADE_DURATION),
+        fade_in_analysis.duration or float(SMART_CROSSFADE_DURATION),
+    )
+    vocal_collision_reliable = not (
+        vocal_out_placement is not None
+        and vocal_in_placement is not None
+        and mask_saturated(vocal_out_placement, audio_end)
+        and mask_saturated(vocal_in_placement, head_span)
+    )
+    if not vocal_collision_reliable:
+        logger.debug("both decks read near-continuous vocal; the collision guard abstains")
 
     # the tier reads the kick-folded anchor (the old planner's effective_end),
     # never the pure full-band mix_out_anchor: a kick-timed track's blendability
@@ -311,6 +332,7 @@ def build_transition_context(
         vocal_in_scoring=vocal_in_scoring,
         natural_entry=natural_entry,
         protective_downbeats=tuple(float(x) for x in protective_downbeats),
+        vocal_collision_reliable=vocal_collision_reliable,
     )
 
 

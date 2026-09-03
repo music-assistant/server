@@ -197,6 +197,29 @@ async def _drain(stream: AsyncGenerator[bytes]) -> int:
     return total
 
 
+def _install_counting_mix(monkeypatch: pytest.MonkeyPatch, audio: StreamsAudio) -> list[None]:
+    """Replace the mixer with the lossless concat stand-in, recording each invocation."""
+    calls: list[None] = []
+
+    async def _counting_mix(
+        _smart_fade: object,
+        *,
+        fade_in_part: bytes | AsyncGenerator[bytes],
+        fade_out_part: bytes,
+        **_kwargs: object,
+    ) -> AsyncGenerator[bytes]:
+        calls.append(None)
+        yield fade_out_part
+        if isinstance(fade_in_part, bytes):
+            yield fade_in_part
+        else:
+            async for fade_in_chunk in fade_in_part:
+                yield fade_in_chunk
+
+    monkeypatch.setattr(audio.smart_fades_mixer, "mix", _counting_mix)
+    return calls
+
+
 async def test_flow_prefetches_the_incoming_fade_in_during_the_holdback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -545,3 +568,78 @@ async def test_prefetch_handover_gives_up_on_a_stalled_source(
     # the timeout keeps a regression here a failure instead of a hung test run
     async with asyncio.timeout(10):
         assert await prefetcher.take(cast("Any", queue_item), 0) is None
+
+
+async def test_enable_crossfade_mid_session_applies_after_current_track(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Turning crossfade on mid-session skips the current track and fades the next one."""
+    first_item = _queue_item("item-1", "First")
+    second_item = _queue_item("item-2", "Second")
+    third_item = _queue_item("item-3", "Third")
+    audio, queue, mass = _flow_audio(
+        monkeypatch,
+        next_item=third_item,
+        load_next=[second_item, third_item, QueueEmpty],
+    )
+    # snapshot at session start and item-1's own iteration still see the old setting;
+    # item-2 and item-3 see it enabled (padded so the sequence can't run dry)
+    mass.streams.get_crossfade_mode.side_effect = [
+        CrossfadeMode.DISABLED,
+        CrossfadeMode.DISABLED,
+        CrossfadeMode.STANDARD_CROSSFADE,
+        CrossfadeMode.STANDARD_CROSSFADE,
+        CrossfadeMode.STANDARD_CROSSFADE,
+        CrossfadeMode.STANDARD_CROSSFADE,
+    ]
+    _install_item_streams(monkeypatch, audio, {"item-1": 40, "item-2": 40, "item-3": 40})
+    mix_calls = _install_counting_mix(monkeypatch, audio)
+
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), TEST_PCM_FORMAT, session_id="session-1"
+    )
+    await _drain(stream)
+
+    # item-1's tail was never held back, so 1->2 cannot fade; only 2->3 does
+    assert len(mix_calls) == 1
+    assert _reported(mass) == [
+        ("item-1", CrossfadeMode.DISABLED),
+        ("item-2", CrossfadeMode.DISABLED),
+        ("item-3", CrossfadeMode.DISABLED),
+        ("item-3", CrossfadeMode.STANDARD_CROSSFADE),
+        ("item-2", CrossfadeMode.STANDARD_CROSSFADE),
+    ]
+
+
+async def test_disable_crossfade_mid_session_applies_at_next_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Turning crossfade off mid-session flushes the held-back tail instead of fading it."""
+    first_item = _queue_item("item-1", "First")
+    second_item = _queue_item("item-2", "Second")
+    audio, queue, mass = _flow_audio(
+        monkeypatch, next_item=second_item, load_next=[second_item, QueueEmpty]
+    )
+    # snapshot and item-1's own iteration still see the old setting; item-2 sees it disabled
+    mass.streams.get_crossfade_mode.side_effect = [
+        CrossfadeMode.STANDARD_CROSSFADE,
+        CrossfadeMode.STANDARD_CROSSFADE,
+        CrossfadeMode.DISABLED,
+        CrossfadeMode.DISABLED,
+        CrossfadeMode.DISABLED,
+    ]
+    _install_item_streams(monkeypatch, audio, {"item-1": 40, "item-2": 20})
+    mix_calls = _install_counting_mix(monkeypatch, audio)
+
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), TEST_PCM_FORMAT, session_id="session-1"
+    )
+    emitted = await _drain(stream)
+
+    # item-1's held-back tail is flushed unfaded rather than blended or dropped
+    assert len(mix_calls) == 0
+    assert _reported(mass) == [
+        ("item-1", CrossfadeMode.DISABLED),
+        ("item-2", CrossfadeMode.DISABLED),
+    ]
+    assert emitted == TEST_PCM_FORMAT.pcm_sample_size * 60

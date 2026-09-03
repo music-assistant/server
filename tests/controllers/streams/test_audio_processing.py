@@ -1836,6 +1836,7 @@ def _native_stream_handler_context(
     audio.get_player_output_plan.side_effect = _OutputPlanRequested
 
     controller = cast("Any", object.__new__(StreamsController))
+    controller._open_item_streams = {}
     controller.mass = mass
     controller.audio = audio
     controller.logger = MagicMock()

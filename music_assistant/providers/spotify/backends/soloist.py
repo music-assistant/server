@@ -1,16 +1,10 @@
 """
 Spotify Soloist playback backend for the Spotify music provider.
 
-Runs one continuous session of ``soloist``, Spotify's official headless client,
-and feeds it one track ahead so the engine plays consecutive tracks without a
-break. The session renders into a private PulseAudio capture sink whose FIFO is
-read back slightly above realtime pace, and that one continuous audio stream is
-handed to Music Assistant as ordinary per-item streams: an item's stream ends
-where the session moves on to the next track, and the next item's stream begins
-there. Played back to back the items reproduce the session's audio sample for
-sample. The engine itself never crossfades — Music Assistant mixes the queue's
-crossfade, so every item's audio starts at its first sample and stays aligned
-with its analysis.
+Plays each item with its own single-track run of ``soloist``, Spotify's
+official headless client. A run renders into a private PulseAudio capture sink
+whose FIFO is read back slightly above realtime pace and handed to Music
+Assistant as that item's stream.
 
 SECURITY NOTE: the daemon takes the user's personal API key on its command
 line; nothing in this module may ever log the process argv.
@@ -167,12 +161,11 @@ _LOG_DRAIN_TIMEOUT_S: Final[float] = 2.0
 
 class SoloistSessionBusyError(ProviderStreamLimitError):
     """
-    Raised when the one Soloist session is delivering a different item.
+    Raised when the one Soloist run is delivering a different item.
 
     A ProviderStreamLimitError so a speculative prepare gives up softly and the
-    item is not marked unplayable, but with a message of its own: the engine
-    allows a single session, which is not the same thing as the provider's
-    source-stream budget (a handover legitimately holds two streams against it).
+    item is not marked unplayable, but with a message of its own: "already
+    playing something else" says more than the slot-budget phrasing.
     """
 
     def __init__(self, provider: MusicProvider) -> None:
