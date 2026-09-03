@@ -6,6 +6,7 @@ from http.cookies import Morsel
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import aiohttp
 import pytest
 
 from music_assistant.models.setup_flow import AbortFlow
@@ -33,8 +34,9 @@ LOGIN_PAGE = (
 
 
 class _FakeResponse:
-    def __init__(self, body: str = "") -> None:
+    def __init__(self, body: str = "", ok: bool = True) -> None:
         self._body = body
+        self.ok = ok
 
     async def text(self) -> str:
         return self._body
@@ -44,10 +46,12 @@ class _FakeResponse:
 
 
 class _FakeRequestContext:
-    def __init__(self, response: _FakeResponse) -> None:
+    def __init__(self, response: _FakeResponse | Exception) -> None:
         self._response = response
 
     async def __aenter__(self) -> _FakeResponse:
+        if isinstance(self._response, Exception):
+            raise self._response
         return self._response
 
     async def __aexit__(self, *exc_info: object) -> bool:
@@ -57,18 +61,27 @@ class _FakeRequestContext:
 class _FakeSession:
     """Fake aiohttp session returning canned bodies in order."""
 
-    def __init__(self, bodies: list[str], cookies: dict[str, str] | None = None) -> None:
+    def __init__(self, bodies: list[Any], cookies: dict[str, str] | None = None) -> None:
         self._bodies = bodies
         self.requests: list[tuple[str, str]] = []
         self.cookie_jar = _cookie_jar(cookies or {})
 
     def get(self, url: Any, **kwargs: Any) -> _FakeRequestContext:
         self.requests.append(("GET", str(url)))
-        return _FakeRequestContext(_FakeResponse(self._bodies.pop(0)))
+        return self._next_context()
 
     def post(self, url: Any, **kwargs: Any) -> _FakeRequestContext:
         self.requests.append(("POST", str(url)))
-        return _FakeRequestContext(_FakeResponse(self._bodies.pop(0)))
+        return self._next_context()
+
+    def _next_context(self) -> _FakeRequestContext:
+        """Return the next canned answer, which may be an error response or a raised error."""
+        body = self._bodies.pop(0)
+        if isinstance(body, Exception):
+            return _FakeRequestContext(body)
+        if isinstance(body, int):
+            return _FakeRequestContext(_FakeResponse(ok=False))
+        return _FakeRequestContext(_FakeResponse(body))
 
 
 def _cookie_jar(cookies: dict[str, str]) -> list[Morsel[str]]:
@@ -127,6 +140,29 @@ async def test_polling_continues_while_the_token_is_unapproved() -> None:
 
     assert cookie == "abc123"
     assert len([req for req in session.requests if req[0] == "POST"]) == 3
+
+
+async def test_an_error_response_is_retried() -> None:
+    """Overcast rate limits us, and an error answer must not be read as the page to open."""
+    session = _FakeSession([429, UNAPPROVED, "/podcasts", ""], cookies={"o": "abc123"})
+
+    with patch("music_assistant.providers.overcast.setup_flow.asyncio.sleep", AsyncMock()):
+        cookie = await _poll_until_approved(session, "tok", "podcasts")  # type: ignore[arg-type]
+
+    assert cookie == "abc123"
+    assert len([req for req in session.requests if req[0] == "POST"]) == 3
+
+
+async def test_a_dropped_connection_is_retried() -> None:
+    """A login the user is part way through survives losing the connection."""
+    session = _FakeSession(
+        [aiohttp.ClientError("boom"), TimeoutError(), "/podcasts", ""], cookies={"o": "abc123"}
+    )
+
+    with patch("music_assistant.providers.overcast.setup_flow.asyncio.sleep", AsyncMock()):
+        cookie = await _poll_until_approved(session, "tok", "podcasts")  # type: ignore[arg-type]
+
+    assert cookie == "abc123"
 
 
 async def test_an_unapproved_code_is_not_taken_for_a_login() -> None:

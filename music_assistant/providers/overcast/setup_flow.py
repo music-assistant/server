@@ -10,6 +10,7 @@ have an email address and password can still sign in with those.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -40,6 +41,8 @@ from .constants import (
     SESSION_COOKIE_NAME,
     UNAPPROVED_BODY_LENGTH,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType
@@ -189,7 +192,12 @@ async def _poll_until_approved(http_session: aiohttp.ClientSession, token: str, 
                     continue
                 body = (await response.text()).strip()
         except (TimeoutError, aiohttp.ClientError) as err:
-            raise AbortFlow("overcast_unreachable") from err
+            # a dropped connection should not end a login the user is part way through.
+            # The flow deadline still bounds the retries, as it arrives as a cancellation
+            LOGGER.debug("Overcast did not answer the login check: %s", err)
+            attempts += 1
+            await asyncio.sleep(_poll_interval(attempts))
+            continue
         if len(body) > UNAPPROVED_BODY_LENGTH:
             return await _claim_session_cookie(http_session, body)
         attempts += 1
