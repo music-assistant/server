@@ -439,7 +439,7 @@ async def test_short_delivery_is_rejected_as_incomplete(tmp_path: Path) -> None:
     run = _make_run(tmp_path, duration=152)
     run._chunks.put_nowait(b"\x01" * _FRAME_BYTES)
     run._finish_delivery()
-    with pytest.raises(AudioError, match="incomplete"):
+    with pytest.raises(AudioError, match="stopped part-way"):
         await _collect(run)
 
 
@@ -451,7 +451,7 @@ async def test_a_refused_item_is_reported_as_a_refusal(tmp_path: Path) -> None:
     run._chunks.put_nowait(b"\x01" * _FRAME_BYTES)
     run._finish_delivery()
     # the message travels on the error itself; the queue reports it where it skips
-    with pytest.raises(AudioError, match=f"would not play {TRACK_A}"):
+    with pytest.raises(AudioError, match="would not play this track"):
         await _collect(run)
 
 
@@ -474,7 +474,7 @@ async def test_a_starved_run_is_still_reported_as_incomplete(tmp_path: Path) -> 
     run._proc = MagicMock(returncode=0)
     run._chunks.put_nowait(b"\x01" * (100 * _BYTES_PER_SECOND))
     run._finish_delivery()
-    with pytest.raises(AudioError, match="incomplete"):
+    with pytest.raises(AudioError, match="stopped part-way"):
         await _collect(run)
 
 

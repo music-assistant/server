@@ -705,9 +705,9 @@ class _SingleTrackRun:
                 ):
                     await asyncio.sleep(_CONNECT_POLL_S)
         except TimeoutError:
-            self._raise_startup_error("did not connect and log in")
+            self._raise_startup_error("could not connect and sign in")
         if self._error or not client.connected:
-            self._raise_startup_error("published no usable WebSocket endpoint")
+            self._raise_startup_error("did not start up correctly")
         await self._await_playback_started(proc)
         if self._seek_target_ms:
             await self._cold_seek(client, self._seek_target_ms)
@@ -799,7 +799,7 @@ class _SingleTrackRun:
         if task.cancelled() or (err := task.exception()) is None:
             return
         self.logger.error("Spotify Soloist task failed: %s", err, exc_info=err)
-        self._fail(f"task failed: {err}")
+        self._fail(f"Spotify playback stopped unexpectedly: {err}")
 
     def _fail(self, message: str) -> None:
         """Record a fatal error, unblock the consumer and tear the run down."""
@@ -854,14 +854,14 @@ class _SingleTrackRun:
             and played_ms <= _REFUSED_DELIVERY_MS
         ):
             raise AudioError(
-                f"Spotify would not play {self.spotify_uri}: it is unavailable for this "
-                "account or region, or Spotify refused it for now"
+                "Spotify would not play this track: it is unavailable for this account "
+                "or region, or Spotify refused it for now"
             )
         # print the exit code: a refusal that exits non-zero lands here
         raise AudioError(
-            f"Spotify Soloist delivered incomplete audio for {self.spotify_uri} "
-            f"(reached {int(delivered_ms)}ms of {self._duration_ms}ms, engine exit code "
-            f"{proc.returncode if proc is not None else None})"
+            f"Spotify stopped part-way through this track, after "
+            f"{int(delivered_ms / 1000)}s of {int(self._duration_ms / 1000)}s "
+            f"(engine exit code {proc.returncode if proc is not None else None})"
         )
 
     def _engine_normalization_enabled(self) -> bool:
@@ -897,7 +897,7 @@ class _SingleTrackRun:
                     exit_task.cancel()
                     started_task.cancel()
         except TimeoutError:
-            self._raise_startup_error("timed out waiting for playback to start")
+            self._raise_startup_error("did not start playing in time")
         if self._error or not self._started.is_set():
             if proc.returncode is not None:
                 # let the log reader catch up, so the daemon's own complaint can
@@ -906,7 +906,7 @@ class _SingleTrackRun:
             if proc.returncode == EXIT_CODE_BUILD_EXPIRED:
                 # an expired build exits with code 10 right at spawn
                 await self._handle_expired_build()
-            self._raise_startup_error("exited before playback started")
+            self._raise_startup_error("stopped before it started playing")
 
     async def _drain_log(self) -> None:
         """Give the log reader a moment to deliver the daemon's parting words."""
@@ -954,8 +954,8 @@ class _SingleTrackRun:
                 "and has to be stopped first (restarting Music Assistant clears it)"
             )
         if self._error:
-            raise AudioError(f"Spotify Soloist failed: {self._error}")
-        raise AudioError(f"Spotify Soloist {detail} for {self.spotify_uri}")
+            raise AudioError(self._error)
+        raise AudioError(f"Spotify {detail}")
 
     async def _cold_seek(self, client: SoloistClient, target_ms: int) -> None:
         """
@@ -1004,7 +1004,7 @@ class _SingleTrackRun:
         if await asyncio.to_thread(self.backend._has_stored_session):
             return
         self._unpaired = True
-        self._fail("the stored session is gone")
+        self._fail("Spotify is no longer signed in and has to be paired again")
 
     async def _watch_exit(self, proc: AsyncProcess) -> None:
         """
@@ -1056,7 +1056,7 @@ class _SingleTrackRun:
                 if self._sink_running:
                     stalled_for += _READ_SLICE_S
                     if stalled_for >= _STALL_TIMEOUT_S:
-                        self._fail("audio stalled")
+                        self._fail("Spotify stopped sending audio")
                         return
                 # Restart the pacing clock rather than carry the gap: making up
                 # lost time would mean an unpaced burst, which over-demands the
@@ -1066,7 +1066,7 @@ class _SingleTrackRun:
             stalled_for = 0.0
             if not chunk:
                 # writer end closed: the capture sink is gone (pulse restart)
-                self._fail("the capture sink was lost mid-stream")
+                self._fail("Spotify playback was interrupted")
                 return
             if not (chunk := shaper.shape(chunk)):
                 continue
@@ -1151,7 +1151,7 @@ class _SingleTrackRun:
             except Exception as err:
                 # fail closed: a sink with unknown suspend state would leak stall
                 # silence into (or withhold audio from) the delivered PCM
-                self._fail(f"capture sink control failed: {err}")
+                self._fail(f"Spotify playback could not be controlled: {err}")
                 return
             self._sink_running = running
 
@@ -1162,7 +1162,7 @@ class _SingleTrackRun:
         if not await client.wait_until_ready(_STARTUP_TIMEOUT_S):
             # a natural exit right at startup still has to release the waiters
             if not self._engine_exited and proc.returncode is None:
-                self._fail("the run did not publish its WebSocket endpoint")
+                self._fail("Spotify playback did not start up correctly")
             client_ready.set()
             return
         client_ready.set()
@@ -1215,7 +1215,10 @@ class _SingleTrackRun:
             if not self._started.is_set():
                 # the engine started on something else entirely: whatever it is
                 # playing, it is not what was asked
-                self._fail(f"the engine started on {uri}")
+                self._fail(
+                    "Spotify is already streaming somewhere else - an account "
+                    "can only play in one place at a time"
+                )
                 return
             # The engine wanders into the next track (autoplay) in the instant
             # before a finished single-track run exits: this run's item is over,
