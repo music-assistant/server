@@ -175,6 +175,11 @@ class _ImportTrackMatchResult:
     ambiguous_providers: tuple[str, ...] = ()
     failed_providers: tuple[str, ...] = ()
     error: str | None = None
+    # only set when `error` came from a provider communication failure (a caught
+    # exception from enrich_provider_mappings) rather than a local data/validation
+    # issue (e.g. a foreign M3U entry with no structured artist to search with) - the
+    # report's provider issues section must not misattribute the latter to a provider
+    error_is_provider_issue: bool = False
 
 
 class BuiltinProvider(MusicProvider):
@@ -1034,7 +1039,8 @@ class BuiltinProvider(MusicProvider):
             return
         if result.error:
             report_current_task_failure(f"{result.label}: {result.error}")
-            provider_issues.append((result.label, result.error))
+            if result.error_is_provider_issue:
+                provider_issues.append((result.label, result.error))
             counts["unmatched"] += 1
             unmatched_items.append((result.label, result.error))
             return
@@ -1162,7 +1168,7 @@ class BuiltinProvider(MusicProvider):
             MediaNotFoundError,
         ) as err:
             message = str(err).strip() or f"Matching failed ({type(err).__name__})"
-            return _ImportTrackMatchResult(label=label, error=message)
+            return _ImportTrackMatchResult(label=label, error=message, error_is_provider_issue=True)
         if not enrichment.matches:
             # nothing was actually matched - the track's provider_mappings may still carry
             # an untrusted, unverified original mapping (trust_track_mappings=False keeps

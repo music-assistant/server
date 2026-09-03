@@ -2110,6 +2110,8 @@ async def test_missing_artist_metadata_is_unmatched_without_search() -> None:
     report_markdown = set_report.call_args.args[0]
     assert "| Unmatched | 1 |" in report_markdown
     assert "No artist metadata" in report_markdown
+    # a local data-quality issue is not a provider lookup failure
+    assert "Provider lookup issues" not in report_markdown
 
 
 async def test_order_and_duplicates_preserved_across_mixed_results() -> None:
