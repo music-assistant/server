@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, VolumeNormalizationMode
 
-from music_assistant.constants import LOUDNESS_MEASUREMENT_MIN_LUFS
+from music_assistant.constants import LOUDNESS_ANALYSIS_VERSION, LOUDNESS_MEASUREMENT_MIN_LUFS
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.tags import write_replaygain_track_gain
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
@@ -48,7 +48,7 @@ class LoudnessSessionData:
 class LoudnessAnalysisProvider(AudioAnalysisProvider):
     """Audio analysis provider that measures EBU R128 integrated loudness."""
 
-    analysis_version: int = 2
+    analysis_version: int = LOUDNESS_ANALYSIS_VERSION
 
     def __init__(
         self,

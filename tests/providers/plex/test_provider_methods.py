@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 from unittest import mock
@@ -39,6 +40,7 @@ def _make_provider(
     mock_mass = MagicMock()
     mock_mass.cache = MagicMock()
     mock_mass.streams.audio_analysis.set_track_loudness = AsyncMock()
+    mock_mass.create_task = asyncio.create_task
 
     mock_config = MagicMock()
     mock_config.instance_id = "plex_instance_1"
@@ -390,19 +392,20 @@ class TestStreamDetailsGuards:
         plex_track = _make_stream_track()
         audio_stream = plex_track.media[0].parts[0].audioStreams.return_value[0]
         audio_stream.loudness = -4.43
-        audio_stream.albumGain = -13.57
+        audio_stream.albumGain = -10.0
         music_provider._get_data = AsyncMock(return_value=plex_track)
         music_provider._plex_server.url.return_value = "http://plex.local/file.flac?download=1"
 
         result = await music_provider.get_stream_details("/library/metadata/1", MediaType.TRACK)
+        await asyncio.sleep(0)
 
         assert result.loudness == -4.43
-        assert result.loudness_album == -4.43
+        assert result.loudness_album == -8.0
         music_provider.mass.streams.audio_analysis.set_track_loudness.assert_awaited_once_with(
             item_id="/library/metadata/1",
             provider_instance_id_or_domain="plex_instance_1",
             loudness=-4.43,
-            loudness_album=-4.43,
+            loudness_album=-8.0,
         )
 
     @pytest.mark.asyncio
