@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
@@ -28,7 +28,6 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_text,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
-from music_assistant.helpers.compare import TrackMatchConfidence
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.playlists import (
@@ -68,25 +67,6 @@ def _update_stage_progress(
         return
     progress = start + int((current * (end - start)) / total)
     update_current_task_progress(min(progress, end), text)
-
-
-# minimum TrackMatchConfidence accepted for each policy tier.
-#
-# EXACT requires release-track evidence (e.g. a MusicBrainz track/release ID) pinning a
-# specific release, not just the underlying recording. M3U playlists exported by a current
-# Music Assistant persist this evidence when the source track carries it, so imports of
-# those files can reach EXACT; legacy or third-party M3U files typically only carry an ISRC
-# or recording ID and cap out at SAME_RECORDING or BEST_EFFORT.
-_MATCH_POLICY_MINIMUM_CONFIDENCE: Final[dict[PlaylistMatchPolicy, TrackMatchConfidence]] = {
-    PlaylistMatchPolicy.EXACT: TrackMatchConfidence.EXACT,
-    PlaylistMatchPolicy.SAME_RECORDING: TrackMatchConfidence.LIKELY,
-    PlaylistMatchPolicy.BEST_EFFORT: TrackMatchConfidence.LOOSE,
-}
-
-
-def match_policy_minimum_confidence(match_policy: PlaylistMatchPolicy) -> TrackMatchConfidence:
-    """Return the minimum track-match confidence accepted by a match policy."""
-    return _MATCH_POLICY_MINIMUM_CONFIDENCE[match_policy]
 
 
 class PlaylistController(MediaControllerBase[Playlist]):

@@ -10,7 +10,7 @@ from enum import Enum, IntEnum
 from functools import lru_cache
 from typing import Final
 
-from music_assistant_models.enums import ExternalID, MediaType
+from music_assistant_models.enums import ExternalID, MediaType, PlaylistMatchPolicy
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
@@ -124,6 +124,23 @@ class TrackMatchConfidence(IntEnum):
     LOOSE = 1
     LIKELY = 2
     EXACT = 3
+
+
+# EXACT requires release-track evidence (e.g. a MusicBrainz track/release ID) pinning a
+# specific release, not just the underlying recording. M3U playlists exported by a current
+# Music Assistant persist this evidence when the source track carries it, so imports of
+# those files can reach EXACT; legacy or third-party M3U files typically only carry an ISRC
+# or recording ID and cap out at SAME_RECORDING or BEST_EFFORT.
+_MATCH_POLICY_MINIMUM_CONFIDENCE: Final[dict[PlaylistMatchPolicy, TrackMatchConfidence]] = {
+    PlaylistMatchPolicy.EXACT: TrackMatchConfidence.EXACT,
+    PlaylistMatchPolicy.SAME_RECORDING: TrackMatchConfidence.LIKELY,
+    PlaylistMatchPolicy.BEST_EFFORT: TrackMatchConfidence.LOOSE,
+}
+
+
+def match_policy_minimum_confidence(match_policy: PlaylistMatchPolicy) -> TrackMatchConfidence:
+    """Return the minimum track-match confidence accepted by a match policy."""
+    return _MATCH_POLICY_MINIMUM_CONFIDENCE[match_policy]
 
 
 def compare_media_item(

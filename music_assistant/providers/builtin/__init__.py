@@ -58,9 +58,6 @@ from music_assistant.constants import (
     PlaylistPlayableItem,
 )
 from music_assistant.controllers.cache import use_cache
-from music_assistant.controllers.music.media.playlists import (
-    match_policy_minimum_confidence,
-)
 from music_assistant.controllers.tasks.context import (
     get_current_task_id,
     report_current_task_failure,
@@ -69,7 +66,11 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_text,
 )
 from music_assistant.helpers.aiohttp_client import encoded_request_url
-from music_assistant.helpers.compare import TrackMatchConfidence, compare_track_evidence
+from music_assistant.helpers.compare import (
+    TrackMatchConfidence,
+    compare_track_evidence,
+    match_policy_minimum_confidence,
+)
 from music_assistant.helpers.playlists import (
     ArtistInfo,
     ImageInfo,
