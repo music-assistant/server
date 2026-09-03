@@ -617,6 +617,57 @@ Records of the substantive design questions that came up during drafting and the
 33. **"Other tracks" sections on Composer and Performer detail pages.** *Resolved:* a composer or performer may have credits on tracks that lack `Work` linkage. To prevent empty / partially-empty detail pages, both Composer detail and Performer detail render a secondary **"Other tracks"** section below the canonical Works list. Both sections are hidden when empty. The "Other tracks" surface is **local to detail pages only** — the Classical view's Works tab stays Work-centric and free of synthetic Work entities. Considered creating synthetic `UNKNOWN` Work entities (rejected — pollutes the global Works tab). Considered tightening tab indices to exclude entities whose credits are all Workless (rejected — hides legitimately classical content). Sort options: Name (default), Year, Date added.
 34. **Work-creation gated by classical-context signal.** *Resolved:* an early draft treated `MUSICBRAINZ_WORKID` or `WORK` as sufficient on its own. Real-world Picard behaviour breaks this: with "Use track relationships" enabled, Picard writes `MUSICBRAINZ_WORKID` for **rock / pop / jazz tracks** too — MB models a Beatles or Led Zeppelin song as a Work the same way it models a Beethoven symphony. Without gating, every Picard-tagged rock album would create Work entities and trigger classical classification, polluting both the Works browse tab and the Classical view's track index. **Fix:** Work creation now requires a `MUSICBRAINZ_WORKID` / `WORK` / composer-plus-movement signal **plus** a classical-context corroborator — classical genre on track / album / `artist.nfo` / `album.nfo`, `is_classical=1` tag, or (at Stage 6 enrichment) MB-confirmed classical Work type. Without classical context, the `MUSICBRAINZ_WORKID` is **preserved on the track row** for re-evaluation but no `Work` entity is created and no classification cascade fires.
 
+35. **Serif typography reserved for classical identity text.** *Resolved:* the Classical section uses a scoped `--font-classical-serif` CSS custom property (Roboto Serif, ui-serif, Georgia fallback chain, `font-optical-sizing: auto`) applied to identity text only — the section title, tab labels, composer names, work titles, and movement titles. Movement titles are the only italic serif in the whole application ("I. Allegro con brio" set like a score marking). Ordinary UI text, chrome, and controls stay in the default sans-serif. Rationale: evokes a concert programme or liner notes without changing the app's overall visual identity. The custom property is scoped to `.classical-typography` on the shell so no non-classical view inherits it. Consumers rewriting the frontend should preserve the identity-only rule; applying serif to chrome breaks the effect.
+
+36. **Nav entry conditionally disabled via `hasClassicalContent` probe.** *Resolved:* the "Classical" sidebar entry is disabled when `store.hasClassicalContent === false`. Same pattern as Audiobooks / Podcasts. The store field is tri-state: `undefined` (not yet probed), `true`, `false`. Nav is disabled only for explicit `false` — an undefined value keeps the entry enabled so the section isn't hidden while the probe is in flight. `hasClassicalContent()` is called once at app initialisation from `App.vue` after the API bootstraps, not per-render.
+
+37. **URL is source of truth for tab and contextual filter; sort and search are local.** *Resolved:* filter state that identifies "what am I looking at" lives in the URL (active tab as path segment, performer-context filter as `?filterByArtistId=X`, role chip as `?role=conductor`). Filter state that is incidental or transient (typed search term, sort order) stays as local component state. The asymmetry is deliberate: a filtered performer-view is worth sharing via URL; a half-typed search term is not. Routing consequences: bare `/classical` redirects to the remembered tab (localStorage `frontend.classical.last_tab`); `router.replace` (not `push`) is used for chip changes so browser history doesn't pile up with chip clicks; "All" clears the query param entirely rather than encoding `role=all`.
+
+38. **Menu absence over greyed-out entries.** *Resolved (UX principle for context menus):* when a classical menu entry has nothing to point at (a workless track's "Go to work", a composer submenu for a track with no composer credit, an empty performer submenu), the entry is **omitted entirely** rather than rendered greyed-out. Applies uniformly to `gotoComposer`, `gotoWork`, and the `Go to performer` submenu. Reasoning: greyed entries add visual noise and imply the user did something wrong; absence just presents what is available. Menu builders return `null` for these entries and the frame filters them out.
+
+39. **Composer detail is a catalogue (navigation only); Performer detail is interactive.** *Resolved:* the Works list on Composer detail is a **catalogue view** — rows navigate but have no play, favourite, or context menu affordances. Reasoning: a composer's works page is for browsing what exists, not for immediate playback of specific recordings. The Works Performed list on Performer detail is the **inverse**: each row carries a right-click menu and a `ClassicalRowActions` cluster (library / favourite / play / overflow). Reasoning: a performer's page is about their recordings, so acting on those recordings from the list is the natural flow. Consequence: on Performer detail, the work row shows composer as a small muted caption *above* a bold work title — inverting the usual "Composer: Title" ordering — because the title is what the user is scanning for; the composer is context.
+
+40. **Recording card credit hierarchy.** *Resolved:* recordings render two credit tiers with weight and size expressing importance. **Bold first line:** conductor / orchestra, followed by year in parentheses at normal weight, followed by duration in square brackets with `font-variant-numeric: tabular-nums`. **Lighter, smaller second line:** performer credits (soloists, ensembles, choirs). Rationale: conductor and orchestra are the recording's identity; soloists are subordinate detail. A missing name falls back to the raw ID rather than vanishing — an integration gap is made visible rather than silently swallowed.
+
+41. **Primary click semantics vary by row type.** *Resolved:*
+
+    | Row | Left click | Right click |
+    |---|---|---|
+    | Recording header | expand / collapse | recording menu |
+    | Movement | play that movement (`.stop` on event) | movement menu (`.stop`) |
+    | Other track | play the track | track menu |
+    | Composer's work | navigate | (no menu) |
+    | Performer's work | navigate | recording menu |
+
+    Playing a whole recording is done from the explicit play button on the recording header, never from the header click. Movement-row events use `.stop` because they are nested inside the expanded recording body and would otherwise bubble to the recording's expand toggle.
+
+42. **RecordingsFilter is one control in two states.** *Resolved (refines #15a):* the recordings filter and the "you are looking at a subset" banner are the same control in two states, not two components stacked. Editable state: plain search input with placeholder "Filter recordings…". Committed state: status banner (e.g. "Showing 3 recordings by Karajan") with a Show all button on the right. A commit is either user-driven (Enter, kind `"text"`) or arrives from context (navigating in from a performer, kind `"performer"`). Clicking the banner text returns to editable input pre-filled with the term. Matching is diacritic-blind substring via the shared `normalizeForFilter` helper, over a memoised haystack per recording (conductor / orchestra / performer names / credit names / source album / year as text). Empty-match state uses a `genericNoMatch` fallback message when other filters (date range) are also narrowing the list, so the message never wrongly blames the typed term.
+
+43. **YearRangeFilter design.** *Resolved:* the date range filter on the Works tab (composition year) and Work detail (performance year) is a two-input year range with a shared "mat" (a rounded surface holding label + both boxes) so the pair reads as one control rather than two loose inputs beside a caption. Behaviour:
+
+    - Placeholders are the real earliest and latest years present in the list, so the control advertises the span the library actually covers.
+    - Part-typed years settle on blur AND on Enter, never while typing.
+    - Left box pads with zeros, right box pads with nines: `19` becomes 1900 in the left box and 1999 in the right, so a part-typed year stands for the span it opens.
+    - Bounds are read low-to-high regardless of which box they were typed into.
+    - Items with no year on file drop out as soon as either bound is set (user's explicit choice).
+    - Clear (×) is always laid out (hidden when inactive) so the mat never changes width as a range is typed.
+    - Digits only, four characters max, sanitised on input.
+    - Mat border takes accent colour when the range is active.
+    - Accessibility: `role="group"` + `aria-labelledby` on the mat, generic per-box labels ("Earliest year", "Latest year") because the same control means composition year on one page and performance year on the other.
+    - The range logic lives in a shared `useYearRange` composable so both pages behave identically.
+
+    Which date each page filters on:
+    - Works list: `Work.composition_year`.
+    - Work detail: `recording.year` (performance year, per #16).
+    - Show all on the filter banner and navigating to another work both clear the range.
+
+## Correction to earlier entries
+
+- **Decision #22 URL scheme.** The composer detail route is `/classical/composers/:id` (plural), matching the tab path segment. Same pluralisation for `/classical/works/:id` and `/classical/performers/:id`. Route `meta.hideTabs` is a misnomer — it does not hide the tab bar, only drops content padding so a detail page's InfoHeader banner can run full-bleed.
+- **Sort defaults on Works tab.** Default sort is by composer, and within a composer by catalog number (canonical Op. / BWV / K. order), with empty catalogs sorting last. Options: Composer / Title / Year composed / Recording count.
+- **Sort defaults on Composers tab.** Default is `sort_name` (surname-first when the SORT tag is present, else display name). Options: Sort name / Name / Work count.
+- **Sort defaults on Performers tab.** Default is `name`; performers have no `sort_name` field. Options: Name / Recording count only.
+
 ## Open questions
 
 1. **`Track.section` (Roon `SECTION` equivalent).** Roon supports a three-level hierarchy `WORK → SECTION → PART` for operas (e.g. "Le nozze di Figaro" → "Act 1" → "Cinque... dieci..."). Our model handles two levels. For Roon-style opera tagging, an additive `Track.section: str | None` field would capture the intermediate level cheaply. Defer until a concrete consumer needs it.
