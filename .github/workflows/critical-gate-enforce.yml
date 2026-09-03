@@ -1,11 +1,14 @@
 name: Critical review gate (enforce)
 
 # Stage 2 of 2. Runs after "Critical review gate (detect)" via `workflow_run`, which grants a WRITE
-# token even when the upstream review was on a fork PR (`pull_request_review` itself does not — that
-# is the whole reason for the split). If detect flagged a [CRITICAL] — signalled by a
-# `critical-gate-request` artifact holding the PR number and reviewed head SHA — this converts that
-# PR to a draft (a draft PR cannot be merged) and leaves one comment saying why. Checks out no PR
-# code; its only inputs are a trusted integer PR number and SHA written by detect from the payload.
+# token even when the upstream review was on a fork PR (`pull_request_review` itself does not — the
+# reason for the split).
+#
+# SECURITY: on a fork PR, detect runs the PR's OWN copy of its workflow, so nothing it produces can
+# be trusted. The `critical-gate-request` artifact is therefore used ONLY as an existence hint
+# ("worth checking") — its contents are ignored. Every fact acted on is re-derived from
+# `workflow_run.head_sha`, which GitHub stamps on the event and a fork cannot forge, and the
+# [CRITICAL] finding is re-verified here. This mirrors the repo's dependency-security-report.yml.
 
 on:  # yamllint disable-line rule:truthy
   workflow_run:
@@ -18,76 +21,80 @@ permissions:
 
 jobs:
   enforce:
+    if: >-
+      github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'pull_request_review'
     runs-on: ubuntu-latest
-    if: github.event.workflow_run.conclusion == 'success'
     steps:
-      - name: Check whether detect raised an enforcement request
-        id: check
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
-        run: |
-          set -euo pipefail
-          # Preflight existence: an ABSENT artifact is the expected no-op (a non-critical review, or a
-          # detect run skipped for a non-Copilot reviewer). A PRESENT artifact means a later download
-          # failure is a real error that must surface — not be swallowed like a missing one.
-          exists=$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" \
-            --jq '[.artifacts[] | select(.name == "critical-gate-request")] | length')
-          echo "exists=$exists" >> "$GITHUB_OUTPUT"
-          if [ "$exists" -gt 0 ]; then echo "Enforcement request present."; else echo "No request; nothing to do."; fi
-
-      - name: Download the enforcement request
-        if: steps.check.outputs.exists != '0'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Draft PRs whose current Copilot review still has an unresolved [CRITICAL]
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          name: critical-gate-request
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ github.token }}
+          script: |
+            const { owner, repo } = context.repo;
+            const runId = context.payload.workflow_run.id;
 
-      - name: Draft the PR and post the explanation
-        if: steps.check.outputs.exists != '0'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          # Leads with a hidden marker so the explanation is posted at most once, even across reruns.
-          GATE_BODY: |
-            <!-- critical-gate -->
-            🚧 **Automated critical-issue gate** — the automated review flagged at least one **`[CRITICAL]`** finding, so this PR was converted to a **draft** to keep it out of the merge queue while it's still being worked on. Please resolve the `[CRITICAL]` item(s) above, then click **Ready for review**.
+            // Untrusted hint only: detect may run fork-controlled code, so its artifact's mere
+            // existence gates work here; its contents are never read. All facts are re-derived below.
+            const arts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts,
+              { owner, repo, run_id: runId, per_page: 100 });
+            if (!arts.some(a => a.name === 'critical-gate-request')) {
+              core.info('No enforcement hint from detect; nothing to do.');
+              return;
+            }
 
-            _Maintainers: add the `override-critical` label to bypass this._
-        run: |
-          set -euo pipefail
-          PR="$(cat pr-number.txt)"
-          REVIEWED_HEAD="$(cat head-sha.txt)"
-          case "$PR" in ''|*[!0-9]*) echo "invalid PR number in artifact"; exit 1 ;; esac
+            // head_sha is stamped by GitHub on the workflow_run event and cannot be forged by a fork.
+            const headSha = context.payload.workflow_run.head_sha;
+            const assoc = await github.paginate(
+              github.rest.repos.listPullRequestsAssociatedWithCommit,
+              { owner, repo, commit_sha: headSha, per_page: 100 });
+            const prs = assoc.filter(p =>
+              p.state === 'open' &&
+              p.head.sha === headSha &&
+              !p.labels.some(l => l.name === 'override-critical'));
+            if (prs.length === 0) { core.info(`No actionable open PR at head ${headSha}.`); return; }
 
-          # Detect ran earlier; re-validate against the PR's CURRENT state before acting.
-          info=$(gh pr view "$PR" --repo "$REPO" --json headRefOid,isDraft,state,labels)
-          cur_head=$(jq -r '.headRefOid' <<<"$info")
-          is_draft=$(jq -r '.isDraft' <<<"$info")
-          state=$(jq -r '.state' <<<"$info")
-          overridden=$(jq -r '[.labels[].name] | index("override-critical") != null' <<<"$info")
+            const MARKER = '<!-- critical-gate -->';
+            const BODY = [
+              MARKER,
+              '🚧 **Automated critical-issue gate** — the automated review flagged at least one ' +
+              '**`[CRITICAL]`** finding, so this PR was converted to a **draft** to keep it out of ' +
+              "the merge queue while it's still being worked on. Please resolve the `[CRITICAL]` " +
+              'item(s) above, then click **Ready for review**.',
+              '',
+              '_Maintainers: add the `override-critical` label to bypass this._',
+            ].join('\n');
+            const REVIEWER = 'copilot-pull-request-reviewer[bot]';
 
-          if [ "$state" != "OPEN" ]; then echo "PR #$PR is $state; skipping."; exit 0; fi
-          if [ "$overridden" = "true" ]; then echo "override-critical label present; skipping."; exit 0; fi
-          if [ "$cur_head" != "$REVIEWED_HEAD" ]; then
-            echo "Head moved since review ($REVIEWED_HEAD -> $cur_head); the newer commit gets its own review. Skipping."
-            exit 0
-          fi
+            for (const pr of prs) {
+              // Re-verify the finding on THIS PR's latest Copilot review — never trust the detector.
+              const reviews = await github.paginate(github.rest.pulls.listReviews,
+                { owner, repo, pull_number: pr.number, per_page: 100 });
+              const copilot = reviews.filter(r => r.user && r.user.login === REVIEWER);
+              if (copilot.length === 0) continue;
+              const latest = copilot[copilot.length - 1];
+              let critical = (latest.body || '').includes('[CRITICAL]');
+              if (!critical) {
+                const cmts = await github.paginate(github.rest.pulls.listCommentsForReview,
+                  { owner, repo, pull_number: pr.number, review_id: latest.id, per_page: 100 });
+                critical = cmts.some(c => (c.body || '').includes('[CRITICAL]'));
+              }
+              if (!critical) { core.info(`PR #${pr.number}: latest Copilot review has no [CRITICAL].`); continue; }
 
-          # Post the explanation idempotently and independently of the draft step, so it can't be lost
-          # if an earlier run drafted the PR but failed before commenting.
-          existing=$(gh pr view "$PR" --repo "$REPO" --json comments --jq '.comments[].body')
-          if printf '%s' "$existing" | grep -qF "<!-- critical-gate -->"; then
-            echo "Explanation already posted."
-          else
-            gh pr comment "$PR" --repo "$REPO" --body "$GATE_BODY"
-          fi
+              // Post the explanation idempotently (hidden marker), independently of draft state.
+              const comments = await github.paginate(github.rest.issues.listComments,
+                { owner, repo, issue_number: pr.number, per_page: 100 });
+              if (!comments.some(c => (c.body || '').includes(MARKER))) {
+                await github.rest.issues.createComment({ owner, repo, issue_number: pr.number, body: BODY });
+              }
 
-          # Draft only if it isn't already one.
-          if [ "$is_draft" = "true" ]; then
-            echo "PR #$PR is already a draft."
-          else
-            gh pr ready "$PR" --repo "$REPO" --undo
-          fi
+              // Draft if not already one (a draft PR can't be merged — the gate).
+              if (pr.draft) { core.info(`PR #${pr.number} already a draft.`); continue; }
+              try {
+                await github.graphql(
+                  'mutation($id: ID!) { convertPullRequestToDraft(input: { pullRequestId: $id }) { pullRequest { isDraft } } }',
+                  { id: pr.node_id });
+                core.info(`PR #${pr.number}: drafted on unresolved [CRITICAL].`);
+              } catch (e) {
+                core.warning(`PR #${pr.number}: could not convert to draft: ${e.message}`);
+              }
+            }
