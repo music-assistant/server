@@ -309,7 +309,7 @@ async def test_import_with_empty_match_providers_narrows_search_to_nothing() -> 
 
 
 async def test_import_source_validation_includes_configured_but_unloaded_provider() -> None:
-    """A configured provider that failed to load still counts for source validation."""
+    """A configured provider that failed to load still counts for search and validation."""
     ctrl = _make_controller()
     ctrl_any = cast("Any", ctrl)
     builtin_prov = _make_builtin_provider_mock()
@@ -338,15 +338,15 @@ async def test_import_source_validation_includes_configured_but_unloaded_provide
 
     call_kwargs = ctrl_any.mass.tasks.run_background_task.call_args.kwargs
     await call_kwargs["handler"]()
-    # the unloaded spotify--1 is still part of the source-validation snapshot (so its
-    # tracks are not mistaken for removed), but it is excluded from the search targets
-    # since nothing can be searched on a provider that isn't loaded
+    # the unloaded spotify--1 is part of both the source-validation snapshot and the
+    # search targets - the deferred task resolves it to a provider object again once
+    # it actually runs, by which point it may well have finished loading
     builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
         "playlist_1",
         1,
         PlaylistMatchPolicy.BEST_EFFORT,
         (("builtin", "builtin"), ("qobuz--1", "qobuz"), ("spotify--1", "spotify")),
-        ("qobuz--1",),
+        ("qobuz--1", "spotify--1"),
     )
 
 
@@ -391,7 +391,8 @@ async def test_import_source_validation_respects_user_provider_filter() -> None:
     """
     A provider outside the requesting user's own filter is never part of the snapshot.
 
-    The builtin provider itself always is.
+    Both source validation and search targets are affected identically - the builtin
+    provider itself always is.
     """
     ctrl = _make_controller()
     ctrl_any = cast("Any", ctrl)
@@ -400,10 +401,6 @@ async def test_import_source_validation_respects_user_provider_filter() -> None:
     builtin_prov.match_imported_playlist_tracks = AsyncMock()
     ctrl_any.mass.get_provider = MagicMock(return_value=builtin_prov)
     ctrl_any.add_item_to_library = AsyncMock(return_value=_make_playlist())
-    ctrl_any.mass.music.providers = [
-        _make_provider_mock("spotify--1", "spotify"),
-        _make_provider_mock("qobuz--1", "qobuz"),
-    ]
     ctrl_any.mass.config.get_provider_configs = AsyncMock(
         return_value=[
             _make_provider_config_mock("spotify--1", "spotify"),
@@ -424,18 +421,16 @@ async def test_import_source_validation_respects_user_provider_filter() -> None:
 
     call_kwargs = ctrl_any.mass.tasks.run_background_task.call_args.kwargs
     await call_kwargs["handler"]()
-    # allowed_provider_instances (source validation) is built from provider configs and
-    # explicitly narrowed by the user's own filter, except the builtin provider - which
-    # is not an opt-in/opt-out streaming choice and always stays authoritatively probable;
-    # search_provider_instances is read straight from mass.music.providers, which already
-    # applies that same filter in production - this double just returns both instances
-    # unfiltered
+    # both source validation and the search target set are derived from the same
+    # configured-and-enabled snapshot, explicitly narrowed by the user's own filter,
+    # except the builtin provider - which is not an opt-in/opt-out streaming choice
+    # and always stays authoritatively probable, but is never itself a search target
     builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
         "playlist_1",
         1,
         PlaylistMatchPolicy.BEST_EFFORT,
         (("builtin", "builtin"), ("qobuz--1", "qobuz")),
-        ("qobuz--1", "spotify--1"),
+        ("qobuz--1",),
     )
 
 

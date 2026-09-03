@@ -404,13 +404,82 @@ async def test_match_confidence_hydrates_album_after_initial_no_match(
         "_get_full_track_album",
         AsyncMock(side_effect=(base_album, candidate_album)),
     ):
-        confidence, _ = await music.tracks._get_match_confidence(
+        confidence, _, _ = await music.tracks._get_match_confidence(
             base,
             candidate,
             None,
         )
 
     assert confidence == TrackMatchConfidence.EXACT
+
+
+async def test_matches_compatible_reuses_hydrated_album_evidence(
+    music: MusicController,
+) -> None:
+    """
+    Two independently EXACT candidates are compatible via reused album evidence.
+
+    Neither is treated as ambiguous against the other for lacking that same
+    evidence in their raw (unhydrated) track.album references.
+    """
+    base = create_track("spotify_1", "base", duration=200)
+    qobuz_candidate = create_track("qobuz_1", "candidate-q", duration=210)
+    deezer_candidate = create_track("deezer_1", "candidate-d", duration=210)
+    base.disc_number = qobuz_candidate.disc_number = deezer_candidate.disc_number = 1
+    base.track_number = qobuz_candidate.track_number = deezer_candidate.track_number = 1
+    mb_album_id = {(ExternalID.MB_ALBUM, "11111111-1111-1111-1111-111111111111")}
+    base_album = create_album("spotify_1", "base-album", name="Album", external_ids=mb_album_id)
+    qobuz_album = create_album("qobuz_1", "qobuz-album", name="Album", external_ids=mb_album_id)
+    deezer_album = create_album("deezer_1", "deezer-album", name="Album", external_ids=mb_album_id)
+    for track, album in (
+        (base, base_album),
+        (qobuz_candidate, qobuz_album),
+        (deezer_candidate, deezer_album),
+    ):
+        track.album = ItemMapping(
+            item_id=album.item_id,
+            provider=album.provider,
+            name=album.name,
+            media_type=MediaType.ALBUM,
+        )
+
+    with patch.object(
+        music.tracks,
+        "_get_full_track_album",
+        AsyncMock(side_effect=(base_album, qobuz_album, deezer_album)),
+    ):
+        (
+            qobuz_confidence,
+            resolved_base_album,
+            qobuz_match_album,
+        ) = await music.tracks._get_match_confidence(base, qobuz_candidate, None)
+        deezer_confidence, _, deezer_match_album = await music.tracks._get_match_confidence(
+            base, deezer_candidate, resolved_base_album
+        )
+
+    assert qobuz_confidence == TrackMatchConfidence.EXACT
+    assert deezer_confidence == TrackMatchConfidence.EXACT
+
+    qobuz_match = TrackProviderMatch(
+        track=qobuz_candidate,
+        mapping=next(iter(qobuz_candidate.provider_mappings)),
+        confidence=qobuz_confidence,
+        album=qobuz_match_album,
+    )
+    deezer_match = TrackProviderMatch(
+        track=deezer_candidate,
+        mapping=next(iter(deezer_candidate.provider_mappings)),
+        confidence=deezer_confidence,
+        album=deezer_match_album,
+    )
+
+    # both candidates are the authoritative release on the base track, so they
+    # must also compare as compatible with each other - without the hydrated
+    # album evidence, the tracks' raw (unhydrated) `.album` references alone
+    # cannot prove this and would be falsely reported ambiguous
+    assert music.tracks._matches_are_compatible(
+        [qobuz_match, deezer_match], TrackMatchConfidence.EXACT
+    )
 
 
 @pytest.mark.parametrize(
@@ -994,6 +1063,7 @@ async def test_find_provider_match_checks_every_artist_credit_query(
                 side_effect=lambda _base, _candidate, base_album, **_kw: (
                     TrackMatchConfidence.EXACT,
                     base_album,
+                    None,
                 )
             ),
         ),
@@ -1199,6 +1269,7 @@ async def test_search_result_with_asymmetric_composite_credit_is_hydrated(
                 side_effect=lambda _base, _candidate, base_album, **_kw: (
                     TrackMatchConfidence.EXACT,
                     base_album,
+                    None,
                 )
             ),
         ),

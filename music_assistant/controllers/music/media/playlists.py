@@ -391,7 +391,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
             # Source ownership is checked against every provider instance the user has
             # configured and enabled, not just the ones currently loaded, so a provider
             # that failed setup or is temporarily down is not mistaken for one the user
-            # removed - only actually searching for a substitute needs a loaded provider.
+            # removed. The same configured-and-enabled snapshot also backs the search
+            # target set below, since the deferred task resolves each instance to a
+            # provider object again once it actually runs.
             # Each instance is snapshotted together with its domain so a domain-only
             # reference can also be expanded from this configured set, independent of
             # whether that instance happens to be loaded right now.
@@ -413,13 +415,21 @@ class PlaylistController(MediaControllerBase[Playlist]):
             # it must not narrow source validation, or a playable original on a provider
             # outside that list would look unavailable and get replaced unnecessarily.
             # An explicit empty list (all providers deselected) must narrow the search
-            # to nothing, so it is checked against None rather than emptiness.
-            search_provider_instances = {item.instance_id for item in self.mass.music.providers}
+            # to nothing, so it is checked against None rather than emptiness. The
+            # builtin instance is excluded from the search set - it exists in the
+            # allowed snapshot only to authoritatively validate a bare HTTP/file
+            # original, it is never itself a substitute-search target.
+            searchable_instances = {
+                instance_id: domain
+                for instance_id, domain in allowed_provider_instances.items()
+                if instance_id != builtin_prov.instance_id
+            }
+            search_provider_instances = set(searchable_instances)
             if match_providers is not None:
                 search_provider_instances = {
-                    item.instance_id
-                    for item in self.mass.music.providers
-                    if item.instance_id in match_providers or item.domain in match_providers
+                    instance_id
+                    for instance_id, domain in searchable_instances.items()
+                    if instance_id in match_providers or domain in match_providers
                 }
             self.mass.tasks.run_background_task(
                 name=f"Import playlist {db_playlist.name}",

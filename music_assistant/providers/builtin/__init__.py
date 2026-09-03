@@ -1233,12 +1233,17 @@ class BuiltinProvider(MusicProvider):
         references (falling back to parsing the raw path for a plain M3U entry that
         carries a bare Music Assistant URI without one) instead of through the shared
         library's mapping resolution, which silently substitutes an arbitrary
-        same-domain instance for a domain-only reference. A provider that is merely
-        down right now, or is configured but not currently loaded (e.g. it failed
-        setup), counts as still usable, so a transient outage does not trigger a
-        permanent substitution. Candidates are only ever expanded within the
-        initiating user's own provider instances, so a domain-only reference can never
-        reach an inaccessible account.
+        same-domain instance for a domain-only reference. A domain-only or foreign
+        reference can expand to several of the caller's own same-domain instances;
+        one of those being down or otherwise unverifiable right now does not rule
+        out another already-healthy sibling actually confirming the item, so every
+        candidate is tried before falling back to a verdict. Only once every
+        candidate is exhausted does an unresolved one count: a provider that is
+        merely down right now, or is configured but not currently loaded (e.g. it
+        failed setup), counts as still usable, so a transient outage does not
+        trigger a permanent substitution. Candidates are only ever expanded within
+        the initiating user's own provider instances, so a domain-only reference can
+        never reach an inaccessible account.
 
         Returns the confirmed provider mapping alongside the playable verdict whenever
         the entry needs it written back to keep resolving on its own next time: a bare
@@ -1300,19 +1305,26 @@ class BuiltinProvider(MusicProvider):
                     allowed_provider_instances,
                 ):
                     candidates.append((instance_id, raw_item_id, needs_provider_metadata))
+        # tracks whether any candidate could not be authoritatively checked at all
+        # (down/unloaded provider, already-known or fresh transient error) - only
+        # once every candidate is exhausted does this decide the final verdict,
+        # so one unreachable sibling instance never rules out trying another
+        any_unverifiable = False
         for provider_instance, provider_item_id, needs_provider_metadata in candidates:
             if provider_instance in failed_source_instances:
                 # a transient error already confirmed this instance unreachable
-                # earlier this pass - assume it is still fine (the same verdict a
-                # fresh probe would give) rather than time out on it again
-                return True, None, frozenset(confirmed_dead)
+                # earlier this pass - skip re-probing (and potentially timing out
+                # on) it again, but still give any other candidate a chance
+                any_unverifiable = True
+                continue
             provider = self.mass.get_provider(provider_instance, return_unavailable=True)
             if provider is None or not provider.available:
                 # every candidate here already passed the allowed-instances snapshot, so
                 # a missing/unavailable provider is a configured source that is merely
-                # down or failed setup right now, not one the user removed - a transient
-                # outage must not trigger a permanent substitution
-                return True, None, frozenset(confirmed_dead)
+                # down or failed setup right now, not one the user removed - try any
+                # other candidate before treating this alone as inconclusive
+                any_unverifiable = True
+                continue
             try:
                 hydrated = await self.mass.music.tracks.get_provider_item(
                     provider_item_id,
@@ -1337,7 +1349,8 @@ class BuiltinProvider(MusicProvider):
                     # provider's own API/HTTP fault) does not prove deletion
                     confirmed_dead.add((provider.instance_id, provider_item_id))
                     continue
-                return True, None, frozenset(confirmed_dead)
+                any_unverifiable = True
+                continue
             except (
                 ResourceTemporarilyUnavailable,
                 ProviderUnavailableError,
@@ -1345,12 +1358,13 @@ class BuiltinProvider(MusicProvider):
                 OSError,
                 TimeoutError,
             ):
-                # could not verify right now (network blip) - assume it is still fine
-                # rather than substitute it, and remember this instance for the rest
-                # of the pass so a large playlist doesn't retry (and re-time-out on)
-                # it once per entry
+                # could not verify right now (network blip) - remember this instance
+                # for the rest of the pass so a large playlist doesn't retry (and
+                # re-time-out on) it once per entry, but still try any other
+                # candidate before treating this alone as inconclusive
                 failed_source_instances.add(provider.instance_id)
-                return True, None, frozenset(confirmed_dead)
+                any_unverifiable = True
+                continue
             else:
                 if not needs_provider_metadata:
                     return True, None, frozenset(confirmed_dead)
@@ -1383,6 +1397,10 @@ class BuiltinProvider(MusicProvider):
                     ),
                     frozenset(confirmed_dead),
                 )
+        if any_unverifiable:
+            # at least one candidate couldn't be authoritatively checked, so the
+            # entry cannot be proven dead - never substitute on an unproven verdict
+            return True, None, frozenset(confirmed_dead)
         return False, None, frozenset(confirmed_dead)
 
     async def _stream_url_confirmed_gone(self, url: str) -> bool:

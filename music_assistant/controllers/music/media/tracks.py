@@ -81,6 +81,12 @@ class TrackProviderMatch:
     track: Track
     mapping: ProviderMapping
     confidence: TrackMatchConfidence
+    # the full hydrated album used to establish this candidate's own confidence,
+    # when album-level release evidence was needed for that; None if confidence
+    # was decided without hydrating an album (e.g. direct item-id/MB_TRACK match),
+    # so a later pairwise compatibility check reuses the same evidence rather than
+    # degrading to the track's raw, unhydrated album reference
+    album: Album | ItemMapping | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -742,7 +748,7 @@ class TracksController(MediaControllerBase[Track]):
                     # of aborting
                     mapped_candidate = None
             if mapped_candidate:
-                confidence, resolved_base_album = await self._get_match_confidence(
+                confidence, resolved_base_album, candidate_album = await self._get_match_confidence(
                     base_track,
                     mapped_candidate,
                     resolved_base_album,
@@ -759,6 +765,7 @@ class TracksController(MediaControllerBase[Track]):
                         track=mapped_candidate,
                         mapping=candidate_mapping,
                         confidence=confidence,
+                        album=candidate_album,
                     )
         if ProviderFeature.SEARCH not in provider.supported_features:
             return TrackProviderMatchResult(match=mapped_match)
@@ -1055,7 +1062,7 @@ class TracksController(MediaControllerBase[Track]):
                     # the caller reports this provider as failed rather than
                     # silently accepting an incomplete candidate set
                     raise
-                confidence, base_album = await self._get_match_confidence(
+                confidence, base_album, candidate_album = await self._get_match_confidence(
                     base_track,
                     candidate,
                     base_album,
@@ -1070,6 +1077,7 @@ class TracksController(MediaControllerBase[Track]):
                     track=candidate,
                     mapping=mapping,
                     confidence=confidence,
+                    album=candidate_album,
                 )
                 candidates.append((len(candidates), candidate_match))
         return candidates
@@ -1082,8 +1090,17 @@ class TracksController(MediaControllerBase[Track]):
         *,
         allow_item_id_match: bool = True,
         allowed_provider_instances: set[str] | None = None,
-    ) -> tuple[TrackMatchConfidence, Album | ItemMapping | None]:
-        """Return candidate confidence with full album evidence when needed."""
+    ) -> tuple[TrackMatchConfidence, Album | ItemMapping | None, Album | ItemMapping | None]:
+        """
+        Return candidate confidence with full album evidence when needed.
+
+        The returned candidate album is the hydrated album actually used to decide
+        the confidence, or ``None`` when no album evidence was needed for the
+        verdict (e.g. a direct item-id/MB_TRACK match) - callers that persist a
+        match should keep this value so a later re-comparison against a sibling
+        candidate reuses the same evidence instead of falling back to the track's
+        raw, unhydrated album reference.
+        """
         confidence = compare_track_evidence(
             base_track,
             candidate,
@@ -1091,7 +1108,7 @@ class TracksController(MediaControllerBase[Track]):
             allow_item_id_match=allow_item_id_match,
         )
         if confidence == TrackMatchConfidence.EXACT:
-            return confidence, base_album
+            return confidence, base_album, None
         if base_album is None:
             base_album = await self._get_full_track_album(
                 base_track, allowed_provider_instances=allowed_provider_instances
@@ -1108,6 +1125,7 @@ class TracksController(MediaControllerBase[Track]):
                 allow_item_id_match=allow_item_id_match,
             ),
             base_album,
+            candidate_album,
         )
 
     @staticmethod
@@ -1236,6 +1254,11 @@ class TracksController(MediaControllerBase[Track]):
         EXACT, since that would let the importer persist one candidate's release evidence
         while the Exact policy is free to later select a conflicting one. Lower tiers only
         require agreement at LIKELY, since that is already their "same recording" floor.
+
+        Each match's own hydrated album (when one was needed to establish its
+        confidence) is reused for this pairwise check, so two candidates that were
+        individually confirmed EXACT via release evidence do not degrade to a lower
+        tier here for lacking that same evidence against each other.
         """
         required = (
             TrackMatchConfidence.EXACT
@@ -1243,7 +1266,13 @@ class TracksController(MediaControllerBase[Track]):
             else TrackMatchConfidence.LIKELY
         )
         return all(
-            compare_track_evidence(base_match.track, compare_match.track) >= required
+            compare_track_evidence(
+                base_match.track,
+                compare_match.track,
+                base_album=base_match.album,
+                compare_album_item=compare_match.album,
+            )
+            >= required
             for index, base_match in enumerate(matches)
             for compare_match in matches[index + 1 :]
         )

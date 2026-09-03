@@ -500,6 +500,52 @@ async def test_transient_source_failure_is_not_reprobed_per_entry() -> None:
     prov_any._write_m3u_file.assert_not_awaited()
 
 
+async def test_domain_only_reference_tries_next_sibling_when_one_is_unavailable() -> None:
+    """One unreachable sibling account must not stop a healthy sibling from being tried."""
+    hydrated = _make_track(
+        "Song",
+        provider_mappings={
+            ProviderMapping(
+                item_id="track_one", provider_domain="spotify", provider_instance="spotify_2"
+            )
+        },
+    )
+    prov = _make_provider(
+        loaded_provider_domains={"builtin"},
+        # spotify_1 is configured but currently down; spotify_2 is a healthy
+        # sibling account of the very same domain and should still get a chance
+        provider_entries=[("spotify", "spotify_1", False), ("spotify", "spotify_2", True)],
+        get_provider_item=AsyncMock(return_value=hydrated),
+    )
+    # a domain-only reference (no pinned instance id) is what triggers the
+    # same-domain sibling widening in the first place
+    item = _make_playlist_item(
+        path="spotify://track/track_one",
+        title="Artist - Song",
+        providers=[ProviderMappingInfo(domain="spotify", item_id="track_one")],
+    )
+    prov_any = _prepare(prov, generate_m3u("Imported", [item]))
+
+    with patch("music_assistant.providers.builtin.set_current_task_report"):
+        await prov.match_imported_playlist_tracks(
+            "playlist_1",
+            1,
+            PlaylistMatchPolicy.BEST_EFFORT,
+            _allowed(prov, "builtin", "spotify_1", "spotify_2"),
+        )
+
+    # the healthy sibling confirmed the item is still there, so it must be
+    # retained and normalized to that instance - never substituted just because
+    # a different sibling account happened to be down
+    prov_any.mass.music.tracks.enrich_provider_mappings.assert_not_called()
+    prov_any._write_m3u_file.assert_awaited_once()
+    written_items = prov_any._write_m3u_file.await_args.args[2]
+    written_mapping = written_items[0].providers[0]
+    assert written_mapping.domain == "spotify"
+    assert written_mapping.item_id == "track_one"
+    assert written_mapping.instance_id == "spotify_2"
+
+
 async def test_confirmed_dead_stream_url_falls_through_to_matching() -> None:
     """A HEAD and corroborating GET both reporting terminal status prove the stream is gone."""
     prov = _make_provider(
