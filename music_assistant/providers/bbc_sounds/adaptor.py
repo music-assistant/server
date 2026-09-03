@@ -49,6 +49,7 @@ from sounds.models import (
 )
 
 import music_assistant.helpers.datetime as dt
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.datetime import LOCAL_TIMEZONE
 from music_assistant.providers.bbc_sounds.constants import ValidMenuIDs, _Constants
 
@@ -876,7 +877,10 @@ class Adaptor:
             BrowseConverter(context),
         ]
         for converter in converters:
-            self.logger.debug(f"Checking if converter {converter} can convert {type(source_obj)}")
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                f"Checking if converter {converter} can convert {type(source_obj)}",
+            )
             if converter.can_convert(source_obj):
                 try:
                     result = await converter.convert(source_obj)
@@ -889,12 +893,19 @@ class Adaptor:
                         "{type(result)} using {type(converter)}"
                     )
                     raise ConversionError(msg)
-                self.provider.logger.debug(
-                    f"Successfully converted {type(source_obj).__name__}"
-                    f" to {type(result).__name__} {result}"
+                msg = (
+                    f"Successfully converted {type(source_obj).__name__} to {type(result).__name__}"
                 )
+                if hasattr(result, "item_id"):
+                    msg += f" item_id: {result.item_id}"
+                if hasattr(result, "urn"):
+                    msg += f" urn: {result.urn}"
+                self.logger.debug(msg)
+                self.provider.logger.log(VERBOSE_LOG_LEVEL, result)
                 return result
-            self.logger.debug(f"Converter {converter} could not convert {type(source_obj)}")
+            self.logger.log(
+                VERBOSE_LOG_LEVEL, f"Converter {converter} could not convert {type(source_obj)}"
+            )
 
         self.logger.warning(f"No converter found for type {type(source_obj).__name__}")
         self.logger.debug(str(source_obj))
