@@ -43,12 +43,11 @@ from music_assistant.models.audio_analysis_provider import (
 from music_assistant.models.music_provider import MusicProvider
 
 LOUDNESS_ANALYSIS_DOMAIN = "loudness_analysis"
-# Virtual AA domain for loudness supplied by music providers (file tags, ReplayGain,
-# server-computed values). No AA provider backs it, so it must bypass the
-# provider-availability gate when merging rows.
+# Virtual AA domain for loudness supplied by music providers (tags, ReplayGain). No AA
+# provider backs it, so it bypasses the provider-availability gate when merging rows.
 PROVIDER_LOUDNESS_DOMAIN = "provider_loudness"
 # Playback normalization prefers provider-supplied loudness over the builtin measurement.
-LOUDNESS_HYDRATION_PRIORITY = (PROVIDER_LOUDNESS_DOMAIN, LOUDNESS_ANALYSIS_DOMAIN)
+LOUDNESS_PROVIDER_PRIORITY = (PROVIDER_LOUDNESS_DOMAIN, LOUDNESS_ANALYSIS_DOMAIN)
 SMART_FADES_ANALYSIS_DOMAIN = "smart_fades"
 SONIC_ANALYSIS_DOMAIN = "sonic_analysis"
 # AA domains trusted for frontend-facing track data (bpm/key/waveform), authoritative first.

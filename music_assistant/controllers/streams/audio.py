@@ -91,7 +91,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.streams.audio_analysis import (
-    LOUDNESS_HYDRATION_PRIORITY,
+    LOUDNESS_PROVIDER_PRIORITY,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.audio_processing import (
@@ -1659,9 +1659,8 @@ class StreamsAudio:
                     streamdetails.item_id,
                     streamdetails.provider,
                     media_type=streamdetails.media_type,
-                    # prefer provider-supplied loudness (tags/metadata); fall back to
-                    # the builtin EBU R128 measurement
-                    priority=LOUDNESS_HYDRATION_PRIORITY,
+                    # provider loudness wins; the builtin measurement is the per-field fallback
+                    priority=LOUDNESS_PROVIDER_PRIORITY,
                 ):
                     if analysis.loudness_integrated is not None:
                         streamdetails.loudness = round(analysis.loudness_integrated, 2)

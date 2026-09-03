@@ -26,7 +26,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.streams.audio_analysis import (
     LOUDNESS_ANALYSIS_DOMAIN,
-    LOUDNESS_HYDRATION_PRIORITY,
+    LOUDNESS_PROVIDER_PRIORITY,
     PROVIDER_LOUDNESS_DOMAIN,
     SMART_FADES_ANALYSIS_DOMAIN,
     SONIC_ANALYSIS_DOMAIN,
@@ -948,7 +948,7 @@ async def test_get_audio_analysis_merges_provider_loudness_without_aa_providers(
 
 
 def test_merged_from_rows_hydration_priority_prefers_provider_loudness() -> None:
-    """LOUDNESS_HYDRATION_PRIORITY prefers provider_loudness; falls back per-field to the measurement."""
+    """LOUDNESS_PROVIDER_PRIORITY prefers provider_loudness; falls back per-field to the measurement."""
     rows = [
         _aa_row(LOUDNESS_ANALYSIS_DOMAIN, 1, loudness_integrated=-7.5, loudness_album=-8.0),
         _aa_row(PROVIDER_LOUDNESS_DOMAIN, 2, loudness_integrated=-9.0),
@@ -956,7 +956,7 @@ def test_merged_from_rows_hydration_priority_prefers_provider_loudness() -> None
     merged = _merged_from_rows(
         rows,
         {PROVIDER_LOUDNESS_DOMAIN, LOUDNESS_ANALYSIS_DOMAIN},
-        priority=LOUDNESS_HYDRATION_PRIORITY,
+        priority=LOUDNESS_PROVIDER_PRIORITY,
     )
     assert merged is not None
     assert merged.loudness_integrated == -9.0  # provider-supplied value wins
