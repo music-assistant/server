@@ -1775,6 +1775,13 @@ async def test_single_item_handler_paces_by_player(
     assert seen["extra_input_args"] == output_pacing_args(profile)  # type: ignore[arg-type]
 
 
+def test_the_reported_cause_skips_an_empty_link_in_the_chain() -> None:
+    """A bare TimeoutError ends plenty of chains; reporting it would say nothing."""
+    err = AudioError("Timeout connecting to Shoutcast stream")
+    err.__cause__ = TimeoutError()
+    assert str(controller_mod._root_cause(err)) == "Timeout connecting to Shoutcast stream"
+
+
 async def test_single_item_handler_ends_a_failed_stream_instead_of_raising(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

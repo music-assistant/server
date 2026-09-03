@@ -2327,7 +2327,11 @@ def _same_ip_family(ip: str, other_ip: str) -> bool:
 
 
 def _root_cause(err: BaseException) -> BaseException:
-    """Return the error a chain of re-raises started from."""
-    while err.__cause__ is not None:
-        err = err.__cause__
-    return err
+    """Return the deepest error in a chain of re-raises that still says something."""
+    # a bare TimeoutError() ends plenty of chains: taking it would report nothing
+    deepest = err
+    while (cause := err.__cause__) is not None:
+        err = cause
+        if str(err):
+            deepest = err
+    return deepest
