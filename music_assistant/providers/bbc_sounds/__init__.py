@@ -295,13 +295,14 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
 
         if dispatch_menu == "listen_live":
             return await self._browse_live()
-        # Categories and collections aren't in the API menus
         if dispatch_menu == "categories":
             return await self._browse_categories(path_parts)
         if dispatch_menu == "collections":
             return await self._browse_collections(path_parts)
         if dispatch_menu == "stations":
             return await self._browse_stations(path_parts)
+        if dispatch_menu == "playlists":
+            return await self._get_playlist(path_parts[2])
         if (
             dispatch_menu != ""
             and dispatch_menu not in ValidMenuIDs
@@ -469,6 +470,26 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             provider_domain=self.domain,
             provider_instance=self.instance_id,
         )
+
+    @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
+    async def _get_playlist(self, pid: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get a playlist from the API.
+
+        When browsing the main menu, or through the "Top Picks for You" section, we might
+        be presented with a Playlist. These don't usually contain their own contents,
+        so we need a helper function to populate them.
+        """
+        playlist_contents = await self.client.streaming.get_playlist_contents(pid=pid)
+        if playlist_contents and type(playlist_contents) is list:
+            return [
+                obj
+                for obj in [
+                    await self._render_browse_item(item) for item in playlist_contents if item
+                ]
+                if obj
+            ]
+        return []
 
     def _stream_error(self, item_id: str, media_type: MediaType) -> MusicAssistantError:
         return MusicAssistantError(f"Couldn't get stream details for {item_id} ({media_type})")
