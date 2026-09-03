@@ -295,7 +295,13 @@ async def add_remove_playlist_tracks(
     def _add_playlist_tracks() -> str | dict[str, Any]:
         ytm = ytmusicapi.YTMusic(auth=headers, user=user)
         if add:
-            return ytm.add_playlist_items(playlistId=prov_playlist_id, videoIds=prov_track_ids)
+            # duplicates=True: YT Music silently drops repeated video IDs otherwise,
+            # which would desync migrated/added playlists from their source order
+            return ytm.add_playlist_items(
+                playlistId=prov_playlist_id,
+                videoIds=prov_track_ids,
+                duplicates=True,
+            )
         return ytm.remove_playlist_items(playlistId=prov_playlist_id, videos=prov_track_ids)
 
     return await _run_ytmusic(_add_playlist_tracks)

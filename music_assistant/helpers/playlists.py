@@ -392,6 +392,19 @@ def sanitize_m3u_value(value: str) -> str:
     return value.translate(_LINE_BREAK_TABLE)
 
 
+def escape_markdown(value: str, table: bool = False) -> str:
+    """
+    Escape provider text before adding it to a Markdown import/migration report.
+
+    :param value: Raw provider text (name, title or error message) to escape.
+    :param table: Whether the value is placed inside a Markdown table cell.
+    """
+    value = value.replace("\r\n", "\n").translate(_LINE_BREAK_TABLE).replace("\\", "\\\\")
+    for character in ("`", "*", "_", "[", "]", "<", ">"):
+        value = value.replace(character, f"\\{character}")
+    return value.replace("|", "\\|") if table else value
+
+
 def generate_m3u(
     playlist_name: str,
     items: Sequence[PlaylistItem],
