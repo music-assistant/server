@@ -307,7 +307,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             and dispatch_menu not in ValidMenuIDs
             and _Constants.LATEST_NEWS_PLAYLIST_SUFFIX not in dispatch_menu
         ):
-            raise MusicAssistantError("Invalid browse path")
+            raise KeyError("Invalid subpath")
         return await self._browse_menu(path_parts)
 
     async def search(

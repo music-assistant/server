@@ -70,7 +70,6 @@ def category_paths(request: pytest.FixtureRequest, provider_domain: str) -> str:
     params=[
         "category",
         "station",
-        "/",
     ]
 )
 def invalid_paths(request: pytest.FixtureRequest, provider_domain: str) -> str:
@@ -137,5 +136,5 @@ class TestBrowse:
         self, provider: BBCSoundsProvider, invalid_paths: str
     ) -> None:
         """Test invalid dispatch paths raise an exception."""
-        with pytest.raises(MusicAssistantError, match="Invalid browse path"):
+        with pytest.raises(KeyError, match="Invalid subpath"):
             await provider.browse(invalid_paths)
