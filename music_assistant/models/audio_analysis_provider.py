@@ -95,9 +95,6 @@ class AudioAnalysisProvider(Provider):
     # the stored version to decide whether to re-analyze a track.
     analysis_version: int = 1
 
-    # AA domain whose stored row (any version) makes this provider's analysis unnecessary.
-    satisfied_by_aa_domain: str | None = None
-
     # Maximum track duration (seconds) this provider will analyze; longer tracks are skipped by
     # start_analysis. None means no limit. Providers that accumulate whole-track state set it.
     max_analysis_duration: float | None = None
@@ -161,15 +158,6 @@ class AudioAnalysisProvider(Provider):
         )
         if stored_version is not None and stored_version >= self.analysis_version:
             return False
-        if self.satisfied_by_aa_domain is not None:
-            external = await self.mass.streams.audio_analysis.get_audio_analysis(
-                streamdetails.item_id,
-                streamdetails.provider,
-                media_type=streamdetails.media_type,
-                priority=(self.satisfied_by_aa_domain,),
-            )
-            if external is not None:
-                return False
         if self.has_unloadable_models and not await self.ensure_models_loaded():
             return False
         self._sessions[session_id] = AnalysisSessionData(

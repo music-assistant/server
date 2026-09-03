@@ -565,76 +565,6 @@ async def test_find_candidates_query_gates_on_current_version(
 
 
 @pytest.mark.asyncio
-async def test_find_candidates_query_gates_on_satisfied_by_domain(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The candidate query must exclude tracks with a satisfied-by-domain row of any version."""
-    controller = _make_controller()
-    p1 = _make_aa_provider("prov-1", available=True)
-    p1.domain = "loudness_analysis"
-    monkeypatch.setattr(
-        controller.__class__,
-        "providers",
-        property(lambda _self: [p1]),
-    )
-
-    fs_prov = MagicMock()
-    fs_prov.domain = "filesystem_local"
-    fs_prov.available = True
-    controller.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
-
-    captured: dict[str, Any] = {}
-
-    async def _capture(query: str, params: dict[str, Any], limit: int) -> list[Any]:  # noqa: ARG001
-        captured["query"] = query
-        captured["params"] = params
-        return []
-
-    controller.mass.music.database.get_rows_from_query = AsyncMock(side_effect=_capture)  # type: ignore[method-assign]
-
-    await controller._find_candidates_missing_analysis(
-        {"loudness_analysis": 2}, 0, satisfied_by_domains={"loudness_analysis": "provider_loudness"}
-    )
-
-    sql = captured["query"]
-    assert "aa_provider_domain = possible.satisfied_by_domain" in sql
-    assert captured["params"]["alt_0"] == "provider_loudness"
-
-
-@pytest.mark.asyncio
-async def test_find_candidates_query_binds_none_without_satisfied_by_domains(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Omitting satisfied_by_domains must bind alt_0 as None, preserving existing behavior."""
-    controller = _make_controller()
-    p1 = _make_aa_provider("prov-1", available=True)
-    p1.domain = "sonic_analysis"
-    monkeypatch.setattr(
-        controller.__class__,
-        "providers",
-        property(lambda _self: [p1]),
-    )
-
-    fs_prov = MagicMock()
-    fs_prov.domain = "filesystem_local"
-    fs_prov.available = True
-    controller.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
-
-    captured: dict[str, Any] = {}
-
-    async def _capture(query: str, params: dict[str, Any], limit: int) -> list[Any]:  # noqa: ARG001
-        captured["query"] = query
-        captured["params"] = params
-        return []
-
-    controller.mass.music.database.get_rows_from_query = AsyncMock(side_effect=_capture)  # type: ignore[method-assign]
-
-    await controller._find_candidates_missing_analysis({"sonic_analysis": 3}, 0)
-
-    assert captured["params"]["alt_0"] is None
-
-
-@pytest.mark.asyncio
 async def test_run_background_scan_concurrency_semaphore(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1048,24 +978,7 @@ async def test_get_audio_analysis_count_filters_by_domain_and_track_media_type()
     sql, params = db.get_count_from_query.await_args.args
     assert "aa_provider_domain = :aa_provider_domain" in sql
     assert "media_type = :media_type" in sql
-    assert params == {
-        "aa_provider_domain": "sonic_analysis",
-        "extra_domain": None,
-        "media_type": MediaType.TRACK.value,
-    }
-
-
-@pytest.mark.asyncio
-async def test_get_audio_analysis_count_extra_domain_counts_unique_tracks() -> None:
-    """With extra_domain, the count deduplicates tracks across both AA domains."""
-    c, db = _stub_controller(count_result=0)
-    await c.get_audio_analysis_count(
-        LOUDNESS_ANALYSIS_DOMAIN, extra_domain=PROVIDER_LOUDNESS_DOMAIN
-    )
-    sql, params = db.get_count_from_query.await_args.args
-    assert "SELECT DISTINCT item_id, provider" in sql
-    assert "aa_provider_domain = :extra_domain" in sql
-    assert params["extra_domain"] == PROVIDER_LOUDNESS_DOMAIN
+    assert params == {"aa_provider_domain": "sonic_analysis", "media_type": MediaType.TRACK.value}
 
 
 @pytest.mark.asyncio
@@ -1349,7 +1262,6 @@ def _make_aa_provider_with_domain(
     provider.domain = domain
     provider.available = available
     provider.analysis_version = analysis_version
-    provider.satisfied_by_aa_domain = None
     return provider
 
 
@@ -1373,26 +1285,6 @@ async def test_coverage_returns_three_counts_and_version() -> None:
         stale_version=5,
         analysis_version=3,
     )
-
-
-@pytest.mark.asyncio
-async def test_coverage_counts_satisfying_domain_and_excludes_satisfied_stale() -> None:
-    """With a satisfying domain, analyzed includes its rows and stale excludes satisfied tracks."""
-    c, db = _stub_controller()
-    p = _make_aa_provider_with_domain(LOUDNESS_ANALYSIS_DOMAIN, analysis_version=2)
-    p.satisfied_by_aa_domain = PROVIDER_LOUDNESS_DOMAIN
-    c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
-    c._count_candidates_missing_analysis = AsyncMock(return_value=0)  # type: ignore[method-assign]
-
-    await c.get_coverage(aa_domain=LOUDNESS_ANALYSIS_DOMAIN)
-
-    analyzed_sql, analyzed_params = db.get_count_from_query.await_args_list[0].args
-    assert "aa_provider_domain = :extra_domain" in analyzed_sql
-    assert analyzed_params["extra_domain"] == PROVIDER_LOUDNESS_DOMAIN
-    stale_sql, stale_params = db.get_count_from_query.await_args_list[1].args
-    assert "NOT EXISTS" in stale_sql
-    assert "alt.aa_provider_domain = :satisfied_by_domain" in stale_sql
-    assert stale_params["satisfied_by_domain"] == PROVIDER_LOUDNESS_DOMAIN
 
 
 @pytest.mark.asyncio
@@ -1423,7 +1315,6 @@ async def test_coverage_stale_query_counts_null_analysis_version_as_stale() -> N
         "aa_domain": "sonic_analysis",
         "media_type": MediaType.TRACK.value,
         "current_version": 3,
-        "satisfied_by_domain": None,
     }
 
 

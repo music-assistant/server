@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import MediaType, VolumeNormalizationMode
 
 from music_assistant.constants import CONF_LOG_LEVEL
 from music_assistant.controllers.streams.audio_analysis import PROVIDER_LOUDNESS_DOMAIN
@@ -346,24 +346,19 @@ async def test_start_analysis_requests_peak_measurement(
 
 
 @pytest.mark.asyncio
-async def test_start_analysis_declines_when_provider_loudness_exists(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """start_analysis must decline without calling _start_analysis when provider loudness exists."""
+async def test_start_analysis_declines_when_provider_loudness_exists() -> None:
+    """_start_analysis must decline the session when a provider_loudness row exists."""
     provider = _make_provider()
     provider.mass.streams.audio_analysis.get_audio_analysis = AsyncMock(  # type: ignore[method-assign]
         return_value=AudioAnalysisData(loudness_integrated=-9.0)
     )
-    start_analysis_mock = AsyncMock(return_value=True)
-    monkeypatch.setattr(provider, "_start_analysis", start_analysis_mock)
-
     _session_data, streamdetails = _make_session_data()
-    streamdetails.duration = 200
+    streamdetails.volume_normalization_mode = VolumeNormalizationMode.FALLBACK_DYNAMIC
 
-    result = await provider.start_analysis("session-gate-skip", streamdetails, MagicMock())
+    result = await provider._start_analysis("session-gate-skip", streamdetails, MagicMock())
 
     assert result is False
-    start_analysis_mock.assert_not_awaited()
+    assert "session-gate-skip" not in provider._data
     provider.mass.streams.audio_analysis.get_audio_analysis.assert_awaited_once_with(
         streamdetails.item_id,
         streamdetails.provider,
@@ -376,15 +371,19 @@ async def test_start_analysis_declines_when_provider_loudness_exists(
 async def test_start_analysis_proceeds_when_no_provider_loudness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """start_analysis must call _start_analysis when no provider_loudness row exists."""
+    """_start_analysis must accept the session when no provider_loudness row exists."""
     provider = _make_provider()
-    start_analysis_mock = AsyncMock(return_value=True)
-    monkeypatch.setattr(provider, "_start_analysis", start_analysis_mock)
-
     _session_data, streamdetails = _make_session_data()
-    streamdetails.duration = 200
+    streamdetails.volume_normalization_mode = VolumeNormalizationMode.FALLBACK_DYNAMIC
 
-    result = await provider.start_analysis("session-gate-proceed", streamdetails, MagicMock())
+    fake_ffmpeg = MagicMock()
+    fake_ffmpeg.start = AsyncMock()
+    monkeypatch.setattr(
+        "music_assistant.providers.loudness_analysis.provider.FFMpeg",
+        MagicMock(return_value=fake_ffmpeg),
+    )
+
+    result = await provider._start_analysis("session-gate-proceed", streamdetails, MagicMock())
 
     assert result is True
-    start_analysis_mock.assert_awaited_once()
+    assert "session-gate-proceed" in provider._data

@@ -50,7 +50,6 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
     """Audio analysis provider that measures EBU R128 integrated loudness."""
 
     analysis_version: int = 2
-    satisfied_by_aa_domain: str | None = PROVIDER_LOUDNESS_DOMAIN
 
     def __init__(
         self,
@@ -134,6 +133,16 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
             VolumeNormalizationMode.DISABLED,
             VolumeNormalizationMode.SOURCE,
         ):
+            return False
+        # a music provider already supplied this track's loudness; measuring it again
+        # would be wasted work (the provider value wins during playback anyway)
+        provider_loudness = await self.mass.streams.audio_analysis.get_audio_analysis(
+            streamdetails.item_id,
+            streamdetails.provider,
+            media_type=streamdetails.media_type,
+            priority=(PROVIDER_LOUDNESS_DOMAIN,),
+        )
+        if provider_loudness is not None:
             return False
         ffmpeg = FFMpeg(
             audio_input="-",
