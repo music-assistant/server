@@ -32,6 +32,7 @@ from music_assistant.helpers.playlists import (
     PlaylistItem,
     ProviderMappingInfo,
     construct_media_item_from_playlist_item,
+    escape_markdown,
     fetch_playlist,
     generate_m3u,
     media_item_to_playlist_item,
@@ -396,6 +397,22 @@ def test_generate_m3u_leaves_values_without_line_breaks_alone() -> None:
     assert sanitize_m3u_value(title) == title
     items = [PlaylistItem(path="spotify://track/abc123", title=title, length="240")]
     assert f"#EXTINF:240,{title}\n" in generate_m3u("My Playlist", items)
+
+
+@pytest.mark.parametrize("line_break", ["\n", "\r", "\r\n"])
+def test_escape_markdown_normalizes_all_line_breaks(line_break: str) -> None:
+    """A lone CR must be neutralized the same as a LF, or it can escape a report row."""
+    escaped = escape_markdown(f"Artist{line_break}Name", table=True)
+    assert "\n" not in escaped
+    assert "\r" not in escaped
+    assert escaped == "Artist Name"
+
+
+def test_escape_markdown_escapes_markdown_and_table_syntax() -> None:
+    """Provider text must not be able to inject Markdown formatting or break a table cell."""
+    assert escape_markdown("a|b") == "a|b"
+    assert escape_markdown("a|b", table=True) == "a\\|b"
+    assert escape_markdown("*bold* `code` [link](url)") == "\\*bold\\* \\`code\\` \\[link\\](url)"
 
 
 def test_generate_m3u_no_extinf_without_title() -> None:

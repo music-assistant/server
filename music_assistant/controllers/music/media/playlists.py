@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+from bisect import bisect_right
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, cast
+from dataclasses import dataclass
+from itertools import batched
+from typing import TYPE_CHECKING, Any, Final, cast
 
+from aiohttp import ClientError
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
     MediaType,
@@ -18,20 +23,26 @@ from music_assistant_models.errors import (
     InvalidProviderURI,
     MediaNotFoundError,
     ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.helpers import create_safe_string
-from music_assistant_models.media_items import Playlist, PlaylistSummary
+from music_assistant_models.media_items import Playlist, PlaylistSummary, ProviderMapping, Track
 
 from music_assistant.constants import DB_TABLE_PLAYLISTS, PLAYLIST_MEDIA_TYPES, PlaylistPlayableItem
 from music_assistant.controllers.tasks.context import (
+    get_current_task,
+    report_current_task_failure,
+    set_current_task_report,
     update_current_task_progress,
     update_current_task_progress_text,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.helpers.compare import TrackMatchConfidence, match_policy_minimum_confidence
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.playlists import (
     PlaylistItem,
+    escape_markdown,
     generate_m3u,
     media_item_to_playlist_item,
 )
@@ -39,11 +50,17 @@ from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.uri import create_uri, parse_uri
 from music_assistant.helpers.util import guard_single_request
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.plugin import PluginProvider
 
 from .audiobooks import AudiobooksController
 from .base import MediaControllerBase
 from .radio import RadioController
-from .tracks import TracksController
+from .tracks import TrackProviderMatch, TracksController
+
+_PROVIDER_PLAYLIST_ADD_BATCH_SIZE: Final[int] = 100
+_MIGRATION_REPORT_DETAIL_LIMIT: Final[int] = 200
+_MIGRATION_RESOLVE_BATCH_SIZE: Final[int] = 5
+_MIGRATION_VERIFY_RETRY_DELAYS: Final[tuple[int, ...]] = (1, 2, 4)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -67,6 +84,21 @@ def _update_stage_progress(
         return
     progress = start + int((current * (end - start)) / total)
     update_current_task_progress(min(progress, end), text)
+
+
+@dataclass(frozen=True, slots=True)
+class _PlaylistMigrationTrackResult:
+    """Resolved destination details for one source track."""
+
+    track: Track | None = None
+    mapping: ProviderMapping | None = None
+    confidence: TrackMatchConfidence = TrackMatchConfidence.NO_MATCH
+    provider_matches: tuple[TrackProviderMatch, ...] = ()
+    ambiguous_providers: tuple[str, ...] = ()
+    failed_providers: tuple[str, ...] = ()
+    used_library_item: bool = False
+    ambiguous: bool = False
+    error: str | None = None
 
 
 class PlaylistController(MediaControllerBase[Playlist]):
@@ -110,6 +142,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
             self.import_playlist,
             required_scope=Scope.LIBRARY_WRITE,
         )
+        self.mass.register_api_command(
+            "music/playlists/migrate_playlist",
+            self.migrate_playlist,
+            required_scope=Scope.LIBRARY_WRITE,
+        )
 
     @property
     def summary_query(self) -> tuple[str, dict[str, Any]]:
@@ -134,8 +171,17 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider_instance_id_or_domain: str,
         force_refresh: bool = False,
         allow_dynamic_tracks: bool = False,
+        strict_provider_instance: bool = False,
     ) -> AsyncGenerator[PlaylistPlayableItem]:
-        """Return playlist tracks for the given provider playlist id."""
+        """
+        Return playlist items for a provider playlist.
+
+        :param item_id: Provider playlist ID.
+        :param provider_instance_id_or_domain: Provider instance ID or domain.
+        :param force_refresh: Bypass cached playlist contents.
+        :param allow_dynamic_tracks: Request a fresh sample from dynamic playlists.
+        :param strict_provider_instance: Do not fall back to another provider instance.
+        """
         if provider_instance_id_or_domain == "library":
             library_item = await self.get_library_item(item_id)
             provider_instance_id_or_domain, item_id = self._select_provider_id(library_item)
@@ -155,6 +201,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 provider_instance_id_or_domain,
                 page=page,
                 force_refresh=force_refresh,
+                strict_provider_instance=strict_provider_instance,
             )
             if not tracks:
                 break
@@ -167,12 +214,26 @@ class PlaylistController(MediaControllerBase[Playlist]):
         name: str,
         media_types: list[MediaType] | None = None,
         provider_instance_or_domain: str | None = None,
+        strict_provider_instance: bool = False,
     ) -> Playlist:
-        """Create new playlist."""
+        """
+        Create a playlist on an available provider.
+
+        :param name: Playlist name.
+        :param media_types: Media types the playlist must support.
+        :param provider_instance_or_domain: Destination provider instance ID or domain.
+        :param strict_provider_instance: Do not fall back to another provider instance.
+        """
         # if provider is omitted, just pick builtin provider
         if provider_instance_or_domain:
-            provider = self.mass.get_provider(provider_instance_or_domain)
-            if provider is None:
+            provider = self.mass.get_provider(
+                provider_instance_or_domain,
+                return_unavailable=strict_provider_instance,
+            )
+            if provider is None or (
+                strict_provider_instance
+                and (provider.instance_id != provider_instance_or_domain or not provider.available)
+            ):
                 raise ProviderUnavailableError
         else:
             provider = self.mass.get_provider("builtin")
@@ -413,6 +474,714 @@ class PlaylistController(MediaControllerBase[Playlist]):
             )
         return db_playlist
 
+    async def migrate_playlist(
+        self,
+        db_playlist_id: str | int,
+        destination_provider: str = "builtin",
+        name: str | None = None,
+        match_policy: PlaylistMatchPolicy = PlaylistMatchPolicy.SAME_RECORDING,
+    ) -> BackgroundTask:
+        """
+        Queue copying a playlist to another provider or Music Assistant.
+
+        :param db_playlist_id: Library database ID of the source playlist.
+        :param destination_provider: Destination provider instance ID or domain.
+        :param name: Optional destination playlist name.
+        :param match_policy: Lowest track-match confidence that may be accepted.
+        :return: Managed background task performing the migration.
+        """
+        source_playlist = await self.get_library_item(int(db_playlist_id))
+        if source_playlist.is_dynamic:
+            raise InvalidDataError("Dynamic playlists can not be migrated")
+        # exclude unavailable providers: mass.music.providers only applies user filtering,
+        # so an unavailable instance would otherwise be selected and fail once the task runs
+        available_providers = [item for item in self.mass.music.providers if item.available]
+        provider = next(
+            (item for item in available_providers if item.instance_id == destination_provider),
+            None,
+        ) or next(
+            (item for item in available_providers if item.domain == destination_provider),
+            None,
+        )
+        if provider is None and destination_provider == "builtin":
+            provider = self.mass.get_provider(
+                "builtin",
+                provider_type=MusicProvider,
+            )
+        if not provider or not isinstance(provider, MusicProvider):
+            raise ProviderUnavailableError(f"Provider {destination_provider} is not available")
+        if provider.domain != "builtin" and not provider.is_streaming_provider:
+            raise InvalidDataError(
+                "Playlists can only be migrated to Music Assistant or a streaming provider"
+            )
+        if not (
+            {
+                ProviderFeature.PLAYLIST_CREATE,
+                ProviderFeature.PLAYLIST_CREATE_TRACKS,
+            }
+            & provider.supported_features
+        ):
+            raise InvalidDataError(
+                f"Provider {provider.name} does not support creating track playlists"
+            )
+        if ProviderFeature.PLAYLIST_TRACKS_EDIT not in provider.supported_features:
+            raise InvalidDataError(f"Provider {provider.name} does not support editing playlists")
+        if MediaType.TRACK not in provider.supported_media_types:
+            raise InvalidDataError(f"Provider {provider.name} does not support track playlists")
+        destination_name = name or source_playlist.name
+        if not is_safe_name(destination_name):
+            raise InvalidDataError(f"{destination_name} is not a valid Playlist name")
+
+        user = get_current_user()
+        source_provider, source_item_id = self._select_provider_id(source_playlist)
+        allowed_provider_instances = {item.instance_id for item in available_providers}
+        source_provider_obj = self.mass.get_provider(
+            source_provider,
+            return_unavailable=True,
+        )
+        if (
+            not isinstance(source_provider_obj, MusicProvider | PluginProvider)
+            or source_provider_obj.instance_id != source_provider
+            or not source_provider_obj.available
+        ):
+            raise ProviderUnavailableError(f"Provider {source_provider} is not available")
+        if isinstance(source_provider_obj, MusicProvider):
+            if (
+                source_provider not in allowed_provider_instances
+                and source_provider_obj.domain != "builtin"
+            ):
+                raise ProviderUnavailableError(f"Provider {source_provider} is not available")
+            allowed_provider_instances.add(source_provider)
+        allowed_provider_instances.add(provider.instance_id)
+        return self.mass.tasks.run_background_task(
+            name=f"Migrate playlist {source_playlist.name}",
+            handler=lambda: self._handle_migrate_playlist(
+                source_playlist.item_id,
+                source_item_id,
+                source_provider,
+                provider.instance_id,
+                destination_name,
+                match_policy,
+                tuple(sorted(allowed_provider_instances)),
+            ),
+            user_id=user.user_id if user else None,
+            metadata={
+                "task_domain": "playlist_migration",
+                "source_playlist_id": source_playlist.item_id,
+                "source_playlist_name": source_playlist.name,
+                "destination_provider": provider.instance_id,
+                "destination_provider_name": provider.name,
+                "match_policy": match_policy.value,
+            },
+            allow_cancel=True,
+            priority=True,
+        )
+
+    async def _handle_migrate_playlist(
+        self,
+        source_playlist_id: str,
+        source_playlist_item_id: str,
+        source_provider: str,
+        destination_provider: str,
+        destination_name: str,
+        match_policy: PlaylistMatchPolicy,
+        allowed_provider_instances: tuple[str, ...],
+    ) -> None:
+        """Resolve and copy a playlist inside a managed task."""
+        source_playlist = await self.get_library_item(source_playlist_id)
+        if source_playlist.is_dynamic:
+            raise InvalidDataError("Dynamic playlists can not be migrated")
+        provider = self.mass.get_provider(
+            destination_provider,
+            return_unavailable=True,
+        )
+        if (
+            not isinstance(provider, MusicProvider)
+            or provider.instance_id != destination_provider
+            or not provider.available
+        ):
+            raise ProviderUnavailableError(f"Provider {destination_provider} is not available")
+        source_provider_obj = self.mass.get_provider(
+            source_provider,
+            return_unavailable=True,
+        )
+        if (
+            not isinstance(source_provider_obj, MusicProvider | PluginProvider)
+            or source_provider_obj.instance_id != source_provider
+            or not source_provider_obj.available
+        ):
+            raise ProviderUnavailableError(f"Provider {source_provider} is not available")
+        trust_source_mappings = (
+            isinstance(source_provider_obj, MusicProvider)
+            and source_provider_obj.domain != "builtin"
+        )
+        update_current_task_progress(0, "Loading source playlist")
+        source_tracks: list[Track] = []
+        unsupported_items: list[tuple[str, str]] = []
+        async for item in self.tracks(
+            source_playlist_item_id,
+            source_provider,
+            force_refresh=True,
+            strict_provider_instance=True,
+        ):
+            if isinstance(item, Track):
+                source_tracks.append(item)
+                continue
+            reason = (
+                f"{item.media_type.value.replace('_', ' ').capitalize()} entries are not supported"
+            )
+            report_current_task_failure(f"{item.name}: {reason.lower()}")
+            unsupported_items.append((item.name, reason))
+        if not source_tracks:
+            raise InvalidDataError("The source playlist has no tracks to migrate")
+
+        minimum_confidence = match_policy_minimum_confidence(match_policy)
+        unique_tracks = {self._migration_track_key(track): track for track in source_tracks}
+        allowed_provider_instance_set = set(allowed_provider_instances)
+        failed_provider_instances: set[str] = set()
+        completed = 0
+
+        async def resolve_track(
+            key: str, track: Track
+        ) -> tuple[str, _PlaylistMigrationTrackResult]:
+            nonlocal completed
+            result = await self._resolve_migration_track(
+                track,
+                provider,
+                minimum_confidence,
+                allowed_provider_instance_set,
+                trust_source_mappings,
+                failed_provider_instances,
+            )
+            completed += 1
+            _update_stage_progress(
+                completed,
+                len(unique_tracks),
+                5,
+                80,
+                f"Matching track {completed}/{len(unique_tracks)}",
+            )
+            return key, result
+
+        resolved_items: list[tuple[str, _PlaylistMigrationTrackResult]] = []
+        for track_batch in batched(
+            unique_tracks.items(),
+            _MIGRATION_RESOLVE_BATCH_SIZE,
+            strict=False,
+        ):
+            resolved_items.extend(
+                await asyncio.gather(*(resolve_track(key, track) for key, track in track_batch))
+            )
+        resolved_tracks = dict(resolved_items)
+        target_ids: list[str] = []
+        target_results: list[tuple[Track, _PlaylistMigrationTrackResult]] = []
+        builtin_entries: list[PlaylistItem] = []
+        counts = {
+            "total": len(source_tracks) + len(unsupported_items),
+            "exact": 0,
+            "same_recording": 0,
+            "best_effort": 0,
+            "skipped": len(unsupported_items),
+            "ambiguous": 0,
+            "library_matches": 0,
+            "provider_matches": 0,
+        }
+        substitutions_by_track: dict[str, tuple[str, str, str]] = {}
+        skipped_items = unsupported_items.copy()
+        provider_issues: list[tuple[str, str]] = []
+        for key, result in resolved_tracks.items():
+            track = unique_tracks[key]
+            track_label = self._migration_track_label(track)
+            if result.used_library_item:
+                counts["library_matches"] += 1
+            counts["provider_matches"] += len(result.provider_matches)
+            if result.error:
+                report_current_task_failure(f"{track_label}: {result.error}")
+                if provider.domain == "builtin":
+                    provider_issues.append((track_label, result.error))
+            for provider_name in result.failed_providers:
+                issue = f"Matching failed on {provider_name}"
+                report_current_task_failure(f"{track_label}: {issue.lower()}")
+                provider_issues.append((track_label, issue))
+            for provider_name in result.ambiguous_providers:
+                issue = f"Ambiguous match on {provider_name}"
+                report_current_task_failure(f"{track_label}: {issue.lower()}")
+                provider_issues.append((track_label, issue))
+            if provider.domain == "builtin" and result.track:
+                continue
+            if result.mapping:
+                if result.track and result.confidence != TrackMatchConfidence.EXACT:
+                    substitutions_by_track[key] = (
+                        track_label,
+                        self._migration_track_label(result.track),
+                        "Same recording"
+                        if result.confidence == TrackMatchConfidence.LIKELY
+                        else "Best effort",
+                    )
+                continue
+            if result.error:
+                skipped_items.append((track_label, result.error))
+                continue
+            reason = (
+                "multiple equally likely matches" if result.ambiguous else "no acceptable match"
+            )
+            report_current_task_failure(f"{track_label}: {reason}")
+            skipped_items.append((track_label, reason.capitalize()))
+
+        seen_target_ids: set[str] = set()
+        for track in source_tracks:
+            result = resolved_tracks[self._migration_track_key(track)]
+            if provider.domain == "builtin" and result.track:
+                builtin_entries.append(media_item_to_playlist_item(result.track))
+                continue
+            if not result.mapping:
+                counts["skipped"] += 1
+                if result.ambiguous:
+                    counts["ambiguous"] += 1
+                continue
+            if (
+                not provider.playlist_duplicates_supported
+                and result.mapping.item_id in seen_target_ids
+            ):
+                reason = f"{provider.name} does not support duplicate playlist entries"
+                counts["skipped"] += 1
+                report_current_task_failure(
+                    f"{self._migration_track_label(track)}: {reason.lower()}"
+                )
+                skipped_items.append((self._migration_track_label(track), reason))
+                continue
+            seen_target_ids.add(result.mapping.item_id)
+            target_ids.append(result.mapping.item_id)
+            target_results.append((track, result))
+            self._adjust_migration_match_count(
+                counts,
+                result.confidence,
+                1,
+            )
+
+        prepared_count = (
+            len(builtin_entries) if provider.domain == "builtin" else len(target_results)
+        )
+        set_current_task_report(
+            self._build_migration_report(
+                source_playlist.name,
+                destination_name,
+                provider.name,
+                prepared_count,
+                counts,
+                list(substitutions_by_track.values()),
+                skipped_items,
+                provider_issues,
+                completed=False,
+                builtin_destination=provider.domain == "builtin",
+            )
+        )
+        if not prepared_count:
+            raise InvalidDataError("No tracks could be migrated")
+        update_current_task_progress(85, "Creating destination playlist")
+        if provider.domain == "builtin":
+            destination_playlist = await self._create_builtin_migration_playlist(
+                destination_name,
+                builtin_entries,
+                source_playlist.image.path if source_playlist.image else None,
+            )
+            migrated_count = prepared_count
+        else:
+            destination_playlist = await self.create_playlist(
+                destination_name,
+                media_types=[MediaType.TRACK],
+                provider_instance_or_domain=provider.instance_id,
+                strict_provider_instance=True,
+            )
+            playlist_provider, playlist_item_id = self._select_provider_id(destination_playlist)
+            if playlist_provider != provider.instance_id:
+                raise ProviderUnavailableError(
+                    f"Created playlist is not available on provider {provider.name}"
+                )
+            update_current_task_progress(
+                90,
+                f"Adding {len(target_ids)} tracks to destination playlist",
+            )
+            await self._add_provider_playlist_tracks(
+                provider,
+                playlist_item_id,
+                target_ids,
+            )
+            update_current_task_progress(95, "Verifying destination playlist")
+            try:
+                confirmed_indexes, destination_mismatch = await self._verify_migration_results(
+                    playlist_item_id,
+                    provider.instance_id,
+                    target_results,
+                )
+            except (
+                ResourceTemporarilyUnavailable,
+                ProviderUnavailableError,
+                MediaNotFoundError,
+                ClientError,
+                OSError,
+                TimeoutError,
+            ) as err:
+                migrated_count = len(target_results)
+                issue = (
+                    "Could not verify destination playlist: "
+                    f"{self._migration_error_message(err, 'Verification failed')}"
+                )
+                self.logger.warning(
+                    "Could not verify migrated playlist %s on provider %s: %s",
+                    destination_playlist.name,
+                    provider.name,
+                    err,
+                )
+                report_current_task_failure(issue)
+                provider_issues.append(("Destination playlist", issue))
+            else:
+                missing_results = [
+                    target_result
+                    for index, target_result in enumerate(target_results)
+                    if index not in confirmed_indexes
+                ]
+                migrated_count = len(confirmed_indexes)
+                for track, result in missing_results:
+                    reason = f"{provider.name} did not add this track in the expected order"
+                    counts["skipped"] += 1
+                    self._adjust_migration_match_count(
+                        counts,
+                        result.confidence,
+                        -1,
+                    )
+                    report_current_task_failure(
+                        f"{self._migration_track_label(track)}: {reason.lower()}"
+                    )
+                    skipped_items.append((self._migration_track_label(track), reason))
+                if destination_mismatch:
+                    issue = "Destination playlist contains unexpected or reordered tracks"
+                    report_current_task_failure(issue)
+                    provider_issues.append(("Destination playlist", issue))
+                confirmed_track_keys = {
+                    self._migration_track_key(target_results[index][0])
+                    for index in confirmed_indexes
+                }
+                substitutions_by_track = {
+                    key: substitution
+                    for key, substitution in substitutions_by_track.items()
+                    if key in confirmed_track_keys
+                }
+            destination_playlist.metadata.last_refresh = None
+            await self.update_item_in_library(
+                destination_playlist.item_id,
+                destination_playlist,
+            )
+
+        if current_task := get_current_task():
+            current_task.metadata.update(
+                {
+                    "playlist_id": destination_playlist.item_id,
+                    "playlist_name": destination_playlist.name,
+                    "migrated_count": migrated_count,
+                    **counts,
+                }
+            )
+        set_current_task_report(
+            self._build_migration_report(
+                source_playlist.name,
+                destination_playlist.name,
+                provider.name,
+                migrated_count,
+                counts,
+                list(substitutions_by_track.values()),
+                skipped_items,
+                provider_issues,
+                completed=True,
+                builtin_destination=provider.domain == "builtin",
+            )
+        )
+        if not migrated_count:
+            raise InvalidDataError("The destination provider did not add any tracks")
+        update_current_task_progress(
+            100,
+            f"Migrated {migrated_count} of {counts['total']} playlist items",
+        )
+
+    async def _resolve_migration_track(
+        self,
+        track: Track,
+        provider: MusicProvider,
+        minimum_confidence: TrackMatchConfidence,
+        allowed_provider_instances: set[str],
+        trust_source_mappings: bool,
+        failed_provider_instances: set[str],
+    ) -> _PlaylistMigrationTrackResult:
+        """Resolve one source track for a migration destination."""
+        if provider.domain != "builtin" and provider.instance_id in failed_provider_instances:
+            return _PlaylistMigrationTrackResult(
+                error=f"Matching unavailable on {provider.name} after an earlier failure"
+            )
+        try:
+            if provider.domain == "builtin":
+                enrichment = await self.mass.music.tracks.enrich_provider_mappings(
+                    track,
+                    minimum_confidence=minimum_confidence,
+                    provider_instance_ids=allowed_provider_instances,
+                    trust_track_mappings=trust_source_mappings,
+                    failed_provider_instances=failed_provider_instances,
+                )
+                return _PlaylistMigrationTrackResult(
+                    track=enrichment.track if enrichment.track.provider_mappings else None,
+                    provider_matches=enrichment.matches,
+                    ambiguous_providers=enrichment.ambiguous_providers,
+                    failed_providers=enrichment.failed_providers,
+                    used_library_item=enrichment.used_library_item,
+                )
+            library_track = await self.mass.music.tracks.get_library_match(track)
+            result = await self.mass.music.tracks.find_provider_match(
+                track,
+                provider,
+                minimum_confidence=minimum_confidence,
+                mapping_source=library_track,
+                allowed_provider_instances=allowed_provider_instances,
+                trust_base_mapping=trust_source_mappings,
+            )
+            if not result.match:
+                return _PlaylistMigrationTrackResult(
+                    used_library_item=library_track is not None,
+                    ambiguous=result.ambiguous,
+                )
+            return _PlaylistMigrationTrackResult(
+                track=result.match.track,
+                mapping=result.match.mapping,
+                confidence=result.match.confidence,
+                used_library_item=library_track is not None,
+            )
+        except (
+            ResourceTemporarilyUnavailable,
+            ProviderUnavailableError,
+            ClientError,
+            OSError,
+            TimeoutError,
+        ) as err:
+            failed_provider_instances.add(provider.instance_id)
+            return _PlaylistMigrationTrackResult(
+                error=self._migration_error_message(
+                    err,
+                    f"Matching failed on {provider.name}",
+                )
+            )
+        except (InvalidDataError, MediaNotFoundError) as err:
+            return _PlaylistMigrationTrackResult(
+                error=self._migration_error_message(
+                    err,
+                    f"Matching failed on {provider.name}",
+                ),
+            )
+
+    async def _create_builtin_migration_playlist(
+        self,
+        name: str,
+        entries: list[PlaylistItem],
+        image_url: str | None,
+    ) -> Playlist:
+        """Create a Music Assistant playlist from resolved entries."""
+        provider = self.mass.get_provider("builtin")
+        if not provider or not isinstance(provider, MusicProvider):
+            raise ProviderUnavailableError("Builtin provider is not available")
+        builtin_provider = cast("BuiltinProvider", provider)
+        # migration writes the playlist directly, with no deferred matching step, so
+        # the generation returned alongside it (used to detect a later delete-and-recreate)
+        # is not needed here
+        playlist, _generation = await builtin_provider.import_playlist(
+            generate_m3u(name, entries, image_url)
+        )
+        for mapping in playlist.provider_mappings:
+            mapping.in_library = True
+        return await self.add_item_to_library(playlist, False)
+
+    async def _verify_migration_results(
+        self,
+        playlist_item_id: str,
+        provider_instance_id: str,
+        target_results: Sequence[tuple[Track, _PlaylistMigrationTrackResult]],
+    ) -> tuple[set[int], bool]:
+        """Verify which requested tracks appear in the destination playlist."""
+        confirmed_indexes: set[int] = set()
+        destination_mismatch = False
+        for retry_delay in (0, *_MIGRATION_VERIFY_RETRY_DELAYS):
+            if retry_delay:
+                await asyncio.sleep(retry_delay)
+            actual_target_ids = [
+                item.item_id
+                async for item in self.tracks(
+                    playlist_item_id,
+                    provider_instance_id,
+                    force_refresh=True,
+                    strict_provider_instance=True,
+                )
+            ]
+            confirmed_indexes, destination_mismatch = self._reconcile_migration_results(
+                actual_target_ids,
+                target_results,
+            )
+            if len(confirmed_indexes) == len(target_results) and not destination_mismatch:
+                break
+        return confirmed_indexes, destination_mismatch
+
+    @staticmethod
+    def _reconcile_migration_results(
+        actual_target_ids: list[str],
+        target_results: Sequence[tuple[Track, _PlaylistMigrationTrackResult]],
+    ) -> tuple[set[int], bool]:
+        """Return confirmed result indexes and whether destination content is unexpected."""
+        expected_positions: dict[str, list[int]] = {}
+        for index, (_track, result) in enumerate(target_results):
+            assert result.mapping is not None
+            expected_positions.setdefault(result.mapping.item_id, []).append(index)
+
+        confirmed_indexes: set[int] = set()
+        last_confirmed_index = -1
+        destination_mismatch = False
+        for actual_target_id in actual_target_ids:
+            positions = expected_positions.get(actual_target_id)
+            if not positions:
+                destination_mismatch = True
+                continue
+            position_index = bisect_right(positions, last_confirmed_index)
+            if position_index == len(positions):
+                destination_mismatch = True
+                continue
+            last_confirmed_index = positions[position_index]
+            confirmed_indexes.add(last_confirmed_index)
+        return confirmed_indexes, destination_mismatch
+
+    @staticmethod
+    def _adjust_migration_match_count(
+        counts: dict[str, int],
+        confidence: TrackMatchConfidence,
+        amount: int,
+    ) -> None:
+        """Adjust the aggregate count for a migration match confidence."""
+        count_key = {
+            TrackMatchConfidence.EXACT: "exact",
+            TrackMatchConfidence.LIKELY: "same_recording",
+            TrackMatchConfidence.LOOSE: "best_effort",
+        }[confidence]
+        counts[count_key] += amount
+
+    @staticmethod
+    def _migration_track_key(track: Track) -> str:
+        """Return a stable key for reusing duplicate track resolutions."""
+        return track.uri or f"{track.provider}://track/{track.item_id}"
+
+    @classmethod
+    def _build_migration_report(
+        cls,
+        source_name: str,
+        destination_name: str,
+        destination_provider: str,
+        migrated_count: int,
+        counts: Mapping[str, int],
+        substitutions: list[tuple[str, str, str]],
+        skipped_items: list[tuple[str, str]],
+        provider_issues: list[tuple[str, str]],
+        *,
+        completed: bool,
+        builtin_destination: bool,
+    ) -> str:
+        """Build the human-readable Markdown report for a migration task."""
+        source = escape_markdown(source_name)
+        destination = escape_markdown(destination_name)
+        provider = escape_markdown(destination_provider)
+        action = "Migrated" if completed else "Prepared"
+        lines = [
+            f"## Playlist migration {'complete' if completed else 'analysis'}",
+            "",
+            f"{action} **{migrated_count}** of **{counts['total']}** playlist items "
+            f"from **{source}** for **{destination}** on **{provider}**.",
+            "",
+            "| Result | Items |",
+            "| --- | ---: |",
+        ]
+        if builtin_destination:
+            lines.extend(
+                (
+                    f"| Included | {migrated_count} |",
+                    f"| Existing library matches used | {counts['library_matches']} |",
+                    f"| Additional provider mappings found | {counts['provider_matches']} |",
+                    f"| Skipped | {counts['skipped']} |",
+                )
+            )
+        else:
+            lines.extend(
+                (
+                    f"| Exact release | {counts['exact']} |",
+                    f"| Same recording | {counts['same_recording']} |",
+                    f"| Best effort | {counts['best_effort']} |",
+                    f"| Skipped | {counts['skipped']} |",
+                    f"| Ambiguous | {counts['ambiguous']} |",
+                )
+            )
+        cls._add_report_table(
+            lines,
+            "Substitutions",
+            ("Source", "Destination", "Match"),
+            substitutions,
+        )
+        cls._add_report_table(
+            lines,
+            "Skipped items",
+            ("Item", "Reason"),
+            skipped_items,
+        )
+        cls._add_report_table(
+            lines,
+            "Provider lookup issues",
+            ("Track", "Issue"),
+            provider_issues,
+        )
+        return "\n".join(lines)
+
+    @classmethod
+    def _add_report_table(
+        cls,
+        lines: list[str],
+        title: str,
+        headers: tuple[str, ...],
+        rows: Sequence[tuple[str, ...]],
+    ) -> None:
+        """Append a Markdown report table when it has rows."""
+        if not rows:
+            return
+        visible_rows = rows[:_MIGRATION_REPORT_DETAIL_LIMIT]
+        lines.extend(
+            (
+                "",
+                f"### {title}",
+                "",
+                f"| {' | '.join(headers)} |",
+                f"| {' | '.join('---' for _ in headers)} |",
+            )
+        )
+        lines.extend(
+            f"| {' | '.join(escape_markdown(value, table=True) for value in row)} |"
+            for row in visible_rows
+        )
+        if omitted_count := len(rows) - len(visible_rows):
+            lines.extend(
+                (
+                    "",
+                    f"_{omitted_count} additional rows omitted._",
+                )
+            )
+
+    @staticmethod
+    def _migration_track_label(track: Track) -> str:
+        """Return a readable artist and title label."""
+        return f"{track.artist_str} - {track.name}" if track.artist_str else track.name
+
+    @staticmethod
+    def _migration_error_message(error: BaseException, fallback: str) -> str:
+        """Return a non-empty error message for a migration report."""
+        return str(error).strip() or f"{fallback} ({type(error).__name__})"
+
     def _verify_update_allowed(self, current_item: Playlist, update: Playlist) -> None:
         """
         Verify that the update is allowed from a security perspective.
@@ -536,12 +1305,24 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider_instance_id_or_domain: str,
         page: int = 0,
         force_refresh: bool = False,
+        strict_provider_instance: bool = False,
     ) -> Sequence[PlaylistPlayableItem]:
         """Return playlist tracks for the given provider playlist id."""
         assert provider_instance_id_or_domain != "library"
-        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
+        provider = self.mass.get_provider(
+            provider_instance_id_or_domain,
+            return_unavailable=strict_provider_instance,
+        )
+        if strict_provider_instance and (
+            provider is None
+            or provider.instance_id != provider_instance_id_or_domain
+            or not provider.available
+        ):
+            raise ProviderUnavailableError(
+                f"Provider {provider_instance_id_or_domain} is not available"
+            )
+        if not isinstance(provider, MusicProvider | PluginProvider):
             return []
-        provider = cast("MusicProvider", provider)
         async with self.mass.cache.handle_refresh(force_refresh):
             return await provider.get_playlist_tracks(item_id, page=page)
 
@@ -815,6 +1596,23 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # in the next scheduled run of the playlist metadata task
         playlist.metadata.last_refresh = None
         await self.update_item_in_library(db_playlist_id, playlist)
+
+    @staticmethod
+    async def _add_provider_playlist_tracks(
+        provider: MusicProvider,
+        playlist_item_id: str,
+        track_ids: list[str],
+    ) -> None:
+        """Add tracks in ordered batches accepted by provider APIs."""
+        for track_id_batch in batched(
+            track_ids,
+            _PROVIDER_PLAYLIST_ADD_BATCH_SIZE,
+            strict=False,
+        ):
+            await provider.add_playlist_tracks(
+                playlist_item_id,
+                list(track_id_batch),
+            )
 
     def _parse_summary_row(self, db_row: Mapping[str, Any]) -> PlaylistSummary:
         """Parse a raw summary db row into a PlaylistSummary object."""

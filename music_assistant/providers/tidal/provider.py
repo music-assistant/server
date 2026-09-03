@@ -82,6 +82,9 @@ SUPPORTED_FEATURES = {
 class TidalProvider(RecommendationPayloadMixin, MusicProvider):
     """Implementation of a Tidal MusicProvider."""
 
+    # Tidal playlists reject adding a track that is already in the playlist
+    playlist_duplicates_supported = False
+
     def __init__(self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig):
         """Initialize Tidal provider."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
