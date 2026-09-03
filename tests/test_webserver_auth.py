@@ -9,6 +9,7 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import web
