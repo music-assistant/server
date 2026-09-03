@@ -110,24 +110,6 @@ async def make_api_request(
         raise ProviderUnavailableError(f"Podcast Index API timeout: {err}") from err
 
 
-def _response_detail(body: str, *secrets: str) -> str:
-    """
-    Return an error body condensed into a readable suffix, empty when it says nothing.
-
-    :param body: The raw response body.
-    :param secrets: Values to mask, as the body is quoted back to the user.
-    """
-    detail = " ".join(body.split())
-    if not detail:
-        return ""
-    for secret in secrets:
-        if secret:
-            detail = detail.replace(secret, "***")
-    if len(detail) > MAX_ERROR_DETAIL_LENGTH:
-        detail = f"{detail[:MAX_ERROR_DETAIL_LENGTH]}..."
-    return f": {detail}"
-
-
 def parse_podcast_from_feed(
     feed_data: dict[str, Any], instance_id: str, domain: str
 ) -> Podcast | None:
@@ -271,3 +253,21 @@ def parse_episode_from_data(
         )
 
     return episode
+
+
+def _response_detail(body: str, *secrets: str) -> str:
+    """
+    Return an error body condensed into a readable suffix, empty when it says nothing.
+
+    :param body: The raw response body.
+    :param secrets: Values to mask, as the body is quoted back to the user.
+    """
+    detail = " ".join(body.split())
+    if not detail:
+        return ""
+    for secret in secrets:
+        if secret:
+            detail = detail.replace(secret, "***")
+    if len(detail) > MAX_ERROR_DETAIL_LENGTH:
+        detail = f"{detail[:MAX_ERROR_DETAIL_LENGTH]}..."
+    return f": {detail}"
