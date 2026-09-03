@@ -29,6 +29,7 @@ from music_assistant.models.setup_flow import AbortFlow
 
 from . import announce
 from .constants import (
+    AIRPLAY_DEFAULT_PORT,
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_HIRES_AUDIO_FORMATS,
     AIRPLAY_HIRES_SAMPLE_RATES,
@@ -55,6 +56,7 @@ from .constants import (
     PAIRING_PIN_FORMAT,
     PASSWORD_BIT,
     PIN_REQUIRED,
+    RAOP_DEFAULT_PORT,
     RAOP_DISCOVERY_TYPE,
     STREAMING_MODE_AP2_COMPAT,
     STREAMING_MODE_AP2_NTP,
@@ -1301,9 +1303,9 @@ class AirPlayPlayer(Player):
         # when streaming will use RAOP; the RAOP port (5000) is only for streaming.
         port: int | None = None
         if self.airplay_discovery_info:
-            port = self.airplay_discovery_info.port or 7000
+            port = self.airplay_discovery_info.port or AIRPLAY_DEFAULT_PORT
         elif self.raop_discovery_info:
-            port = self.raop_discovery_info.port or 5000
+            port = self.raop_discovery_info.port or RAOP_DEFAULT_PORT
         provider = cast("AirPlayProvider", self.provider)
         device_id = provider.dacp_id
         pairing_address = self.address
