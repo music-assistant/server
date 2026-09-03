@@ -183,6 +183,9 @@ async def test_daemon_env_isolation(server: PulseCaptureServer, tmp_path: Path) 
         assert proc.env["XDG_RUNTIME_DIR"] == private_dir
         assert proc.env["PULSE_RUNTIME_PATH"] == private_dir
         assert proc.env["PULSE_STATE_PATH"] == private_dir
+        # PA writes an auth cookie under HOME and refuses to start when it is
+        # unwritable, as it is when the container runs as a uid with no passwd entry
+        assert proc.env["HOME"] == private_dir
         # the generated config loads only the native protocol on the private socket
         config_text = (Path(private_dir) / "pulse_capture.pa").read_text(encoding="utf-8")
         assert config_text.startswith("load-module module-native-protocol-unix ")

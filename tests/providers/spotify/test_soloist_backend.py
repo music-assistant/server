@@ -416,7 +416,8 @@ async def test_a_full_cushion_pauses_the_engine(tmp_path: Path) -> None:
 
 async def test_a_full_cushion_still_ends_the_stream(tmp_path: Path) -> None:
     """The end of delivery survives a cushion with no room left for the sentinel."""
-    run = _make_run(tmp_path, duration=1)
+    # no duration: this covers the cushion, not how much audio arrived
+    run = _make_run(tmp_path, duration=None)
     while not run._chunks.full():
         run._chunks.put_nowait(b"\x01" * 64)
     run._finish_delivery()
@@ -433,13 +434,113 @@ async def test_a_failed_run_surfaces_its_error_to_the_stream(tmp_path: Path) -> 
         await _collect(run)
 
 
-async def test_short_delivery_is_rejected_as_incomplete(tmp_path: Path) -> None:
-    """An engine that refuses an item must not read as a completed stream."""
+async def test_a_run_that_delivered_nothing_is_rejected(tmp_path: Path) -> None:
+    """A run still going that rendered nothing must not read as a completed stream."""
     run = _make_run(tmp_path, duration=152)
     run._chunks.put_nowait(b"\x01" * _FRAME_BYTES)
     run._finish_delivery()
-    with pytest.raises(AudioError, match="incomplete"):
+    with pytest.raises(AudioError, match="stopped before it played"):
         await _collect(run)
+
+
+async def test_a_refused_item_is_reported_as_a_refusal(tmp_path: Path) -> None:
+    """An engine that plays nothing and ends the run cleanly was refused the item."""
+    run = _make_run(tmp_path, duration=152)
+    run._engine_exited = True
+    run._proc = MagicMock(returncode=0)
+    run._chunks.put_nowait(b"\x01" * _FRAME_BYTES)
+    run._finish_delivery()
+    # the message travels on the error itself; the queue reports it where it skips
+    with pytest.raises(AudioError, match="would not play this track"):
+        await _collect(run)
+
+
+async def test_a_crashed_run_is_not_reported_as_a_refusal(tmp_path: Path) -> None:
+    """An engine that died on its own item is a fault, whatever it managed to play."""
+    run = _make_run(tmp_path, duration=152)
+    run._engine_exited = True
+    run._proc = MagicMock(returncode=1)
+    run._chunks.put_nowait(b"\x01" * _FRAME_BYTES)
+    run._finish_delivery()
+    # names the code, so a refusal that turns out to exit non-zero is recognisable
+    with pytest.raises(AudioError, match="engine exit code 1"):
+        await _collect(run)
+
+
+async def test_audio_that_arrived_and_stopped_is_not_a_failure(tmp_path: Path) -> None:
+    """Something ended the item early - a skip, a seek, the account playing elsewhere."""
+    run = _make_run(tmp_path, duration=152)
+    run._engine_exited = True
+    run._proc = MagicMock(returncode=0)
+    run._chunks.put_nowait(b"\x01" * (100 * _BYTES_PER_SECOND))
+    run._finish_delivery()
+    await _collect(run)
+
+
+async def test_a_crash_part_way_through_is_reported(tmp_path: Path) -> None:
+    """Audio arrived, but the engine died on the item rather than ending it."""
+    run = _make_run(tmp_path, duration=152)
+    run._engine_exited = True
+    run._proc = MagicMock(returncode=1)
+    run._chunks.put_nowait(b"\x01" * (30 * _BYTES_PER_SECOND))
+    run._finish_delivery()
+    with pytest.raises(AudioError, match="stopped unexpectedly"):
+        await _collect(run)
+
+
+async def test_a_brief_item_that_played_nothing_is_still_reported(tmp_path: Path) -> None:
+    """Accepting short items wholesale would let a refused one through unnoticed."""
+    run = _make_run(tmp_path, duration=2)
+    run._duration_ms = 1200
+    run._engine_exited = True
+    run._proc = MagicMock(returncode=0)
+    run._chunks.put_nowait(b"\x01" * _FRAME_BYTES)
+    run._finish_delivery()
+    with pytest.raises(AudioError, match="would not play this track"):
+        await _collect(run)
+
+
+async def test_a_brief_item_played_in_full_is_accepted(tmp_path: Path) -> None:
+    """The lead trim takes its cut off a complete delivery of a very short item."""
+    run = _make_run(tmp_path, duration=2)
+    run._duration_ms = 1200
+    run._engine_exited = True
+    run._proc = MagicMock(returncode=0)
+    # what a complete 1.2s item arrives as once the trim has taken its full budget
+    run._chunks.put_nowait(b"\x01" * (7 * _BYTES_PER_SECOND // 10))
+    run._finish_delivery()
+    await _collect(run)
+
+
+async def test_a_short_item_that_played_nothing_is_still_reported(tmp_path: Path) -> None:
+    """A short item is judged the same way: nothing arrived, so nothing played."""
+    run = _make_run(tmp_path, duration=8)
+    run._engine_exited = True
+    run._proc = MagicMock(returncode=0)
+    run._chunks.put_nowait(b"\x01" * _FRAME_BYTES)
+    run._finish_delivery()
+    with pytest.raises(AudioError, match="would not play this track"):
+        await _collect(run)
+
+
+async def test_a_short_item_played_in_full_is_accepted(tmp_path: Path) -> None:
+    """A complete short item must not be mistaken for one that never played."""
+    run = _make_run(tmp_path, duration=8)
+    run._engine_exited = True
+    run._proc = MagicMock(returncode=0)
+    run._chunks.put_nowait(b"\x01" * (8 * _BYTES_PER_SECOND))
+    run._finish_delivery()
+    await _collect(run)
+
+
+async def test_a_seek_to_the_items_end_is_not_read_as_a_refusal(tmp_path: Path) -> None:
+    """Audio the seek skipped counts, so a near-complete delivery ends cleanly."""
+    run = _make_run(tmp_path, duration=152, seek_ms=151_000)
+    run._engine_exited = True
+    run._proc = MagicMock(returncode=0)
+    run._chunks.put_nowait(b"\x01" * _FRAME_BYTES)
+    run._finish_delivery()
+    await _collect(run)
 
 
 async def test_a_stopped_run_is_not_judged_incomplete(tmp_path: Path) -> None:
@@ -529,6 +630,44 @@ async def test_the_engine_wandering_on_after_delivery_ends_the_run_cleanly(
     assert run._item_over is True
     assert await _collect(run) == b"\x01" * (60 * _BYTES_PER_SECOND)
     run.mass.create_task.assert_called_once()
+
+
+def test_losing_the_device_mid_item_is_reported_as_a_takeover(tmp_path: Path) -> None:
+    """Another player taking the account is what ends this item, and it must say so."""
+    run = _make_run(tmp_path)
+    run.mass.create_task = MagicMock()  # type: ignore[method-assign]
+    run._started.set()
+    run._observe_device_active(active=False)
+    assert run._error is not None
+    assert "already streaming somewhere else" in run._error
+
+
+def test_the_device_report_at_startup_is_not_a_takeover(tmp_path: Path) -> None:
+    """The engine reports itself inactive while a run is still starting up."""
+    run = _make_run(tmp_path)
+    run.mass.create_task = MagicMock()  # type: ignore[method-assign]
+    run._observe_device_active(active=False)
+    assert run._error is None
+
+
+def test_losing_the_device_once_the_daemon_has_gone_is_not_a_takeover(tmp_path: Path) -> None:
+    """A run that ended on its own sheds the device as it goes; the item still played."""
+    run = _make_run(tmp_path)
+    run.mass.create_task = MagicMock()  # type: ignore[method-assign]
+    run._started.set()
+    run._engine_exited = True
+    run._observe_device_active(active=False)
+    assert run._error is None
+
+
+def test_losing_the_device_after_the_item_is_over_is_not_a_takeover(tmp_path: Path) -> None:
+    """The daemon drops the device on its way out; the item already played."""
+    run = _make_run(tmp_path)
+    run.mass.create_task = MagicMock()  # type: ignore[method-assign]
+    run._started.set()
+    run._item_over = True
+    run._observe_device_active(active=False)
+    assert run._error is None
 
 
 def test_the_engine_starting_on_the_wrong_item_fails_the_run(tmp_path: Path) -> None:
