@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, cast
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 
-from music_assistant.constants import SENDSPIN_SERVER_PORT, WILDCARD_BIND_IPS
+from music_assistant.constants import SENDSPIN_SERVER_PORT
 from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -26,7 +26,7 @@ from .scenarios import SCENARIOS, SCENARIOS_BY_ID
 SENDSPIN_DOMAIN = "sendspin"
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigActionResult, ProviderConfig
     from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.provider import ProviderManifest
 
@@ -83,9 +83,13 @@ class DemoSendspinClientsProvider(PlayerProvider):
             entries.extend(self._device_entries(scenario))
         return tuple(entries)
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
         """Run a device control and re-render the page with the resulting state."""
         scenario_id, _, name = action.partition(ACTION_SEPARATOR)
+        if name not in (ACTION_PRESS_BUTTON, ACTION_RESET, ACTION_REFRESH):
+            return await super().handle_config_action(action)
         device = self._devices.get(scenario_id)
         if device is not None:
             if name == ACTION_PRESS_BUTTON:
@@ -103,7 +107,7 @@ class DemoSendspinClientsProvider(PlayerProvider):
         await asyncio.to_thread(storage_dir.mkdir, parents=True, exist_ok=True)
         server_url = self._server_url()
         for scenario in self._selected_scenarios():
-            device = FakeSendspinDevice(scenario, storage_dir, server_url)
+            device = FakeSendspinDevice(scenario, storage_dir, server_url, self.mass.http_session)
             # registered before it starts, so a teardown that begins meanwhile can see it
             self._devices[scenario.scenario_id] = device
             await device.start()
@@ -118,10 +122,15 @@ class DemoSendspinClientsProvider(PlayerProvider):
         await self._stop_devices()
 
     async def _stop_devices(self) -> None:
-        """Disconnect and forget every running device."""
+        """Disconnect and forget every running device, reporting any that would not stop."""
         devices = list(self._devices.values())
         self._devices.clear()
-        await asyncio.gather(*(device.stop() for device in devices), return_exceptions=True)
+        results = await asyncio.gather(
+            *(device.stop() for device in devices), return_exceptions=True
+        )
+        for device, result in zip(devices, results, strict=True):
+            if isinstance(result, BaseException):
+                self.logger.error("%s did not shut down cleanly: %s", device.scenario.name, result)
 
     async def _forget_on_server(self, client_id: str) -> None:
         """Drop this server's own pairing and unpaired-access records for a device."""
@@ -153,7 +162,13 @@ class DemoSendspinClientsProvider(PlayerProvider):
     def _server_url(self) -> str:
         """Return the WebSocket URL of this server's own Sendspin endpoint."""
         bind_ip = self.mass.streams.bind_ip
-        host = "127.0.0.1" if not bind_ip or bind_ip in WILDCARD_BIND_IPS else bind_ip
+        if not bind_ip or bind_ip == "0.0.0.0":
+            host = "127.0.0.1"
+        elif bind_ip == "::":
+            # an IPv6 wildcard bind may not accept IPv4-mapped connections at all
+            host = "::1"
+        else:
+            host = bind_ip
         return f"ws://{format_ip_for_url(host)}:{SENDSPIN_SERVER_PORT}/sendspin"
 
     def _device_entries(self, scenario: Scenario) -> list[ConfigEntry]:
@@ -217,6 +232,8 @@ def _status_text(device: FakeSendspinDevice | None) -> str:
         parts.append(f"PIN on the device right now: {device.dynamic_pin}")
     if device.static_pin is not None:
         parts.append(f"Static PIN: {device.static_pin}")
+    if device.pairing_token is not None:
+        parts.append(f"Pairing token: {device.pairing_token}")
     if device.last_abort is not None:
         parts.append(f"Last pairing abort: {device.last_abort.value}")
     return " ".join(parts)

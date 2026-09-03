@@ -37,8 +37,8 @@ class Scenario:
     :param name: Friendly name the device reports to the server.
     :param product_name: Model name shown on the player's device info.
     :param description: What this device is meant to demonstrate, shown in the settings.
-    :param pairing_psk: Offer the token method, as every real speaker does. It is never an
-        operator-facing choice, so on its own it leaves the device unpairable.
+    :param pairing_psk: Offer the token method, as every real speaker does. Setup only
+        surfaces it for a device with no PIN method of its own.
     :param static_pin: Offer the fixed PIN. Always gesture-gated by the spec.
     :param dynamic_pin: Offer a per-attempt derived PIN.
     :param unpaired_access: Admit a server without pairing. The device is then approved on
@@ -153,13 +153,25 @@ SCENARIOS: tuple[Scenario, ...] = (
     ),
     Scenario(
         scenario_id="token",
-        name="Demo Unpairable Speaker",
-        product_name="Unpairable Speaker",
+        name="Demo Token Speaker",
+        product_name="Token Speaker",
         description=(
-            "Only the server-side token method, which no operator can carry out. "
-            "Setup can only report that the device cannot be paired."
+            "No PIN support, so setup falls back to the pairing token printed on the "
+            "device. Copy the token below into setup."
         ),
         pairing_psk=True,
+        secret_locations=("device",),
+    ),
+    Scenario(
+        scenario_id="token_operator",
+        name="Demo Managed Speaker",
+        product_name="Managed Speaker",
+        description=(
+            "No PIN support either, with its token handed out by whoever administers "
+            "the device rather than printed on it."
+        ),
+        pairing_psk=True,
+        secret_locations=("operator",),
     ),
     Scenario(
         scenario_id="locked",

@@ -16,6 +16,8 @@ from aiosendspin.models.source import ClientHelloSourceFeatures, ClientHelloSour
 from aiosendspin.models.types import AudioCodec, Roles
 from aiosendspin.noise.driver import HandshakeAbortedError
 from aiosendspin.noise.keys import Identity, generate_psk, psk_id_for
+from aiosendspin.noise.pairing import PairingError
+from aiosendspin.noise.pairing_token import PSKPairingToken, encode_token
 from aiosendspin.noise.trust_store import FileClientPairingStore, PairingPsk
 
 from .constants import DEVICE_MANUFACTURER, RECONNECT_INTERVAL, STATIC_PIN
@@ -23,6 +25,7 @@ from .constants import DEVICE_MANUFACTURER, RECONNECT_INTERVAL, STATIC_PIN
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from aiohttp import ClientSession
     from aiosendspin.models.types import PairAbortReason
 
     from .scenarios import Scenario
@@ -46,21 +49,33 @@ class FakeSendspinDevice:
     needing a sound card.
     """
 
-    def __init__(self, scenario: Scenario, storage_dir: Path, server_url: str) -> None:
+    def __init__(
+        self,
+        scenario: Scenario,
+        storage_dir: Path,
+        server_url: str,
+        session: ClientSession,
+    ) -> None:
         """
         Build the device for a scenario, without connecting it yet.
 
         :param scenario: The pairing profile this device presents.
         :param storage_dir: Directory holding one pairing-store file per device.
         :param server_url: WebSocket URL of this server's Sendspin endpoint.
+        :param session: Shared HTTP session every fake device dials through.
         """
         self.scenario = scenario
         self.identity = _scenario_identity(scenario.scenario_id)
         self.dynamic_pin: str | None = None
+        self.pairing_token: str | None = None
         self.awaiting_button: bool = False
         self.last_abort: PairAbortReason | None = None
         self._storage_path = storage_dir / f"{scenario.scenario_id}.json"
         self._server_url = server_url
+        self._session = session
+        # start, stop and reset all suspend; without this they interleave and leak a
+        # reconnect loop that no longer belongs to any tracked device
+        self._lifecycle = asyncio.Lock()
         self._client: SendspinClient | None = None
         self._stopped = False
         self._task: asyncio.Task[None] | None = None
@@ -83,6 +98,32 @@ class FakeSendspinDevice:
 
     async def start(self) -> None:
         """Build the client from the scenario profile and keep it connected."""
+        async with self._lifecycle:
+            await self._start()
+
+    async def stop(self) -> None:
+        """Disconnect the device and stop its reconnect loop, including one still starting."""
+        async with self._lifecycle:
+            await self._stop()
+
+    async def reset(self) -> None:
+        """Forget everything this device knows about the server and reconnect as new."""
+        async with self._lifecycle:
+            await self._stop()
+            self.dynamic_pin = None
+            self.awaiting_button = False
+            self.last_abort = None
+            self._disconnected.clear()
+            await asyncio.to_thread(self._storage_path.unlink, missing_ok=True)
+            await self._start()
+
+    def press_pairing_button(self) -> None:
+        """Perform the operator gesture that admits one gated pairing attempt."""
+        if self._client is not None:
+            self._client.open_pairing_window()
+
+    async def _start(self) -> None:
+        """Bring the client up; callers hold the lifecycle lock."""
         self._stopped = False
         store = await FileClientPairingStore.open(self._storage_path)
         config = await store.get_pairing_config()
@@ -99,7 +140,7 @@ class FakeSendspinDevice:
         if self.scenario.static_pin:
             await store.set_static_pin(STATIC_PIN)
         if self.scenario.pairing_psk:
-            await _ensure_pairing_psk(store)
+            self.pairing_token = await _ensure_pairing_token(store, self.client_id)
 
         roles = [Roles.PLAYER]
         if self.scenario.source_role:
@@ -127,6 +168,7 @@ class FakeSendspinDevice:
                 else None
             ),
             pairing_support=self._pairing_support(),
+            session=self._session,
         )
         if self._stopped:
             # ``stop`` ran while this was still coming up, and it had no task to cancel
@@ -139,8 +181,8 @@ class FakeSendspinDevice:
         self._task = asyncio.create_task(self._connect_loop())
         self._task.add_done_callback(self._log_task_result)
 
-    async def stop(self) -> None:
-        """Disconnect the device and stop its reconnect loop, including one still starting."""
+    async def _stop(self) -> None:
+        """Tear the client down; callers hold the lifecycle lock."""
         self._stopped = True
         if self._task is not None:
             self._task.cancel()
@@ -149,21 +191,6 @@ class FakeSendspinDevice:
         if self._client is not None:
             await self._client.disconnect()
             self._client = None
-
-    def press_pairing_button(self) -> None:
-        """Perform the operator gesture that admits one gated pairing attempt."""
-        if self._client is not None:
-            self._client.open_pairing_window()
-
-    async def reset(self) -> None:
-        """Forget everything this device knows about the server and reconnect as new."""
-        await self.stop()
-        self.dynamic_pin = None
-        self.awaiting_button = False
-        self.last_abort = None
-        self._disconnected.clear()
-        await asyncio.to_thread(self._storage_path.unlink, missing_ok=True)
-        await self.start()
 
     def _pairing_support(self) -> PairingSupport:
         """Wire the operator channels the scenario's pairing methods need."""
@@ -182,7 +209,14 @@ class FakeSendspinDevice:
             self._disconnected.clear()
             try:
                 await self._client.connect(self._server_url)
-            except (ClientError, OSError, TimeoutError, HandshakeAbortedError) as err:
+            except (
+                ClientError,
+                OSError,
+                TimeoutError,
+                HandshakeAbortedError,
+                PairingError,
+                RuntimeError,
+            ) as err:
                 LOGGER.debug("%s could not connect: %s", self.scenario.name, err)
                 await asyncio.sleep(RECONNECT_INTERVAL)
                 continue
@@ -233,14 +267,16 @@ def _scenario_identity(scenario_id: str) -> Identity:
     return Identity.from_private_bytes(seed)
 
 
-async def _ensure_pairing_psk(store: FileClientPairingStore) -> None:
+async def _ensure_pairing_token(store: FileClientPairingStore, client_id: str) -> str:
     """
-    Mint the Pairing PSK once, so the device can advertise the token method.
+    Return the device's pairing token, minting the Pairing PSK behind it once.
 
-    The token itself is never shown: Music Assistant pairs by token only when enrolling
-    its own web player, and never offers it as something an operator can carry out.
+    Setup offers the token only to a device with no PIN method of its own, but every
+    device mints one, since real speakers advertise it alongside their PIN.
     """
-    if await store.pairing_psk() is not None:
-        return
-    psk = generate_psk()
-    await store.set_pairing_psk(PairingPsk(psk_id=psk_id_for(psk), psk=psk))
+    pairing_psk = await store.pairing_psk()
+    if pairing_psk is None:
+        psk = generate_psk()
+        pairing_psk = PairingPsk(psk_id=psk_id_for(psk), psk=psk)
+        await store.set_pairing_psk(pairing_psk)
+    return encode_token(PSKPairingToken(client_id=client_id, pairing_psk=pairing_psk.psk))

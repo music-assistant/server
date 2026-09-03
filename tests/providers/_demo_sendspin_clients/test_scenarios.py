@@ -6,6 +6,7 @@ import asyncio
 from typing import TYPE_CHECKING
 
 import pytest
+from aiohttp import ClientSession
 from aiosendspin.models.types import PairMethod
 from aiosendspin.noise.trust_store import FileClientPairingStore
 
@@ -21,9 +22,17 @@ from music_assistant.providers._demo_sendspin_clients.scenarios import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from pathlib import Path
 
     from music_assistant.providers._demo_sendspin_clients.scenarios import Scenario
+
+
+@pytest.fixture(name="session")
+async def session_fixture() -> AsyncIterator[ClientSession]:
+    """Yield one HTTP session, as the provider hands every device the shared one."""
+    async with ClientSession() as session:
+        yield session
 
 
 def test_scenario_ids_are_unique() -> None:
@@ -57,26 +66,29 @@ def test_real_speakers_carry_the_token_alongside_a_pin_method() -> None:
             assert scenario.pairing_psk, f"{scenario.scenario_id} should also offer the token"
 
 
-def test_exactly_one_device_offers_only_the_token() -> None:
-    """One device covers the unpairable case: the token is never operator-facing."""
-    token_only = [
-        scenario
+def test_the_token_only_devices_cover_both_secret_locations() -> None:
+    """Setup falls back to the token only without a PIN, and says where to find it."""
+    token_only = {
+        scenario.scenario_id: scenario.secret_locations
         for scenario in SCENARIOS
         if scenario.pairing_psk and not (scenario.static_pin or scenario.dynamic_pin)
-    ]
-    assert [scenario.scenario_id for scenario in token_only] == ["token"]
+    }
+    assert token_only == {"token": ("device",), "token_operator": ("operator",)}
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda s: s.scenario_id)
-async def test_device_advertises_its_scenario(scenario: Scenario, tmp_path: Path) -> None:
+async def test_device_advertises_its_scenario(
+    scenario: Scenario, tmp_path: Path, session: ClientSession
+) -> None:
     """A started device implements and enables exactly the methods its scenario declares."""
-    device = FakeSendspinDevice(scenario, tmp_path, "ws://127.0.0.1:1/sendspin")
+    device = FakeSendspinDevice(scenario, tmp_path, "ws://127.0.0.1:1/sendspin", session)
     try:
         await device.start()
         client = device._client
         assert client is not None
 
         implemented = client.implemented_pair_methods
+        assert (PairMethod.PAIRING_PSK in implemented) is True
         assert (PairMethod.STATIC_PIN in implemented) is scenario.static_pin
         assert (PairMethod.DYNAMIC_PIN in implemented) is scenario.dynamic_pin
         assert client.secret_locations == scenario.secret_locations
@@ -92,6 +104,7 @@ async def test_device_advertises_its_scenario(scenario: Scenario, tmp_path: Path
         assert config.dynamic_pin_min_length == scenario.min_pin_length
         assert (await store.static_pin() == STATIC_PIN) is scenario.static_pin
         assert (await store.pairing_psk() is not None) is scenario.pairing_psk
+        assert (device.pairing_token is not None) is scenario.pairing_psk
     finally:
         await device.stop()
 
@@ -111,17 +124,38 @@ def test_pin_channel_flags() -> None:
     assert not PinChannel.NONE.has_speaker
 
 
-async def test_stop_during_start_leaves_nothing_running(tmp_path: Path) -> None:
+async def test_stop_during_start_leaves_nothing_running(
+    tmp_path: Path, session: ClientSession
+) -> None:
     """
     A stop landing mid-start must not leave a reconnect loop behind.
 
     An escaped loop keeps dialling under an identity the next load reuses, and the two
     connections then displace each other on every attempt.
     """
-    device = FakeSendspinDevice(SCENARIOS[0], tmp_path, "ws://127.0.0.1:1/sendspin")
+    device = FakeSendspinDevice(SCENARIOS[0], tmp_path, "ws://127.0.0.1:1/sendspin", session)
     starting = asyncio.create_task(device.start())
     await asyncio.sleep(0)
     await device.stop()
     await starting
+    assert device._task is None
+    assert device._client is None
+
+
+async def test_a_reset_racing_a_stop_leaves_nothing_running(
+    tmp_path: Path, session: ClientSession
+) -> None:
+    """
+    Reset and stop both suspend, so without serialising them a loop escapes teardown.
+
+    An escaped loop keeps dialling under an identity the next load reuses, and the two
+    connections then displace each other on every attempt.
+    """
+    device = FakeSendspinDevice(SCENARIOS[0], tmp_path, "ws://127.0.0.1:1/sendspin", session)
+    await device.start()
+    resetting = asyncio.create_task(device.reset())
+    await asyncio.sleep(0)
+    await device.stop()
+    await resetting
     assert device._task is None
     assert device._client is None

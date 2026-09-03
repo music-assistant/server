@@ -22,7 +22,7 @@ an ordinary Sendspin player needing setup. Run the setup flow on that player to 
 The provider's own settings page is the device's front panel:
 
 - the derived dynamic PIN, once the server asks for one
-- the static PIN, so it can be copied into setup
+- the static PIN and the pairing token, so they can be copied into setup
 - whether the device is waiting for its pairing button, and the button itself
 - the reason the last pairing attempt was aborted
 
@@ -54,12 +54,14 @@ the button is only needed for a first pairing.
 | Short PIN Speaker | Four-digit PIN, which is gesture-gated |
 | Static PIN Speaker | Fixed eight-digit PIN, always gesture-gated |
 | Dual PIN Speaker | Both PIN methods, so setup first asks which to use |
-| Unpairable Speaker | Only the server-side token method, so setup can only refuse |
+| Token Speaker | No PIN support, so setup falls back to the token printed on the device |
+| Managed Speaker | No PIN support, with its token handed out by an administrator |
 | Locked Speaker | Nothing on offer, so setup can only abort |
 | Everything Speaker | Guest access plus every method, on both PIN out-channels |
 | Line-In Speaker | Adds an audio input, and with it the line-in decision step |
 
-Every device except the two edge cases also carries the server-side token method, as real
-speakers do. It is never offered as a pairing choice, so it changes nothing on screen.
+Every device except the locked one also carries the token method, as real speakers do.
+Setup only surfaces it for a device with no PIN of its own, so on the rest it changes
+nothing on screen.
 
 Audio is decoded and dropped, so the players are usable playback targets too.
