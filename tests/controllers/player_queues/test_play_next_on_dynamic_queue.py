@@ -103,7 +103,7 @@ def _controller(snapshot: RecencySnapshot) -> PlayerQueuesController:
     ctrl._smart_shuffle = Mock()
     ctrl._smart_shuffle.is_enabled = Mock(return_value=True)
     ctrl._smart_shuffle.windows = Mock(return_value=WINDOWS)
-    ctrl._smart_shuffle.arrange = AsyncMock(side_effect=lambda _queue, items: list(items))
+    ctrl._smart_shuffle.arrange = AsyncMock(side_effect=lambda _queue, items, **_kw: list(items))
     ctrl._managed_pool = ManagedPool(ctrl)
     ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
     # a carved-out NEXT track is expanded through the media resolver like on a linear queue;

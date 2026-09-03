@@ -1207,11 +1207,28 @@ class BuiltinProvider(MusicProvider):
                     return tracks
         return []
 
-    @use_cache(expiration=30, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_recently_played(self) -> list[Track]:
         result: list[Track] = []
         recent_tracks = await self.mass.music.recently_played(100, [MediaType.TRACK])
+        # "library" rows have no provider instance to resolve, so read them from the db in one go
+        library_ids = [int(x.item_id) for x in recent_tracks if x.provider == "library"]
+        library_tracks: dict[str, Track] = {}
+        if library_ids:
+            library_tracks = {
+                track.item_id: track
+                for track in await self.mass.music.tracks.get_library_items_by_query(
+                    extra_query_parts=["tracks.item_id IN :item_ids"],
+                    extra_query_params={"item_ids": library_ids},
+                    in_library_only=False,
+                )
+            }
         for idx, item in enumerate(recent_tracks, 1):
+            if item.provider == "library":
+                # pop so a track played by several users is listed once (newest play first)
+                if track := library_tracks.pop(item.item_id, None):
+                    track.position = idx
+                    result.append(track)
+                continue
             if not (item_provider := self.mass.get_provider(item.provider)):
                 continue
             track = Track(

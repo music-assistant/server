@@ -1005,6 +1005,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 async with self.mass.cache.handle_refresh(force_refresh):
                     if self.media_type == MediaType.PLAYLIST:
                         return cast("ItemCls", await provider.get_playlist(item_id))
+                    if self.media_type == MediaType.RADIO:
+                        return cast("ItemCls", await provider.get_radio(item_id))
                     music_prov = cast("MusicProvider", provider)
                     if self.media_type == MediaType.ARTIST:
                         return cast("ItemCls", await music_prov.get_artist(item_id))
@@ -1012,8 +1014,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         return cast("ItemCls", await music_prov.get_album(item_id))
                     if self.media_type == MediaType.TRACK:
                         return cast("ItemCls", await music_prov.get_track(item_id))
-                    if self.media_type == MediaType.RADIO:
-                        return cast("ItemCls", await music_prov.get_radio(item_id))
                     if self.media_type == MediaType.AUDIOBOOK:
                         return cast("ItemCls", await music_prov.get_audiobook(item_id))
                     if self.media_type == MediaType.PODCAST:
