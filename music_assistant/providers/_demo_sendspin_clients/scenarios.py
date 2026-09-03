@@ -37,12 +37,12 @@ class Scenario:
     :param name: Friendly name the device reports to the server.
     :param product_name: Model name shown on the player's device info.
     :param description: What this device is meant to demonstrate, shown in the settings.
-    :param pairing_psk: Offer token pairing. Only reachable in the UI when no PIN method is
-        offered too, since the setup flow treats a token as the last resort.
+    :param pairing_psk: Offer the token method, as every real speaker does. It is never an
+        operator-facing choice, so on its own it leaves the device unpairable.
     :param static_pin: Offer the fixed PIN. Always gesture-gated by the spec.
     :param dynamic_pin: Offer a per-attempt derived PIN.
-    :param unpaired_access: Admit a server without pairing, which turns the setup flow into
-        a one-click consent step.
+    :param unpaired_access: Admit a server without pairing. The device is then approved on
+        connect and needs no setup at all, unless it also has an audio input.
     :param min_pin_length: Shortest dynamic PIN the device accepts. The server negotiates
         ``max(this, its own minimum)``, and anything under 6 digits is gesture-gated.
     :param pin_channel: How the derived dynamic PIN reaches the operator.

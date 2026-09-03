@@ -91,7 +91,7 @@ async def test_device_advertises_its_scenario(scenario: Scenario, tmp_path: Path
         assert config.unpaired_access_enabled is scenario.unpaired_access
         assert config.dynamic_pin_min_length == scenario.min_pin_length
         assert (await store.static_pin() == STATIC_PIN) is scenario.static_pin
-        assert (device.pairing_token is not None) is scenario.pairing_psk
+        assert (await store.pairing_psk() is not None) is scenario.pairing_psk
     finally:
         await device.stop()
 

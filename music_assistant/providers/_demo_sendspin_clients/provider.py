@@ -217,8 +217,6 @@ def _status_text(device: FakeSendspinDevice | None) -> str:
         parts.append(f"PIN on the device right now: {device.dynamic_pin}")
     if device.static_pin is not None:
         parts.append(f"Static PIN: {device.static_pin}")
-    if device.pairing_token is not None:
-        parts.append(f"Pairing token: {device.pairing_token}")
     if device.last_abort is not None:
         parts.append(f"Last pairing abort: {device.last_abort.value}")
     return " ".join(parts)

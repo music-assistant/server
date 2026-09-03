@@ -16,7 +16,6 @@ from aiosendspin.models.source import ClientHelloSourceFeatures, ClientHelloSour
 from aiosendspin.models.types import AudioCodec, Roles
 from aiosendspin.noise.driver import HandshakeAbortedError
 from aiosendspin.noise.keys import Identity, generate_psk, psk_id_for
-from aiosendspin.noise.pairing_token import PSKPairingToken, encode_token
 from aiosendspin.noise.trust_store import FileClientPairingStore, PairingPsk
 
 from .constants import DEVICE_MANUFACTURER, RECONNECT_INTERVAL, STATIC_PIN
@@ -57,7 +56,6 @@ class FakeSendspinDevice:
         """
         self.scenario = scenario
         self.identity = _scenario_identity(scenario.scenario_id)
-        self.pairing_token: str | None = None
         self.dynamic_pin: str | None = None
         self.awaiting_button: bool = False
         self.last_abort: PairAbortReason | None = None
@@ -101,7 +99,7 @@ class FakeSendspinDevice:
         if self.scenario.static_pin:
             await store.set_static_pin(STATIC_PIN)
         if self.scenario.pairing_psk:
-            self.pairing_token = await _ensure_pairing_token(store, self.client_id)
+            await _ensure_pairing_psk(store)
 
         roles = [Roles.PLAYER]
         if self.scenario.source_role:
@@ -235,11 +233,14 @@ def _scenario_identity(scenario_id: str) -> Identity:
     return Identity.from_private_bytes(seed)
 
 
-async def _ensure_pairing_token(store: FileClientPairingStore, client_id: str) -> str:
-    """Return the device's pairing token, minting the Pairing PSK behind it once."""
-    pairing_psk = await store.pairing_psk()
-    if pairing_psk is None:
-        psk = generate_psk()
-        pairing_psk = PairingPsk(psk_id=psk_id_for(psk), psk=psk)
-        await store.set_pairing_psk(pairing_psk)
-    return encode_token(PSKPairingToken(client_id=client_id, pairing_psk=pairing_psk.psk))
+async def _ensure_pairing_psk(store: FileClientPairingStore) -> None:
+    """
+    Mint the Pairing PSK once, so the device can advertise the token method.
+
+    The token itself is never shown: Music Assistant pairs by token only when enrolling
+    its own web player, and never offers it as something an operator can carry out.
+    """
+    if await store.pairing_psk() is not None:
+        return
+    psk = generate_psk()
+    await store.set_pairing_psk(PairingPsk(psk_id=psk_id_for(psk), psk=psk))

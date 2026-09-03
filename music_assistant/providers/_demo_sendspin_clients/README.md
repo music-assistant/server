@@ -22,7 +22,7 @@ an ordinary Sendspin player needing setup. Run the setup flow on that player to 
 The provider's own settings page is the device's front panel:
 
 - the derived dynamic PIN, once the server asks for one
-- the static PIN and the pairing token, so they can be copied into setup
+- the static PIN, so it can be copied into setup
 - whether the device is waiting for its pairing button, and the button itself
 - the reason the last pairing attempt was aborted
 
