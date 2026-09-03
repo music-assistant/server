@@ -894,7 +894,7 @@
   "core.webserver.config_entries.verify_ssl.action_label": "Verify",
   "core.webserver.config_entries.verify_ssl.description": "Test your certificate and private key to verify they are valid and match each other.",
   "core.webserver.config_entries.verify_ssl.label": "Verify SSL Certificate",
-  "core.webserver.config_entries.webserver_warn.label": "Please note that the webserver is by default unencrypted. Never ever expose the webserver directly to the internet! \n\nTo access Music Assistant from outside your local network, use the Remote Access feature which secures access to your Music Assistant instance without the need to expose your webserver directly. \n\nAlternatively, you can use a reverse proxy, VPN or enable SSL (enable advanced settings), but these options are not officially supported.",
+  "core.webserver.config_entries.webserver_warn.label": "Please note that the webserver is by default unencrypted. Never ever expose the webserver directly to the internet! \n\nTo access Music Assistant from outside your local network, use the Remote Access feature which secures access to your Music Assistant instance without the need to expose your webserver directly. \n\nAlternatively, you can use a reverse proxy, VPN or enable SSL.",
   "core.webserver.errors.ssl_verification_failed": "Certificate verification failed: {0}",
   "core.webserver.manifest.description": "Configuration of the webserver and API",
   "core.webserver.manifest.name": "Webserver",
