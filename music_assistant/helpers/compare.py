@@ -472,6 +472,43 @@ def compare_track(
     return abs(base_item.duration - compare_item.duration) <= 2
 
 
+def _same_instance_item_match(
+    base_item: MediaItem | ItemMapping, compare_item: MediaItem | ItemMapping
+) -> bool:
+    """
+    Return whether two items share the same provider instance and item id.
+
+    Unlike ``compare_item_ids``, this never widens the identity match across sibling
+    instances of the same domain. A shared item id there only proves catalog identity
+    for a genuinely portable (streaming) provider - for a non-streaming one (e.g.
+    filesystem), each instance mints its own local ids, so an id collision is
+    coincidence, not evidence. Confidence tiers built from this check have no way to
+    tell portable domains from non-portable ones here, so they only trust the
+    unambiguous case: the very same provider instance.
+    """
+    if not base_item.provider or not compare_item.provider:
+        return False
+    if not base_item.item_id or not compare_item.item_id:
+        return False
+    if base_item.provider == compare_item.provider and base_item.item_id == compare_item.item_id:
+        return True
+    base_mappings = getattr(base_item, "provider_mappings", None)
+    if base_mappings is not None:
+        for prov_l in base_mappings:
+            if prov_l.provider_instance == compare_item.provider and prov_l.item_id == (
+                compare_item.item_id
+            ):
+                return True
+    compare_mappings = getattr(compare_item, "provider_mappings", None)
+    if compare_mappings is not None:
+        for prov_r in compare_mappings:
+            if prov_r.provider_instance == base_item.provider and prov_r.item_id == (
+                base_item.item_id
+            ):
+                return True
+    return False
+
+
 def _album_has_authoritative_release_evidence(
     base_album: Album | ItemMapping | None, compare_album_item: Album | ItemMapping | None
 ) -> bool:
@@ -486,7 +523,7 @@ def _album_has_authoritative_release_evidence(
     """
     if base_album is None or compare_album_item is None:
         return False
-    if compare_item_ids(base_album, compare_album_item):
+    if _same_instance_item_match(base_album, compare_album_item):
         return True
     return any(
         compare_external_ids(base_album.external_ids, compare_album_item.external_ids, ext_id)
@@ -512,7 +549,7 @@ def compare_track_evidence(
     :param compare_album_item: Optional full album for the candidate track.
     :param allow_item_id_match: Trust shared provider item identity as exact evidence.
     """
-    if allow_item_id_match and compare_item_ids(base_item, compare_item):
+    if allow_item_id_match and _same_instance_item_match(base_item, compare_item):
         return TrackMatchConfidence.EXACT
 
     base_album = base_album or base_item.album

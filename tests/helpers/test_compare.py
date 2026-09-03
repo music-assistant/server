@@ -1321,6 +1321,87 @@ def test_compare_track_evidence_conflicting_release_track_ids_are_not_exact() ->
     assert compare.compare_track_evidence(base, candidate) == compare.TrackMatchConfidence.LIKELY
 
 
+def test_compare_track_evidence_cross_instance_item_id_collision_is_not_exact() -> None:
+    """A coincidental item id shared by two different provider instances is not proof."""
+    base = media_items.Track(
+        item_id="Artist/Album/01.flac",
+        provider="filesystem_1",
+        name="Track One",
+        version="",
+        duration=200,
+        disc_number=1,
+        track_number=1,
+        artists=media_items.UniqueList(
+            [
+                media_items.ItemMapping(
+                    item_id="artist-a",
+                    provider="filesystem_1",
+                    name="Artist A",
+                    media_type=MediaType.ARTIST,
+                )
+            ]
+        ),
+        provider_mappings={
+            media_items.ProviderMapping(
+                item_id="Artist/Album/01.flac",
+                provider_domain="filesystem",
+                provider_instance="filesystem_1",
+            )
+        },
+    )
+    # a second, unrelated filesystem instance happens to mint the same relative
+    # path/item id for an entirely different recording - non-streaming providers
+    # do not share a portable catalog, so this must not be trusted as identity
+    unrelated = media_items.Track(
+        item_id="Artist/Album/01.flac",
+        provider="filesystem_2",
+        name="Completely Different Song",
+        version="",
+        duration=321,
+        disc_number=1,
+        track_number=7,
+        artists=media_items.UniqueList(
+            [
+                media_items.ItemMapping(
+                    item_id="artist-b",
+                    provider="filesystem_2",
+                    name="Someone Else",
+                    media_type=MediaType.ARTIST,
+                )
+            ]
+        ),
+        provider_mappings={
+            media_items.ProviderMapping(
+                item_id="Artist/Album/01.flac",
+                provider_domain="filesystem",
+                provider_instance="filesystem_2",
+            )
+        },
+    )
+
+    assert compare.compare_track_evidence(base, unrelated) == compare.TrackMatchConfidence.NO_MATCH
+
+    # the same instance sharing the same item id is unambiguous identity and stays EXACT
+    same_instance = media_items.Track(
+        item_id="Artist/Album/01.flac",
+        provider="filesystem_1",
+        name="Completely Different Song",
+        version="",
+        duration=321,
+        disc_number=1,
+        track_number=7,
+        artists=base.artists,
+        provider_mappings={
+            media_items.ProviderMapping(
+                item_id="Artist/Album/01.flac",
+                provider_domain="filesystem",
+                provider_instance="filesystem_1",
+            )
+        },
+    )
+    assert compare.compare_track_evidence(base, same_instance) == compare.TrackMatchConfidence.EXACT
+
+
 def test_compare_track_evidence_authoritative_id_overrides_position_drift() -> None:
     """Provider track-number drift does not override an authoritative release-track ID."""
     mb_track = (
