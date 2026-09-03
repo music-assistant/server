@@ -434,12 +434,12 @@ async def test_a_failed_run_surfaces_its_error_to_the_stream(tmp_path: Path) -> 
         await _collect(run)
 
 
-async def test_short_delivery_is_rejected_as_incomplete(tmp_path: Path) -> None:
-    """A run still going that stops delivering must not read as a completed stream."""
+async def test_a_run_that_delivered_nothing_is_rejected(tmp_path: Path) -> None:
+    """A run still going that rendered nothing must not read as a completed stream."""
     run = _make_run(tmp_path, duration=152)
     run._chunks.put_nowait(b"\x01" * _FRAME_BYTES)
     run._finish_delivery()
-    with pytest.raises(AudioError, match="stopped part-way"):
+    with pytest.raises(AudioError, match="stopped before it played"):
         await _collect(run)
 
 
@@ -467,30 +467,29 @@ async def test_a_crashed_run_is_not_reported_as_a_refusal(tmp_path: Path) -> Non
         await _collect(run)
 
 
-async def test_a_starved_run_is_still_reported_as_incomplete(tmp_path: Path) -> None:
-    """A run that played most of its item and then stopped is a fault, not a refusal."""
+async def test_audio_that_arrived_and_stopped_is_not_a_failure(tmp_path: Path) -> None:
+    """Something ended the item early - a skip, a seek, the account playing elsewhere."""
     run = _make_run(tmp_path, duration=152)
     run._engine_exited = True
     run._proc = MagicMock(returncode=0)
     run._chunks.put_nowait(b"\x01" * (100 * _BYTES_PER_SECOND))
     run._finish_delivery()
-    with pytest.raises(AudioError, match="stopped part-way"):
-        await _collect(run)
+    await _collect(run)
 
 
-async def test_a_short_item_is_still_judged_on_what_arrived(tmp_path: Path) -> None:
-    """An item shorter than the tolerance would otherwise pass however little arrived."""
+async def test_a_short_item_that_played_nothing_is_still_reported(tmp_path: Path) -> None:
+    """A short item is judged the same way: nothing arrived, so nothing played."""
     run = _make_run(tmp_path, duration=8)
     run._engine_exited = True
     run._proc = MagicMock(returncode=0)
     run._chunks.put_nowait(b"\x01" * _FRAME_BYTES)
     run._finish_delivery()
-    with pytest.raises(AudioError, match="would not play"):
+    with pytest.raises(AudioError, match="would not play this track"):
         await _collect(run)
 
 
 async def test_a_short_item_played_in_full_is_accepted(tmp_path: Path) -> None:
-    """The proportional tolerance must not turn a complete short item into a refusal."""
+    """A complete short item must not be mistaken for one that never played."""
     run = _make_run(tmp_path, duration=8)
     run._engine_exited = True
     run._proc = MagicMock(returncode=0)

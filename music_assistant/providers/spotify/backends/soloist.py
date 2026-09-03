@@ -130,11 +130,8 @@ _SEEK_TOLERANCE_MS: Final[int] = 2000
 # capture pre-roll from a genuinely digitally-silent intro, so the budget bounds
 # what an intro can lose while still covering the measured pre-roll (~140 ms).
 _MAX_LEAD_TRIM_S: Final[float] = 0.5
-# how far short of an item's duration its delivered PCM may end before it is
-# rejected as incomplete (reported durations are approximate)
-_SHORT_DELIVERY_TOLERANCE_MS: Final[int] = 10000
-# below this much audio, on a clean exit, a short delivery is the engine
-# refusing the item rather than a run that starved or crashed
+# below this much audio an item rendered nothing: the engine either refused it
+# (clean exit) or never got going, and anything above it played and was cut short
 _REFUSED_DELIVERY_MS: Final[int] = 1000
 # The elastic cushion between the paced FIFO reader and the consumer. A full
 # cushion suspends the capture sink, which pauses the engine: the FIFO itself
@@ -831,36 +828,29 @@ class _SingleTrackRun:
 
     def _validate_delivery(self) -> None:
         """
-        Raise when the engine ended the item long before its own duration.
+        Raise when the engine played none of the item it was given.
 
-        Crediting a run that stopped short as a completed stream would mark the
-        track as played and hide the cause. An engine that ends the run cleanly
-        having played nothing refused the item, and is reported as that.
+        Audio that arrives and then stops belongs to something ending the item
+        early - a skip, a seek or the account playing elsewhere - so only a run
+        that rendered nothing at all is a failure worth reporting.
         """
         if self._stopped or self._duration_ms is None:
             return
         played_ms = self._delivered / _BYTES_PER_SECOND * 1000
-        delivered_ms = played_ms + self._seek_target_ms
-        # scaled by duration, or a short item passes whatever little it delivered
-        tolerance_ms = min(_SHORT_DELIVERY_TOLERANCE_MS, self._duration_ms // 2)
-        if delivered_ms >= self._duration_ms - tolerance_ms:
+        # a seek can leave an item with almost nothing left to play
+        expected_ms = self._duration_ms - self._seek_target_ms
+        if played_ms > _REFUSED_DELIVERY_MS or expected_ms <= _REFUSED_DELIVERY_MS:
             return
         proc = self._proc
-        # the exit code is what separates a refusal from a crash: both end early
-        if (
-            self._engine_exited
-            and proc is not None
-            and proc.returncode == 0
-            and played_ms <= _REFUSED_DELIVERY_MS
-        ):
+        if self._engine_exited and proc is not None and proc.returncode == 0:
             raise AudioError(
                 "Spotify would not play this track: it is unavailable for this account "
                 "or region, or Spotify refused it for now"
             )
-        # print the exit code: a refusal that exits non-zero lands here
+        # the exit code is named because the clean exit above is what a refusal
+        # is judged on: one landing here shows the value to widen that test with
         raise AudioError(
-            f"Spotify stopped part-way through this track, after "
-            f"{int(delivered_ms / 1000)}s of {int(self._duration_ms / 1000)}s "
+            "Spotify stopped before it played any of this track "
             f"(engine exit code {proc.returncode if proc is not None else None})"
         )
 
