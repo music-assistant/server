@@ -28,7 +28,7 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import format_ip_for_url
 
-from .constants import StreamingProtocol
+from .constants import AIRPLAY_DEFAULT_PORT, RAOP_DEFAULT_PORT, StreamingProtocol
 from .helpers import get_cli_binary
 
 # Timeout for the binary to complete the SRP exchange after the PIN is entered
@@ -89,7 +89,9 @@ class AirPlayPairing:
         self.name = name
         self.protocol = protocol
         self.logger = logger
-        self.port = port or (7000 if protocol == StreamingProtocol.AIRPLAY2 else 5000)
+        self.port = port or (
+            AIRPLAY_DEFAULT_PORT if protocol == StreamingProtocol.AIRPLAY2 else RAOP_DEFAULT_PORT
+        )
         self.device_id = device_id
 
         # cliairplay --pair-setup subprocess state (AirPlay 2)
