@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, PropertyMock, patch
 
 import pytest
 
 from music_assistant.helpers.datetime import utc_timestamp
+from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 from music_assistant.providers.bbc_sounds.constants import _Constants
 
 if TYPE_CHECKING:
     from sounds.models import Menu
-
-    from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 
 
 class TestMenuLoading:
@@ -49,8 +48,9 @@ class TestMenuLoading:
         provider._refresh_menu_from_api.assert_awaited_once()
 
     @pytest.mark.parametrize(
-        "last_fetched", [utc_timestamp(), utc_timestamp() - _Constants.SHORT_EXPIRATION + 1]
+        "last_fetched", [1788517216, 1788517216 - _Constants.SHORT_EXPIRATION + 1]
     )
+    @patch.object(BBCSoundsProvider, "_menu_is_stale", new_callable=PropertyMock)
     async def test_valid_menu_is_not_refreshed(
         self, provider: BBCSoundsProvider, uk_menu: Menu, last_fetched: float
     ) -> None:
@@ -58,7 +58,5 @@ class TestMenuLoading:
         provider.menu = uk_menu
         provider.menu_last_fetched = last_fetched
         provider._refresh_menu_from_api = AsyncMock()  # type: ignore[method-assign]
-
-        await provider._get_menu()
-
+        provider._get_menu()  # type: ignore[unused-coroutine]
         provider._refresh_menu_from_api.assert_not_awaited()
