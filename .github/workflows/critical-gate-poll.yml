@@ -1,0 +1,118 @@
+name: Critical review gate (poll)
+
+# Scheduled gate: every ~10 minutes, scan open PRs and convert to a draft any with an unresolved,
+# non-outdated Copilot [CRITICAL] thread from a review posted in the last ~30 minutes (a draft PR
+# cannot be merged), with one explanatory comment.
+#
+# The gate is RECENCY-based, not "latest review": a scheduled poller should act on FRESH criticals
+# and then back off — gating on the latest review regardless of age would re-draft a PR with an old,
+# ignored critical on every run, forever. The 30-minute window (> a few poll cycles) means no fresh
+# critical is missed; and dev's ruleset already blocks merging any PR with an unresolved thread, so a
+# critical that ages out of the window still can't be merged — the draft is only the visible signal.
+#
+# Why a poller and not a `pull_request_review` trigger: GitHub holds workflow runs triggered by the
+# Copilot bot for manual approval (they sit at `action_required` and never run), so an event-reactive
+# gate never fires automatically. A scheduled run executes as a trusted actor with a write token,
+# which also sidesteps the fork read-only-token and workflow_run artifact-trust problems.
+
+on:  # yamllint disable-line rule:truthy
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: critical-gate-poll
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Draft open PRs with a recent unresolved [CRITICAL] Copilot finding
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const BASES = ['dev', 'stable'];
+            const COPILOT = 'copilot-pull-request-reviewer';  // exact GraphQL reviewer login
+            const GATE_BOT = 'github-actions[bot]';            // author of this gate's comments
+            const WINDOW_MS = 30 * 60 * 1000;                  // act only on criticals this recent
+            const MARKER = '<!-- critical-gate -->';
+            const BODY = [
+              MARKER,
+              "🚧 **Automated critical-issue gate** — this PR has an unresolved **`[CRITICAL]`** " +
+              "finding from the automated review, so it is kept as a **draft** (a draft PR can't be " +
+              "merged) until that is resolved. Please address the `[CRITICAL]` thread(s), then mark " +
+              "it **Ready for review**.",
+              '',
+              '_Maintainers: add the `override-critical` label to bypass this._',
+            ].join('\n');
+
+            // Gate on an unresolved, non-outdated [CRITICAL] thread whose Copilot review was posted
+            // within WINDOW_MS. Recency (not "latest review") keeps the poller a responder, not a
+            // perpetual enforcer; the exact author login prevents a look-alike username from
+            // triggering the write-token job.
+            const THREADS = `query($owner:String!,$repo:String!,$num:Int!,$cursor:String){
+              repository(owner:$owner,name:$repo){ pullRequest(number:$num){
+                reviewThreads(first:100, after:$cursor){
+                  pageInfo{ hasNextPage endCursor }
+                  nodes{ isResolved isOutdated
+                    comments(first:1){ nodes{ author{login} body pullRequestReview{ submittedAt } } } }
+                } } } }`;
+            async function activeCritical(num) {
+              const now = Date.now();
+              let cursor = null;
+              for (;;) {
+                const d = await github.graphql(THREADS, { owner, repo, num, cursor });
+                const tr = d.repository.pullRequest.reviewThreads;
+                for (const t of tr.nodes) {
+                  if (t.isResolved || t.isOutdated) continue;
+                  const c = t.comments.nodes[0];
+                  if (!c || (c.author && c.author.login) !== COPILOT) continue;
+                  if (!(c.body || '').includes('[CRITICAL]')) continue;
+                  const at = c.pullRequestReview && c.pullRequestReview.submittedAt;
+                  if (at && (now - new Date(at).getTime()) <= WINDOW_MS) return true;
+                }
+                if (!tr.pageInfo.hasNextPage) return false;
+                cursor = tr.pageInfo.endCursor;
+              }
+            }
+
+            const prs = await github.paginate(github.rest.pulls.list,
+              { owner, repo, state: 'open', per_page: 100 });
+
+            let failed = false, drafted = 0;
+            for (const pr of prs) {
+              try {
+                if (!BASES.includes(pr.base.ref)) continue;
+                if (pr.labels.some(l => l.name === 'override-critical')) continue;
+                if (!(await activeCritical(pr.number))) continue;
+
+                // Draft first — it is the gate; never swallow a failure.
+                if (!pr.draft) {
+                  await github.graphql(
+                    'mutation($id: ID!) { convertPullRequestToDraft(input: { pullRequestId: $id }) { pullRequest { isDraft } } }',
+                    { id: pr.node_id });
+                  drafted++;
+                  core.info(`PR #${pr.number}: drafted on unresolved [CRITICAL].`);
+                }
+                // Then the explanation, at most once — matched on marker AND our own bot author, so a
+                // quoted or pre-posted marker in someone else's comment can't suppress it.
+                const comments = await github.paginate(github.rest.issues.listComments,
+                  { owner, repo, issue_number: pr.number, per_page: 100 });
+                const posted = comments.some(c =>
+                  c.user && c.user.login === GATE_BOT && (c.body || '').includes(MARKER));
+                if (!posted) {
+                  await github.rest.issues.createComment({ owner, repo, issue_number: pr.number, body: BODY });
+                }
+              } catch (e) {
+                failed = true;
+                core.error(`PR #${pr.number}: ${e.message}`);
+              }
+            }
+            core.info(`Scanned ${prs.length} open PRs; drafted ${drafted}.`);
+            if (failed) core.setFailed('One or more PRs could not be gated; see errors above.');
