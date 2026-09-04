@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 import pytest
@@ -11,6 +11,7 @@ from music_assistant_models.auth import UserRole
 from music_assistant_models.enums import (
     AlbumType,
     ArtistType,
+    MediaType,
     ProviderFeature,
     ProviderType,
 )
@@ -111,6 +112,51 @@ async def test_browse_root_honors_admin_provider_filter(mock_get_user: Mock) -> 
     result = await controller.browse(path=None)
 
     assert [folder.path for folder in result] == ["m_a://"]  # type: ignore[union-attr]
+
+
+@patch("music_assistant.controllers.music.controller.get_current_user")
+async def test_verify_item_uri_bypasses_filter_for_plain_url(mock_get_user: Mock) -> None:
+    """A plain URL resolves via the builtin provider and must bypass the filter (issue #6320)."""
+    mock_get_user.return_value = Mock(provider_filter=["spotify--TPf9JZ2K"])
+    controller = MusicController.__new__(MusicController)
+
+    with patch.object(MusicController, "get_item", AsyncMock(return_value=Mock())):
+        assert await controller._handle_verify_item_uri("https://example.com/clip.mp3") is True
+
+
+@patch("music_assistant.controllers.music.controller.get_current_user")
+async def test_verify_item_uri_resolves_domain_against_instance_filter(
+    mock_get_user: Mock,
+) -> None:
+    """A uri naming a provider by domain must match the user's filter of instance ids."""
+    mock_get_user.return_value = Mock(provider_filter=["spotify--TPf9JZ2K"])
+    spotify = _make_prov("spotify--TPf9JZ2K", ProviderType.MUSIC)
+    spotify.domain = "spotify"
+    controller = MusicController.__new__(MusicController)
+    controller.mass = Mock(providers=[spotify])
+
+    with patch.object(MusicController, "get_item", AsyncMock(return_value=Mock())) as get_item:
+        assert await controller._handle_verify_item_uri("spotify://track/abc") is True
+        get_item.assert_awaited_once_with(
+            media_type=MediaType.TRACK,
+            item_id="abc",
+            provider_instance_id_or_domain="spotify",
+            allow_update_metadata=False,
+        )
+
+
+@patch("music_assistant.controllers.music.controller.get_current_user")
+async def test_verify_item_uri_denies_provider_outside_filter(mock_get_user: Mock) -> None:
+    """A uri for a provider the user may not access must verify False."""
+    mock_get_user.return_value = Mock(provider_filter=["deezer--xyz"])
+    spotify = _make_prov("spotify--TPf9JZ2K", ProviderType.MUSIC)
+    spotify.domain = "spotify"
+    controller = MusicController.__new__(MusicController)
+    controller.mass = Mock(providers=[spotify])
+
+    with patch.object(MusicController, "get_item", AsyncMock(return_value=Mock())) as get_item:
+        assert await controller._handle_verify_item_uri("spotify://track/abc") is False
+        get_item.assert_not_awaited()
 
 
 def _mapping(provider_instance: str) -> ProviderMapping:
