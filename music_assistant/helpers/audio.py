@@ -21,6 +21,7 @@ from music_assistant_models.enums import (
     VolumeNormalizationMode,
 )
 from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import MultiPartPath
 
 from music_assistant.constants import (
@@ -33,7 +34,6 @@ from .ffmpeg import DEFAULT_MP3_BIT_RATE, get_ffmpeg_stream
 from .process import AsyncProcess, communicate
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
@@ -775,10 +775,18 @@ def is_dsd_audio_format(audio_format: AudioFormat) -> bool:
 
 def is_dsd_stream(streamdetails: StreamDetails) -> bool:
     """Return whether a stream contains DSD, including DFF/DST local files."""
-    if is_dsd_audio_format(arriving_audio_format(streamdetails)):
+    if streamdetails.decoded_audio_format is not None:
+        return is_dsd_audio_format(streamdetails.decoded_audio_format)
+    if is_dsd_audio_format(streamdetails.audio_format):
         return True
     path = streamdetails.path
-    return isinstance(path, str) and urllib.parse.urlparse(path).path.lower().endswith(".dff")
+    if isinstance(path, str):
+        return urllib.parse.urlparse(path).path.lower().endswith(".dff")
+    return (
+        isinstance(path, list)
+        and bool(path)
+        and all(urllib.parse.urlparse(part.path).path.lower().endswith(".dff") for part in path)
+    )
 
 
 def decoded_pcm_format(streamdetails: StreamDetails) -> AudioFormat:
@@ -792,8 +800,6 @@ def decoded_pcm_format(streamdetails: StreamDetails) -> AudioFormat:
 
     :param streamdetails: The stream whose decoded PCM format is required.
     """
-    from music_assistant_models.media_items import AudioFormat  # noqa: PLC0415
-
     arriving = arriving_audio_format(streamdetails)
     if is_dsd_stream(streamdetails):
         return AudioFormat(
