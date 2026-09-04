@@ -133,23 +133,35 @@ async def test_prevent_playback_cancels_pending_discrete_pause(
 async def test_device_volume_updates_volume(
     airplay_provider: AirPlayProvider, mock_mass: MagicMock
 ) -> None:
-    """dmcp.device-volume in dB updates the player volume via the converted 0-100 value."""
+    """dmcp.device-volume in dB is adopted as a device-applied level via the converted value."""
     player = make_player(mock_mass)
     # -15 dB maps to 50 on the 0-100 scale
     raw = build_dacp_request("/ctrl-int/1/setproperty?dmcp.device-volume=-15.000000")
     await replay(airplay_provider, raw)
-    player.update_volume_from_device.assert_called_once_with(50)
+    player.update_volume_from_device.assert_called_once_with(50, device_applied=True)
 
 
 async def test_device_volume_mute_threshold_mutes(
     airplay_provider: AirPlayProvider, mock_mass: MagicMock
 ) -> None:
-    """dmcp.device-volume at/below the mute threshold mutes the player and sends VOLUME=0."""
+    """dmcp.device-volume at/below the mute threshold mutes the player without writing back."""
     player = make_player(mock_mass)
     raw = build_dacp_request("/ctrl-int/1/setproperty?dmcp.device-volume=-144.000000")
     await replay(airplay_provider, raw)
     assert player._attr_volume_muted is True
-    player.stream.send_cli_command.assert_called_once_with("VOLUME=0")
+    player.stream.send_cli_command.assert_not_called()
+
+
+async def test_device_volume_report_clears_mute_latch_without_writeback(
+    airplay_provider: AirPlayProvider, mock_mass: MagicMock
+) -> None:
+    """A device-volume report above the mute threshold clears a latched mute without a write-back."""
+    player = make_player(mock_mass)
+    player.volume_muted = True
+    raw = build_dacp_request("/ctrl-int/1/setproperty?dmcp.device-volume=-15.000000")
+    await replay(airplay_provider, raw)
+    assert player._attr_volume_muted is False
+    player.stream.send_cli_command.assert_not_called()
 
 
 async def test_device_volume_ignored_for_apple_device(
@@ -169,7 +181,7 @@ async def test_dmcp_volume_button_updates_volume(
     player = make_player(mock_mass)
     raw = build_dacp_request("/ctrl-int/1/setproperty?dmcp.volume=45")
     await replay(airplay_provider, raw)
-    player.update_volume_from_device.assert_called_once_with(45)
+    player.update_volume_from_device.assert_called_once_with(45, device_applied=False)
 
 
 _PREVENT_1 = "/ctrl-int/1/setproperty?device-prevent-playback=1"
