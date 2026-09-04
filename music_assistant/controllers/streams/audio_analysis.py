@@ -35,7 +35,7 @@ from music_assistant.helpers.api import api_command
 from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.util import inference_thread_budget, is_arm
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import (
     AudioAnalysisProvider,
     InstrumentedSemaphore,
@@ -1414,7 +1414,7 @@ class AudioAnalysisController:
         if not provider_ids:
             return
 
-        async def _process(prov_id: str) -> str | None:
+        async def _process(prov_id: str) -> tuple[str, tuple[str, datetime | None] | None] | None:
             try:
                 provider = self.mass.get_provider(prov_id)
                 if not (
@@ -1441,22 +1441,38 @@ class AudioAnalysisController:
                     contention,
                     len(self._active_sessions),
                 )
-                return prov_id
+                # a timeout tracks server load rather than the audio, so the track stays
+                # pending for the next run instead of being recorded against it
+                return prov_id, None
+            except AudioAnalysisError as err:
+                # the provider judged this track unanalyzable, so its own wording is what
+                # the user should see in the failures overview
+                self.logger.warning(
+                    "Provider %s failed analysis for %s: %s", prov_id, session_key, err.reason
+                )
+                return prov_id, (err.reason, err.retry_at)
             except Exception as err:
                 # process_pcm_chunk is provider-implemented (torch/numpy/ffmpeg); evict
                 # the provider that fails on a chunk rather than crashing the session.
                 self.logger.warning("Error processing PCM chunk on provider %s: %s", prov_id, err)
-                return prov_id
+                return prov_id, (
+                    f"audio processing failed ({str(err) or type(err).__name__})",
+                    None,
+                )
             return None
 
         results = await asyncio.gather(*[_process(prov_id) for prov_id in provider_ids])
-        evicted = {prov_id for prov_id in results if prov_id is not None}
+        evicted = dict(result for result in results if result is not None)
         if evicted:
-            for prov_id in evicted:
+            for prov_id, failure in evicted.items():
                 provider = self.mass.get_provider(prov_id)
                 if provider and isinstance(provider, AudioAnalysisProvider) and provider.available:
-                    self.mass.create_task(provider.cancel(session_key))
-            provider_ids -= evicted
+                    if failure is None:
+                        self.mass.create_task(provider.cancel(session_key))
+                    else:
+                        reason, retry_at = failure
+                        self.mass.create_task(provider.abort(session_key, reason, retry_at))
+            provider_ids.difference_update(evicted)
             if not provider_ids:
                 self._active_sessions.pop(session_key, None)
 

@@ -8,6 +8,7 @@ import sqlite3
 from collections.abc import AsyncGenerator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from datetime import UTC, datetime
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -35,7 +36,7 @@ from music_assistant.controllers.streams.audio_analysis import (
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBufferEOF
 from music_assistant.helpers.json import json_dumps, json_loads
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import (
     AudioAnalysisProvider,
     InstrumentedSemaphore,
@@ -199,6 +200,94 @@ async def test_distribute_chunk_evicts_provider_on_exception() -> None:
 
     assert "raises" not in controller._active_sessions[session_key]
     assert "ok" in controller._active_sessions[session_key]
+
+
+@pytest.mark.asyncio
+async def test_distribute_chunk_records_failure_when_provider_raises() -> None:
+    """A provider that raises is aborted so the track shows up in the failures overview."""
+    controller = _make_controller()
+    session_key = "track://provider/abc"
+    controller._active_sessions[session_key] = {"raises"}
+
+    raises = _make_aa_provider(
+        "raises",
+        available=True,
+        process_pcm_chunk=AsyncMock(side_effect=RuntimeError("boom")),
+    )
+    controller.mass.get_provider = MagicMock(return_value=raises)  # type: ignore[method-assign]
+
+    await controller._distribute_chunk(session_key, b"\x00" * 1024)
+
+    raises.cancel.assert_not_called()
+    raises.abort.assert_called_once()
+    assert raises.abort.call_args.args[0] == session_key
+    assert "boom" in raises.abort.call_args.args[1]
+    # an unexpected error carries no retry window, so the row blocks until cleared
+    assert raises.abort.call_args.args[2] is None
+
+
+@pytest.mark.asyncio
+async def test_distribute_chunk_keeps_the_provider_failure_reason() -> None:
+    """A reason the provider states itself reaches the failure record unwrapped."""
+    controller = _make_controller()
+    session_key = "track://provider/abc"
+    controller._active_sessions[session_key] = {"raises"}
+
+    raises = _make_aa_provider(
+        "raises",
+        available=True,
+        process_pcm_chunk=AsyncMock(
+            side_effect=AudioAnalysisError("audio decoding failed during loudness measurement")
+        ),
+    )
+    controller.mass.get_provider = MagicMock(return_value=raises)  # type: ignore[method-assign]
+
+    await controller._distribute_chunk(session_key, b"\x00" * 1024)
+
+    raises.abort.assert_called_once_with(
+        session_key, "audio decoding failed during loudness measurement", None
+    )
+
+
+@pytest.mark.asyncio
+async def test_distribute_chunk_forwards_the_provider_retry_time() -> None:
+    """A retry window the provider attaches to its error reaches the failure record."""
+    controller = _make_controller()
+    session_key = "track://provider/abc"
+    controller._active_sessions[session_key] = {"raises"}
+    retry_at = datetime(2026, 9, 2, tzinfo=UTC)
+
+    raises = _make_aa_provider(
+        "raises",
+        available=True,
+        process_pcm_chunk=AsyncMock(
+            side_effect=AudioAnalysisError("models are not loaded", retry_at=retry_at)
+        ),
+    )
+    controller.mass.get_provider = MagicMock(return_value=raises)  # type: ignore[method-assign]
+
+    await controller._distribute_chunk(session_key, b"\x00" * 1024)
+
+    raises.abort.assert_called_once_with(session_key, "models are not loaded", retry_at)
+
+
+@pytest.mark.asyncio
+async def test_distribute_chunk_records_no_failure_on_timeout() -> None:
+    """A timed out provider is cancelled rather than aborted, leaving the track pending."""
+    controller = _make_controller()
+    session_key = "track://provider/abc"
+    controller._active_sessions[session_key] = {"slow"}
+
+    async def _hang(*_args: object, **_kwargs: object) -> None:
+        await asyncio.sleep(10)
+
+    slow = _make_aa_provider("slow", available=True, process_pcm_chunk=AsyncMock(side_effect=_hang))
+    controller.mass.get_provider = MagicMock(return_value=slow)  # type: ignore[method-assign]
+
+    await controller._distribute_chunk(session_key, b"\x00" * 1024, max_interval=0.05)
+
+    slow.abort.assert_not_called()
+    slow.cancel.assert_called_once_with(session_key)
 
 
 def test_get_scan_concurrency_returns_default_on_unset() -> None:
@@ -412,6 +501,7 @@ def _make_aa_provider(
     provider.available = available
     provider.process_pcm_chunk = process_pcm_chunk or AsyncMock(return_value=None)
     provider.cancel = AsyncMock(return_value=None)
+    provider.abort = AsyncMock(return_value=None)
     return provider
 
 
