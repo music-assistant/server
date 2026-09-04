@@ -20,6 +20,8 @@ from music_assistant_models.enums import (
     MediaType,
     ProviderFeature,
     ProviderType,
+    SortDirection,
+    SortField,
 )
 from music_assistant_models.errors import (
     InsufficientPermissions,
@@ -55,7 +57,13 @@ from music_assistant.constants import (
     DB_TABLE_TRACK_ARTISTS,
     MASS_LOGGER_NAME,
 )
+from music_assistant.controllers.music.constants import BASE_SORT_FIELD_SQL, LEGACY_SORT_KEYS
 from music_assistant.controllers.music.helpers import search_name_match_clause
+from music_assistant.controllers.music.sorting import (
+    SortOptionInfo,
+    get_default_direction,
+    get_sort_options_for_media_type,
+)
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.collections import (
     get_collection_item_id,
@@ -114,36 +122,6 @@ SUPPRESS_MEDIA_ITEM_UPDATES: ContextVar[bool] = ContextVar(
     "SUPPRESS_MEDIA_ITEM_UPDATES", default=False
 )
 
-SORT_KEYS = {
-    # sqlite has no builtin support for natural sorting
-    # so we have use an additional column for this
-    # this also improves searching and sorting performance
-    "name": "search_name ASC",
-    "name_desc": "search_name DESC",
-    "duration": "duration ASC",
-    "duration_desc": "duration DESC",
-    "sort_name": "search_sort_name ASC",
-    "sort_name_desc": "search_sort_name DESC",
-    "timestamp_added": "timestamp_added ASC",
-    "timestamp_added_desc": "timestamp_added DESC",
-    "timestamp_modified": "timestamp_modified ASC",
-    "timestamp_modified_desc": "timestamp_modified DESC",
-    "last_played": "last_played ASC",
-    "last_played_desc": "last_played DESC",
-    "play_count": "play_count ASC",
-    "play_count_desc": "play_count DESC",
-    "year": "year ASC",
-    "year_desc": "year DESC",
-    "position": "position ASC",
-    "position_desc": "position DESC",
-    "album_artist_name": "artists.search_name ASC, year DESC",
-    "album_artist_name_desc": "artists.search_name DESC, year DESC",
-    "track_artist_name": "artists.search_name ASC, search_name ASC",
-    "track_artist_name_desc": "artists.search_name DESC, search_name ASC",
-    "random": "RANDOM()",
-    "random_play_count": "RANDOM(), play_count ASC",
-}
-
 
 @dataclass(slots=True)
 class LibraryItemSyncDetails:
@@ -200,6 +178,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             self.library_items,
             required_scope=Scope.LIBRARY_READ,
             allow_impersonation=True,
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/get_sort_options",
+            self.get_sort_options,
+            required_scope=Scope.LIBRARY_READ,
         )
         self.mass.register_api_command(
             f"music/{api_base}/get", self.get, required_scope=Scope.LIBRARY_READ
@@ -422,6 +405,15 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         sql_query = f"SELECT item_id FROM {self.db_table} WHERE {' AND '.join(query_parts)}"
         return await self.mass.music.database.get_count_from_query(sql_query, query_params)
 
+    async def get_sort_options(self) -> list[SortOptionInfo]:
+        """
+        Get available sort options for this media type.
+
+        Returns list of sort options with field, direction support, and defaults.
+        Used by clients to build sorting UI.
+        """
+        return get_sort_options_for_media_type(self.media_type)
+
     if TYPE_CHECKING:
 
         @overload
@@ -431,11 +423,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             search: str | None = None,
             limit: int = 500,
             offset: int = 0,
-            order_by: str = "sort_name",
+            *,
+            sort_field: SortField | None = None,
+            sort_direction: SortDirection | None = None,
+            order_by: str | None = None,
             provider: str | list[str] | None = None,
             genre: int | list[int] | None = None,
             played_only: bool = False,
-            *,
             summary: bool = True,
             collapse_collections: Literal[False] = False,
             reachable_via: list[str] | None = None,
@@ -449,11 +443,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             search: str | None = None,
             limit: int = 500,
             offset: int = 0,
-            order_by: str = "sort_name",
+            *,
+            sort_field: SortField | None = None,
+            sort_direction: SortDirection | None = None,
+            order_by: str | None = None,
             provider: str | list[str] | None = None,
             genre: int | list[int] | None = None,
             played_only: bool = False,
-            *,
             summary: bool = True,
             collapse_collections: Literal[True],
             reachable_via: list[str] | None = None,
@@ -467,11 +463,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             search: str | None = None,
             limit: int = 500,
             offset: int = 0,
-            order_by: str = "sort_name",
+            *,
+            sort_field: SortField | None = None,
+            sort_direction: SortDirection | None = None,
+            order_by: str | None = None,
             provider: str | list[str] | None = None,
             genre: int | list[int] | None = None,
             played_only: bool = False,
-            *,
             summary: bool = True,
             collapse_collections: bool,
             reachable_via: list[str] | None = None,
@@ -484,11 +482,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         search: str | None = None,
         limit: int = 500,
         offset: int = 0,
-        order_by: str = "sort_name",
+        *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        order_by: str | None = None,
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
-        *,
         summary: bool = True,
         collapse_collections: bool = False,
         reachable_via: list[str] | None = None,
@@ -501,7 +501,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
-        :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
+        :param sort_field: Sort field to use.
+        :param sort_direction: Sort direction (ASC/DESC). Only applies if sort_field is set.
+        :param order_by: DEPRECATED - use sort_field and sort_direction instead.
+            Legacy string-based sorting (e.g. 'sort_name', 'timestamp_added_desc').
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
         :param played_only: Only include items that have been played (last_played > 0).
@@ -516,6 +519,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             be in-library. None applies no filter; an explicit empty list, or a list
             with no currently loaded/allowed instance, returns no items.
         """
+        final_order_by = self._resolve_sort_parameters(
+            sort_field, sort_direction, order_by, default="sort_name"
+        )
+
         reachable_via = self._resolve_reachable_via(reachable_via)
         if reachable_via is not None and not reachable_via:
             return []
@@ -524,7 +531,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             search=search,
             limit=limit,
             offset=offset,
-            order_by=order_by,
+            order_by=final_order_by,
             provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
             genre_ids=genre,
             played_only=played_only,
@@ -544,7 +551,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 limit=limit,
                 offset=offset,
                 favorite=favorite,
-                order_by=order_by,
+                order_by=final_order_by,
                 provider=provider,
                 genre=genre,
                 summary=summary,
@@ -1975,6 +1982,98 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             conditions.append(f"({' OR '.join(provider_conditions)})")
         return f"EXISTS(SELECT 1 FROM provider_mappings WHERE {' AND '.join(conditions)})"
 
+    def _parse_order_by(
+        self, order_by: str | None
+    ) -> tuple[SortField, SortDirection | None] | None:
+        """
+        Parse order_by string into SortField and SortDirection.
+
+        Supports both new format (field:direction) and legacy format (field_desc).
+        Returns None if order_by is None or invalid.
+        """
+        if not order_by:
+            return None
+
+        # Check legacy format first (e.g., "name_desc")
+        if order_by in LEGACY_SORT_KEYS:
+            return LEGACY_SORT_KEYS[order_by]
+
+        # Parse new format (e.g., "name:desc" or "name:asc")
+        if ":" in order_by:
+            field_str, direction_str = order_by.split(":", 1)
+            try:
+                field = SortField(field_str)
+                direction = SortDirection(direction_str.lower())
+                return (field, direction)
+            except ValueError:
+                self.logger.warning("Invalid sort field or direction: %s", order_by)
+                return None
+
+        # Try parsing as field without direction (default ASC)
+        try:
+            field = SortField(order_by)
+            # Special fields like RANDOM don't support direction
+            if field in (SortField.RANDOM, SortField.RANDOM_PLAY_COUNT):
+                return (field, None)
+            return (field, SortDirection.ASC)
+        except ValueError:
+            self.logger.warning("Invalid sort field: %s", order_by)
+            return None
+
+    def _resolve_sort_parameters(
+        self,
+        sort_field: SortField | None,
+        sort_direction: SortDirection | None,
+        order_by: str | None,
+        default: str = "sort_name",
+    ) -> str:
+        """
+        Resolve sort parameters to final order_by string.
+
+        Applies proper defaults: if sort_field is given without sort_direction,
+        uses the field's default direction from SORT_FIELD_DEFINITIONS.
+
+        :param sort_field: Optional SortField enum value.
+        :param sort_direction: Optional SortDirection enum value.
+        :param order_by: Legacy string-based order_by parameter.
+        :param default: Default order_by string if none specified.
+        :return: Resolved order_by string in 'field:direction' format.
+        """
+        if sort_field is not None:
+            # Use per-field default direction if not specified
+            direction = sort_direction if sort_direction else get_default_direction(sort_field)
+            return f"{sort_field.value}:{direction.value}"
+        if order_by:
+            return order_by
+        return default
+
+    def _get_sort_sql(self, field: SortField, direction: SortDirection | None) -> str | None:
+        """
+        Get SQL ORDER BY clause for a sort field and direction.
+
+        Can be overridden in subclasses to provide media-type specific SQL.
+        For example, ARTIST_NAME needs different JOINs for tracks vs albums.
+        """
+        # Get base SQL for this field
+        sql_field = BASE_SORT_FIELD_SQL.get(field)
+        if not sql_field:
+            return None
+
+        # Special fields like RANDOM don't use direction
+        if field == SortField.RANDOM:
+            return sql_field
+        if field == SortField.RANDOM_PLAY_COUNT:
+            return f"RANDOM(), {self.db_table}.play_count"
+
+        # Qualify bare column names with table name to avoid ambiguity when JOINs are present
+        if "." not in sql_field and "(" not in sql_field:
+            sql_field = f"{self.db_table}.{sql_field}"
+
+        # Apply direction
+        if direction:
+            return f"{sql_field} {direction.value.upper()}"
+        return sql_field
+
     @final
     def _build_final_query(
         self,
@@ -2002,8 +2101,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             sql_query += f" GROUP BY {self.db_table}.item_id"
 
         if order_by:
-            if sort_key := SORT_KEYS.get(order_by):
-                sql_query += f" ORDER BY {sort_key}"
+            parsed = self._parse_order_by(order_by)
+            if parsed:
+                field, direction = parsed
+                if sort_sql := self._get_sort_sql(field, direction):
+                    sql_query += f" ORDER BY {sort_sql}"
 
         return sql_query, base_query_params
 
@@ -2357,20 +2459,15 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         collections_column = "collections" if summary else "json_extract(metadata, '$.collections')"
 
-        supported_order_keys = [
-            "name",
-            "name_desc",
-            "sort_name",
-            "sort_name_desc",
-            "timestamp_added",
-            "timestamp_added_desc",
-            "timestamp_modified",
-            "timestamp_modified_desc",
-            "last_played",
-            "last_played_desc",
-            "play_count",
-            "play_count_desc",
-        ]
+        # Define supported sort fields for collections
+        supported_sort_fields = {
+            SortField.NAME,
+            SortField.SORT_NAME,
+            SortField.TIMESTAMP_ADDED,
+            SortField.TIMESTAMP_MODIFIED,
+            SortField.LAST_PLAYED,
+            SortField.PLAY_COUNT,
+        }
 
         # additional order options subject to media type
         # single is targeting a single media item, collection the aggregated ones
@@ -2379,7 +2476,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if MediaType.AUDIOBOOK.value in self.api_base:
             single_extra_order_keys = "duration,"
             collection_extra_order_keys = "SUM(duration) as duration,"
-            supported_order_keys += ["duration", "duration_desc"]
+            supported_sort_fields.add(SortField.DURATION)
 
         sql_query = f"""
         SELECT * FROM (
@@ -2472,11 +2569,20 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             sql_query += " WHERE search_name LIKE :search"
 
         if order_by:
-            if order_by not in supported_order_keys:
-                self.logger.warning("%s is not supported for order_by key in collections", order_by)
-                order_by = "name"  # fallback
-            if sort_key := SORT_KEYS.get(order_by):
-                sql_query += f" ORDER BY {sort_key}"
+            parsed = self._parse_order_by(order_by)
+            if not parsed:
+                self.logger.warning("Invalid order_by format: %s", order_by)
+                parsed = (SortField.NAME, SortDirection.ASC)
+
+            field, direction = parsed
+            if field not in supported_sort_fields:
+                self.logger.warning("%s is not supported for order_by in collections", field.value)
+                field = SortField.NAME
+                direction = SortDirection.ASC
+
+            if sql_sort := self._get_sort_sql(field, direction):
+                sql_sort = sql_sort.replace(f"{self.db_table}.", "")
+                sql_query += f" ORDER BY {sql_sort}"
 
         return sql_query
 

@@ -9,7 +9,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import AlbumType, ExternalID, MediaType, ProviderFeature
+from music_assistant_models.enums import (
+    AlbumType,
+    ExternalID,
+    MediaType,
+    ProviderFeature,
+    SortDirection,
+    SortField,
+)
 from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
@@ -168,12 +175,14 @@ class AlbumsController(MediaControllerBase[Album]):
         search: str | None = None,
         limit: int = 500,
         offset: int = 0,
-        order_by: str = "sort_name",
+        *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        order_by: str | None = None,
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
         album_types: list[AlbumType] | None = None,
-        *,
         summary: bool = True,
         reachable_via: list[str] | None = None,
         **kwargs: Any,
@@ -185,7 +194,9 @@ class AlbumsController(MediaControllerBase[Album]):
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
-        :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
+        :param sort_field: Sort field to use.
+        :param sort_direction: Sort direction (ASC/DESC). Only applies if sort_field is set.
+        :param order_by: DEPRECATED - use sort_field and sort_direction instead.
         :param provider: Filter by provider instance ID (single string or list).
         :param album_types: Filter by album types.
         :param genre: Filter by genre id(s).
@@ -195,6 +206,10 @@ class AlbumsController(MediaControllerBase[Album]):
             through one of these provider instance ids (OR semantics). See
             `MediaControllerBase.library_items` for the full semantics.
         """
+        final_order_by = self._resolve_sort_parameters(
+            sort_field, sort_direction, order_by, default="sort_name"
+        )
+
         reachable_via = self._resolve_reachable_via(reachable_via)
         if reachable_via is not None and not reachable_via:
             return []
@@ -202,17 +217,19 @@ class AlbumsController(MediaControllerBase[Album]):
         extra_query_parts: list[str] = []
         extra_join_parts: list[str] = []
         artist_table_joined = False
-        # optional album type filter
         if album_types:
             extra_query_parts.append("albums.album_type IN :album_types")
             extra_query_params["album_types"] = [x.value for x in album_types]
-        if order_by and "album_artist_name" in order_by:
-            # join artist table to allow sorting on artist name
-            extra_join_parts.append(
-                "JOIN album_artists ON album_artists.album_id = albums.item_id "
-                "JOIN artists ON artists.item_id = album_artists.artist_id "
-            )
-            artist_table_joined = True
+
+        if final_order_by:
+            parsed = self._parse_order_by(final_order_by)
+            if parsed and parsed[0] == SortField.ARTIST_NAME:
+                extra_join_parts.append(
+                    "JOIN album_artists ON album_artists.album_id = albums.item_id "
+                    "JOIN artists ON artists.item_id = album_artists.artist_id"
+                )
+                artist_table_joined = True
+
         if search and " - " in search:
             # handle combined artist + title search
             artist_str, title_str = search.split(" - ", 1)
@@ -222,24 +239,29 @@ class AlbumsController(MediaControllerBase[Album]):
             extra_query_parts.append(
                 search_name_match_clause("albums", title_str, "search_title", extra_query_params)
             )
-            artist_clause = "AND " + search_name_match_clause(
-                "artists", artist_str, "search_artist", extra_query_params
-            )
-            # use join with artists table to filter on artist name
-            extra_join_parts.append(
-                "JOIN album_artists ON album_artists.album_id = albums.item_id "
-                "JOIN artists ON artists.item_id = album_artists.artist_id " + artist_clause
-                if not artist_table_joined
-                else artist_clause
-            )
-            artist_table_joined = True
+            if not artist_table_joined:
+                extra_join_parts.append(
+                    "JOIN album_artists ON album_artists.album_id = albums.item_id "
+                    "JOIN artists ON artists.item_id = album_artists.artist_id "
+                    "AND "
+                    + search_name_match_clause(
+                        "artists", artist_str, "search_artist", extra_query_params
+                    )
+                )
+                artist_table_joined = True
+            else:
+                extra_query_parts.append(
+                    search_name_match_clause(
+                        "artists", artist_str, "search_artist", extra_query_params
+                    )
+                )
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
             genre_ids=genre,
             limit=limit,
             offset=offset,
-            order_by=order_by,
+            order_by=final_order_by,
             provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
@@ -256,22 +278,26 @@ class AlbumsController(MediaControllerBase[Album]):
         if search and len(result) < 25 and not offset and remaining_limit > 0:
             # append artist items to result
             search = create_safe_string(search, True, True)
-            artist_clause = "AND " + search_name_match_clause(
-                "artists", search, "search_artist", extra_query_params
-            )
-            extra_join_parts.append(
-                "JOIN album_artists ON album_artists.album_id = albums.item_id "
-                "JOIN artists ON artists.item_id = album_artists.artist_id " + artist_clause
-                if not artist_table_joined
-                else artist_clause
-            )
+            if not artist_table_joined:
+                extra_join_parts.append(
+                    "JOIN album_artists ON album_artists.album_id = albums.item_id "
+                    "JOIN artists ON artists.item_id = album_artists.artist_id "
+                    "AND "
+                    + search_name_match_clause(
+                        "artists", search, "search_artist", extra_query_params
+                    )
+                )
+            else:
+                extra_query_parts.append(
+                    search_name_match_clause("artists", search, "search_artist", extra_query_params)
+                )
             existing_uris = {item.uri for item in result}
 
             for album in await self.get_library_items_by_query(
                 favorite=favorite,
                 search=None,
                 limit=remaining_limit,
-                order_by=order_by,
+                order_by=final_order_by,
                 provider_filter=self._provider_filter_considering_reachability(
                     provider, reachable_via
                 ),
@@ -968,6 +994,18 @@ class AlbumsController(MediaControllerBase[Album]):
                 "disc_number": track.disc_number,
             },
         )
+
+    def _get_sort_sql(self, field: SortField, direction: SortDirection | None) -> str | None:
+        """
+        Get SQL ORDER BY clause for albums.
+
+        Overrides base implementation to provide album-specific ARTIST_NAME sorting.
+        """
+        if field == SortField.ARTIST_NAME:
+            if direction == SortDirection.DESC:
+                return "artists.search_name DESC, year DESC"
+            return "artists.search_name ASC, year DESC"
+        return super()._get_sort_sql(field, direction)
 
     def _parse_summary_row(self, db_row: Mapping[str, Any]) -> AlbumSummary:
         """Parse a raw summary db row into an AlbumSummary object."""
