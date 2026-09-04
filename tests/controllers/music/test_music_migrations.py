@@ -11,9 +11,12 @@ from music_assistant_models.enums import ExternalID
 from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.constants import (
+    DB_TABLE_ALBUMS,
     DB_TABLE_AUDIO_ANALYSIS,
+    DB_TABLE_AUDIOBOOKS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_PLAYLOG,
+    DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_SETTINGS,
 )
 from music_assistant.controllers.music import MusicController
@@ -542,3 +545,82 @@ async def test_migration_adds_is_dynamic_column_to_radios(database: DatabaseConn
     )
 
     assert "is_dynamic" in await _table_columns(database, "radios")
+
+
+BIBI_COVER = "https://cdn-images.dzcdn.net/images/cover/bibi/264x264-000000-80-0-0.jpg"
+ALBUM_COVER = "https://cdn-images.dzcdn.net/images/cover/endgame/264x264-000000-80-0-0.jpg"
+
+
+async def _seed_cross_media_type_mappings(
+    database: DatabaseConnection, *, album_owns_own_mapping: bool
+) -> None:
+    """Seed an album and an audiobook that share a library item id and a provider item."""
+    for table in (DB_TABLE_ALBUMS, DB_TABLE_AUDIOBOOKS):
+        await database.execute(f"ALTER TABLE {table} ADD COLUMN metadata json")
+    await database.execute(
+        f"CREATE TABLE {DB_TABLE_PROVIDER_MAPPINGS}([media_type] TEXT NOT NULL, "
+        "[item_id] INTEGER NOT NULL, [provider_domain] TEXT NOT NULL, "
+        "[provider_instance] TEXT NOT NULL, [provider_item_id] TEXT NOT NULL)"
+    )
+    await database.execute(
+        f"INSERT INTO {DB_TABLE_ALBUMS} (item_id, metadata) VALUES (9, :metadata)",
+        {"metadata": json.dumps({"images": [{"path": BIBI_COVER}, {"path": ALBUM_COVER}]})},
+    )
+    await database.execute(
+        f"INSERT INTO {DB_TABLE_AUDIOBOOKS} (item_id, metadata) VALUES (9, :metadata)",
+        {"metadata": json.dumps({"images": [{"path": BIBI_COVER}]})},
+    )
+    mappings = [("audiobook", "14001886"), ("album", "14001886")]
+    if album_owns_own_mapping:
+        mappings.append(("album", "908993"))
+    for media_type, provider_item_id in mappings:
+        await database.execute(
+            f"INSERT INTO {DB_TABLE_PROVIDER_MAPPINGS} VALUES "
+            "(:media_type, 9, 'deezer', 'deezer_1', :provider_item_id)",
+            {"media_type": media_type, "provider_item_id": provider_item_id},
+        )
+    await database.commit()
+
+
+async def _run_cross_media_type_migration(database: DatabaseConnection) -> None:
+    """Run the migration step that cleans up cross-media-type provider mappings."""
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    await migrate_database(mass, database, MagicMock(), prev_version=58, create_tables=AsyncMock())
+
+
+async def test_migration_drops_cross_media_type_provider_mappings(
+    database: DatabaseConnection,
+) -> None:
+    """A mapping that landed on an item of another media type is dropped with its artwork."""
+    await _seed_cross_media_type_mappings(database, album_owns_own_mapping=True)
+
+    await _run_cross_media_type_migration(database)
+
+    album_mappings = await database.get_rows(DB_TABLE_PROVIDER_MAPPINGS, {"media_type": "album"})
+    assert [row["provider_item_id"] for row in album_mappings] == ["908993"]
+    # the audiobook owns the provider item, so its own mapping and artwork stay untouched
+    audiobook_mappings = await database.get_rows(
+        DB_TABLE_PROVIDER_MAPPINGS, {"media_type": "audiobook"}
+    )
+    assert [row["provider_item_id"] for row in audiobook_mappings] == ["14001886"]
+    album = await database.get_row(DB_TABLE_ALBUMS, {"item_id": 9})
+    assert album is not None
+    assert json.loads(album["metadata"])["images"] == [{"path": ALBUM_COVER}]
+    audiobook = await database.get_row(DB_TABLE_AUDIOBOOKS, {"item_id": 9})
+    assert audiobook is not None
+    assert json.loads(audiobook["metadata"])["images"] == [{"path": BIBI_COVER}]
+
+
+async def test_migration_keeps_ambiguous_cross_media_type_mappings(
+    database: DatabaseConnection,
+) -> None:
+    """An item whose only mapping collides is left alone: without one it cannot be resolved."""
+    await _seed_cross_media_type_mappings(database, album_owns_own_mapping=False)
+
+    await _run_cross_media_type_migration(database)
+
+    assert len(await database.get_rows(DB_TABLE_PROVIDER_MAPPINGS)) == 2
+    album = await database.get_row(DB_TABLE_ALBUMS, {"item_id": 9})
+    assert album is not None
+    assert len(json.loads(album["metadata"])["images"]) == 2
