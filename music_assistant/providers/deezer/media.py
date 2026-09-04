@@ -22,11 +22,9 @@ from music_assistant_models.media_items import (
     Playlist,
     Podcast,
     PodcastEpisode,
-    ProviderMapping,
     Radio,
     SearchResults,
     Track,
-    UniqueList,
 )
 
 from music_assistant.controllers.cache import use_cache
@@ -134,6 +132,13 @@ class DeezerMediaManager:
                 break
             start += page_size
         return all_songs
+
+    async def _get_personal_song(self, song_id: str) -> dict[str, Any]:
+        """Return the raw GW song dict for a single user upload."""
+        for song in await self._get_personal_songs():
+            if str(song["SNG_ID"]) == song_id:
+                return song
+        raise MediaNotFoundError(f"Personal song {song_id} not found")
 
     # -- Library retrieval --
 
@@ -393,22 +398,11 @@ class DeezerMediaManager:
         if prov_artist_id.startswith(PERSONAL_ARTIST_PREFIX):
             # Personal track artist — reconstruct from GW data
             song_id = prov_artist_id.removeprefix(PERSONAL_ARTIST_PREFIX)
-            personal_songs = await self._get_personal_songs()
-            for song in personal_songs:
-                if str(song["SNG_ID"]) == song_id:
-                    return Artist(
-                        item_id=prov_artist_id,
-                        provider=self.instance_id,
-                        name=song.get("ART_NAME", ""),
-                        provider_mappings={
-                            ProviderMapping(
-                                item_id=prov_artist_id,
-                                provider_domain=self.domain,
-                                provider_instance=self.instance_id,
-                            )
-                        },
-                    )
-            raise MediaNotFoundError(f"Personal artist {prov_artist_id} not found")
+            song = await self._get_personal_song(song_id)
+            artist = parse_gw_track(self.provider, song).artists[0]
+            if not isinstance(artist, Artist):
+                raise MediaNotFoundError(f"Personal artist {prov_artist_id} not found")
+            return artist
         result = await self.provider.gql_client.get_artist(artist_id=prov_artist_id)
         if result is None:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found on Deezer")
@@ -422,35 +416,11 @@ class DeezerMediaManager:
         if prov_album_id.startswith(PERSONAL_ALBUM_PREFIX):
             # Personal track album — reconstruct from GW data
             song_id = prov_album_id.removeprefix(PERSONAL_ALBUM_PREFIX)
-            personal_songs = await self._get_personal_songs()
-            for song in personal_songs:
-                if str(song["SNG_ID"]) == song_id:
-                    art_name = song.get("ART_NAME", "")
-                    personal_art_id = f"{PERSONAL_ARTIST_PREFIX}{song_id}"
-                    artists: UniqueList[Artist | ItemMapping] = UniqueList()
-                    if art_name:
-                        artists.append(
-                            ItemMapping(
-                                media_type=MediaType.ARTIST,
-                                item_id=personal_art_id,
-                                provider=self.instance_id,
-                                name=art_name,
-                            )
-                        )
-                    return Album(
-                        item_id=prov_album_id,
-                        provider=self.instance_id,
-                        name=song.get("ALB_TITLE", ""),
-                        artists=artists,
-                        provider_mappings={
-                            ProviderMapping(
-                                item_id=prov_album_id,
-                                provider_domain=self.domain,
-                                provider_instance=self.instance_id,
-                            )
-                        },
-                    )
-            raise MediaNotFoundError(f"Personal album {prov_album_id} not found")
+            song = await self._get_personal_song(song_id)
+            album = parse_gw_track(self.provider, song).album
+            if not isinstance(album, Album):
+                raise MediaNotFoundError(f"Personal album {prov_album_id} not found")
+            return album
         result = await self.provider.gql_client.get_album(album_id=prov_album_id)
         if result is None:
             raise MediaNotFoundError(f"Album {prov_album_id} not found on Deezer")

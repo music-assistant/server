@@ -48,6 +48,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 
 from .constants import (
@@ -763,33 +764,49 @@ def parse_gw_track(provider: DeezerProvider, song: dict[str, Any], position: int
     """
     song_id = str(song["SNG_ID"])
     is_personal = int(song_id) < 0
+
+    # Catalog tracks always carry an ALB_PICTURE hash. User uploads only get one when
+    # the uploaded file had embedded artwork, which Deezer extracts server-side; the
+    # field is present but empty otherwise.
+    images: UniqueList[MediaItemImage] = UniqueList()
+    if md5 := song.get("ALB_PICTURE"):
+        images.append(
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=deezer_cover_url(md5, "cover"),
+                provider=provider.instance_id,
+                remotely_accessible=True,
+            )
+        )
+
     artists: UniqueList[Artist | ItemMapping] = UniqueList()
     art_name = song.get("ART_NAME", "")
     art_id = str(song.get("ART_ID", "0"))
-    if art_name:
-        if is_personal or art_id == "0":
-            # Personal tracks have ART_ID=0 which doesn't exist on Deezer.
-            # Create a full Artist object so MA doesn't try to resolve it.
-            # Use a prefixed ID to avoid collisions with the track's provider mapping.
-            personal_art_id = f"{PERSONAL_ARTIST_PREFIX}{song_id}"
-            artists.append(
-                Artist(
-                    item_id=personal_art_id,
-                    provider=provider.instance_id,
-                    name=art_name,
-                    favorite=True,
-                    provider_mappings={_provider_mapping(provider, personal_art_id)},
-                )
+    if is_personal or art_id == "0":
+        # Personal tracks have ART_ID=0 which doesn't exist on Deezer.
+        # Create a full Artist object so MA doesn't try to resolve it.
+        # Use a prefixed ID to avoid collisions with the track's provider mapping.
+        # An upload whose file had no artist tag reports an empty ART_NAME; without a
+        # placeholder the track would carry no artist at all and library sync drops it.
+        personal_art_id = f"{PERSONAL_ARTIST_PREFIX}{song_id}"
+        artists.append(
+            Artist(
+                item_id=personal_art_id,
+                provider=provider.instance_id,
+                name=art_name or UNKNOWN_ARTIST,
+                favorite=True,
+                provider_mappings={_provider_mapping(provider, personal_art_id)},
             )
-        else:
-            artists.append(
-                ItemMapping(
-                    media_type=MediaType.ARTIST,
-                    item_id=art_id,
-                    provider=provider.instance_id,
-                    name=art_name,
-                )
+        )
+    elif art_name:
+        artists.append(
+            ItemMapping(
+                media_type=MediaType.ARTIST,
+                item_id=art_id,
+                provider=provider.instance_id,
+                name=art_name,
             )
+        )
 
     album: Album | ItemMapping | None = None
     alb_title = song.get("ALB_TITLE", "")
@@ -807,6 +824,7 @@ def parse_gw_track(provider: DeezerProvider, song: dict[str, Any], position: int
                 favorite=True,
                 artists=artists,
                 provider_mappings={_provider_mapping(provider, personal_alb_id)},
+                metadata=MediaItemMetadata(images=images),
             )
         else:
             album = ItemMapping(
@@ -814,6 +832,7 @@ def parse_gw_track(provider: DeezerProvider, song: dict[str, Any], position: int
                 item_id=alb_id,
                 provider=provider.instance_id,
                 name=alb_title,
+                image=images[0] if images else None,
             )
 
     name, version = parse_title_and_version(song.get("SNG_TITLE", ""))
@@ -828,6 +847,9 @@ def parse_gw_track(provider: DeezerProvider, song: dict[str, Any], position: int
         album=album,
         provider_mappings={_provider_mapping(provider, song_id, available=True)},
         position=position,
+        # An upload without an album tag has no Album object to carry the cover, so keep
+        # it on the track as well.
+        metadata=MediaItemMetadata(images=images),
     )
 
 
