@@ -39,6 +39,7 @@ class MsxItem(BaseModel):
     player_label: str | None = Field(default=None, serialization_alias="playerLabel")
     title_footer: str | None = Field(default=None, serialization_alias="titleFooter")
     duration: int | None = None
+    properties: dict[str, str] | None = None
     next_action: str | None = Field(default=None, serialization_alias="nextAction")
     prev_action: str | None = Field(default=None, serialization_alias="prevAction")
     content: str | None = None
@@ -56,3 +57,4 @@ class MsxContent(BaseModel):
     items: list[MsxItem] | None = None
     action: str | None = None
     hint: str | None = None
+    compress: bool | None = None

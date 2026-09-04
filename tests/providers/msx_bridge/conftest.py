@@ -3,32 +3,24 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
 from typing import Any
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import Mock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from music_assistant_models.enums import PlayerType
 
-from music_assistant.providers.msx_bridge.http_server import (
-    MSXHTTPServer,
-    _render_qr,
-)
+from music_assistant.providers.msx_bridge.http_server import MSXHTTPServer
+from music_assistant.providers.msx_bridge.party import render_qr
 from music_assistant.providers.msx_bridge.player import MSXPlayer
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
-
-
-async def _empty_async_gen() -> AsyncGenerator[Any]:
-    """Empty async generator for mocking AsyncGenerator return types."""
-    return
-    yield  # type: ignore[unreachable]  # pragma: no cover — makes it a generator
+from tests.providers.msx_bridge.fakes import FakeMass
 
 
 @pytest.fixture(autouse=True)
 def _reset_render_qr_cache() -> None:
     """Keep the memoized QR renderer isolated between tests."""
-    _render_qr.cache_clear()
+    render_qr.cache_clear()
 
 
 @pytest.fixture
@@ -45,69 +37,8 @@ def player_config_mock() -> Mock:
 
 @pytest.fixture
 def mass_mock(player_config_mock: Mock) -> Mock:
-    """Return a mock MusicAssistant instance."""
-    mass = Mock()
-    mass.http_session = AsyncMock()
-    mass.cache = Mock()
-    mass.cache.get = AsyncMock(return_value=None)
-    mass.cache.set = AsyncMock()
-
-    # Player.__init__ deps
-    mass.config.create_default_player_config = Mock()
-    mass.config.get_base_player_config = Mock(return_value=player_config_mock)
-    mass.config.get_raw_player_config_value = Mock(return_value="stereo")
-    mass.config.get_player_dsp_config = Mock()
-    mass.config.get = Mock(return_value={})
-    mass.verify_event_loop_thread = Mock()
-
-    # Library API
-    mass.music.albums.library_items = AsyncMock(return_value=[])
-    mass.music.albums.tracks = AsyncMock(return_value=[])
-    mass.music.artists.library_items = AsyncMock(return_value=[])
-    mass.music.artists.albums = AsyncMock(return_value=[])
-    mass.music.playlists.library_items = AsyncMock(return_value=[])
-    mass.music.playlists.tracks = Mock(side_effect=lambda *_args, **_kwargs: _empty_async_gen())
-    mass.music.tracks.library_items = AsyncMock(return_value=[])
-    mass.music.search = AsyncMock(return_value=Mock(artists=[], albums=[], tracks=[], playlists=[]))
-
-    # Track metadata resolution
-    mass.music.get_item_by_uri = AsyncMock(return_value=None)
-
-    # Playback control
-    mass.player_queues.play_media = AsyncMock()
-    mass.player_queues.resume = AsyncMock()
-    mass.player_queues.items = Mock(return_value=[])
-    mass.player_queues.get = Mock(return_value=None)
-    mass.players.cmd_pause = AsyncMock()
-    mass.players.cmd_play = AsyncMock()
-    mass.players.cmd_stop = AsyncMock()
-    mass.players.cmd_next_track = AsyncMock()
-    mass.players.cmd_previous_track = AsyncMock()
-    mass.players._handle_cmd_pause = AsyncMock()
-    mass.players._handle_cmd_play = AsyncMock()
-    mass.players._handle_cmd_stop = AsyncMock()
-    mass.players._handle_play_media = AsyncMock()
-    mass.players.get = Mock(return_value=None)
-    mass.players.get_player = Mock(return_value=None)
-
-    @asynccontextmanager
-    async def _player_lock(*_args: Any, **_kwargs: Any) -> AsyncGenerator[None]:
-        yield
-
-    mass.players.get_player_lock = Mock(side_effect=_player_lock)
-    mass.players.register = AsyncMock()
-    mass.players.unregister = AsyncMock()
-    mass.players.all = Mock(return_value=[])
-    mass.players.all_players = Mock(return_value=[])
-    mass.players.iter_players = Mock(return_value=[])
-
-    # Image URLs
-    mass.metadata.get_image_url = Mock(return_value=None)
-
-    # Other providers (e.g. the Party plugin) are absent by default
-    mass.get_provider = Mock(return_value=None)
-
-    return mass
+    """Return a fake MusicAssistant with only provider-used controller seams."""
+    return FakeMass(player_config_mock)  # type: ignore[return-value]
 
 
 @pytest.fixture
@@ -133,7 +64,6 @@ def config_mock() -> Mock:
             "http_port": 8099,
             "output_format": "mp3",
             "log_level": "GLOBAL",
-            "enable_player_grouping": True,
         }.get(key, default)
     )
     return config
