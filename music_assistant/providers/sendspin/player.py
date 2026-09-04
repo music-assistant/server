@@ -216,6 +216,10 @@ PAIR_CONFIRM_TIMEOUT = 30.0
 # Seconds a Cast-bridged member gets to report its Sendspin app ready.
 CAST_APP_READY_TIMEOUT = 30.0
 
+# Longest gap since elapsed_time_last_updated across which corrected_elapsed_time
+# is still trusted for metadata progress.
+MAX_PROGRESS_EXTRAPOLATION = 30.0
+
 # Terminal pairing-error slugs that map to a dedicated setup_flow.abort reason;
 # anything else falls back to the generic "pairing_failed" abort.
 _PAIRING_ABORT_REASONS = {
@@ -1631,6 +1635,9 @@ class SendspinPlayer(SendspinBasePlayer):
         shuffle = queue.shuffle_enabled if queue else False
         is_playing = self.state.playback_state == PlaybackState.PLAYING
         track_progress = self._compute_track_progress_ms(current_media, is_playing=is_playing)
+        # A progress beyond the track length is never meaningful to clients.
+        if track_duration:
+            track_progress = min(track_progress, int(track_duration * 1000))
 
         metadata = Metadata(
             title=current_media.title,
@@ -2085,8 +2092,10 @@ class SendspinPlayer(SendspinBasePlayer):
         elapsed_time: float | None = (
             float(current_media.elapsed_time) if current_media.elapsed_time is not None else None
         )
-        if is_playing and current_media.corrected_elapsed_time is not None:
-            elapsed_time = current_media.corrected_elapsed_time
+        if is_playing and (corrected := current_media.corrected_elapsed_time) is not None:
+            # Only trust the extrapolation across a fresh window.
+            if elapsed_time is None or corrected - elapsed_time <= MAX_PROGRESS_EXTRAPOLATION:
+                elapsed_time = corrected
         if elapsed_time is None:
             elapsed_time = self.corrected_elapsed_time if is_playing else self.elapsed_time
         return max(0, int(elapsed_time * 1000)) if elapsed_time is not None else 0
