@@ -1,8 +1,14 @@
 name: Critical review gate (poll)
 
-# Scheduled gate: every ~10 minutes, scan open PRs and convert to a draft any whose LATEST Copilot
-# review still has an unresolved, non-outdated [CRITICAL] thread (a draft PR cannot be merged), with
-# one explanatory comment.
+# Scheduled gate: every ~10 minutes, scan open PRs and convert to a draft any with an unresolved,
+# non-outdated Copilot [CRITICAL] thread from a review posted in the last ~30 minutes (a draft PR
+# cannot be merged), with one explanatory comment.
+#
+# The gate is RECENCY-based, not "latest review": a scheduled poller should act on FRESH criticals
+# and then back off — gating on the latest review regardless of age would re-draft a PR with an old,
+# ignored critical on every run, forever. The 30-minute window (> a few poll cycles) means no fresh
+# critical is missed; and dev's ruleset already blocks merging any PR with an unresolved thread, so a
+# critical that ages out of the window still can't be merged — the draft is only the visible signal.
 #
 # Why a poller and not a `pull_request_review` trigger: GitHub holds workflow runs triggered by the
 # Copilot bot for manual approval (they sit at `action_required` and never run), so an event-reactive
@@ -26,14 +32,15 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     steps:
-      - name: Draft open PRs with an unresolved [CRITICAL] Copilot finding
+      - name: Draft open PRs with a recent unresolved [CRITICAL] Copilot finding
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const { owner, repo } = context.repo;
             const BASES = ['dev', 'stable'];
-            const COPILOT = 'copilot-pull-request-reviewer[bot]';  // exact reviewer login
-            const GATE_BOT = 'github-actions[bot]';                // author of this gate's comments
+            const COPILOT = 'copilot-pull-request-reviewer';  // exact GraphQL reviewer login
+            const GATE_BOT = 'github-actions[bot]';            // author of this gate's comments
+            const WINDOW_MS = 30 * 60 * 1000;                  // act only on criticals this recent
             const MARKER = '<!-- critical-gate -->';
             const BODY = [
               MARKER,
@@ -45,24 +52,19 @@ jobs:
               '_Maintainers: add the `override-critical` label to bypass this._',
             ].join('\n');
 
-            // Gate only on the LATEST Copilot review's unresolved, non-outdated [CRITICAL] threads.
-            // Copilot re-reviews the whole diff on each push, so its latest review is the current
-            // verdict; older threads it did not re-raise are stale. Threads are matched to that
-            // review by databaseId, which also pins the reviewer to the exact Copilot bot (a thread
-            // from that review is Copilot's by construction) — no username substring matching.
+            // Gate on an unresolved, non-outdated [CRITICAL] thread whose Copilot review was posted
+            // within WINDOW_MS. Recency (not "latest review") keeps the poller a responder, not a
+            // perpetual enforcer; the exact author login prevents a look-alike username from
+            // triggering the write-token job.
             const THREADS = `query($owner:String!,$repo:String!,$num:Int!,$cursor:String){
               repository(owner:$owner,name:$repo){ pullRequest(number:$num){
                 reviewThreads(first:100, after:$cursor){
                   pageInfo{ hasNextPage endCursor }
                   nodes{ isResolved isOutdated
-                    comments(first:1){ nodes{ body pullRequestReview{ databaseId } } } }
+                    comments(first:1){ nodes{ author{login} body pullRequestReview{ submittedAt } } } }
                 } } } }`;
             async function activeCritical(num) {
-              const reviews = await github.paginate(github.rest.pulls.listReviews,
-                { owner, repo, pull_number: num, per_page: 100 });
-              const copilot = reviews.filter(r => r.user && r.user.login === COPILOT);
-              if (copilot.length === 0) return false;
-              const latestId = copilot[copilot.length - 1].id;  // REST id == GraphQL databaseId
+              const now = Date.now();
               let cursor = null;
               for (;;) {
                 const d = await github.graphql(THREADS, { owner, repo, num, cursor });
@@ -70,8 +72,10 @@ jobs:
                 for (const t of tr.nodes) {
                   if (t.isResolved || t.isOutdated) continue;
                   const c = t.comments.nodes[0];
-                  if (c && c.pullRequestReview && c.pullRequestReview.databaseId === latestId
-                        && (c.body || '').includes('[CRITICAL]')) return true;
+                  if (!c || (c.author && c.author.login) !== COPILOT) continue;
+                  if (!(c.body || '').includes('[CRITICAL]')) continue;
+                  const at = c.pullRequestReview && c.pullRequestReview.submittedAt;
+                  if (at && (now - new Date(at).getTime()) <= WINDOW_MS) return true;
                 }
                 if (!tr.pageInfo.hasNextPage) return false;
                 cursor = tr.pageInfo.endCursor;
