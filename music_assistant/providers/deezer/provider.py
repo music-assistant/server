@@ -127,10 +127,16 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
                 translation_owner=self.translation_owner,
             ) from err
         except DeezerGWAuthError as err:
-            self.logger.error("Deezer GW API rejected the ARL token: %s", err)
+            # get_me() above already signed in with this very token, so the ARL is good and
+            # telling the user to fetch a new one sends them after something that is not broken.
+            self.logger.error(
+                "Deezer accepted the ARL through the auth service, but the GW API "
+                "handed out no session: %s",
+                err,
+            )
             raise LoginFailed(
-                "Deezer did not accept the ARL token.",
-                translation_key="arl_rejected",
+                "Deezer did not hand out a session for this account.",
+                translation_key="gw_no_session",
                 translation_owner=self.translation_owner,
             ) from err
         except GraphQLClientAuthError as err:
@@ -143,7 +149,7 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
         except (GraphQLClientError, DeezerGWError) as err:
             self.logger.error("Deezer authentication failed: %s", err)
             raise LoginFailed(
-                "Deezer authentication failed. Please check your ARL token.",
+                "Deezer authentication failed. See the Music Assistant log for the reason.",
                 translation_key="auth_failed",
                 translation_owner=self.translation_owner,
             ) from err

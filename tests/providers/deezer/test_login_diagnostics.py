@@ -126,7 +126,7 @@ def test_specific_errors_stay_catchable_as_the_generic_one() -> None:
     ("error", "expected_key"),
     [
         (DeezerGWNoSubscriptionError("no offer"), "no_subscription"),
-        (DeezerGWAuthError("no user"), "arl_rejected"),
+        (DeezerGWAuthError("no user"), "gw_no_session"),
         (GraphQLClientAuthError("rejected"), "arl_rejected"),
         (GraphQLClientError("boom"), "auth_failed"),
         (DeezerGWError("boom"), "auth_failed"),
@@ -149,5 +149,16 @@ async def test_cause_is_chained_and_logged() -> None:
 def test_every_translation_key_exists_in_strings() -> None:
     """A key without a string would silently fall back to the generic message."""
     errors = json.loads(STRINGS.read_text(encoding="utf-8"))["errors"]
-    for key in ("no_subscription", "arl_rejected", "auth_failed"):
+    for key in ("no_subscription", "arl_rejected", "gw_no_session", "auth_failed"):
         assert errors.get(key), f"missing errors.{key} in deezer strings.json"
+
+
+async def test_gw_failure_does_not_blame_the_arl() -> None:
+    """
+    get_me() signed in with this token first, so a GW failure is not a bad ARL.
+
+    Sharing arl_rejected here would send the user after a fresh token that changes nothing.
+    """
+    gw_failure = await _init_with(DeezerGWAuthError("no user"))
+    arl_failure = await _init_with(GraphQLClientAuthError("rejected"))
+    assert gw_failure.translation_key != arl_failure.translation_key

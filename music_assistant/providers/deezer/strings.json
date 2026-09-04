@@ -106,6 +106,7 @@
   "errors": {
     "no_subscription": "This Deezer account has no subscription that Music Assistant can stream from. Deezer Free accounts are not supported; check that the subscription on this specific account is still active.",
     "arl_rejected": "Deezer did not accept the ARL token for this account. It is most likely expired or was copied from a different account -- grab a fresh one and try again.",
+    "gw_no_session": "Deezer accepted the ARL for this account but did not hand out a playback session. The token itself is fine, so a fresh one will not help -- try again, and restart Music Assistant if it keeps happening.",
     "auth_failed": "Could not sign in to Deezer. See the Music Assistant log for the reason reported by Deezer."
   }
 }

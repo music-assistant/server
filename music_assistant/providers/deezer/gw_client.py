@@ -81,11 +81,13 @@ class GWClient:
             if user_data["results"]["USER"]["USER_ID"]:
                 break
             if attempt == 2:
-                msg = "Failed to authenticate with the GW API. Make sure you set a valid ARL."
+                # Not an ARL problem: the auth service already accepted this token in
+                # handle_async_init, otherwise we would never get here.
+                msg = "The GW API returned no user for this ARL, on the first call and the retry."
                 raise DeezerGWAuthError(msg)
 
         if not user_data["results"]["OFFER_ID"]:
-            msg = "Free subscriptions cannot be used in MA. Make sure you set a valid ARL."
+            msg = "The account signed in, but has no subscription that MA can stream from."
             raise DeezerGWNoSubscriptionError(msg)
 
         self._gw_csrf_token = user_data["results"]["checkForm"]
