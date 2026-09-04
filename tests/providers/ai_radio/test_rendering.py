@@ -22,7 +22,14 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
 )
-from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
+from music_assistant_models.media_items import (
+    AudioFormat,
+    ItemMapping,
+    ProviderMapping,
+    SoundEffect,
+    Track,
+    UniqueList,
+)
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import (
@@ -36,9 +43,11 @@ from music_assistant.helpers.tags import AudioTags
 from music_assistant.helpers.tts import TTSLanguageNotSupportedError
 from music_assistant.models.plugin import PluginProvider, TTSEngine
 from music_assistant.providers.ai_radio.constants import (
+    ATTR_FEED_CLIP,
     ATTR_HOST_ID,
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
+    ATTR_QUEUE_DJ,
     ATTR_RENDERED_TEXT,
     ATTR_SESSION_ID,
     ATTR_STATION_ID,
@@ -53,12 +62,12 @@ from music_assistant.providers.ai_radio.constants import (
     TTS_PEAK_CEILING_DB,
     TTS_SPEECHNORM_FILTER,
 )
-from music_assistant.providers.ai_radio.models import SessionState
+from music_assistant.providers.ai_radio.queue_dj import AIRadioQueueDJMixin
 from music_assistant.providers.ai_radio.rendering import AIRadioRenderMixin
 
 
-class DummyRenderer(AIRadioRenderMixin):
-    """Minimal harness exposing the render path."""
+class DummyRenderer(AIRadioRenderMixin, AIRadioQueueDJMixin):
+    """Minimal harness exposing the render path; the DJ mixin only supplies its queue reads."""
 
     domain = "ai_radio"
     instance_id = "ai_radio--test"
@@ -66,8 +75,8 @@ class DummyRenderer(AIRadioRenderMixin):
     def __init__(self) -> None:
         """Initialize the harness with recording stubs."""
         self.logger = logging.getLogger("tests.ai_radio.rendering")
-        self._sessions: dict[str, Any] = {}
         self._hosts: dict[str, dict[str, Any]] = {}
+        self._feed_clip_contracts: dict[str, dict[str, Any]] = {}
         self.llm_prompts: list[str] = []
         self.tts_texts: list[str] = []
         self.tts_options: list[dict[str, Any] | None] = []
@@ -167,6 +176,39 @@ def _clip_item(clip_id: str, queue_id: str = "player_a", **overrides: Any) -> Qu
         duration=None,
         media_item=media_item,
         extra_attributes=attributes,
+    )
+
+
+def _music_item(item_id: str, artist: str, name: str, queue_id: str = "player_a") -> QueueItem:
+    """Build a queue item for a music track."""
+    track = Track(
+        item_id=item_id,
+        provider="library",
+        name=name,
+        artists=UniqueList(
+            [
+                ItemMapping(
+                    media_type=MediaType.ARTIST,
+                    item_id=f"artist_{item_id}",
+                    provider="library",
+                    name=artist,
+                )
+            ]
+        ),
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain="filesystem_local",
+                provider_instance="filesystem_local",
+            )
+        },
+    )
+    return QueueItem(
+        queue_id=queue_id,
+        queue_item_id=f"qi_{item_id}",
+        name=f"{artist} - {name}",
+        duration=200,
+        media_item=track,
     )
 
 
@@ -403,23 +445,8 @@ async def test_render_tts_media_does_not_retry_after_a_timeout_style_failure() -
     engine.provider.get_tts_message.assert_awaited_once()
 
 
-async def test_clip_is_found_in_the_owning_sessions_queue() -> None:
-    """The session registry points the lookup at the queue that holds the clip."""
-    renderer = DummyRenderer()
-    session = SessionState(session_id="sess", station_id="st", queue_id="player_b")
-    renderer._sessions = {"sess": session}
-    _attach_queues(
-        renderer,
-        {"player_a": [], "player_b": [_clip_item("sess_001", queue_id="player_b")]},
-    )
-
-    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
-
-    assert streamdetails.item_id == "sess_001"
-
-
-async def test_clip_is_found_by_scanning_every_queue_after_a_restart() -> None:
-    """With the session registry gone, the clip is still located in its persisted queue."""
+async def test_clip_is_found_by_scanning_every_queue() -> None:
+    """Every queue is a candidate, so the clip is located wherever it is persisted."""
     renderer = DummyRenderer()
     _attach_queues(
         renderer,
@@ -451,6 +478,89 @@ async def test_clip_without_prompt_raises_media_not_found() -> None:
         await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
 
+async def test_a_feed_clip_picks_up_its_contract_on_first_play() -> None:
+    """A clip fed into the queue as a bare media item renders from its stored contract."""
+    renderer = DummyRenderer()
+    renderer._hosts["amy"] = {"id": "amy", "instructions": "Be brief"}
+    item = _clip_item("show_000")
+    contract = dict(item.extra_attributes)
+    contract[ATTR_HOST_ID] = "amy"
+    item.extra_attributes.clear()
+    renderer._feed_clip_contracts["show_000"] = contract
+    signals = _attach_queue(renderer, [item])
+
+    streamdetails = await renderer.get_stream_details("show_000", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.item_id == "show_000"
+    # the contract now travels on the item itself, persisted like any rendered attribute
+    assert item.extra_attributes[ATTR_PROMPT] == contract[ATTR_PROMPT]
+    assert item.extra_attributes[ATTR_HOST_ID] == "amy"
+    assert item.extra_attributes[ATTR_RENDERED_TEXT]
+    assert signals == [True, True]
+    assert renderer.llm_prompts[0].startswith("It is ")
+
+
+INTRO_PROMPT = "Before: <prev_songinfo>. First up <next_songinfo>, then <very_next_songinfo>."
+
+
+async def test_a_feed_clip_announces_the_music_actually_behind_it() -> None:
+    """A show intro names the tracks the queue holds behind it, not the snapshot's order."""
+    renderer = DummyRenderer()
+    intro = _clip_item("show_000")
+    intro.extra_attributes.clear()
+    renderer._feed_clip_contracts["show_000"] = {
+        ATTR_SESSION_ID: "show",
+        ATTR_STATION_ID: "st",
+        ATTR_PROMPT: INTRO_PROMPT,
+        ATTR_MAX_CHARS: 300,
+        ATTR_WEB_SEARCH_MODE: "disabled",
+        ATTR_FEED_CLIP: True,
+    }
+    # a DJ break spliced right behind the intro is not music, so it is looked past
+    dj_attributes: dict[str, Any] = {ATTR_QUEUE_DJ: True, ATTR_PROMPT: "p"}
+    dj_break = _clip_item("dj_000", **dj_attributes)
+    _attach_queue(
+        renderer,
+        [
+            intro,
+            dj_break,
+            _music_item("t2", "Beta", "Two"),
+            _music_item("t3", "Gamma", "Three"),
+            _music_item("t1", "Alpha", "One"),
+        ],
+    )
+
+    await renderer.get_stream_details("show_000", MediaType.SOUND_EFFECT)
+
+    assert renderer.llm_prompts == ["Before: . First up Beta - Two, then Gamma - Three."]
+    # the tokens stay on the item, like the other deferred placeholders
+    assert intro.extra_attributes[ATTR_PROMPT] == INTRO_PROMPT
+
+
+async def test_a_feed_clip_with_nothing_behind_it_announces_nothing() -> None:
+    """A feed clip that ended up last in its queue gets neutral values for the missing songs."""
+    renderer = DummyRenderer()
+    attributes: dict[str, Any] = {ATTR_PROMPT: INTRO_PROMPT, ATTR_FEED_CLIP: True}
+    outro = _clip_item("show_001", **attributes)
+    _attach_queue(renderer, [_music_item("t1", "Alpha", "One"), outro])
+
+    await renderer.get_stream_details("show_001", MediaType.SOUND_EFFECT)
+
+    assert renderer.llm_prompts == ["Before: Alpha - One. First up , then ."]
+
+
+async def test_a_dj_clip_keeps_its_planned_prompt() -> None:
+    """A DJ-spliced clip's prompt was settled at plan time; the render path leaves it alone."""
+    renderer = DummyRenderer()
+    attributes: dict[str, Any] = {ATTR_QUEUE_DJ: True, ATTR_PROMPT: "Next: <next_songinfo>."}
+    clip = _clip_item("sess_001", **attributes)
+    _attach_queue(renderer, [clip, _music_item("t2", "Beta", "Two")])
+
+    await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert renderer.llm_prompts == ["Next: <next_songinfo>."]
+
+
 async def test_llm_failure_raises_media_not_found() -> None:
     """An LLM failure surfaces as missing media so the core skips the clip."""
     renderer = DummyRenderer()
@@ -461,23 +571,22 @@ async def test_llm_failure_raises_media_not_found() -> None:
         await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
 
-async def test_render_failure_increments_the_session_skip_counter() -> None:
-    """A skipped clip is recorded on its session without failing the run."""
+async def test_generation_failure_logs_the_skip(caplog: pytest.LogCaptureFixture) -> None:
+    """A clip that fails to generate is skipped and logged, without failing the run."""
     renderer = DummyRenderer()
-    session = SessionState(session_id="sess", station_id="st")
-    renderer._sessions = {"sess": session}
     _attach_queue(renderer, [_clip_item("sess_001")])
     renderer.fail_generation = True
 
-    with pytest.raises(MediaNotFoundError):
+    with caplog.at_level(logging.WARNING), pytest.raises(MediaNotFoundError):
         await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
-    assert session.skipped_sections == 1
-    assert session.last_render_error
+    assert any("failed to generate" in message for message in caplog.messages)
 
 
-async def test_tts_failure_raises_media_not_found_and_records_skip() -> None:
-    """A TTS failure surfaces as missing media and is recorded on the owning session."""
+async def test_tts_failure_raises_media_not_found_and_logs_the_skip(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A TTS failure surfaces as missing media and is logged."""
 
     class UnspeakableRenderer(DummyRenderer):
         async def _render_tts_media(
@@ -490,15 +599,12 @@ async def test_tts_failure_raises_media_not_found_and_records_skip() -> None:
             raise RuntimeError("tts down")
 
     renderer = UnspeakableRenderer()
-    session = SessionState(session_id="sess", station_id="st")
-    renderer._sessions = {"sess": session}
     _attach_queue(renderer, [_clip_item("sess_001")])
 
-    with pytest.raises(MediaNotFoundError):
+    with caplog.at_level(logging.WARNING), pytest.raises(MediaNotFoundError):
         await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
-    assert session.skipped_sections == 1
-    assert session.last_render_error
+    assert any("failed TTS" in message for message in caplog.messages)
 
 
 class NoWeatherRenderer(DummyRenderer):
@@ -509,20 +615,19 @@ class NoWeatherRenderer(DummyRenderer):
         return {}
 
 
-async def test_weather_required_clip_is_skipped_when_weather_is_unavailable() -> None:
+async def test_weather_required_clip_is_skipped_when_weather_is_unavailable(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """A weather-required clip with no forecast data is skipped instead of airing a guess."""
     renderer = NoWeatherRenderer()
-    session = SessionState(session_id="sess", station_id="st")
-    renderer._sessions = {"sess": session}
     item = _clip_item("sess_001")
     item.extra_attributes[ATTR_WEATHER_REQUIRED] = True
     _attach_queue(renderer, [item])
 
-    with pytest.raises(MediaNotFoundError):
+    with caplog.at_level(logging.WARNING), pytest.raises(MediaNotFoundError):
         await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
-    assert session.skipped_sections == 1
-    assert session.last_render_error
+    assert any("weather data unavailable" in message for message in caplog.messages)
     assert renderer.llm_prompts == []
 
 
@@ -580,7 +685,6 @@ def _failing_probe(message: str, monkeypatch: pytest.MonkeyPatch) -> RealProbeRe
 
     monkeypatch.setattr("music_assistant.providers.ai_radio.rendering.async_parse_tags", _raise)
     renderer = RealProbeRenderer()
-    renderer._sessions = {"sess": SessionState(session_id="sess", station_id="st")}
     _attach_queue(renderer, [_clip_item("sess_001")])
     return renderer
 
@@ -590,7 +694,7 @@ def _failing_probe(message: str, monkeypatch: pytest.MonkeyPatch) -> RealProbeRe
     ["Server returned 5XX Server Error reply", "HTTP error 500 Internal Server Error"],
 )
 async def test_tts_server_error_fails_the_clip_with_an_actionable_message(
-    server_error: str, monkeypatch: pytest.MonkeyPatch
+    server_error: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """An engine that hands out a URL it cannot render fails the clip, not the playback."""
     renderer = _failing_probe(
@@ -598,16 +702,14 @@ async def test_tts_server_error_fails_the_clip_with_an_actionable_message(
         monkeypatch,
     )
 
-    with pytest.raises(MediaNotFoundError):
+    with caplog.at_level(logging.WARNING), pytest.raises(MediaNotFoundError):
         await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
-    session = renderer._sessions["sess"]
-    assert session.skipped_sections == 1
-    assert "Check the logs of the TTS engine" in session.last_render_error
+    assert "Check the logs of the TTS engine" in caplog.text
     # the hint is a guess, so the whole probe message travels with it - the url included,
     # since that is what tells a failing engine apart from a failing tts server behind it
-    assert "http://ha.invalid/api/tts_proxy/1.mp3" in session.last_render_error
-    assert server_error in session.last_render_error
+    assert "http://ha.invalid/api/tts_proxy/1.mp3" in caplog.text
+    assert server_error in caplog.text
 
 
 async def test_unmeasurable_clip_still_plays(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -621,7 +723,6 @@ async def test_unmeasurable_clip_still_plays(monkeypatch: pytest.MonkeyPatch) ->
     streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
     assert streamdetails.duration is None
-    assert renderer._sessions["sess"].skipped_sections == 0
 
 
 async def test_generate_script_uses_host_instructions() -> None:

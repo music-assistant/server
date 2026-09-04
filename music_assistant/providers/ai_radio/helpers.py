@@ -11,7 +11,7 @@ from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.helpers.datetime import utc
 
-from .constants import EMPTY_SECTION_ID
+from .constants import EMPTY_SECTION_ID, SONG_PLACEHOLDER_TOKENS
 from .models import Slot
 
 
@@ -49,6 +49,22 @@ def track_songinfo(track: dict[str, Any] | None) -> str:
     artist = str(track.get("artist") or "").strip()
     name = str(track.get("name") or "").strip()
     return f"{artist} - {name}".strip(" -")
+
+
+def song_placeholder_values(
+    prev_track: dict[str, Any] | None,
+    next_track: dict[str, Any] | None,
+    very_next_track: dict[str, Any] | None,
+) -> dict[str, str]:
+    """
+    Return the song placeholder values for a clip sitting between the given tracks.
+
+    :param prev_track: The track playing before the clip, None when nothing does.
+    :param next_track: The track following the clip, None when nothing does.
+    :param very_next_track: The track after that one, None when there is none.
+    """
+    neighbours = (prev_track, next_track, very_next_track)
+    return dict(zip(SONG_PLACEHOLDER_TOKENS, map(track_songinfo, neighbours), strict=True))
 
 
 def pick_weighted_choice(choices: list[dict[str, Any]], rng: random.Random) -> str:

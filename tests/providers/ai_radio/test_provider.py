@@ -11,12 +11,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import EventType, PlaybackState, ProviderFeature
-from music_assistant_models.errors import (
-    InvalidDataError,
-    PlayerUnavailableError,
-    SetupFailedError,
-)
+from music_assistant_models.enums import EventType, ProviderFeature
+from music_assistant_models.errors import InvalidDataError, SetupFailedError
 
 from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
 from music_assistant.providers.ai_radio import provider as ai_radio_provider
@@ -24,53 +20,14 @@ from music_assistant.providers.ai_radio.constants import (
     CONF_AI_ENGINE,
     CONF_TTS_ENGINE,
     ENGINE_RETRY_DELAY,
-    MAX_FINISHED_SESSIONS,
 )
-from music_assistant.providers.ai_radio.models import DJQueueState, SessionState
+from music_assistant.providers.ai_radio.models import DJQueueState
 from music_assistant.providers.ai_radio.provider import AIRadioProvider
-
-
-def _close(coro: Any) -> None:
-    """Close an un-awaited coroutine so the test does not warn."""
-    coro.close()
-
-
-def _recording_stop(recorder: list[str]) -> Any:
-    """Return an async queue-stop stub that records the queue ids it was called with."""
-
-    async def _stop(queue_id: str) -> None:
-        recorder.append(queue_id)
-
-    return _stop
 
 
 def _make_provider() -> AIRadioProvider:
     """Create a minimal AIRadioProvider object without full init."""
-    provider = AIRadioProvider.__new__(AIRadioProvider)
-    provider._sessions = {}
-    provider._session_lock = asyncio.Lock()
-    return provider
-
-
-def _make_dynamic_provider(player_obj: object | None, default_player_id: str) -> AIRadioProvider:
-    """Create a minimal provider object suitable for dynamic-mode validation tests."""
-    provider = _make_provider()
-    provider._stations = {
-        "station_a": {
-            "id": "station_a",
-            "name": "Station A",
-            "source_playlist_id": "1",
-            "source_playlist_provider": "library",
-            "default_player_id": default_player_id,
-        }
-    }
-    provider.mass = cast(
-        "Any",
-        SimpleNamespace(
-            players=SimpleNamespace(get_player=lambda _player_id: player_obj),
-        ),
-    )
-    return provider
+    return AIRadioProvider.__new__(AIRadioProvider)
 
 
 @pytest.fixture
@@ -85,206 +42,6 @@ def provider(tmp_path: Path) -> AIRadioProvider:
     instance._hosts_file = tmp_path / "hosts.json"
     instance._sections = {item["id"]: item for item in instance._default_sections_template()}
     return instance
-
-
-def test_resolve_session_for_stop_by_session_id() -> None:
-    """Resolve explicit session id directly."""
-    provider = _make_provider()
-    session = SessionState(session_id="s1", station_id="st")
-    provider._sessions[session.session_id] = session
-
-    resolved = provider._resolve_session_for_stop(session_id="s1", station_id=None)
-
-    assert resolved is session
-
-
-def test_resolve_session_for_stop_uses_latest_running_for_station() -> None:
-    """Resolve latest running session for selected station."""
-    provider = _make_provider()
-    older = SessionState(
-        session_id="s_old",
-        station_id="station_a",
-        created_at="2026-01-01T10:00:00+00:00",
-    )
-    newer = SessionState(
-        session_id="s_new",
-        station_id="station_a",
-        created_at="2026-01-01T11:00:00+00:00",
-    )
-    other = SessionState(
-        session_id="s_other",
-        station_id="station_b",
-        created_at="2026-01-01T12:00:00+00:00",
-    )
-    provider._sessions = {s.session_id: s for s in (older, newer, other)}
-
-    resolved = provider._resolve_session_for_stop(session_id=None, station_id="station_a")
-
-    assert resolved.session_id == "s_new"
-
-
-def test_resolve_session_for_stop_raises_when_nothing_running() -> None:
-    """Raise when no running sessions exist."""
-    provider = _make_provider()
-
-    with pytest.raises(KeyError, match="No active AI Radio run found"):
-        provider._resolve_session_for_stop(session_id=None, station_id=None)
-
-
-def test_session_state_as_dict_reports_the_resolved_queue() -> None:
-    """Serialize the queue id once a run has resolved its target queue."""
-    session = SessionState(session_id="s1", station_id="st", queue_id="living_room")
-
-    assert session.as_dict()["queue_id"] == "living_room"
-
-
-def test_session_state_as_dict_reports_no_queue_before_resolution() -> None:
-    """Report no queue id before a run resolves its target queue."""
-    session = SessionState(session_id="s1", station_id="st")
-
-    assert session.as_dict()["queue_id"] is None
-
-
-@pytest.mark.asyncio
-async def test_start_run_dynamic_requires_player_id() -> None:
-    """Reject dynamic run start when no player is configured."""
-    provider = _make_dynamic_provider(player_obj=None, default_player_id="")
-
-    with pytest.raises(InvalidDataError, match="requires a target player"):
-        await provider.start_run(station_id="station_a")
-
-
-@pytest.mark.asyncio
-async def test_start_run_rejects_unknown_station() -> None:
-    """Reject starting a run for a station that does not exist."""
-    provider = _make_provider()
-    provider._stations = {}
-
-    with pytest.raises(KeyError, match="Unknown station id: missing_station"):
-        await provider.start_run(station_id="missing_station")
-
-
-@pytest.mark.asyncio
-async def test_start_run_dynamic_rejects_unavailable_player() -> None:
-    """Reject dynamic run start when configured player is unavailable."""
-    unavailable_player = SimpleNamespace(player_id="living_room", available=False, enabled=True)
-    provider = _make_dynamic_provider(
-        player_obj=unavailable_player,
-        default_player_id="living_room",
-    )
-
-    with pytest.raises(InvalidDataError, match="Target player is unavailable"):
-        await provider.start_run(station_id="station_a")
-
-
-@pytest.mark.asyncio
-async def test_start_run_dynamic_rejects_negative_source_playtime_cap_override() -> None:
-    """Reject dynamic run start when source playtime cap override is negative."""
-    provider = _make_dynamic_provider(player_obj=None, default_player_id="")
-
-    with pytest.raises(InvalidDataError, match="dynamic_source_playtime_cap_override must be >= 0"):
-        await provider.start_run(
-            station_id="station_a",
-            dynamic_source_playtime_cap_override=-1,
-        )
-
-
-@pytest.mark.asyncio
-async def test_start_run_dynamic_rejects_disabled_player() -> None:
-    """Reject dynamic run start when target player is disabled."""
-    disabled_player = SimpleNamespace(player_id="living_room", available=True, enabled=False)
-    provider = _make_dynamic_provider(
-        player_obj=disabled_player,
-        default_player_id="living_room",
-    )
-
-    with pytest.raises(InvalidDataError, match="Target player is disabled"):
-        await provider.start_run(station_id="station_a")
-
-
-@pytest.mark.asyncio
-async def test_stop_run_rejects_already_completed_session() -> None:
-    """Reject stopping a session that is already completed."""
-    provider = _make_provider()
-    provider.logger = cast(
-        "Any",
-        SimpleNamespace(debug=lambda *_a, **_kw: None, info=lambda *_a, **_kw: None),
-    )
-    provider._sessions["s_done"] = SessionState(
-        session_id="s_done",
-        station_id="st",
-        status="completed",
-        ended_at="2026-01-01T10:00:00+00:00",
-    )
-
-    with pytest.raises(InvalidDataError):
-        await provider.stop_run(session_id="s_done")
-
-
-@pytest.mark.asyncio
-async def test_stop_run_accepts_running_session_by_id() -> None:
-    """Stop a running session resolved by explicit session id."""
-    provider = _make_provider()
-    provider.logger = cast(
-        "Any",
-        SimpleNamespace(debug=lambda *_a, **_kw: None, info=lambda *_a, **_kw: None),
-    )
-    provider._sessions["s_run"] = SessionState(
-        session_id="s_run",
-        station_id="st",
-        status="running",
-    )
-
-    result = await provider.stop_run(session_id="s_run")
-
-    assert result["status"] == "stopped"
-
-
-@pytest.mark.asyncio
-async def test_start_run_prunes_oldest_finished_sessions() -> None:
-    """Drop the oldest finished sessions beyond the retention limit on run start."""
-    provider = _make_provider()
-    provider.logger = cast(
-        "Any",
-        SimpleNamespace(debug=lambda *_a, **_kw: None, info=lambda *_a, **_kw: None),
-    )
-    player = SimpleNamespace(player_id="living_room", available=True, enabled=True)
-    provider._stations = {
-        "station_a": {
-            "id": "station_a",
-            "name": "Station A",
-            "source_playlist_id": "1",
-            "source_playlist_provider": "library",
-            "default_player_id": "living_room",
-            "host_id": "host_a",
-        }
-    }
-    provider._hosts = {"host_a": {"id": "host_a", "name": "Host A"}}
-    provider._sections = {}
-    provider.mass = cast(
-        "Any",
-        SimpleNamespace(
-            players=SimpleNamespace(get_player=lambda _player_id: player),
-            create_task=lambda coro, **_kw: coro.close(),
-        ),
-    )
-    for index in range(MAX_FINISHED_SESSIONS + 5):
-        session_id = f"s_{index}"
-        provider._sessions[session_id] = SessionState(
-            session_id=session_id,
-            station_id="station_a",
-            status="completed",
-            created_at=f"2026-01-01T10:{index:02d}:00+00:00",
-        )
-
-    await provider.start_run(station_id="station_a")
-
-    finished = [s for s in provider._sessions.values() if s.status != "running"]
-    assert len(finished) == MAX_FINISHED_SESSIONS
-    # the five oldest sessions are gone, the newest finished ones remain
-    for index in range(5):
-        assert f"s_{index}" not in provider._sessions
-    assert f"s_{MAX_FINISHED_SESSIONS + 4}" in provider._sessions
 
 
 @pytest.mark.asyncio
@@ -391,6 +148,32 @@ async def test_save_section_leaves_the_stations_file_alone(provider: Any, tmp_pa
     assert provider._stations_file.read_text() == "untouched"
 
 
+async def test_station_changes_reconcile_the_library_under_the_station_lock(
+    provider: Any, tmp_path: Path
+) -> None:
+    """The library mirror is rebuilt while the station lock is still held."""
+    provider._stations_file = tmp_path / "stations.json"
+    provider._hosts = {"host_a": {"id": "host_a", "name": "Host A"}}
+    locked_during_sync: list[bool] = []
+
+    async def _sync() -> None:
+        locked_during_sync.append(provider._station_lock.locked())
+
+    provider._sync_show_library_items = _sync
+    station = {
+        "id": "station_a",
+        "name": "Station A",
+        "source_playlist_id": "playlist-1",
+        "source_playlist_provider": "library",
+        "host_id": "host_a",
+    }
+
+    await provider.save_station(station)
+    await provider.delete_station("station_a")
+
+    assert locked_during_sync == [True, True]
+
+
 async def test_delete_host_refuses_when_station_references_it(provider: Any) -> None:
     """Refuse to delete a host that a station still references."""
     saved = await provider.save_host(await provider.host_template())
@@ -420,118 +203,6 @@ async def test_delete_host_refuses_when_it_is_an_active_queue_dj(provider: Any) 
 
     with pytest.raises(InvalidDataError, match="is the active DJ on queues: queue-1"):
         await provider.delete_host(saved["id"])
-
-
-@pytest.mark.asyncio
-async def test_concurrent_start_run_calls_respect_the_run_limit() -> None:
-    """
-    Concurrent start_run calls must not both get past the concurrency guards.
-
-    The guards and the session insert are one critical section; without it an await
-    introduced between them would let both callers observe zero running sessions.
-    """
-    player = SimpleNamespace(player_id="living_room", available=True, enabled=True)
-    provider = _make_provider()
-    provider.logger = logging.getLogger("tests.ai_radio.provider")
-    provider._stations = {
-        "station_a": {
-            "id": "station_a",
-            "name": "Station A",
-            "default_player_id": "living_room",
-            "host_id": "host_a",
-        },
-        "station_b": {
-            "id": "station_b",
-            "name": "Station B",
-            "default_player_id": "living_room",
-            "host_id": "host_a",
-        },
-    }
-    provider._hosts = {"host_a": {"id": "host_a", "name": "Host A"}}
-    provider._sections = {}
-    provider.mass = cast(
-        "Any",
-        SimpleNamespace(
-            players=SimpleNamespace(get_player=lambda _player_id: player),
-            create_task=lambda coro, **_kw: _close(coro),
-        ),
-    )
-
-    results = await asyncio.gather(
-        provider.start_run(station_id="station_a"),
-        provider.start_run(station_id="station_b"),
-        return_exceptions=True,
-    )
-
-    started = [item for item in results if isinstance(item, dict)]
-    rejected = [item for item in results if isinstance(item, InvalidDataError)]
-    assert len(started) == 1
-    assert len(rejected) == 1
-    assert "Max concurrent runs reached" in str(rejected[0])
-
-
-@pytest.mark.asyncio
-async def test_stop_run_stops_the_queue_it_owns() -> None:
-    """Stop playback on the target queue when the show is stopped from the UI."""
-    provider = _make_provider()
-    provider.logger = cast(
-        "Any",
-        SimpleNamespace(debug=lambda *_a, **_kw: None, info=lambda *_a, **_kw: None),
-    )
-    stopped: list[str] = []
-    provider.mass = cast(
-        "Any",
-        SimpleNamespace(
-            player_queues=SimpleNamespace(
-                get=lambda _queue_id: SimpleNamespace(state=PlaybackState.PLAYING, current_index=3),
-                stop=_recording_stop(stopped),
-            )
-        ),
-    )
-    provider._sessions["s_run"] = SessionState(
-        session_id="s_run",
-        station_id="st",
-        status="running",
-        queue_id="living_room",
-    )
-
-    result = await provider.stop_run(session_id="s_run")
-
-    assert result["status"] == "stopped"
-    assert stopped == ["living_room"]
-
-
-@pytest.mark.asyncio
-async def test_stop_run_survives_an_unavailable_player() -> None:
-    """Still mark the session stopped when the target player has gone away."""
-    provider = _make_provider()
-    provider.logger = cast(
-        "Any",
-        SimpleNamespace(debug=lambda *_a, **_kw: None, info=lambda *_a, **_kw: None),
-    )
-
-    async def _raise(queue_id: str) -> None:
-        raise PlayerUnavailableError(f"Player {queue_id} is not available")
-
-    provider.mass = cast(
-        "Any",
-        SimpleNamespace(
-            player_queues=SimpleNamespace(
-                get=lambda _queue_id: SimpleNamespace(state=PlaybackState.PLAYING, current_index=3),
-                stop=_raise,
-            )
-        ),
-    )
-    provider._sessions["s_run"] = SessionState(
-        session_id="s_run",
-        station_id="st",
-        status="running",
-        queue_id="living_room",
-    )
-
-    result = await provider.stop_run(session_id="s_run")
-
-    assert result["status"] == "stopped"
 
 
 def _make_engine_provider(
@@ -816,7 +487,12 @@ async def test_loaded_in_mass_watches_the_loaded_providers() -> None:
     )
     assert subscribe_calls[1].args == (
         provider._on_dj_queue_event,
-        (EventType.QUEUE_ADDED, EventType.QUEUE_ITEMS_UPDATED, EventType.PLAYER_REMOVED),
+        (
+            EventType.QUEUE_ADDED,
+            EventType.QUEUE_ITEMS_UPDATED,
+            EventType.QUEUE_UPDATED,
+            EventType.PLAYER_REMOVED,
+        ),
     )
     assert subscribers == [provider._on_providers_updated, provider._on_dj_queue_event]
 
@@ -840,7 +516,7 @@ async def test_queue_dj_commands_are_registered_as_queue_control() -> None:
     }
     assert scopes["ai_radio/queue_dj/set"] == Scope.QUEUES_CONTROL
     assert scopes["ai_radio/queue_dj/status"] == Scope.QUEUES_CONTROL
-    assert scopes["ai_radio/status"] == Scope.CONFIG_PROVIDERS_READ
+    assert scopes["ai_radio/stations/list"] == Scope.CONFIG_PROVIDERS_READ
 
 
 async def test_unload_cancels_an_in_flight_engine_recheck() -> None:

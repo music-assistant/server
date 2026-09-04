@@ -55,6 +55,7 @@ from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     MASS_LOGO_ONLINE,
     PLAYLIST_MEDIA_TYPES,
+    DynamicFeedItem,
 )
 from music_assistant.controllers.player_queues.autoplay import Autoplay
 from music_assistant.controllers.player_queues.config import (
@@ -1653,9 +1654,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """
         return await self._media_resolver.get_playlist_tracks(playlist, start_item, sort_by)
 
-    async def get_dynamic_source_tracks(self, item: MediaItemType) -> list[Track]:
+    async def get_dynamic_source_tracks(self, item: MediaItemType) -> list[DynamicFeedItem]:
         """
-        Return a fresh batch of tracks for a dynamic source (a dynamic playlist or radio station).
+        Return a fresh batch of feed items for a dynamic source (dynamic playlist or radio station).
 
         :param item: The dynamic playlist or radio station to fetch the next batch for.
         """
