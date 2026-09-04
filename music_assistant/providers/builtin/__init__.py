@@ -5,26 +5,32 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from collections.abc import AsyncGenerator, Mapping
+from collections import defaultdict, deque
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from contextlib import suppress
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final, cast
 from urllib.parse import urlparse
 
 import aiofiles
+from aiohttp import ClientError, ClientTimeout
 from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import (
     ContentType,
-    ExternalID,
     ImageType,
     MediaType,
+    PlaylistMatchPolicy,
     ProviderFeature,
     StreamType,
 )
 from music_assistant_models.errors import (
     InvalidDataError,
+    InvalidProviderID,
     InvalidProviderURI,
     MediaNotFoundError,
     ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import (
     Artist,
@@ -55,17 +61,24 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.tasks.context import (
     get_current_task_id,
     report_current_task_failure,
+    set_current_task_report,
     update_current_task_progress_from_index,
     update_current_task_progress_text,
 )
-from music_assistant.helpers.compare import compare_strings
-from music_assistant.helpers.external_ids import normalize_external_id
+from music_assistant.helpers.aiohttp_client import encoded_request_url
+from music_assistant.helpers.compare import (
+    TrackMatchConfidence,
+    compare_track_evidence,
+    match_policy_minimum_confidence,
+)
 from music_assistant.helpers.playlists import (
+    ArtistInfo,
     ImageInfo,
     IsHLSPlaylist,
     PlaylistItem,
     ProviderMappingInfo,
     construct_media_item_from_playlist_item,
+    escape_markdown,
     fetch_playlist,
     generate_m3u,
     media_item_to_playlist_item,
@@ -77,7 +90,7 @@ from music_assistant.helpers.playlists import (
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
 from music_assistant.helpers.track_filter import filter_tracks, get_track_filter
-from music_assistant.helpers.uri import parse_uri
+from music_assistant.helpers.uri import BUILTIN_URL_SCHEMES, parse_uri
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
@@ -115,6 +128,20 @@ if TYPE_CHECKING:
 CACHE_CATEGORY_MEDIA_INFO: Final[int] = 1
 CACHE_CATEGORY_PLAYLISTS: Final[int] = 2
 
+# maximum number of detail rows rendered per table in the import matching report
+_IMPORT_REPORT_DETAIL_LIMIT: Final[int] = 200
+# report count bucket for each accepted track-match confidence
+_CONFIDENCE_COUNT_KEY: Final[dict[TrackMatchConfidence, str]] = {
+    TrackMatchConfidence.EXACT: "exact",
+    TrackMatchConfidence.LIKELY: "same_recording",
+    TrackMatchConfidence.LOOSE: "best_effort",
+}
+_CONFIDENCE_TIER_LABELS: Final[dict[str, str]] = {
+    "exact": "Exact release",
+    "same_recording": "Same recording",
+    "best_effort": "Best effort",
+}
+
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.LIBRARY_TRACKS,
@@ -139,12 +166,28 @@ async def setup(
     return BuiltinProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
+@dataclass(slots=True)
+class _ImportTrackMatchResult:
+    """Resolved outcome for one playlist entry during import matching."""
+
+    label: str
+    retained: bool = False
+    entry: PlaylistItem | None = None
+    confidence: TrackMatchConfidence = TrackMatchConfidence.NO_MATCH
+    ambiguous_providers: tuple[str, ...] = ()
+    failed_providers: tuple[str, ...] = ()
+    error: str | None = None
+    # True when the error came from provider communication, not local validation.
+    error_is_provider_issue: bool = False
+
+
 class BuiltinProvider(MusicProvider):
     """Built-in/generic provider to handle (manually added) media from files and (remote) urls."""
 
     _playlists_dir: str
     _playlist_lock: asyncio.Lock
     _playlist_locks: dict[str, asyncio.Lock]
+    _playlist_generations: dict[str, int]
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
@@ -161,13 +204,12 @@ class BuiltinProvider(MusicProvider):
         """Call after the provider has been loaded."""
         self._playlist_lock = asyncio.Lock()
         self._playlist_locks = {}
+        self._playlist_generations = {}
         self._playlists_dir = os.path.join(self.mass.storage_path, "playlists")
         if not await asyncio.to_thread(os.path.exists, self._playlists_dir):
             await asyncio.to_thread(os.mkdir, self._playlists_dir)
         await super().loaded_in_mass()
-        # run in the background to avoid blocking startup. besides migrating old-style
-        # playlists, this repairs entries whose manually set name or artwork no longer
-        # matches the builtin config, which is not a one-off.
+        # Run in the background: migrate legacy playlists and repair stored metadata drift.
         # TODO: drop the config->M3U migration after MA 2.9, keep the repair pass
         self.mass.tasks.register_scheduled_task(
             task_id="migrate_builtin_playlists",
@@ -375,8 +417,9 @@ class BuiltinProvider(MusicProvider):
         elif media_type == MediaType.PLAYLIST:
             # user-created playlist removal - delete the M3U file
             playlist_file = os.path.join(self._playlists_dir, f"{prov_item_id}.m3u")
-            if await asyncio.to_thread(os.path.isfile, playlist_file):
-                async with self._playlist_lock:
+            # Hold both locks so the existence check and unlink cannot race other I/O.
+            async with self._get_playlist_lock(prov_item_id), self._playlist_lock:
+                if await asyncio.to_thread(os.path.isfile, playlist_file):
                     await asyncio.to_thread(os.remove, playlist_file)
             return True
         else:
@@ -545,26 +588,19 @@ class BuiltinProvider(MusicProvider):
 
         The playlist name is used as the filename (sanitized for filesystem safety).
         """
-        playlist_id = self._sanitize_playlist_id(name)
-        # ensure uniqueness
-        counter = 1
-        base_id = playlist_id
-        while await asyncio.to_thread(
-            os.path.isfile, os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
-        ):
-            playlist_id = f"{base_id} ({counter})"
-            counter += 1
-        # create empty M3U file with header
-        await self._write_m3u_file(playlist_id, name, [])
+        playlist_id, _generation = await self._reserve_playlist_file(name, [])
         return await self.get_playlist(playlist_id)
 
-    async def import_playlist(self, m3u_data: str) -> Playlist:
+    async def import_playlist(self, m3u_data: str) -> tuple[Playlist, int]:
         """
         Import a playlist from M3U8 format.
 
         Creates a new playlist and populates it with items from the M3U data.
         Items with valid MA URIs are added directly. Plain URLs or unresolvable
         URIs are stored as-is for later matching.
+
+        Also returns the playlist generation so deferred work can detect a later
+        delete-and-recreate under the same ID.
 
         :param m3u_data: The M3U8 playlist data as a string.
         """
@@ -573,97 +609,132 @@ class BuiltinProvider(MusicProvider):
             msg = "No items found in M3U data"
             raise InvalidDataError(msg)
         playlist_name = parse_m3u_playlist_name(m3u_data) or "Imported Playlist"
-        playlist = await self.create_playlist(
-            playlist_name,
-            media_types={MediaType.TRACK, MediaType.RADIO},
-        )
         playlist_image_url = parse_m3u_playlist_image(m3u_data)
-        # Write the parsed items directly as the M3U file, preserving all
-        # metadata from the source. This avoids re-resolving items that
-        # already have rich metadata (e.g. exported from another MA instance).
-        await self._write_m3u_file(
-            playlist.item_id,
-            playlist_name,
-            parsed_items,
-            playlist_image_url,
+        # Reserve the ID and write the final contents in one step.
+        playlist_id, generation = await self._reserve_playlist_file(
+            playlist_name, parsed_items, playlist_image_url
         )
-        return await self.get_playlist(playlist.item_id)
+        return await self.get_playlist(playlist_id), generation
 
     async def match_imported_playlist_tracks(
         self,
         prov_playlist_id: str,
-        match_providers: list[str] | None = None,
+        expected_generation: int,
+        match_policy: PlaylistMatchPolicy,
+        allowed_provider_instances: tuple[tuple[str, str], ...],
+        search_provider_instances: tuple[str, ...] | None = None,
     ) -> None:
         """
         Match imported playlist tracks against available providers.
 
-        Iterates through playlist items whose provider is unavailable,
-        searching other providers for matches using metadata stored in
-        the M3U file. Matched tracks are replaced in-place.
+        Playable originals are kept. Entries confirmed missing are replaced in place
+        with matches that meet ``match_policy``.
 
-        :param prov_playlist_id: The provider-side playlist ID.
-        :param match_providers: Optional list of provider instance IDs or
-            domains to search. When None, all providers are searched.
+        :param prov_playlist_id: The provider-side playlist ID of the playlist to match.
+        :param expected_generation: Creation generation captured at import time. If the
+            playlist was recreated under the same ID, this call is skipped.
+        :param match_policy: Lowest track-match confidence accepted for a substitute.
+        :param allowed_provider_instances: Snapshotted ``(instance_id, domain)`` pairs
+            used to validate the original source.
+        :param search_provider_instances: Optional subset to search for substitutes.
         """
-        m3u_data = await self._read_m3u_file(prov_playlist_id)
-        parsed_items = parse_m3u(m3u_data)
-        if not parsed_items:
-            return
+        # Read the playlist and capture its generation under the per-playlist lock.
+        async with self._get_playlist_lock(prov_playlist_id):
+            m3u_data = await self._read_m3u_file(prov_playlist_id)
+            parsed_items = parse_m3u(m3u_data)
+            if not parsed_items:
+                return
+            playlist = await self.get_playlist(prov_playlist_id)
+            # Distinguish a later delete-and-recreate under the same ID.
+            original_generation = await self._get_playlist_generation(prov_playlist_id)
+            if original_generation != expected_generation:
+                return
 
+        minimum_confidence = match_policy_minimum_confidence(match_policy)
+        allowed_provider_instance_map = dict(allowed_provider_instances)
+        search_provider_instance_set = (
+            set(allowed_provider_instance_map)
+            if search_provider_instances is None
+            else set(search_provider_instances)
+        )
+        failed_provider_instances: set[str] = set()
+        # Cache transient source-verification failures for the rest of this pass.
+        failed_source_instances: set[str] = set()
         total = len(parsed_items)
-        matched_count = 0
-        unmatched_count = 0
-        changed = False
+        counts = dict.fromkeys(
+            (
+                "retained",
+                "exact",
+                "same_recording",
+                "best_effort",
+                "ambiguous",
+                "unmatched",
+                "concurrent_edit",
+            ),
+            0,
+        )
+        substitutions: list[tuple[str, str, str]] = []
+        # Apply substitutions against a fresh read so concurrent edits are preserved.
+        pending_substitutions: list[tuple[PlaylistItem, PlaylistItem]] = []
+        # Confidence bucket for each pending substitution.
+        substitution_tiers: list[str] = []
+        # Retained entries that gained a confirmed provider mapping.
+        pending_metadata_updates: list[tuple[PlaylistItem, PlaylistItem]] = []
+        unmatched_items: list[tuple[str, str]] = []
+        provider_issues: list[tuple[str, str]] = []
+        # Cache results by full entry content so exact duplicates are resolved once.
+        resolved_by_entry: dict[str, _ImportTrackMatchResult] = {}
 
         for index, item in enumerate(parsed_items):
             update_current_task_progress_from_index(
                 index, total, f"Matching track {index + 1}/{total}"
             )
-            if not item.title:
-                continue
-            # check if the URI's provider is available
-            needs_matching = False
-            media_type = MediaType.TRACK
-            try:
-                media_type, prov_instance, _item_id = await parse_uri(item.path)
-                if media_type == MediaType.RADIO:
-                    continue
-                if not self.mass.get_provider(prov_instance):
-                    needs_matching = True
-            except Exception:
-                needs_matching = True
-
-            if not needs_matching:
-                continue
-
-            matched_uri = await self._match_track_by_metadata(item, match_providers=match_providers)
-            if matched_uri:
-                # enrich the entry with full metadata (#EXTPROV etc.) so it resolves to a
-                # playable item - just storing the URI leaves it without provider mappings
-                try:
-                    parsed_items[index] = await self._build_m3u_entry_from_uri(matched_uri)
-                except MediaNotFoundError, InvalidDataError, ProviderUnavailableError:
-                    item.path = matched_uri
-                changed = True
-                matched_count += 1
-            else:
-                report_current_task_failure(f"No match found for: {item.title}")
-                unmatched_count += 1
-
-        if changed:
-            playlist = await self.get_playlist(prov_playlist_id)
-            await self._write_m3u_file(
-                prov_playlist_id,
-                playlist.name,
-                parsed_items,
-                self._get_playlist_image_url(playlist),
+            entry_key = repr(item)
+            result = resolved_by_entry.get(entry_key)
+            if result is None:
+                result = await self._resolve_import_track(
+                    item,
+                    minimum_confidence,
+                    allowed_provider_instance_map,
+                    search_provider_instance_set,
+                    failed_provider_instances,
+                    failed_source_instances,
+                )
+                resolved_by_entry[entry_key] = result
+            self._tally_import_track_result(
+                item,
+                result,
+                counts,
+                substitutions,
+                unmatched_items,
+                provider_issues,
+                pending_substitutions,
+                substitution_tiers,
+                pending_metadata_updates,
             )
 
-        self.logger.info(
-            "Import matching: %d matched, %d unmatched out of %d items",
-            matched_count,
-            unmatched_count,
-            total,
+        if pending_substitutions:
+            not_applied = await self._apply_import_substitutions(
+                prov_playlist_id, pending_substitutions, original_generation
+            )
+            # Drop substitutions that no longer apply after concurrent edits.
+            for entry_index in sorted(not_applied, reverse=True):
+                counts[substitution_tiers[entry_index]] -= 1
+                counts["concurrent_edit"] += 1
+                del substitutions[entry_index]
+
+        if pending_metadata_updates:
+            not_applied = await self._apply_import_substitutions(
+                prov_playlist_id, pending_metadata_updates, original_generation
+            )
+            for _entry_index in not_applied:
+                counts["retained"] -= 1
+                counts["concurrent_edit"] += 1
+
+        set_current_task_report(
+            _build_import_report(
+                playlist.name, total, counts, substitutions, unmatched_items, provider_issues
+            )
         )
         update_current_task_progress_from_index(total, total, "Matching complete")
 
@@ -807,205 +878,453 @@ class BuiltinProvider(MusicProvider):
         if playlist_id in BUILTIN_PLAYLISTS:
             # builtin playlists are not editable
             return
-        m3u_data = await self._read_m3u_file(playlist_id)
-        if not m3u_data:
-            return
-        existing_items = parse_m3u(m3u_data)
-        try:
-            await self._write_m3u_file(playlist_id, new_name, list(existing_items), image_url)
-        except OSError as err:
-            self.logger.warning("Failed to update playlist metadata: %s", err)
-
-    async def _match_track_by_metadata(
-        self,
-        item: PlaylistItem,
-        match_providers: list[str] | None = None,
-    ) -> str | None:
-        """
-        Search providers for a track matching the given PlaylistItem metadata.
-
-        Uses ISRC/MusicBrainz ID for exact matching first, then falls back
-        to fuzzy title/artist/duration matching.
-
-        :param item: The PlaylistItem with metadata from the M3U file.
-        :param match_providers: Optional list of provider instance IDs or
-            domains to limit the search.
-        """
-        artist_name, track_name = parse_extinf_title(item.title)
-        if not track_name:
-            return None
-
-        search_query = f"{artist_name} - {track_name}" if artist_name else track_name
-
-        all_providers = self.mass.music.get_unique_providers()
-        if match_providers:
-            provider_domains: dict[str, str] = {}
-            for pid in all_providers:
-                prov = self.mass.get_provider(pid)
-                if prov:
-                    provider_domains[pid] = prov.domain
-            all_providers = [
-                pid
-                for pid in all_providers
-                if pid in match_providers or provider_domains.get(pid) in match_providers
-            ]
-
-        best_match: tuple[int, str] | None = None
-
-        for provider_id in all_providers:
+        async with self._get_playlist_lock(playlist_id):
+            m3u_data = await self._read_m3u_file(playlist_id)
+            if not m3u_data:
+                return
+            existing_items = parse_m3u(m3u_data)
             try:
-                results = await self.mass.music.tracks.search(search_query, provider_id, limit=5)
-            except Exception:
-                self.logger.debug(
-                    "Search failed on provider %s for '%s'", provider_id, search_query
-                )
-                continue
+                await self._write_m3u_file(playlist_id, new_name, list(existing_items), image_url)
+            except OSError as err:
+                self.logger.warning("Failed to update playlist metadata: %s", err)
 
-            for result in results:
-                if not result.uri:
+    async def _apply_import_substitutions(
+        self,
+        prov_playlist_id: str,
+        pending_substitutions: list[tuple[PlaylistItem, PlaylistItem]],
+        expected_generation: int | None,
+    ) -> set[int]:
+        """
+        Write resolved substitutes into the playlist's current contents.
+
+        Matches originals against a fresh read so concurrent edits are preserved.
+
+        :param prov_playlist_id: The provider-side playlist ID to update.
+        :param pending_substitutions: (original, replacement) pairs found during matching.
+        :param expected_generation: Playlist generation captured at the start of the
+            pass. If it changed, nothing is written.
+        :return: Indices of substitutions whose original entry was no longer present.
+        """
+        # Queue replacements by entry value so duplicates are applied in order.
+        pending_by_key: dict[str, deque[tuple[int, PlaylistItem]]] = defaultdict(deque)
+        for index, (original, replacement) in enumerate(pending_substitutions):
+            pending_by_key[repr(original)].append((index, replacement))
+
+        async with self._get_playlist_lock(prov_playlist_id):
+            current_generation = await self._get_playlist_generation(prov_playlist_id)
+            if expected_generation is None or current_generation != expected_generation:
+                return set(range(len(pending_substitutions)))
+            current_items = parse_m3u(await self._read_m3u_file(prov_playlist_id))
+            updated_items: list[PlaylistItem] = []
+            applied_indices: set[int] = set()
+            changed = False
+            for current_item in current_items:
+                queue = pending_by_key.get(repr(current_item))
+                if not queue:
+                    updated_items.append(current_item)
                     continue
-                score = self._score_track_match(result, item)
-                if score >= 10:
-                    self.logger.debug("Exact ID match for '%s' -> %s", search_query, result.uri)
-                    return result.uri
-                if score > 0 and (best_match is None or score > best_match[0]):
-                    best_match = (score, result.uri)
+                index, replacement = queue.popleft()
+                updated_items.append(replacement)
+                applied_indices.add(index)
+                changed = True
+            not_applied = set(range(len(pending_substitutions))) - applied_indices
+            if changed:
+                playlist = await self.get_playlist(prov_playlist_id)
+                await self._write_m3u_file(
+                    prov_playlist_id,
+                    playlist.name,
+                    updated_items,
+                    self._get_playlist_image_url(playlist),
+                )
+            return not_applied
 
-        if best_match:
-            self.logger.debug(
-                "Matched '%s' -> %s (score=%d)",
-                search_query,
-                best_match[1],
-                best_match[0],
+    def _tally_import_track_result(
+        self,
+        item: PlaylistItem,
+        result: _ImportTrackMatchResult,
+        counts: dict[str, int],
+        substitutions: list[tuple[str, str, str]],
+        unmatched_items: list[tuple[str, str]],
+        provider_issues: list[tuple[str, str]],
+        pending_substitutions: list[tuple[PlaylistItem, PlaylistItem]],
+        substitution_tiers: list[str],
+        pending_metadata_updates: list[tuple[PlaylistItem, PlaylistItem]],
+    ) -> None:
+        """
+        Record a resolved track match result into the running import report state.
+
+        :param item: The playlist entry this result applies to.
+        :param result: The resolution outcome, possibly reused from an earlier duplicate.
+        :param counts: Per-outcome totals, updated in place.
+        :param substitutions: Accepted substitution rows, appended in place.
+        :param unmatched_items: Ambiguous/unmatched rows, appended in place.
+        :param provider_issues: Provider-level issue rows, appended in place.
+        :param pending_substitutions: Accepted (original, replacement) pairs, appended in place.
+        :param substitution_tiers: Counts key for each pending_substitutions entry, same index.
+        :param pending_metadata_updates: Retained (original, normalized) pairs whose bare-URI
+            entry gained a confirmed provider mapping, appended in place.
+        """
+        for provider_name in result.failed_providers:
+            issue = f"Matching failed on {provider_name}"
+            report_current_task_failure(f"{result.label}: {issue.lower()}")
+            provider_issues.append((result.label, issue))
+        for provider_name in result.ambiguous_providers:
+            issue = f"Ambiguous match on {provider_name}"
+            report_current_task_failure(f"{result.label}: {issue.lower()}")
+            provider_issues.append((result.label, issue))
+        if result.retained:
+            counts["retained"] += 1
+            if result.entry is not None:
+                pending_metadata_updates.append((item, result.entry))
+            return
+        if result.error:
+            report_current_task_failure(f"{result.label}: {result.error}")
+            if result.error_is_provider_issue:
+                provider_issues.append((result.label, result.error))
+            counts["unmatched"] += 1
+            unmatched_items.append((result.label, result.error))
+            return
+        if result.entry is None:
+            if result.ambiguous_providers:
+                counts["ambiguous"] += 1
+                reason = "Ambiguous match"
+            else:
+                counts["unmatched"] += 1
+                reason = "No acceptable match"
+                report_current_task_failure(f"{result.label}: {reason.lower()}")
+            unmatched_items.append((result.label, reason))
+            return
+        pending_substitutions.append((item, result.entry))
+        tier = _CONFIDENCE_COUNT_KEY[result.confidence]
+        counts[tier] += 1
+        substitutions.append(
+            (result.label, _entry_label(result.entry), _CONFIDENCE_TIER_LABELS[tier])
+        )
+        substitution_tiers.append(tier)
+
+    async def _resolve_import_track(
+        self,
+        item: PlaylistItem,
+        minimum_confidence: TrackMatchConfidence,
+        allowed_provider_instances: Mapping[str, str],
+        search_provider_instances: set[str],
+        failed_provider_instances: set[str],
+        failed_source_instances: set[str],
+    ) -> _ImportTrackMatchResult:
+        """Resolve one imported playlist entry against the allowed providers."""
+        # Bare MA URIs still need their real media type to avoid treating radios as tracks.
+        default_media_type = MediaType.TRACK
+        with suppress(InvalidProviderURI, InvalidProviderID):
+            parsed_media_type, _, _ = await parse_uri(item.path)
+            if parsed_media_type != MediaType.UNKNOWN:
+                default_media_type = parsed_media_type
+        media_item = construct_media_item_from_playlist_item(
+            item, self.mass, default_media_type=default_media_type
+        )
+        if not isinstance(media_item, Track):
+            return _ImportTrackMatchResult(label=item.title or item.path, retained=True)
+        label = _entry_label(media_item)
+        (
+            is_playable,
+            confirmed_mapping,
+            confirmed_dead_mappings,
+        ) = await self._original_source_is_playable(
+            item, allowed_provider_instances, failed_source_instances
+        )
+        if is_playable:
+            normalized_entry = None
+            if confirmed_mapping is not None:
+                # Persist a confirmed mapping for bare, domain-only, or foreign-instance
+                # entries so later loads resolve the same instance directly.
+                normalized_entry = replace(
+                    item,
+                    providers=[
+                        confirmed_mapping
+                        if (
+                            pm.domain == confirmed_mapping.domain
+                            and pm.item_id == confirmed_mapping.item_id
+                            and pm.instance_id != confirmed_mapping.instance_id
+                        )
+                        else pm
+                        for pm in item.providers
+                    ]
+                    or [confirmed_mapping],
+                )
+            return _ImportTrackMatchResult(label=label, retained=True, entry=normalized_entry)
+        if not media_item.artists:
+            # Foreign M3U entries may need the artist split from the EXTINF title first.
+            split_item = _split_artist_from_title(item)
+            if split_item is not item:
+                rebuilt = construct_media_item_from_playlist_item(split_item, self.mass)
+                if isinstance(rebuilt, Track):
+                    media_item = rebuilt
+                    label = _entry_label(media_item)
+        if not media_item.artists:
+            return _ImportTrackMatchResult(
+                label=label, error="No artist metadata available to search with"
             )
-            return best_match[1]
-
-        self.logger.info("No match found for '%s'", search_query)
-        return None
-
-    def _score_track_match(
-        self,
-        candidate: Track,
-        item: PlaylistItem,
-    ) -> int:
-        """
-        Score how well a candidate track matches the PlaylistItem metadata.
-
-        Returns 0 for no match, higher scores for better matches.
-        ISRC or MusicBrainz Recording ID match returns 10 (maximum).
-
-        :param candidate: The track from search results.
-        :param item: The PlaylistItem with metadata from the M3U file.
-        """
-        metadata = item.metadata or {}
-        artist_name, track_name = parse_extinf_title(item.title)
-        if not track_name:
-            return 0
-
-        isrc = metadata.get("isrc")
-        mbid = metadata.get("mbid")
-
-        # exact ID matches (cross-provider definitive match)
-        if isrc:
-            candidate_isrc = candidate.get_external_id(ExternalID.ISRC)
-            if candidate_isrc and normalize_external_id(
-                ExternalID.ISRC, candidate_isrc
-            ) == normalize_external_id(ExternalID.ISRC, isrc):
-                return 10
-        if mbid:
-            candidate_mbid = candidate.get_external_id(ExternalID.MB_RECORDING)
-            if candidate_mbid and normalize_external_id(
-                ExternalID.MB_RECORDING, candidate_mbid
-            ) == normalize_external_id(ExternalID.MB_RECORDING, mbid):
-                return 10
-
-        # media type gate
-        if metadata.get("media_type"):
-            candidate_type = getattr(candidate, "media_type", None)
-            if candidate_type and candidate_type.value != metadata["media_type"]:
-                return 0
-
-        return self._score_fuzzy_metadata(candidate, artist_name, track_name, metadata, item)
-
-    def _score_fuzzy_metadata(
-        self,
-        candidate: Track,
-        artist_name: str | None,
-        track_name: str,
-        metadata: dict[str, str],
-        item: PlaylistItem,
-    ) -> int:
-        """
-        Score fuzzy metadata fields (title, artist, album, duration, version).
-
-        :param candidate: The track from search results.
-        :param artist_name: Parsed artist name from EXTINF, or None.
-        :param track_name: Parsed track title from EXTINF.
-        :param metadata: The #EXTMA metadata dict.
-        :param item: The PlaylistItem (for duration from item.length).
-        """
-        if not compare_strings(candidate.name, track_name, strict=False):
-            return 0
-        score = 1
-
-        if artist_name:
-            candidate_artists = [a.name for a in candidate.artists] if candidate.artists else []
-            if not any(compare_strings(a, artist_name, strict=False) for a in candidate_artists):
-                return 0
-            score += 2
-
-        score += self._score_bonus_fields(candidate, metadata)
-        score += self._score_duration(candidate, item)
-        return score
-
-    @staticmethod
-    def _score_bonus_fields(candidate: Track, metadata: dict[str, str]) -> int:
-        """Score bonus metadata fields: podcast, authors, album, version."""
-        score = 0
-        if metadata.get("podcast"):
-            candidate_podcast = getattr(candidate, "podcast", None)
-            if candidate_podcast and hasattr(candidate_podcast, "name"):
-                if compare_strings(candidate_podcast.name, metadata["podcast"], strict=False):
-                    score += 2
-
-        if metadata.get("authors"):
-            candidate_authors = getattr(candidate, "authors", None)
-            if candidate_authors:
-                if compare_strings("; ".join(candidate_authors), metadata["authors"], strict=False):
-                    score += 2
-
-        if metadata.get("album"):
-            candidate_album = getattr(candidate, "album", None)
-            if candidate_album and hasattr(candidate_album, "name"):
-                if compare_strings(candidate_album.name, metadata["album"], strict=False):
-                    score += 1
-
-        if metadata.get("version"):
-            candidate_version = getattr(candidate, "version", None) or ""
-            if candidate_version and compare_strings(
-                candidate_version, metadata["version"], strict=False
-            ):
-                score += 1
-            elif candidate_version:
-                score -= 1
-
-        return score
-
-    @staticmethod
-    def _score_duration(candidate: Track, item: PlaylistItem) -> int:
-        """Score duration proximity between candidate and playlist item."""
         try:
-            duration = int(item.length) if item.length else None
-        except ValueError:
-            return 0
-        if duration is None or duration <= 0 or candidate.duration <= 0:
-            return 0
-        diff = abs(candidate.duration - duration)
-        if diff <= 2:
-            return 2
-        if diff <= 5:
-            return 1
-        return 0
+            enrichment = await self.mass.music.tracks.enrich_provider_mappings(
+                media_item,
+                minimum_confidence=minimum_confidence,
+                provider_instance_ids=search_provider_instances,
+                # Imported playlist metadata is untrusted.
+                trust_track_mappings=False,
+                failed_provider_instances=failed_provider_instances,
+                # Skip source mappings already force-refreshed and confirmed dead.
+                known_dead_mappings=confirmed_dead_mappings,
+                # Keep album-evidence hydration scoped to the full allowed set.
+                evidence_provider_instances=set(allowed_provider_instances),
+                # Explicit non-streaming fallback targets must still be searched.
+                search_non_streaming_without_mapping=True,
+            )
+        except (
+            ResourceTemporarilyUnavailable,
+            ProviderUnavailableError,
+            ClientError,
+            OSError,
+            TimeoutError,
+            InvalidDataError,
+            MediaNotFoundError,
+        ) as err:
+            message = str(err).strip() or f"Matching failed ({type(err).__name__})"
+            return _ImportTrackMatchResult(label=label, error=message, error_is_provider_issue=True)
+        if not enrichment.matches:
+            # Branch on accepted matches, not the raw mapping set.
+            return _ImportTrackMatchResult(
+                label=label,
+                ambiguous_providers=enrichment.ambiguous_providers,
+                failed_providers=enrichment.failed_providers,
+            )
+        best_confidence = max(match.confidence for match in enrichment.matches)
+        tier_matches = [
+            match for match in enrichment.matches if match.confidence == best_confidence
+        ]
+        # Match serializer ordering so exported metadata describes the chosen primary URI.
+        primary_match = min(
+            tier_matches,
+            key=lambda match: (
+                not match.mapping.available,
+                -match.mapping.quality,
+                match.mapping.provider_domain,
+                match.mapping.provider_instance,
+                match.mapping.item_id,
+            ),
+        )
+        # Keep sibling mappings only when they resolve to the same exact release.
+        matched_track = replace(
+            primary_match.track,
+            provider_mappings={
+                match.mapping
+                for match in tier_matches
+                if match is primary_match
+                or compare_track_evidence(primary_match.track, match.track)
+                == TrackMatchConfidence.EXACT
+            },
+        )
+        return _ImportTrackMatchResult(
+            label=label,
+            entry=media_item_to_playlist_item(matched_track),
+            confidence=best_confidence,
+            ambiguous_providers=enrichment.ambiguous_providers,
+            failed_providers=enrichment.failed_providers,
+        )
+
+    async def _original_source_is_playable(
+        self,
+        item: PlaylistItem,
+        allowed_provider_instances: Mapping[str, str],
+        failed_source_instances: set[str],
+    ) -> tuple[bool, ProviderMappingInfo | None, frozenset[tuple[str, str]]]:
+        """
+        Check whether an imported entry's original source is still usable.
+
+        Performs authoritative provider lookups on the entry's own references.
+        Domain-only or foreign-instance references expand only within the caller's
+        allowed instances, and unverifiable providers stay inconclusive rather than
+        being treated as missing.
+
+        Returns the normalized mapping to persist for bare, domain-only, or
+        foreign-instance entries, plus any exact ``(instance_id, item_id)`` pairs
+        confirmed dead during this pass.
+
+        :param failed_source_instances: Instances that already failed transiently in
+            this pass and should be skipped here too.
+        """
+        candidates: list[tuple[str, str, bool]] = []
+        seen: set[tuple[str, str]] = set()
+        confirmed_dead: set[tuple[str, str]] = set()
+        for prov_info in item.providers:
+            # Normalize domain-only or foreign-instance references to the confirming
+            # allowed instance.
+            needs_provider_metadata = (
+                not prov_info.instance_id or prov_info.instance_id not in allowed_provider_instances
+            )
+            for instance_id in self._allowed_instances_for(
+                prov_info.instance_id, prov_info.domain, allowed_provider_instances
+            ):
+                key = (instance_id, prov_info.item_id)
+                if key not in seen:
+                    seen.add(key)
+                    candidates.append((instance_id, prov_info.item_id, needs_provider_metadata))
+        if not item.providers:
+            # Bare MA URIs without #EXTPROV need path parsing to build candidates.
+            with suppress(InvalidProviderURI, InvalidProviderID, IndexError, ValueError):
+                _, provider_instance_or_domain, raw_item_id = await parse_uri(item.path)
+                # Raw builtin stream URLs already reconstruct their mapping from the path.
+                needs_provider_metadata = provider_instance_or_domain != "builtin"
+                # Bare URIs have no separate domain fallback for disallowed instances.
+                for instance_id in self._allowed_instances_for(
+                    provider_instance_or_domain,
+                    provider_instance_or_domain,
+                    allowed_provider_instances,
+                ):
+                    candidates.append((instance_id, raw_item_id, needs_provider_metadata))
+        # Track whether any candidate stayed inconclusive.
+        any_unverifiable = False
+        for provider_instance, provider_item_id, needs_provider_metadata in candidates:
+            if provider_instance in failed_source_instances:
+                # Skip instances that already failed transiently in this pass.
+                any_unverifiable = True
+                continue
+            provider = self.mass.get_provider(provider_instance, return_unavailable=True)
+            if provider is None or not provider.available:
+                # Unloaded or unavailable allowed providers are inconclusive, not dead.
+                any_unverifiable = True
+                continue
+            try:
+                hydrated = await self.mass.music.tracks.get_provider_item(
+                    provider_item_id,
+                    provider.instance_id,
+                    force_refresh=True,
+                    allow_fallback=False,
+                    strict_provider_instance=True,
+                )
+            except MediaNotFoundError, InvalidProviderID:
+                # Missing or malformed ids are permanently dead for this provider.
+                confirmed_dead.add((provider.instance_id, provider_item_id))
+                continue
+            except InvalidDataError:
+                if provider_item_id.startswith(
+                    BUILTIN_URL_SCHEMES
+                ) and await self._stream_url_confirmed_gone(provider_item_id):
+                    # Only a terminal HTTP failure proves a builtin stream URL is gone.
+                    confirmed_dead.add((provider.instance_id, provider_item_id))
+                    continue
+                any_unverifiable = True
+                continue
+            except (
+                ResourceTemporarilyUnavailable,
+                ProviderUnavailableError,
+                ClientError,
+                OSError,
+                TimeoutError,
+            ):
+                # Cache transient verification failures and keep trying siblings.
+                failed_source_instances.add(provider.instance_id)
+                any_unverifiable = True
+                continue
+            else:
+                if not needs_provider_metadata:
+                    return True, None, frozenset(confirmed_dead)
+                # Persist the confirmed mapping for bare, domain-only, or foreign
+                # instance references.
+                own_mapping = next(
+                    (
+                        pm
+                        for pm in hydrated.provider_mappings
+                        if pm.provider_instance == provider.instance_id
+                    ),
+                    None,
+                )
+                # Only persist audio format fields when the provider supplied them.
+                audio_format = own_mapping.audio_format if own_mapping else None
+                return (
+                    True,
+                    ProviderMappingInfo(
+                        domain=provider.domain,
+                        item_id=provider_item_id,
+                        instance_id=provider.instance_id,
+                        content_type=audio_format.content_type.value if audio_format else "",
+                        sample_rate=audio_format.sample_rate if audio_format else 0,
+                        bit_depth=audio_format.bit_depth if audio_format else 0,
+                        bit_rate=(audio_format.bit_rate or 0) if audio_format else 0,
+                    ),
+                    frozenset(confirmed_dead),
+                )
+        if any_unverifiable:
+            # Any inconclusive candidate keeps the entry playable.
+            return True, None, frozenset(confirmed_dead)
+        return False, None, frozenset(confirmed_dead)
+
+    async def _stream_url_confirmed_gone(self, url: str) -> bool:
+        """
+        Return whether a stream URL is confirmed to no longer exist.
+
+        Only terminal 404/410 responses count; HEAD results are confirmed with a
+        ranged GET.
+        """
+        if not url.startswith(("http://", "https://")):
+            return False
+        encoded_url = encoded_request_url(url)
+        head_status: int | None = None
+        with suppress(ClientError, TimeoutError):
+            async with self.mass.http_session.head(
+                encoded_url,
+                allow_redirects=True,
+                timeout=ClientTimeout(total=10),
+            ) as resp:
+                head_status = resp.status
+        if head_status not in (404, 410, 405, 501):
+            return False
+        with suppress(ClientError, TimeoutError):
+            async with self.mass.http_session.get(
+                encoded_url,
+                allow_redirects=True,
+                headers={"Range": "bytes=0-0"},
+                timeout=ClientTimeout(total=10),
+            ) as resp:
+                return resp.status in (404, 410)
+        return False
+
+    def _allowed_instances_for(
+        self, instance_id: str, domain: str, allowed_provider_instances: Mapping[str, str]
+    ) -> list[str]:
+        """
+        Expand an entry's provider reference to allowed instance ids.
+
+        Keeps exact allowed instances. Domain-only or foreign-instance references
+        expand only across allowed streaming instances of the same domain.
+        """
+        if instance_id and instance_id in allowed_provider_instances:
+            return [instance_id]
+        if not self._domain_is_streaming(domain, allowed_provider_instances):
+            return []
+        return [
+            allowed_instance_id
+            for allowed_instance_id, allowed_domain in allowed_provider_instances.items()
+            if allowed_domain == domain
+        ]
+
+    def _domain_is_streaming(
+        self, domain: str, allowed_provider_instances: Mapping[str, str]
+    ) -> bool:
+        """
+        Return whether providers of this domain share a single portable catalog.
+
+        Defaults to ``True`` when no allowed instance of the domain can be resolved.
+
+        :param domain: The provider domain to check.
+        :param allowed_provider_instances: ``(instance_id, domain)`` pairs to search.
+        """
+        for allowed_instance_id, allowed_domain in allowed_provider_instances.items():
+            if allowed_domain != domain:
+                continue
+            if provider := self.mass.get_provider(
+                allowed_instance_id, return_unavailable=True, provider_type=MusicProvider
+            ):
+                return provider.is_streaming_provider
+        return True
 
     def _get_stored_item(
         self, item: PlaylistItem, stored_by_media_type: Mapping[str, Mapping[str, StoredItem]]
@@ -1306,14 +1625,62 @@ class BuiltinProvider(MusicProvider):
     async def _read_m3u_file(self, playlist_id: str) -> str:
         """Read the raw M3U file content for a playlist."""
         playlist_file = os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
+        # Hold the same lock delete uses for the existence check and open.
+        async with self._playlist_lock:
+            if not await asyncio.to_thread(os.path.isfile, playlist_file):
+                return ""
+            async with aiofiles.open(playlist_file, encoding="utf-8") as _file:
+                result: str = await _file.read()
+                return result
+
+    async def _get_playlist_generation(self, playlist_id: str) -> int | None:
+        """
+        Return the current creation generation for a playlist's M3U file.
+
+        Bumped whenever a new file is created under this sanitized ID. Returns
+        ``None`` when the file does not currently exist.
+
+        :param playlist_id: The provider-side playlist ID to fingerprint.
+        """
+        playlist_file = os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
         if not await asyncio.to_thread(os.path.isfile, playlist_file):
-            return ""
-        async with (
-            self._playlist_lock,
-            aiofiles.open(playlist_file, encoding="utf-8") as _file,
-        ):
-            result: str = await _file.read()
-            return result
+            return None
+        return self._playlist_generations.get(playlist_id, 0)
+
+    async def _reserve_playlist_file(
+        self,
+        name: str,
+        entries: list[PlaylistItem],
+        playlist_image_url: str | None = None,
+    ) -> tuple[str, int]:
+        """
+        Reserve a unique playlist ID and write its initial M3U file with given content.
+
+        Claims and writes each candidate ID while holding that playlist's edit lock,
+        so concurrent edits cannot overwrite a newly created file.
+
+        :param name: The playlist's display name, used to derive its sanitized id.
+        :param entries: The initial playlist items to write.
+        :param playlist_image_url: Optional playlist image URL to embed in the header.
+        """
+        base_id = self._sanitize_playlist_id(name)
+        playlist_id = base_id
+        counter = 1
+        while True:
+            async with self._get_playlist_lock(playlist_id), self._playlist_lock:
+                if not await asyncio.to_thread(
+                    os.path.isfile, os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
+                ):
+                    # Bump the generation before creating a new file under this ID.
+                    generation = self._playlist_generations[playlist_id] = (
+                        self._playlist_generations.get(playlist_id, 0) + 1
+                    )
+                    await self._write_m3u_file_locked(
+                        playlist_id, name, entries, playlist_image_url
+                    )
+                    return playlist_id, generation
+            playlist_id = f"{base_id} ({counter})"
+            counter += 1
 
     async def _write_m3u_file(
         self,
@@ -1323,12 +1690,29 @@ class BuiltinProvider(MusicProvider):
         playlist_image_url: str | None = None,
     ) -> None:
         """Write an M3U playlist file to disk."""
+        async with self._playlist_lock:
+            await self._write_m3u_file_locked(
+                playlist_id, playlist_name, entries, playlist_image_url
+            )
+
+    async def _write_m3u_file_locked(
+        self,
+        playlist_id: str,
+        playlist_name: str,
+        entries: list[PlaylistItem],
+        playlist_image_url: str | None = None,
+    ) -> None:
+        """
+        Write an M3U playlist file to disk, assuming the caller already holds `_playlist_lock`.
+
+        :param playlist_id: The provider-side playlist ID to write.
+        :param playlist_name: The playlist's display name to embed in the M3U header.
+        :param entries: The playlist items to write.
+        :param playlist_image_url: Optional playlist image URL to embed in the M3U header.
+        """
         m3u_content = generate_m3u(playlist_name, entries, playlist_image_url)
         playlist_file = os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
-        async with (
-            self._playlist_lock,
-            aiofiles.open(playlist_file, "w", encoding="utf-8") as _file,
-        ):
+        async with aiofiles.open(playlist_file, "w", encoding="utf-8") as _file:
             await _file.write(m3u_content)
 
     def _get_playlist_lock(self, playlist_id: str) -> asyncio.Lock:
@@ -1372,10 +1756,12 @@ class BuiltinProvider(MusicProvider):
     ) -> list[PlaylistPlayableItem]:
         """Get user-created playlist tracks with caching and parallel resolution."""
         playlist_file = os.path.join(self._playlists_dir, f"{prov_playlist_id}.m3u")
-        # use file mtime as cache checksum so edits invalidate the cache
+        # use file mtime as cache checksum so edits invalidate the cache; nanosecond
+        # resolution avoids two writes within the same second (e.g. import immediately
+        # followed by a background match) sharing a checksum and hiding the second write
         try:
             stat = await asyncio.to_thread(os.stat, playlist_file)
-            cache_checksum = str(int(stat.st_mtime))
+            cache_checksum = str(stat.st_mtime_ns)
         except OSError:
             cache_checksum = "0"
 
@@ -1537,87 +1923,94 @@ class BuiltinProvider(MusicProvider):
             if not filename.endswith(".m3u"):
                 continue
             playlist_id = filename[:-4]  # strip .m3u extension
-            m3u_data = await self._read_m3u_file(playlist_id)
-            playlist = await self.get_playlist(playlist_id)
-            self.logger.debug("Checking playlist '%s' for unresolved entries...", playlist.name)
-            update_current_task_progress_text(f"Checking playlist '{playlist.name}'")
-            all_items = parse_m3u(m3u_data)
-            has_changes = False
-            orphaned: set[int] = set()
-            for index, item in enumerate(all_items):
-                if _is_orphaned_entry_path(item.path):
-                    # leftover text from a value that once contained a line break: it is no
-                    # reference to anything and never will be, so drop it instead of failing
-                    # this (and every future) migration run on it
-                    self.logger.warning(
-                        "Dropping unresolvable entry %s from playlist '%s'",
-                        item.path,
-                        playlist.name,
-                    )
-                    orphaned.add(index)
-                    has_changes = True
-                    continue
-                force_migration = item.metadata and item.metadata.get("album") and not item.album
-                unresolved = bool(force_migration) or not (
-                    item.title and item.providers and item.metadata
-                )
-                if not unresolved and not self._stored_details_differ(item, stored_by_media_type):
-                    continue
-                self.logger.debug(
-                    "Found %s entry in playlist '%s': %s",
-                    "unresolved" if unresolved else "outdated",
-                    playlist_id,
-                    item.path,
-                )
-                try:
-                    enriched = await self._build_m3u_entry_from_uri(item.path)
-                    item.length = enriched.length
-                    item.title = enriched.title
-                    item.images = enriched.images
-                    item.providers = enriched.providers
-                    item.metadata = enriched.metadata
-                    item.album = enriched.album
-                    item.artists = enriched.artists
-                    item.podcast = enriched.podcast
-                except (
-                    MediaNotFoundError,
-                    InvalidDataError,
-                    InvalidProviderURI,
-                    ProviderUnavailableError,
-                ) as err:
-                    if unresolved:
+            async with self._get_playlist_lock(playlist_id):
+                m3u_data = await self._read_m3u_file(playlist_id)
+                playlist = await self.get_playlist(playlist_id)
+                self.logger.debug("Checking playlist '%s' for unresolved entries...", playlist.name)
+                update_current_task_progress_text(f"Checking playlist '{playlist.name}'")
+                all_items = parse_m3u(m3u_data)
+                has_changes = False
+                orphaned: set[int] = set()
+                for index, item in enumerate(all_items):
+                    if _is_orphaned_entry_path(item.path):
+                        # leftover text from a value that once contained a line break: it is no
+                        # reference to anything and never will be, so drop it instead of failing
+                        # this (and every future) migration run on it
                         self.logger.warning(
-                            "Could not enrich playlist entry %s during migration: %s",
+                            "Dropping unresolvable entry %s from playlist '%s'",
+                            item.path,
+                            playlist.name,
+                        )
+                        orphaned.add(index)
+                        has_changes = True
+                        continue
+                    force_migration = (
+                        item.metadata and item.metadata.get("album") and not item.album
+                    )
+                    unresolved = bool(force_migration) or not (
+                        item.title and item.providers and item.metadata
+                    )
+                    if not unresolved and not self._stored_details_differ(
+                        item, stored_by_media_type
+                    ):
+                        continue
+                    self.logger.debug(
+                        "Found %s entry in playlist '%s': %s",
+                        "unresolved" if unresolved else "outdated",
+                        playlist_id,
+                        item.path,
+                    )
+                    try:
+                        enriched = await self._build_m3u_entry_from_uri(item.path)
+                        item.length = enriched.length
+                        item.title = enriched.title
+                        item.images = enriched.images
+                        item.providers = enriched.providers
+                        item.metadata = enriched.metadata
+                        item.album = enriched.album
+                        item.artists = enriched.artists
+                        item.podcast = enriched.podcast
+                    except (
+                        MediaNotFoundError,
+                        InvalidDataError,
+                        InvalidProviderURI,
+                        ProviderUnavailableError,
+                    ) as err:
+                        if unresolved:
+                            self.logger.warning(
+                                "Could not enrich playlist entry %s during migration: %s",
+                                item.path,
+                                err,
+                            )
+                            report_current_task_failure(
+                                f"Could not enrich playlist entry: {item.path}"
+                            )
+                            errors += 1
+                            continue
+                        # an outdated entry is still playable, so failing to reach the stream is
+                        # no migration error; restore the stored details without any IO so a
+                        # permanently unreachable stream keeps its name and image
+                        self.logger.debug(
+                            "Could not refresh playlist entry %s, restoring stored details: %s",
                             item.path,
                             err,
                         )
-                        report_current_task_failure(f"Could not enrich playlist entry: {item.path}")
-                        errors += 1
-                        continue
-                    # an outdated entry is still playable, so failing to reach the stream is
-                    # no migration error; restore the stored details without any IO so a
-                    # permanently unreachable stream keeps its name and image
-                    self.logger.debug(
-                        "Could not refresh playlist entry %s, restoring stored details: %s",
-                        item.path,
-                        err,
-                    )
-                    self._restore_stored_details(item, stored_by_media_type)
-                else:
-                    # writing an entry the refresh did not bring back in step would leave
-                    # it outdated, and every later run would rewrite the file again
-                    if self._stored_details_differ(item, stored_by_media_type):
                         self._restore_stored_details(item, stored_by_media_type)
-                    self.logger.debug("Enriched playlist entry %s", item.path)
-                has_changes = True
-            if has_changes:
-                await self._write_m3u_file(
-                    playlist_id,
-                    playlist.name,
-                    [item for idx, item in enumerate(all_items) if idx not in orphaned],
-                    self._get_playlist_image_url(playlist),
-                )
-                self.logger.info("Updated playlist '%s' with enriched metadata", playlist.name)
+                    else:
+                        # writing an entry the refresh did not bring back in step would leave
+                        # it outdated, and every later run would rewrite the file again
+                        if self._stored_details_differ(item, stored_by_media_type):
+                            self._restore_stored_details(item, stored_by_media_type)
+                        self.logger.debug("Enriched playlist entry %s", item.path)
+                    has_changes = True
+                if has_changes:
+                    await self._write_m3u_file(
+                        playlist_id,
+                        playlist.name,
+                        [item for idx, item in enumerate(all_items) if idx not in orphaned],
+                        self._get_playlist_image_url(playlist),
+                    )
+                    self.logger.info("Updated playlist '%s' with enriched metadata", playlist.name)
             if errors > 25:
                 raise RuntimeError("Too many errors during playlist migration")
         self.logger.info("Playlist migration completed with %d errors", errors)
@@ -1642,3 +2035,100 @@ def _has_music_tags(media_info: AudioTags) -> bool:
     return any(
         media_info.get(tag) for tag in ("artist", "artists", "albumartist", "albumartists", "album")
     )
+
+
+def _split_artist_from_title(item: PlaylistItem) -> PlaylistItem:
+    """
+    Return a copy of item with a structured artist parsed from its combined EXTINF title.
+
+    Playlists imported from outside Music Assistant only carry a combined "Artist - Title"
+    string; the shared track matcher needs a structured artist to search and compare
+    candidates against.
+
+    :param item: Parsed PlaylistItem to derive a structured artist for.
+    """
+    if item.artists or not item.title:
+        return item
+    artist_name, track_name = parse_extinf_title(item.title)
+    if not artist_name or not track_name:
+        return item
+    return replace(
+        item,
+        title=track_name,
+        artists=[
+            ArtistInfo(name=artist_name, provider_domain="", item_id="", provider_instance="")
+        ],
+    )
+
+
+def _entry_label(item: Track | PlaylistItem) -> str:
+    """Return a readable "artist - title" label for a report."""
+    if isinstance(item, Track):
+        return f"{item.artist_str} - {item.name}" if item.artist_str else item.name
+    artist_name, track_name = parse_extinf_title(item.title)
+    if artist_name and track_name:
+        return f"{artist_name} - {track_name}"
+    return track_name or item.title or item.path
+
+
+def _build_import_report(
+    playlist_name: str,
+    total: int,
+    counts: Mapping[str, int],
+    substitutions: Sequence[tuple[str, str, str]],
+    unmatched_items: Sequence[tuple[str, str]],
+    provider_issues: Sequence[tuple[str, str]],
+) -> str:
+    """Build the human-readable Markdown report for an import matching task."""
+    name = escape_markdown(playlist_name)
+    matched = counts["exact"] + counts["same_recording"] + counts["best_effort"]
+    lines = [
+        "## Playlist import matching complete",
+        "",
+        f"Retained **{counts['retained']}** original entries and matched **{matched}** of the "
+        f"remaining **{total - counts['retained']}** items in **{name}**.",
+        "",
+        "| Result | Items |",
+        "| --- | ---: |",
+        f"| Retained | {counts['retained']} |",
+        f"| Exact release | {counts['exact']} |",
+        f"| Same recording | {counts['same_recording']} |",
+        f"| Best effort | {counts['best_effort']} |",
+        f"| Ambiguous | {counts['ambiguous']} |",
+        f"| Unmatched | {counts['unmatched']} |",
+    ]
+    if counts["concurrent_edit"]:
+        lines.append(
+            f"| Skipped (playlist changed during matching) | {counts['concurrent_edit']} |"
+        )
+    _add_report_table(lines, "Substitutions", ("Original", "Substitute", "Match"), substitutions)
+    _add_report_table(lines, "Unmatched items", ("Item", "Reason"), unmatched_items)
+    _add_report_table(lines, "Provider lookup issues", ("Track", "Issue"), provider_issues)
+    return "\n".join(lines)
+
+
+def _add_report_table(
+    lines: list[str],
+    title: str,
+    headers: tuple[str, ...],
+    rows: Sequence[tuple[str, ...]],
+) -> None:
+    """Append a Markdown report table when it has rows."""
+    if not rows:
+        return
+    visible_rows = rows[:_IMPORT_REPORT_DETAIL_LIMIT]
+    lines.extend(
+        (
+            "",
+            f"### {title}",
+            "",
+            f"| {' | '.join(headers)} |",
+            f"| {' | '.join('---' for _ in headers)} |",
+        )
+    )
+    lines.extend(
+        f"| {' | '.join(escape_markdown(value, table=True) for value in row)} |"
+        for row in visible_rows
+    )
+    if omitted_count := len(rows) - len(visible_rows):
+        lines.extend(("", f"_{omitted_count} additional rows omitted._"))
