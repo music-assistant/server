@@ -35,13 +35,6 @@
       "description": "Enter the username (or email address) and password of your Pandora account."
     }
   },
-  "media": {
-    "radio": {
-      "pandora_station": {
-        "name": "Pandora Station {0}"
-      }
-    }
-  },
   "manifest": {
     "description": "Pandora is a music and podcast streaming service that creates personalized radio stations based on your favorite songs and artists."
   }

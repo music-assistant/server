@@ -3,6 +3,7 @@
 from unittest.mock import Mock, patch
 
 import pytest
+from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
 
@@ -134,6 +135,16 @@ async def test_get_mix_details_no_rows(
         await media_manager.get_playlist_tracks("mix_123")
 
 
+async def test_get_mix_tracks_fetch_failure_propagates(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test a mix fetch failure is raised instead of reported as missing."""
+    provider_mock.api.get.side_effect = ClientError("connection lost")
+
+    with pytest.raises(ClientError):
+        await media_manager.get_playlist_tracks("mix_123")
+
+
 @patch("music_assistant.providers.tidal.media.parse_track")
 @patch("music_assistant.providers.tidal.media.parse_playlist")
 async def test_mix_feed_fetched_once(
@@ -199,9 +210,9 @@ async def test_mix_modules_found_regardless_of_row_order(
 
 
 async def test_search_empty_results(media_manager: TidalMediaManager, provider_mock: Mock) -> None:
-    """Test search with empty results."""
+    """Test search with a result resource carrying no hits."""
     provider_mock.api.get_jsonapi.return_value = JsonApiDocument(
-        {"data": {"id": "query", "type": "searchResults", "relationships": {}}}
+        {"data": [{"id": "opaque123", "type": "searchResults", "relationships": {}}]}
     )
 
     results = await media_manager.search("query", [MediaType.ARTIST])
@@ -209,4 +220,15 @@ async def test_search_empty_results(media_manager: TidalMediaManager, provider_m
     assert len(results.artists) == 0
     assert len(results.albums) == 0
     assert len(results.tracks) == 0
+
+
+async def test_search_empty_collection(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test search returns empty results when the collection carries no resource."""
+    provider_mock.api.get_jsonapi.return_value = JsonApiDocument({"data": []})
+
+    results = await media_manager.search("query", [MediaType.ARTIST])
+
+    assert len(results.artists) == 0
     assert len(results.playlists) == 0

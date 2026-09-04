@@ -11,6 +11,7 @@ from music_assistant_models.errors import ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import MediaItemImage, MediaItemMetadata, UniqueList
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.external_ids import barcode_to_upc
 from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
@@ -89,8 +90,7 @@ class ITunesArtworkMetadataProvider(MetadataProvider):
 
         :param barcode: UPC/EAN barcode for the album.
         """
-        # iTunes expects a UPC (12 digits), strip leading zero from EAN-13 if present
-        upc = barcode.lstrip("0").zfill(12) if len(barcode) == 13 else barcode
+        upc = barcode_to_upc(barcode)
         try:
             async with self.mass.http_session.get(
                 ITUNES_LOOKUP_URL, params={"upc": upc}

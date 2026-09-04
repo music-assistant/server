@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import PlaybackState
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import AudioError, PlayerCommandFailed
 
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_CLOCK_READY_LEAD_MS,
@@ -44,6 +44,8 @@ def _stream_defaults(stream: MagicMock) -> MagicMock:
     directly.
     """
     stream.start = AsyncMock(side_effect=_ack_commanded_instant)
+    # on the real stream this follows `running` until the audio EOF is written
+    stream.accepts_audio = bool(stream.running)
     stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.UNREPORTED, 0))
     stream.warm_lead_ms = 0
     stream.flushed_head_unix_ms = 0
@@ -80,7 +82,10 @@ def _make_session(
     leader.stream.cumulative_shift_seconds = 0.0
     leader.config.get_value = MagicMock(return_value=0)
 
-    session = AirPlayStreamSession(prov, [leader], pcm_format, MagicMock(elapsed_time=0))
+    # media without a queue session: nothing can be mid-handover to this session,
+    # so a source that ends is by default the end of the stream
+    media = MagicMock(elapsed_time=0, source_id=None, queue_session_id=None)
+    session = AirPlayStreamSession(prov, [leader], pcm_format, media)
     session.start_time = start_time
     session.seconds_streamed = seconds_streamed
     session.start_unix_ms = 1  # dummy
@@ -923,7 +928,328 @@ async def test_start_player_ffmpeg_wires_persistent_cli_stdin() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stream_state", ["missing", "stopped", "disconnected"])
+async def test_audio_confirmation_waits_for_the_source_to_feed() -> None:
+    """
+    A binary is only judged silent once it has actually been handed audio.
+
+    A seek can land seconds ahead of what the source has produced, and giving up
+    on the member there would restart the session into the very same wait.
+    """
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.stream.wait_audio_present = AsyncMock(return_value=True)
+    feeding = asyncio.Event()
+
+    async def _source() -> None:
+        await feeding.wait()
+
+    session._audio_source_task = asyncio.create_task(_source())
+
+    waiter = asyncio.create_task(session._wait_members_audio_present())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not waiter.done()
+    player.stream.wait_audio_present.assert_not_awaited()
+
+    session._feed_settled.set()
+    await waiter
+
+    player.stream.wait_audio_present.assert_awaited_once()
+    feeding.set()
+    await session._audio_source_task
+
+
+@pytest.mark.asyncio
+async def test_a_source_that_dies_settles_the_feed_question() -> None:
+    """A source that fails never leaves a start waiting for audio it will not get."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.stream.write_audio_eof = AsyncMock()
+    session.media = MagicMock(source_id=None, queue_session_id=None)
+    no_chunks: list[bytes] = []
+
+    async def failing_source() -> AsyncGenerator[bytes]:
+        for chunk in no_chunks:
+            yield chunk
+        raise AudioError("source died")
+
+    await session._audio_streamer(failing_source())
+
+    assert session._feed_settled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_warm_replace_rearms_the_feed_question() -> None:
+    """The new source answers for its own feed; what the old one delivered does not count."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.config.get_value = MagicMock(return_value=0)
+    player.stream.flush = AsyncMock(return_value=True)
+    session._feed_settled.set()
+
+    with (
+        patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=100.0),
+    ):
+        assert await session.replace(MagicMock(), MagicMock(elapsed_time=0))
+
+    assert not session._feed_settled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_audio_confirmation_is_released_by_a_source_that_never_feeds() -> None:
+    """A source that ends without handing anything over never holds up the start."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.display_name = "Kantoor"
+    player.stream.wait_audio_present = AsyncMock(return_value=False)
+    session._audio_source_task = asyncio.create_task(asyncio.sleep(0))
+    await session._audio_source_task
+
+    with pytest.raises(PlayerCommandFailed, match="audio feed was not confirmed"):
+        await session._wait_members_audio_present()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("transitioning", "live_session_id", "ends_stream"),
+    [
+        # a seek/next: the queue rotates its session while it loads the new stream
+        (True, "session-2", False),
+        # the queue played out, or the flow broke off for the queue to restart once
+        # the player reports idle - which only the audio EOF can bring about
+        (False, "session-1", True),
+        # not this session's transition (the queue is starting the one we play)
+        (True, "session-1", True),
+        # a transition that already finished cannot be waiting on this session
+        (False, "session-2", True),
+    ],
+)
+async def test_source_end_only_keeps_stdin_open_for_a_pending_replacement(
+    transitioning: bool, live_session_id: str, ends_stream: bool
+) -> None:
+    """
+    The binary's stdin is closed unless the queue is mid-handover to a new stream.
+
+    Closing it ends the stream for good - it cannot be reopened - so a seek would
+    be left with a cold restart as its only option. Everywhere else the EOF is
+    what makes the binary end and the player report idle.
+    """
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.stream.write_audio_eof = AsyncMock()
+    session.media = MagicMock(source_id="queue-1", queue_session_id="session-1")
+    queues: Any = session.mass.player_queues
+    queues.queue_data_or_none = MagicMock(
+        return_value=MagicMock(session_id=live_session_id, transitioning=transitioning)
+    )
+    ffmpeg = MagicMock(closed=False)
+    ffmpeg.write_eof = AsyncMock()
+    ffmpeg.wait_with_timeout = AsyncMock()
+    ffmpeg.kill = AsyncMock()
+    session._player_ffmpeg[player.player_id] = ffmpeg
+
+    no_chunks: list[bytes] = []
+
+    async def exhausted_source() -> AsyncGenerator[bytes]:
+        for chunk in no_chunks:
+            yield chunk
+
+    with patch.object(
+        session, "_end_stream_if_no_replacement_lands", new_callable=AsyncMock
+    ) as backstop:
+        await session._audio_streamer(exhausted_source())
+
+    assert player.player_id not in session._player_ffmpeg
+    assert player.stream.write_audio_eof.await_count == (1 if ends_stream else 0)
+    # a withheld EOF is never simply dropped: it is held for the replacement
+    assert backstop.await_count == (0 if ends_stream else 1)
+    if ends_stream:
+        # the audio ffmpeg still holds is handed over before the binary is told
+        ffmpeg.write_eof.assert_awaited_once()
+        ffmpeg.wait_with_timeout.assert_awaited_once()
+        ffmpeg.kill.assert_not_awaited()
+    else:
+        # the replacement flushes that audio away, and nothing may reach the
+        # binary between the old ffmpeg dying and that flush
+        ffmpeg.kill.assert_awaited_once()
+        ffmpeg.write_eof.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_replacement_that_never_arrives_still_ends_the_stream() -> None:
+    """
+    A predicted replacement that never lands must not leave the session hanging.
+
+    The queue clears its transition on any failure between rotating its stream
+    session and the play_media that carries the replacement, and nothing else
+    ends this stream: the withheld EOF is what makes the binary play out, report
+    eof and the player report idle.
+    """
+    session = _make_session(0, 0)
+    logger = MagicMock()
+    session.prov.logger = logger
+    player: Any = session.sync_clients[0]
+    player.stream.write_audio_eof = AsyncMock()
+    session.media = MagicMock(source_id="queue-1", queue_session_id="session-1")
+    queues: Any = session.mass.player_queues
+    queues.queue_data_or_none = MagicMock(
+        return_value=MagicMock(session_id="session-2", transitioning=True)
+    )
+    ffmpeg = MagicMock(closed=False)
+    ffmpeg.write_eof = AsyncMock()
+    ffmpeg.kill = AsyncMock()
+    session._player_ffmpeg[player.player_id] = ffmpeg
+
+    no_chunks: list[bytes] = []
+
+    async def exhausted_source() -> AsyncGenerator[bytes]:
+        for chunk in no_chunks:
+            yield chunk
+
+    with patch(
+        "music_assistant.providers.airplay.stream_session.AIRPLAY_REPLACEMENT_EOF_TIMEOUT", 0
+    ):
+        await session._audio_streamer(exhausted_source())
+
+    # the ffmpeg is still dropped rather than drained - the audio it held belongs
+    # to a flush that is not coming either
+    ffmpeg.kill.assert_awaited_once()
+    ffmpeg.write_eof.assert_not_awaited()
+    player.stream.write_audio_eof.assert_awaited_once()
+    logger.warning.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_a_queue_that_gives_up_releases_the_withheld_eof_early() -> None:
+    """
+    The queue ending its transition is what says no replacement is coming.
+
+    It clears the flag on any failure between rotating its stream session and
+    the play_media that carries the replacement, so the EOF follows that rather
+    than waiting out the cap, which only covers a transition that hangs.
+    """
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.stream.write_audio_eof = AsyncMock()
+    session.media = MagicMock(source_id="queue-1", queue_session_id="session-1")
+    queues: Any = session.mass.player_queues
+    queue_data = MagicMock(session_id="session-2", transitioning=True)
+    queues.queue_data_or_none = MagicMock(return_value=queue_data)
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.stream_session.AIRPLAY_REPLACEMENT_EOF_TIMEOUT", 30
+        ),
+        patch(
+            "music_assistant.providers.airplay.stream_session.AIRPLAY_REPLACEMENT_POLL_INTERVAL",
+            0.01,
+        ),
+    ):
+        backstop = asyncio.create_task(session._end_stream_if_no_replacement_lands())
+        await asyncio.sleep(0.02)
+        # the load is still running, so the EOF stays withheld
+        assert not backstop.done()
+        player.stream.write_audio_eof.assert_not_awaited()
+        queue_data.transitioning = False
+        await asyncio.wait_for(backstop, timeout=5)
+
+    player.stream.write_audio_eof.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_the_withheld_eof_drops_any_ffmpeg_still_on_the_stdin() -> None:
+    """
+    Nothing may still own the cli stdin when a withheld EOF is finally sent.
+
+    A member that joins while the EOF is held gets an ffmpeg of its own writing
+    into that same stdin, so closing only this end would leave the binary waiting
+    on a pipe that never ends.
+    """
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    session.media = MagicMock(source_id="queue-1", queue_session_id="session-1")
+    queues: Any = session.mass.player_queues
+    queues.queue_data_or_none = MagicMock(
+        return_value=MagicMock(session_id="session-2", transitioning=True)
+    )
+    order: list[str] = []
+    player.stream.write_audio_eof = AsyncMock(side_effect=lambda: order.append("eof"))
+    retired = MagicMock(closed=False)
+    retired.kill = AsyncMock(side_effect=lambda: order.append("retired-kill"))
+    session._player_ffmpeg[player.player_id] = retired
+
+    no_chunks: list[bytes] = []
+
+    async def exhausted_source() -> AsyncGenerator[bytes]:
+        for chunk in no_chunks:
+            yield chunk
+
+    with patch(
+        "music_assistant.providers.airplay.stream_session.AIRPLAY_REPLACEMENT_EOF_TIMEOUT", 0.05
+    ):
+        streamer = asyncio.create_task(session._audio_streamer(exhausted_source()))
+        # the source is out and its ffmpeg retired; the EOF is now being held
+        await asyncio.sleep(0.01)
+        joined = MagicMock(closed=False)
+        joined.kill = AsyncMock(side_effect=lambda: order.append("joiner-kill"))
+        session._player_ffmpeg[player.player_id] = joined
+        await streamer
+
+    assert order == ["retired-kill", "joiner-kill", "eof"]
+    assert not session._player_ffmpeg
+
+
+@pytest.mark.asyncio
+async def test_a_replacement_claiming_the_session_cancels_the_withheld_eof() -> None:
+    """A session taken over warm never delivers the EOF it held for that takeover."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.stream.write_audio_eof = AsyncMock()
+    player.stream.flush = AsyncMock(return_value=True)
+    player.config.get_value = MagicMock(return_value=0)
+    session.media = MagicMock(source_id="queue-1", queue_session_id="session-1")
+    queues: Any = session.mass.player_queues
+    queues.queue_data_or_none = MagicMock(
+        return_value=MagicMock(session_id="session-2", transitioning=True)
+    )
+    ffmpeg = MagicMock(closed=False)
+    ffmpeg.kill = AsyncMock()
+    session._player_ffmpeg[player.player_id] = ffmpeg
+
+    no_chunks: list[bytes] = []
+
+    async def exhausted_source() -> AsyncGenerator[bytes]:
+        for chunk in no_chunks:
+            yield chunk
+
+    with patch(
+        "music_assistant.providers.airplay.stream_session.AIRPLAY_REPLACEMENT_EOF_TIMEOUT", 0.05
+    ):
+        streamer = asyncio.create_task(session._audio_streamer(exhausted_source()))
+        session._audio_source_task = streamer
+        # the source runs out over mocked awaits alone, so the streamer is holding
+        # the withheld EOF well before the wait itself could expire
+        await asyncio.sleep(0.01)
+        assert not streamer.done()
+
+        with (
+            patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
+            patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+            patch("music_assistant.providers.airplay.stream_session.time.time", return_value=100.0),
+        ):
+            assert await session.replace(MagicMock(), MagicMock(elapsed_time=0))
+
+        assert streamer.cancelled()
+        # well past the point where a wait left running would have delivered it
+        await asyncio.sleep(0.1)
+
+    player.stream.write_audio_eof.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream_state", ["missing", "stopped", "disconnected", "audio_ended"])
 async def test_standby_requires_every_member_running_and_connected(stream_state: str) -> None:
     """Standby is unavailable when any member lacks a reusable connected session."""
     session = _make_session(0, 0)
@@ -935,6 +1261,9 @@ async def test_standby_requires_every_member_running_and_connected(stream_state:
     if stream_state != "missing":
         unavailable_player.stream = MagicMock(
             running=stream_state != "stopped",
+            # a stream that was sent its audio EOF is still running, but its
+            # stdin is closed for good so it can never be refilled
+            accepts_audio=stream_state not in ("stopped", "audio_ended"),
             connected=stream_state != "disconnected",
         )
         unavailable_player.stream.send_cli_command = AsyncMock()
@@ -1114,6 +1443,31 @@ async def test_late_join_unacknowledged_start_stops_client() -> None:
 
 
 @pytest.mark.asyncio
+async def test_late_join_refuses_a_session_that_was_sent_its_audio_eof() -> None:
+    """
+    A stream on its way out after an EOF cannot absorb a joiner.
+
+    It keeps reporting itself running for as long as it plays out, so a joiner
+    would otherwise be anchored onto a session that exits moments later, with a
+    stdin of its own that nothing is left to close.
+    """
+    session = _make_session(time.time() - 10, 12.5)
+    reference: Any = session.sync_clients[0]
+    reference.stream.accepts_audio = False
+    player = _make_late_joiner()
+
+    with (
+        patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
+        patch.object(session, "stop_client", new_callable=AsyncMock) as stop_client,
+    ):
+        await session.add_client(player)
+
+    mock_start.assert_not_called()
+    stop_client.assert_not_awaited()
+    assert player not in session.sync_clients
+
+
+@pytest.mark.asyncio
 async def test_late_join_refuses_a_parked_session() -> None:
     """A parked (standby) session has no live timeline, so it cannot absorb a joiner."""
     session = _make_session(time.time() - 10, 12.5)
@@ -1146,8 +1500,7 @@ async def test_late_join_no_running_session() -> None:
     session = _make_session(now - 10, 12.5)
     # Make the leader's stream not running
     leader = session.sync_clients[0]
-    leader.stream = _stream_defaults(MagicMock())
-    leader.stream.running = False
+    leader.stream = _stream_defaults(MagicMock(running=False))
     player = _make_late_joiner()
 
     with patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start:
@@ -1896,3 +2249,44 @@ async def test_start_client_releases_a_foreign_mute_latch() -> None:
         await session._start_client(player, use_shared_ptp=False)
 
     player.release_foreign_mute_latch.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_start_client_displaces_a_stopping_stream_under_the_spawn_lock() -> None:
+    """
+    Displacing a member's cli is one claim: the stop, the connect and the wiring.
+
+    A stream stops reporting itself running the moment its own stop() begins,
+    while its process can still be on the receiver, so the old one is stopped
+    whatever it reports. Holding the spawn lock across the connect and the ffmpeg
+    keeps a Sendspin bridge start from putting a second process on the same
+    receiver in between.
+    """
+    session = _make_session(start_time=0.0, seconds_streamed=0.0)
+    player = _make_late_joiner()
+    player.stream_spawn_lock = asyncio.Lock()
+    steps: list[str] = []
+
+    def record(step: str) -> None:
+        assert player.stream_spawn_lock.locked()
+        steps.append(step)
+
+    old_stream = MagicMock(running=False)
+    old_stream.stop = AsyncMock(side_effect=lambda: record("stop"))
+    player.stream = old_stream
+    new_stream = MagicMock(connect=AsyncMock(side_effect=lambda *_args: record("connect")))
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.stream_session.AirPlayStream",
+            return_value=new_stream,
+        ),
+        patch.object(
+            session, "_start_player_ffmpeg", AsyncMock(side_effect=lambda *_args: record("ffmpeg"))
+        ),
+    ):
+        await session._start_client(player, use_shared_ptp=False)
+
+    assert steps == ["stop", "connect", "ffmpeg"]
+    assert player.stream is new_stream
+    assert new_stream.session is session

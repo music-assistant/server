@@ -164,9 +164,6 @@ def parse_album(
             name=album_id,
         )
     name, version = parse_title_and_version(attributes["name"])
-    # Check availability: library albums owned by user OR catalog items with playParams
-    is_library_album = is_library_id(album_id) and album_obj.get("type") == "library-albums"
-    has_play_params = attributes.get("playParams", {}).get("id") is not None
     album = Album(
         item_id=album_id,
         provider=provider.domain,
@@ -178,7 +175,7 @@ def parse_album(
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
                 url=attributes.get("url"),
-                available=is_library_album or has_play_params,
+                available=_is_available(attributes),
             )
         },
     )
@@ -196,7 +193,7 @@ def parse_album(
     if record_label := attributes.get("recordLabel"):
         album.metadata.label = record_label
     if upc := attributes.get("upc"):
-        album.external_ids.add((ExternalID.BARCODE, "0" + upc))
+        album.external_ids.add((ExternalID.BARCODE, upc))
     if notes := attributes.get("editorialNotes"):
         album.metadata.description = notes.get("standard") or notes.get("short")
     if content_rating := attributes.get("contentRating"):
@@ -236,9 +233,6 @@ def parse_track(
         track_id = track_obj["id"]
         attributes = {}
     name, version = parse_title_and_version(attributes.get("name", ""))
-    # Check availability: library tracks owned by user OR catalog items with playParams
-    is_library_track = is_library_id(track_id) and track_obj.get("type") == "library-songs"
-    has_play_params = attributes.get("playParams", {}).get("id") is not None
     track = Track(
         item_id=track_id,
         provider=provider.domain,
@@ -252,7 +246,7 @@ def parse_track(
                 provider_instance=provider.instance_id,
                 audio_format=AudioFormat(content_type=ContentType.AAC),
                 url=attributes.get("url"),
-                available=is_library_track or has_play_params,
+                available=_is_available(attributes),
             )
         },
     )
@@ -416,3 +410,19 @@ def _has_artist_details(artist_obj: dict[str, Any]) -> bool:
     else:
         attributes = artist_obj.get("attributes", {})
     return bool(normalize_unicode(attributes.get("name")))
+
+
+def _is_available(attributes: dict[str, Any]) -> bool:
+    """
+    Return whether Apple will actually serve a stream for this item.
+
+    ``playParams`` is absent entirely for items Apple has withdrawn. It is present
+    but carries a ``purchasedId`` with no ``catalogId`` for purchase-only items
+    (iTunes purchases, and the 2014 U2 giveaway), which the stream endpoint also
+    refuses. Uploads carry neither marker, so they stay available - see
+    music-assistant/support#6032 and #4108.
+    """
+    play_params = attributes.get("playParams") or {}
+    if play_params.get("id") is None:
+        return False
+    return not (play_params.get("purchasedId") is not None and play_params.get("catalogId") is None)

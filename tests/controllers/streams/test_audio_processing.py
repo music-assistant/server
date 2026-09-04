@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.audio_processing import (
+    ActiveSourceAudioDetails,
     AudioDSPDetails,
     AudioFidelity,
     AudioNormalizationDetails,
@@ -200,6 +201,80 @@ def test_lossy_source_can_have_bit_perfect_lossless_output() -> None:
     assert serialized_outputs["lossless-player"]["fidelity"]["bit_perfect"] is True
 
 
+def test_a_wider_provider_handoff_preserves_the_source_samples() -> None:
+    """A provider that decodes upstream into wider PCM does not lose the source samples."""
+    streamdetails = _source_handled_soloist_item(_format(ContentType.FLAC, 44100, 24))
+
+    chain = cast("AudioProcessingChain", streamdetails.audio_processing)
+    assert chain.input_fidelity.quality == AudioQuality.HI_RES
+    assert chain.outputs[0].fidelity.bit_perfect is True
+
+
+def test_an_output_narrower_than_the_source_is_not_bit_perfect() -> None:
+    """Dropping a 24-bit source to a 16-bit output loses bits, wide handoff or not."""
+    streamdetails = _source_handled_soloist_item(_format(ContentType.FLAC, 44100, 16))
+
+    chain = cast("AudioProcessingChain", streamdetails.audio_processing)
+    assert chain.outputs[0].fidelity.bit_perfect is False
+
+
+def test_an_internal_stage_narrower_than_the_source_is_not_bit_perfect() -> None:
+    """A narrowed internal stage loses bits the output cannot bring back."""
+    manager, _mass, _queue_data, streamdetails, lossless_plan, _lossy_plan = _manager_context()
+    streamdetails.audio_format = _format(ContentType.FLAC, 44100, 24)
+    narrowed = _format(ContentType.PCM_S16LE, 44100, 16)
+    manager.update_item_runtime(
+        "queue-1",
+        "session-1",
+        "item-1",
+        input_format=narrowed,
+        pcm_format=narrowed,
+        normalization=None,
+        playback_speed=1.0,
+    )
+    lossless_plan.input_format = narrowed
+    lossless_plan.output_details.output_format = _format(ContentType.FLAC, 44100, 24)
+    manager.update_output(
+        "player-1",
+        lossless_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    chain = cast("AudioProcessingChain", streamdetails.audio_processing)
+    assert chain.outputs[0].fidelity.bit_perfect is False
+
+
+def test_float_headroom_alone_does_not_break_the_bit_perfect_claim() -> None:
+    """DSP enabled with no filters gets F32 headroom but leaves the samples alone."""
+    manager, _mass, _queue_data, streamdetails, lossless_plan, _lossy_plan = _manager_context()
+    streamdetails.audio_format = _format(ContentType.FLAC, 44100, 24)
+    headroom = _format(ContentType.PCM_F32LE, 44100, 32)
+    manager.update_item_runtime(
+        "queue-1",
+        "session-1",
+        "item-1",
+        input_format=headroom,
+        pcm_format=headroom,
+        normalization=None,
+        playback_speed=1.0,
+    )
+    lossless_plan.input_format = headroom
+    lossless_plan.output_details.dsp = AudioDSPDetails(state=DSPState.ENABLED)
+    lossless_plan.output_details.output_format = _format(ContentType.FLAC, 44100, 24)
+    manager.update_output(
+        "player-1",
+        lossless_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    chain = cast("AudioProcessingChain", streamdetails.audio_processing)
+    assert chain.outputs[0].fidelity.bit_perfect is True
+
+
 def test_shared_output_destinations_are_registered_atomically() -> None:
     """One shared output publishes all destinations in a single queue update."""
     manager, mass, _queue_data, streamdetails, output_plan, _lossy_plan = _manager_context()
@@ -229,6 +304,299 @@ def test_shared_output_destinations_are_registered_atomically() -> None:
         queue_item_id="item-1",
     )
     mass.player_queues.signal_update.assert_not_called()
+
+
+def test_live_source_context_publishes_input_and_source_processing() -> None:
+    """A live source publishes its input and the processing it applies itself."""
+    manager, mass, source_session, _lossless_plan = _source_manager_context()
+
+    manager.update_source_context(
+        "source-player",
+        "source-session",
+        crossfade_enabled=True,
+        volume_normalization_enabled=True,
+    )
+
+    details = cast(
+        "ActiveSourceAudioDetails | None",
+        source_session.active_source_audio,
+    )
+    assert details is not None
+    assert details.input_format == source_session.streamdetails.audio_format
+    assert details.input_fidelity.quality == AudioQuality.HI_RES
+    assert details.crossfade_mode is CrossfadeMode.SOURCE
+    assert details.volume_normalization_mode is VolumeNormalizationMode.SOURCE
+    assert details.outputs == []
+    mass.players.trigger_player_update.assert_called_once_with("source-player")
+
+
+def test_live_source_output_registered_before_context_is_published() -> None:
+    """An output prepared before source details arrive is retained and published."""
+    manager, _mass, source_session, lossless_plan = _source_manager_context()
+
+    assert manager.update_output(
+        "player-1",
+        lossless_plan,
+        shared_player_ids={"player-2"},
+        queue_id="source-player",
+        session_id="source-session",
+    )
+    assert source_session.active_source_audio is None
+
+    manager.update_source_context(
+        "source-player",
+        "source-session",
+        crossfade_enabled=False,
+        volume_normalization_enabled=None,
+    )
+
+    details = cast(
+        "ActiveSourceAudioDetails | None",
+        source_session.active_source_audio,
+    )
+    assert details is not None
+    assert details.crossfade_mode is CrossfadeMode.DISABLED
+    assert details.volume_normalization_mode is VolumeNormalizationMode.UNKNOWN
+    assert len(details.outputs) == 1
+    assert details.outputs[0].player_ids == ["player-1", "player-2"]
+    assert details.outputs[0].output_format == lossless_plan.output_details.output_format
+    assert details.outputs[0].fidelity.quality == AudioQuality.HI_RES
+    assert details.outputs[0].fidelity.bit_perfect is True
+
+
+def test_live_source_publishes_a_new_consumer_with_its_own_format() -> None:
+    """A consumer joining a live source is published with the format it receives."""
+    manager, mass, source_session, native_plan = _source_manager_context()
+    manager.update_output(
+        "player-1",
+        _source_consumer_plan(48000),
+        queue_id="source-player",
+        session_id="source-session",
+    )
+    manager.update_source_context(
+        "source-player",
+        "source-session",
+        crossfade_enabled=False,
+        volume_normalization_enabled=False,
+    )
+
+    # a second player takes the same source at its native rate
+    manager.update_output(
+        "player-2",
+        native_plan,
+        queue_id="source-player",
+        session_id="source-session",
+    )
+
+    assert _source_bit_perfect(source_session) == {"player-1": False, "player-2": True}
+    assert mass.players.trigger_player_update.call_count == 2
+
+
+def test_live_source_consumers_keep_their_own_bit_perfect_verdict() -> None:
+    """A consumer that resamples the source does not cost another one its badge."""
+    manager, _mass, source_session, native_plan = _source_manager_context()
+    manager.update_output(
+        "player-1",
+        native_plan,
+        queue_id="source-player",
+        session_id="source-session",
+    )
+    manager.update_source_context(
+        "source-player",
+        "source-session",
+        crossfade_enabled=False,
+        volume_normalization_enabled=False,
+    )
+
+    manager.update_output(
+        "player-2",
+        _source_consumer_plan(48000),
+        queue_id="source-player",
+        session_id="source-session",
+    )
+    manager.update_source_context(
+        "source-player",
+        "source-session",
+        crossfade_enabled=False,
+        volume_normalization_enabled=False,
+    )
+
+    assert _source_bit_perfect(source_session) == {"player-1": True, "player-2": False}
+
+
+def test_a_source_that_crossfades_itself_stays_bit_perfect() -> None:
+    """A fade the source mixed itself reaches us already mixed, so nothing is lost."""
+    manager, _mass, source_session, lossless_plan = _source_manager_context()
+    manager.update_output(
+        "player-1",
+        lossless_plan,
+        queue_id="source-player",
+        session_id="source-session",
+    )
+
+    manager.update_source_context(
+        "source-player",
+        "source-session",
+        crossfade_enabled=True,
+        volume_normalization_enabled=True,
+    )
+
+    details = cast(
+        "ActiveSourceAudioDetails | None",
+        source_session.active_source_audio,
+    )
+    assert details is not None
+    assert details.crossfade_mode is CrossfadeMode.SOURCE
+    assert details.outputs[0].fidelity.bit_perfect is True
+
+
+def test_unreported_source_processing_does_not_cost_the_bit_perfect_badge() -> None:
+    """A source that never says what it applies still hands us its samples untouched."""
+    manager, _mass, source_session, lossless_plan = _source_manager_context()
+    manager.update_output(
+        "player-1",
+        lossless_plan,
+        queue_id="source-player",
+        session_id="source-session",
+    )
+
+    manager.update_source_context(
+        "source-player",
+        "source-session",
+        crossfade_enabled=None,
+        volume_normalization_enabled=None,
+    )
+
+    details = cast(
+        "ActiveSourceAudioDetails | None",
+        source_session.active_source_audio,
+    )
+    assert details is not None
+    assert details.crossfade_mode is CrossfadeMode.UNKNOWN
+    assert details.volume_normalization_mode is VolumeNormalizationMode.UNKNOWN
+    assert details.outputs[0].fidelity.bit_perfect is True
+
+
+def test_a_player_that_cannot_take_the_source_rate_is_not_bit_perfect() -> None:
+    """A source rate the player cannot take is snapped down, which loses samples."""
+    manager, _mass, source_session, lossless_plan = _source_manager_context()
+    # the source arrives at 96 kHz but the player tops out at 48 kHz
+    snapped = _format(ContentType.PCM_S24LE, 48000, 24)
+    lossless_plan.input_format = snapped
+    lossless_plan.output_details.output_format = _format(ContentType.FLAC, 48000, 24)
+    manager.update_output(
+        "player-1",
+        lossless_plan,
+        queue_id="source-player",
+        session_id="source-session",
+    )
+
+    manager.update_source_context(
+        "source-player",
+        "source-session",
+        crossfade_enabled=False,
+        volume_normalization_enabled=False,
+    )
+
+    details = cast(
+        "ActiveSourceAudioDetails | None",
+        source_session.active_source_audio,
+    )
+    assert details is not None
+    assert details.outputs[0].fidelity.bit_perfect is False
+
+
+def test_a_live_source_output_narrower_than_the_source_is_not_bit_perfect() -> None:
+    """Dropping a 24-bit source to a 16-bit output loses bits for a live source too."""
+    manager, _mass, source_session, lossless_plan = _source_manager_context()
+    lossless_plan.output_details.output_format = _format(ContentType.FLAC, 96000, 16)
+    manager.update_output(
+        "player-1",
+        lossless_plan,
+        queue_id="source-player",
+        session_id="source-session",
+    )
+
+    manager.update_source_context(
+        "source-player",
+        "source-session",
+        crossfade_enabled=False,
+        volume_normalization_enabled=False,
+    )
+
+    details = cast(
+        "ActiveSourceAudioDetails | None",
+        source_session.active_source_audio,
+    )
+    assert details is not None
+    assert details.outputs[0].fidelity.bit_perfect is False
+
+
+def test_stale_live_source_updates_are_rejected() -> None:
+    """A superseded source session cannot publish context or outputs."""
+    manager, _mass, source_session, lossless_plan = _source_manager_context()
+
+    manager.update_source_context(
+        "source-player",
+        "stale-session",
+        crossfade_enabled=True,
+        volume_normalization_enabled=True,
+    )
+
+    assert not manager.update_output(
+        "player-1",
+        lossless_plan,
+        queue_id="source-player",
+        session_id="stale-session",
+    )
+    assert source_session.active_source_audio is None
+
+
+def test_clearing_live_source_processing_removes_the_snapshot() -> None:
+    """Ending a source selection clears its published audio details."""
+    manager, mass, source_session, _lossless_plan = _source_manager_context()
+    manager.update_source_context(
+        "source-player",
+        "source-session",
+        crossfade_enabled=False,
+        volume_normalization_enabled=False,
+    )
+    mass.players.trigger_player_update.reset_mock()
+
+    manager.clear_source("source-player", "source-session")
+
+    assert source_session.active_source_audio is None
+    mass.players.trigger_player_update.assert_called_once_with("source-player")
+
+
+def test_live_source_outputs_follow_current_group_members() -> None:
+    """A departed group member is removed from the live source output snapshot."""
+    manager, mass, source_session, lossless_plan = _source_manager_context()
+    manager.update_output(
+        "player-1",
+        lossless_plan,
+        shared_player_ids={"player-2"},
+        queue_id="source-player",
+        session_id="source-session",
+    )
+    manager.update_source_context(
+        "source-player",
+        "source-session",
+        crossfade_enabled=False,
+        volume_normalization_enabled=False,
+    )
+    mass.players.trigger_player_update.reset_mock()
+
+    manager.retain_outputs("source-player", {"player-1"})
+
+    details = cast(
+        "ActiveSourceAudioDetails | None",
+        source_session.active_source_audio,
+    )
+    assert details is not None
+    assert len(details.outputs) == 1
+    assert details.outputs[0].player_ids == ["player-1"]
+    mass.players.trigger_player_update.assert_called_once_with("source-player")
 
 
 def test_shared_output_adds_member_without_stream_restart() -> None:
@@ -931,6 +1299,81 @@ async def test_stale_flow_generator_does_not_mutate_active_session() -> None:
 
 
 @pytest.mark.asyncio
+async def test_duplicate_flow_producer_does_not_interleave_the_play_log() -> None:
+    """A second flow request for one session keeps the play log of the first out of the queue."""
+
+    def _flow_item(item_id: str) -> Any:
+        return SimpleNamespace(
+            queue_item_id=item_id,
+            name=item_id,
+            media_type=MediaType.TRACK,
+            duration=300,
+            extra_attributes={},
+            streamdetails=SimpleNamespace(
+                fade_in=False,
+                stream_error=False,
+                uri=f"test://{item_id}",
+                seek_position=0,
+                duration=300,
+                buffer=None,
+                seconds_streamed=None,
+                is_realtime=False,
+                audio_format=_format(ContentType.PCM_F32LE, 48000, 32),
+            ),
+        )
+
+    items = {item_id: _flow_item(item_id) for item_id in ("item-1", "item-2")}
+
+    async def _load_next(_queue_id: str, current_id: str) -> Any:
+        if current_id == "item-1":
+            return items["item-2"]
+        raise QueueEmpty
+
+    mass = MagicMock()
+    queue_data = SimpleNamespace(session_id="session-1", flow_mode_stream_log=[])
+    mass.player_queues.queue_data.return_value = queue_data
+    mass.player_queues.load_next_queue_item = _load_next
+    mass.streams.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
+    mass.config.get_raw_core_config_value.return_value = 0
+    mass.player_queues.get_active_queue.return_value = None
+    audio = StreamsAudio(cast("Any", mass))
+
+    async def _one_chunk(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
+        yield b"\x00" * 16
+
+    audio.get_queue_item_stream = _one_chunk  # type: ignore[method-assign]
+    queue = cast(
+        "Any",
+        SimpleNamespace(
+            queue_id="queue-1",
+            display_name="Queue",
+            flow_mode=False,
+            overlay_enabled=False,
+            overlay_source=None,
+        ),
+    )
+    pcm_format = _format(ContentType.PCM_F32LE, 48000, 32)
+
+    # the probing connection opens the flow url and logs its first track
+    first = audio.get_queue_flow_stream(queue, items["item-1"], pcm_format, session_id="session-1")
+    await anext(first)
+    assert [entry.queue_item_id for entry in queue_data.flow_mode_stream_log] == ["item-1"]
+
+    # the connection that really plays opens the same url and publishes its own play log
+    second = audio.get_queue_flow_stream(queue, items["item-1"], pcm_format, session_id="session-1")
+    await anext(second)
+    live_log = queue_data.flow_mode_stream_log
+
+    # the first producer moves on to its next track; that entry must not reach the live log
+    await anext(first)
+    assert queue_data.flow_mode_stream_log is live_log
+    assert [entry.queue_item_id for entry in live_log] == ["item-1"]
+
+    await first.aclose()
+    await second.aclose()
+
+
+@pytest.mark.asyncio
 async def test_flow_source_error_skips_item_without_completing_it() -> None:
     """An item-stream error skips to the next queue item; the flow itself continues."""
     mass = MagicMock()
@@ -940,6 +1383,7 @@ async def test_flow_source_error_skips_item_without_completing_it() -> None:
         uri="audiobookshelf://book",
         seek_position=0,
         duration=3600,
+        is_realtime=False,
     )
     queue_item = SimpleNamespace(
         queue_item_id="item-1",
@@ -1007,6 +1451,8 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         seek_position=0,
         seconds_streamed=0,
         duration=120,
+        buffer=SimpleNamespace(eof=True, cancelled=False, has_error=False, max_size_seconds=300),
+        is_realtime=False,
     )
     first_item = SimpleNamespace(
         queue_id="queue-1",
@@ -1020,12 +1466,20 @@ async def test_flow_zero_audio_skip_restores_seek_position(
     raw_seek_position = 12
     skipped_streamdetails = SimpleNamespace(
         audio_format=pcm_format,
+        buffer=SimpleNamespace(
+            has_error=False,
+            is_valid=lambda *_args: True,
+            duration_available=16,
+            eof=False,
+            ready=SimpleNamespace(is_set=lambda: True),
+        ),
         fade_in=False,
         stream_error=False,
         uri="test://skipped",
         seek_position=raw_seek_position,
         seconds_streamed=0,
         duration=120,
+        is_realtime=False,
     )
     skipped_item = SimpleNamespace(
         queue_id="queue-1",
@@ -1034,7 +1488,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         media_type=MediaType.TRACK,
         media_item=None,
         streamdetails=skipped_streamdetails,
-        extra_attributes={},
+        extra_attributes={"playback_speed": 2.0},
     )
     queue = SimpleNamespace(
         queue_id="queue-1",
@@ -1049,6 +1503,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
     mass.player_queues.get.return_value = queue
     mass.player_queues.get_next_item.return_value = skipped_item
     mass.streams.get_crossfade_mode.return_value = CrossfadeMode.STANDARD_CROSSFADE
+    mass.streams.get_source_crossfade_mode.return_value = CrossfadeMode.DISABLED
     mass.config.get_raw_core_config_value.return_value = 8
     mass.streams.audio_processing.update_item_context = MagicMock()
     mass.player_queues.queue_buffer_completed = MagicMock()
@@ -1067,6 +1522,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         )
     )
     monkeypatch.setattr(audio.smart_fades_mixer, "build", build)
+    eager_seek_positions: list[float] = []
 
     async def _item_stream(
         queue_item: SimpleNamespace,
@@ -1074,8 +1530,12 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         **_kwargs: object,
     ) -> AsyncGenerator[bytes]:
         if queue_item is first_item:
-            yield bytes(pcm_format.pcm_sample_size * 8)
-            yield bytes(pcm_format.pcm_sample_size)
+            # warmup worth of audio, then a full crossfade tail (audible PCM: the
+            # holdback reads zero-filled bytes as trailing silence)
+            yield b"\x10\x20" * (pcm_format.pcm_sample_size * 4)
+            yield b"\x10\x20" * (pcm_format.pcm_sample_size * 4)
+        else:
+            eager_seek_positions.append(queue_item.streamdetails.seek_position)
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
     stream = audio.get_queue_flow_stream(
@@ -1089,7 +1549,89 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         pass
 
     build.assert_awaited_once()
+    # the prefetcher's early open sees the raw position; the reopen after the failed
+    # handover sees the eager (crossfade-adjusted) one
+    assert len(eager_seek_positions) == 2
+    assert eager_seek_positions[-1] == 32
+    # ... and the zero-audio skip restores the raw position afterwards
     assert skipped_streamdetails.seek_position == raw_seek_position
+
+
+@pytest.mark.parametrize(
+    ("source_cancelled", "expected_duration"),
+    [(True, 300), (False, 3)],
+    ids=["aborted_source", "clean_source"],
+)
+@pytest.mark.asyncio
+async def test_flow_does_not_write_back_a_duration_for_an_aborted_source(
+    monkeypatch: pytest.MonkeyPatch, source_cancelled: bool, expected_duration: int
+) -> None:
+    """An externally cancelled buffer ends in a clean EOF that must not shorten the item."""
+    mass = MagicMock()
+    pcm_format = _format(ContentType.PCM_S16LE, 8000, 16)
+    streamdetails = SimpleNamespace(
+        audio_format=pcm_format,
+        buffer=SimpleNamespace(cancelled=source_cancelled),
+        fade_in=False,
+        stream_error=False,
+        uri="test://track",
+        seek_position=0,
+        seconds_streamed=0,
+        duration=300,
+        is_realtime=False,
+    )
+    queue_track = SimpleNamespace(
+        queue_id="queue-1",
+        queue_item_id="item-1",
+        name="track",
+        media_type=MediaType.TRACK,
+        media_item=None,
+        streamdetails=streamdetails,
+        duration=300,
+        extra_attributes={},
+    )
+    queue = SimpleNamespace(
+        queue_id="queue-1",
+        display_name="Queue",
+        flow_mode=False,
+        overlay_enabled=False,
+        overlay_source=None,
+    )
+    queue_data = SimpleNamespace(session_id="session-1", flow_mode_stream_log=[])
+    mass.player_queues.queue_data.return_value = queue_data
+    mass.player_queues.load_next_queue_item = AsyncMock(side_effect=QueueEmpty)
+    mass.player_queues.get.return_value = queue
+    mass.streams.get_crossfade_mode.return_value = CrossfadeMode.DISABLED
+    mass.config.get_raw_core_config_value.return_value = 8
+    mass.streams.audio_processing.update_item_context = MagicMock()
+    mass.player_queues.queue_buffer_completed = MagicMock()
+    player = MagicMock()
+    player.config.get_value.return_value = "fixed_48000"
+    player.get_supported_sample_rates.return_value = []
+    mass.players.get_player.return_value = player
+    audio = StreamsAudio(cast("Any", mass))
+    audio.setup()
+
+    async def _item_stream(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
+        # a cancelled buffer stops yielding without an error, exactly like a real EOF
+        for _ in range(3):
+            yield bytes(pcm_format.pcm_sample_size)
+
+    monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", queue_track), pcm_format, session_id="session-1"
+    )
+
+    chunks = [chunk async for chunk in stream]
+
+    assert len(chunks) == 3
+    assert streamdetails.duration == expected_duration
+    assert queue_track.duration == expected_duration
+    # the honest streamed amount is always recorded, only the duration is protected
+    assert streamdetails.seconds_streamed == 3
+    entry = queue_data.flow_mode_stream_log[0]
+    assert entry.seconds_streamed == 3
+    assert entry.duration == (None if source_cancelled else 3)
 
 
 def _manager_context(
@@ -1145,6 +1687,90 @@ def _manager_context(
         input_format=pcm_format,
     )
     return manager, mass, queue_data, streamdetails, lossless_plan, lossy_plan
+
+
+def _source_manager_context() -> tuple[
+    AudioProcessingManager,
+    MagicMock,
+    Any,
+    AudioOutputPlan,
+]:
+    """Return one active live source and a lossless output plan for it."""
+    mass = MagicMock()
+    streamdetails = StreamDetails(
+        provider="source-provider",
+        item_id="main",
+        audio_format=_format(ContentType.FLAC, 96000, 24, bit_rate=3200),
+        media_type=MediaType.AUDIO_SOURCE,
+    )
+    source_session: Any = SimpleNamespace(
+        playback_session_id="source-session",
+        streamdetails=streamdetails,
+        active_source_audio=None,
+    )
+    mass.players.get_audio_source_session.side_effect = lambda player_id: (
+        source_session if player_id == "source-player" else None
+    )
+    manager = AudioProcessingManager(mass)
+    return manager, mass, source_session, _source_consumer_plan(96000)
+
+
+def _source_consumer_plan(sample_rate: int) -> AudioOutputPlan:
+    """Return a lossless output plan for a live source consumer at one sample rate."""
+    return AudioOutputPlan(
+        filter_params=[],
+        output_details=AudioOutputDetails(
+            dsp=AudioDSPDetails(state=DSPState.DISABLED),
+            output_format=_format(ContentType.FLAC, sample_rate, 24),
+        ),
+        input_format=_format(ContentType.PCM_S24LE, sample_rate, 24),
+    )
+
+
+def _source_bit_perfect(source_session: Any) -> dict[str, bool | None]:
+    """Return the published bit-perfect verdict of every live source consumer."""
+    details = cast("ActiveSourceAudioDetails | None", source_session.active_source_audio)
+    assert details is not None
+    return {
+        player_id: output.fidelity.bit_perfect
+        for output in details.outputs
+        for player_id in output.player_ids
+    }
+
+
+def _source_handled_soloist_item(
+    output_format: AudioFormat,
+) -> StreamDetails:
+    """Prepare a Spotify-soloist-shaped item: a 24-bit tier delivered as 32-bit PCM."""
+    manager, _mass, _queue_data, streamdetails, lossless_plan, _lossy_plan = _manager_context()
+    streamdetails.audio_format = _format(ContentType.FLAC, 44100, 24)
+    streamdetails.decoded_audio_format = _format(ContentType.PCM_S32LE, 44100, 32)
+    pcm_format = _format(ContentType.PCM_S32LE, 44100, 32)
+    manager.update_item_runtime(
+        "queue-1",
+        "session-1",
+        "item-1",
+        input_format=pcm_format,
+        pcm_format=pcm_format,
+        normalization=AudioNormalizationDetails(mode=VolumeNormalizationMode.SOURCE),
+        playback_speed=1.0,
+    )
+    manager.update_item_context(
+        "queue-1",
+        "session-1",
+        "item-1",
+        AudioQueueProcessing(pcm_format=pcm_format, crossfade_mode=CrossfadeMode.SOURCE),
+    )
+    lossless_plan.input_format = pcm_format
+    lossless_plan.output_details.output_format = output_format
+    manager.update_output(
+        "player-1",
+        lossless_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+    return streamdetails
 
 
 def _streamdetails(item_id: str = "item-1") -> StreamDetails:
@@ -1210,6 +1836,7 @@ def _native_stream_handler_context(
     audio.get_player_output_plan.side_effect = _OutputPlanRequested
 
     controller = cast("Any", object.__new__(StreamsController))
+    controller._open_item_streams = {}
     controller.mass = mass
     controller.audio = audio
     controller.logger = MagicMock()

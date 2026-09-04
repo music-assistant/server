@@ -22,8 +22,9 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, SetupFailedError
 
-from music_assistant.controllers.player_queues.helpers import build_queue_item
+from music_assistant.controllers.player_queues.helpers import build_queue_item, committed_index
 from music_assistant.helpers import guest_access
+from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
 from music_assistant.models.plugin import PluginProvider
 
@@ -175,6 +176,7 @@ class PartyPlugin(PluginProvider):
                             self.mass.players.all_players(False, False),
                             key=lambda p: p.display_name.lower(),
                         )
+                        if player.type in PLAYBACK_TARGET_TYPES
                     ],
                 ],
             ),
@@ -281,7 +283,7 @@ class PartyPlugin(PluginProvider):
                 type=ConfigEntryType.INTEGER,
                 default_value=10,
                 depends_on=CONF_ENABLE_ADD_QUEUE,
-                range=(5, 50),
+                range=(1, 50),
                 advanced=True,
                 category="guest_features",
             ),
@@ -290,7 +292,7 @@ class PartyPlugin(PluginProvider):
                 type=ConfigEntryType.INTEGER,
                 default_value=2,
                 depends_on=CONF_ENABLE_ADD_QUEUE,
-                range=(1, 30),
+                range=(1, 60),
                 advanced=True,
                 category="guest_features",
             ),
@@ -511,10 +513,10 @@ class PartyPlugin(PluginProvider):
 
         :returns: The queue ID for party, or None if no player available.
         """
-        if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
-            return None
-
         if self.config.get_value(CONF_PARTY_MODE) == SharedPlaybackMode.REMOTE.value:
+            # remote mode plays on the guest session's virtual player, which needs guest access
+            if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
+                return None
             session = await self._get_session()
             return session.queue_id if session else None
 
@@ -708,12 +710,9 @@ class PartyPlugin(PluginProvider):
                 raise InvalidDataError("This item is already boosted")
 
             if queue.state == PlaybackState.PLAYING:
-                # Use index_in_buffer to avoid moving already-buffered items
-                current_index = (
-                    queue.index_in_buffer
-                    if queue.index_in_buffer is not None
-                    else (queue.current_index if queue.current_index is not None else 0)
-                )
+                # Use the boundary to avoid moving already-buffered items
+                boundary_index = committed_index(queue)
+                current_index = boundary_index if boundary_index is not None else 0
 
                 if item_index <= current_index:
                     raise InvalidDataError(
@@ -814,11 +813,8 @@ class PartyPlugin(PluginProvider):
             # Use index_in_buffer when playing to avoid inserting before an already-buffered
             # track, which would cause the newly added song to be skipped
             if queue and queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
-                current_index = (
-                    queue.index_in_buffer
-                    if queue.index_in_buffer is not None
-                    else (queue.current_index if queue.current_index is not None else 0)
-                )
+                boundary_index = committed_index(queue)
+                current_index = boundary_index if boundary_index is not None else 0
             else:
                 current_index = queue.current_index or 0 if queue else 0
 

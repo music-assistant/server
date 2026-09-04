@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator, Sequence
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from typing import TYPE_CHECKING
 
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
@@ -97,16 +97,19 @@ class MultiClientStream:
             len(self.subscribers),
             self.expected_clients,
         )
-        async for chunk in self.audio_source:
-            fail_count = 0
-            while len(self.subscribers) == 0:
-                await asyncio.sleep(0.1)
-                fail_count += 1
-                if fail_count > 50:
-                    LOGGER.warning("No clients connected, stopping stream")
-                    return
-            await asyncio.gather(
-                *[sub.put(chunk) for sub in self.subscribers], return_exceptions=True
-            )
+        # aclosing so giving up below tears the source down; returning out of an async for
+        # leaves it suspended, and this object keeps it referenced so nothing collects it
+        async with aclosing(self.audio_source):
+            async for chunk in self.audio_source:
+                fail_count = 0
+                while len(self.subscribers) == 0:
+                    await asyncio.sleep(0.1)
+                    fail_count += 1
+                    if fail_count > 50:
+                        LOGGER.warning("No clients connected, stopping stream")
+                        return
+                await asyncio.gather(
+                    *[sub.put(chunk) for sub in self.subscribers], return_exceptions=True
+                )
         # EOF: send empty chunk
         await asyncio.gather(*[sub.put(b"") for sub in self.subscribers], return_exceptions=True)

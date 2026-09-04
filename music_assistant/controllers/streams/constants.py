@@ -3,9 +3,24 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Final
+from typing import Final, Literal
+
+from music_assistant_models.enums import VolumeNormalizationMode
 
 from music_assistant.helpers.util import get_total_system_memory, meets_memory_target
+
+# What the volume normalization preference falls back to.
+DEFAULT_VOLUME_NORMALIZATION_MODE: Final = VolumeNormalizationMode.FALLBACK_DYNAMIC
+
+# Modes that are only ever an outcome, never something to ask for: SOURCE is set by a
+# source that levels its own audio and UNKNOWN is what an unrecognised value
+# deserializes to. Neither is offered as a preference, and one that reaches the config
+# anyway is not honoured as one - it would otherwise be handed straight back as the
+# mode to apply, which for SOURCE also means claiming a source levelled the audio.
+OUTCOME_ONLY_NORMALIZATION_MODES: Final = (
+    VolumeNormalizationMode.SOURCE,
+    VolumeNormalizationMode.UNKNOWN,
+)
 
 
 class BufferMode(StrEnum):
@@ -42,6 +57,31 @@ BUFFER_SIZE_MAP: Final[dict[str, int]] = {
 
 # Buffer size for radio streams (short rolling buffer)
 RADIO_BUFFER_SIZE: Final[int] = 15
+
+# Ceiling on how fast stream output is handed to a player, once it has had its opening
+# burst. Music Assistant serves audio for listening, not for collecting: barely above
+# playback speed the player's buffer still grows, while pulling a whole catalogue takes
+# about as long as listening to it would. A gentle feed also keeps a realtime source's
+# banked head start resident for its end-of-track crossfade, and spares players with a
+# small input buffer (Chromecast is the known case).
+# Do not remove this pacing to "fix" slow buffering. See the usage policy.
+#
+# gapless_burst: players that must hold a whole opening chunk before they play gapless
+# (MusicCast is the known case). low_latency: live AudioSource streams, where whatever
+# the burst hands over sits in the player's buffer as listening delay.
+PacingProfile = Literal["default", "gapless_burst", "low_latency"]
+_PACING: Final[dict[PacingProfile, tuple[str, str]]] = {
+    "default": ("1.02", "3"),
+    "gapless_burst": ("1.2", "60"),
+    "low_latency": ("1.02", "0.5"),
+}
+
+
+def output_pacing_args(profile: PacingProfile = "default") -> list[str]:
+    """Return the ffmpeg pacing arguments for a stream handed to a player."""
+    readrate, burst = _PACING[profile]
+    return ["-readrate", readrate, "-readrate_initial_burst", burst]
+
 
 # Time to keep the flow stream response open after the last audio byte of a queue.
 # Players buffer a few seconds ahead of what they actually render; some of them drop
@@ -89,6 +129,16 @@ def _get_default_buffer_size() -> str:
 CONF_BUFFER_SIZE_DEFAULT: Final[str] = _get_default_buffer_size()
 CONF_ALLOW_CROSSFADE_SAME_ALBUM: Final[str] = "allow_crossfade_same_album"
 CONF_SMART_FADES_LOG_LEVEL: Final[str] = "smart_fades_log_level"
+
+# Maximum wait for a provider source-stream slot before a speculative attempt gives up.
+STREAM_SLOT_WAIT_TIMEOUT: Final[float] = 5.0
+
+# Total capacity budget when an actual playback start retries/reselects provider mappings.
+STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT: Final[float] = 15.0
+
+# Maximum time spent searching other streaming providers for an alternative mapping
+# when every known candidate is capacity-saturated.
+STREAM_SLOT_MATCH_TIMEOUT: Final[float] = 5.0
 
 # Maximum seconds we wait for the buffer to catch up on a forward seek.
 # Beyond this, the stream is re-fetched at the seek position.

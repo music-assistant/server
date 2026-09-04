@@ -43,6 +43,11 @@ from music_assistant.models.audio_analysis_provider import (
 from music_assistant.models.music_provider import MusicProvider
 
 LOUDNESS_ANALYSIS_DOMAIN = "loudness_analysis"
+# Virtual AA domain for loudness supplied by music providers (tags, ReplayGain). No AA
+# provider backs it, so it bypasses the provider-availability gate when merging rows.
+PROVIDER_LOUDNESS_DOMAIN = "provider_loudness"
+# Playback normalization prefers provider-supplied loudness over the builtin measurement.
+LOUDNESS_PROVIDER_PRIORITY = (PROVIDER_LOUDNESS_DOMAIN, LOUDNESS_ANALYSIS_DOMAIN)
 SMART_FADES_ANALYSIS_DOMAIN = "smart_fades"
 SONIC_ANALYSIS_DOMAIN = "sonic_analysis"
 # AA domains trusted for frontend-facing track data (bpm/key/waveform), authoritative first.
@@ -75,6 +80,8 @@ ANALYSIS_MIN_COMPLETENESS_RATIO = 0.9
 # on the next track. Long enough that gaps between tracks/sessions don't thrash the reload.
 MODEL_IDLE_UNLOAD_SECONDS = 300
 MODEL_IDLE_CHECK_INTERVAL_SECONDS = 60
+# Background analysis is deliberately limited to the user's own files: pulling a streaming
+# service's catalogue for audio nobody asked to hear is not something we do. Keep it that way.
 FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
     "filesystem_local",
     "filesystem_smb",
@@ -236,6 +243,8 @@ class AudioAnalysisController:
         # Monotonic time of the last analysis start, and the monitor that unloads idle models.
         self._last_analysis_activity: float = 0.0
         self._idle_unload_task: asyncio.Task[None] | None = None
+        # In-flight provider finalizes: their session is already gone, but the models are not.
+        self._finalize_tasks: set[asyncio.Task[None]] = set()
 
     def setup(self) -> None:
         """Register the nightly background scan task."""
@@ -535,8 +544,9 @@ class AudioAnalysisController:
         """
         Get merged audio analysis data for a track.
 
-        Only rows from currently available AA providers are included. Rows that fail
-        to parse are deleted, so the track can be re-analyzed.
+        Only rows from currently available AA providers are included; the virtual
+        provider_loudness domain is always included. Rows that fail to parse are
+        deleted, so the track can be re-analyzed.
 
         :param item_id: Provider-native item ID from streamdetails.item_id.
         :param provider_instance_id_or_domain: Music provider instance ID or domain.
@@ -564,9 +574,7 @@ class AudioAnalysisController:
         if not rows:
             return None
 
-        available_aa_domains = {
-            p.domain for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS) if p.available
-        }
+        available_aa_domains = self._available_aa_domains()
         unparsable_ids: list[Any] = []
         merged = _merged_from_rows(rows, available_aa_domains, priority, unparsable_ids)
         # corrupt rows would otherwise block re-analysis forever (their stored
@@ -641,8 +649,8 @@ class AudioAnalysisController:
         """
         Store track loudness measurement from an external source (tags, ReplayGain, etc).
 
-        Persists the loudness values under the builtin loudness_analysis provider so
-        the runtime ebur128 analysis will not re-analyze the track on playback.
+        Persists the values under the virtual provider_loudness AA domain; during
+        playback they take precedence over the builtin loudness measurement.
 
         :param item_id: Provider-native item ID.
         :param provider_instance_id_or_domain: Music provider instance ID or domain.
@@ -665,7 +673,7 @@ class AudioAnalysisController:
         await self.set_audio_analysis(
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
-            aa_provider_domain=LOUDNESS_ANALYSIS_DOMAIN,
+            aa_provider_domain=PROVIDER_LOUDNESS_DOMAIN,
             analysis=analysis,
             media_type=media_type,
         )
@@ -802,8 +810,9 @@ class AudioAnalysisController:
         Yield one merged AudioAnalysisData per track present in primary_aa_domain.
 
         Unlike get_audio_analysis, the music provider need not be loaded — rows
-        are merged purely from the database, gated only on AA-provider
-        availability. Used by bulk consumers (e.g. similarity index rebuild).
+        are merged purely from the database, gated on AA-provider availability
+        (the virtual provider_loudness domain always passes this gate). Used by
+        bulk consumers (e.g. similarity index rebuild).
 
         Rows are streamed and grouped on the fly: only the rows for the
         currently-folding (item_id, provider) pair are held in memory at once,
@@ -821,9 +830,7 @@ class AudioAnalysisController:
             wins per-field conflicts (see get_audio_analysis). When None, all available
             providers are merged latest-write-wins.
         """
-        available_aa_domains = {
-            p.domain for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS) if p.available
-        }
+        available_aa_domains = self._available_aa_domains()
         if primary_aa_domain not in available_aa_domains:
             LOGGER.warning(
                 "iter_merged_audio_analysis_rows called with offline primary AA domain "
@@ -1143,15 +1150,20 @@ class AudioAnalysisController:
 
         audio_source = self.mass.streams.audio.get_media_stream(streamdetails, pcm_format)
         next_allowed = time.monotonic()
-        async for chunk in audio_source:
-            if session_key not in self._active_sessions:
-                # all providers evicted — bail early
-                break
-            now = time.monotonic()
-            if now < next_allowed:
-                await asyncio.sleep(next_allowed - now)
-            await self._distribute_chunk(session_key, chunk, max_interval=CHUNK_HANG_GUARD_SECONDS)
-            next_allowed = time.monotonic() + BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR
+        # aclosing guarantees the source (and any provider stream slot it holds)
+        # is released promptly when the loop breaks out early
+        async with contextlib.aclosing(audio_source):
+            async for chunk in audio_source:
+                if session_key not in self._active_sessions:
+                    # all providers evicted — bail early
+                    break
+                now = time.monotonic()
+                if now < next_allowed:
+                    await asyncio.sleep(next_allowed - now)
+                await self._distribute_chunk(
+                    session_key, chunk, max_interval=CHUNK_HANG_GUARD_SECONDS
+                )
+                next_allowed = time.monotonic() + BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR
         if session_key in self._active_sessions:
             self._finalize_providers(session_key)
 
@@ -1330,7 +1342,11 @@ class AudioAnalysisController:
         for provider_id in provider_ids:
             provider = self.mass.get_provider(provider_id)
             if provider and isinstance(provider, AudioAnalysisProvider) and provider.available:
-                self.mass.create_task(provider.finalize(session_key))
+                # finalize runs the whole-track inference, long after the session was popped
+                # above, so track it: it is what keeps the models in use from here on.
+                task = self.mass.create_task(provider.finalize(session_key))
+                self._finalize_tasks.add(task)
+                task.add_done_callback(self._finalize_tasks.discard)
 
     def _cancel_providers(self, session_key: str) -> None:
         """Cancel each provider in the session."""
@@ -1362,7 +1378,7 @@ class AudioAnalysisController:
         """Unload heavy models once no analysis has run for MODEL_IDLE_UNLOAD_SECONDS."""
         while True:
             await asyncio.sleep(MODEL_IDLE_CHECK_INTERVAL_SECONDS)
-            if self._active_sessions:
+            if self._active_sessions or self._finalize_tasks:
                 # Keep the timer fresh while analysis is running.
                 self._last_analysis_activity = time.monotonic()
                 continue
@@ -1534,3 +1550,9 @@ class AudioAnalysisController:
         except ValueError, TypeError:
             value = DEFAULT_BACKGROUND_SCAN_CONCURRENCY
         return max(1, min(value, 16))
+
+    def _available_aa_domains(self) -> set[str]:
+        """Return available AA provider domains plus the virtual provider-loudness domain."""
+        return {
+            p.domain for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS) if p.available
+        } | {PROVIDER_LOUDNESS_DOMAIN}

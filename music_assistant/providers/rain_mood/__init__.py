@@ -46,6 +46,11 @@ async def setup(
 class RainyMoodProvider(MusicProvider):
     """Music provider serving a looping rain ambience from rainymood.com."""
 
+    @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider (none needed)."""
         return ()

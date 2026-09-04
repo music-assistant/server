@@ -41,6 +41,7 @@ from .constants import (
 )
 from .library import TidalLibraryManager
 from .media import TidalMediaManager
+from .play_reporting import TidalPlayReportingManager
 from .playlist import TidalPlaylistManager
 from .recommendations import TidalRecommendationManager
 from .streaming import TidalStreamingManager
@@ -61,6 +62,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_TRACKS,
     ProviderFeature.LIBRARY_PLAYLISTS,
     ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.ARTIST_TRACKS,
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.SEARCH,
     ProviderFeature.LIBRARY_ARTISTS_EDIT,
@@ -80,6 +82,9 @@ SUPPORTED_FEATURES = {
 class TidalProvider(RecommendationPayloadMixin, MusicProvider):
     """Implementation of a Tidal MusicProvider."""
 
+    # Tidal playlists reject adding a track that is already in the playlist
+    playlist_duplicates_supported = False
+
     def __init__(self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig):
         """Initialize Tidal provider."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
@@ -94,6 +99,7 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         self.playlists = TidalPlaylistManager(self)
         self.recommendations_manager = TidalRecommendationManager(self)
         self.streaming = TidalStreamingManager(self)
+        self.play_reporting = TidalPlayReportingManager(self)
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -200,6 +206,11 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         return await self.media.get_artist_albums(prov_artist_id)
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)
+    async def get_artist_tracks(self, prov_artist_id: str) -> list[Track]:
+        """Get a list of all tracks for the given artist."""
+        return await self.media.get_artist_tracks(prov_artist_id)
+
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         return await self.media.get_artist_toptracks(prov_artist_id)
@@ -214,6 +225,29 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
     ) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         return await self.streaming.get_stream_details(item_id)
+
+    async def on_played(
+        self,
+        media_type: MediaType,
+        prov_item_id: str,
+        fully_played: bool,
+        position: int,
+        media_item: MediaItemType,
+        is_playing: bool = False,
+    ) -> None:
+        """
+        Report a completed play back to Tidal (best-effort, never blocks playback).
+
+        Only the terminal call matters here, not the periodic progress pings sent
+        while is_playing is True.
+        """
+        if media_type != MediaType.TRACK or is_playing or not isinstance(media_item, Track):
+            return
+        self.mass.create_task(
+            self.play_reporting.report_played(
+                prov_item_id, media_item.duration, position, fully_played
+            )
+        )
 
     def get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         """Create a generic item mapping."""

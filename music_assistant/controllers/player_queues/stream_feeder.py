@@ -26,7 +26,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
-from music_assistant.controllers.streams.audio_buffer import AudioBuffer
+from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
 
 if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
@@ -59,6 +59,9 @@ class StreamFeederMixin(_PlayerQueuesBase):
             and next_item.streamdetails.buffer
             and next_item.streamdetails.buffer.is_valid()
         ):
+            # reusing audio an earlier session left behind claims it for this one, so its
+            # stop releases it and the earlier session's stop no longer can
+            next_item.streamdetails.queue_session_id = self._queue_data[queue_id].session_id
             return
 
         async def _do_prepare() -> None:
@@ -73,16 +76,54 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     next_item.name,
                     queue.display_name,
                 )
-                await AudioBuffer.get_buffer(
-                    self.mass,
-                    next_item.streamdetails,
+                await self.mass.streams.audio.get_audio_buffer(
+                    next_item,
                     reason="prepare_next",
-                    wait_ready=True,
+                    capacity_wait_timeout=STREAM_SLOT_WAIT_TIMEOUT,
+                    # speculative preparation gives up softly, so it must stay cheap:
+                    # leave the cross-provider search to the actual playback start
+                    allow_provider_match=False,
                 )
             except (AudioError, MediaNotFoundError) as err:
                 self.logger.debug("Failed to prepare next audio buffer: %s", err)
+            except asyncio.CancelledError:
+                # a replacement prepare aborted this one: release the half-filled source
+                # so its slot is not pinned until the inactivity sweep
+                if (sd := next_item.streamdetails) and (buf := sd.buffer) and buf.is_buffering:
+                    await asyncio.shield(buf.clear())
+                raise
 
-        self.mass.create_task(_do_prepare)
+        self.mass.create_task(
+            _do_prepare,
+            task_id=f"prepare_next_audio_buffer_{queue_id}",
+            abort_existing=True,
+        )
+
+    def update_next_item_on_player(self, queue_id: str, force: bool = False) -> None:
+        """
+        Hand the player the track that now follows the one it is playing.
+
+        Does nothing when the player already holds that track, so a queue change that leaves the
+        upcoming track alone costs nothing.
+
+        :param queue_id: The queue whose player should be updated.
+        :param force: Hand it over even when the player already holds it, for a change that
+            alters how the same track is streamed rather than which track it is.
+        """
+        queue_data = self._queue_data[queue_id]
+        queue = queue_data.queue
+        if queue.state != PlaybackState.PLAYING or queue.current_index is None:
+            return
+        if queue.index_in_buffer is None or queue_data.transitioning:
+            # no settled position to follow: a replace clears the buffered index while it swaps
+            # the items, and a starting track moves the two indexes one after the other
+            return
+        next_item = self.get_next_item(queue_id, queue.current_index)
+        if next_item is None:
+            return
+        if not force and next_item.queue_item_id == queue_data.next_item_id_enqueued:
+            return
+        self._enqueue_next_item(queue_id, next_item)
 
     def _enqueue_next_item(self, queue_id: str, next_item: QueueItem | None) -> None:
         """Enqueue the next item on the player."""
@@ -144,7 +185,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 self.logger.debug(
                     "Enqueued next track %s on queue %s",
                     next_item.name,
-                    self._queue_data[queue_id].queue.display_name,
+                    queue.display_name,
                 )
 
         task_id = f"enqueue_next_item_{queue_id}"
@@ -226,7 +267,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
         for idx, item in enumerate(queue_items):
             if idx > cleanup_threshold:
                 break  # No need to check further
-            if item.streamdetails and item.streamdetails.buffer:
+            if (streamdetails := item.streamdetails) and (buffer := streamdetails.buffer):
                 self.logger.log(
                     VERBOSE_LOG_LEVEL,
                     "Clearing stale audio buffer for queue item %s (index %d) in queue %s",
@@ -234,8 +275,9 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     idx,
                     queue_id,
                 )
-                await item.streamdetails.buffer.clear()
-                item.streamdetails.buffer = None
+                # detached before releasing, as in _cleanup_queue_audio_data
+                streamdetails.buffer = None
+                await buffer.clear()
                 buffers_cleared += 1
 
         if buffers_cleared > 0:
@@ -246,7 +288,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 cleanup_threshold + 1,
             )
 
-    async def _cleanup_queue_audio_data(self, queue_id: str) -> None:
+    async def _cleanup_queue_audio_data(self, queue_id: str, session_id: str | None = None) -> None:
         """
         Clean up all audio-related data for a queue when it is stopped or cleared.
 
@@ -255,17 +297,38 @@ class StreamFeederMixin(_PlayerQueuesBase):
         - Any pending crossfade data for the queue
 
         :param queue_id: The queue ID to clean up.
+        :param session_id: The playback session being stopped. Audio the queue's currently
+            playing session claimed is left alone; everything else is released, including
+            what sessions that ended earlier left behind. None clears every buffer.
         """
-        self.mass.streams.audio.clear_crossfade_data(queue_id)
+        self.mass.streams.audio.clear_crossfade_handover(queue_id)
 
-        queue_items = queue_data.items if (queue_data := self._queue_data.get(queue_id)) else []
+        queue_data = self._queue_data.get(queue_id)
+        queue_items = queue_data.items if queue_data else []
         buffers_cleared = 0
 
         for item in queue_items:
-            if item.streamdetails and item.streamdetails.buffer:
-                await item.streamdetails.buffer.clear()
-                item.streamdetails.buffer = None
-                buffers_cleared += 1
+            if not (streamdetails := item.streamdetails) or not (buffer := streamdetails.buffer):
+                continue
+            # read the playing session per item rather than once: releasing a buffer suspends,
+            # and a session that starts during one of those waits owns what it attaches after.
+            # A session id only protects audio while that session is the one playing - sessions
+            # rotate without a stop, so a claim that is no longer current marks audio nobody
+            # will come back for.
+            playing_session = queue_data.session_id if queue_data else None
+            if (
+                session_id is not None
+                and playing_session not in (None, session_id)
+                and streamdetails.queue_session_id == playing_session
+            ):
+                # playback restarted here while this stop was still running; killing its
+                # producer would strand the session that is playing now
+                continue
+            # detach before releasing: clearing suspends on the producer's cancellation, and a
+            # session starting in that window attaches its own buffer here
+            streamdetails.buffer = None
+            await buffer.clear()
+            buffers_cleared += 1
 
         if buffers_cleared > 0:
             self.logger.debug(

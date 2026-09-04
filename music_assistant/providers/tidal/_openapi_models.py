@@ -39,7 +39,7 @@ class ExternalLink(TypedDict):
 
 
 class PlaylistsAttributes(TypedDict):
-    accessType: Literal["PUBLIC", "UNLISTED"]
+    accessType: Literal["PUBLIC", "UNLISTED", "PRIVATE"]
     bounded: bool
     createdAt: str
     description: NotRequired[str]

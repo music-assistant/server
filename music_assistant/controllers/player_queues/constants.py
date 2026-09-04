@@ -45,10 +45,17 @@ PLAY_ACTION_TRACK_DEFAULT_VALUE = PLAY_ACTION_PLAY_FROM_HERE
 CONF_AUTOPLAY_LABEL = "autoplay_label"
 CONF_AUTOPLAY_MODE = "autoplay_mode"
 CONF_AUTOPLAY_PLAYLIST = "autoplay_playlist"
+CONF_AUTOPLAY_ENABLED = "autoplay_enabled"
 CONF_CROSSFADE_LABEL = "crossfade_label"
+CONF_CROSSFADE_ENABLED = "crossfade_enabled"
+
+# global defaults the per-queue autoplay/crossfade toggles follow when not overridden
+DEFAULT_AUTOPLAY_ENABLED = True
+DEFAULT_CROSSFADE_ENABLED = False
 
 CONF_SMART_SHUFFLE_LABEL = "smart_shuffle_label"
 CONF_SMART_SHUFFLE_ENABLED = "smart_shuffle_enabled"
+CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES = "smart_shuffle_optimize_smart_fades"
 CONF_SMART_SHUFFLE_SONG_RECENCY = "smart_shuffle_song_recency"
 CONF_SMART_SHUFFLE_ARTIST_RECENCY = "smart_shuffle_artist_recency"
 CONF_SMART_SHUFFLE_DUPLICATE_GAP = "smart_shuffle_duplicate_gap"
@@ -83,11 +90,18 @@ MANAGED_POOL_MAX = 50
 # deque drains, so a huge playlist or a bulk manual enqueue can't balloon internal state.
 MANAGED_POOL_SOURCE_CAP = 250
 
-# How long a user's shuffle toggle stays "fresh" enough to carry over into the next media the user
-# starts. Turning shuffle on and then pressing play is a deliberate "shuffle this" gesture and must
-# be honoured; a shuffle left on by an earlier listening session must not silently reorder the album
-# the user just picked. Only bridges the gap between the two clicks, so it is deliberately short.
-SHUFFLE_INTENT_WINDOW = 300
+# Media types that are not a pool of tracks to shuffle: an album is sequenced by its artist, a
+# podcast or audiobook only makes sense front to back, and a radio station is a single endless
+# stream. Starting one of these plays it as it comes, switching the queue's shuffle off with it,
+# unless the caller asks for shuffle explicitly. Every other type (playlist, artist, genre, ...)
+# keeps whatever the queue is set to.
+ORDERED_MEDIA_TYPES = (
+    MediaType.ALBUM,
+    MediaType.AUDIOBOOK,
+    MediaType.PODCAST,
+    MediaType.PODCAST_EPISODE,
+    MediaType.RADIO,
+)
 
 CACHE_CATEGORY_PLAYER_QUEUE_STATE = 0
 CACHE_CATEGORY_PLAYER_QUEUE_ITEMS = 1

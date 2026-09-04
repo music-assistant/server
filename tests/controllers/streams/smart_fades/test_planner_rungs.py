@@ -146,6 +146,54 @@ def _small_trim_gap_ctx() -> TransitionContext:
     return build_transition_context(aa_out, aa_in, 45.0, logging.getLogger("test"))
 
 
+def _small_positive_trim_gap_ctx() -> TransitionContext:
+    """
+    Build a context whose energy anchor lands a few seconds before the audible end.
+
+    Same shape as the big-gap fixture but with a short mid-tier energy
+    segment, giving a gap under the trim-closing generator's default min gap.
+    """
+    beats = [i * 60 / 128 for i in range(int(45 * 128 / 60))]
+    downbeats = beats[::4]
+    rms_energy = [0.9] * 1550 + [0.25] * 160 + [0.0] * 90
+    aa_out = AudioAnalysisData(
+        duration=45.0,
+        bpm=128.0,
+        beats=beats,
+        downbeats=downbeats,
+        beats_per_bar=4,
+        rms_energy=rms_energy,
+        key="C",
+        mode="minor",
+        extra_data={},
+    )
+    aa_in = AudioAnalysisData(
+        duration=45.0,
+        bpm=128.0,
+        beats=beats,
+        downbeats=downbeats,
+        beats_per_bar=4,
+        rms_energy=[0.8] * 1800,
+        key="C",
+        mode="minor",
+        extra_data={},
+    )
+    ctx = build_transition_context(aa_out, aa_in, 45.0, logging.getLogger("test"))
+    assert 0.0 < ctx.audio_end - ctx.default_anchor < 8.0
+    return ctx
+
+
+def test_trim_closing_min_gap_zero_bypasses_the_gate() -> None:
+    """An ungated instance emits the ladder at the audible end even for a small trim gap."""
+    ctx = _small_positive_trim_gap_ctx()
+    assert list(TrimClosingAnchorGenerator().generate(ctx)) == []
+    specs = list(TrimClosingAnchorGenerator(min_gap=0.0).generate(ctx))
+    assert specs
+    assert any(
+        spec.anchor_s == ctx.audio_end and spec.source == "trim-closing-anchor" for spec in specs
+    )
+
+
 def test_energy_ladder_emits_only_plain_rungs() -> None:
     """A one-instrumental/one-vocal pair gets the plain ladder, no 16-bar spec."""
     instrumental_vs_vocal_ctx = _instrumental_vs_vocal_ctx()
@@ -297,6 +345,8 @@ def test_lazy_overlay_wins_for_both_ambient_unblendable_pair() -> None:
     assert plan.metrics.strategy is TransitionStrategy.LAZY_OVERLAY
     assert plan.crossfade_duration >= 12.0
     assert plan.fadein_trim_start is None  # B keeps its intro
+    # the long overlay keeps its handover EQ despite riding the QUICK_FADE tier
+    assert plan.eq_plan.low_in is not None
 
 
 def test_lazy_overlay_not_emitted_for_vocal_material() -> None:

@@ -30,6 +30,7 @@ LOGGER = logging.getLogger("ffmpeg")
 MINIMAL_FFMPEG_VERSION = 7
 CACHE_ATTR_LIBSOXR_PRESENT: Final[str] = "libsoxr_present"
 CACHE_ATTR_FFMPEG_VERSION: Final[str] = "ffmpeg_version"
+CACHE_ATTR_HLS_CMAF_BLOCKED: Final[str] = "hls_cmaf_blocked"
 DEFAULT_MP3_BIT_RATE: Final[int] = 320
 
 # FFmpeg's mono->stereo rematrix spreads a source at 1/sqrt(2) per channel; this factor
@@ -188,26 +189,9 @@ class FFMpeg(AsyncProcess):
     ) -> tuple[bytes, bytes]:
         """Override communicate to avoid blocking."""
         if self._stdin_feeder_task:
-            if not self._stdin_feeder_task.done():
-                self._stdin_feeder_task.cancel()
-            # Always await the task to consume any exception and prevent
-            # "Task exception was never retrieved" errors.
-            try:
-                await self._stdin_feeder_task
-            except asyncio.CancelledError:
-                pass  # Expected when we cancel the task
-            except Exception as err:
-                # Log unexpected exceptions from the stdin feeder before suppressing
-                # The audio source may have failed, and we need visibility into this
-                self.logger.warning(
-                    "FFMpeg stdin feeder task ended with error: %s",
-                    err,
-                )
+            await self._cancel_and_await(self._stdin_feeder_task, "stdin feeder")
         if self._stderr_reader_task:
-            if not self._stderr_reader_task.done():
-                self._stderr_reader_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await self._stderr_reader_task
+            await self._cancel_and_await(self._stderr_reader_task, "stderr reader")
         return await super().communicate(input, timeout)
 
     async def _log_reader_task(self) -> None:
@@ -346,6 +330,16 @@ class FFMpeg(AsyncProcess):
             info.bit_depth,
             info.bit_rate,
         )
+
+    def _is_expected_task_error(self, err: BaseException) -> bool:
+        """Return whether a helper task error is an expected outcome rather than a failure."""
+        # deferred import: the provider models pull the controller graph in at
+        # import time, which this low-level helper must stay clear of
+        from music_assistant.models.music_provider import ProviderStreamLimitError  # noqa: PLC0415
+
+        # a provider with no free source-stream slot is a normal outcome of a
+        # speculative prefetch: the caller retries once the current stream releases it
+        return isinstance(err, ProviderStreamLimitError)
 
 
 def parse_ffmpeg_stream_info(line: str) -> FFMpegStreamInfo | None:
@@ -583,7 +577,9 @@ def get_ffmpeg_args(
                 "-f",
                 input_format.content_type.value,
             ]
-        if input_format.codec_type != ContentType.UNKNOWN:
+        elif input_format.codec_type != ContentType.UNKNOWN:
+            # ffmpeg honours the last -acodec it is given, so this must not follow the
+            # raw PCM decoder declared above
             input_args += ["-acodec", input_format.codec_type.name.lower()]
 
         # add input path at the end
@@ -685,8 +681,24 @@ def get_ffmpeg_channel_args(audio_format: AudioFormat) -> list[str]:
     return args
 
 
+def get_ffmpeg_hls_cmaf_input_args() -> list[str]:
+    """
+    Return HLS demuxer input arguments that let CMAF segments through, if any are needed.
+
+    Pass these only for a playlist from a source known to serve CMAF, never for a playlist
+    URL that a user supplied.
+    """
+    # The check this relaxes is hardening against hostile playlists, hence opt-in per caller.
+    # allowed_extensions cannot narrow it: the demuxer matches a segment URL against that
+    # option *and* against a hardcoded per-format extension list that no option reaches, so
+    # switching the check off is the only lever over the second one.
+    if get_global_cache_value(CACHE_ATTR_HLS_CMAF_BLOCKED):
+        return ["-extension_picky", "0"]
+    return []
+
+
 async def check_ffmpeg_version() -> None:
-    """Check if ffmpeg is present (with libsoxr support)."""
+    """Check that ffmpeg is present and usable, and cache the capabilities it reports."""
     # check for FFmpeg presence
     try:
         returncode, output = await check_output("ffmpeg", "-version")
@@ -711,9 +723,23 @@ async def check_ffmpeg_version() -> None:
             f"Additional info: {returncode} {output.decode().strip()}"
         )
     libsoxr_support = "enable-libsoxr" in output.decode()
+    # 7.1.1 backported a segment extension check without whitelisting CMAF, so it rejects the
+    # .cmfa segments some services serve; 7.1.2 whitelisted them, see
+    # https://trac.ffmpeg.org/ticket/11526. Probe the demuxer rather than compare versions,
+    # which builds from git report as e.g. "N-121037-g1234567". A probe that fails reads as
+    # "not blocked", so the check stays in place. Drop this once every supported build
+    # whitelists CMAF.
+    returncode, hls_options = await check_output("ffmpeg", "-hide_banner", "-h", "demuxer=hls")
+    cmaf_blocked = (
+        returncode == 0 and b"extension_picky" in hls_options and b"cmfa" not in hls_options
+    )
     # use globals as in-memory cache
     await set_global_cache_values(
-        {CACHE_ATTR_LIBSOXR_PRESENT: libsoxr_support, CACHE_ATTR_FFMPEG_VERSION: version}
+        {
+            CACHE_ATTR_LIBSOXR_PRESENT: libsoxr_support,
+            CACHE_ATTR_FFMPEG_VERSION: version,
+            CACHE_ATTR_HLS_CMAF_BLOCKED: cmaf_blocked,
+        }
     )
 
     major_version = int("".join(char for char in version.split(".")[0] if not char.isalpha()))

@@ -34,6 +34,8 @@ from music_assistant_models.errors import (
     InvalidCommand,
     InvalidDataError,
     MediaNotFoundError,
+    MusicAssistantError,
+    PlayerCommandFailed,
     PlayerUnavailableError,
     QueueEmpty,
 )
@@ -62,11 +64,15 @@ from music_assistant.controllers.player_queues.config import (
 from music_assistant.controllers.player_queues.constants import (
     CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
     CACHE_CATEGORY_PLAYER_QUEUE_STATE,
+    CONF_AUTOPLAY_ENABLED,
+    CONF_CROSSFADE_ENABLED,
+    DEFAULT_AUTOPLAY_ENABLED,
+    DEFAULT_CROSSFADE_ENABLED,
     PLAYBACK_START_TIMEOUT,
     QUEUE_CACHE_SAVE_DELAY,
-    SHUFFLE_INTENT_WINDOW,
 )
 from music_assistant.controllers.player_queues.helpers import (
+    committed_index,
     get_current_playback_speed,
     handle_play_action,
     is_dynamic_source,
@@ -80,6 +86,9 @@ from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.player_queues.stream_feeder import StreamFeederMixin
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
+from music_assistant.helpers.uri import parse_uri
+from music_assistant.models.music_provider import ProviderStreamLimitError
 from music_assistant.models.player import Player, PlayerMedia
 
 if TYPE_CHECKING:
@@ -112,6 +121,49 @@ _WIRE_SOURCE_MEDIA_TYPES: Final = frozenset(
         MediaType.AUDIOBOOK,
     }
 )
+
+# how many times play_index will try to load an item before giving up
+_MAX_LOAD_ATTEMPTS: Final = 5
+
+
+async def _is_audio_source(item: MediaItemType | ItemMapping | str) -> bool:
+    """
+    Return whether the given media names a live audio source.
+
+    :param item: One entry of a play request.
+    """
+    if not isinstance(item, str):
+        return item.media_type == MediaType.AUDIO_SOURCE
+    try:
+        media_type, _, _ = await parse_uri(item)
+    except MusicAssistantError:
+        return False
+    return media_type == MediaType.AUDIO_SOURCE
+
+
+async def _resolve_audio_source_request(
+    media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
+) -> str | None:
+    """
+    Return the uri of the live audio source a play request names, if it names one.
+
+    A live source is selected on a player rather than queued, so it cannot be lined
+    up behind or alongside other media: naming one among others is a caller error
+    rather than a request to interpret.
+
+    :param media: The media a play request was given.
+    :raises InvalidCommand: When a live source is named among other media.
+    """
+    items = media if isinstance(media, list) else [media]
+    sources = [item for item in items if await _is_audio_source(item)]
+    if not sources:
+        return None
+    if len(items) > 1:
+        raise InvalidCommand(
+            "A live audio source plays on its own: it can not be combined with other media"
+        )
+    item = sources[0]
+    return item if isinstance(item, str) else item.uri
 
 
 class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeederMixin):
@@ -176,9 +228,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         await super().update_config(config, changed_keys)
         if not any(key.startswith("values/") for key in changed_keys):
             return
-        # queues that follow a changed global value may flip their derived indicators, so refresh
-        # and signal them (mirrors what save_player_queue_config does for a single queue)
-        for queue in self.all():
+        # queues that follow a changed global value may flip their effective toggles or derived
+        # indicators, so refresh and signal them (the audible effect lands on the next transition)
+        for queue_data in self._queue_data.values():
+            queue = queue_data.queue
+            self._resolve_default_toggles(queue_data)
             queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
             queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
             self.signal_update(queue.queue_id)
@@ -253,33 +307,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             raise InvalidCommand("Cannot change shuffle while the queue is in dynamic mode")
         if queue.shuffle_enabled == shuffle_enabled:
             return  # no change
-        queue.shuffle_enabled = shuffle_enabled
-        # remember the moment the user asked for shuffle, so media started right after this
-        # keeps it instead of being reset by the "fresh queue plays in order" default. Monotonic
-        # because only the elapsed interval matters, and a host whose clock is corrected while
-        # MA runs (a Pi without an RTC syncing after boot) would otherwise age it wrongly.
-        self._queue_data[queue_id].shuffle_set_at = time.monotonic() if shuffle_enabled else None
-        queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
-        queue_items = self._queue_data[queue_id].items
-        cur_index = (
-            queue.index_in_buffer if queue.index_in_buffer is not None else queue.current_index
-        )
-        if cur_index is not None:
-            next_index = cur_index + 1
-            next_items = queue_items[next_index:]
-        else:
-            next_items = []
-            next_index = 0
-        if not shuffle_enabled:
-            # shuffle disabled, try to restore original sort order of the remaining items
-            next_items.sort(key=lambda x: x.sort_index, reverse=False)
-        await self.load(
-            queue_id=queue_id,
-            queue_items=next_items,
-            insert_at_index=next_index,
-            keep_remaining=False,
-            shuffle=shuffle_enabled,
-        )
+        await self._apply_local_shuffle(queue_id, shuffle_enabled)
 
     def is_smart_shuffle_active(self, queue: PlayerQueue) -> bool:
         """
@@ -300,7 +328,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Configure Autoplay setting on the queue."""
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
-        queue.autoplay_enabled = autoplay_enabled
+        queue_data.autoplay_override = autoplay_enabled
+        self._resolve_default_toggles(queue_data)
         # if we're already at/near the end of the queue, kick off a refill right away
         # (an active dynamic source manages its own refills, so leave it be)
         if (
@@ -321,7 +350,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.set_autoplay(queue_id, dont_stop_the_music_enabled)
 
     @api_command("player_queues/repeat", required_scope=Scope.QUEUES_CONTROL)
-    def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
+    async def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
         """Configure repeat setting on the the queue."""
         queue = self._queue_data[queue_id].queue
         if queue.is_dynamic:
@@ -331,37 +360,24 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return  # no change
         queue.repeat_mode = repeat_mode
         self.signal_update(queue_id)
-        if (
-            queue.state == PlaybackState.PLAYING
-            and queue.index_in_buffer is not None
-            and queue.index_in_buffer == queue.current_index
-        ):
-            # if the queue is playing,
-            # ensure to (re)queue the next track because it might have changed
-            # note that we only do this if the player has loaded the current track
-            # if not, we wait until it has loaded to prevent conflicts
-            if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
-                self._enqueue_next_item(queue_id, next_item)
+        self.update_next_item_on_player(queue_id)
 
     @api_command("player_queues/crossfade", required_scope=Scope.QUEUES_CONTROL)
     def set_crossfade(self, queue_id: str, crossfade_enabled: bool) -> None:
         """Enable or disable crossfade on the queue."""
-        queue = self._queue_data[queue_id].queue
-        if queue.crossfade_enabled == crossfade_enabled:
-            return  # no change
-        queue.crossfade_enabled = crossfade_enabled
-        # refresh the derived smart-fades indicator so the update we signal reflects the new state
-        queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
+        queue_data = self._queue_data[queue_id]
+        queue = queue_data.queue
+        effective_before = queue.crossfade_enabled
+        # the toggle always pins an explicit override, even when it matches the global default
+        queue_data.crossfade_override = crossfade_enabled
+        self._resolve_default_toggles(queue_data)
+        if queue.crossfade_enabled != effective_before:
+            # refresh the derived smart-fades indicator so the update we signal reflects the new state
+            queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
+            # the upcoming track is unchanged but the way it is streamed is not, so hand it over
+            # again
+            self.update_next_item_on_player(queue_id, force=True)
         self.signal_update(queue_id)
-        if (
-            queue.state == PlaybackState.PLAYING
-            and queue.index_in_buffer is not None
-            and queue.index_in_buffer == queue.current_index
-        ):
-            # re-enqueue the next track so the new crossfade behaviour applies to the
-            # upcoming transition (only when the player has already loaded the current track)
-            if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
-                self._enqueue_next_item(queue_id, next_item)
 
     @api_command("player_queues/overlay", required_scope=Scope.QUEUES_CONTROL)
     async def set_overlay(
@@ -498,15 +514,29 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             saved resume position. The stored progress itself is left untouched.
         :param shuffle: Play the media shuffled (or explicitly in order). Only applies to the
             options that start playing right away (play/replace), and never to a dynamic source
-            (an always-on smart mix). Omit to let the queue decide: it keeps shuffle when the user
-            just switched it on, and plays the media in order otherwise.
+            (an always-on smart mix). Omit to follow the queue's own shuffle setting, which media
+            with an order of its own (album, podcast, episode, audiobook, audio source) switches
+            off; the first item of a batch decides for the whole batch.
         """
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
+        # A live source is not queue content: it plays on the player while the queue
+        # keeps its own items. Selecting it is the real operation, so a play request
+        # naming one is forwarded there rather than enqueued.
+        if (source_uri := await _resolve_audio_source_request(media)) is not None:
+            await self.mass.players.select_source(queue_id, source_uri)
+            return
         # Lock is acquired by the @handle_play_action decorator on the internal handler
         await self._handle_play_media(
-            queue_id, media, option, radio_mode, start_item, sort_by, start_from_beginning, shuffle
+            queue_id,
+            media,
+            option,
+            radio_mode,
+            start_item,
+            sort_by,
+            start_from_beginning,
+            shuffle,
         )
 
     @api_command("player_queues/move_item", required_scope=Scope.QUEUES_CONTROL)
@@ -518,26 +548,32 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         - queue_item_id: the item_id of the queueitem that needs to be moved.
         - pos_shift: move item x positions down if positive value
         - pos_shift: move item x positions up if negative value
-        - pos_shift:  move item to top of queue as next item if 0.
+        - pos_shift: move item to the front of the upcoming items if 0
         """
         queue = self._queue_data[queue_id].queue
         item_index = self.index_by_id(queue_id, queue_item_id)
         if item_index is None:
             raise InvalidDataError(f"Item {queue_item_id} not found in queue")
-        if queue.index_in_buffer is not None and item_index <= queue.index_in_buffer:
+        # the player owns everything up to this index and keeps playing it whatever the queue
+        # says, so it is out of bounds as both a source and a destination
+        boundary_index = committed_index(queue) if queue.index_in_buffer is not None else None
+        if boundary_index is not None and item_index <= boundary_index:
             msg = f"{item_index} is already played/buffered"
             raise IndexError(msg)
 
         queue_items = self._queue_data[queue_id].items
         queue_items = queue_items.copy()
 
-        if pos_shift == 0 and queue.state == PlaybackState.PLAYING:
-            new_index = (queue.current_index or 0) + 1
+        if pos_shift == 0 and queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+            new_index = (boundary_index if boundary_index is not None else 0) + 1
         elif pos_shift == 0:
             new_index = queue.current_index or 0
         else:
             new_index = item_index + pos_shift
-        if (new_index < (queue.current_index or 0)) or (new_index > len(queue_items)):
+        lowest_index = (
+            boundary_index + 1 if boundary_index is not None else (queue.current_index or 0)
+        )
+        if new_index < lowest_index or new_index > len(queue_items):
             return
         # move the item in the list
         queue_items.insert(new_index, queue_items.pop(item_index))
@@ -555,7 +591,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         item_index = self.index_by_id(queue_id, queue_item_id)
         if item_index is None:
             raise InvalidDataError(f"Item {queue_item_id} not found in queue")
-        if queue.index_in_buffer is not None and item_index <= queue.index_in_buffer:
+        boundary_index = committed_index(queue) if queue.index_in_buffer is not None else None
+        if boundary_index is not None and item_index <= boundary_index:
             msg = f"{item_index} is already played/buffered"
             raise IndexError(msg)
 
@@ -580,7 +617,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         else:
             item_index = item_id_or_index
         queue = self._queue_data[queue_id].queue
-        if queue.index_in_buffer is not None and item_index <= queue.index_in_buffer:
+        boundary_index = committed_index(queue) if queue.index_in_buffer is not None else None
+        if boundary_index is not None and item_index <= boundary_index:
             # ignore request if track already loaded in the buffer
             # the frontend should guard so this is just in case
             self.logger.warning("delete requested for item already loaded in buffer")
@@ -650,7 +688,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         return await self.mass.music.playlists.add_playlist_tracks(playlist.item_id, uris)
 
     @api_command("player_queues/stop", required_scope=Scope.QUEUES_CONTROL)
-    @handle_play_action
     async def stop(self, queue_id: str) -> None:
         """
         Handle STOP command for given queue.
@@ -658,29 +695,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         - queue_id: queue_id of the playerqueue to handle the command.
         """
         self._check_player_permission(queue_id)
-        # cancel any pending play_index calls for this queue to prevent conflicts
-        self.mass.cancel_timer(f"queue_play_index_{queue_id}")
-        # cancel in-flight preload/enqueue-next so it can't enqueue after stop
-        self.mass.cancel_task(f"preload_next_item_{queue_id}")
-        self.mass.cancel_timer(f"enqueue_next_item_{queue_id}")
-        self.mass.cancel_task(f"enqueue_next_item_{queue_id}")
-        self._set_transitioning(queue_id, False)
-        queue_data = self._queue_data[queue_id]
-        session_id = queue_data.session_id
-        queue_player = self.mass.players.get_player(queue_id, True)
-        if queue_player is None:
-            raise PlayerUnavailableError(f"Player {queue_id} is not available")
-        if (queue := self.get(queue_id)) and queue.active:
-            if queue.state == PlaybackState.PLAYING:
-                queue.resume_pos = int(queue.corrected_elapsed_time)
-        # Use internal handler to avoid circular redirect:
-        # public cmd_stop redirects to queue.stop when a queue is active,
-        # which would loop back here indefinitely.
-        await self.mass.players._handle_cmd_stop(queue_id)
-        if queue_data.session_id == session_id:
-            queue_data.session_id = None
-        self.mass.streams.audio_processing.clear(queue_id, session_id)
-        self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
+        await self._handle_stop(queue_id)
 
     @api_command("player_queues/play", required_scope=Scope.QUEUES_CONTROL)
     async def play(self, queue_id: str) -> None:
@@ -1003,56 +1018,75 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     queue_item.extra_attributes["playback_speed"] = stored_speed
 
             # try to load the item, retry with next item if it fails
-            for attempt in range(5):
-                try:
-                    queue_item = self.get_item(queue_id, index)
-                    if not queue_item:
-                        continue  # guard
-                    await self._load_item(
-                        queue_item,
-                        self._get_next_index(queue_id, index),
-                        is_start=True,
-                        seek_position=seek_position if attempt == 0 else 0,
-                        fade_in=fade_in if attempt == 0 else False,
-                    )
-                    # if we reach this point, loading the item succeeded, break the loop
-                    queue.current_index = index
-                    queue.current_item = queue_item
-                    # playback is under way, so the queue is no longer sitting at its end
-                    queue.ended = False
-                    # reset the elapsed clock together with the item switch (like
-                    # next/previous do), so queue updates signaled before the player
-                    # reports position don't carry the previous item's elapsed_time
-                    queue.elapsed_time = seek_position if attempt == 0 else 0
-                    queue.elapsed_time_last_updated = time.time()
+            requested_index = index
+            attempts = 0
+            refilled = False
+            loaded_item: QueueItem | None = None
+            while attempts < _MAX_LOAD_ATTEMPTS:
+                queue_item = self.get_item(queue_id, index)
+                if not queue_item:
                     break
-                except (MediaNotFoundError, AudioError) as err:
-                    item_name = queue_item.name if queue_item else "unknown"
-                    # Only MediaNotFoundError (item unreachable) is persistent;
-                    # keep AudioError items available so a retry can resurface
-                    # the same actionable error.
-                    if queue_item and isinstance(err, MediaNotFoundError):
-                        queue_item.available = False
+                err: MediaNotFoundError | AudioError | None = None
+                if queue_item.available:
+                    try:
+                        await self._load_item(
+                            queue_item,
+                            is_start=True,
+                            seek_position=seek_position if index == requested_index else 0,
+                            fade_in=fade_in if index == requested_index else False,
+                        )
+                        queue.current_index = index
+                        queue.current_item = queue_item
+                        # playback is under way, so the queue is no longer sitting at its end
+                        queue.ended = False
+                        # reset the elapsed clock together with the item switch (like
+                        # next/previous do), so queue updates signaled before the player
+                        # reports position don't carry the previous item's elapsed_time
+                        queue.elapsed_time = seek_position if index == requested_index else 0
+                        queue.elapsed_time_last_updated = time.time()
+                        loaded_item = queue_item
+                        break
+                    except (MediaNotFoundError, AudioError) as load_err:
+                        if isinstance(load_err, ProviderStreamLimitError):
+                            # the requested item is playable, its provider is just at capacity:
+                            # report that instead of silently advancing to another item
+                            self.logger.error("%s", load_err)
+                            await self.stop(queue_id)
+                            raise
+                        err = load_err
+                        attempts += 1
+                        # Only MediaNotFoundError (item unreachable) is persistent;
+                        # keep AudioError items available so a retry can resurface
+                        # the same actionable error.
+                        if isinstance(err, MediaNotFoundError):
+                            queue_item.available = False
+                next_index = self._get_next_index(queue_id, index, allow_repeat=False)
+                if next_index is None and queue.is_dynamic and not refilled:
+                    refilled = True
+                    await self._fill_dynamic_tracks(queue_id)
                     next_index = self._get_next_index(queue_id, index, allow_repeat=False)
-                    if next_index is None:
-                        # Surface an AudioError's own (actionable) message;
-                        # MediaNotFoundError gets the generic wording.
-                        if isinstance(err, AudioError) and str(err):
-                            msg = str(err)
-                        else:
-                            msg = f"Playback failed for {item_name} - no more tracks available"
-                        self.logger.error(msg)
-                        await self.stop(queue_id)
-                        raise MediaNotFoundError(msg) from err
-                    self.logger.warning(
-                        "Skipping unplayable item %s",
-                        item_name,
-                    )
-                    index = next_index
-            else:
-                # all attempts to find a playable item failed
+                    # the refilled items get their own budget
+                    attempts = 0
+                if next_index is None:
+                    # Surface an AudioError's own (actionable) message;
+                    # MediaNotFoundError gets the generic wording.
+                    if isinstance(err, AudioError) and str(err):
+                        msg = str(err)
+                    else:
+                        msg = f"Playback failed for {queue_item.name} - no more tracks available"
+                    self.logger.error(msg)
+                    await self.stop(queue_id)
+                    raise MediaNotFoundError(msg) from err
+                self.logger.warning(
+                    "Skipping unplayable item %s: %s",
+                    queue_item.name,
+                    err or "marked unavailable",
+                )
+                index = next_index
+            if loaded_item is None:
                 await self.stop(queue_id)
                 raise MediaNotFoundError("No playable item found to start playback")
+            queue_item = loaded_item
 
             # Reset flow_mode - the streams controller will set it if flow mode is used.
             queue.flow_mode = False
@@ -1092,6 +1126,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         target_player = self.mass.players.get_player(target_queue_id)
         if target_player is None:
             raise PlayerUnavailableError(f"Player {target_queue_id} is not available")
+        # refuse targets that can never render audio (display/visualizer/lighting clients)
+        # before anything is mutated, so a bad target does not destroy the source queue
+        if target_player.state.type not in PLAYBACK_TARGET_TYPES:
+            raise PlayerCommandFailed(f"Player {target_player.name} is not capable of playback")
         if target_player.state.active_group or target_player.state.synced_to:
             # edge case: the user wants to move playback from the group as a whole, to a single
             # player in the group or it is grouped and the command targeted at the single player.
@@ -1137,17 +1175,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         target_queue.repeat_mode = source_queue.repeat_mode
         target_queue.shuffle_enabled = source_queue.shuffle_enabled
-        # The shuffle intent moves with the flag it was recorded for, or the target would judge the
-        # transferred shuffle against a stamp left over from its own previous content. It is good
-        # for one play, so it is taken off the source rather than copied: the gesture followed the
-        # queue to its new player and must not shuffle whatever is started here next.
-        source_data = self._queue_data[source_queue_id]
-        self._queue_data[target_queue_id].shuffle_set_at = source_data.shuffle_set_at
-        source_data.shuffle_set_at = None
-        target_queue.crossfade_enabled = source_queue.crossfade_enabled
+        # carry over the pinned overrides (or follow-global state) and re-resolve the target
+        self._queue_data[target_queue_id].crossfade_override = self._queue_data[
+            source_queue_id
+        ].crossfade_override
+        self._queue_data[target_queue_id].autoplay_override = self._queue_data[
+            source_queue_id
+        ].autoplay_override
+        self._resolve_default_toggles(self._queue_data[target_queue_id])
         # refresh the derived smart-fades indicator for the target's own config/availability
         target_queue.smart_fades_active = self.mass.streams.is_smart_fades_active(target_queue)
-        target_queue.autoplay_enabled = source_queue.autoplay_enabled
         self._queue_data[target_queue_id].source_items = list(
             self._queue_data[source_queue_id].source_items
         )
@@ -1156,6 +1193,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         target_queue.smart_shuffle_active = self.is_smart_shuffle_active(target_queue)
         self._queue_data[target_queue_id].enqueued_media_items = list(
             self._queue_data[source_queue_id].enqueued_media_items
+        )
+        self._queue_data[target_queue_id].credited_albums = set(
+            self._queue_data[source_queue_id].credited_albums
         )
         target_queue.resume_pos = source_resume_pos
         target_queue.current_index = source_current_index
@@ -1178,12 +1218,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_id = player.player_id
         queue_data: PlayerQueueData | None = None
         # try to restore previous state
-        if prev_state := await self.mass.cache.get(
-            key=queue_id,
-            provider=self.domain,
-            category=CACHE_CATEGORY_PLAYER_QUEUE_STATE,
-        ):
-            try:
+        try:
+            if prev_state := await self.mass.cache.get(
+                key=queue_id,
+                provider=self.domain,
+                category=CACHE_CATEGORY_PLAYER_QUEUE_STATE,
+            ):
                 prev_items = await self.mass.cache.get(
                     key=queue_id,
                     provider=self.domain,
@@ -1191,14 +1231,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     default=[],
                 )
                 queue_data = PlayerQueueData.from_cache(prev_state, prev_items)
-            except Exception as err:
-                self.logger.warning(
-                    "Failed to restore the queue(items) for %s - %s",
-                    player.state.name,
-                    str(err),
-                )
-                # Reset to clean state on failure
-                queue_data = None
+        except Exception as err:
+            self.logger.warning(
+                "Failed to restore the queue(items) for %s - %s",
+                player.state.name,
+                str(err),
+            )
+            # Reset to clean state on failure
+            queue_data = None
         if queue_data is None:
             queue_data = PlayerQueueData(
                 queue=PlayerQueue(
@@ -1206,12 +1246,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     active=False,
                     display_name=player.state.name,
                     available=player.state.available,
-                    # Autoplay starts out on for a brand new queue; the player's own Autoplay
-                    # switch owns it from here on (and is restored above for a queue we know)
-                    autoplay_enabled=True,
                     items=0,
                 )
             )
+        # new queues and queues restored without a pinned override follow the global defaults
+        self._resolve_default_toggles(queue_data)
 
         self._queue_data[queue_id] = queue_data
         # always call update to calculate state etc
@@ -1346,14 +1385,17 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 # we only allow 10 retries to prevent infinite loops
                 raise QueueEmpty("No more (playable) tracks left in the queue.")
             try:
-                await self._load_item(queue_item, next_index)
+                await self._load_item(queue_item)
                 # we're all set, this is our next item
                 next_item = queue_item
                 break
-            except MediaNotFoundError, AudioError:
+            except ProviderStreamLimitError:
+                # transient source capacity, do not burn a playable item over it
+                raise
+            except (MediaNotFoundError, AudioError) as err:
                 # No stream details found, skip this QueueItem
                 self.logger.warning(
-                    "Skipping unplayable item %s (%s)", queue_item.name, queue_item.uri
+                    "Skipping unplayable item %s (%s): %s", queue_item.name, queue_item.uri, err
                 )
                 queue_item.available = False
                 idx += 1
@@ -1493,6 +1535,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         keep_remaining: bool = True,
         keep_played: bool = True,
         shuffle: bool = False,
+        pin_first: bool = False,
     ) -> None:
         """
         Load new items at index.
@@ -1502,6 +1545,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         - insert_at_index: insert the item(s) at this index
         - keep_remaining: keep the remaining items after the insert
         - shuffle: (re)shuffle the items after insert index
+        - pin_first: keep the first item at the insert index instead of letting the shuffle
+          move it; only meaningful together with shuffle
         """
         prev_items = self._queue_data[queue_id].items[:insert_at_index] if keep_played else []
         next_items = queue_items
@@ -1516,10 +1561,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # (re)shuffle the final batch if needed: smart shuffle when enabled, else pure random
         if shuffle:
             queue = self._queue_data[queue_id].queue
+            # a user-picked item must stay the one that plays, so hold it out of the shuffle
+            pinned = next_items[:1] if pin_first else []
+            shuffled = next_items[1:] if pin_first else next_items
+            # Keep MA's protected part of the queue fixed. Only the future part MA
+            # already considers safe to move should be reordered.
+            preceding_item = pinned[-1] if pinned else (prev_items[-1] if prev_items else None)
             if self._smart_shuffle.is_enabled(queue_id):
-                next_items = await self._smart_shuffle.arrange(queue, next_items)
+                shuffled = await self._smart_shuffle.arrange(
+                    queue, shuffled, preceding_item=preceding_item
+                )
             else:
-                next_items = random.sample(next_items, len(next_items))
+                shuffled = random.sample(shuffled, len(shuffled))
+            next_items = pinned + shuffled
         self.update_items(queue_id, prev_items + next_items)
 
     def update_items(self, queue_id: str, queue_items: list[QueueItem]) -> None:
@@ -1528,17 +1582,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue = self._queue_data[queue_id].queue
         queue.items = len(self._queue_data[queue_id].items)
         self.signal_update(queue_id, True)
-        if (
-            queue.state == PlaybackState.PLAYING
-            and queue.index_in_buffer is not None
-            and queue.index_in_buffer == queue.current_index
-        ):
-            # if the queue is playing,
-            # ensure to (re)queue the next track because it might have changed
-            # note that we only do this if the player has loaded the current track
-            # if not, we wait until it has loaded to prevent conflicts
-            if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
-                self._enqueue_next_item(queue_id, next_item)
+        self.update_next_item_on_player(queue_id)
 
     # Helper methods
 
@@ -1560,6 +1604,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (queue_data := self._queue_data.get(queue_id)) is None:
             return
         queue = queue_data.queue
+        # a mirrored shuffle write (streams controller) changes what smart shuffle
+        # resolves to, so refresh the derived flag with every signaled update
+        queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         if items_changed:
             queue_data.items_cache_dirty = True
             self.mass.signal_event(EventType.QUEUE_ITEMS_UPDATED, object_id=queue_id, data=queue)
@@ -1618,6 +1665,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Return the configured recency windows (a global setting; used for recency-aware gating)."""
         return self._smart_shuffle.windows()
 
+    def smart_fade_ordering_enabled(self, queue: PlayerQueue) -> bool:
+        """Return whether Smart Fades-aware ordering should run for the queue."""
+        if not queue.smart_fades_active:
+            return False
+        return self._smart_shuffle.is_smart_fade_ordering_enabled(queue)
+
     async def player_media_from_queue_item(self, queue_item: QueueItem) -> PlayerMedia:
         """
         Parse PlayerMedia from QueueItem.
@@ -1648,8 +1701,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             stream_duration=stream_duration,
             source_id=queue_item.queue_id,
             queue_item_id=queue_item.queue_item_id,
+            queue_session_id=queue_data.session_id,
             custom_data={
-                "session_id": queue_data.session_id,
                 "original_uri": queue_item.uri,
             },
         )
@@ -1690,6 +1743,39 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 continue
             return next_item
         return None
+
+    def is_current_window_item(self, queue_id: str, queue_item_id: str) -> bool:
+        """
+        Return whether the item sits at or right around the queue's playhead.
+
+        Players that play upcoming tracks from a cached copy of the queue use this to
+        verify a requested item is still the previous, current, buffered or expected
+        next track.
+
+        :param queue_id: The queue to check against.
+        :param queue_item_id: The queue item id the player asked for.
+        """
+        queue = self.get(queue_id)
+        if queue is None:
+            return False
+        item_index = self.index_by_id(queue_id, queue_item_id)
+        if item_index is None:
+            return False
+        for center in (queue.current_index, queue.index_in_buffer):
+            if center is None:
+                continue
+            if item_index in (center - 1, center):
+                return True
+        if queue.current_index is None:
+            return False
+        # get_next_item accounts for repeat mode and unavailable items, so this is the
+        # item that will really play next rather than whatever sits at the next index.
+        # The expected next is measured from the PLAYING track only: with crossfade,
+        # index_in_buffer already sits on the next track while it preloads for the fade,
+        # and one more hop from there would admit the very stale item this check exists
+        # to refuse
+        next_item = self.get_next_item(queue_id, queue.current_index)
+        return next_item is not None and next_item.queue_item_id == queue_item_id
 
     def store_sources(self, queue: PlayerQueue, items: list[MediaItemType]) -> None:
         """
@@ -1770,6 +1856,47 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             raise InsufficientPermissions(msg)
 
     @handle_play_action
+    async def _handle_stop(self, queue_id: str) -> None:
+        """
+        Handle stop without checking the caller's player permissions.
+
+        :param queue_id: queue_id of the playerqueue to stop.
+        """
+        # cancel any pending play_index calls for this queue to prevent conflicts
+        self.mass.cancel_timer(f"queue_play_index_{queue_id}")
+        # cancel in-flight preload/enqueue-next so it can't enqueue after stop
+        self.mass.cancel_task(f"preload_next_item_{queue_id}")
+        self.mass.cancel_timer(f"enqueue_next_item_{queue_id}")
+        self.mass.cancel_task(f"enqueue_next_item_{queue_id}")
+        # a prewarm still running would attach its buffer after the teardown below has run,
+        # leaving a stopped queue holding a provider's stream. Cancelled here rather than
+        # alongside that teardown, where the task id can already belong to a new session.
+        self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
+        self._set_transitioning(queue_id, False)
+        queue_data = self._queue_data[queue_id]
+        session_id = queue_data.session_id
+        if (queue := self.get(queue_id)) and queue.active:
+            if queue.state == PlaybackState.PLAYING:
+                queue.resume_pos = int(queue.corrected_elapsed_time)
+        try:
+            # Use internal handler to avoid circular redirect:
+            # public cmd_stop redirects to queue.stop when a queue is active,
+            # which would loop back here indefinitely.
+            await self.mass.players._handle_cmd_stop(queue_id)
+        finally:
+            # a device that could not be reached still gets its session torn down: an
+            # open session keeps the item buffers producing, which holds a provider's
+            # live session open long after the queue was told to stop
+            if session_id is not None:
+                # only the stopped session's audio is released. A stop that had no session
+                # owns none of what is here, and taking it down would hit playback that
+                # started while this stop was still waiting on the device
+                if queue_data.session_id == session_id:
+                    queue_data.session_id = None
+                self.mass.streams.audio_processing.clear(queue_id, session_id)
+                self.mass.create_task(self._cleanup_queue_audio_data(queue_id, session_id))
+
+    @handle_play_action
     async def _handle_play(self, queue_id: str) -> None:
         """Handle play without acquiring the queue lock."""
         queue_player = self.mass.players.get_player(queue_id, True)
@@ -1818,17 +1945,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.update_items(queue_id, [])
 
     def _reset_shuffle(self, queue_id: str) -> None:
-        """Switch shuffle off and drop any pending shuffle intent."""
-        queue_data = self._queue_data[queue_id]
-        queue_data.shuffle_set_at = None
-        queue = queue_data.queue
+        """Switch shuffle off."""
+        queue = self._queue_data[queue_id].queue
         if not queue.shuffle_enabled:
             return
         queue.shuffle_enabled = False
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
         self.signal_update(queue_id)
 
-    async def _apply_shuffle_intent(
+    async def _apply_shuffle(
         self, queue_id: str, option: QueueOption, shuffle: bool | None
     ) -> None:
         """
@@ -1836,44 +1961,81 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         :param queue_id: The queue the media is played on.
         :param option: The enqueue option this command resolved to.
-        :param shuffle: Explicit shuffle request from the caller; None to derive it.
+        :param shuffle: The state to put the queue's shuffle in; None to leave it as it is.
         """
-        queue_data = self._queue_data[queue_id]
-        queue = queue_data.queue
-        if option == QueueOption.REPLACE_NEXT and queue.is_dynamic:
-            # The one staging option that replaces the queue's sources, so the smart mix may be on
+        queue = self._queue_data[queue_id].queue
+        if queue.is_dynamic and option in (
+            QueueOption.PLAY,
+            QueueOption.REPLACE,
+            QueueOption.REPLACE_NEXT,
+        ):
+            # These are the options that replace the queue's sources, so the smart mix may be on
             # its way out - and its shuffle is never the user's own (a dynamic queue's toggle is
-            # locked), so it must not outlive the source that imposed it. Recorded directly, as in
-            # the still-dynamic case below: the state is provisional until the sources are known,
-            # and `_enter_dynamic_mode` forces shuffle back on if the queue stays dynamic. The
-            # intent goes with it, or a play soon after would resurrect a shuffle the queue's own
-            # toggle now reads as off.
-            queue.shuffle_enabled = False
-            queue_data.shuffle_set_at = None
-            return
-        if option not in (QueueOption.PLAY, QueueOption.REPLACE):
-            # only the options that start playing the media right away are a new listening
-            # session; staging items for later leaves the queue's shuffle state alone
-            return
-        if shuffle is None:
-            # Without an explicit request, shuffle only carries over when the user asked for it
-            # moments ago: starting an album is otherwise expected to play it in track order,
-            # regardless of what the previous listening session left switched on.
-            shuffle = (
-                queue_data.shuffle_set_at is not None
-                and (time.monotonic() - queue_data.shuffle_set_at) < SHUFFLE_INTENT_WINDOW
-            )
-        if queue.shuffle_enabled != shuffle:
-            if queue.is_dynamic:
-                # set_shuffle refuses a queue that is still a smart mix, but the media being
-                # started may well replace that dynamic source - and the items are resolved
-                # against this flag. Record the requested state directly: should the queue stay
-                # dynamic, `_enter_dynamic_mode` forces shuffle back on further down.
-                queue.shuffle_enabled = shuffle
+            # locked), so it must not outlive the source that imposed it. Recorded directly
+            # because set_shuffle refuses a queue that is still a smart mix, and the items are
+            # resolved against this flag. The state is provisional until the sources are known:
+            # `_enter_dynamic_mode` forces shuffle back on if the queue stays dynamic.
+            if option == QueueOption.REPLACE_NEXT:
+                # staging leaves the shuffle the user chose alone, so it never carries a request
+                # of its own to honour here
+                queue.shuffle_enabled = False
             else:
-                # routed through set_shuffle so switching shuffle off also restores the order of
-                # the items that stay in the queue: a play keeps them, and a tail left in shuffled
-                # order behind a queue that now reads unshuffled would contradict its own flag
-                await self.set_shuffle(queue_id, shuffle)
-        # the intent belongs to this play command alone, whether or not it changed anything
-        queue_data.shuffle_set_at = None
+                queue.shuffle_enabled = bool(shuffle)
+            return
+        if shuffle is None or option not in (QueueOption.PLAY, QueueOption.REPLACE):
+            # nothing to settle: the media brings no order of its own to protect, or the option
+            # only stages items for later and leaves the queue's shuffle state alone
+            return
+        if queue.shuffle_enabled == shuffle:
+            return
+        # routed through set_shuffle so switching shuffle off also restores the order of
+        # the items that stay in the queue: a play keeps them, and a tail left in shuffled
+        # order behind a queue that now reads unshuffled would contradict its own flag
+        await self.set_shuffle(queue_id, shuffle)
+
+    async def _apply_local_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
+        """
+        Record the queue's shuffle state and re-order the un-played tail accordingly.
+
+        :param queue_id: The queue to apply the shuffle state to.
+        :param shuffle_enabled: The shuffle state to record and apply to the tail.
+        """
+        queue = self._queue_data[queue_id].queue
+        queue.shuffle_enabled = shuffle_enabled
+        queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
+        queue_items = self._queue_data[queue_id].items
+        cur_index = committed_index(queue)
+        if cur_index is not None:
+            next_index = cur_index + 1
+            next_items = queue_items[next_index:]
+        else:
+            next_items = []
+            next_index = 0
+        if not shuffle_enabled:
+            # shuffle disabled, try to restore original sort order of the remaining items
+            next_items.sort(key=lambda x: x.sort_index, reverse=False)
+        await self.load(
+            queue_id=queue_id,
+            queue_items=next_items,
+            insert_at_index=next_index,
+            keep_remaining=False,
+            shuffle=shuffle_enabled,
+        )
+
+    def _resolve_default_toggles(self, queue_data: PlayerQueueData) -> None:
+        """Set the queue's effective autoplay/crossfade from their override or the global default."""
+        queue = queue_data.queue
+        queue.autoplay_enabled = (
+            queue_data.autoplay_override
+            if queue_data.autoplay_override is not None
+            else self.mass.config.get_raw_core_config_value(
+                self.domain, CONF_AUTOPLAY_ENABLED, DEFAULT_AUTOPLAY_ENABLED
+            )
+        )
+        queue.crossfade_enabled = (
+            queue_data.crossfade_override
+            if queue_data.crossfade_override is not None
+            else self.mass.config.get_raw_core_config_value(
+                self.domain, CONF_CROSSFADE_ENABLED, DEFAULT_CROSSFADE_ENABLED
+            )
+        )

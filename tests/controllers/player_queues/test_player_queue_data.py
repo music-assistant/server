@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-import time
-
 import pytest
-from music_assistant_models.enums import RepeatMode
-from music_assistant_models.media_items import ItemMapping, Playlist, ProviderMapping, Track
+from music_assistant_models.enums import AlbumType, RepeatMode
+from music_assistant_models.media_items import (
+    Album,
+    ItemMapping,
+    Playlist,
+    ProviderMapping,
+    Track,
+)
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
@@ -23,6 +27,19 @@ def _track(item_id: str) -> Track:
         provider_mappings={
             ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
         },
+    )
+
+
+def _album(item_id: str) -> Album:
+    """Build a minimal library Album."""
+    return Album(
+        item_id=item_id,
+        provider="library",
+        name=f"Album {item_id}",
+        provider_mappings={
+            ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
+        },
+        album_type=AlbumType.ALBUM,
     )
 
 
@@ -59,12 +76,14 @@ def _queue(**kwargs: object) -> PlayerQueue:
 def _data_with_dynamic_source() -> PlayerQueueData:
     """Build a PlayerQueueData for a queue playing a dynamic radio playlist plus one queued track."""
     playlist = _dynamic_playlist()
+    album = _album("a1")
     queue = _queue(is_dynamic=True, sources=[ItemMapping.from_item(playlist)])
     return PlayerQueueData(
         queue=queue,
         items=[QueueItem.from_media_item("q1", _track("t1"))],
         source_items=[playlist],
-        enqueued_media_items=[playlist],
+        enqueued_media_items=[playlist, album],
+        credited_albums={album},
         userid="user-1",
         # runtime-only fields set to non-defaults to prove they do not survive the round-trip
         transitioning=True,
@@ -91,6 +110,10 @@ def test_cache_round_trip_restores_queue_items_and_sources() -> None:
         item.uri for item in data.enqueued_media_items
     ]
     assert restored.userid == "user-1"
+    # a credited album survives, so a restart does not re-credit the same enqueue
+    assert {item.uri for item in restored.credited_albums} == {
+        item.uri for item in data.credited_albums
+    }
     # is_dynamic is recomputed from the restored source items (a dynamic playlist is present)
     assert restored.queue.is_dynamic is True
     # runtime-only fields are reset to their defaults, never persisted
@@ -138,7 +161,7 @@ def test_cache_round_trip_restores_settings() -> None:
         crossfade_enabled=True,
         autoplay_enabled=True,
     )
-    data = PlayerQueueData(queue=queue, shuffle_set_at=time.time())
+    data = PlayerQueueData(queue=queue)
 
     restored = PlayerQueueData.from_cache(data.to_cache(), data.items_to_cache())
 
@@ -146,9 +169,31 @@ def test_cache_round_trip_restores_settings() -> None:
     assert restored.queue.repeat_mode == RepeatMode.ALL
     assert restored.queue.crossfade_enabled is True
     assert restored.queue.autoplay_enabled is True
-    # the shuffle switch itself is restored, but the moment the user flipped it is not: a shuffle
-    # from an earlier session must not read as intent for whatever is played after a restart
-    assert restored.shuffle_set_at is None
+
+
+def test_cache_round_trip_restores_toggle_overrides() -> None:
+    """A pinned autoplay/crossfade override survives a cache round-trip."""
+    queue = _queue()
+    data = PlayerQueueData(queue=queue, autoplay_override=False, crossfade_override=True)
+
+    restored = PlayerQueueData.from_cache(data.to_cache(), data.items_to_cache())
+
+    assert restored.autoplay_override is False
+    assert restored.crossfade_override is True
+
+
+def test_from_cache_legacy_without_toggle_overrides_yields_none() -> None:
+    """A legacy cache with no override keys restores as None, i.e. follow the global default."""
+    queue = _queue()
+    data = PlayerQueueData(queue=queue)
+    state = data.to_cache()
+    del state["autoplay_override"]
+    del state["crossfade_override"]
+
+    restored = PlayerQueueData.from_cache(state, data.items_to_cache())
+
+    assert restored.autoplay_override is None
+    assert restored.crossfade_override is None
 
 
 def test_from_cache_keeps_settings_when_item_unreadable() -> None:

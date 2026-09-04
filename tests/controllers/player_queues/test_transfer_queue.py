@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import time
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
-from music_assistant_models.enums import PlaybackState
+import pytest
+from music_assistant_models.enums import AlbumType, PlaybackState, PlayerType
+from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.media_items import Album, Track
 from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
@@ -45,6 +47,7 @@ def _fake_controller(source_id: str, target_player: MagicMock) -> MagicMock:
     fake.resume = AsyncMock()
     fake.clear = MagicMock()
     fake.update_items = MagicMock()
+    fake._notify_audio_source_transferred = AsyncMock()
     fake.mass.players.get_player = MagicMock(return_value=target_player)
     fake.mass.players.cmd_ungroup = AsyncMock()
     fake.mass.players.wait_for_player_update = MagicMock(return_value=_DummyACM())
@@ -60,6 +63,7 @@ async def test_transfer_queue_ad_hoc_member_ungroups_target_not_leader() -> None
     recurse back into transfer_queue, so only the target may be ungrouped.
     """
     target_player = MagicMock()
+    target_player.state.type = PlayerType.PLAYER
     target_player.state.synced_to = "leaderA"
     target_player.state.active_group = None
     fake = _fake_controller("src", target_player)
@@ -71,9 +75,31 @@ async def test_transfer_queue_ad_hoc_member_ungroups_target_not_leader() -> None
     fake.mass.players.cmd_ungroup.assert_awaited_once_with("memberB")
 
 
+async def test_transfer_queue_refuses_non_audio_target() -> None:
+    """
+    A target that can never render audio is refused before anything is touched.
+
+    The source queue must survive intact: no stop, no clear, no item handover.
+    """
+    target_player = MagicMock()
+    target_player.state.type = PlayerType.VISUALIZER
+    fake = _fake_controller("src", target_player)
+
+    with pytest.raises(PlayerCommandFailed):
+        await PlayerQueuesController.transfer_queue(
+            cast("PlayerQueuesController", fake), "src", "viz", auto_play=False
+        )
+
+    fake.stop.assert_not_awaited()
+    fake._clear.assert_not_called()
+    fake.load.assert_not_awaited()
+    fake.mass.players.cmd_ungroup.assert_not_awaited()
+
+
 async def test_transfer_queue_group_member_ungroups_group() -> None:
     """Transferring onto a virtual-group member releases the group player itself."""
     target_player = MagicMock()
+    target_player.state.type = PlayerType.PLAYER
     target_player.state.synced_to = None
     target_player.state.active_group = "groupP"
     fake = _fake_controller("src", target_player)
@@ -87,20 +113,27 @@ async def test_transfer_queue_group_member_ungroups_group() -> None:
 
 def _shuffle_controller(
     source_shuffle_enabled: bool,
-    source_shuffle_set_at: float | None,
-    target_shuffle_set_at: float | None,
+    target_shuffle_enabled: bool = False,
     source_is_dynamic: bool = False,
+    *,
+    source_crossfade_override: bool | None = None,
+    source_autoplay_override: bool | None = None,
+    target_crossfade_override: bool | None = None,
+    target_autoplay_override: bool | None = None,
 ) -> MagicMock:
     """
     Build a controller stand-in whose two queues carry real state records.
 
-    Both the shuffle flag and the shuffle intent behind it live on separate per-queue objects, so
-    unlike the ungroup tests above these need real queues rather than one shared mock.
+    The shuffle flag lives on the per-queue state record, so unlike the ungroup tests above these
+    need real queues rather than one shared mock.
 
     :param source_shuffle_enabled: Whether shuffle is on for the queue being handed over.
-    :param source_shuffle_set_at: When the user last switched shuffle on for the source queue.
-    :param target_shuffle_set_at: When the user last switched shuffle on for the target queue.
+    :param target_shuffle_enabled: Whether shuffle is on for the queue being handed to.
     :param source_is_dynamic: Whether the source queue is managed by a dynamic source.
+    :param source_crossfade_override: Pinned crossfade override on the source queue, if any.
+    :param source_autoplay_override: Pinned autoplay override on the source queue, if any.
+    :param target_crossfade_override: Pinned crossfade override already on the target, if any.
+    :param target_autoplay_override: Pinned autoplay override already on the target, if any.
     """
     source_queue = PlayerQueue(
         queue_id="src",
@@ -111,24 +144,53 @@ def _shuffle_controller(
         shuffle_enabled=source_shuffle_enabled,
         smart_shuffle_active=source_is_dynamic,
         is_dynamic=source_is_dynamic,
+        # the wire fields carry the already-resolved effective value for these tests
+        crossfade_enabled=bool(source_crossfade_override),
+        autoplay_enabled=bool(source_autoplay_override),
     )
     target_queue = PlayerQueue(
-        queue_id="tgt", active=True, display_name="Tgt", available=True, items=0
+        queue_id="tgt",
+        active=True,
+        display_name="Tgt",
+        available=True,
+        items=0,
+        shuffle_enabled=target_shuffle_enabled,
+        crossfade_enabled=bool(target_crossfade_override),
+        autoplay_enabled=bool(target_autoplay_override),
     )
 
     fake = MagicMock()
     fake.get = MagicMock(side_effect=lambda qid: source_queue if qid == "src" else target_queue)
     fake._queue_data = {
-        "src": PlayerQueueData(queue=source_queue, shuffle_set_at=source_shuffle_set_at),
-        "tgt": PlayerQueueData(queue=target_queue, shuffle_set_at=target_shuffle_set_at),
+        "src": PlayerQueueData(
+            queue=source_queue,
+            crossfade_override=source_crossfade_override,
+            autoplay_override=source_autoplay_override,
+        ),
+        "tgt": PlayerQueueData(
+            queue=target_queue,
+            crossfade_override=target_crossfade_override,
+            autoplay_override=target_autoplay_override,
+        ),
     }
     fake.stop = AsyncMock()
     fake.load = AsyncMock()
     fake.resume = AsyncMock()
     fake._clear = MagicMock()
     fake.update_items = MagicMock()
+    fake._notify_audio_source_transferred = AsyncMock()
     fake.is_smart_shuffle_active = MagicMock(side_effect=lambda queue: queue.is_dynamic)
+    # bind the real toggle resolver (with stubbed globals) so the handover under test
+    # exercises actual logic
+    defaults = {"autoplay_enabled": True, "crossfade_enabled": False}
+    fake.mass.config.get_raw_core_config_value = MagicMock(
+        side_effect=lambda _core_module, key, _default: defaults[key]
+    )
+    fake._resolve_default_toggles = lambda queue_data: (
+        PlayerQueuesController._resolve_default_toggles(fake, queue_data)
+    )
     target_player = MagicMock()
+    target_player.state.type = PlayerType.PLAYER
     target_player.state.synced_to = None
     target_player.state.active_group = None
     fake.mass.players.get_player = MagicMock(return_value=target_player)
@@ -136,55 +198,63 @@ def _shuffle_controller(
     return fake
 
 
-async def test_transfer_queue_drops_a_stale_shuffle_intent_on_the_target() -> None:
-    """
-    A shuffle the user switched on for the target earlier does not shuffle the queue moved onto it.
-
-    The transfer brings its own (off) shuffle state; leaving the target's own stamp behind would
-    make the media started next read it as a "shuffle this" gesture the user never made for it.
-    """
-    fake = _shuffle_controller(
-        source_shuffle_enabled=False,
-        source_shuffle_set_at=None,
-        target_shuffle_set_at=time.monotonic(),
+async def test_transfer_queue_carries_the_album_credit_bookkeeping() -> None:
+    """A credited album stays credited on the player the queue is handed to."""
+    fake = _shuffle_controller(source_shuffle_enabled=False)
+    album = Album(
+        item_id="a1",
+        provider="library",
+        name="A",
+        provider_mappings=set(),
+        album_type=AlbumType.ALBUM,
     )
+    track = Track(item_id="t1", provider="library", name="T1", provider_mappings=set(), album=album)
+    source_data = fake._queue_data["src"]
+    source_data.enqueued_media_items = [album]
+    source_data.credited_albums = {album}
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
+    )
+
+    target_data = fake._queue_data["tgt"]
+    # the target holds its own copy, so the source's set no longer drives it
+    assert target_data.credited_albums == {album}
+    assert target_data.credited_albums is not source_data.credited_albums
+    # and the album is not credited a second time on the new player
+    assert (
+        PlayerQueuesController._claim_enqueued_album_credit(
+            cast("PlayerQueuesController", fake), target_data, track
+        )
+        is None
+    )
+
+
+async def test_transfer_queue_overwrites_the_targets_own_shuffle() -> None:
+    """The queue brings its own shuffle state, so the target's previous one does not survive."""
+    fake = _shuffle_controller(source_shuffle_enabled=False, target_shuffle_enabled=True)
 
     await PlayerQueuesController.transfer_queue(
         cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
     )
 
     assert fake.get("tgt").shuffle_enabled is False
-    assert fake._queue_data["tgt"].shuffle_set_at is None
 
 
-async def test_transfer_queue_carries_the_source_shuffle_intent() -> None:
-    """A shuffle switched on moments before the transfer still counts for the media started next."""
-    switched_on_at = time.monotonic()
-    fake = _shuffle_controller(
-        source_shuffle_enabled=True,
-        source_shuffle_set_at=switched_on_at,
-        target_shuffle_set_at=None,
-    )
+async def test_transfer_queue_carries_the_source_shuffle() -> None:
+    """A shuffled queue handed to another player stays shuffled there."""
+    fake = _shuffle_controller(source_shuffle_enabled=True)
 
     await PlayerQueuesController.transfer_queue(
         cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
     )
 
     assert fake.get("tgt").shuffle_enabled is True
-    assert fake._queue_data["tgt"].shuffle_set_at == switched_on_at
-    # the gesture is good for one play and it followed the queue, so it must not be left behind
-    # to shuffle whatever gets started on the player it was moved off
-    assert fake._queue_data["src"].shuffle_set_at is None
 
 
 async def test_transfer_queue_drops_dynamic_shuffle_from_source() -> None:
     """The shuffle imposed by a dynamic source follows it to the target queue."""
-    fake = _shuffle_controller(
-        source_shuffle_enabled=True,
-        source_shuffle_set_at=None,
-        target_shuffle_set_at=None,
-        source_is_dynamic=True,
-    )
+    fake = _shuffle_controller(source_shuffle_enabled=True, source_is_dynamic=True)
     fake._clear.side_effect = lambda queue_id, skip_stop=False: PlayerQueuesController._clear(
         cast("PlayerQueuesController", fake), queue_id, skip_stop
     )
@@ -198,3 +268,24 @@ async def test_transfer_queue_drops_dynamic_shuffle_from_source() -> None:
     assert fake.get("src").is_dynamic is False
     assert fake.get("src").shuffle_enabled is False
     assert fake.get("src").smart_shuffle_active is False
+
+
+async def test_transfer_queue_carries_pinned_toggle_overrides() -> None:
+    """Pinned autoplay/crossfade overrides, and their already-resolved wire values, reach the target."""
+    fake = _shuffle_controller(
+        source_shuffle_enabled=False,
+        source_crossfade_override=True,
+        source_autoplay_override=False,
+        target_crossfade_override=False,
+        target_autoplay_override=True,
+    )
+
+    await PlayerQueuesController.transfer_queue(
+        cast("PlayerQueuesController", fake), "src", "tgt", auto_play=False
+    )
+
+    target_data = fake._queue_data["tgt"]
+    assert target_data.crossfade_override is True
+    assert target_data.autoplay_override is False
+    assert target_data.queue.crossfade_enabled is True
+    assert target_data.queue.autoplay_enabled is False

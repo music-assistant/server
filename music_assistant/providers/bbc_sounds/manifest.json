@@ -11,7 +11,7 @@
     "[auntie-sounds](https://github.com/kieranhogg/auntie-sounds)"
   ],
   "requirements": [
-    "auntie-sounds==2.0.4",
+    "auntie-sounds==2.0.9",
     "pytz==2026.2"
   ],
   "multi_instance": false

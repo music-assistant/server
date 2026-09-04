@@ -135,6 +135,11 @@ class RadiothekProvider(MusicProvider):
         self.catchup_proto = "progressive"
         self.catchup_stations = ""
 
+    @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return provider configuration entries."""
         return (

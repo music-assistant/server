@@ -29,14 +29,17 @@ from music_assistant.models.setup_flow import AbortFlow
 
 from . import announce
 from .constants import (
+    AIRPLAY_DEFAULT_PORT,
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_HIRES_AUDIO_FORMATS,
     AIRPLAY_HIRES_SAMPLE_RATES,
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_REJOIN_ATTEMPT_DELAYS,
+    AIRPLAY_VOLUME_ECHO_GRACE_S,
     BASE_PLAYER_FEATURES,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_BUFFER_DEPTH,
+    CONF_ENABLE_HIRES,
     CONF_ENCRYPTION,
     CONF_ENTRY_SYNC_ADJUST_AIRPLAY,
     CONF_IGNORE_VOLUME,
@@ -50,8 +53,10 @@ from .constants import (
     CONF_STREAMING_MODE,
     FALLBACK_VOLUME,
     LEGACY_PAIRING_BIT,
+    PAIRING_PIN_FORMAT,
     PASSWORD_BIT,
     PIN_REQUIRED,
+    RAOP_DEFAULT_PORT,
     RAOP_DISCOVERY_TYPE,
     STREAMING_MODE_AP2_COMPAT,
     STREAMING_MODE_AP2_NTP,
@@ -62,6 +67,7 @@ from .constants import (
 )
 from .helpers import (
     default_buffer_depth,
+    default_hires_enabled,
     get_decoded_property,
     is_apple_device,
     is_macos_device,
@@ -109,7 +115,16 @@ class AirPlayPlayer(Player):
         super().__init__(provider, player_id)
         self.address = address
         self.stream: AirPlayStream | None = None
+        # Serializes the two paths that can put a cliairplay process on this
+        # receiver (the native stream session and the Sendspin bridge), from the
+        # moment either decides to displace what is published until it publishes
+        # its own stream. Two processes on one receiver reset each other's RTSP
+        # channel and both sessions die. Always taken INSIDE self._lock, never
+        # around it: play_media holds self._lock across the whole session start,
+        # which takes this lock for every member.
+        self.stream_spawn_lock = asyncio.Lock()
         self.last_command_sent = 0.0
+        self._volume_reports_ignored_until = 0.0
         self._lock = asyncio.Lock()
         self._transitioning = False  # Set during stream replacement to ignore stale DACP messages
         self._rejoin_task: asyncio.Task[None] | None = None
@@ -201,13 +216,16 @@ class AirPlayPlayer(Player):
 
     @property
     def hires_playback_enabled(self) -> bool:
-        """Return if 24-bit hi-res playback is possible for this player."""
+        """Return if 24-bit hi-res playback is possible and enabled for this player."""
         # 24-bit only works over the AirPlay 2 flow, so a device that streams RAOP
         # (a legacy receiver, or the force-RAOP escape hatch) stays on the 16-bit
         # base whatever it advertises.
         return (
             bool(self.advertised_audio_formats & AIRPLAY_HIRES_AUDIO_FORMATS)
             and self.protocol == StreamingProtocol.AIRPLAY2
+            # the compat lane is 16-bit only, so hi-res stands down while the pin is active
+            and self.streaming_mode != STREAMING_MODE_AP2_COMPAT
+            and bool(self.config.get_value(CONF_ENABLE_HIRES, self._hires_default_enabled))
         )
 
     @property
@@ -308,22 +326,29 @@ class AirPlayPlayer(Player):
         # an AirPlay receiver), which only pauses the sync leader while the other
         # members keep playing.
         features = {*BASE_PLAYER_FEATURES, PlayerFeature.PAUSE}
-        # A player with a Sendspin bridge CONFIGURED still announces natively
-        # whenever there is a stream to mix into: its own (session-backed)
-        # AirPlay stream, or the bridge's stream while Sendspin plays through
-        # it. Only a bridged player with neither hides the feature - a
-        # dedicated announcement session on it would race the bridge for the
-        # device, so those announcements keep their existing routing (the
-        # generic flow via the Sendspin parent).
-        prov = cast("AirPlayProvider", self.provider)
-        bridge = prov.bridge_manager.get_bridge(self.player_id)
-        if (
-            bridge is not None
-            and not bridge.owns_airplay_stream
-            and not (self.stream is not None and self.stream.running and self.stream.session)
-        ):
+        # An announcement is mixed into the audio the player is already rendering, so
+        # the feature is only offered while there is live playback to mix into. Without
+        # it the players controller plays the announcement its own way, which leaves
+        # the device to whatever else may be streaming to it.
+        if not self.has_live_audio:
             features.discard(PlayerFeature.PLAY_ANNOUNCEMENT)
         return features
+
+    @property
+    def has_live_audio(self) -> bool:
+        """Return True if the player is rendering audio an announcement can mix into."""
+        if self.playback_state != PlaybackState.PLAYING:
+            return False
+        if self.stream is None or self.stream.superseded:
+            # A stream handed to a teardown stays published until its process is
+            # off the receiver, and a clip mixed into it dies with it.
+            return False
+        return self.stream.running and self.stream.connected
+
+    @property
+    def applies_announcement_volume(self) -> bool:
+        """Return True: the announcement volume is applied around the mixed clip."""
+        return True
 
     @property
     def can_group_with(self) -> set[str]:
@@ -379,6 +404,22 @@ class AirPlayPlayer(Player):
                     advanced=True,
                 )
             )
+
+        # 24-bit toggle, shown only when the device advertises 24-bit support
+        # (per-device default: see default_hires_enabled). Hidden rather than
+        # omitted when it does not: the formats are probed async after
+        # registration, and an entry absent from the registration-time config
+        # parse would drop the user's stored value until the next config save.
+        base_entries.append(
+            ConfigEntry(
+                key=CONF_ENABLE_HIRES,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=self._hires_default_enabled,
+                hidden=not self.advertised_audio_formats & AIRPLAY_HIRES_AUDIO_FORMATS,
+                category="protocol_generic",
+                requires_reload=True,
+            )
+        )
 
         # Regular AirPlay config entries
         base_entries += [
@@ -557,7 +598,7 @@ class AirPlayPlayer(Player):
             ):
                 self._transitioning = True
                 audio_source = self.mass.streams.get_stream(
-                    media, session_pcm_format, self.player_id, use_flow_stream_buffering=True
+                    media, session_pcm_format, self.player_id
                 )
                 if await self.stream.session.replace(audio_source, media):
                     self._transitioning = False
@@ -578,13 +619,17 @@ class AirPlayPlayer(Player):
             if self.stream and self.stream.running and self.stream.session:
                 # Set transitioning flag to ignore stale DACP messages (like prevent-playback)
                 self._transitioning = True
+                stopped_stream = self.stream
                 await self.stream.session.stop()
-                self.stream = None
+                # Only drop what this call stopped: tearing a group session down
+                # awaits every member, and a bridge can publish its own stream
+                # here. Erasing that would leave the start below with nothing to
+                # displace and a live process still on the speaker.
+                if self.stream is stopped_stream:
+                    self.stream = None
 
             # select audio source
-            audio_source = self.mass.streams.get_stream(
-                media, session_pcm_format, self.player_id, use_flow_stream_buffering=True
-            )
+            audio_source = self.mass.streams.get_stream(media, session_pcm_format, self.player_id)
 
             # setup StreamSession for player (and its sync childs if any)
             provider = cast("AirPlayProvider", self.provider)
@@ -601,14 +646,14 @@ class AirPlayPlayer(Player):
         self, announcement: PlayerMedia, volume_level: int | None = None
     ) -> None:
         """
-        Play an announcement natively: mixed over live playback, or as its own session.
+        Play an announcement natively, mixed over the audio the player is rendering.
 
         :param announcement: Details of the announcement that needs to be played.
         :param volume_level: Optional volume level for the announcement.
         """
-        # The lock windows live inside the orchestration: the dispatch decision
-        # and session mutations hold self._lock like play_media does, while the
-        # multi-second clip waits run outside it (see announce.py).
+        # The lock windows live inside the orchestration: the dispatch decision and
+        # the arming hold self._lock like play_media does, while the multi-second
+        # clip waits run outside it (see announce.py).
         await announce.play_announcement(self, announcement, volume_level)
 
     async def volume_set(self, volume_level: int) -> None:
@@ -753,19 +798,36 @@ class AirPlayPlayer(Player):
             # always update the state after modifying group members
             self.update_state()
 
-    def update_volume_from_device(self, volume: int) -> None:
-        """Update volume from device feedback."""
-        ignore_volume_report = (
+    @property
+    def ignore_volume_reports(self) -> bool:
+        """Return True if the device's own volume reports must not be acted on."""
+        if self._volume_reports_ignored_until > time.time():
+            # a level we sent ourselves is still echoing back
+            return True
+        return bool(
             self.config.get_value(CONF_IGNORE_VOLUME)
             or self.device_info.manufacturer.lower() == "apple"
         )
 
-        if ignore_volume_report:
+    def suppress_volume_reports(self, seconds: float = AIRPLAY_VOLUME_ECHO_GRACE_S) -> None:
+        """
+        Ignore the device's own volume reports for the given time.
+
+        :param seconds: How long from now the reports are ignored; a window that is
+            already open is only ever extended.
+        """
+        self._volume_reports_ignored_until = max(
+            self._volume_reports_ignored_until, time.time() + seconds
+        )
+
+    def update_volume_from_device(self, volume: int) -> None:
+        """Update volume from device feedback."""
+        if self.ignore_volume_reports:
             return
 
         cur_volume = self.volume_level or 0
         if abs(cur_volume - volume) > 1 or (time.time() - self.last_command_sent) > 3:
-            self.mass.create_task(self.volume_set(volume))
+            self.mass.create_task(self._adopt_device_volume(volume))
         else:
             self._attr_volume_level = volume
             self.mass.config.set_raw_player_config_value(self.player_id, CONF_STORED_VOLUME, volume)
@@ -941,10 +1003,14 @@ class AirPlayPlayer(Player):
     def cancel_group_rejoin(self) -> None:
         """Cancel any pending automatic group re-join attempts for this player."""
         rejoin_task = self._rejoin_task
-        self._rejoin_task = None
         # never self-cancel: the re-join attempt itself flows through the same
-        # session (re)start paths that call this to clear stale schedules
-        if rejoin_task and not rejoin_task.done() and rejoin_task is not asyncio.current_task():
+        # session (re)start paths that call this to clear stale schedules. The
+        # handle also survives such a call, so a later user action can still
+        # cancel the retry loop between attempts.
+        if rejoin_task is None or rejoin_task is asyncio.current_task():
+            return
+        self._rejoin_task = None
+        if not rejoin_task.done():
             rejoin_task.cancel()
 
     def on_player_media_updated(self) -> None:
@@ -956,6 +1022,21 @@ class AirPlayPlayer(Player):
             return
         progress = int(metadata.corrected_elapsed_time or 0)
         self.mass.create_task(self.stream.send_metadata(progress, metadata))
+
+    async def _adopt_device_volume(self, volume: int) -> None:
+        """
+        Take over a level the device set itself.
+
+        :param volume: The level the device reported.
+        """
+        ignored_until = self._volume_reports_ignored_until
+        await self.volume_set(volume)
+        # Writing the level back is a volume command like any other and opens the echo
+        # window, but this one only hands the device its own level: leaving the window
+        # open would swallow the rest of a volume the user is still turning up. A longer
+        # window opened while this was in flight (an announcement) still stands.
+        if self._volume_reports_ignored_until <= time.time() + AIRPLAY_VOLUME_ECHO_GRACE_S:
+            self._volume_reports_ignored_until = ignored_until
 
     def _control_routes_to_self(self, control: str) -> bool:
         """Return True if the given (resolved) control routes to this player."""
@@ -1081,12 +1162,18 @@ class AirPlayPlayer(Player):
         protocol = self.protocol
         cred_key = self._get_credentials_key(protocol)
         if pin_pairing:
-            step_id, field_key, field_type = "pair_pin", CONF_PAIRING_PIN, ConfigEntryType.STRING
+            step_id, field_key, field_type, field_format = (
+                "pair_pin",
+                CONF_PAIRING_PIN,
+                ConfigEntryType.PAIRING_CODE,
+                PAIRING_PIN_FORMAT,
+            )
         else:
-            step_id, field_key, field_type = (
+            step_id, field_key, field_type, field_format = (
                 "pair_password",
                 CONF_PAIRING_PASSWORD,
                 ConfigEntryType.SECURE_STRING,
+                None,
             )
 
         errors: dict[str, str] | None = None
@@ -1103,6 +1190,7 @@ class AirPlayPlayer(Player):
                             type=field_type,
                             required=True,
                             category="protocol_generic",
+                            format=field_format,
                         )
                     ],
                     step_id=step_id,
@@ -1215,9 +1303,9 @@ class AirPlayPlayer(Player):
         # when streaming will use RAOP; the RAOP port (5000) is only for streaming.
         port: int | None = None
         if self.airplay_discovery_info:
-            port = self.airplay_discovery_info.port or 7000
+            port = self.airplay_discovery_info.port or AIRPLAY_DEFAULT_PORT
         elif self.raop_discovery_info:
-            port = self.raop_discovery_info.port or 5000
+            port = self.raop_discovery_info.port or RAOP_DEFAULT_PORT
         provider = cast("AirPlayProvider", self.provider)
         device_id = provider.dacp_id
         pairing_address = self.address
@@ -1335,7 +1423,13 @@ class AirPlayPlayer(Player):
                 if heal_session is not None:
                     await heal_session.add_client(self)
                 else:
-                    await self.mass.players.cmd_group(self.player_id, target.player_id)
+                    # Join through the target's own set_members: both ends are
+                    # players of this provider, so the join never needs the
+                    # visible-player translations of the controller's grouping
+                    # pipeline - and that pipeline's capability gate reflects
+                    # grouping state that is in flux right after a stream loss,
+                    # so it may silently refuse an internal re-join.
+                    await target.set_members(player_ids_to_add=[self.player_id])
             except Exception as err:
                 self.logger.warning(
                     "Automatic re-join of %s to group of %s failed (attempt %d/%d): %s",
@@ -1346,9 +1440,9 @@ class AirPlayPlayer(Player):
                     err,
                 )
                 continue
-            # A failed late-join is swallowed inside the grouping path (the player
-            # then holds group membership without a live stream), so verify the
-            # session actually carries this player before declaring success.
+            # A late-join can also fail without raising (the player then holds
+            # group membership without a live stream), so verify the session
+            # actually carries this player before declaring success.
             if (
                 self.stream
                 and self.stream.running
@@ -1370,7 +1464,16 @@ class AirPlayPlayer(Player):
             if heal_session is None:
                 # undo the group membership this attempt created so a retry (or
                 # a manual regroup) starts from a clean join
-                await self.mass.players.cmd_ungroup(self.player_id)
+                try:
+                    await target.set_members(player_ids_to_remove=[self.player_id])
+                except Exception as err:
+                    # a failed undo leaves the membership for the next attempt,
+                    # which then heals the session instead of joining anew
+                    self.logger.debug(
+                        "Undo of failed re-join attempt for %s failed: %s",
+                        self.display_name,
+                        err,
+                    )
         self.logger.warning(
             "Giving up on automatic group re-join for %s after %d attempt(s); "
             "the player stays idle",
@@ -1415,6 +1518,13 @@ class AirPlayPlayer(Player):
         # a freshly entered password deserves a clean slate: the reject marker
         # would otherwise keep the player in "needs setup" until the next connect
         self.set_password_invalid(False)
+
+    @property
+    def _hires_default_enabled(self) -> bool:
+        """Return the per-device default for the 24-bit toggle."""
+        return default_hires_enabled(
+            self.device_info.manufacturer or "", self.device_info.model or ""
+        )
 
 
 class GenericAirPlayPlayer(AirPlayPlayer):
