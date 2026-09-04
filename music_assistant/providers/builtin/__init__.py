@@ -78,6 +78,7 @@ from music_assistant.helpers.playlists import (
     PlaylistItem,
     ProviderMappingInfo,
     construct_media_item_from_playlist_item,
+    escape_markdown,
     fetch_playlist,
     generate_m3u,
     media_item_to_playlist_item,
@@ -2079,7 +2080,7 @@ def _build_import_report(
     provider_issues: Sequence[tuple[str, str]],
 ) -> str:
     """Build the human-readable Markdown report for an import matching task."""
-    name = _escape_markdown(playlist_name)
+    name = escape_markdown(playlist_name)
     matched = counts["exact"] + counts["same_recording"] + counts["best_effort"]
     lines = [
         "## Playlist import matching complete",
@@ -2126,16 +2127,8 @@ def _add_report_table(
         )
     )
     lines.extend(
-        f"| {' | '.join(_escape_markdown(value, table=True) for value in row)} |"
+        f"| {' | '.join(escape_markdown(value, table=True) for value in row)} |"
         for row in visible_rows
     )
     if omitted_count := len(rows) - len(visible_rows):
         lines.extend(("", f"_{omitted_count} additional rows omitted._"))
-
-
-def _escape_markdown(value: str, table: bool = False) -> str:
-    """Escape provider text before adding it to a Markdown report."""
-    value = value.replace("\\", "\\\\").replace("\n", " ")
-    for character in ("`", "*", "_", "[", "]", "<", ">"):
-        value = value.replace(character, f"\\{character}")
-    return value.replace("|", "\\|") if table else value
