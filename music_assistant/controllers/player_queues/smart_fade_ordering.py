@@ -15,6 +15,7 @@ actual transition.
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import random
 from collections.abc import Callable
@@ -22,6 +23,7 @@ from dataclasses import dataclass
 from statistics import median
 from typing import TYPE_CHECKING, TypeVar
 
+from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.controllers.streams.smart_fades.helpers import camelot_affinity
 from music_assistant.controllers.streams.smart_fades.planner.context import (
@@ -35,6 +37,8 @@ if TYPE_CHECKING:
     from music_assistant.models.audio_analysis import AudioAnalysisData
 
 ItemT = TypeVar("ItemT")
+
+LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.player_queues.smart_fade_ordering")
 
 _ANALYSIS_BATCH_SIZE = 32
 _MOVE_PENALTY = 0.03
@@ -174,10 +178,32 @@ async def _order_run(
         _features(analysis_by_track[preceding_track]) if preceding_track is not None else None
     )
 
+    if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL):
+        analyzed = sum(1 for feature in features if feature.known)
+        LOGGER.log(
+            VERBOSE_LOG_LEVEL,
+            "fade order: %d items, %d with analysis, %d without",
+            len(features),
+            analyzed,
+            len(features) - analyzed,
+        )
+
     # The pick loop is O(N^2) pure CPU and must not run on the event loop.
     order = await asyncio.to_thread(
         _pick_order, features, typed_tracks, seam_features, preceding_track
     )
+
+    if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL):
+        # Only worth the extra O(N) scoring passes when the result is actually logged.
+        result_features = [features[index] for index in order]
+        LOGGER.log(
+            VERBOSE_LOG_LEVEL,
+            "fade order: mean pair score %.2f, was %.2f over %d transitions",
+            _mean_pair_score(result_features),
+            _mean_pair_score(features),
+            len(order) - 1,
+        )
+
     return [items[index] for index in order]
 
 
@@ -366,3 +392,13 @@ def _edge_energy(
 
     edge = audible[:window_size] if from_start else audible[-window_size:]
     return median(edge)
+
+
+def _mean_pair_score(features: list[_TrackFeatures]) -> float:
+    """Return the mean transition score across adjacent pairs, or 0.0 when there is no pair."""
+    if len(features) < 2:
+        return 0.0
+    pairs = [
+        _pair_score(features[index], features[index + 1]) for index in range(len(features) - 1)
+    ]
+    return sum(pairs) / len(pairs)

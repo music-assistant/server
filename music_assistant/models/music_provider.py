@@ -163,6 +163,10 @@ class MusicProvider(Provider):
     Music Provider implementations should inherit from this base model.
     """
 
+    # whether a playlist on this provider accepts the same track more than once;
+    # providers that dedupe entries server-side must override this to False
+    playlist_duplicates_supported = True
+
     def __init__(
         self,
         mass: MusicAssistant,

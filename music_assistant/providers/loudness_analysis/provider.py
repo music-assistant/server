@@ -12,6 +12,7 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, VolumeNormalizationMode
 
 from music_assistant.constants import LOUDNESS_MEASUREMENT_MIN_LUFS
+from music_assistant.controllers.streams.audio_analysis import PROVIDER_LOUDNESS_DOMAIN
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.tags import write_replaygain_track_gain
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
@@ -132,6 +133,16 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
             VolumeNormalizationMode.DISABLED,
             VolumeNormalizationMode.SOURCE,
         ):
+            return False
+        # a music provider already supplied this track's loudness; measuring it again
+        # would be wasted work (the provider value wins during playback anyway)
+        provider_loudness = await self.mass.streams.audio_analysis.get_audio_analysis(
+            streamdetails.item_id,
+            streamdetails.provider,
+            media_type=streamdetails.media_type,
+            priority=(PROVIDER_LOUDNESS_DOMAIN,),
+        )
+        if provider_loudness is not None:
             return False
         ffmpeg = FFMpeg(
             audio_input="-",

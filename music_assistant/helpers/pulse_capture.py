@@ -319,7 +319,9 @@ class PulseCaptureServer:
 
         await asyncio.to_thread(_prepare)
         # runtime/state dirs are redirected into the private dir via the child
-        # environment only; os.environ is never mutated
+        # environment only; os.environ is never mutated. HOME goes too: PA writes an
+        # auth cookie there and refuses to start when it is unwritable, as it is for
+        # a container running as a uid with no passwd entry.
         proc = AsyncProcess(
             [
                 "pulseaudio",
@@ -331,6 +333,7 @@ class PulseCaptureServer:
             stderr=True,
             name="pulse-capture",
             env={
+                "HOME": str(self._base_dir),
                 "XDG_RUNTIME_DIR": str(self._base_dir),
                 "PULSE_RUNTIME_PATH": str(self._base_dir),
                 "PULSE_STATE_PATH": str(self._base_dir),
