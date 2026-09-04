@@ -489,6 +489,19 @@ class AlbumsController(MediaControllerBase[Album]):
                 # make sure that the 'base' version is NOT included
                 and not album.provider_mappings.intersection(prov_item.provider_mappings)
             )
+            if ProviderFeature.ALBUM_VERSIONS in provider.supported_features:
+                # Call the specialized function in addition to searching to
+                # handle cases where the provider hasn't merged the album
+                # variants
+                if mapped_id := next(
+                    (
+                        p.item_id
+                        for p in album.provider_mappings
+                        if p.provider_instance == provider.instance_id
+                    ),
+                    None,
+                ):
+                    result.extend(await provider.get_album_versions(mapped_id))
         return result
 
     async def get_library_album_tracks(
