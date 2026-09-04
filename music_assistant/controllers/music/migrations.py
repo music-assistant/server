@@ -1002,6 +1002,16 @@ async def migrate_database(  # noqa: PLR0915
             if "duplicate column" not in str(err):
                 raise
 
+    if prev_version <= 58:
+        # provider mappings used to be resolved without their media type, so a provider item
+        # that exists as two types (Deezer lists audiobooks among the album favorites) could
+        # attach its mapping and artwork to the unrelated item that shared its library id.
+        # Failures are non-fatal here: a leftover mapping is cosmetic, a discarded library is not.
+        try:
+            await _drop_cross_media_type_mappings(database, logger)
+        except Exception as err:
+            logger.warning("Could not clean up cross-media-type provider mappings: %s", err)
+
     # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
     # with the current code/schema, so the external_ids column must be gone first.
     if prev_version <= 47:
@@ -1042,3 +1052,72 @@ async def migrate_database(  # noqa: PLR0915
 
     # always clear the cache after a db migration
     await mass.cache.clear()
+
+
+async def _drop_cross_media_type_mappings(
+    database: DatabaseConnection, logger: logging.Logger
+) -> None:
+    """
+    Drop provider mappings that ended up on a library item of a different media type.
+
+    :param database: the opened library database connection.
+    """
+    # Only an unambiguous pair is touched: the item that owns the provider item has it as
+    # its single mapping, while the polluted one still has its own. Anything else is left
+    # alone, as is a lone mapping - an item without one can no longer be resolved.
+    stale_rows = await database.get_rows_from_query(
+        f"SELECT stale.media_type AS stale_type, keeper.media_type AS keeper_type, "
+        f"stale.item_id, stale.provider_instance, stale.provider_item_id "
+        f"FROM {DB_TABLE_PROVIDER_MAPPINGS} stale "
+        f"JOIN {DB_TABLE_PROVIDER_MAPPINGS} keeper ON keeper.item_id = stale.item_id "
+        "AND keeper.provider_instance = stale.provider_instance "
+        "AND keeper.provider_item_id = stale.provider_item_id "
+        "AND keeper.media_type != stale.media_type "
+        f"WHERE (SELECT COUNT(*) FROM {DB_TABLE_PROVIDER_MAPPINGS} m "
+        "WHERE m.media_type = keeper.media_type AND m.item_id = keeper.item_id) = 1 "
+        f"AND (SELECT COUNT(*) FROM {DB_TABLE_PROVIDER_MAPPINGS} m "
+        "WHERE m.media_type = stale.media_type AND m.item_id = stale.item_id) > 1",
+        limit=0,
+    )
+    for row in stale_rows:
+        stale_table = f"{row['stale_type']}s"
+        keeper_table = f"{row['keeper_type']}s"
+        if stale_table not in MEDIA_ITEM_DB_TABLES or keeper_table not in MEDIA_ITEM_DB_TABLES:
+            continue
+        await database.delete(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": row["stale_type"],
+                "item_id": row["item_id"],
+                "provider_instance": row["provider_instance"],
+                "provider_item_id": row["provider_item_id"],
+            },
+        )
+        await _drop_foreign_images(database, stale_table, keeper_table, row["item_id"])
+    if stale_rows:
+        logger.info(
+            "Removed %s provider mapping(s) that belonged to another media type", len(stale_rows)
+        )
+
+
+async def _drop_foreign_images(
+    database: DatabaseConnection, stale_table: str, keeper_table: str, item_id: int
+) -> None:
+    """Strip the images the polluted item copied from the item it was confused with."""
+    stale_row = await database.get_row(stale_table, {"item_id": item_id})
+    keeper_row = await database.get_row(keeper_table, {"item_id": item_id})
+    if not stale_row or not keeper_row:
+        return
+    # metadata is user data written by older versions, so treat anything unreadable as
+    # nothing to clean up rather than failing the migration over it
+    with suppress(Exception):
+        metadata = json_loads(stale_row["metadata"] or "{}")
+        foreign = json_loads(keeper_row["metadata"] or "{}").get("images") or []
+        foreign_paths = {image["path"] for image in foreign}
+        images = metadata.get("images") or []
+        kept = [image for image in images if image["path"] not in foreign_paths]
+        if len(kept) != len(images):
+            metadata["images"] = kept
+            await database.update(
+                stale_table, {"item_id": item_id}, {"metadata": serialize_to_json(metadata)}
+            )
