@@ -8,22 +8,21 @@ CONF_HTTP_PORT = "http_port"
 CONF_OUTPUT_FORMAT = "output_format"
 CONF_PLAYER_IDLE_TIMEOUT = "player_idle_timeout"
 CONF_SHOW_STOP_NOTIFICATION = "show_stop_notification"
-CONF_ENABLE_GROUPING = "enable_player_grouping"
 CONF_GROUP_STREAM_MODE = "group_stream_mode"
-CONF_ENABLE_SENDSPIN_BRIDGE = "enable_sendspin_bridge"
+CONF_INCLUDE_CONTENT_LENGTH = "include_content_length"
+LEGACY_CONF_ENABLE_GROUPING = "enable_player_grouping"
 
 DEFAULT_HTTP_PORT = 8099
 DEFAULT_OUTPUT_FORMAT = "mp3"
 DEFAULT_PLAYER_IDLE_TIMEOUT = 30  # minutes
 DEFAULT_SHOW_STOP_NOTIFICATION = False
-DEFAULT_ENABLE_GROUPING = False
-DEFAULT_ENABLE_SENDSPIN_BRIDGE = True
+DEFAULT_INCLUDE_CONTENT_LENGTH = True
 
-# Group stream modes
-GROUP_STREAM_MODE_INDEPENDENT = "independent"  # Each player gets its own stream
-GROUP_STREAM_MODE_SHARED = "shared"  # Shared buffer: one ffmpeg, multiple readers
-GROUP_STREAM_MODE_REDIRECT = "redirect"  # Redirect TVs to the MA Streamserver directly (default)
+# Stream delivery modes
+GROUP_STREAM_MODE_INDEPENDENT = "independent"  # Local compatibility proxy
+GROUP_STREAM_MODE_REDIRECT = "redirect"  # Redirect TVs to the MA Streamserver directly
 DEFAULT_GROUP_STREAM_MODE = GROUP_STREAM_MODE_REDIRECT
+LEGACY_GROUP_STREAM_MODE_SHARED = "shared"
 
 # Player ID prefix for dynamically registered players
 MSX_PLAYER_ID_PREFIX = "msx_"
@@ -34,9 +33,3 @@ PLAYER_ID_SANITIZE_RE = re.compile(r"[^a-zA-Z0-9_]+")
 # Pre-buffer size: accumulate this many bytes before sending HTTP headers to prevent
 # MSX stutter/restart when ffmpeg hasn't produced data yet.
 PRE_BUFFER_BYTES = 64 * 1024
-
-# Sendspin bridge: client id prefix follows the Sendspin ecosystem "spb_" convention
-SENDSPIN_BRIDGE_CLIENT_PREFIX = "spb_msx_"
-# Seconds the bridge waits for the TV's JS client to connect after a stream
-# start before transferring playback back to the regular HTTP player.
-SENDSPIN_CONNECT_TIMEOUT = 15.0

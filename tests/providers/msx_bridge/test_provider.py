@@ -2,34 +2,16 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
+from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import InvalidDataError, PlayerUnavailableError
+from music_assistant_models.player import PlayerMedia
+
+from music_assistant.providers.msx_bridge.player import MSXPlayer
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
-
-
-async def test_init_without_sendspin_provider_module(
-    provider: MSXBridgeProvider,
-) -> None:
-    """
-    The provider must load even when the Sendspin provider module is absent.
-
-    In a Music Assistant install that ships no Sendspin provider, importing
-    the bridge manager fails; the MSX provider must degrade to "no bridge"
-    instead of failing to load.
-    """
-    provider.sendspin_bridge_enabled = True
-    with (
-        patch("music_assistant.providers.msx_bridge.provider.MSXHTTPServer") as mock_server_cls,
-        patch.object(
-            MSXBridgeProvider,
-            "_make_bridge_manager",
-            side_effect=ImportError("No module named 'music_assistant.providers.sendspin'"),
-        ),
-    ):
-        mock_server_cls.return_value = AsyncMock()
-        await provider.handle_async_init()
-
-    assert provider.bridge_manager is None
 
 
 async def test_handle_async_init(provider: MSXBridgeProvider) -> None:
@@ -75,7 +57,7 @@ async def test_get_ma_stream_url_uses_streamserver(
     provider: MSXBridgeProvider, mass_mock: Mock
 ) -> None:
     """get_ma_stream_url must resolve the URL via the MA streamserver API."""
-    media = Mock()
+    media = PlayerMedia(uri="library://track/1")
     mass_mock.streams.resolve_stream_url = AsyncMock(
         return_value="http://ma:8097/single/s1/q1/i1/msx_test.mp3"
     )
@@ -100,21 +82,72 @@ async def test_get_ma_stream_url_rejects_flow_urls(
         return_value="http://ma:8097/flow/s1/q1/i1/msx_test.mp3"
     )
 
-    url = await provider.get_ma_stream_url("msx_test", Mock())
+    url = await provider.get_ma_stream_url("msx_test", PlayerMedia(uri="library://track/1"))
 
     assert url is None
+
+
+async def test_get_ma_stream_url_accepts_universal_group_flow_media(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """Universal Group flow media must be redirected to its common stream."""
+    stream_url = "http://ma:8097/flow/universal-group.mp3?player_id=msx_test"
+    mass_mock.streams.resolve_stream_url = AsyncMock(return_value=stream_url)
+    media = PlayerMedia(uri=stream_url, media_type=MediaType.FLOW_STREAM)
+
+    url = await provider.get_ma_stream_url("msx_test", media)
+
+    assert url == stream_url
+
+
+def test_shared_stream_mode_migrates_to_independent(provider: MSXBridgeProvider) -> None:
+    """The removed shared mode migrates without changing local delivery topology."""
+    cast("Any", provider.config).get_value = Mock(return_value="shared")
+    set_raw_value = Mock()
+    cast("Any", provider.mass.config).set_raw_provider_config_value = set_raw_value
+
+    mode = provider._load_stream_mode()
+
+    assert mode == "independent"
+    set_raw_value.assert_called_once_with(
+        provider.instance_id,
+        "group_stream_mode",
+        "independent",
+    )
+
+
+def test_shared_stream_mode_migration_failure_is_non_fatal(
+    provider: MSXBridgeProvider,
+) -> None:
+    """A failed best-effort config write must not prevent provider startup."""
+    cast("Any", provider.config).get_value = Mock(return_value="shared")
+    cast("Any", provider.mass.config).set_raw_provider_config_value = Mock(
+        side_effect=OSError("read-only")
+    )
+
+    assert provider._load_stream_mode() == "independent"
 
 
 async def test_get_ma_stream_url_returns_none_on_error(
     provider: MSXBridgeProvider, mass_mock: Mock
 ) -> None:
     """get_ma_stream_url must degrade to None (proxy fallback) when resolution fails."""
-    mass_mock.streams.resolve_stream_url = AsyncMock(side_effect=RuntimeError("no session"))
+    mass_mock.streams.resolve_stream_url = AsyncMock(side_effect=InvalidDataError("no session"))
 
-    url = await provider.get_ma_stream_url("msx_test", Mock())
+    url = await provider.get_ma_stream_url("msx_test", PlayerMedia(uri="library://track/1"))
 
     assert url is None
     mass_mock.streams.resolve_stream_url.assert_awaited_once()
+
+
+async def test_get_ma_stream_url_does_not_swallow_unexpected_error(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """Programming errors while resolving a stream URL must not look like a missing URL."""
+    mass_mock.streams.resolve_stream_url = AsyncMock(side_effect=ValueError("bug"))
+
+    with pytest.raises(ValueError, match="bug"):
+        await provider.get_ma_stream_url("msx_test", PlayerMedia(uri="library://track/1"))
 
 
 def test_on_player_activity_uses_monotonic_clock(provider: MSXBridgeProvider) -> None:
@@ -130,6 +163,18 @@ def test_on_player_activity_uses_monotonic_clock(provider: MSXBridgeProvider) ->
         provider.on_player_activity("msx_x")
 
     assert provider._player_last_activity["msx_x"] == 1234.0
+
+
+def test_on_player_activity_restores_unavailable_player(
+    provider: MSXBridgeProvider, mass_mock: Mock, player: MSXPlayer
+) -> None:
+    """A later HTTP request from the TV must make the player available to MA again."""
+    player._attr_available = False
+    mass_mock.players.get_player = Mock(return_value=player)
+
+    provider.on_player_activity(player.player_id)
+
+    assert player.available is True
 
 
 async def test_loaded_in_mass_starts_timeout_task(provider: MSXBridgeProvider) -> None:
@@ -159,7 +204,44 @@ async def test_unload_stops_server_first(provider: MSXBridgeProvider) -> None:
     await provider.unload()
 
     mock_server.stop.assert_awaited_once()
+    cast("Mock", provider.mass.players.iter_players).assert_called_once_with(
+        return_disabled=True,
+        provider_filter=provider.instance_id,
+        return_protocol_players=True,
+    )
     provider.mass.players.unregister.assert_awaited_once_with("msx_test")  # type: ignore[attr-defined]
+
+
+async def test_unload_continues_when_unregister_fails(
+    provider: MSXBridgeProvider,
+) -> None:
+    """One unavailable player must not block the rest of unload."""
+    first = Mock(display_name="A", player_id="msx_a")
+    second = Mock(display_name="B", player_id="msx_b")
+    provider.mass.players.all.return_value = [first, second]  # type: ignore[attr-defined]
+    provider.mass.players.iter_players.return_value = [first, second]  # type: ignore[attr-defined]
+    provider.mass.players.unregister = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[PlayerUnavailableError("gone"), None]
+    )
+    provider.http_server = None
+
+    await provider.unload()
+
+    assert provider.mass.players.unregister.await_count == 2
+
+
+async def test_unload_does_not_swallow_unexpected_unregister_error(
+    provider: MSXBridgeProvider,
+) -> None:
+    """A bug while unregistering must not be hidden as a missing player."""
+    mock_player = Mock(display_name="Test TV", player_id="msx_test")
+    provider.mass.players.all.return_value = [mock_player]  # type: ignore[attr-defined]
+    provider.mass.players.iter_players.return_value = [mock_player]  # type: ignore[attr-defined]
+    provider.mass.players.unregister = AsyncMock(side_effect=ValueError("bug"))  # type: ignore[method-assign]
+    provider.http_server = None
+
+    with pytest.raises(ValueError, match="bug"):
+        await provider.unload()
 
 
 async def test_unload_no_server(provider: MSXBridgeProvider) -> None:
