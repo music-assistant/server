@@ -21,6 +21,7 @@ from music_assistant_models.enums import (
     VolumeNormalizationMode,
 )
 from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import MultiPartPath
 
 from music_assistant.constants import (
@@ -33,7 +34,6 @@ from .ffmpeg import DEFAULT_MP3_BIT_RATE, get_ffmpeg_stream
 from .process import AsyncProcess, communicate
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
@@ -52,6 +52,16 @@ SLOW_PROVIDERS = ("tidal", "ytmusic", "apple_music")
 _MIME_TYPE_OVERRIDES: Final[dict[str, str]] = {
     "mp3": "audio/mpeg",
 }
+
+DSD_CONTENT_TYPES: Final[frozenset[ContentType]] = frozenset(
+    {
+        ContentType.DSF,
+        ContentType.DSD_LSBF,
+        ContentType.DSD_MSBF,
+        ContentType.DSD_LSBF_PLANAR,
+        ContentType.DSD_MSBF_PLANAR,
+    }
+)
 
 
 def get_mime_type(format_str: str) -> str:
@@ -753,6 +763,58 @@ def arriving_audio_format(streamdetails: StreamDetails) -> AudioFormat:
     :param streamdetails: The stream the audio belongs to.
     """
     return streamdetails.decoded_audio_format or streamdetails.audio_format
+
+
+def is_dsd_audio_format(audio_format: AudioFormat) -> bool:
+    """Return whether an audio format carries or identifies DSD samples."""
+    return (
+        audio_format.content_type in DSD_CONTENT_TYPES
+        or audio_format.codec_type in DSD_CONTENT_TYPES
+    )
+
+
+def is_dsd_stream(streamdetails: StreamDetails) -> bool:
+    """Return whether a stream contains DSD, including DFF/DST local files."""
+    if streamdetails.decoded_audio_format is not None:
+        return is_dsd_audio_format(streamdetails.decoded_audio_format)
+    if is_dsd_audio_format(streamdetails.audio_format):
+        return True
+    path = streamdetails.path
+    if isinstance(path, str):
+        return urllib.parse.urlparse(path).path.lower().endswith(".dff")
+    return (
+        isinstance(path, list)
+        and bool(path)
+        and all(urllib.parse.urlparse(part.path).path.lower().endswith(".dff") for part in path)
+    )
+
+
+def decoded_pcm_format(streamdetails: StreamDetails) -> AudioFormat:
+    """
+    Return the PCM format FFmpeg emits after decoding the arriving audio.
+
+    FFprobe describes DSD in units of one byte per decoded time step: DSD64 is
+    reported as 352.8 kHz / 8-bit even though FFmpeg's DSD decoder emits planar
+    float samples. Normalize that decoder contract here so buffer byte accounting
+    and downstream bit-depth selection describe the bytes FFmpeg actually writes.
+
+    :param streamdetails: The stream whose decoded PCM format is required.
+    """
+    arriving = arriving_audio_format(streamdetails)
+    if is_dsd_stream(streamdetails):
+        return AudioFormat(
+            content_type=ContentType.PCM_F32LE,
+            codec_type=ContentType.PCM_F32LE,
+            sample_rate=arriving.sample_rate,
+            bit_depth=32,
+            channels=min(arriving.channels, 2),
+        )
+    return AudioFormat(
+        content_type=ContentType.from_bit_depth(arriving.bit_depth),
+        sample_rate=arriving.sample_rate,
+        bit_depth=arriving.bit_depth,
+        channels=min(arriving.channels, 2),
+    )
 
 
 def get_bit_rate(fmt: AudioFormat) -> int:

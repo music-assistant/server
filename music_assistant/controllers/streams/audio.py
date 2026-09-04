@@ -123,6 +123,7 @@ from music_assistant.helpers.audio import (
     audio_source_silence_keepalive,
     build_concat_filelist,
     calculate_content_length,
+    decoded_pcm_format,
     get_bit_rate,
     get_normalization_mode,
     get_parts_from_position,
@@ -4503,8 +4504,8 @@ class StreamsAudio:
         # the depth the audio arrives in, not the one the source claims: a
         # provider that decoded on our behalf may advertise a narrower format
         # for display, and narrowing the stream to that would truncate it
-        bit_depth = arriving_audio_format(streamdetails).bit_depth
-        return ContentType.from_bit_depth(bit_depth), bit_depth
+        decoded_format = decoded_pcm_format(streamdetails)
+        return decoded_format.content_type, decoded_format.bit_depth
 
     def _select_audio_source_pcm_format(
         self,

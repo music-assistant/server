@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import ContentType, MediaType, VolumeNormalizationMode
 from music_assistant_models.media_items import AudioFormat
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 if TYPE_CHECKING:
     from music_assistant.models.player import Player
@@ -72,6 +72,158 @@ def test_the_buffer_uses_the_source_when_nothing_was_decoded() -> None:
     pcm = _buffer_pcm_format(_streamdetails(advertised, None))
     assert pcm.bit_depth == 24
     assert pcm.sample_rate == 48000
+
+
+def test_the_buffer_normalizes_ffmpegs_dsd_decoder_output() -> None:
+    """DSD's byte-rate probe values must not be mistaken for its decoded PCM format."""
+    from music_assistant.controllers.streams.audio_buffer import (  # noqa: PLC0415
+        _buffer_pcm_format,
+    )
+
+    advertised = AudioFormat(
+        content_type=ContentType.DSF,
+        codec_type=ContentType.DSD_LSBF_PLANAR,
+        sample_rate=352800,
+        bit_depth=8,
+        channels=2,
+    )
+
+    pcm = _buffer_pcm_format(_streamdetails(advertised, None))
+
+    assert pcm.content_type == ContentType.PCM_F32LE
+    assert pcm.codec_type == ContentType.PCM_F32LE
+    assert pcm.sample_rate == 352800
+    assert pcm.bit_depth == 32
+    assert pcm.channels == 2
+
+
+def test_the_buffer_recognizes_dst_compressed_dff_by_path() -> None:
+    """DFF/DST needs path-based detection until the shared models expose those types."""
+    from music_assistant.controllers.streams.audio_buffer import (  # noqa: PLC0415
+        _buffer_pcm_format,
+    )
+
+    advertised = AudioFormat(
+        content_type=ContentType.UNKNOWN,
+        codec_type=ContentType.UNKNOWN,
+        sample_rate=705600,
+        bit_depth=16,
+        channels=2,
+    )
+    streamdetails = _streamdetails(advertised, None)
+    streamdetails.path = "/music/album/track.dff"
+
+    pcm = _buffer_pcm_format(streamdetails)
+
+    assert pcm.content_type == ContentType.PCM_F32LE
+    assert pcm.codec_type == ContentType.PCM_F32LE
+    assert pcm.sample_rate == 705600
+    assert pcm.bit_depth == 32
+
+
+def test_an_explicit_decoded_format_overrides_a_dff_path() -> None:
+    """A provider's decoded PCM handoff is authoritative even for a DFF source path."""
+    from music_assistant.controllers.streams.audio_buffer import (  # noqa: PLC0415
+        _buffer_pcm_format,
+    )
+
+    advertised = AudioFormat(
+        content_type=ContentType.UNKNOWN,
+        codec_type=ContentType.UNKNOWN,
+        sample_rate=352800,
+        bit_depth=8,
+        channels=2,
+    )
+    arriving = AudioFormat(
+        content_type=ContentType.PCM_S16LE,
+        codec_type=ContentType.PCM_S16LE,
+        sample_rate=88200,
+        bit_depth=16,
+        channels=2,
+    )
+    streamdetails = _streamdetails(advertised, arriving)
+    streamdetails.path = "/music/album/track.dff"
+
+    pcm = _buffer_pcm_format(streamdetails)
+
+    assert pcm.content_type == ContentType.PCM_S16LE
+    assert pcm.sample_rate == 88200
+    assert pcm.bit_depth == 16
+
+
+def test_the_buffer_recognizes_a_multipart_dff_stream() -> None:
+    """Every DFF part in a concatenated stream is decoded to float PCM."""
+    from music_assistant.controllers.streams.audio_buffer import (  # noqa: PLC0415
+        _buffer_pcm_format,
+    )
+
+    advertised = AudioFormat(
+        content_type=ContentType.UNKNOWN,
+        codec_type=ContentType.UNKNOWN,
+        sample_rate=352800,
+        bit_depth=8,
+        channels=2,
+    )
+    streamdetails = _streamdetails(advertised, None)
+    streamdetails.path = [
+        MultiPartPath(path="/music/disc1.dff"),
+        MultiPartPath(path="/music/disc2.DFF"),
+    ]
+
+    pcm = _buffer_pcm_format(streamdetails)
+
+    assert pcm.content_type == ContentType.PCM_F32LE
+    assert pcm.bit_depth == 32
+
+
+def test_a_mixed_multipart_stream_is_not_assumed_to_be_dsd() -> None:
+    """A shared decoded format cannot safely be inferred from only one DFF part."""
+    from music_assistant.controllers.streams.audio_buffer import (  # noqa: PLC0415
+        _buffer_pcm_format,
+    )
+
+    advertised = AudioFormat(
+        content_type=ContentType.UNKNOWN,
+        codec_type=ContentType.UNKNOWN,
+        sample_rate=48000,
+        bit_depth=16,
+        channels=2,
+    )
+    streamdetails = _streamdetails(advertised, None)
+    streamdetails.path = [
+        MultiPartPath(path="/music/disc1.dff"),
+        MultiPartPath(path="/music/disc2.flac"),
+    ]
+
+    pcm = _buffer_pcm_format(streamdetails)
+
+    assert pcm.content_type == ContentType.PCM_S16LE
+    assert pcm.bit_depth == 16
+
+
+def test_the_flow_depth_uses_ffmpegs_decoded_dsd_depth() -> None:
+    """Unprocessed DSD-to-PCM playback carries FFmpeg's float output without narrowing it."""
+    from music_assistant.controllers.streams.audio import StreamsAudio  # noqa: PLC0415
+
+    advertised = AudioFormat(
+        content_type=ContentType.DSF,
+        codec_type=ContentType.DSD_LSBF_PLANAR,
+        sample_rate=352800,
+        bit_depth=8,
+        channels=2,
+    )
+    streamdetails = _streamdetails(advertised, None)
+    streamdetails.volume_normalization_mode = VolumeNormalizationMode.DISABLED
+
+    content_type, bit_depth = StreamsAudio._pick_pcm_bit_depth(
+        cast("StreamsAudio", SimpleNamespace()),
+        players=(),
+        streamdetails=streamdetails,
+        crossfade_enabled=False,
+    )
+
+    assert content_type == ContentType.PCM_F32LE
+    assert bit_depth == 32
 
 
 def test_a_surround_source_is_folded_to_stereo() -> None:
