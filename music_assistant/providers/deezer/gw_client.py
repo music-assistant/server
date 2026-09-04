@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from aiohttp import ClientSession, ClientTimeout
 from music_assistant_models.errors import MediaNotFoundError
+from yarl import URL
 
 from music_assistant.helpers.datetime import future_timestamp, utc_timestamp
 
@@ -60,11 +61,20 @@ class GWClient:
         self._cookies: dict[str, str] = {}
         self.formats = [{"cipher": "BF_CBC_STRIPE", "format": "MP3_128"}]
 
-    def _request_cookies(self) -> dict[str, str]:
-        """Return the cookies to send with a request."""
-        # deezer resolves the account from the arl again when the sid does not match, so the
-        # empty default keeps a sid another instance left in the shared jar from taking over
-        return {"sid": "", **self._cookies, "arl": self._arl_token}
+    def _request_cookies(self, url: str) -> dict[str, str]:
+        """
+        Return the cookies to send with a request to the given url.
+
+        :param url: The url the request is made to, it selects which cookies apply.
+        """
+        # The http session is shared server-wide, so its jar can already hold deezer cookies
+        # that another instance of this provider left behind: a session id, but also the bot
+        # detection tokens deezer ties to that session. aiohttp cannot skip the jar for a
+        # single request (aio-libs/aiohttp#2067) and per request cookies only override it by
+        # name, so blank out every name the jar would contribute and layer our own on top.
+        # That gives each instance the identity of its own arl without its own session.
+        blanked = dict.fromkeys(self.session.cookie_jar.filter_cookies(URL(url)), "")
+        return blanked | self._cookies | {"arl": self._arl_token}
 
     def _store_cookies(self, response: ClientResponse) -> None:
         """Remember the cookies deezer set, the shared jar is not ours to use."""
@@ -138,7 +148,7 @@ class GWClient:
             timeout=ClientTimeout(total=30),
             json=args,
             headers={"User-Agent": USER_AGENT_HEADER},
-            cookies=self._request_cookies(),
+            cookies=self._request_cookies(GW_LIGHT_URL),
         )
         self._store_cookies(result)
         result_json = await result.json()
@@ -217,7 +227,7 @@ class GWClient:
             MEDIA_GET_URL,
             json=url_data,
             headers={"User-Agent": USER_AGENT_HEADER},
-            cookies=self._request_cookies(),
+            cookies=self._request_cookies(MEDIA_GET_URL),
         )
         self._store_cookies(url_response)
         result_json = await url_response.json()
