@@ -14,7 +14,7 @@ music_assistant/providers/audible/audible_helper.py	21
 music_assistant/providers/audiobookshelf/__init__.py	10
 music_assistant/providers/audiobookshelf/helpers.py	4
 music_assistant/providers/bandcamp/__init__.py	11
-music_assistant/providers/bbc_sounds/__init__.py	9
+music_assistant/providers/bbc_sounds/__init__.py	6
 music_assistant/providers/bbc_sounds/adaptor.py	5
 music_assistant/providers/bluesound/player.py	3
 music_assistant/providers/deezer/browse.py	3

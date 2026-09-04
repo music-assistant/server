@@ -51,7 +51,7 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 from music_assistant.providers.bbc_sounds.adaptor import Adaptor
-from music_assistant.providers.bbc_sounds.constants import _Constants
+from music_assistant.providers.bbc_sounds.constants import ValidMenuIDs, _Constants
 from music_assistant.providers.bbc_sounds.metadata import (
     _find_segment,
     _segment_to_metadata,
@@ -162,51 +162,8 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def loaded_in_mass(self) -> None:
         """Do post-loaded actions."""
-        if not self.menu or (
-            isinstance(self.menu, Menu) and self.menu.sub_items and len(self.menu.sub_items) == 0
-        ):
-            await self._fetch_menu()
-
-    @property
-    def is_streaming_provider(self) -> bool:
-        """Return True as the provider is a streaming provider."""
-        return True
-
-    async def get_recommendations(self) -> list[RecommendationFolder]:
-        """Get this provider's available recommendation rows, without items."""
-        if not self.logged_in:
-            return []
-        return await self._recommendation_rows_from_payload()
-
-    async def get_recommendation_items(
-        self, item_id: str
-    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
-        """
-        Get the items for a single recommendation row.
-
-        :param item_id: The item_id of the row, as returned by get_recommendations.
-        """
-        if not self.logged_in:
-            return UniqueList()
-        return await self._recommendation_items_from_payload(item_id)
-
-    def _get_provider_mapping(self, item_id: str) -> ProviderMapping:
-        return ProviderMapping(
-            item_id=item_id,
-            provider_domain=self.domain,
-            provider_instance=self.instance_id,
-        )
-
-    def _stream_error(self, item_id: str, media_type: MediaType) -> MusicAssistantError:
-        return MusicAssistantError(f"Couldn't get stream details for {item_id} ({media_type})")
-
-    async def _fetch_menu(self) -> None:
-        self.logger.debug("No cached menu, fetching from API")
-        self.menu = await self.client.get_menu(
-            include_local_stations=self.show_local_stations,
-            recommendations=MenuRecommendationOptions.EXCLUDE,
-        )
-        self.menu_last_fetched = datetime.now_timestamp()
+        if not self.menu or (isinstance(self.menu, Menu) and not self.menu.sub_items):
+            await self._refresh_menu_from_api()
 
     @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
     async def get_track(self, prov_track_id: str) -> Track:
@@ -279,6 +236,263 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
 
         self.logger.debug(f"{station} {ma_radio} {type(ma_radio)}")
         raise MediaNotFoundError("No valid radio stream found")
+
+    @property
+    def is_streaming_provider(self) -> bool:
+        """Return True as the provider is a streaming provider."""
+        return True
+
+    @property
+    def _menu_is_stale(self) -> bool:
+        if not self.menu:
+            self.logger.debug("No menu set")
+            return True
+        if not self.menu.sub_items:
+            self.logger.debug("Menu has no items")
+            return True
+        if self.menu_last_fetched is not None and (
+            (datetime.utc_timestamp() - self.menu_last_fetched) >= _Constants.SHORT_EXPIRATION
+        ):
+            self.logger.debug("Menu has expired")
+            return True
+        return False
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        if not self.logged_in:
+            return []
+        return await self._recommendation_rows_from_payload()
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if not self.logged_in:
+            return UniqueList()
+        return await self._recommendation_items_from_payload(item_id)
+
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Browse this provider's items.
+
+        :param path: The path to browse, (e.g. provider_id://artists).
+        """
+        self.logger.debug(f"Browsing path: {path}")
+        if not path.startswith(f"{self.domain}://"):
+            raise MusicAssistantError(f"Invalid path for {self.domain} provider: {path}")
+        path_parts = path.split("://", 1)[1].split("/")
+        self.logger.debug(f"Path parts: {path_parts}")
+
+        path_parts = [
+            f"{self.domain}:/",
+            *[part for part in path_parts if len(part) > 0],
+        ]
+        dispatch_menu = path_parts[1] if len(path_parts) > 1 else ""
+
+        if dispatch_menu == "listen_live":
+            return await self._browse_live()
+        if dispatch_menu == "categories":
+            return await self._browse_categories(path_parts)
+        if dispatch_menu == "collections":
+            return await self._browse_collections(path_parts)
+        if dispatch_menu == "stations":
+            return await self._browse_stations(path_parts)
+        if dispatch_menu == "playlists":
+            return await self._get_playlist(path_parts[2])
+        if (
+            dispatch_menu != ""
+            and dispatch_menu not in ValidMenuIDs
+            and _Constants.LATEST_NEWS_PLAYLIST_SUFFIX not in dispatch_menu
+        ):
+            raise KeyError("Invalid subpath")
+        return await self._browse_menu(path_parts)
+
+    async def search(
+        self, search_query: str, media_types: list[MediaType] | None, limit: int = 5
+    ) -> SearchResults:
+        """Perform search for BBC Sounds stations."""
+        results = SearchResults()
+        search_result = await self.client.streaming.search(search_query)
+        self.logger.debug(search_result)
+        if media_types is None or MediaType.RADIO in media_types:
+            radios = [await self.adaptor.new_object(radio) for radio in search_result.stations]
+            results.radio = [radio for radio in radios if isinstance(radio, Radio)]
+        if (
+            media_types is None
+            or MediaType.TRACK in media_types
+            or MediaType.PODCAST_EPISODE in media_types
+        ):
+            episodes = [await self.adaptor.new_object(track) for track in search_result.episodes]
+            results.tracks = [track for track in episodes if type(track) is Track]
+
+        if media_types is None or MediaType.PODCAST in media_types:
+            podcasts = [await self.adaptor.new_object(show) for show in search_result.shows]
+            results.podcasts = [podcast for podcast in podcasts if isinstance(podcast, Podcast)]
+
+        return results
+
+    async def on_played(
+        self,
+        media_type: MediaType,
+        prov_item_id: str,
+        fully_played: bool,
+        position: int,
+        media_item: MediaItemType,
+        is_playing: bool = False,
+    ) -> None:
+        """Handle callback when a (playable) media item has been played."""
+        if self.logged_in:
+            if media_type != MediaType.RADIO:
+                # Handle Sounds API play status updates
+                action = None
+
+                if is_playing:
+                    action = PlayStatus.STARTED if position < 30 else PlayStatus.HEARTBEAT
+                elif fully_played:
+                    action = PlayStatus.ENDED
+                else:
+                    action = PlayStatus.PAUSED
+
+                if action:
+                    try:
+                        success = await self.client.streaming.update_play_status(
+                            pid=prov_item_id, elapsed_time=position, action=action
+                        )
+                        self.logger.debug(f"Updated play status: {success}")
+                    except exceptions.APIResponseError as err:
+                        self.logger.error(f"Error updating play status: {err}")
+
+    async def _browse_menu(
+        self, path_parts: list[str]
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        if len(path_parts) == 1:
+            # bbc_sounds://
+            return await self._get_menu()
+        return await self._get_subpath_menu(path_parts[1:])
+
+    async def _browse_live(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        return await self._station_list(
+            include_local=self.show_local_stations, show_current_programme=True
+        )
+
+    async def _browse_categories(
+        self, path_parts: list[str]
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        if len(path_parts) == 3:
+            # bbc_sounds://categories/<category>
+            return await self._get_category(path_parts[2])
+        # bbc_sounds://categories/
+        return await self._get_subpath_menu(path_parts[1:])
+
+    async def _browse_collections(
+        self, path_parts: list[str]
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        if len(path_parts) == 3:
+            # bbc_sounds://collections/<collection>
+            return await self._get_collection(path_parts[2])
+        # bbc_sounds://collections/
+        return await self._get_subpath_menu(path_parts[1:])
+
+    async def _browse_stations(
+        self, path_parts: list[str]
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        if len(path_parts) == 4:
+            # bbc_sounds://stations/<station_id>/<date>
+            return await self._get_station_schedule_menu(
+                path_parts=path_parts,
+                station_id=path_parts[2],
+                date=path_parts[3],
+            )
+        if len(path_parts) == 3:
+            # bbc_sounds://stations/<station_id>
+            return await self._get_station_menu(path_parts[2], path_parts)
+
+        # bbc_sounds://stations
+        return await self._station_list_as_folders(
+            path_parts=path_parts, include_local=self.show_local_stations
+        )
+
+    async def _get_station_menu(
+        self,
+        station_id: str,
+        path_parts: list[str],
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Lookup the full schedule menu for a station."""
+        schedules = await self.client.stations.get_station_menu(station_id)
+        item_list: list[MediaItemType | ItemMapping | BrowseFolder] = []
+        if schedules and schedules.sub_items:
+            for folder in schedules.sub_items:
+                new_folder = await self._render_browse_item(folder, path_parts=path_parts)
+                if new_folder:
+                    item_list.append(new_folder)
+        return item_list
+
+    async def _refresh_menu_from_api(self) -> None:
+        """Get a fresh copy of the main Sounds menu from the API."""
+        self.logger.debug("No cached menu, fetching from API")
+        self.menu = await self.client.get_menu(
+            include_local_stations=self.show_local_stations,
+            recommendations=MenuRecommendationOptions.EXCLUDE,
+        )
+        self.menu_last_fetched = datetime.utc_timestamp()
+
+    async def _convert_menu(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        menu_items = []
+        if self.menu:
+            for item in self.menu.sub_items:
+                new_item = await self._render_browse_item(item)
+                if isinstance(new_item, (MediaItemType | ItemMapping | BrowseFolder)):
+                    menu_items.append(new_item)
+        return menu_items
+
+    async def _get_menu(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Access self.menu data, refreshing when necessary."""
+        if self._menu_is_stale:
+            await self._refresh_menu_from_api()
+
+        if not self.menu or not self.menu.sub_items:
+            raise MusicAssistantError("Menu API response is empty or invalid")
+        utc_timestamp = datetime.utc_timestamp()
+        if self.menu_last_fetched:
+            menu_valid_for_mins = int(
+                (_Constants.SHORT_EXPIRATION - (utc_timestamp - self.menu_last_fetched)) / 60
+            )
+            self.logger.debug(f"Menu valid for {menu_valid_for_mins} more mins")
+        return await self._convert_menu()
+
+    def _get_provider_mapping(self, item_id: str) -> ProviderMapping:
+        return ProviderMapping(
+            item_id=item_id,
+            provider_domain=self.domain,
+            provider_instance=self.instance_id,
+        )
+
+    @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
+    async def _get_playlist(self, pid: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get a playlist from the API.
+
+        When browsing the main menu, or through the "Top Picks for You" section, we might
+        be presented with a Playlist. These don't usually contain their own contents,
+        so we need a helper function to populate them.
+        """
+        playlist_contents = await self.client.streaming.get_playlist_contents(pid=pid)
+        if playlist_contents and type(playlist_contents) is list:
+            return [
+                obj
+                for obj in [
+                    await self._render_browse_item(item) for item in playlist_contents if item
+                ]
+                if obj
+            ]
+        return []
+
+    def _stream_error(self, item_id: str, media_type: MediaType) -> MusicAssistantError:
+        return MusicAssistantError(f"Couldn't get stream details for {item_id} ({media_type})")
 
     async def _catch_up_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details for catch-up content."""
@@ -534,28 +748,6 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                 )
         return radio_list
 
-    async def _get_menu(
-        self, path_parts: list[str] | None = None
-    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        if not self.menu:
-            self.logger.debug("No menu set, fetching from API")
-            await self._fetch_menu()
-        elif (
-            self.menu_last_fetched is not None
-            and (datetime.now_timestamp() - self.menu_last_fetched) >= _Constants.SHORT_EXPIRATION
-        ):
-            self.logger.debug("Menu has expired, fetching from API")
-            await self._fetch_menu()
-        if not self.menu or not self.menu.sub_items:
-            raise MusicAssistantError("Menu API response is empty or invalid")
-        menu_items = []
-        for item in self.menu.sub_items:
-            new_item = await self._render_browse_item(item, path_parts)
-            if isinstance(new_item, (MediaItemType | ItemMapping | BrowseFolder)):
-                menu_items.append(new_item)
-
-        return menu_items
-
     async def _render_browse_item(
         self,
         item: SoundsTypes,
@@ -657,131 +849,13 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             ]
         return []
 
-    async def _get_station_menu(
-        self,
-        station_id: str,
-        path_parts: list[str],
-    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Lookup the full schedule menu for a station."""
-        schedules = await self.client.stations.get_station_menu(station_id)
-        item_list: list[MediaItemType | ItemMapping | BrowseFolder] = []
-        if schedules and schedules.sub_items:
-            for folder in schedules.sub_items:
-                new_folder = await self._render_browse_item(folder, path_parts=path_parts)
-                if new_folder:
-                    item_list.append(new_folder)
-        return item_list
-
-    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """
-        Browse this provider's items.
-
-        :param path: The path to browse, (e.g. provider_id://artists).
-        """
-        self.logger.debug(f"Browsing path: {path}")
-        if not path.startswith(f"{self.domain}://"):
-            raise MusicAssistantError(f"Invalid path for {self.domain} provider: {path}")
-        path_parts = path.split("://", 1)[1].split("/")
-        self.logger.debug(f"Path parts: {path_parts}")
-
-        sub_path = path_parts[0] if path_parts else ""
-        sub_sub_path = path_parts[1] if len(path_parts) > 1 else ""
-        sub_sub_sub_path = path_parts[2] if len(path_parts) > 2 else ""
-        path_parts = [
-            f"{self.domain}:/",
-            *[part for part in path_parts if len(part) > 0],
-        ]
-
-        # A large part of the menu content is pre-loaded into self.menu
-        # These are the exceptions, so get the extra content
-        if sub_path == "":
-            return await self._get_menu()
-        if sub_path == "listen_live":
-            return await self._station_list(
-                include_local=self.show_local_stations, show_current_programme=True
-            )
-        # Categories and collections aren't in the API menus
-        if sub_path == "categories" and sub_sub_path:
-            return await self._get_category(sub_sub_path)
-        if sub_path == "collections" and sub_sub_path:
-            return await self._get_collection(sub_sub_path)
-        # The main menu fetch returns up to the schedule date folders, but no contents
-        # so as not to show out of date information
-        if sub_path == "stations" and sub_sub_path and sub_sub_sub_path:
-            return await self._get_station_schedule_menu(
-                path_parts=path_parts,
-                station_id=sub_sub_path,
-                date=sub_sub_sub_path,
-            )
-        if sub_path == "stations" and sub_sub_path and not sub_sub_sub_path:
-            return await self._get_station_menu(sub_sub_path, path_parts)
-        if sub_path == "stations" and not (sub_sub_path or sub_sub_sub_path):
-            return await self._station_list_as_folders(
-                path_parts=path_parts, include_local=self.show_local_stations
-            )
-        # If no special cases, pass the rest of the path to iterate through
-        return await self._get_subpath_menu(path_parts[1:])
-
-    async def search(
-        self, search_query: str, media_types: list[MediaType] | None, limit: int = 5
-    ) -> SearchResults:
-        """Perform search for BBC Sounds stations."""
-        results = SearchResults()
-        search_result = await self.client.streaming.search(search_query)
-        self.logger.debug(search_result)
-        if media_types is None or MediaType.RADIO in media_types:
-            radios = [await self.adaptor.new_object(radio) for radio in search_result.stations]
-            results.radio = [radio for radio in radios if isinstance(radio, Radio)]
-        if (
-            media_types is None
-            or MediaType.TRACK in media_types
-            or MediaType.PODCAST_EPISODE in media_types
-        ):
-            episodes = [await self.adaptor.new_object(track) for track in search_result.episodes]
-            results.tracks = [track for track in episodes if type(track) is Track]
-
-        if media_types is None or MediaType.PODCAST in media_types:
-            podcasts = [await self.adaptor.new_object(show) for show in search_result.shows]
-            results.podcasts = [podcast for podcast in podcasts if isinstance(podcast, Podcast)]
-
-        return results
-
-    async def on_played(
-        self,
-        media_type: MediaType,
-        prov_item_id: str,
-        fully_played: bool,
-        position: int,
-        media_item: MediaItemType,
-        is_playing: bool = False,
-    ) -> None:
-        """Handle callback when a (playable) media item has been played."""
-        if self.logged_in:
-            if media_type != MediaType.RADIO:
-                # Handle Sounds API play status updates
-                action = None
-
-                if is_playing:
-                    action = PlayStatus.STARTED if position < 30 else PlayStatus.HEARTBEAT
-                elif fully_played:
-                    action = PlayStatus.ENDED
-                else:
-                    action = PlayStatus.PAUSED
-
-                if action:
-                    try:
-                        success = await self.client.streaming.update_play_status(
-                            pid=prov_item_id, elapsed_time=position, action=action
-                        )
-                        self.logger.debug(f"Updated play status: {success}")
-                    except exceptions.APIResponseError as err:
-                        self.logger.error(f"Error updating play status: {err}")
-
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch the recommendation menu folders, with items."""
         self.logger.debug("Getting recommendations from API")
         folders: list[RecommendationFolder] = []
         recommendations = await self.client.get_menu(recommendations=MenuRecommendationOptions.ONLY)
+        if not recommendations:
+            return []
         if recommendations.sub_items:
             for recommendation in recommendations.sub_items:
                 # recommendation is a RecommendedMenuItem
