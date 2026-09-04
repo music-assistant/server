@@ -1,0 +1,23 @@
+{
+  "config_entries": {
+    "friendly_name": {
+      "label": "Friendly name prefix",
+      "description": "Prefix for DLNA renderer names shown on the network. Player name is appended automatically in multi-player mode."
+    },
+    "target_players": {
+      "label": "Target players",
+      "description": "Select the Music Assistant players to expose as DLNA renderers. Leave the selection empty to create a renderer for every eligible player."
+    },
+    "bind_ip": {
+      "label": "Bind IP address",
+      "description": "IP address to bind the UPnP HTTP server and SSDP listener. Leave empty to auto-detect."
+    },
+    "http_port": {
+      "label": "HTTP base port",
+      "description": "Base port for UPnP HTTP servers. In multi-player mode, each renderer uses an incrementing port (8298, 8299, …)."
+    }
+  },
+  "manifest": {
+    "description": "Expose Music Assistant as a UPnP/DLNA MediaRenderer so external apps can cast audio to any MA player."
+  }
+}
