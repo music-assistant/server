@@ -282,6 +282,26 @@ def create_streaming_wave_header(audio_format: AudioFormat) -> bytes:
     )
 
 
+def format_icy_metadata_frame(title: str, image_url: str | None = None) -> bytes:
+    """
+    Build a Shoutcast/ICY in-band metadata frame.
+
+    :param title: Track title to advertise via the StreamTitle field.
+    :param image_url: Optional URL advertised via the StreamURL field.
+    :return: Length-prefixed, zero-padded metadata frame ready to be written
+        to the stream response at the next icy-metaint boundary.
+    """
+    metadata = f"StreamTitle='{title}';".encode()
+    if image_url:
+        metadata += f"StreamURL='{image_url}'".encode()
+    # ICY frames must be padded to a multiple of 16 bytes
+    padding = (-len(metadata)) % 16
+    metadata += b"\x00" * padding
+    # the leading byte encodes the frame length divided by 16
+    length_byte = len(metadata) // 16
+    return bytes((length_byte,)) + metadata
+
+
 def parse_extinf_metadata(extinf_line: str) -> dict[str, str]:
     """
     Parse metadata from HLS EXTINF line.

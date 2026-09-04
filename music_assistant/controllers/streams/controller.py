@@ -98,6 +98,7 @@ from music_assistant.controllers.streams.live_announcements import (
 from music_assistant.helpers.audio import (
     calculate_content_length,
     create_streaming_wave_header,
+    format_icy_metadata_frame,
     get_content_length,
     get_mime_type,
     store_content_length_in_cache,
@@ -1361,15 +1362,13 @@ class StreamsController(CoreController):
                         title = current_item.name
                     else:
                         title = "Music Assistant"
-                    metadata = f"StreamTitle='{title}';".encode()
-                    if icy_preference == "full" and current_item and current_item.image:
-                        metadata += f"StreamURL='{current_item.image.path}'".encode()
-                    while len(metadata) % 16 != 0:
-                        metadata += b"\x00"
-                    length = len(metadata)
-                    length_b = chr(int(length / 16)).encode()
+                    image_url = (
+                        current_item.image.path
+                        if icy_preference == "full" and current_item and current_item.image
+                        else None
+                    )
                     try:
-                        await resp.write(length_b + metadata)
+                        await resp.write(format_icy_metadata_frame(title, image_url))
                     except BrokenPipeError, ConnectionResetError, ConnectionError:
                         # same as the chunk write above: a superseded response is
                         # aborted under us and this is its normal end

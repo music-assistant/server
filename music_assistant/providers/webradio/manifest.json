@@ -1,0 +1,11 @@
+{
+  "type": "player",
+  "domain": "webradio",
+  "name": "Web Radio Broadcast",
+  "description": "Publish Music Assistant queues as plain HTTP audio streams (Shoutcast/ICY) that any device - web radios, VLC, browsers - can tune into by URL. Audio is only broadcast while the queue is playing; on stop or pause the broadcast ends and listeners reconnect when playback resumes.",
+  "codeowners": ["@music-assistant"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/player-support/webradio/",
+  "multi_instance": false,
+  "stage": "beta"
+}
