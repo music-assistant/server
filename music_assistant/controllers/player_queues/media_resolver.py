@@ -379,23 +379,21 @@ class MediaResolver:
             "Fetching episode(s) and resume point to play for Podcast %s",
             podcast.name,
         )
+        all_episodes = [
+            x async for x in self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider)
+        ]
+        all_episodes.sort(key=lambda x: x.position)
         # Require exact case and keyword match to minimise false positives.
         if isinstance(episode, str) and episode in _LATEST_EPISODE_KEYWORDS:
-            # provider yields newest-first, so only pull the first episode here and skip
-            # materialising the rest, which avoids a per-episode resume lookup on each one
-            latest = await anext(
-                self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider), None
-            )
+            # the newest episode holds the highest position, whatever order the provider
+            # lists its episodes in. A tie at the top resolves to the first one listed
+            latest = max(all_episodes, key=lambda x: x.position, default=None)
             if latest is None:
                 raise InvalidDataError(
                     f"Unable to resolve episode to play for Podcast {podcast.name}"
                 )
             await self._set_episode_resume_point(latest, userid, start_from_beginning)
             return UniqueList([latest])
-        all_episodes = [
-            x async for x in self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider)
-        ]
-        all_episodes.sort(key=lambda x: x.position)
         # if a episode was provided, a user explicitly selected a episode to play
         # so we need to find the index of the episode in the list
         resolved_episode: PodcastEpisode | None = None
