@@ -58,23 +58,52 @@ async def _init_with(error: Exception) -> LoginFailed:
 
 
 def _user_data(user_id: str | int, offer_id: int) -> dict:
+    """Build a getUserData payload complete enough to reach the end of _update_user_data."""
     return {
         "error": [],
         "results": {
-            "USER": {"USER_ID": user_id, "OPTIONS": {}},
+            "checkForm": "csrf-token",
+            "COUNTRY": "DE",
             "OFFER_ID": offer_id,
+            "USER": {
+                "USER_ID": user_id,
+                "OPTIONS": {
+                    "license_token": "license",
+                    "expiration_timestamp": 4102444800,
+                    "web_sound_quality": {"high": True, "lossless": True},
+                    "mobile_sound_quality": {"high": True, "lossless": True},
+                },
+            },
         },
     }
 
 
 async def test_missing_user_raises_auth_error() -> None:
-    """No USER_ID means the ARL was not accepted -- not that the account is free."""
+    """No USER_ID on either attempt means the ARL was not accepted."""
     client = GWClient(Mock(), "arl-one")
-    with (
-        patch.object(GWClient, "_gw_api_call", AsyncMock(return_value=_user_data("", 1))),
-        pytest.raises(DeezerGWAuthError),
-    ):
+    call = AsyncMock(return_value=_user_data("", 1))
+    with patch.object(GWClient, "_gw_api_call", call), pytest.raises(DeezerGWAuthError):
         await client.setup()
+    assert call.await_count == 2, "the anonymous first answer must be retried once"
+
+
+async def test_anonymous_first_answer_is_retried() -> None:
+    """Deezer hands out the sid on the first call; the second one may be the one that lands."""
+    client = GWClient(Mock(), "arl-one")
+    call = AsyncMock(side_effect=[_user_data("", 1), _user_data("123", 1)])
+    with patch.object(GWClient, "_gw_api_call", call):
+        await client.setup()
+    assert call.await_count == 2
+    assert client._user_id == 123
+
+
+async def test_retry_does_not_recurse_through_gw_api_call() -> None:
+    """_gw_api_call's own retry path calls this method, so it must ask it not to."""
+    client = GWClient(Mock(), "arl-one")
+    call = AsyncMock(return_value=_user_data("123", 1))
+    with patch.object(GWClient, "_gw_api_call", call):
+        await client.setup()
+    assert call.await_args.kwargs.get("retry") is False
 
 
 async def test_missing_offer_raises_no_subscription_error() -> None:

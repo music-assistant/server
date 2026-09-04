@@ -71,10 +71,18 @@ class GWClient:
         self._cookies.update({name: morsel.value for name, morsel in response.cookies.items()})
 
     async def _update_user_data(self) -> None:
-        user_data = await self._gw_api_call("deezer.getUserData", False)
-        if not user_data["results"]["USER"]["USER_ID"]:
-            msg = "Failed to authenticate with the GW API. Make sure you set a valid ARL."
-            raise DeezerGWAuthError(msg)
+        # A client starts without a sid, and deezer hands one out on the first call. Some
+        # sessions answer that first call anonymously and only accept the arl once their own
+        # sid comes back with it, so try again with what deezer just set. The retry stays
+        # instance local: _store_cookies keeps the sid here, never in the shared jar.
+        # retry=False because _gw_api_call's own retry path calls this method.
+        for attempt in (1, 2):
+            user_data = await self._gw_api_call("deezer.getUserData", False, retry=False)
+            if user_data["results"]["USER"]["USER_ID"]:
+                break
+            if attempt == 2:
+                msg = "Failed to authenticate with the GW API. Make sure you set a valid ARL."
+                raise DeezerGWAuthError(msg)
 
         if not user_data["results"]["OFFER_ID"]:
             msg = "Free subscriptions cannot be used in MA. Make sure you set a valid ARL."
