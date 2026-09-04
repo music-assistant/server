@@ -1,8 +1,8 @@
 """
-Digitally Incorporated Music Provider for Music Assistant.
+Digitally Imported Music Provider for Music Assistant.
 
-This provider supports the Digitally Incorporated network of streaming radio services:
-- DI.FM (Digitally Imported)
+This provider supports the Digitally Imported network of streaming radio services:
+- DI.FM
 - RadioTunes
 - RockRadio
 - JazzRadio
@@ -108,11 +108,11 @@ RATE_PERIOD = 1  # second
 # Validation constants
 MIN_LISTEN_KEY_LENGTH = 10
 
-# Digitally Incorporated radio services configuration
+# Digitally Imported radio services configuration
 NETWORKS = {
     "di": {
         "domain": "di.fm",
-        "display_name": "DigitallyImported",
+        "display_name": "DI.FM",
         "description": "Electronic music radio stations",
     },
     "radiotunes": {
@@ -147,11 +147,11 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return DigitallyIncorporatedProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    return DigitallyImportedProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-class DigitallyIncorporatedProvider(MusicProvider):
-    """Digitally Incorporated Music Provider."""
+class DigitallyImportedProvider(MusicProvider):
+    """Digitally Imported Music Provider."""
 
     _throttler: Throttler
 
@@ -162,7 +162,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
         config: ProviderConfig,
         supported_features: set[ProviderFeature],
     ) -> None:
-        """Initialize Digitally Incorporated provider."""
+        """Initialize Digitally Imported provider."""
         super().__init__(mass, manifest, config, supported_features)
         self._throttler = Throttler(rate_limit=RATE_LIMIT, period=RATE_PERIOD)
 
@@ -210,15 +210,13 @@ class DigitallyIncorporatedProvider(MusicProvider):
         try:
             first_network = enabled_networks[0]
             await self._get_channels(first_network)
-            self.logger.info(
-                "%s: Successfully connected to Digitally Incorporated API", self.domain
-            )
+            self.logger.info("%s: Successfully connected to Digitally Imported API", self.domain)
         except ProviderUnavailableError, MediaNotFoundError:
             # Re-raise provider/media errors as-is (they already have domain prefix)
             raise
         except (aiohttp.ClientError, aiohttp.ServerTimeoutError) as err:
             self.logger.error(
-                "%s: Failed to connect to Digitally Incorporated API: %s", self.domain, err
+                "%s: Failed to connect to Digitally Imported API: %s", self.domain, err
             )
             msg = f"{self.domain}: API unavailable: {err}"
             raise ProviderUnavailableError(msg) from err
@@ -234,7 +232,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
         media_types: list[MediaType],
         limit: int = 5,
     ) -> SearchResults:
-        """Perform search on Digitally Incorporated channels."""
+        """Perform search on Digitally Imported channels."""
         results = SearchResults()
 
         if MediaType.RADIO not in media_types:
@@ -371,7 +369,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
 
     @use_cache(CACHE_CHANNELS)
     async def browse(self, path: str) -> list[MediaItemType | BrowseFolder]:
-        """Browse Digitally Incorporated radio services and channels."""
+        """Browse Digitally Imported radio services and channels."""
         self.logger.debug("%s: Browse called with path: %s", self.domain, path)
 
         # Extract meaningful path component
@@ -483,7 +481,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
         json_body: dict[str, Any] | None = None,
         **params: Any,
     ) -> Any:
-        """Make a generic API request to Digitally Incorporated."""
+        """Make a generic API request to Digitally Imported."""
         scheme = "https" if use_https else "http"
         base_url = f"{scheme}://{API_BASE_URL}/{network_key}"
         url = f"{base_url}/{endpoint}"
@@ -809,7 +807,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
             )
 
             if not playlist or not isinstance(playlist, list):
-                msg = f"{self.domain}: No stream URLs returned from Digitally Incorporated API"
+                msg = f"{self.domain}: No stream URLs returned from Digitally Imported API"
                 raise MediaNotFoundError(msg)
 
             stream_list: list[str] = [url for url in playlist if url and isinstance(url, str)]
