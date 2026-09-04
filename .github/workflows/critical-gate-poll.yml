@@ -1,13 +1,13 @@
 name: Critical review gate (poll)
 
-# Scheduled gate: every ~10 minutes, scan open non-draft PRs and convert to a draft any whose latest
-# Copilot review still carries an unresolved [CRITICAL] finding (a draft PR cannot be merged), with
-# one explanatory comment.
+# Scheduled gate: every ~10 minutes, scan open PRs and convert to a draft any that still have an
+# UNRESOLVED, non-outdated Copilot [CRITICAL] review thread (a draft PR cannot be merged), with one
+# explanatory comment.
 #
 # Why a poller and not a `pull_request_review` trigger: GitHub holds workflow runs triggered by the
 # Copilot bot for manual approval (they sit at `action_required` and never run), so an event-reactive
 # gate never fires automatically. A scheduled run executes as a trusted actor with a write token,
-# which also sidesteps the fork read-only-token and workflow_run artifact-trust problems entirely.
+# which also sidesteps the fork read-only-token and workflow_run artifact-trust problems.
 
 on:  # yamllint disable-line rule:truthy
   schedule:
@@ -31,18 +31,43 @@ jobs:
         with:
           script: |
             const { owner, repo } = context.repo;
-            const REVIEWER = 'copilot-pull-request-reviewer[bot]';
             const BASES = ['dev', 'stable'];
             const MARKER = '<!-- critical-gate -->';
             const BODY = [
               MARKER,
-              '🚧 **Automated critical-issue gate** — the automated review flagged at least one ' +
-              '**`[CRITICAL]`** finding, so this PR was converted to a **draft** to keep it out of ' +
-              "the merge queue while it's still being worked on. Please resolve the `[CRITICAL]` " +
-              'item(s) above, then click **Ready for review**.',
+              "🚧 **Automated critical-issue gate** — this PR has an unresolved **`[CRITICAL]`** " +
+              "finding from the automated review, so it is kept as a **draft** (a draft PR can't be " +
+              "merged) until that is resolved. Please address the `[CRITICAL]` thread(s), then mark " +
+              "it **Ready for review**.",
               '',
               '_Maintainers: add the `override-critical` label to bypass this._',
             ].join('\n');
+
+            // A finding counts only while its review thread is UNRESOLVED and not OUTDATED — so a
+            // resolved critical, or one whose code the author has since changed, no longer gates.
+            // Copilot writes [CRITICAL] in inline threads (which carry this state); the review
+            // summary body is deliberately ignored because it has no resolved state to clear.
+            const THREADS = `query($owner:String!,$repo:String!,$num:Int!,$cursor:String){
+              repository(owner:$owner,name:$repo){ pullRequest(number:$num){
+                reviewThreads(first:100, after:$cursor){
+                  pageInfo{ hasNextPage endCursor }
+                  nodes{ isResolved isOutdated comments(first:1){ nodes{ author{login} body } } }
+                } } } }`;
+            async function hasActiveCritical(num) {
+              let cursor = null;
+              for (;;) {
+                const d = await github.graphql(THREADS, { owner, repo, num, cursor });
+                const tr = d.repository.pullRequest.reviewThreads;
+                for (const t of tr.nodes) {
+                  if (t.isResolved || t.isOutdated) continue;
+                  const c = t.comments.nodes[0];
+                  if (c && (c.author?.login || '').toLowerCase().includes('copilot')
+                        && (c.body || '').includes('[CRITICAL]')) return true;
+                }
+                if (!tr.pageInfo.hasNextPage) return false;
+                cursor = tr.pageInfo.endCursor;
+              }
+            }
 
             const prs = await github.paginate(github.rest.pulls.list,
               { owner, repo, state: 'open', per_page: 100 });
@@ -50,36 +75,20 @@ jobs:
             let failed = false, drafted = 0;
             for (const pr of prs) {
               try {
-                if (pr.draft) continue;                                    // already gated / author draft
-                if (!BASES.includes(pr.base.ref)) continue;                // only mergeable bases
+                if (!BASES.includes(pr.base.ref)) continue;
                 if (pr.labels.some(l => l.name === 'override-critical')) continue;
+                if (!(await hasActiveCritical(pr.number))) continue;
 
-                const reviews = await github.paginate(github.rest.pulls.listReviews,
-                  { owner, repo, pull_number: pr.number, per_page: 100 });
-                const copilot = reviews.filter(r => r.user && r.user.login === REVIEWER);
-                if (copilot.length === 0) continue;
-                const latest = copilot[copilot.length - 1];
-
-                // Only act on a review of the CURRENT head, so a pushed-but-not-yet-re-reviewed fix
-                // is not drafted on a stale finding (Copilot re-reviews on push).
-                if (latest.commit_id && latest.commit_id !== pr.head.sha) continue;
-
-                let critical = (latest.body || '').includes('[CRITICAL]');
-                if (!critical) {
-                  const cmts = await github.paginate(github.rest.pulls.listCommentsForReview,
-                    { owner, repo, pull_number: pr.number, review_id: latest.id, per_page: 100 });
-                  critical = cmts.some(c => (c.body || '').includes('[CRITICAL]'));
+                // Draft first — it is the gate; never swallow a failure.
+                if (!pr.draft) {
+                  await github.graphql(
+                    'mutation($id: ID!) { convertPullRequestToDraft(input: { pullRequestId: $id }) { pullRequest { isDraft } } }',
+                    { id: pr.node_id });
+                  drafted++;
+                  core.info(`PR #${pr.number}: drafted on unresolved [CRITICAL].`);
                 }
-                if (!critical) continue;
-
-                // Draft first — it is the gate; never swallow a failure. Then the explanation,
-                // posted at most once (hidden marker).
-                await github.graphql(
-                  'mutation($id: ID!) { convertPullRequestToDraft(input: { pullRequestId: $id }) { pullRequest { isDraft } } }',
-                  { id: pr.node_id });
-                drafted++;
-                core.info(`PR #${pr.number}: drafted on unresolved [CRITICAL].`);
-
+                // Then the explanation, posted at most once (hidden marker) and retried on a later
+                // poll if an earlier run drafted the PR but failed to comment.
                 const comments = await github.paginate(github.rest.issues.listComments,
                   { owner, repo, issue_number: pr.number, per_page: 100 });
                 if (!comments.some(c => (c.body || '').includes(MARKER))) {
