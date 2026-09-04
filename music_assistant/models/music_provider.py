@@ -953,6 +953,19 @@ class MusicProvider(Provider):
             return await self.browse(folders[0].path)
         return folders
 
+    async def get_album_versions(self, prov_album_id: str) -> list[Album]:
+        """
+        Get other versions of the provided album.
+
+        This should only be implemented if search alone is insufficient to get
+        all variants of an album.
+
+        Will only be called if ProviderFeature.ALBUM_VERSIONS is declared.
+        """
+        if ProviderFeature.ALBUM_VERSIONS in self.supported_features:
+            raise NotImplementedError
+        return []
+
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """
         Get this provider's available recommendation rows, without items.
