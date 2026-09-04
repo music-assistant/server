@@ -150,6 +150,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SIMILAR_TRACKS,
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.RECOMMENDATIONS,
+    ProviderFeature.ALBUM_VERSIONS,
 }
 
 
@@ -398,10 +399,10 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             tracks.append(track)
         return tracks
 
-    @use_cache(3600 * 24 * 30)  # Cache for 30 days
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_album_versions(self, prov_album_id: str) -> list[Album]:
         """
-        Get albums that are related to the given prov_album_id.
+        Get albums that YTM has indicated as alternate versions to the given album.
 
         YTM won't surface these variants via search, so we must explicitly grab
         them out of the other_versions field.
