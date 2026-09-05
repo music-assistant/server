@@ -110,10 +110,10 @@ async def test_filter_without_subsonic_instance_falls_back(
     assert prov in providers.values()
 
 
-async def test_unavailable_preferred_instance_is_skipped(
+async def test_unavailable_preferred_instance_scrobbles_nowhere(
     handler: SubsonicScrobbleEventHandler, mass: Mock, providers: dict[str, Mock]
 ) -> None:
-    """A preferred instance that is not loaded yields to the one that is."""
+    """A filter is an allowlist: if the user's instance is not loaded, no other account gets the play."""
     mass.webserver.auth.get_user.return_value = _user_with_filter([INSTANCE_B])
     mass.get_provider.side_effect = lambda instance_id: (
         None if instance_id == INSTANCE_B else providers.get(instance_id)
@@ -123,8 +123,8 @@ async def test_unavailable_preferred_instance_is_skipped(
         MediaType.TRACK, "library", "1", USER_ID
     )
 
-    assert prov is providers[INSTANCE_A]
-    assert item_id == "a-42"
+    assert prov is None
+    assert item_id == "1"
 
 
 async def test_provider_uri_is_not_redirected(

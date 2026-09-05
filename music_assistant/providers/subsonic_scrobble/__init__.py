@@ -136,7 +136,17 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
             # preference the account that receives the scrobble is arbitrary; the instance in
             # the playing user's provider filter goes first, the others keep their order.
             preferred = await self._get_user_provider_filter(user_id)
-            sonic_mappings.sort(key=lambda mapping: mapping.provider_instance not in preferred)
+            if any(instance_id.startswith("opensubsonic") for instance_id in preferred):
+                # A filter that names a Subsonic instance is an allowlist, the same way the music
+                # controller treats it for playback: only the user's own instance(s) may receive
+                # the report. Falling back to another account's instance, because the preferred
+                # one is unloaded or does not hold this item, would disclose and credit the
+                # user's listening to that other account, so in that case nothing is reported.
+                # A filter that names no Subsonic instance at all (built-in providers only)
+                # expresses no preference between accounts and keeps the previous behaviour.
+                sonic_mappings = [
+                    mapping for mapping in sonic_mappings if mapping.provider_instance in preferred
+                ]
             for mapping in sonic_mappings:
                 prov = self.mass.get_provider(mapping.provider_instance)
                 if not isinstance(prov, OpenSonicProvider):
