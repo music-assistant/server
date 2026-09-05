@@ -1,0 +1,13 @@
+{
+  "type": "plugin",
+  "stage": "beta",
+  "domain": "library_automations",
+  "name": "Library Automations",
+  "description": "Generic trigger + condition + action rules for library events, e.g. move a track to a playlist when it is unfavorited.",
+  "codeowners": ["@ManuelW77"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/plugins/library_automations/",
+  "multi_instance": false,
+  "builtin": false,
+  "icon": "flash-outline"
+}
