@@ -16,10 +16,17 @@ from music_assistant_models.media_items import (
     MediaItemChapter,
     MediaItemImage,
     MediaItemLink,
+    MediaItemTranscriptCue,
     Podcast,
     PodcastEpisode,
     ProviderMapping,
     UniqueList,
+)
+
+from music_assistant.helpers.transcripts import (
+    cues_to_text,
+    document_to_text,
+    parse_transcript_cues,
 )
 
 if TYPE_CHECKING:
@@ -31,10 +38,25 @@ LOGGER = logging.getLogger(__name__)
 
 # best-effort enrichment must never stall episode resolution, so cap the chapter fetch
 _CHAPTERS_FETCH_TIMEOUT = ClientTimeout(total=10)
+_TRANSCRIPT_FETCH_TIMEOUT = ClientTimeout(total=15)
+
+# some podcast hosts and CDNs reject anything that does not look like a browser, so these
+# fetches override the Music Assistant user agent that the session sends by default
+# https://github.com/music-assistant/support/issues/3596
+_BROWSER_UA_HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+# transcript formats carrying timings, most preferred first. Anything else is still
+# usable, but only as untimed text.
+_TIMED_TRANSCRIPT_TYPES = ("text/vtt", "application/x-subrip", "application/srt", "text/srt")
 
 # defaults for the parsed-feed cache shared by the podcast providers
 CACHE_CATEGORY_PODCAST_FEED = 0
 PODCAST_FEED_CACHE_EXPIRATION = 24 * 3600
+
+# a published transcript does not change, so it is cached far longer than the feed to keep
+# repeat views of an episode off the publisher's server
+CACHE_CATEGORY_PODCAST_TRANSCRIPT = 1
+PODCAST_TRANSCRIPT_CACHE_EXPIRATION = 3600 * 24 * 180
 
 
 async def get_podcastparser_dict(
@@ -46,10 +68,8 @@ async def get_podcastparser_dict(
     max_episodes = 0 does not limit the returned episodes.
     """
     feed_data: bytes | None = None
-    # without user agent, some feeds can not be retrieved
-    # https://github.com/music-assistant/support/issues/3596
-    # but, reports on discord show, that also the opposite may be true
-    for headers in [{"User-Agent": "Mozilla/5.0"}, {}]:
+    # reports on discord show that some feeds need the opposite, so also try without any UA
+    for headers in [_BROWSER_UA_HEADERS, {}]:
         # raises ClientError on status failure
         # ClientError is the base class of all possible Error, i.e. not authorized,
         # url doesn't exist etc. The body is read inside the context manager, so a
@@ -520,16 +540,15 @@ async def enrich_episode_chapters(
     url = chapters_json_url
     if not url:
         return
-    # send a browser UA: some podcast hosts/CDNs reject non-browser agents
-    # (music-assistant/support#3596). Chapter data is supplementary, so unlike
-    # get_podcastparser_dict we make a single best-effort attempt with no UA-less retry.
+    # chapter data is supplementary, so unlike get_podcastparser_dict this is a single
+    # attempt with no UA-less retry.
     # TimeoutError (raised on total-timeout) is not a ClientError, so catch it explicitly
     # to keep this enrichment best-effort. The parse stays inside the try so a malformed
     # document can never break episode resolution either.
     try:
         async with session.get(
             url,
-            headers={"User-Agent": "Mozilla/5.0"},
+            headers=_BROWSER_UA_HEADERS,
             raise_for_status=True,
             timeout=_CHAPTERS_FETCH_TIMEOUT,
         ) as response:
@@ -538,3 +557,75 @@ async def enrich_episode_chapters(
             mass_episode.metadata.chapters = chapters
     except (ClientError, TimeoutError, ValueError, TypeError) as err:
         LOGGER.warning("Failed to fetch podcast chapters from %s: %s", url, err)
+
+
+async def get_episode_transcript(
+    *,
+    mass: MusicAssistant,
+    provider_instance_id: str,
+    transcripts: list[dict[str, Any]] | None,
+) -> tuple[str | None, list[MediaItemTranscriptCue] | None]:
+    """
+    Return an episode's transcript as (readable text, timed cues).
+
+    Never raises: a transcript is supplementary, so a failure yields (None, None). The
+    document is fetched once and cached, so repeat views cost nothing.
+
+    :param mass: The MusicAssistant instance holding the cache.
+    :param provider_instance_id: Provider instance the cache entry belongs to.
+    :param transcripts: The available transcripts as dicts with a url and optional type,
+        or None. The one carrying timings is preferred.
+    """
+    if not (url := _select_transcript_url(transcripts)):
+        return None, None
+    raw = await mass.cache.get(
+        key=url,
+        provider=provider_instance_id,
+        category=CACHE_CATEGORY_PODCAST_TRANSCRIPT,
+        default=None,
+    )
+    if raw is None:
+        if (raw := await _fetch_transcript(session=mass.http_session, url=url)) is None:
+            return None, None
+        await mass.cache.set(
+            key=url,
+            provider=provider_instance_id,
+            category=CACHE_CATEGORY_PODCAST_TRANSCRIPT,
+            data=raw,
+            expiration=PODCAST_TRANSCRIPT_CACHE_EXPIRATION,
+        )
+    if cues := parse_transcript_cues(raw):
+        return cues_to_text(cues), cues
+    return document_to_text(raw) or None, None
+
+
+def _select_transcript_url(transcripts: list[dict[str, Any]] | None) -> str | None:
+    """Return the url of the most useful transcript, preferring the formats with timings."""
+
+    def preference(transcript: dict[str, Any]) -> int:
+        media_type = str(transcript.get("type") or "").lower()
+        if media_type in _TIMED_TRANSCRIPT_TYPES:
+            return _TIMED_TRANSCRIPT_TYPES.index(media_type)
+        return len(_TIMED_TRANSCRIPT_TYPES)
+
+    if not (candidates := [entry for entry in transcripts or [] if entry.get("url")]):
+        return None
+    return str(min(candidates, key=preference)["url"])
+
+
+async def _fetch_transcript(*, session: aiohttp.ClientSession, url: str) -> str | None:
+    """Fetch a transcript document, returning None when it cannot be retrieved."""
+    # TimeoutError (raised on total-timeout) is not a ClientError, so catch it explicitly.
+    try:
+        async with session.get(
+            url,
+            headers=_BROWSER_UA_HEADERS,
+            raise_for_status=True,
+            timeout=_TRANSCRIPT_FETCH_TIMEOUT,
+        ) as response:
+            # hosts commonly serve these without a charset (or as octet-stream), so decode
+            # explicitly rather than letting aiohttp guess at the encoding
+            return (await response.read()).decode("utf-8", errors="replace")
+    except (ClientError, TimeoutError) as err:
+        LOGGER.warning("Failed to fetch podcast transcript from %s: %s", url, err)
+        return None
