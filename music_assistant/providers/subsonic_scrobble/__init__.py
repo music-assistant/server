@@ -103,13 +103,20 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
         self.mass = mass
 
     async def _get_subsonic_provider_and_item_id(
-        self, media_type: MediaType, provider_instance_id_or_domain: str, item_id: str
+        self,
+        media_type: MediaType,
+        provider_instance_id_or_domain: str,
+        item_id: str,
+        user_id: str | None = None,
     ) -> tuple[OpenSonicProvider | None, str]:
         """
         Return a OpenSonicProvider or None if no subsonic provider, and the Subsonic item_id.
 
-        Returns:
-            Tuple[OpenSonicProvider | None, str]: The provider or None, and the Subsonic item_id.
+        :param media_type: Media type of the played item.
+        :param provider_instance_id_or_domain: Provider part of the played item's uri.
+        :param item_id: Item id part of the played item's uri.
+        :param user_id: MA user that initiated playback. When the item maps to more than one
+            Subsonic provider instance, the instance in that user's provider filter is used.
         """
         if provider_instance_id_or_domain == "library":
             # unwrap library item to check if we have a subsonic mapping...
@@ -119,19 +126,39 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
             if library_item is None:
                 return None, item_id
             assert isinstance(library_item, Track | Audiobook | PodcastEpisode)
-            for mapping in library_item.provider_mappings:
-                if mapping.provider_domain.startswith("opensubsonic"):
-                    # found a subsonic mapping, proceed...
-                    prov = self.mass.get_provider(mapping.provider_instance)
-                    assert isinstance(prov, OpenSonicProvider)
-                    # Because there is no way to retrieve a single podcast episode in vanilla
-                    # subsonic, we have to carry around the channel id as well. See
-                    # opensubsonic.parsers.parse_episode.
-                    if isinstance(library_item, PodcastEpisode) and EP_CHAN_SEP in mapping.item_id:
-                        _, ret_id = mapping.item_id.split(EP_CHAN_SEP)
-                    else:
-                        ret_id = mapping.item_id
-                    return prov, ret_id
+            sonic_mappings = [
+                mapping
+                for mapping in library_item.provider_mappings
+                if mapping.provider_domain.startswith("opensubsonic")
+            ]
+            # One library item can map to several instances of the same Subsonic server (one
+            # instance per account of that server). provider_mappings is a set, so without a
+            # preference the account that receives the scrobble is arbitrary; the instance in
+            # the playing user's provider filter goes first, the others keep their order.
+            preferred = await self._get_user_provider_filter(user_id)
+            if any(instance_id.startswith("opensubsonic") for instance_id in preferred):
+                # A filter that names a Subsonic instance is an allowlist, the same way the music
+                # controller treats it for playback: only the user's own instance(s) may receive
+                # the report. Falling back to another account's instance, because the preferred
+                # one is unloaded or does not hold this item, would disclose and credit the
+                # user's listening to that other account, so in that case nothing is reported.
+                # A filter that names no Subsonic instance at all (built-in providers only)
+                # expresses no preference between accounts and keeps the previous behaviour.
+                sonic_mappings = [
+                    mapping for mapping in sonic_mappings if mapping.provider_instance in preferred
+                ]
+            for mapping in sonic_mappings:
+                prov = self.mass.get_provider(mapping.provider_instance)
+                if not isinstance(prov, OpenSonicProvider):
+                    continue
+                # Because there is no way to retrieve a single podcast episode in vanilla
+                # subsonic, we have to carry around the channel id as well. See
+                # opensubsonic.parsers.parse_episode.
+                if isinstance(library_item, PodcastEpisode) and EP_CHAN_SEP in mapping.item_id:
+                    _, ret_id = mapping.item_id.split(EP_CHAN_SEP)
+                else:
+                    ret_id = mapping.item_id
+                return prov, ret_id
             # no subsonic mapping has been found in library item, ignore...
             return None, item_id
         if provider_instance_id_or_domain.startswith("opensubsonic"):
@@ -145,10 +172,23 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
         # not an item from subsonic provider, ignore...
         return None, item_id
 
+    async def _get_user_provider_filter(self, user_id: str | None) -> set[str]:
+        """
+        Return the provider instance ids the given MA user is restricted to.
+
+        :param user_id: MA user id, or None when playback was not initiated by a user.
+        """
+        if not user_id:
+            return set()
+        user = await self.mass.webserver.auth.get_user(user_id)
+        if user is None or not user.provider_filter:
+            return set()
+        return set(user.provider_filter)
+
     async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
         media_type, provider_instance_id_or_domain, item_id = await parse_uri(report.uri)
         prov, item_id = await self._get_subsonic_provider_and_item_id(
-            media_type, provider_instance_id_or_domain, item_id
+            media_type, provider_instance_id_or_domain, item_id, report.userid
         )
         if not prov:
             return
@@ -158,7 +198,7 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
     async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
         media_type, provider_instance_id_or_domain, item_id = await parse_uri(report.uri)
         prov, item_id = await self._get_subsonic_provider_and_item_id(
-            media_type, provider_instance_id_or_domain, item_id
+            media_type, provider_instance_id_or_domain, item_id, report.userid
         )
         if not prov:
             return
