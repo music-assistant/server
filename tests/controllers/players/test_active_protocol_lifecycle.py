@@ -13,14 +13,18 @@ Covers two regressions from support#5771:
 
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import PlayerMedia
 
+from music_assistant.constants import CONF_POWER_CONTROL
 from music_assistant.controllers.players import PlayerController
 from music_assistant.models.player import LinkedOutputProtocol
+from music_assistant.providers.sync_group.player import SyncGroupPlayer
+from music_assistant.providers.sync_group.provider import SyncGroupProvider
 from tests.common import MockPlayer, MockProvider
 
 
@@ -183,6 +187,107 @@ class TestPlayMediaProtocolSelection:
         assert protocol_player.play_media_calls == [media]
         assert player.play_media_calls == []
         assert player.active_output_protocol == "proto_1"
+
+
+class TestGroupPlayMediaPower:
+    """Playing new media must form an explicitly configured group before capture."""
+
+    async def test_unpowered_fake_power_group_captures_linked_sendspin_target(  # noqa: PLR0915
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The real controller path powers and captures a group before its first play."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        mock_mass.cache.set = AsyncMock()
+        mock_mass.player_queues.resume = AsyncMock()
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=lambda _player_id, key, default=None: (
+                "fake"
+                if key == CONF_POWER_CONTROL
+                else (0 if key == "min_volume" else 100 if key == "max_volume" else default)
+            )
+        )
+        provider = cast("SyncGroupProvider", MockProvider("sync_group", mass=mock_mass))
+        native = MockProvider("sonos", mass=mock_mass)
+        sendspin = MockProvider("sendspin", mass=mock_mass)
+        group = SyncGroupPlayer(provider, "group_1")
+        leader = PlayableMockPlayer(native, "leader", "Leader")
+        display = PlayableMockPlayer(native, "display", "Display")
+        target = PlayableMockPlayer(sendspin, "target", "Leader protocol", PlayerType.PROTOCOL)
+        display_target = PlayableMockPlayer(
+            sendspin, "display_target", "Display protocol", PlayerType.PROTOCOL
+        )
+        for protocol in (target, display_target):
+            protocol._attr_supported_features.update(
+                {PlayerFeature.PLAY_MEDIA, PlayerFeature.SET_MEMBERS}
+            )
+        target.set_protocol_parent_id("leader")
+        display_target.set_protocol_parent_id("display")
+        target._attr_can_group_with = {"display_target"}
+        display_target._attr_can_group_with = {"target"}
+        leader.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="target", protocol_domain="sendspin")]
+        )
+        display.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="display_target", protocol_domain="sendspin")]
+        )
+        leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        leader._attr_can_group_with = {"display"}
+        leader.set_active_output_protocol("target")
+        group._attr_group_members = ["leader", "display"]
+        group._attr_powered = False
+        controller._players = {
+            "group_1": group,
+            "leader": leader,
+            "display": display,
+            "target": target,
+            "display_target": display_target,
+        }
+        for player in (leader, display, target, display_target):
+            player.set_initialized()
+        group.set_initialized()
+        group.refresh_state(signal_event=False)
+        for player in (leader, display, target, display_target):
+            player.update_state(signal_event=False)
+        leader.state.can_group_with = {"display"}
+
+        snapshot = object()
+        target.snapshot = snapshot  # type: ignore[attr-defined]
+        events: list[str] = []
+
+        async def _takeover() -> int:
+            events.append("clear")
+            target.snapshot = None  # type: ignore[attr-defined]
+            return 1
+
+        async def _set_members(**kwargs: object) -> None:
+            events.append("set_members")
+            assert kwargs["player_ids_to_add"] == ["display_target"]
+            assert target.snapshot is None  # type: ignore[attr-defined]
+
+        async def _takeover_finished(_token: object) -> None:
+            events.append("finish")
+
+        async def _play_media(_media: PlayerMedia) -> None:
+            events.append("play")
+
+        target.on_group_content_takeover = _takeover  # type: ignore[method-assign]
+        target.on_group_content_takeover_finished = _takeover_finished  # type: ignore[assignment]
+        target.set_members = _set_members  # type: ignore[assignment]
+        target.play_media = _play_media  # type: ignore[assignment]
+        media = PlayerMedia(uri="http://test/new-stream")
+
+        await controller._handle_play_media("group_1", media)
+
+        assert group._attr_powered is True
+        assert group.sync_leader is leader
+        assert leader.state.active_group == "group_1"
+        assert group._attr_group_members == ["leader", "display"]
+        assert group.state.group_members == ["leader"]
+        assert target.play_media_calls == []
+        assert events == ["clear", "set_members", "play", "finish"]
+        assert group._pending_content_takeover is None
+        assert group._reconnect_pending_ids == set()
 
 
 class TestCmdStopWithPinnedProtocol:

@@ -328,6 +328,90 @@ class TestNativeSetMembersGuard:
         )
         parent.set_members.assert_not_called()
 
+    async def test_native_unsupported_keeps_protocol_takeover_owner(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """An unsupported native leg must not bypass an active protocol transaction."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        protocol_provider = MockProvider("sendspin", instance_id="sendspin", mass=mock_mass)
+        parent = MockPlayer(provider, "parent", "Parent")
+        parent._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
+        parent.set_members = AsyncMock()  # type: ignore[method-assign]
+        parent.set_active_output_protocol("protocol")
+        protocol = MockPlayer(protocol_provider, "protocol", "Protocol", PlayerType.PROTOCOL)
+        protocol._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        protocol.on_group_content_takeover = AsyncMock(return_value=7)  # type: ignore[method-assign]
+        protocol.on_group_content_takeover_finished = AsyncMock()  # type: ignore[method-assign]
+        native_child = MockPlayer(provider, "native_child", "Native child")
+        controller._players = {x.player_id: x for x in (parent, protocol, native_child)}
+        mock_mass.players = controller
+        parent.state.supported_features = set()
+        protocol.state.supported_features = {PlayerFeature.SET_MEMBERS}
+        native_child.state.type = PlayerType.PLAYER
+
+        with (
+            patch.object(
+                controller,
+                "_translate_members_for_protocols",
+                return_value=(["protocol_child"], ["native_child"], protocol, "sendspin"),
+            ),
+            patch.object(
+                controller,
+                "_translate_members_to_remove_for_protocols",
+                return_value=([], []),
+            ),
+        ):
+            takeover = await controller._handle_set_members_with_protocols(
+                parent, [], ["native_child"], new_content=True
+            )
+
+        assert takeover == (protocol, 7)
+        parent.set_members.assert_not_awaited()
+        protocol.on_group_content_takeover_finished.assert_not_awaited()
+
+    async def test_protocol_takeover_failure_finishes_captured_owner(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A protocol forwarding failure releases the owner that started the token."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        protocol_provider = MockProvider("sendspin", instance_id="sendspin", mass=mock_mass)
+        parent = MockPlayer(provider, "parent", "Parent")
+        parent.set_active_output_protocol("protocol")
+        protocol = MockPlayer(protocol_provider, "protocol", "Protocol", PlayerType.PROTOCOL)
+        protocol._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        protocol.on_group_content_takeover = AsyncMock(return_value=11)  # type: ignore[method-assign]
+        protocol.on_group_content_takeover_finished = AsyncMock()  # type: ignore[method-assign]
+        protocol.on_group_content_takeover_aborted = AsyncMock()  # type: ignore[method-assign]
+        controller._players = {x.player_id: x for x in (parent, protocol)}
+        mock_mass.players = controller
+
+        with (
+            patch.object(
+                controller,
+                "_translate_members_for_protocols",
+                return_value=(["protocol_child"], [], protocol, "sendspin"),
+            ),
+            patch.object(
+                controller,
+                "_translate_members_to_remove_for_protocols",
+                return_value=([], []),
+            ),
+            patch.object(
+                controller,
+                "_forward_protocol_set_members",
+                side_effect=RuntimeError("forward failed"),
+            ),
+            pytest.raises(RuntimeError, match="forward failed"),
+        ):
+            await controller._handle_set_members_with_protocols(
+                parent, ["protocol_child"], [], new_content=True
+            )
+
+        protocol.on_group_content_takeover_aborted.assert_awaited_once_with(11)
+        protocol.on_group_content_takeover_finished.assert_not_awaited()
+
 
 class TestGroupUngroup:
     """Test group and ungroup commands."""
@@ -605,6 +689,36 @@ class TestStateForwarding:
                 controller._forward_state_update(member, changed_values)
 
         on_group_member_updated.assert_called_once_with(member, changed_values)
+
+    def test_active_static_group_is_notified_for_dropped_configured_member(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """An active static group still receives reconnect events for dropped members."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        group_player = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
+        member = MockPlayer(provider, "member", "Member")
+        controller._players = {"group": group_player, "member": member}
+        mock_mass.players = controller
+        group_player._attr_group_members = ["leader"]
+        group_player._attr_static_group_members = ["member"]
+        for player in (group_player, member):
+            player.initialized.set()
+            player.update_state(signal_event=False)
+
+        with (
+            patch.object(
+                type(group_player),
+                "is_active_session",
+                new_callable=PropertyMock,
+                return_value=True,
+            ),
+            patch.object(group_player, "on_group_member_updated") as callback,
+        ):
+            changed_values = {"available": (False, True)}
+            controller._forward_state_update(member, changed_values)
+
+        callback.assert_called_once_with(member, changed_values)
 
     def test_unavailable_group_player_is_still_notified(self, mock_mass: MagicMock) -> None:
         """A group player mirrors its members, so it must update while unavailable too."""
@@ -925,6 +1039,48 @@ class TestRegisterUnregisterRace:
         return any(
             call_args.args and call_args.args[0] == EventType.PLAYER_ADDED
             for call_args in mock_mass.signal_event.call_args_list
+        )
+
+    async def test_fresh_registration_notifies_active_static_group(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A new member registration reaches an active static group's callback path."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        mock_mass.config.get_player_config.return_value.enabled = True
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        group = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
+        group._config.enabled = True
+        group._attr_group_members = ["leader"]
+        group._attr_static_group_members = ["member"]
+        group.initialized.set()
+        group.update_state(signal_event=False)
+        controller._players = {"group": group}
+        mock_mass.players = controller
+        member = MockPlayer(provider, "member", "Member")
+        member._config.enabled = True
+        member._attr_enabled_by_default = True
+        member._cache.clear()
+        callback = MagicMock()
+
+        with (
+            patch.object(
+                type(group), "is_active_session", new_callable=PropertyMock, return_value=True
+            ),
+            patch.object(group, "on_group_member_updated", callback),
+            patch(
+                "music_assistant.controllers.players.controller.enrich_device_mac_address",
+                AsyncMock(),
+            ),
+        ):
+            await controller.register(member)
+
+        callback.assert_called_once_with(
+            member,
+            {
+                "available": (False, True),
+                "enabled": (False, True),
+            },
         )
 
     async def test_register_aborts_when_unregistered_during_config_load(

@@ -1693,6 +1693,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 self.mass.signal_event(
                     EventType.PLAYER_ADDED, object_id=player.player_id, data=player
                 )
+            # A freshly registered player is already available/enabled, so no state
+            # transition reaches the debounced update — forward a synthetic one so
+            # active static groups can reconnect the member.
+            self._forward_state_update(
+                player,
+                {
+                    ATTR_AVAILABLE: (False, player.state.available),
+                    ATTR_ENABLED: (False, player.state.enabled),
+                },
+            )
             # register playerqueue for this player (if not a protocol player)
             if player.state.type != PlayerType.PROTOCOL:
                 await self.mass.player_queues.on_player_register(player)
@@ -3114,7 +3124,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 continue
             if _player.state.type != PlayerType.GROUP:
                 continue
-            if player_id in _player.state.group_members:
+            if player_id in _player.state.group_members or (
+                _player.is_active_session and player_id in _player.state.static_group_members
+            ):
                 yield _player
 
     # Protocol linking methods are provided by ProtocolLinkingMixin (protocol_linking.py)
@@ -3492,12 +3504,14 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             return False
         return True
 
-    async def _handle_set_members(
+    async def _handle_set_members(  # noqa: PLR0915
         self,
         parent_player: Player,
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
-    ) -> None:
+        *,
+        new_content: bool = False,
+    ) -> tuple[Player, object] | None:
         """
         Handle the actual set_members logic.
 
@@ -3530,7 +3544,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             if has_playback_heir and active_queue and active_queue.state != PlaybackState.IDLE:
                 # transfer leadership to a remaining member instead of dissolving
                 await self._transfer_ad_hoc_leadership(parent_player, remaining_members)
-                return
+                return None
             self.logger.info(
                 "Dissolving sync group of player %s as it is being removed from itself",
                 parent_player.name,
@@ -3634,21 +3648,33 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 player_ids_to_add=final_player_ids_to_add,
                 player_ids_to_remove=final_player_ids_to_remove,
             )
-            return
+            return None
         # For regular players, handle protocol selection and translation
-        await self._handle_set_members_with_protocols(
-            parent_player, final_player_ids_to_add, final_player_ids_to_remove
+        takeover = await self._handle_set_members_with_protocols(
+            parent_player,
+            final_player_ids_to_add,
+            final_player_ids_to_remove,
+            new_content=new_content,
         )
 
         if should_stop:
-            await self._stop_player_or_its_queue(parent_player)
+            try:
+                await self._stop_player_or_its_queue(parent_player)
+            except BaseException:
+                if takeover is not None:
+                    takeover_owner, takeover_token = takeover
+                    await takeover_owner.on_group_content_takeover_aborted(takeover_token)
+                raise
+        return takeover
 
     async def _handle_set_members_with_protocols(
         self,
         parent_player: Player,
         player_ids_to_add: list[str],
         player_ids_to_remove: list[str],
-    ) -> None:
+        *,
+        new_content: bool = False,
+    ) -> tuple[Player, object] | None:
         """
         Handle set_members considering protocol and native members.
 
@@ -3704,45 +3730,59 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         )
 
         # Forward protocol members to protocol player's set_members
-        if (protocol_members_to_add or protocol_members_to_remove) and parent_protocol_player:
-            await self._forward_protocol_set_members(
-                parent_player,
-                parent_protocol_player,
-                protocol_members_to_add,
-                protocol_members_to_remove,
-            )
+        takeover_owner: Player | None = None
+        takeover_token: object | None = None
+        if protocol_members_to_add and parent_protocol_player and new_content:
+            takeover_owner = parent_protocol_player
+            takeover_token = await takeover_owner.on_group_content_takeover()
+        try:
+            if (protocol_members_to_add or protocol_members_to_remove) and parent_protocol_player:
+                await self._forward_protocol_set_members(
+                    parent_player,
+                    parent_protocol_player,
+                    protocol_members_to_add,
+                    protocol_members_to_remove,
+                )
 
-        # Forward native members to parent player's set_members
-        if native_members_to_add or native_members_to_remove:
-            filtered_native_add = self._filter_native_members(native_members_to_add, parent_player)
-            # For removal, allow protocol players if they're actually in the parent's group_members
-            # This handles native protocol players (e.g., native AirPlay) where group_members
-            # contains protocol player IDs
-            filtered_native_remove = [
-                pid
-                for pid in native_members_to_remove
-                if (p := self.get_player(pid))
-                and (p.type != PlayerType.PROTOCOL or pid in parent_player.group_members)
-            ]
-            self.logger.debug(
-                "Native grouping on %s: filtered_add=%s, filtered_remove=%s",
-                parent_player.state.name,
-                filtered_native_add,
-                filtered_native_remove,
-            )
-            if filtered_native_add or filtered_native_remove:
-                if PlayerFeature.SET_MEMBERS not in parent_player.state.supported_features:
-                    return
-                self.logger.info(
-                    "Calling set_members on native player %s with add=%s, remove=%s",
+            # Forward native members to parent player's set_members
+            if native_members_to_add or native_members_to_remove:
+                filtered_native_add = self._filter_native_members(
+                    native_members_to_add, parent_player
+                )
+                # For removal, allow protocol players if they're actually in the parent's group_members
+                # This handles native protocol players (e.g., native AirPlay) where group_members
+                # contains protocol player IDs
+                filtered_native_remove = [
+                    pid
+                    for pid in native_members_to_remove
+                    if (p := self.get_player(pid))
+                    and (p.type != PlayerType.PROTOCOL or pid in parent_player.group_members)
+                ]
+                self.logger.debug(
+                    "Native grouping on %s: filtered_add=%s, filtered_remove=%s",
                     parent_player.state.name,
                     filtered_native_add,
                     filtered_native_remove,
                 )
-                await parent_player.set_members(
-                    player_ids_to_add=filtered_native_add or None,
-                    player_ids_to_remove=filtered_native_remove or None,
-                )
+                if filtered_native_add or filtered_native_remove:
+                    if PlayerFeature.SET_MEMBERS in parent_player.state.supported_features:
+                        self.logger.info(
+                            "Calling set_members on native player %s with add=%s, remove=%s",
+                            parent_player.state.name,
+                            filtered_native_add,
+                            filtered_native_remove,
+                        )
+                        await parent_player.set_members(
+                            player_ids_to_add=filtered_native_add or None,
+                            player_ids_to_remove=filtered_native_remove or None,
+                        )
+        except BaseException:
+            if takeover_token is not None and takeover_owner:
+                await takeover_owner.on_group_content_takeover_aborted(takeover_token)
+            raise
+        if takeover_owner is not None and takeover_token is not None:
+            return takeover_owner, takeover_token
+        return None
 
     async def _transfer_ad_hoc_leadership(
         self, leader: Player, remaining_members: list[str]
@@ -4348,14 +4388,15 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             )
             player.set_active_output_protocol("native")
 
-        # power on the player if needed (skip auto-play since we're about to start playback)
-        if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
-            await self._handle_cmd_power(player.player_id, True, skip_auto_play=True)
-        await target_player.play_media(media)
-        if target_player.player_id != player.player_id:
-            # notify the native player that protocol playback started
-            assert output_protocol is not None
-            await player.on_protocol_playback(output_protocol=output_protocol)
+        async with player.prepare_play_media():
+            # power on the player if needed (skip auto-play since we're about to start playback)
+            if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
+                await self._handle_cmd_power(player.player_id, True, skip_auto_play=True)
+            await target_player.play_media(media)
+            if target_player.player_id != player.player_id:
+                # notify the native player that protocol playback started
+                assert output_protocol is not None
+                await player.on_protocol_playback(output_protocol=output_protocol)
 
     async def _handle_enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """
