@@ -3425,11 +3425,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return False
 
         # fast return for a provider uri which is not part of a user with a provider filter
+        # MediaType.UNKNOWN is a plain url or local file resolved by the builtin provider,
+        # not catalog content of a music service, so it must bypass the filter entirely
         if (
             provider_instance_id_or_domain != "library"
+            and media_type != MediaType.UNKNOWN
             and user
             and user.provider_filter
-            and provider_instance_id_or_domain not in user.provider_filter
+            and not self._user_may_access_provider(provider_instance_id_or_domain, user)
         ):
             return False
 
@@ -3460,3 +3463,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 return True
 
         return False
+
+    def _user_may_access_provider(self, provider_instance_id_or_domain: str, user: User) -> bool:
+        """Check a uri's provider instance id or domain against the user's provider filter."""
+        if provider_instance_id_or_domain in user.provider_filter:
+            return True
+        return any(
+            prov.instance_id in user.provider_filter
+            for prov in self.mass.providers
+            if prov.domain == provider_instance_id_or_domain
+        )
