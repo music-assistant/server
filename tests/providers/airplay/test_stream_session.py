@@ -1933,8 +1933,9 @@ async def test_late_join_maps_content_from_the_acked_instant() -> None:
     skip_seconds = session._client_skip_bytes[player.player_id] / PCM_SAMPLE_SIZE
     assert skip_seconds == pytest.approx(4.0, abs=0.01)
     # Progress is reported against the sample that lands on the acked instant,
-    # not the one that would have landed on the commanded instant.
-    player.stream.rebase_position.assert_called_once_with(9000)
+    # not the one that would have landed on the commanded instant; the same
+    # instant dates that position in the player's clock.
+    player.stream.rebase_position.assert_called_once_with(9000, commanded_ms + deferral_ms)
 
 
 @pytest.mark.asyncio

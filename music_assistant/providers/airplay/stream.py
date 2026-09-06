@@ -678,7 +678,16 @@ class AirPlayStream:
         # Stamp the player's elapsed onto the new anchor's base right away: until
         # the binary's first status arrives, interpolation would otherwise keep
         # extending the previous anchor's clock, briefly mapping a bogus position.
-        self.player.set_state_from_stream(elapsed_time=self._start_position, stream=self)
+        # The stamp is dated at the commanded audible instant, not at the command:
+        # the first sample is heard only a lead later, and the position model
+        # treats a later report that differs by under a second as ordinary
+        # progression, so a base stamped at the command would run a lead ahead of
+        # the speakers for the rest of the track.
+        self.player.set_state_from_stream(
+            elapsed_time=self._start_position,
+            stream=self,
+            elapsed_time_at=start_unix_ms / 1000 if start_unix_ms else None,
+        )
         self._arm_start_answer()
         self._start_was_join = join
         start_cmd = f"START_UNIX_MS={start_unix_ms}\nACTION=START"
@@ -743,9 +752,18 @@ class AirPlayStream:
             )
         # A malformed ack still answered the START, so the commanded instant is
         # what the binary applied (see the parse fallback in _handle_status_line).
-        return self._start_ack[1] if self._start_ack else start_unix_ms
+        actual_unix_ms = self._start_ack[1] if self._start_ack else start_unix_ms
+        if actual_unix_ms and actual_unix_ms != start_unix_ms:
+            # the binary seated the start later than commanded (or the command
+            # left the instant to it): the base is heard from the acked instant
+            self.player.set_state_from_stream(
+                elapsed_time=self._start_position,
+                stream=self,
+                elapsed_time_at=actual_unix_ms / 1000,
+            )
+        return actual_unix_ms
 
-    def rebase_position(self, position_ms: int) -> None:
+    def rebase_position(self, position_ms: int, at_unix_ms: int = 0) -> None:
         """
         Re-map reported progress onto a start instant that moved after the command.
 
@@ -755,10 +773,16 @@ class AirPlayStream:
 
         :param position_ms: Media position of the first sample the binary
             renders at the acked instant.
+        :param at_unix_ms: The acked instant itself, so the base is dated when it
+            is heard rather than when it is recorded (0: now).
         """
         self._start_position = position_ms / 1000
         self._pending_content_cut_ms = 0
-        self.player.set_state_from_stream(elapsed_time=self._start_position, stream=self)
+        self.player.set_state_from_stream(
+            elapsed_time=self._start_position,
+            stream=self,
+            elapsed_time_at=at_unix_ms / 1000 if at_unix_ms else None,
+        )
 
     def reset_reanchor_shift(self) -> None:
         """Clear the accumulated re-anchor shift."""

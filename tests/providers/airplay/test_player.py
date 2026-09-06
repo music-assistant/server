@@ -92,6 +92,23 @@ def airplay_player() -> AirPlayPlayer:
     )
 
 
+def test_set_state_from_stream_dates_elapsed_at_the_audible_instant(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A scheduled start's elapsed base is dated when its first sample is audible."""
+    stream = MagicMock()
+    airplay_player.stream = stream
+
+    airplay_player.set_state_from_stream(
+        elapsed_time=12.0,
+        stream=stream,
+        elapsed_time_at=1_750_000_000.4,
+    )
+
+    assert airplay_player._attr_elapsed_time == 12.0
+    assert airplay_player._attr_elapsed_time_last_updated == 1_750_000_000.4
+
+
 async def test_cold_restart_keeps_a_stream_published_while_it_was_stopping(
     airplay_player: AirPlayPlayer,
 ) -> None:

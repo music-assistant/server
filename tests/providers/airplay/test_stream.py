@@ -1353,7 +1353,11 @@ async def test_start_sends_command_and_stamps_position() -> None:
 
     write_command.assert_awaited_once_with(f"START_UNIX_MS={START_UNIX_MS}\nACTION=START")
     assert stream._start_position == 12.0
-    player.set_state_from_stream.assert_called_once_with(elapsed_time=12.0, stream=stream)
+    player.set_state_from_stream.assert_called_once_with(
+        elapsed_time=12.0,
+        stream=stream,
+        elapsed_time_at=START_UNIX_MS / 1000,
+    )
 
 
 @pytest.mark.asyncio
@@ -1590,7 +1594,8 @@ async def test_start_failure_does_not_outlive_its_command() -> None:
 @pytest.mark.asyncio
 async def test_start_returns_the_instant_the_binary_scheduled() -> None:
     """A corrected ack, not the commanded instant, is what the caller maps content onto."""
-    stream = AirPlayStream(_make_player())
+    player = _make_player()
+    stream = AirPlayStream(player)
     stream._cli_proc = _make_cli_proc()
     stream._connected.set()
     corrected = START_UNIX_MS + 700
@@ -1602,6 +1607,26 @@ async def test_start_returns_the_instant_the_binary_scheduled() -> None:
         side_effect=_acking_write_cli_command(stream, corrected),
     ):
         assert await stream.start(START_UNIX_MS, 0) == corrected
+
+    assert player.set_state_from_stream.call_args_list == [
+        call(elapsed_time=0.0, stream=stream, elapsed_time_at=START_UNIX_MS / 1000),
+        call(elapsed_time=0.0, stream=stream, elapsed_time_at=corrected / 1000),
+    ]
+
+
+def test_rebase_position_dates_the_position_at_the_acked_instant() -> None:
+    """A moved join anchor maps its content at the instant the receiver acknowledged."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    stream.rebase_position(30_000, START_UNIX_MS)
+
+    assert stream._start_position == 30.0
+    player.set_state_from_stream.assert_called_once_with(
+        elapsed_time=30.0,
+        stream=stream,
+        elapsed_time_at=START_UNIX_MS / 1000,
+    )
 
 
 @pytest.mark.asyncio

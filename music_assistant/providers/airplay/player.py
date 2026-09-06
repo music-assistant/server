@@ -875,6 +875,7 @@ class AirPlayPlayer(Player):
         state: PlaybackState | None = None,
         elapsed_time: float | None = None,
         stream: AirPlayStream | None = None,
+        elapsed_time_at: float | None = None,
     ) -> None:
         """
         Set the playback state from stream (RAOP or AirPlay2).
@@ -882,6 +883,9 @@ class AirPlayPlayer(Player):
         :param state: New playback state (or None to keep current).
         :param elapsed_time: New elapsed time (or None to keep current).
         :param stream: The stream instance sending this update (for validation).
+        :param elapsed_time_at: Unix time at which ``elapsed_time`` is (or will be)
+            the audible position; defaults to now. A start anchor is stamped at
+            its commanded instant, which lies a lead ahead of the command.
         """
         # Ignore state updates from old/stale streams
         if stream is not None and stream != self.stream:
@@ -901,7 +905,9 @@ class AirPlayPlayer(Player):
             self._attr_playback_state = state
         if elapsed_time is not None:
             self._attr_elapsed_time = elapsed_time
-            self._attr_elapsed_time_last_updated = time.time()
+            self._attr_elapsed_time_last_updated = (
+                elapsed_time_at if elapsed_time_at is not None else time.time()
+            )
         self.update_state()
 
     def get_stream_pcm_format(self, session_pcm_format: AudioFormat) -> AudioFormat:

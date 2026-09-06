@@ -673,7 +673,7 @@ class AirPlayStreamSession:
                 # actually lands on the anchor.
                 acked_position_ms = int(((self.media.elapsed_time or 0) + fed_pos_due) * 1000)
                 if acked_position_ms != position_ms:
-                    stream.rebase_position(acked_position_ms)
+                    stream.rebase_position(acked_position_ms, actual)
 
                 self.prov.logger.debug(
                     "Late joiner %s: priming %.2fs, skipping %.2fs, stream_pos=%.2fs, "
