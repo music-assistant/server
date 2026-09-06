@@ -1324,8 +1324,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             full_item.item_id,
             True,
         )
-        # forward to provider(s) if needed
-        for prov_mapping in full_item.provider_mappings:
+        # forward to the acting user's own provider instance(s) if needed
+        for prov_mapping in self._favorite_target_mappings(full_item.provider_mappings):
             provider = self.mass.get_provider(
                 prov_mapping.provider_instance, provider_type=MusicProvider
             )
@@ -1347,9 +1347,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             library_item_id,
             False,
         )
-        # forward to provider(s) if needed
+        # forward to the acting user's own provider instance(s) if needed
         full_item = await ctrl.get_library_item(library_item_id)
-        for prov_mapping in full_item.provider_mappings:
+        for prov_mapping in self._favorite_target_mappings(full_item.provider_mappings):
             provider = self.mass.get_provider(
                 prov_mapping.provider_instance, provider_type=MusicProvider
             )
@@ -2594,6 +2594,42 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         for allowed_player_id in player_filter:
             sources.extend(provider.get_player_audio_sources(allowed_player_id) or [])
         return sources
+
+    def _favorite_target_mappings(
+        self,
+        provider_mappings: Iterable[ProviderMapping],
+    ) -> list[ProviderMapping]:
+        """
+        Return the provider mappings a favorite write may reach for the acting user.
+
+        A library item can map to several instances of the SAME server, one instance per account
+        on it, which is the normal setup for a household sharing one music library. Writing a
+        favorite to every mapping then writes one person's choice into everybody else's account.
+
+        A non-empty provider_filter is treated as an allowlist, the same way this controller
+        already treats it for browsing, listing and playback: only the acting user's own
+        instance(s) receive the write, and if none of them holds this item nothing is forwarded.
+        The library favorite is still set either way, so the user keeps seeing their own choice.
+
+        A filter that names no music provider at all (built-in providers only) expresses no
+        preference between accounts and keeps the previous behavior.
+        """
+        user = get_current_user()
+        user_provider_filter = user.provider_filter if user else None
+        if not user_provider_filter:
+            return list(provider_mappings)
+        names_music_provider = any(
+            (prov := self.mass.get_provider(instance_id)) is not None
+            and prov.type == ProviderType.MUSIC
+            for instance_id in user_provider_filter
+        )
+        if not names_music_provider:
+            return list(provider_mappings)
+        return [
+            mapping
+            for mapping in provider_mappings
+            if mapping.provider_instance in user_provider_filter
+        ]
 
     def _apply_user_provider_filter(
         self,
