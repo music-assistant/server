@@ -43,3 +43,12 @@ BROWSE_TOP_ALBUMS = "Top Albums"
 BROWSE_TOP_ARTISTS = "Top Artists"
 BROWSE_TOP_PLAYLISTS = "Top Playlists"
 BROWSE_ALL_FLOWS = "All Flows"
+
+# -- Track decryption --
+
+# Length of the bundled blowfish secret, see helpers/app_vars.py.
+DECRYPT_KEY_LENGTH = 16
+DECRYPT_KEY_MISSING = (
+    "No Deezer decrypt key in this build, playback will not work. "
+    "Builds from source ship without the bundled app secrets."
+)

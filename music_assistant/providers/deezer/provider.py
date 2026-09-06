@@ -19,10 +19,12 @@ from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .browse import DeezerBrowseManager
+from .constants import DECRYPT_KEY_LENGTH, DECRYPT_KEY_MISSING
 from .gw_client import (
     DeezerGWAuthError,
     DeezerGWError,
@@ -104,6 +106,10 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async init of the Deezer provider."""
+        # Say it here instead of leaving it to the first track someone plays, the failure
+        # looks like a rights problem down there.
+        if len(app_var("deezer_decrypt_key")) != DECRYPT_KEY_LENGTH:
+            self.logger.warning(DECRYPT_KEY_MISSING)
         arl_token = str(self.get_setup_value(CONF_ARL_TOKEN))
 
         try:
