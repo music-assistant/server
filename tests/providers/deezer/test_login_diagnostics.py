@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -57,7 +58,7 @@ async def _init_with(error: Exception) -> LoginFailed:
     return raised.value
 
 
-def _user_data(user_id: str | int, offer_id: int) -> dict:
+def _user_data(user_id: str | int, offer_id: int) -> dict[str, Any]:
     """Build a getUserData payload complete enough to reach the end of _update_user_data."""
     return {
         "error": [],
@@ -103,6 +104,7 @@ async def test_retry_does_not_recurse_through_gw_api_call() -> None:
     call = AsyncMock(return_value=_user_data("123", 1))
     with patch.object(GWClient, "_gw_api_call", call):
         await client.setup()
+    assert call.await_args is not None
     assert call.await_args.kwargs.get("retry") is False
 
 
