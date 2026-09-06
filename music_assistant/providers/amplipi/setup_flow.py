@@ -55,16 +55,7 @@ async def run_setup(session: SetupSession) -> None:
 
 
 async def _discover_host(session: SetupSession) -> str:
-    """
-    Return the address to prefill the host field with.
-
-    Prefers the hostname the discovered controller advertises, as its IP address is
-    usually a DHCP lease that stops working once it is reassigned. The provider reaches
-    the controller over ``mass.http_session``, whose resolver answers .local names from
-    mDNS, so the hostname holds even where the system resolver knows nothing about them.
-    The value is only a prefill: the user can always point the provider at another
-    controller.
-    """
+    """Return the address to prefill the host field with."""
     discovery_info = await _find_amplipi(session)
     if discovery_info is None:
         LOGGER.debug("No %s service found on mDNS, offering %s", MDNS_TYPE, DEFAULT_HOST)
