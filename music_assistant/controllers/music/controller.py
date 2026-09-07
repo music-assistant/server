@@ -1325,12 +1325,16 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             True,
         )
         # forward to the acting user's own provider instance(s) if needed
-        for prov_mapping in self._favorite_target_mappings(full_item.provider_mappings):
+        for prov_mapping in self._user_target_mappings(full_item.provider_mappings):
             provider = self.mass.get_provider(
-                prov_mapping.provider_instance, provider_type=MusicProvider
+                prov_mapping.provider_instance,
+                return_unavailable=True,
+                provider_type=MusicProvider,
             )
-            if not provider or not self.library_favorites_edit_supported(
-                provider, full_item.media_type
+            if (
+                not provider
+                or not provider.available
+                or not self.library_favorites_edit_supported(provider, full_item.media_type)
             ):
                 continue
             await provider.set_favorite(prov_mapping.item_id, full_item.media_type, True)
@@ -1349,12 +1353,16 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         )
         # forward to the acting user's own provider instance(s) if needed
         full_item = await ctrl.get_library_item(library_item_id)
-        for prov_mapping in self._favorite_target_mappings(full_item.provider_mappings):
+        for prov_mapping in self._user_target_mappings(full_item.provider_mappings):
             provider = self.mass.get_provider(
-                prov_mapping.provider_instance, provider_type=MusicProvider
+                prov_mapping.provider_instance,
+                return_unavailable=True,
+                provider_type=MusicProvider,
             )
-            if not provider or not self.library_favorites_edit_supported(
-                provider, full_item.media_type
+            if (
+                not provider
+                or not provider.available
+                or not self.library_favorites_edit_supported(provider, full_item.media_type)
             ):
                 continue
             self.mass.create_task(provider.set_favorite(prov_mapping.item_id, media_type, False))
@@ -1371,13 +1379,23 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         ctrl = self.get_controller(media_type)
         # remove from provider(s) library
         full_item = await ctrl.get_library_item(library_item_id)
+        # only the acting user's own instance(s) receive the provider-side removal
+        targets = {
+            m.provider_instance for m in self._user_target_mappings(full_item.provider_mappings)
+        }
         for prov_mapping in full_item.provider_mappings:
-            if not prov_mapping.in_library:
+            if not prov_mapping.in_library or prov_mapping.provider_instance not in targets:
                 continue
             provider = self.mass.get_provider(
-                prov_mapping.provider_instance, provider_type=MusicProvider
+                prov_mapping.provider_instance,
+                return_unavailable=True,
+                provider_type=MusicProvider,
             )
-            if not provider or not self.library_edit_supported(provider, full_item.media_type):
+            if (
+                not provider
+                or not provider.available
+                or not self.library_edit_supported(provider, full_item.media_type)
+            ):
                 continue
             if not self.library_sync_back_enabled(provider, full_item.media_type):
                 continue
@@ -1429,16 +1447,27 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             raise UnsupportedFeaturedException(
                 f"{full_item.media_type.value} items can not be library items"
             )
-        # add to provider(s) library first
+        # add to provider(s) library first, but only to the acting user's own instance(s)
+        targets = {
+            m.provider_instance for m in self._user_target_mappings(full_item.provider_mappings)
+        }
         for prov_mapping in full_item.provider_mappings:
             # we optimistically set in library to True to prevent items
             # from disappearing when the provider doesn't support library edit
             # or 2-way sync is disabled.
             prov_mapping.in_library = True
+            if prov_mapping.provider_instance not in targets:
+                continue
             provider = self.mass.get_provider(
-                prov_mapping.provider_instance, provider_type=MusicProvider
+                prov_mapping.provider_instance,
+                return_unavailable=True,
+                provider_type=MusicProvider,
             )
-            if not provider or not self.library_edit_supported(provider, full_item.media_type):
+            if (
+                not provider
+                or not provider.available
+                or not self.library_edit_supported(provider, full_item.media_type)
+            ):
                 continue
             if not self.library_sync_back_enabled(provider, full_item.media_type):
                 continue
@@ -2595,35 +2624,42 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             sources.extend(provider.get_player_audio_sources(allowed_player_id) or [])
         return sources
 
-    def _favorite_target_mappings(
+    def _user_target_mappings(
         self,
         provider_mappings: Iterable[ProviderMapping],
     ) -> list[ProviderMapping]:
         """
-        Return the provider mappings a favorite write may reach for the acting user.
+        Return the provider mappings a user-initiated write may reach for the acting user.
 
         A library item can map to several instances of the SAME server, one instance per account
         on it, which is the normal setup for a household sharing one music library. Writing a
-        favorite to every mapping then writes one person's choice into everybody else's account.
+        favorite, or adding to the library, on every mapping then writes one person's choice into
+        everybody else's account.
 
         A non-empty provider_filter is treated as an allowlist, the same way this controller
         already treats it for browsing, listing and playback: only the acting user's own
         instance(s) receive the write, and if none of them holds this item nothing is forwarded.
-        The library favorite is still set either way, so the user keeps seeing their own choice.
+        The library row is still written either way, so the user keeps seeing their own choice.
 
         A filter that names no music provider at all (built-in providers only) expresses no
-        preference between accounts and keeps the previous behavior.
+        preference between accounts and keeps the previous behavior. A filter entry that resolves
+        to no provider at all (an instance removed or renamed since the user was configured) fails
+        closed: nothing is forwarded rather than everything. Unavailable instances are resolved as
+        themselves, never as another instance of the same domain, so the write is skipped while
+        the user's server is down instead of landing in a sibling account.
         """
         user = get_current_user()
         user_provider_filter = user.provider_filter if user else None
         if not user_provider_filter:
             return list(provider_mappings)
-        names_music_provider = any(
-            (prov := self.mass.get_provider(instance_id)) is not None
-            and prov.type == ProviderType.MUSIC
+        resolved = [
+            self.mass.get_provider(instance_id, return_unavailable=True)
             for instance_id in user_provider_filter
-        )
-        if not names_music_provider:
+        ]
+        known = [prov for prov in resolved if prov is not None]
+        if len(known) != len(resolved):
+            return []
+        if not any(prov.type == ProviderType.MUSIC for prov in known):
             return list(provider_mappings)
         return [
             mapping

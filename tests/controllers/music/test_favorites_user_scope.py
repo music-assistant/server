@@ -1,21 +1,16 @@
 """
-Tests for scoping favorite writes to the acting user's provider filter.
+Favorite and library writes reach only the acting user's own provider instance(s).
 
-A library item can map to several instances of the SAME server, one per account on it, which is
-the normal setup for a household sharing one music library. Writing a favorite to every mapping
-then writes one person's choice into everybody else's account.
-
-Measured on a live install on 2026-09-05: one user starring one track produced three rows in the
-server's own annotation table, 15 milliseconds apart, in provider-mapping order. A loop, not three
-people.
+One library item maps to one instance per account on a shared server; before this, every write
+fanned out to all of them.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
-from music_assistant_models.enums import ProviderType
+from music_assistant_models.enums import MediaType, ProviderType
 from music_assistant_models.media_items import ProviderMapping
 
 from music_assistant.controllers.music import MusicController
@@ -26,36 +21,47 @@ if TYPE_CHECKING:
 INSTANCE_MINE = "opensubsonic--mine"
 INSTANCE_OTHER = "opensubsonic--other"
 INSTANCE_THIRD = "opensubsonic--third"
+INSTANCE_GONE = "opensubsonic--gone"
 BUILTIN = "builtin"
 
 
-def _mapping(instance_id: str, item_id: str) -> ProviderMapping:
+def _mapping(instance_id: str, item_id: str, in_library: bool = False) -> ProviderMapping:
     return ProviderMapping(
         item_id=item_id,
         provider_domain="opensubsonic",
         provider_instance=instance_id,
+        in_library=in_library,
     )
 
 
-def _controller(music_instances: set[str]) -> MusicController:
+def _controller(music_instances: set[str], unavailable: set[str] | None = None) -> MusicController:
     """Build a controller stub whose only live parts are the provider registry lookups."""
     controller = MusicController.__new__(MusicController)
     controller.mass = Mock()
+    unavailable = unavailable or set()
+    providers: dict[str, Mock] = {}
 
-    def _get_provider(instance_id: str, **_kwargs: object) -> Mock | None:
+    def _get_provider(
+        instance_id: str, return_unavailable: bool = False, **_kwargs: object
+    ) -> Mock | None:
         if instance_id in music_instances:
-            prov = Mock()
+            if instance_id in unavailable and not return_unavailable:
+                return None
+            prov = providers.setdefault(instance_id, Mock())
             prov.type = ProviderType.MUSIC
             prov.instance_id = instance_id
+            prov.available = instance_id not in unavailable
             return prov
         if instance_id == BUILTIN:
-            prov = Mock()
+            prov = providers.setdefault(instance_id, Mock())
             prov.type = ProviderType.PLUGIN
             prov.instance_id = instance_id
+            prov.available = True
             return prov
         return None
 
     controller.mass.get_provider.side_effect = _get_provider
+    controller._providers = providers  # type: ignore[attr-defined]
     return controller
 
 
@@ -80,7 +86,7 @@ def test_favorite_reaches_only_the_acting_users_instance(monkeypatch: pytest.Mon
     _patched(monkeypatch, [BUILTIN, INSTANCE_MINE])
     controller = _controller(MUSIC)
 
-    targets = controller._favorite_target_mappings(MAPPINGS)
+    targets = controller._user_target_mappings(MAPPINGS)
 
     assert [m.provider_instance for m in targets] == [INSTANCE_MINE]
 
@@ -90,7 +96,7 @@ def test_unfiltered_user_keeps_the_previous_behaviour(monkeypatch: pytest.Monkey
     _patched(monkeypatch, [])
     controller = _controller(MUSIC)
 
-    targets = controller._favorite_target_mappings(MAPPINGS)
+    targets = controller._user_target_mappings(MAPPINGS)
 
     assert [m.provider_instance for m in targets] == [
         INSTANCE_MINE,
@@ -104,7 +110,7 @@ def test_no_current_user_keeps_the_previous_behaviour(monkeypatch: pytest.Monkey
     _patched(monkeypatch, None)
     controller = _controller(MUSIC)
 
-    targets = controller._favorite_target_mappings(MAPPINGS)
+    targets = controller._user_target_mappings(MAPPINGS)
 
     assert len(targets) == 3
 
@@ -112,16 +118,11 @@ def test_no_current_user_keeps_the_previous_behaviour(monkeypatch: pytest.Monkey
 def test_filter_naming_no_music_provider_expresses_no_preference(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """
-    A built-in-only filter is not a statement about which account owns a favorite.
-
-    Same rule as the Subsonic scrobbler: a filter that names no instance of the relevant kind
-    carries no preference, so narrowing on it would remove behaviour rather than fix a leak.
-    """
+    """A built-in-only filter is not a statement about which account owns a favorite."""
     _patched(monkeypatch, [BUILTIN])
     controller = _controller(MUSIC)
 
-    targets = controller._favorite_target_mappings(MAPPINGS)
+    targets = controller._user_target_mappings(MAPPINGS)
 
     assert len(targets) == 3
 
@@ -129,17 +130,11 @@ def test_filter_naming_no_music_provider_expresses_no_preference(
 def test_filter_is_an_allowlist_when_the_users_instance_holds_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """
-    No mapping of the user's own means NOTHING is forwarded, not somebody else's account.
-
-    This is the review finding from the scrobbler pull request applied one layer up: falling
-    through to another instance is exactly the disclosure the filter exists to prevent. The library
-    favorite is still set, so the user keeps seeing their own choice.
-    """
+    """No mapping of the user's own means NOTHING is forwarded, not somebody else's account."""
     _patched(monkeypatch, [INSTANCE_MINE])
     controller = _controller(MUSIC)
 
-    targets = controller._favorite_target_mappings(
+    targets = controller._user_target_mappings(
         [_mapping(INSTANCE_OTHER, "other-42"), _mapping(INSTANCE_THIRD, "third-42")]
     )
 
@@ -151,6 +146,82 @@ def test_multiple_own_instances_are_all_reached(monkeypatch: pytest.MonkeyPatch)
     _patched(monkeypatch, [INSTANCE_MINE, INSTANCE_THIRD])
     controller = _controller(MUSIC)
 
-    targets = controller._favorite_target_mappings(MAPPINGS)
+    targets = controller._user_target_mappings(MAPPINGS)
 
     assert [m.provider_instance for m in targets] == [INSTANCE_MINE, INSTANCE_THIRD]
+
+
+def test_unavailable_own_instance_stays_the_only_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    The user's instance being down must not widen the write to everybody.
+
+    The default provider lookup returns None for an unavailable non-streaming instance, which
+    used to read as "the filter names no music provider" and returned every mapping.
+    """
+    _patched(monkeypatch, [INSTANCE_MINE])
+    controller = _controller(MUSIC, unavailable={INSTANCE_MINE})
+
+    targets = controller._user_target_mappings(MAPPINGS)
+
+    assert [m.provider_instance for m in targets] == [INSTANCE_MINE]
+
+
+def test_stale_filter_entry_forwards_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A filter entry that resolves to no provider (removed or renamed) fails closed."""
+    _patched(monkeypatch, [INSTANCE_MINE, INSTANCE_GONE])
+    controller = _controller(MUSIC)
+
+    targets = controller._user_target_mappings(MAPPINGS)
+
+    assert targets == []
+
+
+async def test_library_remove_reaches_only_the_acting_users_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The provider-side removal goes to the user's own account only; the row still goes."""
+    _patched(monkeypatch, [INSTANCE_MINE])
+    controller = _controller(MUSIC)
+    full_item = Mock(
+        media_type=MediaType.TRACK,
+        provider_mappings=[
+            _mapping(INSTANCE_MINE, "mine-42", in_library=True),
+            _mapping(INSTANCE_OTHER, "other-42", in_library=True),
+        ],
+    )
+    ctrl = Mock(
+        get_library_item=AsyncMock(return_value=full_item),
+        remove_item_from_library=AsyncMock(),
+    )
+    controller.get_controller = Mock(return_value=ctrl)  # type: ignore[method-assign]
+    controller.library_edit_supported = Mock(return_value=True)  # type: ignore[method-assign]
+    controller.library_sync_back_enabled = Mock(return_value=True)  # type: ignore[method-assign]
+
+    await controller.remove_item_from_library(MediaType.TRACK, "42")
+
+    providers = controller._providers  # type: ignore[attr-defined]
+    providers[INSTANCE_MINE].library_remove.assert_called_once_with("mine-42", MediaType.TRACK)
+    assert INSTANCE_OTHER not in providers or not providers[INSTANCE_OTHER].library_remove.called
+    ctrl.remove_item_from_library.assert_awaited_once_with("42", True)
+
+
+async def test_library_add_reaches_only_the_acting_users_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The provider-side add goes to the user's own account; every mapping still reads in_library."""
+    _patched(monkeypatch, [INSTANCE_MINE])
+    controller = _controller(MUSIC)
+    mappings = [_mapping(INSTANCE_MINE, "mine-42"), _mapping(INSTANCE_OTHER, "other-42")]
+    item = Mock(provider="builtin", media_type=MediaType.TRACK, provider_mappings=mappings)
+    ctrl = Mock(add_item_to_library=AsyncMock(return_value=item))
+    controller.get_controller = Mock(return_value=ctrl)  # type: ignore[method-assign]
+    controller.library_edit_supported = Mock(return_value=True)  # type: ignore[method-assign]
+    controller.library_sync_back_enabled = Mock(return_value=True)  # type: ignore[method-assign]
+    controller.mass.metadata.update_metadata = AsyncMock()  # type: ignore[method-assign]
+
+    await controller.add_item_to_library(item)
+
+    providers = controller._providers  # type: ignore[attr-defined]
+    assert providers[INSTANCE_MINE].library_add.call_count == 1
+    assert INSTANCE_OTHER not in providers or not providers[INSTANCE_OTHER].library_add.called
+    assert all(m.in_library for m in mappings)
