@@ -1140,6 +1140,76 @@ async def test_output_format_prefers_rendering_player_channels() -> None:
     assert fmt.channels == 1
 
 
+def _hires_capable_audio() -> tuple[StreamsAudio, MagicMock]:
+    """Return a StreamsAudio and a player that can take 96 kHz / 24 bit."""
+    mass = MagicMock()
+    player = MagicMock(player_id="player-1", protocol_parent_id=None)
+    player.get_supported_sample_rates.return_value = [(96000, 24)]
+    mass.config.get_raw_player_config_value.side_effect = lambda _player_id, _key, default: default
+    return StreamsAudio(cast("Any", mass)), player
+
+
+@pytest.mark.parametrize(
+    ("source_bit_depth", "expected"), [(24, 24), (16, 16), (8, 16), (20, 24), (32, 24)]
+)
+@pytest.mark.asyncio
+async def test_output_format_caps_non_track_media_at_source_depth(
+    source_bit_depth: int, expected: int
+) -> None:
+    """Radio follows the source bit depth, rounded up to a container width."""
+    audio, player = _hires_capable_audio()
+
+    # 32 bit content depth: the internal PCM is float once normalization runs on radio
+    fmt = await audio.get_output_format(
+        "flac", player, 96000, 32, MediaType.RADIO, source_bit_depth=source_bit_depth
+    )
+
+    assert fmt.bit_depth == expected
+
+
+@pytest.mark.asyncio
+async def test_output_format_defaults_non_track_media_to_16_bit() -> None:
+    """A caller that cannot state the source depth still gets the 16 bit cap."""
+    audio, player = _hires_capable_audio()
+
+    fmt = await audio.get_output_format("flac", player, 96000, 32, MediaType.RADIO)
+
+    assert fmt.bit_depth == 16
+
+
+@pytest.mark.parametrize(
+    "media_type", [MediaType.TRACK, MediaType.AUDIO_SOURCE, MediaType.FLOW_STREAM]
+)
+@pytest.mark.asyncio
+async def test_output_format_ignores_source_depth_for_full_range_media(
+    media_type: MediaType,
+) -> None:
+    """Tracks and flow streams keep the full player depth whatever the source says."""
+    audio, player = _hires_capable_audio()
+
+    fmt = await audio.get_output_format("flac", player, 96000, 32, media_type, source_bit_depth=16)
+
+    assert fmt.bit_depth == 24
+
+
+@pytest.mark.asyncio
+async def test_single_stream_handler_uses_declared_source_bit_depth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The source depth comes from what the provider declares, not the PCM it hands over."""
+    controller, request, _ = _native_stream_handler_context(monkeypatch)
+    queue_item = controller.mass.player_queues.get_item.return_value
+    queue_item.media_type = MediaType.PODCAST_EPISODE
+    queue_item.streamdetails.media_type = MediaType.PODCAST_EPISODE
+    queue_item.streamdetails.audio_format = _format(ContentType.OGG, 44100, 16)
+    queue_item.streamdetails.decoded_audio_format = _format(ContentType.PCM_S32LE, 44100, 32)
+
+    with pytest.raises(_OutputPlanRequested):
+        await controller.serve_queue_item_stream(request)
+
+    assert controller.audio.get_output_format.call_args.kwargs["source_bit_depth"] == 16
+
+
 @pytest.mark.asyncio
 async def test_single_stream_handler_shares_native_group_members(
     monkeypatch: pytest.MonkeyPatch,
