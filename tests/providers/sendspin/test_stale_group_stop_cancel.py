@@ -18,6 +18,8 @@ def _make_player_mock() -> MagicMock:
     """Create a mock with the real methods under test bound to it."""
     mock = MagicMock()
     mock.synced_to = None
+    # not in the reconnect window, so the _was_playing guard does not interfere
+    mock._was_playing = False
     mock.playback_session.cancel = AsyncMock()
     return mock
 

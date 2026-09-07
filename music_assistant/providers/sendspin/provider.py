@@ -52,6 +52,7 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
     IdentifierType,
+    PlaybackState,
     PlayerFeature,
     PlayerType,
     ProviderFeature,
@@ -504,10 +505,9 @@ class SendspinProvider(PlayerProvider):
             case ClientUpdatedEvent(client_id):
                 event_version = self._begin_client_event(client_id)
                 self.mass.create_task(self._handle_client_updated(client_id, event_version))
-            # Transport lifecycle events, implemented in another PR.
-            case ClientConnectedEvent():
-                pass
-            case ClientDisconnectedEvent(client_id):
+            case ClientConnectedEvent(client_id):
+                self.mass.create_task(self._handle_client_connected(client_id))
+            case ClientDisconnectedEvent(client_id, goodbye_reason):
                 self._pending_pairing_evictions.add(client_id)
                 self.mass.call_later(
                     SESSION_PAIRING_EVICTION_GRACE,
@@ -515,6 +515,7 @@ class SendspinProvider(PlayerProvider):
                     client_id,
                     task_id=_evict_session_pairing_task_id(client_id),
                 )
+                self.mass.create_task(self._handle_client_disconnected(client_id, goodbye_reason))
             case _:
                 self.logger.error("Unknown sendspin event: %s", event)
 
@@ -1712,6 +1713,47 @@ class SendspinProvider(PlayerProvider):
             await self.mass.players.register_or_update(existing_player)
         finally:
             self._finish_client_event(client_id)
+
+    async def _handle_client_connected(self, client_id: str) -> None:
+        """
+        Handle a client that established a transport connection.
+
+        Fires on every ``attach_connection()`` — first connect and reconnects.
+        Refreshes player info and available state.
+        """
+        if self._unloading:
+            return
+        sendspin_client = self.server_api.get_client(client_id)
+        if sendspin_client is None:
+            return
+        existing_player = self.mass.players.get_player(client_id)
+        if isinstance(existing_player, SendspinBasePlayer):
+            existing_player._refresh_client_info(sendspin_client)
+            await self.mass.players.register_or_update(existing_player)
+
+    async def _handle_client_disconnected(self, client_id: str, goodbye_reason: object) -> None:
+        """
+        Handle a client whose transport connection was lost.
+
+        Captures playback state so auto-resume can restore it on reconnect.
+        Sets player as unavailable to reflect the lost connection.
+        """
+        if self._unloading:
+            return
+        existing_player = self.mass.players.get_player(client_id)
+        if not isinstance(existing_player, SendspinBasePlayer):
+            return
+        # Remember playing state for auto-resume on reconnect
+        if existing_player.playback_state is PlaybackState.PLAYING:
+            existing_player._was_playing = True
+            self.logger.debug(
+                "Client %s disconnected while playing, marked for auto-resume (reason=%s)",
+                client_id,
+                goodbye_reason,
+            )
+        # Mark player unavailable so UI reflects the lost connection
+        existing_player._attr_available = False
+        await self.mass.players.register_or_update(existing_player)
 
     def _get_virtual_player_config_owner(self, player_id: str) -> str | None:
         """Return the owner instance id from a stored virtual player config, if any."""
