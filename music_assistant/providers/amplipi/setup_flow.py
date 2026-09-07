@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
-from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf
+from music_assistant.helpers.util import format_ip_for_url, get_primary_ip_address_from_zeroconf
 from music_assistant.models.setup_flow import SetupFlowError
 from music_assistant.providers.amplipi.constants import CONF_HOST, DEFAULT_HOST, MDNS_TYPE
 
@@ -65,18 +65,6 @@ async def _discover_host(session: SetupSession) -> str:
         return hostname
     # a record without a hostname still carries addresses to fall back on
     address = get_primary_ip_address_from_zeroconf(discovery_info)
-    host = _as_url_host(address) if address else DEFAULT_HOST
+    host = format_ip_for_url(address) if address else DEFAULT_HOST
     LOGGER.debug("Discovered AmpliPi advertising no hostname, offering %s", host)
     return host
-
-
-def _as_url_host(address: str) -> str:
-    """
-    Return an address in the form a URL can carry.
-
-    The provider builds its endpoint as "http://<host>/api", which an IPv6 literal only
-    survives in brackets.
-
-    :param address: The address discovered over mDNS.
-    """
-    return f"[{address}]" if ":" in address else address
