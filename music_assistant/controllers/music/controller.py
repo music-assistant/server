@@ -57,6 +57,7 @@ from music_assistant_models.playlog_update import PlaylogUpdate
 
 from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_BACK,
+    CONF_PROVIDERS,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_PLAYLOG,
@@ -2236,15 +2237,44 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 return uri
             if provider != provider_instance:
                 return uri
-            try:
-                ctrl = self.get_controller(media_type)
-            except NotImplementedError:
-                return None
-            if library_item := await ctrl.get_library_item_by_prov_id(item_id, provider_instance):
-                return f"library://{media_type.value}/{library_item.item_id}"
-            return None
+            return await self._shortcut_library_uri(media_type, item_id, provider)
 
         await self.mass.webserver.auth.cleanup_user_shortcuts(_rewrite)
+
+    async def cleanup_stale_provider_shortcuts(self) -> None:
+        """Repair sidebar shortcuts left pointing at a provider instance that no longer exists."""
+        provider_configs: dict[str, Any] = self.mass.config.get(CONF_PROVIDERS, {})
+        # an empty config section means nothing is configured yet, which must not be
+        # mistaken for every provider having been removed
+        if not provider_configs:
+            return
+        # a shortcut URI names either the instance id or the bare domain, and a single-instance
+        # provider is keyed on its domain, so both forms have to count as known
+        known_providers = set(provider_configs)
+        known_providers.update(
+            domain
+            for config in provider_configs.values()
+            if isinstance(config, dict) and (domain := config.get("domain"))
+        )
+
+        async def _rewrite(uri: str) -> str | None:
+            try:
+                media_type, provider, item_id = await parse_uri(uri)
+            except InvalidProviderURI, InvalidProviderID, KeyError, ValueError:
+                return uri
+            if provider == "library" or provider in known_providers:
+                return uri
+            return await self._shortcut_library_uri(media_type, item_id, provider)
+
+        try:
+            await self.mass.webserver.auth.cleanup_user_shortcuts(_rewrite)
+        except Exception as err:
+            # broad on purpose: this runs on the boot path, and nothing validates what is
+            # stored in a user's shortcuts, so an escape here would keep the server from
+            # starting at all. A skipped repair only costs the popup it was fixing.
+            self.logger.warning(
+                "Unable to repair sidebar shortcuts - %s: %s", type(err).__name__, err, exc_info=err
+            )
 
     async def cleanup_library_shortcuts(self) -> None:
         """Remove sidebar shortcuts whose library item no longer exists."""
@@ -2807,6 +2837,28 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             if not provider.library_sync_album_tracks_enabled():
                 continue
             self.mass.create_task(provider.import_album_tracks(prov_mapping.item_id, album))
+
+    async def _shortcut_library_uri(
+        self, media_type: MediaType, item_id: str, provider_instance: str
+    ) -> str | None:
+        """
+        Return the library URI a provider shortcut should follow, or None to drop it.
+
+        :param media_type: Media type of the shortcut's item.
+        :param item_id: Provider item ID the shortcut points at.
+        :param provider_instance: Provider instance the shortcut points at.
+        """
+        # nothing validates a stored shortcut, and a URI such as "prov--x://track/" parses to an
+        # empty item id, which the library lookup asserts on
+        if not item_id:
+            return None
+        try:
+            ctrl = self.get_controller(media_type)
+        except NotImplementedError:
+            return None
+        if library_item := await ctrl.get_library_item_by_prov_id(item_id, provider_instance):
+            return f"library://{media_type.value}/{library_item.item_id}"
+        return None
 
     async def _get_provider_sound_effects(self, provider: MusicProvider) -> list[SoundEffect]:
         """Return all sound effect items from a single provider."""
