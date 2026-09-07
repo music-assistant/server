@@ -1382,7 +1382,10 @@ class StreamsAudio:
             # or DSP runs), so cap on the source instead: a lossy station or TTS stays
             # 16 bit while a hi-res radio stream keeps its own depth. 16 stays the floor,
             # since the encoders and the content length headers assume at least that.
-            output_bit_depth = min(output_bit_depth, max(source_bit_depth, 16))
+            source_container_bit_depth = (
+                16 if source_bit_depth <= 16 else 24 if source_bit_depth <= 24 else 32
+            )
+            output_bit_depth = min(output_bit_depth, source_container_bit_depth)
         if output_format_str == "pcm":
             content_type = ContentType.from_bit_depth(output_bit_depth)
 
