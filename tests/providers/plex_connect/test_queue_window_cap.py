@@ -199,6 +199,35 @@ async def test_pagination_fetches_forward_pages_past_the_anchor(
     assert set(range(91, 143)).issubset(set(kept_tracks))
 
 
+@pytest.mark.asyncio
+async def test_pagination_survives_unparsable_continuation_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A continuation page that fails to parse ends pagination instead of failing playback.
+
+    plexapi indexes a page's items with the queue-absolute selected offset while
+    constructing the PlayQueue, which can raise IndexError on forward-only pages.
+    """
+    initial = _make_playqueue(1, 90, selected_track=60, selected_offset=59, total_count=142)
+
+    class _RaisingPlayQueue:
+        @staticmethod
+        def get(*_args: Any, **kwargs: Any) -> Any:
+            if "center" in kwargs:
+                raise IndexError("selected offset outside window")
+            return initial
+
+    monkeypatch.setattr(queue_commands, "PlayQueue", _RaisingPlayQueue)
+    handler = _QueueHandler()
+
+    result = await handler._fetch_full_play_queue("123")
+
+    assert result is not None
+    assert len(result.items) == 90
+    assert result.items[handler._selected_item_index(result)].playQueueItemID == 1000 + 60
+
+
 class _CreateQueueHandler(_QueueHandler):
     """_QueueHandler that records background queue loading instead of running it."""
 

@@ -125,17 +125,23 @@ class QueueCommandsMixin:
         while len(all_items) < target_count:
             last_id = all_items[-1].playQueueItemID
 
-            def fetch_next(_last_id: int = last_id) -> PlayQueue:
+            def fetch_next(_last_id: int = last_id) -> PlayQueue | None:
                 # own=False — we already claimed ownership on the first fetch.
                 # includeBefore=False — only items strictly after center are returned.
-                return PlayQueue.get(
-                    plex_server,
-                    playQueueID=queue_id,
-                    own=False,
-                    center=_last_id,
-                    window=page_size,
-                    includeBefore=False,
-                )
+                try:
+                    return PlayQueue.get(
+                        plex_server,
+                        playQueueID=queue_id,
+                        own=False,
+                        center=_last_id,
+                        window=page_size,
+                        includeBefore=False,
+                    )
+                except IndexError, TypeError:
+                    # plexapi resolves selectedItem by indexing the returned window with
+                    # the queue-absolute selected offset, which can fall outside a
+                    # forward-only page; treat such a page as the end of pagination.
+                    return None
 
             next_page = await asyncio.to_thread(fetch_next)
             if next_page is None or not next_page.items:
