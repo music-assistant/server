@@ -6,7 +6,12 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import (
+    MediaType,
+    ProviderFeature,
+    SortDirection,
+    SortField,
+)
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
@@ -75,17 +80,19 @@ class PodcastsController(MediaControllerBase[Podcast]):
             FROM podcasts"""
         return query, {}
 
-    async def library_items(
+    async def library_items(  # noqa: PLR0913
         self,
         favorite: bool | None = None,
         search: str | None = None,
         limit: int = 500,
         offset: int = 0,
-        order_by: str = "sort_name",
+        *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
+        order_by: str | None = None,
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
-        *,
         summary: bool = True,
         reachable_via: list[str] | None = None,
         **kwargs: Any,
@@ -97,7 +104,9 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
-        :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
+        :param sort_field: Sort field to use.
+        :param sort_direction: Sort direction (ASC/DESC). Only applies if sort_field is set.
+        :param order_by: DEPRECATED - use sort_field and sort_direction instead.
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
         :param summary: When True (default), return slim summary items containing only the
@@ -106,6 +115,10 @@ class PodcastsController(MediaControllerBase[Podcast]):
             through one of these provider instance ids (OR semantics). See
             `MediaControllerBase.library_items` for the full semantics.
         """
+        final_order_by = self._resolve_sort_parameters(
+            sort_field, sort_direction, order_by, default="sort_name"
+        )
+
         reachable_via = self._resolve_reachable_via(reachable_via)
         if reachable_via is not None and not reachable_via:
             return []
@@ -115,7 +128,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             genre_ids=genre,
             limit=limit,
             offset=offset,
-            order_by=order_by,
+            order_by=final_order_by,
             provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
             played_only=played_only,
             in_library_only=True,
