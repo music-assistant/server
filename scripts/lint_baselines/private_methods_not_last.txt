@@ -18,7 +18,6 @@ music_assistant/providers/bbc_sounds/__init__.py	6
 music_assistant/providers/bbc_sounds/adaptor.py	5
 music_assistant/providers/bluesound/player.py	3
 music_assistant/providers/deezer/browse.py	3
-music_assistant/providers/deezer/gw_client.py	5
 music_assistant/providers/deezer/media.py	27
 music_assistant/providers/deezer/streaming.py	2
 music_assistant/providers/digitally_incorporated/__init__.py	2
