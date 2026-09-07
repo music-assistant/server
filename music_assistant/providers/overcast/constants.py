@@ -23,7 +23,9 @@ METHOD_PASSWORD = "password"
 QR_AUTH_URL = "overcast:///auth?t={token}&l=browser"
 # the login page hands out a fresh token on every load
 QR_TOKEN_PATTERN = re.compile(
-    r'id="qrcode"[^>]*\bdata-token="(?P<token>[^"]+)"[^>]*\bdata-then="(?P<then>[^"]*)"'
+    r'''<(?=[^>]*\bid\s*=\s*["']qrcode["'])'''
+    r'''(?=[^>]*\bdata-token\s*=\s*["'](?P<token>[^"']+)["'])'''
+    r'''(?=[^>]*\bdata-then\s*=\s*["'](?P<then>[^"']*)["'])[^>]*>'''
 )
 # how long a shown QR code is offered before a fresh one replaces it
 QR_EXPIRES_IN = 300.0
