@@ -28,6 +28,7 @@ from music_assistant.providers.sendspin.constants import (
     CONF_CONNECT_METHOD,
     CONF_PAIRING_METHOD,
     CONF_PAIRING_PIN,
+    CONF_PAIRING_TOKEN,
     CONF_SOURCE_APPROVAL_DISMISSED,
     CONF_SOURCE_INPUT_ACTION,
     CONNECT_METHOD_PAIR,
@@ -35,6 +36,7 @@ from music_assistant.providers.sendspin.constants import (
     PAIR_METHOD_DYNAMIC_PIN,
     PAIR_METHOD_PIN,
     PAIR_METHOD_STATIC_PIN,
+    PAIR_METHOD_TOKEN,
     SOURCE_INPUT_DISMISS,
     SOURCE_INPUT_PAIR,
 )
@@ -840,27 +842,33 @@ async def test_abort_mid_pairing_runs_cleanup() -> None:
     assert not session.finished
 
 
-async def test_token_only_device_aborts_as_unpairable() -> None:
-    """Token pairing is how a server enrols itself, so a token-only device cannot be paired."""
+async def test_token_only_device_pairs_with_token() -> None:
+    """A token-only device goes straight to the pairing-token form and can pair."""
     api = _FakeApi([_desc(PairMethod.PAIRING_PSK)])
     provider = _FakeProvider(api)
-    session, _mass = _make_session(_ok_finish)
+    session, mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
 
-    with pytest.raises(AbortFlow) as excinfo:
-        await player.run_setup_flow(session)
-    assert excinfo.value.reason == "token_pairing_only"
-    assert provider.tokens == []
+    task = asyncio.create_task(player.run_setup_flow(session))
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_token")
+    assert not any(s.step_id == "select_method" for s in _published_steps(mass))
+    session.handle_submit({CONF_PAIRING_TOKEN: "  SP:0TEST  "})
+
+    await _wait_for(lambda: session.finished)
+    await task
+    assert provider.tokens == ["SP:0TEST"]
 
 
 async def test_token_hidden_when_the_device_can_pair_by_pin() -> None:
-    """A device offering both goes straight to its PIN, never showing the token as a choice."""
+    """Token pairing is machine-to-machine only and stays hidden while PIN pairing works."""
     api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN), _desc(PairMethod.PAIRING_PSK)])
     provider = _FakeProvider(api)
     session, mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
 
     task = asyncio.create_task(player.run_setup_flow(session))
+    # PIN is the only operator-facing option, so the flow skips straight past the
+    # method picker instead of offering a choice between PIN and token.
     await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
     assert not any(s.step_id == "select_method" for s in _published_steps(mass))
     session.handle_submit({CONF_PAIRING_PIN: "123456"})
@@ -897,7 +905,7 @@ async def test_unencrypted_connection_aborts() -> None:
 
 
 def test_pairing_method_options_derivation() -> None:
-    """Static PIN needs both PIN methods usable; the token is never offered at all."""
+    """Derive PIN choices and expose pairing_psk as an operator-facing token option."""
     api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN), _desc(PairMethod.STATIC_PIN)])
     provider = _FakeProvider(api)
     player = _make_player(api, provider)
@@ -908,17 +916,21 @@ def test_pairing_method_options_derivation() -> None:
         PAIR_METHOD_STATIC_PIN,
     ]
 
+    # Token pairing is machine-to-machine only, so it stays hidden while PIN pairing
+    # is usable, even though the device also advertises pairing_psk.
     api_single = _FakeApi(
         [_desc(PairMethod.STATIC_PIN), _desc(PairMethod.PAIRING_PSK)], unpaired_access=True
     )
     provider_single = _FakeProvider(api_single)
     player_single = _make_player(api_single, provider_single)
     assert player_single._pairing_method_options(cast("SendspinProvider", provider_single)) == [
-        PAIR_METHOD_PIN
+        PAIR_METHOD_PIN,
     ]
 
-    # The token is never an operator-facing option, so a token-only device offers nothing.
+    # A token-only device goes directly to the token entry form.
     api_token = _FakeApi([_desc(PairMethod.PAIRING_PSK)], unpaired_access=True)
     provider_token = _FakeProvider(api_token)
     player_token = _make_player(api_token, provider_token)
-    assert player_token._pairing_method_options(cast("SendspinProvider", provider_token)) == []
+    assert player_token._pairing_method_options(cast("SendspinProvider", provider_token)) == [
+        PAIR_METHOD_TOKEN
+    ]

@@ -161,7 +161,9 @@ def _controller(**queue_kwargs: Any) -> Any:
     )
     ctrl._smart_shuffle = Mock()
     ctrl._smart_shuffle.is_enabled = Mock(return_value=True)
-    ctrl._smart_shuffle.arrange = AsyncMock(side_effect=lambda _queue, items: list(items)[::-1])
+    ctrl._smart_shuffle.arrange = AsyncMock(
+        side_effect=lambda _queue, items, **_kw: list(items)[::-1]
+    )
     ctrl._media_resolver = Mock()
     ctrl._media_resolver._resolve_media_items = AsyncMock(
         side_effect=lambda *_args, **_kwargs: [_track(item_id) for item_id in ALBUM_TRACKS]

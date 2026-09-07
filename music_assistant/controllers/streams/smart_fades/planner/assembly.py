@@ -1,15 +1,17 @@
 """
-Smart Fades - EQ assembly and the emergency vocal handoff.
+Smart Fades - EQ assembly and the fallback/emergency transition factories.
 
 The candidate factory builds every candidate with a neutral EQ plan (scoring
 never needs it), so the bass/mid/high handover EQ is computed exactly once,
-for the winner only, by ``PlanAssembler``. ``EmergencyHandoffFactory`` builds
-the click-free equal-power fallback used when every phrased candidate still
-collides with the incoming track's vocal.
+for the winner only, by ``PlanAssembler``. When every phrased candidate is
+rejected, ``FallbackCrossfadeFactory`` builds a plain equal-power volume
+crossfade; ``EmergencyHandoffFactory`` builds the click-free handoff shipped
+as the last resort when even that fallback collides too severely.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -70,6 +72,10 @@ _BASS_SWAP_WINDOW_BARS: int = 8
 _LOW_GATE_LO: float = 0.10
 _LOW_GATE_HI: float = 0.25
 _EQ_BYPASS_BELOW_DB: float = -6.0
+# Bound on the incoming deck's predicted broadband attenuation under its own
+# entry shelf, computed from its band fractions; only bites when the entry
+# window is more than ~75% low-band power
+_INCOMING_AUDIBILITY_FLOOR_DB: float = -6.0
 
 # Reciprocal high-ease gate, same shape on the high band. Mean-music LTAS is ~0.02 in
 # 4-11kHz (Elowsson & Friberg 2017): lo = an average track earns no duck, hi = clearly
@@ -105,6 +111,17 @@ _MID_BYPASS_BELOW_DB: float = -1.0
 # below its plateau across the overlap (outside the intentional bass-handover notch).
 _MAX_PREDICTED_DIP_DB: float = 3.0
 
+# Plain fallback crossfade, tried when every phrased candidate was rejected:
+# long enough to read as an intentional crossfade, short enough that a
+# colliding vocal tail stays brief
+_FALLBACK_FADE_SECONDS: float = 8.0
+# the fallback tolerates up to twice the candidate rejection limits before the
+# click-free handoff takes over
+_FALLBACK_COLLISION_CEILING_FACTOR: float = 2.0
+# same depth as the full-blend mid cap — softens a colliding outgoing vocal
+# without hollowing the mix
+_FALLBACK_DUCK_DB: float = -8.0
+
 
 class PlanAssembler:
     """Applies the full EQ handover and its dip-guard repair to the selected candidate's plan."""
@@ -125,13 +142,21 @@ class PlanAssembler:
         # the winner's metrics ride along: consumers read them off the plan
         return replace(
             candidate.plan,
-            eq_plan=self._choose_eq(candidate.plan),
-            fadeout_curve=self._choose_fadeout_curve(candidate.plan),
+            eq_plan=self._choose_eq(candidate.plan, candidate.spec.strategy),
+            fadeout_curve=_choose_fadeout_curve(self._ctx, candidate.plan),
             metrics=candidate.metrics,
         )
 
-    def _choose_eq(self, plan: TransitionPlan) -> EqPlan:
+    def _choose_eq(self, plan: TransitionPlan, strategy: TransitionStrategy) -> EqPlan:
         """Plan the low/mid/high EQ handover, centered on the swap point."""
+        # an unsynced quick fade has no beatmatched handover to stage: shelving
+        # the decks would only bury the incoming track's entry; the long lazy
+        # overlay (also QUICK_FADE tier) keeps its handover EQ
+        if (
+            plan.tier is TransitionTier.QUICK_FADE
+            and strategy is not TransitionStrategy.LAZY_OVERLAY
+        ):
+            return EqPlan.neutral(swap_at=0.6 * plan.crossfade_duration)
         ctx = self._ctx
         effective_end = plan.fade_out_window
         crossfade_duration = plan.crossfade_duration
@@ -280,6 +305,8 @@ class PlanAssembler:
         f_low_a_out = window_fraction(ctx.outgoing_profile, "low", *w_a_out)
         depth_a = _EQ_KILL_DB * smoothstep(f_low_b_in, _LOW_GATE_LO, _LOW_GATE_HI)
         depth_b = _EQ_KILL_DB * smoothstep(f_low_a_out, _LOW_GATE_LO, _LOW_GATE_HI)
+        # a bass-dominant incoming intro must stay audible under its entry shelf
+        depth_b = _depth_for_attenuation_floor(f_low_b_in, depth_b, _INCOMING_AUDIBILITY_FLOOR_DB)
         return depth_a, depth_b
 
     def _choose_high_swap(
@@ -414,8 +441,6 @@ class PlanAssembler:
         """Gate and scale the measured mid-band (vocal) swap depth; ``None`` means bypass."""
         ctx = self._ctx
         cap = _MID_CAP_FULL_DB if tier is TransitionTier.FULL_BLEND else _MID_CAP_TEMPO_DB
-        if tier is TransitionTier.QUICK_FADE:
-            return None, None
         if ctx.outgoing_profile is None or ctx.incoming_profile is None:
             return None, None
         w_a_out, w_b_in = self._swap_windows(effective_end, _BASS_SWAP_WINDOW_BARS)
@@ -532,23 +557,102 @@ class PlanAssembler:
                 max_drop_db = max(max_drop_db, 10.0 * float(np.log10(running_max / power)))
         return max_drop_db
 
-    def _choose_fadeout_curve(self, plan: TransitionPlan) -> str:
-        """Pick ``nofade`` when the overlap sits entirely inside a detected mastered fade."""
+
+class FallbackCrossfadeFactory:
+    """Builds the plain equal-power FALLBACK_CROSSFADE plan tried before the emergency handoff."""
+
+    def __init__(
+        self, ctx: TransitionContext, factory: CandidateFactory, logger: logging.Logger
+    ) -> None:
+        """Initialize the fallback factory for one transition."""
+        self._ctx = ctx
+        self._factory = factory
+        self._logger = logger
+
+    def build(self) -> TransitionPlan | None:
+        """
+        Build the plain unphrased equal-power volume crossfade plan.
+
+        Tried when every phrased candidate (main and rescue pass) was
+        rejected: a plain crossfade reads far less abrupt than the click-free
+        handoff. Returns ``None`` when its own vocal collision is too severe
+        to tolerate, sending the caller to the emergency handoff instead.
+        """
         ctx = self._ctx
-        if ctx.fade_onset is None:
-            return "qsin"
-        crossfade_start = plan.fade_out_window - plan.crossfade_duration
-        if crossfade_start < ctx.fade_onset:
-            return "qsin"
-        bar_out = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
-        if plan.fade_out_window < ctx.audio_end - bar_out:
-            return "qsin"
-        # the record already fades itself here; don't double it with a second curve
-        return "nofade"
+        base_spec = CandidateSpec(
+            tier=ctx.tier,
+            bars=1,
+            anchor_s=None,
+            entry_s=ctx.natural_entry,
+            strategy=TransitionStrategy.FALLBACK_CROSSFADE,
+            source="fallback-crossfade",
+            ideal_bars=1,
+        )
+        candidate = self._factory.build(base_spec)
+        assert candidate is not None  # the 1-bar rung always yields a candidate
+        # the audible tail room caps the fade; the protective anchor extension
+        # is judged against the fallback's own duration, not the 1-bar rung's
+        duration = min(_FALLBACK_FADE_SECONDS, candidate.plan.fade_out_window)
+        spec, candidate = _extend_protective_anchor(
+            ctx, self._factory, self._logger, base_spec, candidate, duration
+        )
+        duration = min(_FALLBACK_FADE_SECONDS, candidate.plan.fade_out_window)
+        plan = replace(
+            candidate.plan,
+            crossfade_duration=duration,
+            fadein_trim_start=None,
+            tempo_plan=TempoPlan(),
+            eq_plan=EqPlan.neutral(swap_at=duration / 2.0),
+        )
+        metrics = self._factory.score(spec, plan)
+        # on saturated (unreliable) masks the collision metrics are noise:
+        # never defer to the handoff, and never duck, on their account
+        if ctx.vocal_collision_reliable and (
+            metrics.weighted_collision_seconds
+            >= _FALLBACK_COLLISION_CEILING_FACTOR * WEIGHTED_COLLISION_LIMIT
+            or metrics.collision_seconds
+            >= _FALLBACK_COLLISION_CEILING_FACTOR * COLLISION_SECONDS_LIMIT
+        ):
+            self._logger.debug(
+                "fallback crossfade collides too severely "
+                "(collision=%.2f weighted_collision=%.2f); deferring to the emergency handoff",
+                metrics.collision_seconds,
+                metrics.weighted_collision_seconds,
+            )
+            return None
+        # a collision a candidate would have been rejected for is tolerated
+        # here, but the leaving vocal steps back behind a mid-band duck
+        duck = (
+            ctx.vocal_collision_reliable
+            and metrics.weighted_collision_seconds >= WEIGHTED_COLLISION_LIMIT
+        )
+        if duck:
+            plan = replace(plan, eq_plan=self._duck_eq_plan(plan))
+        self._logger.debug(
+            "fallback crossfade: duration=%.2f weighted_collision=%.2f duck=%s",
+            duration,
+            metrics.weighted_collision_seconds,
+            duck,
+        )
+        return replace(plan, fadeout_curve=_choose_fadeout_curve(ctx, plan), metrics=metrics)
+
+    def _duck_eq_plan(self, plan: TransitionPlan) -> EqPlan:
+        """Mid-band duck on the outgoing deck so its colliding vocal steps back."""
+        # A-side schedules are in A input time; the fallback has no tempo ramp,
+        # so input time equals buffer-local time
+        cf_start = plan.fade_out_window - plan.crossfade_duration
+        ease = 0.25 * plan.crossfade_duration
+        mid_out = ShelfSchedule(
+            ShelfType.PEAK,
+            _MID_FREQ,
+            [(0.0, 0.0), *db_ramp(cf_start, ease, 0.0, _FALLBACK_DUCK_DB)],
+            width_oct=_MID_WIDTH_OCT,
+        )
+        return replace(plan.eq_plan, mid_out=mid_out)
 
 
 class EmergencyHandoffFactory:
-    """Builds the click-free equal-power SHORT_VOCAL_HANDOFF fallback plan."""
+    """Builds the click-free equal-power SHORT_VOCAL_HANDOFF last-resort plan."""
 
     def __init__(
         self, ctx: TransitionContext, factory: CandidateFactory, logger: logging.Logger
@@ -562,10 +666,11 @@ class EmergencyHandoffFactory:
         """
         Build the never-fail click-free equal-power handoff plan.
 
-        Used only when every phrased candidate still collides: keeps the
-        outgoing vocal's protective anchor and shrinks the overlap to the
-        auditioned click-free window, favoring the incoming track's own
-        vocal onset so the handoff needs no EQ to hide anything.
+        The last resort behind the fallback crossfade, used when even that
+        fallback collides too severely: keeps the outgoing vocal's protective
+        anchor and shrinks the overlap to the auditioned click-free window,
+        favoring the incoming track's own vocal onset so the handoff needs no
+        EQ to hide anything.
         """
         ctx = self._ctx
         base_spec = CandidateSpec(
@@ -579,43 +684,14 @@ class EmergencyHandoffFactory:
         )
         candidate = self._factory.build(base_spec)
         assert candidate is not None  # the 1-bar rung always yields a candidate
-        spec = base_spec
-
-        # old-planner protection semantics: extend the anchor (never past the
-        # RMS-audible boundary) far enough to cover any outgoing vocal the
-        # handoff would cut short, AND to keep a short fade's audible trim
-        # within its own overlap length
-        last_vocal_end = _outgoing_vocal_end(ctx)
-        plan0 = candidate.plan
-        vocal_would_be_cut = last_vocal_end > plan0.fade_out_window + 1e-9
-        overtrims_short_fade = (
-            plan0.crossfade_duration <= SHORT_FADE_SECONDS
-            and ctx.audio_end - plan0.fade_out_window > plan0.crossfade_duration + 1e-9
+        spec, candidate = _extend_protective_anchor(
+            ctx,
+            self._factory,
+            self._logger,
+            base_spec,
+            candidate,
+            candidate.plan.crossfade_duration,
         )
-        if vocal_would_be_cut or overtrims_short_fade:
-            target = max(plan0.fade_out_window, last_vocal_end)
-            if overtrims_short_fade:
-                target = max(target, ctx.audio_end - plan0.crossfade_duration)
-            target = min(target, ctx.audio_end)
-            anchor = _nearest_protective_anchor(ctx, target, prefer_earliest=vocal_would_be_cut)
-            reasons = [
-                reason
-                for reason, fired in (
-                    ("vocal_would_be_cut", vocal_would_be_cut),
-                    ("overtrims_short_fade", overtrims_short_fade),
-                )
-                if fired
-            ]
-            self._logger.debug(
-                "extending emergency handoff anchor (%s): old_anchor=%.2f new_anchor=%.2f",
-                ",".join(reasons),
-                plan0.fade_out_window,
-                anchor,
-            )
-            spec = replace(base_spec, anchor_s=anchor)
-            rebuilt = self._factory.build(spec)
-            assert rebuilt is not None  # the 1-bar rung always yields a candidate
-            candidate = rebuilt
 
         in_mask = ctx.vocal_in_placement
         incoming_onset = in_mask.windows[0][0] if in_mask is not None and in_mask.windows else 0.0
@@ -654,6 +730,78 @@ class EmergencyHandoffFactory:
         )
 
 
+def _extend_protective_anchor(
+    ctx: TransitionContext,
+    factory: CandidateFactory,
+    logger: logging.Logger,
+    base_spec: CandidateSpec,
+    candidate: Candidate,
+    fade_duration: float,
+) -> tuple[CandidateSpec, Candidate]:
+    """
+    Re-anchor a fallback's base candidate so its cut stays protective.
+
+    Old-planner protection semantics: the anchor is extended (never past the
+    RMS-audible boundary) far enough to cover any outgoing vocal the fade
+    would cut short, AND to keep a short fade's audible trim within
+    ``fade_duration``. Returns the (possibly re-anchored) spec and candidate.
+
+    :param ctx: The transition context.
+    :param factory: Candidate factory to rebuild the re-anchored candidate with.
+    :param logger: Logger for the anchor-extension diagnostics.
+    :param base_spec: The fallback's base 1-bar spec.
+    :param candidate: The candidate built from ``base_spec``.
+    :param fade_duration: The fade length the audible trim is judged against.
+    """
+    last_vocal_end = _outgoing_vocal_end(ctx)
+    plan = candidate.plan
+    vocal_would_be_cut = last_vocal_end > plan.fade_out_window + 1e-9
+    overtrims_short_fade = (
+        fade_duration <= SHORT_FADE_SECONDS
+        and ctx.audio_end - plan.fade_out_window > fade_duration + 1e-9
+    )
+    if not (vocal_would_be_cut or overtrims_short_fade):
+        return base_spec, candidate
+    target = max(plan.fade_out_window, last_vocal_end)
+    if overtrims_short_fade:
+        target = max(target, ctx.audio_end - fade_duration)
+    target = min(target, ctx.audio_end)
+    anchor = _nearest_protective_anchor(ctx, target, prefer_earliest=vocal_would_be_cut)
+    reasons = [
+        reason
+        for reason, fired in (
+            ("vocal_would_be_cut", vocal_would_be_cut),
+            ("overtrims_short_fade", overtrims_short_fade),
+        )
+        if fired
+    ]
+    logger.debug(
+        "extending %s anchor (%s): old_anchor=%.2f new_anchor=%.2f",
+        base_spec.source,
+        ",".join(reasons),
+        plan.fade_out_window,
+        anchor,
+    )
+    spec = replace(base_spec, anchor_s=anchor)
+    rebuilt = factory.build(spec)
+    assert rebuilt is not None  # the 1-bar rung always yields a candidate
+    return spec, rebuilt
+
+
+def _choose_fadeout_curve(ctx: TransitionContext, plan: TransitionPlan) -> str:
+    """Pick ``nofade`` when the overlap sits entirely inside a detected mastered fade."""
+    if ctx.fade_onset is None:
+        return "qsin"
+    crossfade_start = plan.fade_out_window - plan.crossfade_duration
+    if crossfade_start < ctx.fade_onset:
+        return "qsin"
+    bar_out = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
+    if plan.fade_out_window < ctx.audio_end - bar_out:
+        return "qsin"
+    # the record already fades itself here; don't double it with a second curve
+    return "nofade"
+
+
 def _band_gain(
     schedule: ShelfSchedule | None,
     rendered_t: float,
@@ -668,3 +816,24 @@ def _band_gain(
     # A-side schedules live in pre-stretch input time; B-side already in rendered time
     schedule_time = cf_start_input + rendered_t * ratio if side == "A" else rendered_t
     return schedule.gain_at(schedule_time)
+
+
+def _depth_for_attenuation_floor(f_band: float, depth_db: float, floor_db: float) -> float:
+    """
+    Shallow a shelf depth so a deck's predicted broadband attenuation stays above a floor.
+
+    :param f_band: The deck's power fraction inside the shelved band (0..1).
+    :param depth_db: Proposed shelf depth in dB (negative).
+    :param floor_db: Deepest allowed broadband attenuation in dB (negative).
+    """
+    if depth_db >= 0.0 or not 0.0 < f_band <= 1.0:
+        return depth_db
+    target = 10.0 ** (floor_db / 10.0)
+    rest = 1.0 - f_band
+    if rest >= target:
+        # even a full kill cannot push the deck below the floor
+        return depth_db
+    predicted = f_band * 10.0 ** (depth_db / 10.0) + rest
+    if predicted >= target:
+        return depth_db
+    return 10.0 * math.log10((target - rest) / f_band)
