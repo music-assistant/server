@@ -102,7 +102,6 @@ from .constants import (
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS_HIDDEN,
     CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN,
     CONF_ENTRY_LIBRARY_SYNC_TRACKS_HIDDEN,
-    CONF_KEY_PLAYLISTS,
     CONF_KEY_RADIOS,
     CONF_KEY_TRACKS,
     DEFAULT_FANART,
@@ -209,8 +208,7 @@ class BuiltinProvider(MusicProvider):
         if not await asyncio.to_thread(os.path.exists, self._playlists_dir):
             await asyncio.to_thread(os.mkdir, self._playlists_dir)
         await super().loaded_in_mass()
-        # Run in the background: migrate legacy playlists and repair stored metadata drift.
-        # TODO: drop the config->M3U migration after MA 2.9, keep the repair pass
+        # Run in the background: repair stored metadata drift in the user's playlists.
         self.mass.tasks.register_scheduled_task(
             task_id="migrate_builtin_playlists",
             name="Builtin provider playlist migration",
@@ -1855,59 +1853,12 @@ class BuiltinProvider(MusicProvider):
 
     async def _migrate_playlists(self) -> None:  # noqa: PLR0915
         """
-        Migrate old-style playlists to M3U files and repair incomplete or stale entries.
+        Repair incomplete or stale entries in the stored playlists.
 
         Raises RuntimeError when too many entries could not be resolved to keep a broken
         install from rewriting every playlist.
         """
-        # migrate playlists stored in config to M3U files on disk with enriched metadata
-        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_PLAYLISTS, [])
-        for stored_item in stored_items:
-            # keep the original item_id as filename so library DB references stay valid
-            playlist_id = stored_item["item_id"]
-            playlist_name = stored_item["name"]
-            self.logger.info("Migrating playlist '%s' to M3U format...", playlist_name)
-            update_current_task_progress_text(
-                f"Migrating playlist '{playlist_name}' to M3U format..."
-            )
-            old_file = os.path.join(self._playlists_dir, playlist_id)
-            # read old URI file and enrich each entry with full metadata
-            uris: list[str] = []
-            if await asyncio.to_thread(os.path.isfile, old_file):
-                async with aiofiles.open(old_file, encoding="utf-8") as _file:
-                    lines = await _file.readlines()
-                    uris = [line.strip() for line in lines if line.strip()]
-            entries: list[PlaylistItem] = []
-            for uri in uris:
-                try:
-                    entries.append(await self._build_m3u_entry_from_uri(uri))
-                except (
-                    MediaNotFoundError,
-                    InvalidDataError,
-                    InvalidProviderURI,
-                    ProviderUnavailableError,
-                ):
-                    # parse URI for minimal provider info so the entry is resolvable later
-                    entry = PlaylistItem(path=uri)
-                    if "://" in uri:
-                        try:
-                            domain, rest = uri.split("://", 1)
-                            media_type_str, item_id = rest.split("/", 1)
-                            entry.metadata = {"media_type": media_type_str}
-                            entry.providers = [ProviderMappingInfo(domain=domain, item_id=item_id)]
-                        except ValueError:
-                            pass
-                    entries.append(entry)
-                    self.logger.debug("Could not enrich migrated entry: %s", uri)
-            # write as {item_id}.m3u with the display name in #PLAYLIST
-            await self._write_m3u_file(playlist_id, playlist_name, entries)
-            # clean up old file (without .m3u extension)
-            if await asyncio.to_thread(os.path.isfile, old_file):
-                await asyncio.to_thread(os.remove, old_file)
-            self.logger.debug("Migrated playlist '%s' -> %s.m3u", playlist_name, playlist_id)
-        # clear old config entries
-        self.mass.config.remove(CONF_KEY_PLAYLISTS)
-        # fix (already migrated) user playlists that have unresolved URIs, or entries whose
+        # fix user playlists that have unresolved URIs, or entries whose
         # manually set name or artwork was lost, by re-saving them with enriched metadata
         errors = 0
         # built once: a lookup per entry would rescan the entire config list each time
