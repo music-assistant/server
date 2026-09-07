@@ -242,21 +242,6 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         """Return True as the provider is a streaming provider."""
         return True
 
-    @property
-    def _menu_is_stale(self) -> bool:
-        if not self.menu:
-            self.logger.debug("No menu set")
-            return True
-        if not self.menu.sub_items:
-            self.logger.debug("Menu has no items")
-            return True
-        if self.menu_last_fetched is not None and (
-            (datetime.utc_timestamp() - self.menu_last_fetched) >= _Constants.SHORT_EXPIRATION
-        ):
-            self.logger.debug("Menu has expired")
-            return True
-        return False
-
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """Get this provider's available recommendation rows, without items."""
         if not self.logged_in:
@@ -364,6 +349,21 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                         self.logger.debug(f"Updated play status: {success}")
                     except exceptions.APIResponseError as err:
                         self.logger.error(f"Error updating play status: {err}")
+
+    @property
+    def _menu_is_stale(self) -> bool:
+        if not self.menu:
+            self.logger.debug("No menu set")
+            return True
+        if not self.menu.sub_items:
+            self.logger.debug("Menu has no items")
+            return True
+        if self.menu_last_fetched is not None and (
+            (datetime.utc_timestamp() - self.menu_last_fetched) >= _Constants.SHORT_EXPIRATION
+        ):
+            self.logger.debug("Menu has expired")
+            return True
+        return False
 
     async def _browse_menu(
         self, path_parts: list[str]
