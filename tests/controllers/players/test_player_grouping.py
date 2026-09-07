@@ -239,17 +239,12 @@ class TestSyncLeaderBehavior:
     def test_solo_raw_group_members_does_not_exclude_a_playing_candidate(
         self, mock_mass: MagicMock
     ) -> None:
-        """
-        A playing candidate whose raw group_members is only itself is not a group leader.
-
-        Regression test for a detached client (e.g. a Sendspin client dropped to a
-        solo group) whose raw group_members briefly reports [self]: normalization
-        collapses that to an empty list, so it must still be offered as a grouping
-        target. A candidate with real (multi-member) raw group_members is still excluded.
-        """
+        """Test that a playing player whose raw group_members is only itself can still be grouped."""
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
 
+        # A detached client (e.g. a Sendspin client in a solo group) reports itself
+        # as its only raw group member - that must not make it a group leader
         solo_candidate = MockPlayer(provider, "solo", "Solo")
         solo_candidate._attr_group_members = ["solo"]
         solo_candidate._attr_playback_state = PlaybackState.PLAYING
@@ -274,6 +269,7 @@ class TestSyncLeaderBehavior:
         for player in (solo_candidate, real_leader, member, other):
             player.update_state(signal_event=False)
 
+        # Solo player is still offered, a real (multi-member) leader stays excluded
         assert "solo" in other.state.can_group_with
         assert "leader" not in other.state.can_group_with
 
