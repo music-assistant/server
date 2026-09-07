@@ -19,7 +19,6 @@ def client() -> AsyncMock:
     """Return a mocked Pocket Casts API client with no show notes or transcripts on offer."""
     client = AsyncMock()
     client.get_show_notes.return_value = {}
-    client.get_episode_transcripts.return_value = {}
     client.get_podcast.return_value = {"uuid": "podcast-1", "title": "Podcast One"}
     return client
 
@@ -345,14 +344,15 @@ async def test_sync_flags_episodes_that_have_a_transcript(
     )
     client.get_in_progress_episodes.return_value = []
     client.get_history.return_value = []
-    client.get_episode_transcripts.return_value = {
-        "episode-1": [{"url": "https://example.com/ep1.vtt", "type": "text/vtt"}]
+    client.get_show_notes.return_value = {
+        "episode-1": {"transcripts": [{"url": "https://example.com/ep1.vtt", "type": "text/vtt"}]}
     }
 
     episodes = [episode async for episode in provider.get_podcast_episodes("podcast-1")]
 
     assert [episode.metadata.has_transcript for episode in episodes] == [True, False]
     cast("MagicMock", provider.mass.http_session).get.assert_not_called()
+    client.get_show_notes.assert_awaited_once()
 
 
 async def test_sync_survives_unavailable_transcripts(
@@ -362,7 +362,7 @@ async def test_sync_survives_unavailable_transcripts(
     client.get_podcast_episodes.return_value = ("Podcast One", [_feed_episode(uuid="episode-1")])
     client.get_in_progress_episodes.return_value = []
     client.get_history.return_value = []
-    client.get_episode_transcripts.side_effect = ProviderUnavailableError("boom")
+    client.get_show_notes.side_effect = ProviderUnavailableError("boom")
 
     episodes = [episode async for episode in provider.get_podcast_episodes("podcast-1")]
 
@@ -377,7 +377,7 @@ async def test_sync_survives_exhausted_transcript_retries(
     client.get_podcast_episodes.return_value = ("Podcast One", [_feed_episode(uuid="episode-1")])
     client.get_in_progress_episodes.return_value = []
     client.get_history.return_value = []
-    client.get_episode_transcripts.side_effect = RetriesExhausted("gave up")
+    client.get_show_notes.side_effect = RetriesExhausted("gave up")
 
     episodes = [episode async for episode in provider.get_podcast_episodes("podcast-1")]
 
@@ -387,9 +387,9 @@ async def test_sync_survives_exhausted_transcript_retries(
 async def test_episode_transcript_is_fetched_on_demand(
     provider: PocketCastsProvider, client: AsyncMock
 ) -> None:
-    """The transcript is retrieved through its own call, not with the episode."""
-    client.get_episode_transcripts.return_value = {
-        "episode-1": [{"url": "https://example.com/ep1.vtt", "type": "text/vtt"}]
+    """The transcript document is retrieved on demand, not with the episode."""
+    client.get_show_notes.return_value = {
+        "episode-1": {"transcripts": [{"url": "https://example.com/ep1.vtt", "type": "text/vtt"}]}
     }
     with patch(
         "music_assistant.providers.pocketcasts.get_episode_transcript",
@@ -408,7 +408,7 @@ async def test_episode_transcript_absent_yields_nothing(
     provider: PocketCastsProvider, client: AsyncMock
 ) -> None:
     """An episode without a transcript returns nothing rather than raising."""
-    client.get_episode_transcripts.return_value = {}
+    client.get_show_notes.return_value = {}
     assert await provider.get_podcast_episode_transcript("podcast-1:episode-1") == (None, None)
 
 
@@ -422,8 +422,8 @@ async def test_episode_no_longer_carries_the_transcript(
         "url": "https://example.com/ep1.mp3",
         "duration": 1800,
     }
-    client.get_episode_transcripts.return_value = {
-        "episode-1": [{"url": "https://example.com/ep1.vtt", "type": "text/vtt"}]
+    client.get_show_notes.return_value = {
+        "episode-1": {"transcripts": [{"url": "https://example.com/ep1.vtt", "type": "text/vtt"}]}
     }
 
     episode = await provider.get_podcast_episode("podcast-1:episode-1")

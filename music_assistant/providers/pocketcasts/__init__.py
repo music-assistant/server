@@ -241,19 +241,17 @@ class PocketCastsProvider(MusicProvider):
 
         :param prov_podcast_id: The provider podcast id.
         """
-        # fetch episode metadata, user status, show notes and transcript availability in parallel
+        # fetch episode metadata, user status and show notes in parallel
         (
             (podcast_name, episodes),
             in_progress,
             history,
             show_notes,
-            transcripts,
         ) = await asyncio.gather(
             self._client.get_podcast_episodes(prov_podcast_id),
             self._client.get_in_progress_episodes(),
             self._client.get_history(),
             self._get_show_notes(prov_podcast_id),
-            self._get_episode_transcripts(prov_podcast_id),
         )
         in_progress_map = {ep.get("uuid"): ep for ep in in_progress}
         history_map = {ep.get("uuid"): ep for ep in history}
@@ -261,19 +259,16 @@ class PocketCastsProvider(MusicProvider):
         # the full-podcast payload carries no episode number, so rank on the publication date
         positions = rank_episodes_by_date([ep.get("published") or None for ep in episodes])
         for position, episode_data in zip(positions, episodes, strict=True):
+            details = (show_notes or {}).get(episode_data.get("uuid", ""))
             episode_item = self._convert_episode(
                 episode_data,
                 prov_podcast_id,
-                show_notes.get(episode_data.get("uuid", "")),
+                details,
                 podcast_name,
                 position=position,
             )
             if episode_item:
-                # None keeps the flag unknown when the index could not be read, so a
-                # transient failure does not hide transcripts for the whole podcast
-                episode_item.metadata.has_transcript = (
-                    None if transcripts is None else episode_data.get("uuid") in transcripts
-                )
+                episode_item.metadata.has_transcript = self._has_transcript(show_notes, details)
                 self._enrich_episode_with_status(
                     episode_item, episode_data, in_progress_map, history_map
                 )
@@ -358,9 +353,8 @@ class PocketCastsProvider(MusicProvider):
             self._get_show_notes(podcast_uuid),
             self._get_podcast_name(podcast_uuid),
         )
-        episode_item = self._convert_episode(
-            episode_data, podcast_uuid, show_notes.get(episode_uuid), podcast_name
-        )
+        details = (show_notes or {}).get(episode_uuid)
+        episode_item = self._convert_episode(episode_data, podcast_uuid, details, podcast_name)
         if episode_item is None:
             raise MediaNotFoundError(f"Episode {episode_uuid} not found in podcast {podcast_uuid}")
 
@@ -376,10 +370,7 @@ class PocketCastsProvider(MusicProvider):
         episode_item.fully_played = completed
         episode_item.resume_position_ms = 0 if completed else played_up_to * 1000
 
-        transcripts = await self._get_episode_transcripts(podcast_uuid)
-        episode_item.metadata.has_transcript = (
-            None if transcripts is None else episode_uuid in transcripts
-        )
+        episode_item.metadata.has_transcript = self._has_transcript(show_notes, details)
 
         return episode_item
 
@@ -392,11 +383,11 @@ class PocketCastsProvider(MusicProvider):
         :param prov_episode_id: The episode item id (format: podcast_uuid:episode_uuid).
         """
         podcast_uuid, episode_uuid = prov_episode_id.split(":", 1)
-        transcripts = await self._get_episode_transcripts(podcast_uuid)
+        show_notes = await self._get_show_notes(podcast_uuid)
         return await get_episode_transcript(
             mass=self.mass,
             provider_instance_id=self.instance_id,
-            transcripts=transcripts.get(episode_uuid) if transcripts else None,
+            transcripts=((show_notes or {}).get(episode_uuid) or {}).get("transcripts"),
         )
 
     async def get_resume_position(
@@ -534,8 +525,8 @@ class PocketCastsProvider(MusicProvider):
             self.logger.debug("Could not retrieve podcast name for %s: %s", prov_podcast_id, err)
             return ""
 
-    async def _get_show_notes(self, prov_podcast_id: str) -> dict[str, dict[str, Any]]:
-        """Return show notes per episode uuid, empty when they cannot be read."""
+    async def _get_show_notes(self, prov_podcast_id: str) -> dict[str, dict[str, Any]] | None:
+        """Return show notes per episode uuid, or None when they cannot be read."""
         # show notes are supplementary, so a failure here must never break episode
         # resolution. The failure itself is not cached, so the next call tries again.
         try:
@@ -547,44 +538,23 @@ class PocketCastsProvider(MusicProvider):
             RetriesExhausted,
         ) as err:
             self.logger.debug("Could not retrieve show notes for %s: %s", prov_podcast_id, err)
-            return {}
-
-    async def _get_episode_transcripts(
-        self, prov_podcast_id: str
-    ) -> dict[str, list[dict[str, Any]]] | None:
-        """
-        Return the available transcripts per episode uuid, or None when they cannot be read.
-
-        :param prov_podcast_id: The provider podcast id.
-        """
-        # transcripts are supplementary, so a failure here must never break episode
-        # resolution. The failure itself is not cached, so the next call tries again.
-        try:
-            return await self._fetch_episode_transcripts(prov_podcast_id)
-        except (
-            LoginFailed,
-            ProviderUnavailableError,
-            ResourceTemporarilyUnavailable,
-            RetriesExhausted,
-        ) as err:
-            self.logger.debug("Could not retrieve transcripts for %s: %s", prov_podcast_id, err)
             return None
+
+    @staticmethod
+    def _has_transcript(
+        show_notes: dict[str, dict[str, Any]] | None, details: dict[str, Any] | None
+    ) -> bool | None:
+        """Return whether an episode has a transcript, or None when that cannot be known."""
+        # None keeps the flag unknown when the show notes could not be read, so a
+        # transient failure does not hide transcripts for the whole podcast
+        if show_notes is None:
+            return None
+        return bool(details and details.get("transcripts"))
 
     @use_cache(3600 * 24)
     async def _fetch_show_notes(self, prov_podcast_id: str) -> dict[str, dict[str, Any]]:
         """Return show notes per episode uuid for the given podcast."""
         return await self._client.get_show_notes(prov_podcast_id)
-
-    @use_cache(3600 * 24)
-    async def _fetch_episode_transcripts(
-        self, prov_podcast_id: str
-    ) -> dict[str, list[dict[str, Any]]]:
-        """
-        Return the available transcripts per episode uuid for a podcast.
-
-        :param prov_podcast_id: The provider podcast id.
-        """
-        return await self._client.get_episode_transcripts(prov_podcast_id)
 
     def _convert_episode(
         self,
