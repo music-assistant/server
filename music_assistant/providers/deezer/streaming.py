@@ -322,7 +322,7 @@ class DeezerStreamingManager:
         # Seek by skipping chunks (Range header causes malformed audio)
         if seek_position and streamdetails.size and streamdetails.duration:
             chunk_count = ceil(streamdetails.size / 2048)
-            skip_chunks = int(chunk_count / streamdetails.duration) * seek_position
+            skip_chunks = chunk_count * seek_position // streamdetails.duration
         else:
             skip_chunks = 0
 

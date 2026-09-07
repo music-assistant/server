@@ -8,16 +8,15 @@ cookie based on the api_token.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from http.cookies import BaseCookie, Morsel
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from aiohttp import ClientSession, ClientTimeout
 from music_assistant_models.errors import MediaNotFoundError
-from yarl import URL
 
 from music_assistant.helpers.datetime import future_timestamp, utc_timestamp
 
 if TYPE_CHECKING:
+    from aiohttp import ClientResponse
     from music_assistant_models.streamdetails import StreamDetails
 
 USER_AGENT_HEADER = (
@@ -26,6 +25,7 @@ USER_AGENT_HEADER = (
 )
 
 GW_LIGHT_URL = "https://www.deezer.com/ajax/gw-light.php"
+MEDIA_GET_URL = "https://media.deezer.com/v1/get_url"
 
 
 class DeezerGWError(Exception):
@@ -41,29 +41,32 @@ class GWClient:
     _license_expiration_timestamp: int
     _user_id: int
     session: ClientSession
-    formats: ClassVar[list[dict[str, str]]] = [
-        {"cipher": "BF_CBC_STRIPE", "format": "MP3_128"},
-    ]
+    formats: list[dict[str, str]]
     user_country: str
 
     def __init__(self, session: ClientSession, arl_token: str) -> None:
         """Provide an aiohttp ClientSession and the deezer ARL token."""
         self._arl_token = arl_token
         self.session = session
+        # the session is shared server-wide, so this client keeps its cookies to itself
+        self._cookies: dict[str, str] = {}
+        self.formats = [{"cipher": "BF_CBC_STRIPE", "format": "MP3_128"}]
 
-    async def _set_cookie(self) -> None:
-        cookie: Morsel[str] = Morsel()
+    def _request_cookies(self) -> dict[str, str]:
+        """Return the cookies to send with a request."""
+        # deezer resolves the account from the arl again when the sid does not match, so the
+        # empty default keeps a sid another instance left in the shared jar from taking over
+        return {"sid": "", **self._cookies, "arl": self._arl_token}
 
-        cookie.set("arl", self._arl_token, self._arl_token)
-        cookie.update({"domain": ".deezer.com", "path": "/", "httponly": "True"})
-
-        self.session.cookie_jar.update_cookies(BaseCookie({"arl": cookie}), URL(GW_LIGHT_URL))
+    def _store_cookies(self, response: ClientResponse) -> None:
+        """Remember the cookies deezer set, the shared jar is not ours to use."""
+        self._cookies.update({name: morsel.value for name, morsel in response.cookies.items()})
 
     async def _update_user_data(self) -> None:
         user_data = await self._gw_api_call("deezer.getUserData", False)
         if not user_data["results"]["USER"]["USER_ID"]:
-            await self._set_cookie()
-            user_data = await self._gw_api_call("deezer.getUserData", False)
+            msg = "Failed to authenticate with the GW API. Make sure you set a valid ARL."
+            raise DeezerGWError(msg)
 
         if not user_data["results"]["OFFER_ID"]:
             msg = "Free subscriptions cannot be used in MA. Make sure you set a valid ARL."
@@ -75,18 +78,20 @@ class GWClient:
         self._license_expiration_timestamp = user_data["results"]["USER"]["OPTIONS"][
             "expiration_timestamp"
         ]
+        # Rebuilt on every license refresh, so start from the default list
+        formats = [{"cipher": "BF_CBC_STRIPE", "format": "MP3_128"}]
         web_qualities = user_data["results"]["USER"]["OPTIONS"]["web_sound_quality"]
         mobile_qualities = user_data["results"]["USER"]["OPTIONS"]["mobile_sound_quality"]
         if web_qualities["high"] or mobile_qualities["high"]:
-            self.formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "MP3_320"})
+            formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "MP3_320"})
         if web_qualities["lossless"] or mobile_qualities["lossless"]:
-            self.formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "FLAC"})
+            formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "FLAC"})
+        self.formats = formats
 
         self.user_country = user_data["results"]["COUNTRY"]
 
     async def setup(self) -> None:
-        """Call this to let the client get its cookies, license and tokens."""
-        await self._set_cookie()
+        """Call this to let the client get its license and tokens."""
         await self._update_user_data()
 
     async def _get_license(self) -> str | None:
@@ -115,7 +120,9 @@ class GWClient:
             timeout=ClientTimeout(total=30),
             json=args,
             headers={"User-Agent": USER_AGENT_HEADER},
+            cookies=self._request_cookies(),
         )
+        self._store_cookies(result)
         result_json = await result.json()
 
         if result_json["error"]:
@@ -189,10 +196,12 @@ class GWClient:
             "track_tokens": [track_token],
         }
         url_response = await self.session.post(
-            "https://media.deezer.com/v1/get_url",
+            MEDIA_GET_URL,
             json=url_data,
             headers={"User-Agent": USER_AGENT_HEADER},
+            cookies=self._request_cookies(),
         )
+        self._store_cookies(url_response)
         result_json = await url_response.json()
 
         if error := result_json["data"][0].get("errors"):
