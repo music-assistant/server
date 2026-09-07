@@ -24,6 +24,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.datetime import utc_timestamp
 
+from .constants import DECRYPT_KEY_ERROR, DECRYPT_KEY_LENGTH
 from .gw_client import DeezerGWError
 from .helpers import fetch_all_audiobook_chapter_edges, fetch_all_bookmarks
 
@@ -367,6 +368,8 @@ class DeezerStreamingManager:
     def _get_blowfish_key(self, track_id: str) -> str:
         """Get blowfish key to decrypt a chunk of a track."""
         secret = app_var("deezer_decrypt_key")
+        if len(secret) != DECRYPT_KEY_LENGTH:
+            raise AudioError(DECRYPT_KEY_ERROR)
         id_md5 = self._md5(track_id)
         return "".join(
             chr(ord(id_md5[i]) ^ ord(id_md5[i + 16]) ^ ord(secret[i])) for i in range(16)
