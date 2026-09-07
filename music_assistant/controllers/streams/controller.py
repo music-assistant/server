@@ -826,6 +826,7 @@ class StreamsController(CoreController):
                 content_sample_rate=pcm_format.sample_rate,
                 content_bit_depth=pcm_format.bit_depth,
                 media_type=queue_item.media_type,
+                source_bit_depth=queue_item.streamdetails.audio_format.bit_depth,
             )
 
             # prepare request, add some DLNA/UPNP compatible headers
@@ -959,6 +960,7 @@ class StreamsController(CoreController):
                 )
             first_chunk_received = False
             bytes_sent = 0
+            stream_failure: AudioError | None = None
             # Mark this player as actively streaming so audio analysis yields CPU to playback
             # for the duration of the transfer (see audio_analysis.playback_active).
             self._active_output_streams += 1
@@ -1016,15 +1018,28 @@ class StreamsController(CoreController):
                                     resp.content_length,
                                 )
                             break
+            except AudioError as err:
+                # the response is already being written: raising answers one that is
+                # long gone, which aiohttp logs as two unhandled tracebacks. Whose
+                # failure it is stays with the layer that knows, which has already
+                # flagged the item when the audio was this item's own.
+                stream_failure = err
             finally:
                 self._active_output_streams -= 1
-            if queue_item.streamdetails.stream_error:
+            if stream_failure is not None or queue_item.streamdetails.stream_error:
+                # every stage in between replaces the message with one of its own, so
+                # the reason worth reporting is the one at the bottom of the chain
                 self.logger.error(
-                    "Error streaming QueueItem %s (%s) to %s",
+                    "Error streaming QueueItem %s (%s) to %s: %s",
                     queue_item.name,
                     queue_item.uri,
                     queue.display_name,
+                    _root_cause(stream_failure) if stream_failure else "see the preceding log",
                 )
+                # the body stops short of an announced content length, and aiohttp
+                # relays the 'Connection: close' we advertise without applying it -
+                # so the player waits out a stream that already ended (as the flow route)
+                resp.force_close()
             elif (
                 bytes_sent > 0
                 and queue_item.streamdetails
@@ -1222,6 +1237,11 @@ class StreamsController(CoreController):
             content_sample_rate=flow_pcm_format.sample_rate,
             content_bit_depth=flow_pcm_format.bit_depth,
             media_type=start_queue_item.media_type,
+            source_bit_depth=(
+                start_queue_item.streamdetails.audio_format.bit_depth
+                if start_queue_item.streamdetails
+                else 16
+            ),
         )
         # work out ICY metadata support
         icy_preference = self.mass.config.get_raw_player_config_value(
@@ -2310,3 +2330,14 @@ class StreamsController(CoreController):
 def _same_ip_family(ip: str, other_ip: str) -> bool:
     """Return whether two addresses belong to the same IP family."""
     return (":" in ip) == (":" in other_ip)
+
+
+def _root_cause(err: BaseException) -> BaseException:
+    """Return the deepest error in a chain of re-raises that still says something."""
+    # a bare TimeoutError() ends plenty of chains: taking it would report nothing
+    deepest = err
+    while (cause := err.__cause__) is not None:
+        err = cause
+        if str(err):
+            deepest = err
+    return deepest

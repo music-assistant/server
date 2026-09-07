@@ -424,6 +424,25 @@ async def test_cli_args_auto_raop_uses_raop_service_port() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("discovered_port", [0, None])
+async def test_cli_args_unresolved_discovery_port_falls_back_to_default(
+    discovered_port: int | None,
+) -> None:
+    """An unresolved service port must not make the binary dial port 0."""
+    player = _make_player()
+    player.airplay_discovery_info.port = discovered_port
+    player.raop_discovery_info.port = discovered_port
+
+    args = await _build_args(player)
+    assert _arg_value(args, "--port") == "7000"
+
+    player.protocol = StreamingProtocol.RAOP
+    player.airplay_discovery_info = None
+    args = await _build_args(player)
+    assert _arg_value(args, "--port") == "5000"
+
+
+@pytest.mark.asyncio
 async def test_cli_args_pass_raop_feature_fallback_to_auto_router() -> None:
     """AP2 bits advertised only on _raop.ft still reach the binary route resolver."""
     player = _make_player()
