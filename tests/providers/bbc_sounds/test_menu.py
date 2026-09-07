@@ -52,11 +52,20 @@ class TestMenuLoading:
     )
     @patch.object(BBCSoundsProvider, "_menu_is_stale", new_callable=PropertyMock)
     async def test_valid_menu_is_not_refreshed(
-        self, provider: BBCSoundsProvider, uk_menu: Menu, last_fetched: float
+        self,
+        mock_menu_is_stale: PropertyMock,
+        provider: BBCSoundsProvider,
+        uk_menu: Menu,
+        last_fetched: float,
     ) -> None:
         """Test that when we have a valid menu, it isn't refreshed."""
+        mock_menu_is_stale.return_value = False
         provider.menu = uk_menu
         provider.menu_last_fetched = last_fetched
         provider._refresh_menu_from_api = AsyncMock()  # type: ignore[method-assign]
-        provider._get_menu()  # type: ignore[unused-coroutine]
-        provider._refresh_menu_from_api.assert_not_awaited()
+        provider._convert_menu = AsyncMock(return_value=uk_menu.sub_items)  # type: ignore[method-assign]
+
+        result = await provider._get_menu()
+
+        provider._refresh_menu_from_api.assert_not_called()
+        assert result == uk_menu.sub_items
