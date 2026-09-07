@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
-    from music_assistant_models.enums import MediaType
+    from music_assistant_models.enums import ExternalID, MediaType
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -202,13 +202,13 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
     # ------------------------------------------------------------------
 
     async def get_track_by_external_id(
-        self, external_id: str, external_id_type: str
+        self, external_id: str, external_id_type: ExternalID
     ) -> Track | None:
         """Retrieve track by external ID (ISRC)."""
         return await self.media_manager.get_track_by_external_id(external_id, external_id_type)
 
     async def get_album_by_external_id(
-        self, external_id: str, external_id_type: str
+        self, external_id: str, external_id_type: ExternalID
     ) -> Album | None:
         """Retrieve album by external ID (UPC/Barcode)."""
         return await self.media_manager.get_album_by_external_id(external_id, external_id_type)

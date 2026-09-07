@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
     Album,
@@ -15,6 +15,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.external_ids import barcode_to_upc, normalize_external_id
 from music_assistant.helpers.track_filter import filter_tracks
 
 from .constants import ARTWORK_CACHE_EXPIRATION, PARSED_ITEM_CACHE_CHECKSUM
@@ -188,40 +189,35 @@ class AppleMusicMediaManager:
 
     @use_cache(3600 * 24 * 7, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True)
     async def get_track_by_external_id(
-        self, external_id: str, external_id_type: str
+        self, external_id: str, external_id_type: ExternalID
     ) -> Track | None:
         """Retrieve track by external ID (ISRC)."""
-        if external_id_type.upper() != "ISRC":
+        if external_id_type != ExternalID.ISRC:
             return None
 
         endpoint = f"catalog/{self.provider._storefront}/songs"
+        normalized_isrc = normalize_external_id(ExternalID.ISRC, external_id)
         try:
-            response = await self.api.get_data(endpoint, **{"filter[isrc]": external_id})
+            response = await self.api.get_data(endpoint, **{"filter[isrc]": normalized_isrc})
             if not response.get("data"):
                 return None
             track_data = response["data"][0]
             track_ids = [track_data["id"]]
             rating_response = await self.api.get_ratings(track_ids, MediaType.TRACK)
             return parse_track(self.provider, track_data, rating_response.get(track_data["id"]))
-        except (MediaNotFoundError, KeyError, IndexError):  # fmt: skip
+        except MediaNotFoundError:
             return None
 
     @use_cache(3600 * 24 * 7, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True)
     async def get_album_by_external_id(
-        self, external_id: str, external_id_type: str
+        self, external_id: str, external_id_type: ExternalID
     ) -> Album | None:
         """Retrieve album by external ID (UPC/Barcode)."""
-        if external_id_type.upper() not in ("UPC", "BARCODE"):
+        if external_id_type != ExternalID.BARCODE:
             return None
 
-        # Apple Music stores UPC with leading zero stripped (EAN-13 -> UPC-12), so normalize it
-        normalized_upc = (
-            external_id[1:]
-            if len(external_id) == 13 and external_id.startswith("0")
-            else external_id
-        )
-
         endpoint = f"catalog/{self.provider._storefront}/albums"
+        normalized_upc = barcode_to_upc(external_id)
         try:
             response = await self.api.get_data(endpoint, **{"filter[upc]": normalized_upc})
             if not response.get("data"):
@@ -233,7 +229,7 @@ class AppleMusicMediaManager:
                 "Album | None",
                 parse_album(self.provider, album_data, rating_response.get(album_data["id"])),
             )
-        except (MediaNotFoundError, KeyError, IndexError):  # fmt: skip
+        except MediaNotFoundError:
             return None
 
     @use_cache(cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)

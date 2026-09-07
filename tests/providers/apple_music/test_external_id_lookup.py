@@ -1,8 +1,10 @@
 """Unit tests for Apple Music external ID lookup."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.enums import ExternalID
 
 from music_assistant.providers.apple_music.media import AppleMusicMediaManager
 
@@ -24,7 +26,7 @@ def _make_media_manager() -> tuple[AppleMusicMediaManager, MagicMock]:
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
-    mass.create_task = MagicMock(side_effect=lambda coro, **_: coro.close())
+    mass.create_task = MagicMock(side_effect=lambda coro, **_: asyncio.create_task(coro))
     provider.mass = mass
 
     return AppleMusicMediaManager(provider), api_mock
@@ -43,19 +45,19 @@ async def test_get_track_by_isrc() -> None:
                 "attributes": {
                     "name": "Test Track",
                     "artistName": "Test Artist",
-                    "isrc": "USTEST1234567",
+                    "isrc": "USABC1234567",
                 },
             }
         ]
     }
 
-    result = await manager.get_track_by_external_id("USTEST1234567", "ISRC")
+    result = await manager.get_track_by_external_id("US-ABC-12-34567", ExternalID.ISRC)
 
     assert result is not None
     api_mock.get_data.assert_called_once()
     call_args = api_mock.get_data.call_args
     assert "catalog/us/songs" in call_args[0][0]
-    assert call_args[1]["filter[isrc]"] == "USTEST1234567"
+    assert call_args[1]["filter[isrc]"] == "USABC1234567"
 
 
 @pytest.mark.asyncio
@@ -65,7 +67,7 @@ async def test_get_track_by_isrc_not_found() -> None:
 
     api_mock.get_data.return_value = {"data": []}
 
-    result = await manager.get_track_by_external_id("UNKNOWN123", "ISRC")
+    result = await manager.get_track_by_external_id("UNKNOWN123", ExternalID.ISRC)
 
     assert result is None
 
@@ -75,7 +77,7 @@ async def test_get_track_by_wrong_id_type() -> None:
     """Track lookup returns None for unsupported ID types."""
     manager, api_mock = _make_media_manager()
 
-    result = await manager.get_track_by_external_id("123456", "UPC")
+    result = await manager.get_track_by_external_id("123456", ExternalID.BARCODE)
 
     assert result is None
     api_mock.get_data.assert_not_called()
@@ -100,13 +102,12 @@ async def test_get_album_by_upc() -> None:
         ]
     }
 
-    result = await manager.get_album_by_external_id("0123456789012", "UPC")
+    result = await manager.get_album_by_external_id("00123456789012", ExternalID.BARCODE)
 
     assert result is not None
     api_mock.get_data.assert_called_once()
     call_args = api_mock.get_data.call_args
     assert "catalog/us/albums" in call_args[0][0]
-    # UPC should be normalized (leading zero stripped)
     assert call_args[1]["filter[upc]"] == "123456789012"
 
 
@@ -129,7 +130,7 @@ async def test_get_album_by_barcode() -> None:
         ]
     }
 
-    result = await manager.get_album_by_external_id("123456789012", "BARCODE")
+    result = await manager.get_album_by_external_id("123456789012", ExternalID.BARCODE)
 
     assert result is not None
 
@@ -139,7 +140,7 @@ async def test_get_album_by_wrong_id_type() -> None:
     """Album lookup returns None for unsupported ID types."""
     manager, api_mock = _make_media_manager()
 
-    result = await manager.get_album_by_external_id("USTEST1234567", "ISRC")
+    result = await manager.get_album_by_external_id("USTEST1234567", ExternalID.ISRC)
 
     assert result is None
     api_mock.get_data.assert_not_called()
