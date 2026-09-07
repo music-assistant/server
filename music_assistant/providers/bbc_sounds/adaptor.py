@@ -893,7 +893,7 @@ class Adaptor:
         ]
         for converter in converters:
             self.logger.debug(
-                "Checking if converter %s can convert %s", converter, str(type(source_obj))
+                "Checking if converter %s can convert %s", converter, type(source_obj)
             )
             if converter.can_convert(source_obj):
                 try:
