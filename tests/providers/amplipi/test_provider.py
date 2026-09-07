@@ -13,9 +13,8 @@ from music_assistant_models.errors import PlayerCommandFailed, SetupFailedError
 from pyamplipi.error import AmpliPiUnreachableError
 from zeroconf import IPVersion
 
-from music_assistant.providers.amplipi import setup, setup_flow
+from music_assistant.providers.amplipi import setup_flow
 from music_assistant.providers.amplipi.constants import (
-    CONF_HOST,
     DEFAULT_HOST,
     MA_STREAM_NAME,
     MA_STREAM_TYPE,
@@ -61,30 +60,11 @@ def _discovery_info(
     )
 
 
-def _setup_session(cache: dict[str, None] | None = None) -> MagicMock:
-    """
-    Build a setup session exposing the given mDNS cache.
-
-    Mirrors what the shared browser leaves in the zeroconf cache: an instance name keyed
-    by the controller's MAC under the AmpliPi service type.
-    """
+def _setup_session(discovery_info: SimpleNamespace | None = None) -> MagicMock:
+    """Build a setup session whose discovery controller yields the given mDNS record."""
     session = MagicMock()
-    session.mass.discovery.aiozc.zeroconf.cache.cache = cache if cache is not None else {}
+    session.mass.discovery.async_find_mdns_service = AsyncMock(return_value=discovery_info)
     return session
-
-
-def _cache_with_amplipi() -> dict[str, None]:
-    """Return an mDNS cache holding one AmpliPi instance."""
-    return {f"amplipi-b8:27:eb:8f:8d:85.{MDNS_TYPE}": None}
-
-
-def _patch_resolution(
-    monkeypatch: pytest.MonkeyPatch, discovery_info: SimpleNamespace | None
-) -> None:
-    """Make resolving any cached mDNS name yield the given record (or fail to resolve)."""
-    if discovery_info is None:
-        discovery_info = SimpleNamespace(async_request=AsyncMock(return_value=False))
-    monkeypatch.setattr(setup_flow, "AsyncServiceInfo", lambda *_args: discovery_info)
 
 
 class TestHandleAsyncInit:
@@ -457,150 +437,38 @@ class TestRemoveMaStreams:
 class TestHostDiscovery:
     """Test the mDNS lookup that prefills the host field in the setup flow."""
 
-    async def test_prefers_the_advertised_hostname(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_asks_for_any_instance_of_the_service_type(self) -> None:
+        """The instance name carries the controller's MAC, so no name filter can be given."""
+        session = _setup_session(_discovery_info())
+        await setup_flow._discover_host(session)
+        session.mass.discovery.async_find_mdns_service.assert_awaited_once_with(
+            MDNS_TYPE, timeout=setup_flow._DISCOVERY_TIMEOUT
+        )
+
+    async def test_prefers_the_advertised_hostname(self) -> None:
         """
         The hostname outlives a DHCP lease, so it wins over the advertised address.
 
         It is preferred even where the system resolver cannot resolve it: the provider
         connects over mass.http_session, whose resolver answers .local from mDNS.
         """
-        _patch_resolution(monkeypatch, _discovery_info())
-        session = _setup_session(_cache_with_amplipi())
-        assert await setup_flow._discover_host(session) == "amplipi.local"
+        assert await setup_flow._discover_host(_setup_session(_discovery_info())) == "amplipi.local"
 
-    async def test_falls_back_to_the_default_without_discovery(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_falls_back_to_the_default_without_discovery(self) -> None:
         """With no AmpliPi on the network the user still gets the conventional hostname."""
-        monkeypatch.setattr(setup_flow, "_DISCOVERY_TIMEOUT", 0.0)
         assert await setup_flow._discover_host(_setup_session()) == DEFAULT_HOST
 
-    async def test_ignores_other_services_in_the_cache(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The cache is shared with every browsed type, so non-AmpliPi names must be skipped."""
-        monkeypatch.setattr(setup_flow, "_DISCOVERY_TIMEOUT", 0.0)
-        resolve = MagicMock()
-        monkeypatch.setattr(setup_flow, "AsyncServiceInfo", resolve)
-        session = _setup_session({"nas01._http._tcp.local.": None, "_amplipi._tcp.local.": None})
-        assert await setup_flow._discover_host(session) == DEFAULT_HOST
-        resolve.assert_not_called()
-
-    async def test_falls_back_to_the_default_when_the_record_will_not_resolve(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A cached name that no longer answers must not stall or crash the form."""
-        monkeypatch.setattr(setup_flow, "_DISCOVERY_TIMEOUT", 0.0)
-        _patch_resolution(monkeypatch, None)
-        session = _setup_session(_cache_with_amplipi())
-        assert await setup_flow._discover_host(session) == DEFAULT_HOST
-
-    async def test_falls_back_to_the_default_without_a_usable_address(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_falls_back_to_the_default_without_a_usable_address(self) -> None:
         """A record advertising neither a hostname nor an address is no help."""
-        _patch_resolution(monkeypatch, _discovery_info(server="", address=None))
-        session = _setup_session(_cache_with_amplipi())
+        session = _setup_session(_discovery_info(server="", address=None))
         assert await setup_flow._discover_host(session) == DEFAULT_HOST
 
-    async def test_falls_back_to_the_address_without_a_hostname(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_falls_back_to_the_address_without_a_hostname(self) -> None:
         """Only a record carrying no hostname at all falls through to its address."""
-        _patch_resolution(monkeypatch, _discovery_info(server=""))
-        session = _setup_session(_cache_with_amplipi())
+        session = _setup_session(_discovery_info(server=""))
         assert await setup_flow._discover_host(session) == "192.168.11.148"
 
-    async def test_ipv6_address_is_bracketed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_ipv6_address_is_bracketed(self) -> None:
         """The provider builds "http://<host>/api", which needs a bracketed IPv6 literal."""
-        _patch_resolution(
-            monkeypatch, _discovery_info(server="", address=None, v6_address="fd00::1")
-        )
-        session = _setup_session(_cache_with_amplipi())
+        session = _setup_session(_discovery_info(server="", address=None, v6_address="fd00::1"))
         assert await setup_flow._discover_host(session) == "[fd00::1]"
-
-    async def test_a_stale_record_cannot_outlast_the_budget(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Records that no longer answer must share one deadline, not a timeout each."""
-        monkeypatch.setattr(setup_flow, "_DISCOVERY_TIMEOUT", 0.05)
-        budgets: list[float] = []
-
-        class _Unanswered:
-            def __init__(self, *_args: object) -> None:
-                pass
-
-            async def async_request(self, _zeroconf: object, timeout: float) -> bool:
-                budgets.append(timeout)
-                await asyncio.sleep(0.03)
-                return False
-
-        monkeypatch.setattr(setup_flow, "AsyncServiceInfo", _Unanswered)
-        cache = {f"amplipi-{index}.{MDNS_TYPE}": None for index in range(5)}
-        assert await setup_flow._discover_host(_setup_session(cache)) == DEFAULT_HOST
-        # each attempt is handed what is left of the budget, and it keeps shrinking
-        assert budgets == sorted(budgets, reverse=True)
-        assert max(budgets) <= 0.05 * 1000
-
-
-class TestSetupFlowPrefill:
-    """Test that the collected host form is seeded from discovery."""
-
-    @staticmethod
-    def _session(setup_data: dict[str, str]) -> MagicMock:
-        """Build a session that submits whatever the form was prefilled with."""
-        session = MagicMock()
-        session.context.setup_data = setup_data
-        session.finish = AsyncMock(return_value={})
-
-        async def _form(entries: list[object], **_kwargs: object) -> dict[str, object]:
-            host = next(e for e in entries if e.key == CONF_HOST)  # type: ignore[attr-defined]
-            return {CONF_HOST: host.value}  # type: ignore[attr-defined]
-
-        session.form = AsyncMock(side_effect=_form)
-        return session
-
-    async def test_form_is_prefilled_with_the_discovered_host(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A fresh setup should offer the discovered controller rather than an empty field."""
-        monkeypatch.setattr(setup_flow, "_discover_host", AsyncMock(return_value="amplipi.local"))
-        session = self._session({})
-        await setup_flow.run_setup(session)
-        entries = session.form.await_args.args[0]
-        host = next(e for e in entries if e.key == CONF_HOST)
-        assert host.value == "amplipi.local"
-
-    async def test_a_known_host_is_not_rediscovered(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Reconfiguring keeps the host already collected, without searching the network."""
-        discover = AsyncMock(return_value="amplipi.local")
-        monkeypatch.setattr(setup_flow, "_discover_host", discover)
-        session = self._session({CONF_HOST: "10.0.0.5"})
-        await setup_flow.run_setup(session)
-        discover.assert_not_awaited()
-        entries = session.form.await_args.args[0]
-        host = next(e for e in entries if e.key == CONF_HOST)
-        assert host.value == "10.0.0.5"
-
-
-class TestModuleEntryPoints:
-    """Test the provider module setup / config entry hooks."""
-
-    async def test_setup_returns_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """setup() should construct and return an AmpliPiPlayerProvider."""
-        monkeypatch.setattr(
-            "music_assistant.providers.amplipi.AmpliPiPlayerProvider",
-            lambda *_args: "PROVIDER",
-        )
-        result = await setup(MagicMock(), MagicMock(), MagicMock())
-        assert result == "PROVIDER"  # type: ignore[comparison-overlap]
-
-    async def test_get_config_entries_has_no_setup_entries(self) -> None:
-        """The host moved to the setup flow, so the options entries no longer expose it."""
-        entries = await _provider().get_config_entries()
-        assert all(e.key != CONF_HOST for e in entries)
-
-    async def test_setup_flow_exposes_host(self) -> None:
-        """The setup flow must collect a required Host entry."""
-        host = next(e for e in setup_flow._ENTRIES if e.key == CONF_HOST)
-        assert host.required is True

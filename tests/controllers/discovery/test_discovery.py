@@ -231,6 +231,27 @@ async def test_async_find_mdns_service_no_substring_match(mass: MusicAssistant) 
     mock_service_info.assert_not_called()
 
 
+async def test_async_find_mdns_service_without_filter_matches_any_instance(
+    mass: MusicAssistant,
+) -> None:
+    """Omitting the name filter accepts whichever instance of the service type answers."""
+    mass.discovery.aiozc.zeroconf.cache.cache = {
+        "amplipi-b827eb8f8d85._amplipi._tcp.local.": {},
+    }
+    mock_info = MagicMock()
+    mock_info.async_request = AsyncMock(return_value=True)
+    with patch(
+        "music_assistant.controllers.discovery.controller.AsyncServiceInfo",
+        return_value=mock_info,
+    ) as mock_service_info:
+        result = await mass.discovery.async_find_mdns_service("_amplipi._tcp.local.", timeout=1.0)
+
+    assert result is mock_info
+    mock_service_info.assert_called_once_with(
+        "_amplipi._tcp.local.", "amplipi-b827eb8f8d85._amplipi._tcp.local."
+    )
+
+
 async def test_async_find_mdns_service_preserves_at_sign_in_name(mass: MusicAssistant) -> None:
     """Only a RAOP MAC prefix is stripped, so device names containing '@' still match."""
     mass.discovery.aiozc.zeroconf.cache.cache = {
