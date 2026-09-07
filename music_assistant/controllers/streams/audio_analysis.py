@@ -1471,7 +1471,7 @@ class AudioAnalysisController:
                         self.mass.create_task(provider.cancel(session_key))
                     else:
                         reason, retry_at = failure
-await provider.abort(session_key, reason, retry_at)
+                        await provider.abort(session_key, reason, retry_at)
             provider_ids.difference_update(evicted)
             if not provider_ids:
                 self._active_sessions.pop(session_key, None)
