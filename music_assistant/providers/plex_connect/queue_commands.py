@@ -148,16 +148,7 @@ class QueueCommandsMixin:
             all_items.extend(new_items)
             seen_ids.update(i.playQueueItemID for i in new_items)
 
-        if len(all_items) > MAX_QUEUE_ITEMS:
-            selected_offset = getattr(playqueue, "playQueueSelectedItemOffset", None)
-            capped_items = self._cap_to_selected_window(all_items, anchor, selected_offset)
-            LOGGER.info(
-                "Capping Plex play queue from %d to %d items", len(all_items), len(capped_items)
-            )
-            all_items = capped_items
-
-        # Patch the cached items property on the PlayQueue object.
-        playqueue.__dict__["items"] = all_items
+        self._cap_playqueue_items(playqueue, all_items)
         return playqueue
 
     @staticmethod
@@ -183,6 +174,22 @@ class QueueCommandsMixin:
         else:
             head = []
         return head + tail
+
+    def _cap_playqueue_items(self, playqueue: PlayQueue, all_items: list[Any]) -> None:
+        """Cap items around the selected item and patch them onto the PlayQueue."""
+        if len(all_items) > MAX_QUEUE_ITEMS:
+            anchor = self._selected_item_anchor(
+                all_items, getattr(playqueue, "playQueueSelectedItemID", None)
+            )
+            selected_offset = getattr(playqueue, "playQueueSelectedItemOffset", None)
+            capped_items = self._cap_to_selected_window(all_items, anchor, selected_offset)
+            LOGGER.info(
+                "Capping Plex play queue from %d to %d items", len(all_items), len(capped_items)
+            )
+            all_items = capped_items
+
+        # Patch the cached items property on the PlayQueue object.
+        playqueue.__dict__["items"] = all_items
 
     def _selected_item_index(self, playqueue: PlayQueue) -> int:
         """Return the selected item's index within the fetched queue window."""
@@ -518,26 +525,17 @@ class QueueCommandsMixin:
                 self.play_queue_id = str(playqueue.playQueueID)
                 self.play_queue_version = 1
 
-                if len(playqueue.items) > MAX_QUEUE_ITEMS:
-                    LOGGER.info(
-                        "Capping created Plex play queue from %d to %d items",
-                        len(playqueue.items),
-                        MAX_QUEUE_ITEMS,
-                    )
-                    anchor = self._selected_item_anchor(
-                        playqueue.items, getattr(playqueue, "playQueueSelectedItemID", None)
-                    )
-                    selected_offset = getattr(playqueue, "playQueueSelectedItemOffset", None)
-                    playqueue.__dict__["items"] = self._cap_to_selected_window(
-                        list(playqueue.items), anchor, selected_offset
-                    )
+                self._cap_playqueue_items(playqueue, list(playqueue.items))
 
                 LOGGER.info(
                     f"Created play queue {self.play_queue_id} with {len(playqueue.items)} items"
                 )
 
                 self.play_queue_item_ids = {}
-                first_item = playqueue.items[0]
+                # A created queue may select a mid-queue item (e.g. a single track expanded
+                # to its album context), so start playback at the selected item.
+                selected_index = self._selected_item_index(playqueue)
+                first_item = playqueue.items[selected_index]
                 first_track_key, first_play_queue_item_id = plex_item_fields(first_item)
 
                 if not first_track_key:
@@ -561,7 +559,9 @@ class QueueCommandsMixin:
 
                     if len(playqueue.items) > 1:
                         self.provider.mass.create_task(
-                            self._load_remaining_queue_tracks(player_id, playqueue, 0, shuffle)
+                            self._load_remaining_queue_tracks(
+                                player_id, playqueue, selected_index, shuffle
+                            )
                         )
 
                     await self._broadcast_timeline()

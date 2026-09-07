@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -29,7 +29,10 @@ class _QueueHandler(QueueCommandsMixin):
 
 def _make_items(first_track: int, last_track: int) -> list[SimpleNamespace]:
     """Build fake queue items; track number N gets playQueueItemID 1000+N."""
-    return [SimpleNamespace(playQueueItemID=1000 + n) for n in range(first_track, last_track + 1)]
+    return [
+        SimpleNamespace(playQueueItemID=1000 + n, key=f"/library/metadata/{n}")
+        for n in range(first_track, last_track + 1)
+    ]
 
 
 def _make_playqueue(
@@ -194,3 +197,47 @@ async def test_pagination_fetches_forward_pages_past_the_anchor(
     kept_tracks = [item.playQueueItemID - 1000 for item in result.items]
     # Paginated tracks (91..142) must be present in the kept window.
     assert set(range(91, 143)).issubset(set(kept_tracks))
+
+
+class _CreateQueueHandler(_QueueHandler):
+    """_QueueHandler that records background queue loading instead of running it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.remaining_calls: list[tuple[Any, ...]] = []
+
+    def _load_remaining_queue_tracks(self, *args: Any, **kwargs: Any) -> None:  # type: ignore[override]
+        self.remaining_calls.append(args)
+
+    async def _broadcast_timeline(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_create_play_queue_starts_at_selected_item(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A created queue selecting a mid-queue item starts playback on that item."""
+    playqueue = _make_playqueue(1, 150, selected_track=120, selected_offset=119, total_count=150)
+    playqueue.playQueueID = 555
+
+    class _FakeCreate:
+        @staticmethod
+        def create(*_args: Any, **_kwargs: Any) -> Any:
+            return playqueue
+
+    monkeypatch.setattr(queue_commands, "PlayQueue", _FakeCreate)
+
+    handler = _CreateQueueHandler()
+    get_track = AsyncMock(return_value=SimpleNamespace(name="Track 120"))
+    monkeypatch.setattr(handler.provider, "get_track", get_track)
+    monkeypatch.setattr(handler.provider.mass.player_queues, "play_media", AsyncMock())
+    monkeypatch.setattr(handler.provider.mass, "create_task", Mock())
+
+    request = SimpleNamespace(query={"uri": "library://whatever"})
+    response = await handler.handle_create_play_queue(request)  # type: ignore[arg-type]
+
+    assert response.status == 200
+    get_track.assert_awaited_once_with("/library/metadata/120")
+    # Capped to tracks 1..69 + 120..150; the selected track sits after the head fill.
+    kept_tracks = [item.playQueueItemID - 1000 for item in playqueue.items]
+    assert kept_tracks == [*range(1, 70), *range(120, 151)]
+    assert handler.remaining_calls[0][2] == 69
