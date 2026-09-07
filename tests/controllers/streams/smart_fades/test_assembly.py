@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 import numpy as np
 import pytest
 
-from music_assistant.controllers.streams.smart_fades.models import TransitionStrategy
+from music_assistant.controllers.streams.smart_fades.models import (
+    TransitionStrategy,
+    TransitionTier,
+)
 from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
 from music_assistant.controllers.streams.smart_fades.planner.assembly import (
     EmergencyHandoffFactory,
+    FallbackCrossfadeFactory,
     PlanAssembler,
 )
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
@@ -23,6 +28,7 @@ from music_assistant.controllers.streams.smart_fades.planner.context import (
     TransitionContext,
     build_transition_context,
 )
+from music_assistant.controllers.streams.smart_fades.vocal import COLLISION_SECONDS_LIMIT
 from music_assistant.models.audio_analysis import AudioAnalysisData
 
 from .conftest import _analysis_with_bands
@@ -73,6 +79,16 @@ def _bands_pair(f_low_out: float, f_low_in: float) -> tuple[AudioAnalysisData, A
 
     out = _analysis_with_bands(*_levels(f_low_out), duration=240.0)
     inc = _analysis_with_bands(*_levels(f_low_in), duration=240.0)
+    return out, inc
+
+
+def _mastered_fade_pair() -> tuple[AudioAnalysisData, AudioAnalysisData]:
+    """Build a -14dB frozen-spectrum ramp from media 210s, mirroring test_generators.py's fixture."""
+    t = np.linspace(0.0, 240.0, 1800)
+    gain_db = np.where(t < 210.0, 0.0, -(t - 210.0) / 30.0 * 14.0)
+    band = (0.3 * 10.0 ** (gain_db / 20.0)).astype(np.float32)
+    out = _analysis_with_bands(band, band, band, band, duration=240.0)
+    inc = _analysis(120.0, duration=240.0)
     return out, inc
 
 
@@ -176,6 +192,53 @@ class TestFinalizeCarriesMetrics:
         assert plan.metrics == candidate.metrics
 
 
+class TestFinalizeChoosesFadeoutCurve:
+    """The crossfade degrades to ``nofade`` only when the overlap sits fully inside a mastered fade."""
+
+    def _candidate(self, ctx: TransitionContext) -> Candidate:
+        factory = CandidateFactory(ctx, LOGGER)
+        candidate = factory.build(CandidateSpec(tier=ctx.tier, bars=1, anchor_s=None, entry_s=None))
+        assert candidate is not None  # the 1-bar rung always yields a candidate
+        return candidate
+
+    def test_overlap_entirely_inside_the_fade_uses_nofade(self) -> None:
+        """A crossfade that starts after the fade onset and runs to the audible end gets nofade."""
+        out, inc = _mastered_fade_pair()
+        ctx = _ctx(out, inc)
+        assert ctx.fade_onset is not None
+        candidate = self._candidate(ctx)
+        plan = replace(candidate.plan, fade_out_window=44.0, crossfade_duration=20.0)
+        candidate = replace(candidate, plan=plan)
+
+        new_plan = PlanAssembler(ctx, LOGGER).finalize(candidate)
+
+        assert new_plan.fadeout_curve == "nofade"
+
+    def test_no_detected_fade_keeps_qsin(self) -> None:
+        """Without a detected mastered fade, the crossfade curve stays the qsin default."""
+        out, inc = _rich_pair()
+        ctx = _ctx(out, inc)
+        assert ctx.fade_onset is None
+        candidate = self._candidate(ctx)
+
+        new_plan = PlanAssembler(ctx, LOGGER).finalize(candidate)
+
+        assert new_plan.fadeout_curve == "qsin"
+
+    def test_overlap_straddling_the_fade_onset_keeps_qsin(self) -> None:
+        """A crossfade that starts before the fade onset (flat-then-fade) cannot use nofade."""
+        out, inc = _mastered_fade_pair()
+        ctx = _ctx(out, inc)
+        assert ctx.fade_onset is not None
+        candidate = self._candidate(ctx)
+        plan = replace(candidate.plan, fade_out_window=44.0, crossfade_duration=30.0)
+        candidate = replace(candidate, plan=plan)
+
+        new_plan = PlanAssembler(ctx, LOGGER).finalize(candidate)
+
+        assert new_plan.fadeout_curve == "qsin"
+
+
 class TestFinalizeDipGuardBehavior:
     """The dip-guard repair must match the old planner's remediation exactly."""
 
@@ -206,6 +269,88 @@ class TestFinalizeDipGuardBehavior:
             assert new_plan.eq_plan.low_out.steps == pytest.approx(
                 reference_plan.eq_plan.low_out.steps
             )
+
+
+class TestIncomingAudibilityFloor:
+    """A bass-dominant incoming intro keeps enough broadband level under its entry shelf."""
+
+    def test_bass_dominant_incoming_shallows_its_entry_shelf(self) -> None:
+        """An 85% low-band incoming entry window floors the kill near the analytic -9.2dB."""
+        out, inc = _bands_pair(0.4, 0.85)
+
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
+
+        assert plan.eq_plan.low_in is not None
+        # analytic floor: 10*log10((10**-0.6 - 0.15) / 0.85)
+        assert plan.eq_plan.low_in.steps[0][1] == pytest.approx(-9.24, abs=0.05)
+        assert plan.eq_plan.low_in.steps[-1][1] == pytest.approx(0.0)
+        # the outgoing deck's post-swap kill is the handover gesture: untouched
+        assert plan.eq_plan.low_out is not None
+        assert plan.eq_plan.low_out.steps[-1][1] == pytest.approx(-26.0)
+
+    def test_bass_balanced_incoming_keeps_the_gated_depth(self) -> None:
+        """A ~30% low-band incoming window can never fall below the floor: full kill kept."""
+        out, inc = _bands_pair(0.4, 0.3)
+
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
+
+        assert plan.eq_plan.low_in is not None
+        assert plan.eq_plan.low_in.steps[0][1] == pytest.approx(-26.0)
+
+
+class TestQuickFadeSkipsEq:
+    """A quick fade is a pure volume fade: no bass/high/mid handover shelves at all."""
+
+    def test_quick_fade_plans_a_neutral_eq(self) -> None:
+        """A tempo-incompatible bass-heavy pair ships a QUICK_FADE without any shelf."""
+        out, inc = _bands_pair(0.6, 0.6)
+        inc.bpm = 150.0
+
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
+
+        assert plan.tier is TransitionTier.QUICK_FADE
+        eq = plan.eq_plan
+        assert eq.low_out is None
+        assert eq.low_in is None
+        assert eq.high_out is None
+        assert eq.high_in is None
+        assert eq.mid_out is None
+        assert eq.mid_in is None
+
+
+class TestFallbackCrossfadeOnUnreliableMasks:
+    """Saturated (unreliable) masks never push the fallback into deferral or a duck."""
+
+    def test_unreliable_masks_ship_the_fallback_without_a_duck(self) -> None:
+        """Wall-to-wall masks read as severe collision, yet the fallback ships duck-free."""
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(196.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 41.0)])
+        ctx = _ctx(out, inc)
+        assert not ctx.vocal_collision_reliable
+        factory = CandidateFactory(ctx, LOGGER)
+
+        plan = FallbackCrossfadeFactory(ctx, factory, LOGGER).build()
+
+        assert plan is not None
+        assert plan.metrics.strategy is TransitionStrategy.FALLBACK_CROSSFADE
+        # the metrics really read as severe: only the unreliable flag kept the
+        # fallback from deferring to the handoff
+        assert plan.metrics.collision_seconds >= 2 * COLLISION_SECONDS_LIMIT
+        assert plan.eq_plan.mid_out is None
+        assert plan.eq_plan.mid_in is None
+        assert plan.fadeout_curve == "qsin"
+
+    def test_fallback_inside_a_mastered_fade_uses_nofade(self) -> None:
+        """A fallback overlap sitting entirely inside a detected mastered fade skips the qsin curve."""
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(196.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 41.0)])
+        ctx = replace(_ctx(out, inc), fade_onset=30.0)
+        factory = CandidateFactory(ctx, LOGGER)
+
+        plan = FallbackCrossfadeFactory(ctx, factory, LOGGER).build()
+
+        assert plan is not None
+        assert plan.fadeout_curve == "nofade"
 
 
 class TestEmergencyHandoff:

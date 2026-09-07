@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 from music_assistant_models.media_items import Podcast
+from ytmusicapi.parsers.podcasts import Description
 
 from music_assistant.providers.ytmusic import YoutubeMusicProvider
 
@@ -15,6 +16,19 @@ def _make_provider() -> MagicMock:
     prov._parse_thumbnails = MagicMock(return_value=[])
     prov._parse_podcast = lambda obj: YoutubeMusicProvider._parse_podcast(prov, obj)
     return prov
+
+
+def _parse_episode(description: object) -> str | None:
+    """Parse an episode with the given raw description and return the parsed one."""
+    prov = _make_provider()
+    podcast = Podcast(
+        item_id="PLtest123", provider="ytmusic_test", name="Couple Of", provider_mappings=set()
+    )
+    episode_obj = {"videoId": "vid123", "title": "Episode 1", "description": description}
+
+    episode = YoutubeMusicProvider._parse_podcast_episode(prov, episode_obj, podcast)
+
+    return episode.metadata.description
 
 
 def test_browse_podcast_with_mpsp_browse_id_is_parsed() -> None:
@@ -63,3 +77,15 @@ def test_browse_item_without_browse_id_is_not_parsed_as_podcast() -> None:
     prov = _make_provider()
 
     assert YoutubeMusicProvider._parse_browse_podcast(prov, {"title": "X"}) is None
+
+
+def test_episode_description_object_is_stored_as_text() -> None:
+    """A Description object must be flattened, as the metadata expects a string."""
+    description = Description.from_runs([{"text": "Part one. "}, {"text": "Part two."}])
+
+    assert _parse_episode(description) == "Part one. Part two."
+
+
+def test_episode_description_string_is_stored_as_is() -> None:
+    """A description that already is a string must be left untouched."""
+    assert _parse_episode("Part one. Part two.") == "Part one. Part two."

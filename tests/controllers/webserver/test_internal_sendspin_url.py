@@ -8,14 +8,6 @@ from music_assistant.controllers.webserver.controller import WebserverController
 
 
 @pytest.fixture
-def mock_mass() -> MagicMock:
-    """Create a mock Music Assistant instance."""
-    mass = MagicMock()
-    mass.config.get_raw_core_config_value.return_value = "GLOBAL"
-    return mass
-
-
-@pytest.fixture
 def webserver(mock_mass: MagicMock) -> WebserverController:
     """Create a WebserverController backed by a mocked Music Assistant instance."""
     return WebserverController(mock_mass)

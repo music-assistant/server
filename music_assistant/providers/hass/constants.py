@@ -10,6 +10,13 @@ from music_assistant_models.enums import PlaybackState
 if TYPE_CHECKING:
     import logging
 
+CONF_POWER_CONTROLS = "power_controls"
+CONF_MUTE_CONTROLS = "mute_controls"
+CONF_VOLUME_CONTROLS = "volume_controls"
+
+# Home Assistant entity domains Music Assistant can offer as player controls.
+CONTROL_DOMAINS = ("media_player", "switch", "input_boolean", "number", "input_number")
+
 
 class MediaPlayerEntityFeature(IntFlag):
     """Supported features of the media player entity."""

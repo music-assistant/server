@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.errors import LoginFailed
 
-from music_assistant.providers.spotify.constants import CONF_REFRESH_TOKEN_GLOBAL
+from music_assistant.providers.spotify.constants import CONF_ACCOUNT_ID, CONF_REFRESH_TOKEN_GLOBAL
 from music_assistant.providers.spotify.provider import SpotifyProvider
 
 USED_TOKEN = "token_a"
@@ -75,7 +75,6 @@ async def test_login_reads_token_from_persisted_store(monkeypatch: pytest.Monkey
         }
     )
     monkeypatch.setattr(prov, "_update_setup_data", MagicMock())
-    monkeypatch.setattr(prov, "_setup_librespot_auth", AsyncMock())
     monkeypatch.setattr("music_assistant.providers.spotify.provider.get_spotify_token", token_call)
     await prov.login()
     # the token sent to Spotify must come from the persisted store
@@ -140,7 +139,6 @@ async def test_login_refreshes_when_cached_token_expired(monkeypatch: pytest.Mon
         }
     )
     monkeypatch.setattr(prov, "_update_setup_data", MagicMock())
-    monkeypatch.setattr(prov, "_setup_librespot_auth", AsyncMock())
     monkeypatch.setattr("music_assistant.providers.spotify.provider.get_spotify_token", token_call)
     await prov.login()
     token_call.assert_awaited_once()
@@ -169,7 +167,6 @@ async def test_login_persists_rotated_token_immediately(monkeypatch: pytest.Monk
     prov._sp_user = {"display_name": "tester"}  # already populated -> skip the user-info fetch
     update_setup_data = MagicMock()
     monkeypatch.setattr(prov, "_update_setup_data", update_setup_data)
-    monkeypatch.setattr(prov, "_setup_librespot_auth", AsyncMock())
     monkeypatch.setattr(
         "music_assistant.providers.spotify.provider.get_spotify_token",
         AsyncMock(
@@ -192,7 +189,6 @@ async def test_login_debounces_save_when_token_unchanged(monkeypatch: pytest.Mon
     prov._sp_user = {"display_name": "tester"}
     update_setup_data = MagicMock()
     monkeypatch.setattr(prov, "_update_setup_data", update_setup_data)
-    monkeypatch.setattr(prov, "_setup_librespot_auth", AsyncMock())
     monkeypatch.setattr(
         "music_assistant.providers.spotify.provider.get_spotify_token",
         AsyncMock(
@@ -207,3 +203,59 @@ async def test_login_debounces_save_when_token_unchanged(monkeypatch: pytest.Mon
     update_setup_data.assert_called_once_with(
         CONF_REFRESH_TOKEN_GLOBAL, USED_TOKEN, immediate=False
     )
+
+
+async def test_login_records_the_account_on_a_legacy_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A config predating the stored account id gets it filled in on the next login."""
+    prov = _make_provider(stored_token="fresh_token")
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.provider.get_spotify_token",
+        AsyncMock(
+            return_value={
+                "access_token": "access",
+                "refresh_token": "fresh_token",
+                "expires_at": 9999999999,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        prov, "_get_data", AsyncMock(return_value={"id": "u1", "display_name": "tester"})
+    )
+    update = MagicMock()
+    monkeypatch.setattr(prov, "_update_setup_data", update)
+    prov.mass.metadata = MagicMock()
+
+    await prov.login()
+
+    # the setup flow can now spot a duplicate account without loading this instance
+    assert (CONF_ACCOUNT_ID, "u1") in [call.args[:2] for call in update.call_args_list]
+
+
+async def test_login_leaves_a_recorded_account_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An account id that is already stored is not rewritten on every login."""
+    prov = _make_provider(stored_token="fresh_token")
+    prov.mass.config.get = MagicMock(  # type: ignore[method-assign]
+        return_value={CONF_REFRESH_TOKEN_GLOBAL: "fresh_token", CONF_ACCOUNT_ID: "u1"}
+    )
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.provider.get_spotify_token",
+        AsyncMock(
+            return_value={
+                "access_token": "access",
+                "refresh_token": "fresh_token",
+                "expires_at": 9999999999,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        prov, "_get_data", AsyncMock(return_value={"id": "u1", "display_name": "tester"})
+    )
+    update = MagicMock()
+    monkeypatch.setattr(prov, "_update_setup_data", update)
+    prov.mass.metadata = MagicMock()
+
+    await prov.login()
+
+    assert CONF_ACCOUNT_ID not in [call.args[0] for call in update.call_args_list]

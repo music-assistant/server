@@ -1,7 +1,7 @@
 {
   "type": "audio_analysis",
   "domain": "acoustid_lookup",
-  "stage": "beta",
+  "stage": "stable",
   "name": "AcoustID Lookup",
   "description": "Identifies local audio files using AcoustID/Chromaprint fingerprinting and fills in their MusicBrainz recording ID for subsequent metadata enrichment.",
   "codeowners": ["@music-assistant"],

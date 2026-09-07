@@ -34,15 +34,19 @@ if TYPE_CHECKING:
 @dataclass(slots=True)
 class ComplexFilterInput:
     """
-    An extra audio file feeding a ComplexFilter.
+    An extra audio source feeding a ComplexFilter.
 
-    :param path: Audio file to read.
+    :param path: Audio source to read, either a file path or a URL.
     :param filters: Optional chain applied to the input before the body consumes
         it (e.g. "aresample=48000").
+    :param input_args: Optional FFmpeg options for reading this input, placed
+        before its ``-i`` on top of the ones every input already gets
+        (e.g. ["-stream_loop", "-1"]).
     """
 
     path: str
     filters: str = ""
+    input_args: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -56,7 +60,7 @@ class ComplexFilter:
 
     :param body: The filter consuming the main input followed by each extra
         input in order (e.g. "afir=irnorm=1").
-    :param inputs: Extra audio files for ``body``, in the order it consumes them.
+    :param inputs: Extra audio sources for ``body``, in the order it consumes them.
     """
 
     body: str
@@ -187,16 +191,22 @@ def filter_to_ffmpeg_params(
     if isinstance(dsp_filter, GainFilter) and dsp_filter.gain != 0:
         filter_params.append(f"volume={dsp_filter.gain}dB")
     if isinstance(dsp_filter, BalanceFilter) and dsp_filter.balance != 0:
-        # balance is a stereo operation; on a non-stereo source the FL/FR pan
-        # expression would output silence, so only apply it to stereo streams
+        # attenuate only the channel opposite the slider direction, so there is
+        # no positive gain and thus no clipping risk
+        attenuation = (100 - abs(dsp_filter.balance)) / 100
         if input_format.channels == 2:
-            # attenuate only the channel opposite the slider direction, so there is
-            # no positive gain and thus no clipping risk
-            attenuation = (100 - abs(dsp_filter.balance)) / 100
             if dsp_filter.balance > 0:
                 filter_params.append(f"pan=stereo|FL={attenuation}*FL|FR=FR")
             else:
                 filter_params.append(f"pan=stereo|FL=FL|FR={attenuation}*FR")
+        elif input_format.channels == 1:
+            # a mono source has no FL/FR to pan between, so widen it here by position.
+            # the output stage widens mono at unity, so the favoured channel stays there
+            # too, otherwise leaving the centre would drop the level by 3 dB
+            if dsp_filter.balance > 0:
+                filter_params.append(f"pan=stereo|FL={attenuation}*c0|FR=c0")
+            else:
+                filter_params.append(f"pan=stereo|FL=c0|FR={attenuation}*c0")
     if isinstance(dsp_filter, TransposeFilter) and dsp_filter.semitones != 0:
         # rubberband expects a frequency ratio rather than a number of semitones
         pitch = 2 ** (dsp_filter.semitones / 12)

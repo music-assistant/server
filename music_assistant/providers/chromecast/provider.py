@@ -25,7 +25,7 @@ from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import MULTICHANNEL_RECHECK_INTERVAL
 from .dashboard import ChromecastDashboards
-from .helpers import ChromecastInfo
+from .helpers import ChromecastInfo, without_ipv6_host_services
 from .player import ChromecastPlayer
 from .sendspin_bridge import SendspinBridgeManager
 
@@ -169,7 +169,9 @@ class ChromecastProvider(PlayerProvider):
 
         # Quick lookup and existing-player update under lock (fast path)
         with self._discover_lock:
-            disc_info: CastInfo = self.browser.devices[uuid]
+            # filter here so the socket client and the eureka_info HTTP calls below
+            # only receive addresses pychromecast can connect to
+            disc_info: CastInfo = without_ipv6_host_services(self.browser.devices[uuid])
 
             if disc_info.uuid is None:
                 self.logger.error("Discovered chromecast without uuid %s", disc_info)  # type: ignore[unreachable]

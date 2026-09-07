@@ -11,11 +11,13 @@ import pytest
 from music_assistant.models.plugin import AIEngine, PluginProvider
 from music_assistant.providers.music_quiz.ai_distractors import (
     MAX_AI_LABEL_LENGTH,
+    parse_ai_distractor_response,
+    request_ai_distractors,
+)
+from music_assistant.providers.music_quiz.constants import (
     MAX_AI_PROMPT_BYTES,
     MAX_AI_RESPONSE_BYTES,
     MAX_AI_RESPONSE_LINES,
-    parse_ai_distractor_response,
-    request_ai_distractors,
 )
 from music_assistant.providers.music_quiz.suggestions import (
     SuggestionCandidate,
@@ -298,9 +300,41 @@ def test_parse_ai_distractor_response_accepts_exact_schema() -> None:
 
 
 @pytest.mark.parametrize(
+    "fence",
+    ["```json", "```"],
+)
+def test_parse_ai_distractor_response_accepts_fenced_payload(fence: str) -> None:
+    """Accept an exact payload wrapped in a code fence with or without a language tag."""
+    payload = json.dumps(
+        {
+            "ranked_ids": ["candidate_0"],
+            "synthetic": [{"kind": "artist", "label": "Fake Artist"}],
+        }
+    )
+
+    parsed = parse_ai_distractor_response(
+        f"{fence}\n{payload}\n```\n",
+        ["candidate_0"],
+        ["artist"],
+    )
+
+    assert parsed.ranked_ids == ("candidate_0",)
+    assert [(item.kind, item.label) for item in parsed.synthetic] == [("artist", "Fake Artist")]
+
+
+@pytest.mark.parametrize(
     "response",
     [
         "not json",
+        "```json\nnot json\n```",
+        "Here is the JSON you asked for:\n```json\n"
+        + json.dumps(
+            {
+                "ranked_ids": ["candidate_0"],
+                "synthetic": [{"kind": "artist", "label": "Fake Artist"}],
+            }
+        )
+        + "\n```",
         json.dumps(
             {
                 "ranked_ids": ["candidate_0"],
@@ -402,6 +436,17 @@ def test_parse_ai_distractor_response_enforces_size_line_and_label_limits() -> N
         parse_ai_distractor_response(too_many_lines, [], [])
     with pytest.raises(ValueError, match="length"):
         parse_ai_distractor_response(oversized_label, [], ["artist"])
+
+
+def test_parse_ai_distractor_response_limits_the_original_response() -> None:
+    """Enforce the size and line limits before a code fence is stripped."""
+    oversized_response = f"```json\n{'x' * MAX_AI_RESPONSE_BYTES}\n```"
+    too_many_lines = "```json\n" + "\n".join("{}" for _ in range(MAX_AI_RESPONSE_LINES)) + "\n```"
+
+    with pytest.raises(ValueError, match="size"):
+        parse_ai_distractor_response(oversized_response, [], [])
+    with pytest.raises(ValueError, match="line"):
+        parse_ai_distractor_response(too_many_lines, [], [])
 
 
 @pytest.mark.asyncio

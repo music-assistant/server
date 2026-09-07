@@ -95,7 +95,16 @@
         'Hip-Hop',
       ]),
       'grouping': None,
-      'images': None,
+      'has_transcript': None,
+      'images': list([
+        dict({
+          'path': 'mf-082f435a363c32c57d5edb6a678a28d4_6410b3ce',
+          'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
+          'remotely_accessible': False,
+          'type': 'thumb',
+        }),
+      ]),
       'label': None,
       'languages': None,
       'last_refresh': None,
@@ -133,6 +142,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '"polar expedition"',
     'position': None,
@@ -187,6 +198,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -202,6 +214,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': '[unknown]',
         'position': None,
@@ -256,6 +270,7 @@
         'Hip-Hop',
       ]),
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
@@ -279,6 +294,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '8-bit lagerfeuer',
     'position': None,
@@ -333,6 +350,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -348,6 +366,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': '[unknown]',
         'position': None,
@@ -402,6 +422,7 @@
         'Hip-Hop',
       ]),
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
@@ -432,6 +453,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '8-bit lagerfeuer',
     'position': None,
@@ -540,6 +563,7 @@
         'Hip-Hop',
       ]),
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
@@ -563,6 +587,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '8-bit lagerfeuer',
     'position': None,
@@ -671,6 +697,7 @@
         'Hip-Hop',
       ]),
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
@@ -701,6 +728,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '8-bit lagerfeuer',
     'position': None,
@@ -809,6 +838,7 @@
         'Hip-Hop',
       ]),
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
@@ -832,6 +862,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '8-bit lagerfeuer',
     'position': None,
@@ -940,6 +972,7 @@
         'Hip-Hop',
       ]),
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
@@ -970,6 +1003,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '8-bit lagerfeuer',
     'position': None,
@@ -1025,6 +1060,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'ar-37ec820ca7193e17040c98f7da7c4b51_0',
@@ -1055,6 +1091,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '2 Mello',
     'position': None,
@@ -1109,6 +1147,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'ar-37ec820ca7193e17040c98f7da7c4b51_0',
@@ -1146,6 +1185,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '2 Mello',
     'position': None,
@@ -1200,6 +1241,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'ar-37ec820ca7193e17040c98f7da7c4b51_0',
@@ -1230,6 +1272,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '2 Mello',
     'position': None,
@@ -1284,6 +1328,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'ar-37ec820ca7193e17040c98f7da7c4b51_0',
@@ -1321,6 +1366,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '2 Mello',
     'position': None,
@@ -1371,6 +1418,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'ar-100000002',
@@ -1394,6 +1442,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'Synthetic',
     'position': None,
@@ -1444,6 +1494,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'ar-100000002',
@@ -1474,6 +1525,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'Synthetic',
     'position': None,
@@ -1525,6 +1578,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'pd-5',
@@ -1548,6 +1602,8 @@
       'release_date': '2012-05-06T18:18:38+00:00',
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '179- The End',
     'podcast': dict({
@@ -1568,6 +1624,7 @@
         'explicit': None,
         'genres': None,
         'grouping': None,
+        'has_transcript': None,
         'images': list([
           dict({
             'path': 'pd-5',
@@ -1591,6 +1648,8 @@
         'release_date': None,
         'review': None,
         'style': None,
+        'transcript': None,
+        'transcript_cues': None,
       }),
       'name': 'The History of Rome',
       'position': None,
@@ -1623,7 +1682,7 @@
       'uri': 'http://feeds.feedburner.com/TheHistoryOfRome',
       'version': '',
     }),
-    'position': 5,
+    'position': 0,
     'provider': 'opensubsonic',
     'provider_mappings': list([
       dict({
@@ -1673,6 +1732,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'pd-5',
@@ -1696,6 +1756,8 @@
       'release_date': '2012-05-06T18:18:38+00:00',
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '179- The End',
     'podcast': dict({
@@ -1716,6 +1778,7 @@
         'explicit': None,
         'genres': None,
         'grouping': None,
+        'has_transcript': None,
         'images': list([
           dict({
             'path': 'pd-5',
@@ -1739,6 +1802,8 @@
         'release_date': None,
         'review': None,
         'style': None,
+        'transcript': None,
+        'transcript_cues': None,
       }),
       'name': 'The History of Rome',
       'position': None,
@@ -1771,7 +1836,7 @@
       'uri': 'http://feeds.feedburner.com/TheHistoryOfRome',
       'version': '',
     }),
-    'position': 5,
+    'position': 0,
     'provider': 'opensubsonic',
     'provider_mappings': list([
       dict({
@@ -1821,6 +1886,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'pd-5',
@@ -1844,6 +1910,8 @@
       'release_date': '2012-05-06T18:18:38+00:00',
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '179- The End',
     'podcast': dict({
@@ -1864,6 +1932,7 @@
         'explicit': None,
         'genres': None,
         'grouping': None,
+        'has_transcript': None,
         'images': list([
           dict({
             'path': 'pd-5',
@@ -1887,6 +1956,8 @@
         'release_date': None,
         'review': None,
         'style': None,
+        'transcript': None,
+        'transcript_cues': None,
       }),
       'name': 'The History of Rome',
       'position': None,
@@ -1919,7 +1990,7 @@
       'uri': 'http://feeds.feedburner.com/TheHistoryOfRome',
       'version': '',
     }),
-    'position': 5,
+    'position': 0,
     'provider': 'opensubsonic',
     'provider_mappings': list([
       dict({
@@ -1969,6 +2040,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'al-2250',
@@ -1992,6 +2064,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': "Guns N' Roses - Use Your Illusion",
     'owner': '',
@@ -2047,6 +2121,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'pd-5',
@@ -2070,6 +2145,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'The History of Rome',
     'position': None,
@@ -2122,6 +2199,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'pd-5',
@@ -2145,6 +2223,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'The History of Rome',
     'position': None,
@@ -2216,6 +2296,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -2231,6 +2312,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': '[unknown]',
         'position': None,
@@ -2289,7 +2372,16 @@
         'Hip-Hop',
       ]),
       'grouping': None,
-      'images': None,
+      'has_transcript': None,
+      'images': list([
+        dict({
+          'path': 'mf-082f435a363c32c57d5edb6a678a28d4_6410b3ce',
+          'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
+          'remotely_accessible': False,
+          'type': 'thumb',
+        }),
+      ]),
       'label': None,
       'languages': None,
       'last_refresh': None,
@@ -2308,6 +2400,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '"polar expedition"',
     'position': None,
@@ -2417,6 +2511,7 @@
           'Hip-Hop',
         ]),
         'grouping': None,
+        'has_transcript': None,
         'images': list([
           dict({
             'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
@@ -2440,6 +2535,8 @@
         'release_date': None,
         'review': None,
         'style': None,
+        'transcript': None,
+        'transcript_cues': None,
       }),
       'name': 'Live at The Casbah - 2005-04-29',
       'position': None,
@@ -2490,6 +2587,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -2505,6 +2603,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': '[unknown]',
         'position': None,
@@ -2563,7 +2663,16 @@
         'Hip-Hop',
       ]),
       'grouping': None,
-      'images': None,
+      'has_transcript': None,
+      'images': list([
+        dict({
+          'path': 'mf-082f435a363c32c57d5edb6a678a28d4_6410b3ce',
+          'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
+          'remotely_accessible': False,
+          'type': 'thumb',
+        }),
+      ]),
       'label': None,
       'languages': None,
       'last_refresh': None,
@@ -2582,6 +2691,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '"polar expedition"',
     'position': None,
@@ -2651,6 +2762,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -2666,6 +2778,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'The New Deal',
         'position': None,
@@ -2724,7 +2838,16 @@
         'Hip-Hop',
       ]),
       'grouping': None,
-      'images': None,
+      'has_transcript': None,
+      'images': list([
+        dict({
+          'path': 'mf-082f435a363c32c57d5edb6a678a28d4_6410b3ce',
+          'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
+          'remotely_accessible': False,
+          'type': 'thumb',
+        }),
+      ]),
       'label': None,
       'languages': None,
       'last_refresh': None,
@@ -2743,6 +2866,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '"polar expedition"',
     'position': None,
@@ -2852,6 +2977,7 @@
           'Hip-Hop',
         ]),
         'grouping': None,
+        'has_transcript': None,
         'images': list([
           dict({
             'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
@@ -2875,6 +3001,8 @@
         'release_date': None,
         'review': None,
         'style': None,
+        'transcript': None,
+        'transcript_cues': None,
       }),
       'name': 'Live at The Casbah - 2005-04-29',
       'position': None,
@@ -2925,6 +3053,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -2940,6 +3069,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'The New Deal',
         'position': None,
@@ -2998,7 +3129,16 @@
         'Hip-Hop',
       ]),
       'grouping': None,
-      'images': None,
+      'has_transcript': None,
+      'images': list([
+        dict({
+          'path': 'mf-082f435a363c32c57d5edb6a678a28d4_6410b3ce',
+          'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
+          'remotely_accessible': False,
+          'type': 'thumb',
+        }),
+      ]),
       'label': None,
       'languages': None,
       'last_refresh': None,
@@ -3017,6 +3157,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '"polar expedition"',
     'position': None,
@@ -3144,7 +3286,16 @@
         'Hip-Hop',
       ]),
       'grouping': None,
-      'images': None,
+      'has_transcript': None,
+      'images': list([
+        dict({
+          'path': 'mf-082f435a363c32c57d5edb6a678a28d4_6410b3ce',
+          'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
+          'remotely_accessible': False,
+          'type': 'thumb',
+        }),
+      ]),
       'label': None,
       'languages': None,
       'last_refresh': None,
@@ -3163,6 +3314,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '"polar expedition"',
     'position': None,
@@ -3272,6 +3425,7 @@
           'Hip-Hop',
         ]),
         'grouping': None,
+        'has_transcript': None,
         'images': list([
           dict({
             'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
@@ -3295,6 +3449,8 @@
         'release_date': None,
         'review': None,
         'style': None,
+        'transcript': None,
+        'transcript_cues': None,
       }),
       'name': 'Live at The Casbah - 2005-04-29',
       'position': None,
@@ -3403,7 +3559,16 @@
         'Hip-Hop',
       ]),
       'grouping': None,
-      'images': None,
+      'has_transcript': None,
+      'images': list([
+        dict({
+          'path': 'mf-082f435a363c32c57d5edb6a678a28d4_6410b3ce',
+          'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
+          'remotely_accessible': False,
+          'type': 'thumb',
+        }),
+      ]),
       'label': None,
       'languages': None,
       'last_refresh': None,
@@ -3422,6 +3587,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '"polar expedition"',
     'position': None,
@@ -3549,7 +3716,16 @@
         'Hip-Hop',
       ]),
       'grouping': None,
-      'images': None,
+      'has_transcript': None,
+      'images': list([
+        dict({
+          'path': 'mf-082f435a363c32c57d5edb6a678a28d4_6410b3ce',
+          'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
+          'remotely_accessible': False,
+          'type': 'thumb',
+        }),
+      ]),
       'label': None,
       'languages': None,
       'last_refresh': None,
@@ -3568,6 +3744,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '"polar expedition"',
     'position': None,
@@ -3677,6 +3855,7 @@
           'Hip-Hop',
         ]),
         'grouping': None,
+        'has_transcript': None,
         'images': list([
           dict({
             'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
@@ -3700,6 +3879,8 @@
         'release_date': None,
         'review': None,
         'style': None,
+        'transcript': None,
+        'transcript_cues': None,
       }),
       'name': 'Live at The Casbah - 2005-04-29',
       'position': None,
@@ -3808,7 +3989,16 @@
         'Hip-Hop',
       ]),
       'grouping': None,
-      'images': None,
+      'has_transcript': None,
+      'images': list([
+        dict({
+          'path': 'mf-082f435a363c32c57d5edb6a678a28d4_6410b3ce',
+          'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
+          'remotely_accessible': False,
+          'type': 'thumb',
+        }),
+      ]),
       'label': None,
       'languages': None,
       'last_refresh': None,
@@ -3827,6 +4017,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': '"polar expedition"',
     'position': None,

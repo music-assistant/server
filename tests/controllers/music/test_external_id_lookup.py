@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 
 import pytest
 from music_assistant_models.enums import ExternalID
+from music_assistant_models.media_items import Album, Artist, ProviderMapping, UniqueList
 
 from music_assistant.constants import DB_TABLE_EXTERNAL_ID_LOOKUP
 from music_assistant.controllers.music import MusicController
@@ -14,6 +15,7 @@ from music_assistant.mass import MusicAssistant
 from .helpers import ISRC, create_track
 
 MBID = "b1a9c0e9-d987-4042-ae91-78d6a3267d69"
+BARCODE = "0724354283857"
 
 
 @pytest.fixture
@@ -37,6 +39,57 @@ async def _get_lookup_rows(music: MusicController, item_id: int | str) -> set[tu
     }
 
 
+def _create_album(
+    provider_instance: str,
+    item_id: str,
+    name: str,
+    artist_name: str,
+    year: int,
+    barcode: str = BARCODE,
+) -> Album:
+    """
+    Create an album as received from a music provider.
+
+    :param provider_instance: Provider instance the album originates from.
+    :param item_id: Provider-native album identifier.
+    :param name: Album name.
+    :param artist_name: Album artist name.
+    :param year: Album release year.
+    :param barcode: Album barcode.
+    """
+    provider_domain = provider_instance.rsplit("_", 1)[0]
+    return Album(
+        item_id=item_id,
+        provider=provider_instance,
+        name=name,
+        year=year,
+        external_ids={(ExternalID.BARCODE, barcode)},
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=provider_domain,
+                provider_instance=provider_instance,
+            )
+        },
+        artists=UniqueList(
+            [
+                Artist(
+                    item_id=f"{item_id}_artist",
+                    provider=provider_instance,
+                    name=artist_name,
+                    provider_mappings={
+                        ProviderMapping(
+                            item_id=f"{item_id}_artist",
+                            provider_domain=provider_domain,
+                            provider_instance=provider_instance,
+                        )
+                    },
+                )
+            ]
+        ),
+    )
+
+
 async def test_same_isrc_from_two_providers_dedupes(music: MusicController) -> None:
     """Two providers exposing the same track with an identical ISRC merge into one item."""
     library_track_1 = await music.tracks.add_item_to_library(create_track("spotify_1", "track_abc"))
@@ -45,6 +98,82 @@ async def test_same_isrc_from_two_providers_dedupes(music: MusicController) -> N
     assert library_track_1.item_id == library_track_2.item_id
     assert len(library_track_2.provider_mappings) == 2
     assert await music.tracks.library_count() == 1
+
+
+async def test_formatted_isrc_from_two_providers_dedupes(music: MusicController) -> None:
+    """Equivalent formatted ISRC values merge into one library track."""
+    first = create_track("spotify_1", "track_abc", isrc="US-RC1-76-07839")
+    second = create_track("tidal_1", "track_xyz", isrc="usrc17607839")
+
+    library_track_1 = await music.tracks.add_item_to_library(first)
+    library_track_2 = await music.tracks.add_item_to_library(second)
+
+    assert library_track_1.item_id == library_track_2.item_id
+    assert library_track_2.external_ids == {(ExternalID.ISRC, ISRC)}
+    untyped_match = await music.tracks.get_library_item_by_external_id("US-RC1-76-07839")
+    assert untyped_match is not None
+    assert untyped_match.item_id == library_track_1.item_id
+
+
+async def test_matching_checks_more_than_fifty_external_id_candidates(
+    music: MusicController,
+) -> None:
+    """Internal matching paginates every row sharing a non-unique identifier."""
+    for index in range(50):
+        await music.tracks.add_item_to_library(
+            create_track(
+                f"provider{index}_1",
+                f"collision_{index}",
+                name=f"Collision {index}",
+                duration=100 + index * 20,
+            )
+        )
+    expected = await music.tracks.add_item_to_library(
+        create_track("expected_1", "expected", name="Expected", duration=2000)
+    )
+
+    matched = await music.tracks.add_item_to_library(
+        create_track("incoming_1", "incoming", name="Different name", duration=2000)
+    )
+
+    assert matched.item_id == expected.item_id
+    assert await music.tracks.library_count() == 51
+
+
+async def test_non_unique_external_id_candidates_are_all_verified(
+    music: MusicController,
+) -> None:
+    """An unrelated barcode collision does not hide the correct album candidate."""
+    unrelated = await music.albums.add_item_to_library(
+        _create_album("apple_music_1", "unrelated", "Keeping It All Low", "XP", 2019)
+    )
+    expected = await music.albums.add_item_to_library(
+        _create_album(
+            "apple_music_1",
+            "expected",
+            "#1",
+            "Fischerspooner",
+            2001,
+            barcode="000724354283857",
+        )
+    )
+    await music.database.execute_write(
+        f"UPDATE {DB_TABLE_EXTERNAL_ID_LOOKUP} SET external_id = :external_id "
+        "WHERE media_type = 'album' AND item_id = :item_id",
+        {"external_id": "000724354283857", "item_id": int(expected.item_id)},
+    )
+
+    matched = await music.albums.add_item_to_library(
+        _create_album("qobuz_1", "qobuz_release", "#1", "Fischerspooner", 2002)
+    )
+
+    assert matched.item_id == expected.item_id
+    assert matched.item_id != unrelated.item_id
+    assert await music.albums.library_count() == 2
+    assert {mapping.provider_instance for mapping in matched.provider_mappings} == {
+        "apple_music_1",
+        "qobuz_1",
+    }
 
 
 async def test_get_library_item_by_external_id(music: MusicController) -> None:

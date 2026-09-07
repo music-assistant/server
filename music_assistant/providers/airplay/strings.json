@@ -1,8 +1,12 @@
 {
   "config_entries": {
-    "force_raop": {
-      "label": "Force RAOP protocol",
-      "description": "Escape hatch for devices whose AirPlay 2 implementation misbehaves (e.g. dropouts, silence or failed playback). \nWhen enabled, this device is streamed to using the older AirPlay 1 (RAOP) protocol instead of AirPlay 2. \nLeave this off unless this device genuinely works better on RAOP."
+    "streaming_mode": {
+      "label": "Streaming mode",
+      "description": "Pins the streaming protocol and clock timing for this device. \nLeave on Automatic unless this device misbehaves on its automatic route: only the modes this device can actually use are offered. \nWhen an automatic route conclusively fails, a warning in the log points at this setting; Music Assistant never changes it by itself. Pick one of the offered modes to work around a failing route, or set it back to Automatic to retry the original one."
+    },
+    "enable_hires": {
+      "label": "24-bit audio (hi-res)",
+      "description": "Stream 24-bit (hi-res) audio to this device when the source provides it. \nOn some devices this can cause intermittent crackling or static noises during playback, especially on wireless connections; disable this option if you hear such noises."
     },
     "encryption": {
       "label": "Enable encryption",
@@ -16,21 +20,36 @@
       "label": "Ignore volume reports sent by the device itself",
       "description": "The AirPlay protocol allows devices to report their own volume level. \nFor some devices this is not reliable and can cause unexpected volume changes. \nEnable this option to ignore these reports."
     },
+    "buffer_depth": {
+      "label": "Audio buffer depth",
+      "description": "How much audio the speaker keeps queued ahead of playback. Deeper values help speakers that stay silent or drop out while Music Assistant shows them playing - especially when the speaker also plays in a multiroom group of its own brand - at the cost of slower track skips and pauses. Automatic picks a default suited to the device.",
+      "options": {
+        "0": "Automatic",
+        "500": "500 ms",
+        "750": "750 ms",
+        "1000": "1000 ms",
+        "1500": "1500 ms",
+        "1750": "1750 ms",
+        "2000": "2000 ms",
+        "2500": "2500 ms",
+        "3000": "3000 ms"
+      }
+    },
     "sync_adjust": {
       "label": "Audio synchronization delay correction",
       "description": "Shifts when audio is heard on this device relative to the other players in a synced group. \nNegative values make this device play earlier; positive values make it play later. \nUse a negative value when this device is connected to a TV, AV receiver or amplifier that adds a processing delay, which makes it play slightly behind the rest of the group. \nExample: if this device lags the group by about 100 ms, set it to -100 to pull it back into sync."
     },
     "pairing_pin": {
-      "label": "Enter the 4-digit PIN shown on the device"
+      "label": "Enter the 4-digit pairing code shown on the device"
     },
     "pairing_password": {
       "label": "Enter the device password"
     },
     "companion_pairing_pin": {
-      "label": "Enter the 4-digit PIN shown on the device"
+      "label": "Enter the 4-digit pairing code shown on the device"
     },
     "mrp_pairing_pin": {
-      "label": "Enter the 4-digit PIN shown on the device"
+      "label": "Enter the 4-digit pairing code shown on the device"
     },
     "pair_now": {
       "label": "Set up now"
@@ -43,7 +62,7 @@
   "setup_flow": {
     "pair_pin": {
       "title": "Pair with your device",
-      "description": "A PIN code is shown on the screen of your device. Enter it below to complete pairing."
+      "description": "A pairing code is shown on the screen of your device. Enter it below to complete pairing."
     },
     "pair_password": {
       "title": "Enter the device password",
@@ -59,7 +78,7 @@
     },
     "pair_companion": {
       "title": "Pair remote control",
-      "description": "A PIN code is shown on the screen of your device. Enter it below to pair the remote controls."
+      "description": "A pairing code is shown on the screen of your device. Enter it below to pair the remote controls."
     },
     "mrp_offer": {
       "title": "Set up playback monitoring (optional)",
@@ -67,16 +86,21 @@
     },
     "pair_mrp": {
       "title": "Pair playback monitoring",
-      "description": "A PIN code is shown on the screen of your device. Enter it below to pair playback monitoring."
+      "description": "A pairing code is shown on the screen of your device. Enter it below to pair playback monitoring."
     },
     "abort": {
       "pairing_failed": "Could not start pairing with the device. Make sure the device is reachable on the network and try again."
     }
   },
   "errors": {
-    "invalid_pin": "Enter the numeric PIN shown on the screen of your device.",
+    "invalid_pin": "Enter the numeric pairing code shown on the screen of your device.",
+    "invalid_value": "Enter the complete pairing code exactly as shown on the device.",
     "authentication_failed": "The device rejected the saved password. Run the setup for this player to enter it again.",
-    "show_dashboard_failed": "Failed to show the dashboard on {0}."
+    "connection_refused": "The device refused the connection. Run the setup for this player to pair it again.",
+    "show_dashboard_failed": "Failed to show the dashboard on {0}.",
+    "pairing_backoff": "The device is refusing new pairing attempts after too many tries. Restart the device, then start pairing once and wait for the pairing code.",
+    "pairing_failed": "Pairing did not complete. Make sure the device is awake and reachable, then try again.",
+    "pairing_wrong_pin": "The device rejected the pairing code. Start pairing again and enter the new code shown on its screen."
   },
   "manifest": {
     "description": "Stream to AirPlay-enabled devices on your local network."

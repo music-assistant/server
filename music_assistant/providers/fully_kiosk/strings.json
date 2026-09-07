@@ -20,6 +20,9 @@
       "description": "Optional SHA-256 hex fingerprint. When provided it must match the device certificate and overrides the verify setting."
     }
   },
+  "errors": {
+    "show_dashboard_failed": "Failed to show the dashboard on {0}."
+  },
   "manifest": {
     "description": "Play audio on Fully Kiosk-enabled displays or Android devices."
   },

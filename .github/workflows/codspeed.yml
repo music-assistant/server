@@ -62,13 +62,11 @@ jobs:
         run: uv pip install --system --index-strategy unsafe-best-match . .[test] -r requirements_all.txt
 
       - name: Run benchmarks
-        uses: CodSpeedHQ/action@88472375d0a4572cf70a9f1fe3a4e0ab8da1b924  # v5.0.1
+        uses: CodSpeedHQ/action@373d6868929f444bc08d901fd0eb0ad52a8875ea  # v5.2.1
         with:
           mode: simulation
           # tests/benchmarks/ holds only deterministic pure-function benchmarks, so their
           # instruction counts are reproducible under simulation. Server-level / async
           # scenarios are non-deterministic under instruction counting and are covered by
           # the scripts/perf/ deep-dive suite instead.
-          # -o addopts="" clears the default "--cov music_assistant" so coverage
-          # instrumentation does not interfere with the CodSpeed measurements.
-          run: pytest tests/benchmarks/ --codspeed -o addopts=""
+          run: pytest tests/benchmarks/ --codspeed

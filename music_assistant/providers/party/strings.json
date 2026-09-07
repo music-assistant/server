@@ -29,16 +29,8 @@
     "guest_disabled_note": {
       "label": "Ready to get the party started? Enable guest access and let your friends add songs by scanning a QR code!"
     },
-    "action_enable_guest_access": {
-      "label": "Enable Guest Access",
-      "action_label": "Enable Guest Access"
-    },
     "guest_enabled_note": {
-      "label": "Guest mode is enabled. Guests will be able to join your party by scanning the QR code (which automatically expires after 8 hours unless configured otherwise). Click the button below to end the party and withdraw guest access."
-    },
-    "action_disable_guest_access": {
-      "label": "Disable Guest Access",
-      "action_label": "Disable Guest Access"
+      "label": "Guest mode is enabled. Guests will be able to join your party by scanning the QR code (which automatically expires after 8 hours unless configured otherwise). Switch the toggle off to end the party and withdraw guest access."
     },
     "qr_text": {
       "label": "QR Code Text",

@@ -106,7 +106,7 @@ class YandexStationProvider(PlayerProvider):
             return
 
         # Load device list from Quasar cloud API.  Two endpoints with
-        # *different* auth — ``get_speakers`` uses cookie/CSRF auth and
+        # *different* auth — ``get_speakers`` uses cookie auth and
         # carries cloud-side metadata (name, model, room, etc.), while
         # ``get_local_speakers`` uses Glagol/music_token auth and carries
         # the IP/port needed for the local WebSocket.  When cookies are

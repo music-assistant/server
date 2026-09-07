@@ -12,6 +12,7 @@ from music_assistant_models.enums import PlayerFeature
 from music_assistant_models.errors import SetupFailedError, UnsupportedFeaturedException
 
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
+from tests.common import collect_loop_errors
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -436,6 +437,50 @@ async def test_cancelled_remote_creation_failure_is_observed() -> None:
     assert all(task.done() for task in tasks)
 
 
+async def test_cancelled_remote_creation_failure_logs_no_loop_error() -> None:
+    """A creation failure observed after the caller was cancelled is not reported to the loop."""
+    sendspin = MagicMock()
+    mass, tasks = _create_mock_remote_mass(sendspin)
+    creation_started = asyncio.Event()
+    allow_creation = asyncio.Event()
+
+    async def _create_virtual_player(**_kwargs: object) -> str:
+        creation_started.set()
+        await allow_creation.wait()
+        raise RuntimeError("creation failed")
+
+    sendspin.create_virtual_player = AsyncMock(side_effect=_create_virtual_player)
+    sendspin.remove_virtual_player = AsyncMock()
+
+    with (
+        collect_loop_errors() as reported,
+        patch("music_assistant.helpers.shared_playback.LOGGER") as logger,
+    ):
+        session_task = asyncio.create_task(
+            SharedPlaybackSession.create_remote(
+                mass,
+                owner_instance_id="plugin--test",
+                display_name="Test Party",
+            )
+        )
+        await creation_started.wait()
+        session_task.cancel()
+        # the cancellation must be fully processed before the gate is released, so the
+        # creation failure reliably lands after the caller has already given up -- releasing
+        # the gate first would let the failure race the cancellation and pass even on the
+        # buggy shield-based code
+        with pytest.raises(asyncio.CancelledError):
+            await session_task
+
+        allow_creation.set()
+        await tasks[1]
+
+    logger.debug.assert_called_once()  # the cleanup task still observes and logs the failure
+    sendspin.remove_virtual_player.assert_not_awaited()
+    assert all(task.done() for task in tasks)
+    assert reported == []
+
+
 async def test_cancelled_remote_creation_timeout_cancels_task() -> None:
     """Bound cleanup when virtual-player creation does not finish."""
     sendspin = MagicMock()
@@ -559,20 +604,15 @@ async def test_cancelled_remote_creation_retries_cleanup() -> None:
     assert sendspin.remove_virtual_player.await_count == 2
 
 
-async def test_cancelled_remote_creation_bounds_hung_removal() -> None:
-    """Bound cleanup when virtual-player removal does not finish."""
+async def test_cancelled_remote_creation_awaits_a_slow_removal() -> None:
+    """Await a slow virtual-player removal to completion instead of abandoning it."""
     sendspin = MagicMock()
     mass = MagicMock()
-    removal_started = asyncio.Event()
-    removal_cancelled = asyncio.Event()
-    never_finish = asyncio.Event()
+    removal_completed = asyncio.Event()
 
     async def _remove_virtual_player(_player_id: str, **_kwargs: object) -> None:
-        removal_started.set()
-        try:
-            await never_finish.wait()
-        finally:
-            removal_cancelled.set()
+        await asyncio.sleep(0.1)
+        removal_completed.set()
 
     sendspin.is_virtual_player.return_value = True
     sendspin.remove_virtual_player = AsyncMock(side_effect=_remove_virtual_player)
@@ -588,9 +628,12 @@ async def test_cancelled_remote_creation_bounds_hung_removal() -> None:
             "music_assistant.helpers.shared_playback.REMOTE_REMOVAL_CLEANUP_DELAYS",
             (0.0,),
         ),
+        # the bound this path used to carry, patched back in so the removal is
+        # cut short - and this test fails - if it ever returns
         patch(
             "music_assistant.helpers.shared_playback.REMOTE_REMOVAL_CLEANUP_TIMEOUT",
             0.01,
+            create=True,
         ),
         patch("music_assistant.helpers.shared_playback.LOGGER") as logger,
     ):
@@ -601,9 +644,9 @@ async def test_cancelled_remote_creation_bounds_hung_removal() -> None:
             cleanup_required,
         )
 
-    assert removal_started.is_set()
-    assert removal_cancelled.is_set()
-    logger.warning.assert_called_once()
+    assert removal_completed.is_set()
+    assert sendspin.remove_virtual_player.await_count == 1
+    logger.warning.assert_not_called()
 
 
 async def test_remote_close_is_idempotent(mass: MusicAssistant) -> None:

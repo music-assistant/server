@@ -3,7 +3,24 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+from music_assistant.constants import (
+    CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
+    CONF_PREFER_WAV_FOR_LIVE_SOURCES,
+)
+from music_assistant.providers.mpd.player import MPDPlayer
 from music_assistant.providers.mpd.provider import MPDPlayerProvider
+
+
+async def test_mpd_prefers_wav_for_live_sources_by_default() -> None:
+    """MPD players default to the known-compatible low-latency WAV path."""
+    player = MPDPlayer.__new__(MPDPlayer)
+
+    entries = await player.get_config_entries()
+    entry = next(entry for entry in entries if entry.key == CONF_PREFER_WAV_FOR_LIVE_SOURCES)
+
+    assert (
+        entry.default_value == CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED.default_value
+    )
 
 
 async def test_remove_player_prunes_manual_host_config() -> None:

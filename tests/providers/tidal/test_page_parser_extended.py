@@ -1,37 +1,11 @@
 """Extended tests for Tidal Page Parser."""
 
 from typing import Any
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock, patch
 
-import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import ItemMapping
 
 from music_assistant.providers.tidal.tidal_page_parser import TidalPageParser
-
-
-@pytest.fixture
-def provider_mock() -> Mock:
-    """Return a mock provider."""
-    provider = Mock()
-    provider.domain = "tidal"
-    provider.instance_id = "tidal_instance"
-    provider.auth.user_id = "12345"
-    provider.logger = Mock()
-    provider.mass = Mock()
-    provider.mass.cache.get = AsyncMock(return_value=None)
-    provider.mass.cache.set = AsyncMock()
-
-    def get_item_mapping(media_type: MediaType, key: str, name: str) -> ItemMapping:
-        return ItemMapping(
-            media_type=media_type,
-            item_id=key,
-            provider=provider.instance_id,
-            name=name,
-        )
-
-    provider.get_item_mapping.side_effect = get_item_mapping
-    return provider
 
 
 def test_parser_initialization(provider_mock: Mock) -> None:

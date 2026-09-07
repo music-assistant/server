@@ -7,16 +7,28 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from music_assistant.providers.snapcast.constants import DEFAULT_SNAPCAST_FORMAT
+
 
 class FakeSnapstream:
     """Minimal Snapstream stand-in for testing ma_stream._register_tcp_server_source."""
 
-    def __init__(self, identifier: str, name: str, path: str = "") -> None:
+    def __init__(
+        self,
+        identifier: str,
+        name: str,
+        path: str = "",
+        sampleformat: str = "48000:16:2",
+        packed_s24le: bool = False,
+    ) -> None:
         """Initialize with stream identifier, name, and optional path."""
         self.identifier = identifier
         self.name = name
         self.path = path
-        self._stream: dict[str, Any] = {"uri": {"host": "127.0.0.1"}}
+        query: dict[str, Any] = {"sampleformat": sampleformat}
+        if packed_s24le:
+            query["packed_s24le"] = "true"
+        self._stream: dict[str, Any] = {"uri": {"host": "127.0.0.1", "query": query}}
         self._callback = None
 
     def set_callback(self, cb: Any) -> None:
@@ -38,9 +50,12 @@ class FakeSnapserver:
         self.add_stream_calls: list[str] = []
 
         self.stream_add_stream = AsyncMock(side_effect=self._add_stream_impl)
-        self.stream_remove_stream = AsyncMock()
+        self.stream_remove_stream = AsyncMock(side_effect=self._remove_stream_impl)
         self.status = AsyncMock(side_effect=self._status_impl)
         self._status_payload: dict[str, Any] | None = None
+
+    async def _remove_stream_impl(self, stream_id: str) -> None:
+        self._streams_by_id.pop(stream_id, None)
 
     @property
     def streams(self) -> list[FakeSnapstream]:
@@ -59,7 +74,14 @@ class FakeSnapserver:
             if not sid:
                 continue
             if sid not in self._streams_by_id:
-                self._streams_by_id[sid] = FakeSnapstream(sid, name=s.get("name", sid))
+                uri = s.get("uri", {}) if isinstance(s.get("uri"), dict) else {}
+                query = uri.get("query", {}) if isinstance(uri.get("query"), dict) else {}
+                self._streams_by_id[sid] = FakeSnapstream(
+                    sid,
+                    name=s.get("name", sid),
+                    sampleformat=str(query.get("sampleformat", "48000:16:2")),
+                    packed_s24le=str(query.get("packed_s24le", "")).lower() in {"1", "true", "yes"},
+                )
 
     async def _status_impl(self) -> tuple[Any, Any]:
         # status() in the real Snapserver is async and returns (result, error)
@@ -105,18 +127,37 @@ class FakeSnapserver:
         """Queue a generic (non-name-collision) error response."""
         self.queue_response({"code": -32603, "data": data, "message": "Internal error"})
 
-    def cache_stream_directly(self, stream_id: str, name: str) -> FakeSnapstream:
+    def cache_stream_directly(
+        self,
+        stream_id: str,
+        name: str,
+        *,
+        sampleformat: str = "48000:16:2",
+        packed_s24le: bool = False,
+    ) -> FakeSnapstream:
         """
         Pre-register a stream in the local cache (skipping the status round-trip).
 
         Use this when the test wants the orphan to be visible WITHOUT requiring
         adopt() to call status() + synchronize() first.
         """
-        s = FakeSnapstream(stream_id, name)
+        s = FakeSnapstream(
+            stream_id,
+            name,
+            sampleformat=sampleformat,
+            packed_s24le=packed_s24le,
+        )
         self._streams_by_id[stream_id] = s
         return s
 
-    def stage_orphan_stream(self, stream_id: str, name: str) -> None:
+    def stage_orphan_stream(
+        self,
+        stream_id: str,
+        name: str,
+        *,
+        sampleformat: str = "48000:16:2",
+        packed_s24le: bool = False,
+    ) -> None:
         """
         Stage an orphan stream that only appears after .synchronize(.status()).
 
@@ -124,9 +165,18 @@ class FakeSnapserver:
         status-driven resync (the actual Bug B post-MA-restart scenario).
         The stream is NOT in _streams_by_id until synchronize() is called.
         """
+        query: dict[str, Any] = {"sampleformat": sampleformat}
+        if packed_s24le:
+            query["packed_s24le"] = "true"
         self._status_payload = {
             "server": {
-                "streams": [{"id": stream_id, "name": name}],
+                "streams": [
+                    {
+                        "id": stream_id,
+                        "name": name,
+                        "uri": {"query": query},
+                    }
+                ],
                 "groups": [],
             }
         }
@@ -145,5 +195,6 @@ def fake_provider(fake_snapserver: FakeSnapserver) -> MagicMock:
     provider._snapserver = fake_snapserver
     provider._snapcast_stream_idle_threshold = 60000
     provider._use_builtin_server = False
+    provider.stream_audio_format = DEFAULT_SNAPCAST_FORMAT
     provider.logger = MagicMock()
     return provider

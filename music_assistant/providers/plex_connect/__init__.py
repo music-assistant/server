@@ -55,6 +55,8 @@ async def setup(
 class PlexConnectProvider(PluginProvider):
     """Plex Connect plugin provider implementation."""
 
+    reload_on_streams_network_change = True
+
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
@@ -237,8 +239,8 @@ class PlexConnectProvider(PluginProvider):
                 f"Plex Connect ready: '{player_name}' is now available in Plex apps "
                 f"on port {self._allocated_port}"
             )
-        except Exception as e:
-            self.logger.exception(f"Failed to start Plex remote control: {e}")
+        except Exception:
+            self.logger.exception("Failed to start Plex remote control")
             self._player_instance = None
 
     async def _teardown_player_instance(self) -> None:

@@ -105,6 +105,30 @@ async def test_admin_scoped_command_rejects_non_admin(role: UserRole) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("role", [UserRole.USER, UserRole.GUEST])
+async def test_users_read_command_rejects_non_service(role: UserRole) -> None:
+    """Reading user accounts is off limits for regular users and guests."""
+    client = _create_client(role, _command_handler(required_scope=Scope.USERS_READ))
+
+    await client._handle_command(CommandMessage(message_id="1", command="test/protected"))
+
+    assert _sent_error_code(client) == PERMISSION_DENIED
+    client.mass.create_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", [UserRole.SERVICE, UserRole.ADMIN])
+async def test_users_read_command_allows_service_and_admin(role: UserRole) -> None:
+    """The Home Assistant integration runs as a service account and may read user accounts."""
+    client = _create_client(role, _command_handler(required_scope=Scope.USERS_READ))
+
+    await client._handle_command(CommandMessage(message_id="1", command="test/protected"))
+
+    assert _sent_error_code(client) is None
+    client.mass.create_task.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_authenticated_command_without_scope_allows_guest() -> None:
     """Guests may invoke authenticated commands that require no specific scope."""
     client = _create_client(UserRole.GUEST, _command_handler(required_scope=None))

@@ -9,6 +9,7 @@ from aiohttp import ClientError
 
 from music_assistant.providers.airplay.helpers import (
     _CLI_BINARY_CHECK_TIMEOUT,
+    default_buffer_depth,
     get_cli_binary,
     get_decoded_property,
     probe_audio_formats,
@@ -239,3 +240,20 @@ def _mass_serving_info(info: dict[str, Any], status: int = 200) -> MagicMock:
     mass = MagicMock()
     mass.http_session.get = MagicMock(return_value=context)
     return mass
+
+
+def test_default_buffer_depth_family_table() -> None:
+    """
+    Every family defaults to Automatic since buffered became the auto-route.
+
+    The LinkPlay generations that used to need a deepened realtime queue
+    (WiiM 1750 ms, Edifier MS50A 2500 ms) manage their own buffer on the
+    buffered stream; the per-player depth setting remains as the manual
+    override for field reports.
+    """
+    assert (
+        default_buffer_depth("Linkplay Technology Inc.", "WiiM Pro Receiver", "p20.4.8.814756") == 0
+    )
+    assert default_buffer_depth("Edifier Inc", "Edifier MS50A", "p20.Linkplay.4.6.430230") == 0
+    assert default_buffer_depth("Sonos", "Era 100", "p20.96.0-79160") == 0
+    assert default_buffer_depth("Apple Inc.", "AppleTV11,1", None) == 0

@@ -17,13 +17,16 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import yaml
 from aiohttp.test_utils import TestClient, TestServer
+from music_assistant_models.config_entries import ConfigActionResult
+from music_assistant_models.errors import ActionUnavailable
 
+from music_assistant.providers.fastmcp_server import _init_helpers
 from music_assistant.providers.fastmcp_server._init_helpers import (
     _detect_external_base_url,
     _dispatch_open_connect,
@@ -34,6 +37,7 @@ from music_assistant.providers.fastmcp_server.connect.clients import CLIENTS, lo
 from music_assistant.providers.fastmcp_server.connect.mount import mount_connect_wizard
 from music_assistant.providers.fastmcp_server.connect.page import HTML
 from music_assistant.providers.fastmcp_server.constants import CONF_CONNECT_EXTERNAL_URL
+from music_assistant.providers.fastmcp_server.provider import MCPServerProvider
 
 from .conftest import FakeWebserver, build_aiohttp_app
 
@@ -1004,11 +1008,11 @@ def test_detect_external_base_url_prefers_matching_client() -> None:
     other = SimpleNamespace(user_id="u2", username="someone-else")
     clients = [
         SimpleNamespace(
-            _authenticated_user=other,
+            authenticated_user=other,
             base_url="https://wrong.example.com",
         ),
         SimpleNamespace(
-            _authenticated_user=user,
+            authenticated_user=user,
             base_url="https://ha.example.com/d5369777_music_assistant_dev",
         ),
     ]
@@ -1026,10 +1030,10 @@ def test_detect_external_base_url_returns_none_without_match() -> None:
     user = _matching_user()
     clients = [
         SimpleNamespace(
-            _authenticated_user=SimpleNamespace(user_id="other", username="other"),
+            authenticated_user=SimpleNamespace(user_id="other", username="other"),
             base_url="https://other.example.com",
         ),
-        SimpleNamespace(_authenticated_user=user, base_url=None),
+        SimpleNamespace(authenticated_user=user, base_url=None),
     ]
     mass = MagicMock()
     mass.webserver.clients = clients
@@ -1118,7 +1122,7 @@ async def test_dispatch_detects_ws_client_base_url(
     mass = MagicMock()
     mass.webserver.clients = [
         SimpleNamespace(
-            _authenticated_user=user,
+            authenticated_user=user,
             base_url="https://ha.example.com/d5369777_music_assistant_dev",
         )
     ]
@@ -1223,6 +1227,35 @@ async def test_dispatch_uses_server_base_url_for_direct_access(
 
     assert url is not None
     assert url.startswith("http://192.0.2.20:8095/mcp/v1/connect")
+
+
+async def test_open_connect_action_reports_the_url_to_open() -> None:
+    """The action hands the wizard URL back as the url the client opens once."""
+    provider = MagicMock()
+    with patch.object(
+        _init_helpers,
+        "_dispatch_open_connect",
+        AsyncMock(return_value="/mcp/v1/connect?bootstrap=jwt-xyz"),
+    ):
+        result = await MCPServerProvider.handle_config_action(provider, "open_connect")
+
+    assert isinstance(result, ConfigActionResult)
+    assert result.open_url == "/mcp/v1/connect?bootstrap=jwt-xyz"
+    assert result.message is None
+
+
+async def test_open_connect_action_without_a_url_reports_failure() -> None:
+    """A dispatch that yields no URL failed, so the action reports an error."""
+    provider = MagicMock()
+    provider.translation_owner = "provider.fastmcp_server"
+    with (
+        patch.object(_init_helpers, "_dispatch_open_connect", AsyncMock(return_value=None)),
+        pytest.raises(ActionUnavailable) as err,
+    ):
+        await MCPServerProvider.handle_config_action(provider, "open_connect")
+
+    assert err.value.translation_key == "connect_wizard_unavailable"
+    assert err.value.translation_owner == "provider.fastmcp_server"
 
 
 # ── Client template integrity ────────────────────────────────────────────────

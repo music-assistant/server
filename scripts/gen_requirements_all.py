@@ -70,12 +70,12 @@ def gather_requirements_from_manifests() -> list[str]:
     providers_path = "music_assistant/providers"
     for dir_str in sorted(os.listdir(providers_path)):  # noqa: PTH208, RUF100
         dir_path = os.path.join(providers_path, dir_str)
-        if not os.path.isdir(dir_path):
+        if not Path(dir_path).is_dir():
             continue
         # get files in subdirectory
         for file_str in os.listdir(dir_path):  # noqa: PTH208, RUF100
             file_path = os.path.join(dir_path, file_str)
-            if not os.path.isfile(file_path):
+            if not Path(file_path).is_file():
                 continue
             if file_str != "manifest.json":
                 continue
@@ -89,7 +89,7 @@ def gather_requirements_from_manifests() -> list[str]:
 
 def main() -> int:
     """Run the script."""
-    if not os.path.isfile("requirements_all.txt"):
+    if not Path("requirements_all.txt").is_file():
         print("Run this from MA root dir")
         return 1
 

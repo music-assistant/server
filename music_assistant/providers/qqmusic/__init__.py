@@ -72,7 +72,14 @@ from .constants import (
     QUALITY_MP3_128,
     QUALITY_MP3_320,
 )
-from .helpers import extract_first_text, normalize_qq_lyric_text, qrc_to_lrc
+from .helpers import (
+    extract_album_mid,
+    extract_first_text,
+    extract_playlist_ids,
+    extract_track_mid,
+    normalize_qq_lyric_text,
+    qrc_to_lrc,
+)
 from .parsers import (
     build_playlist_id,
     extract_guess_recommend_tracks,
@@ -759,6 +766,11 @@ class QQMusicProvider(MusicProvider):
     def _parse_playlist(self, playlist_obj: dict[str, Any]) -> Playlist:
         return parse_playlist(playlist_obj, self.domain, self.instance_id)
 
+    def _skipped_playlist_id(self, playlist_obj: dict[str, Any]) -> str | None:
+        """Return the provider playlist id of a playlist that could not be parsed."""
+        dissid, dirid = extract_playlist_ids(playlist_obj)
+        return build_playlist_id(dissid, dirid) if dissid else None
+
     @use_cache(3600 * 3)
     async def search(
         self,
@@ -1048,7 +1060,10 @@ class QQMusicProvider(MusicProvider):
                 try:
                     yield self._parse_artist(artist_obj)
                     total_yielded += 1
-                except InvalidDataError, TypeError, ValueError:
+                except (InvalidDataError, TypeError, ValueError) as error:
+                    mapping = self._get_artist_mapping(artist_obj)
+                    item_id = mapping.item_id if mapping else None
+                    self.report_skipped_sync_item(MediaType.ARTIST, item_id, error)
                     continue
             if len(artists) < num:
                 break
@@ -1076,7 +1091,10 @@ class QQMusicProvider(MusicProvider):
                 try:
                     yield self._parse_track(song)
                     yielded += 1
-                except InvalidDataError, TypeError, ValueError:
+                except (InvalidDataError, TypeError, ValueError) as error:
+                    self.report_skipped_sync_item(
+                        MediaType.TRACK, extract_track_mid(song) or None, error
+                    )
                     continue
             if total and yielded >= total:
                 break
@@ -1110,7 +1128,10 @@ class QQMusicProvider(MusicProvider):
                 try:
                     yield self._parse_album(album_obj)
                     total_yielded += 1
-                except InvalidDataError, TypeError, ValueError:
+                except (InvalidDataError, TypeError, ValueError) as error:
+                    self.report_skipped_sync_item(
+                        MediaType.ALBUM, extract_album_mid(album_obj) or None, error
+                    )
                     continue
             if len(albums) < num:
                 break
@@ -1129,7 +1150,10 @@ class QQMusicProvider(MusicProvider):
         ):
             try:
                 yield self._parse_playlist(playlist_obj)
-            except InvalidDataError, TypeError, ValueError:
+            except (InvalidDataError, TypeError, ValueError) as error:
+                self.report_skipped_sync_item(
+                    MediaType.PLAYLIST, self._skipped_playlist_id(playlist_obj), error
+                )
                 continue
 
         page = 1
@@ -1149,7 +1173,10 @@ class QQMusicProvider(MusicProvider):
             for playlist_obj in fav_playlists:
                 try:
                     yield self._parse_playlist(playlist_obj)
-                except InvalidDataError, TypeError, ValueError:
+                except (InvalidDataError, TypeError, ValueError) as error:
+                    self.report_skipped_sync_item(
+                        MediaType.PLAYLIST, self._skipped_playlist_id(playlist_obj), error
+                    )
                     continue
             if len(fav_playlists) < num:
                 break

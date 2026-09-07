@@ -101,8 +101,8 @@ def is_allowed_redirect_url(
         LOGGER.info("Redirect URL is external (requires consent): %s", url)
         return True, "external"
 
-    except Exception as e:
-        LOGGER.exception("Error validating redirect URL: %s", e)
+    except Exception:
+        LOGGER.exception("Error validating redirect URL")
         return False, "blocked"
 
 

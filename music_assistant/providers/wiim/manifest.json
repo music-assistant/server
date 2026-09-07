@@ -2,10 +2,10 @@
   "type": "player",
   "domain": "wiim",
   "stage": "stable",
-  "name": "WiiM",
-  "description": "Stream music to WiiM devices.",
+  "name": "WiiM / LinkPlay",
+  "description": "Discover and control WiiM, Audio Pro and other compatible LinkPlay speakers, including generic LinkPlay devices such as Edifier.",
   "codeowners": ["@davidanthoff", "@music-assistant"],
-  "requirements": ["wiim==0.1.5"],
+  "requirements": ["wiim==0.1.7", "pywiim==2.3.0"],
   "documentation": "https://music-assistant.io/player-support/wiim/",
   "mdns_discovery": ["_linkplay._tcp.local."]
 }

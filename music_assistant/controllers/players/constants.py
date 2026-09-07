@@ -8,3 +8,4 @@ class PlayerLockPurpose(StrEnum):
 
     PLAYBACK = "playback"
     VOLUME = "volume"
+    GROUP_VOLUME = "group_volume"

@@ -17,8 +17,6 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import quote
 
 from aiohttp import ClientError
-from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import (
     LoginFailed,
     ProviderUnavailableError,
@@ -38,6 +36,7 @@ from music_assistant.providers.filesystem_cloud.base import (
 )
 from music_assistant.providers.filesystem_local.constants import (
     CONF_CONTENT_TYPE,
+    CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
@@ -45,6 +44,7 @@ from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PROPAGATE_GENRES,
+    content_type_config_entry,
 )
 
 from .auth import MAOneDriveAuth
@@ -52,7 +52,7 @@ from .constants import GRAPH_BASE_URL
 
 if TYPE_CHECKING:
     from aiohttp import ClientResponse
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -98,9 +98,11 @@ class OneDriveFileSystemProvider(CloudFileSystemProvider):
         """
         # the content type is set by the setup flow; surface it read-only so the sync
         # options' depends_on chains still resolve
-        content_type = getattr(self, "media_content_type", "music")
+        content_type = str(
+            self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
+        )
         return (
-            ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
+            content_type_config_entry(content_type),
             CONF_ENTRY_MISSING_ALBUM_ARTIST,
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
             CONF_ENTRY_LIBRARY_SYNC_TRACKS,
@@ -145,12 +147,23 @@ class OneDriveFileSystemProvider(CloudFileSystemProvider):
         out: list[RawItem] = []
         for item in items:
             if isinstance(item, Folder):
-                out.append((item.id, item.name, True, "folder", item.size))
+                out.append((item.id, item.name, True, "folder", item.size, None))
                 continue
-            # quickXorHash is a stable content hash; not every file has one,
-            # so fall back to the size
+            # quickXorHash is a stable content hash; not every file has one, so fall back to
+            # the size - this is also the imported-media checksum, so it must stay exactly as
+            # it always has been, or every existing mapping would look changed on next sync
             checksum = item.hashes.quick_xor_hash or str(item.size)
-            out.append((item.id, item.name, False, checksum, item.size))
+            # a stronger hash (when the account computes one) is only used to detect a
+            # metadata file (NFO/image) changing; it never touches the checksum above. Note:
+            # the onedrive_personal_sdk client's typed File model does not surface an eTag,
+            # cTag, or lastModifiedDateTime (Microsoft Graph returns them, but the SDK's
+            # dataclass mapping silently drops unmapped fields), so a same-size edit on a file
+            # with none of these hashes is the one residual case this cannot detect; that
+            # would require bypassing the SDK's typed client for raw Graph responses
+            metadata_token = (
+                item.hashes.quick_xor_hash or item.hashes.sha256_hash or item.hashes.sha1_hash
+            )
+            out.append((item.id, item.name, False, checksum, item.size, metadata_token))
         return out
 
     async def _api_download_bytes(self, file_id: str) -> bytes:

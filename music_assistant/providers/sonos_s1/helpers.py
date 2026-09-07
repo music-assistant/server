@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import functools
+import inspect
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast, overload
 
 from music_assistant_models.errors import PlayerCommandFailed
-from soco import SoCo
 from soco.exceptions import SoCoException, SoCoUPnPException
 
 from .constants import UID_POSTFIX, UID_PREFIX
 
 if TYPE_CHECKING:
+    from soco import SoCo
+
     from .player import SonosPlayer
 
 
@@ -49,43 +52,33 @@ def soco_error(
 
     def decorator(funct: _FuncType[_T, _P, _R]) -> _ReturnFuncType[_T, _P, _R]:
         """Decorate functions."""
+        if inspect.iscoroutinefunction(funct):
 
+            @functools.wraps(funct)
+            async def async_wrapper(self: _T, *args: _P.args, **kwargs: _P.kwargs) -> Any:
+                """Await the call so soco UPnP exceptions surface inside the try block."""
+                try:
+                    return await funct(self, *args, **kwargs)
+                except (OSError, SoCoException, SoCoUPnPException, TimeoutError) as err:
+                    _handle_soco_error(self, err, funct.__qualname__, errorcodes)
+                    return None
+
+            return cast("_ReturnFuncType[_T, _P, _R]", async_wrapper)
+
+        @functools.wraps(funct)
         def wrapper(self: _T, *args: _P.args, **kwargs: _P.kwargs) -> _R | None:
             """Wrap for all soco UPnP exception."""
-            args_soco = next((arg for arg in args if isinstance(arg, SoCo)), None)
             try:
                 result = funct(self, *args, **kwargs)
             except (OSError, SoCoException, SoCoUPnPException, TimeoutError) as err:
-                error_code = getattr(err, "error_code", None)
-                function = funct.__qualname__
-                if errorcodes and error_code in errorcodes:
-                    _LOGGER.debug("Error code %s ignored in call to %s", error_code, function)
-                    return None
-
-                if (target := _find_target_identifier(self, args_soco)) is None:
-                    msg = "Unexpected use of soco_error"
-                    raise RuntimeError(msg) from err
-
-                message = f"Error calling {function} on {target}: {err}"
-                raise SonosUpdateError(message) from err
+                _handle_soco_error(self, err, funct.__qualname__, errorcodes)
+                return None
 
             return result
 
         return wrapper
 
     return decorator
-
-
-def _find_target_identifier(instance: Any, fallback_soco: SoCo | None) -> str | None:
-    """Extract the best available target identifier from the provided instance object."""
-    if zone_name := getattr(instance, "zone_name", None):
-        # SonosPlayer instance
-        return str(zone_name)
-    if soco := getattr(instance, "soco", fallback_soco):
-        # Holds a SoCo instance attribute
-        # Only use attributes with no I/O
-        return str(soco._player_name or soco.ip_address)
-    return None
 
 
 def hostname_to_uid(hostname: str) -> str:
@@ -105,3 +98,22 @@ def sync_get_visible_zones(soco: SoCo) -> set[SoCo]:
     _ = soco.household_id
     _ = soco.uid
     return soco.visible_zones or set()
+
+
+def _handle_soco_error(
+    instance: SonosPlayer,
+    err: Exception,
+    function: str,
+    errorcodes: list[str] | None,
+) -> None:
+    """Ignore a filtered UPnP error code or raise the error as a SonosUpdateError."""
+    error_code = getattr(err, "error_code", None)
+    if errorcodes and error_code in errorcodes:
+        _LOGGER.debug("Error code %s ignored in call to %s", error_code, function)
+        return
+
+    soco = instance.soco
+    # Only use attributes with no I/O
+    target = soco._player_name or soco.ip_address
+    message = f"Error calling {function} on {target}: {err}"
+    raise SonosUpdateError(message) from err

@@ -15,7 +15,10 @@ from tests.common import MockPlayer, MockProvider
 def mock_mass() -> MagicMock:
     """Create a mock MusicAssistant instance."""
     mass = MagicMock()
-    mass.config.get_raw_player_config_value = MagicMock(return_value="auto")
+    mass.config.get_raw_player_config_value = MagicMock(
+        side_effect=lambda _player_id, _key, default=None: default
+    )
+    mass.players.get_audio_source_session = MagicMock(return_value=None)
     return mass
 
 

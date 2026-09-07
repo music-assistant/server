@@ -14,7 +14,7 @@ from music_assistant_models.provider import ProviderManifest
 from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, CoreConfig
+    from music_assistant_models.config_entries import ConfigActionResult, ConfigEntry, CoreConfig
 
     from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
@@ -64,12 +64,17 @@ class CoreController:
         """
         return ()
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
         """
-        Handle a one-shot action button press from this module's config and re-render.
+        Run the one-shot side effect for a pressed action button from this module's config.
 
         Override to run the side effect for each ``ConfigEntryType.ACTION`` entry this
-        module declares, then return the (possibly refreshed) config entries to display.
+        module declares. Return a ``ConfigActionResult`` to report the outcome (a message
+        to show and/or a url to open), or None when there is nothing to report. Raise to
+        report failure to the caller. Returning config entries re-renders the config form
+        with those entries instead.
 
         :param action: The action id of the pressed button (an entry's ``action`` key).
         """

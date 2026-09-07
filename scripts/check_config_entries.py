@@ -1,9 +1,10 @@
 """
-Guard against invalid ConfigEntry/ConfigValueOption definitions.
+Guard against invalid ConfigEntry/ConfigValueOption/ConfigActionResult definitions.
 
-Fails when a ConfigEntry or ConfigValueOption hardcodes user-facing text instead of strings.json,
-when a ConfigEntry.category value is not defined in any strings.json config_categories section,
-or when an entry returned by ``get_config_entries`` is required but has no default value.
+Fails when a ConfigEntry, ConfigValueOption or ConfigActionResult hardcodes user-facing text
+instead of strings.json, when a ConfigEntry.category value is not defined in any strings.json
+config_categories section, or when an entry returned by ``get_config_entries`` is required but
+has no default value.
 
 A provider instance is created with empty values (setup input is collected by the setup flow into
 ``setup_data``), and its config is validated at load right after the instance is constructed. An
@@ -16,6 +17,11 @@ localized at serialization from the owning provider's (or the common) ``strings.
 as literals in code means the text never reaches Lokalise and stays English-only. This is a
 pre-commit/CI guard that scans the source tree and prints every offending call so the text can be
 moved into a strings.json.
+
+A ConfigActionResult's ``message`` is localized the same way, but from its own
+``config_actions.<translation_key>`` group, so a static outcome message must be authored there and
+referenced with ``translation_key`` instead of passed as a literal. A message computed from live
+data (passed in as a variable) is a legitimate data-driven value and is left alone.
 
 ConfigEntry text may also be composed in code (an f-string, concatenation, ``.format()``): a
 dynamic label must instead use a strings.json template (with ``{0}``/``{1}`` placeholders) plus
@@ -39,11 +45,12 @@ import ast
 import json
 import os
 import sys
+from pathlib import Path
 
 # ruff: noqa: T201
 
 # repo paths (this file lives at <repo>/scripts/check_config_entries.py)
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_REPO_ROOT = str(Path(__file__).resolve().parents[1])
 PACKAGE_ROOT = os.path.join(_REPO_ROOT, "music_assistant")
 
 # constructor name -> (localized text fields, whether an f-string also counts, strings.json target).
@@ -51,6 +58,7 @@ PACKAGE_ROOT = os.path.join(_REPO_ROOT, "music_assistant")
 _CHECKS: dict[str, tuple[tuple[str, ...], bool, str]] = {
     "ConfigEntry": (("label", "description", "action_label"), True, "config_entries.<key>.<field>"),
     "ConfigValueOption": (("title",), False, "config_entries.<key>.options.<value>"),
+    "ConfigActionResult": (("message",), True, "config_actions.<translation_key>"),
 }
 
 # ConfigEntryType members that never hold a value (models: config_entries.UI_ONLY)
@@ -106,11 +114,11 @@ def find_violations() -> list[str]:
 
 
 def main() -> int:
-    """Print every invalid ConfigEntry/ConfigValueOption definition; return 1 when any were found."""
+    """Print every invalid definition found in the source tree; return 1 when any were found."""
     violations = find_violations()
     if not violations:
         return 0
-    print("Invalid ConfigEntry/ConfigValueOption definitions found:", file=sys.stderr)
+    print("Invalid config entry/option/action-result definitions found:", file=sys.stderr)
     for violation in violations:
         print(f"  {violation}", file=sys.stderr)
     return 1
@@ -141,7 +149,7 @@ def _iter_python_files() -> list[str]:
     """Return all shipped provider/controller Python files (skipping ``_*``/``test`` templates)."""
     result: list[str] = []
     for root, dirs, files in os.walk(PACKAGE_ROOT):
-        parts = root.split(os.sep)
+        parts = Path(root).parts
         if "providers" in parts:
             index = parts.index("providers")
             if len(parts) > index + 1 and (

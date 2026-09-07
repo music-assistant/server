@@ -69,8 +69,11 @@ def _migrate_legacy_token(mass: MusicAssistant, config: ProviderConfig) -> None:
         CONF_REFRESH_TOKEN_GLOBAL
     ):
         return
-    # a custom client id means the legacy token authenticated a developer session
-    custom_client_id = config.get_value(CONF_CLIENT_ID)
+    # a custom client id means the legacy token authenticated a developer session.
+    # the setup_data read yields the value as stored (encrypted), which is only ever
+    # tested for presence and fed back to encrypt_string, which leaves an already
+    # encrypted value alone.
+    custom_client_id = config.setup_data.get(CONF_CLIENT_ID) or config.get_value(CONF_CLIENT_ID)
     target_key = CONF_REFRESH_TOKEN_DEV if custom_client_id else CONF_REFRESH_TOKEN_GLOBAL
     base = f"{CONF_PROVIDERS}/{config.instance_id}/setup_data"
     encrypted = mass.config.encrypt_string(str(legacy_token))

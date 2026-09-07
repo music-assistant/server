@@ -154,7 +154,7 @@ async def test_unload_stops_server_first(provider: MSXBridgeProvider) -> None:
     mock_player.display_name = "Test TV"
     mock_player.player_id = "msx_test"
     provider.mass.players.all.return_value = [mock_player]  # type: ignore[attr-defined]
-    provider.mass.players.all_players.return_value = [mock_player]  # type: ignore[attr-defined]
+    provider.mass.players.iter_players.return_value = [mock_player]  # type: ignore[attr-defined]
 
     await provider.unload()
 
@@ -166,7 +166,7 @@ async def test_unload_no_server(provider: MSXBridgeProvider) -> None:
     """Unload should not crash when http_server is None."""
     provider.http_server = None
     provider.mass.players.all.return_value = []  # type: ignore[attr-defined]
-    provider.mass.players.all_players.return_value = []  # type: ignore[attr-defined]
+    provider.mass.players.iter_players.return_value = []  # type: ignore[attr-defined]
 
     await provider.unload()  # should not raise
 
