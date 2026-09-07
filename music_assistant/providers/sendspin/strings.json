@@ -236,6 +236,7 @@
     "pairing_error_pin_length": "The device rejected the pairing code length.",
     "pairing_error_cancelled": "Pairing was cancelled on the device.",
     "pairing_error_method_unsupported": "The device does not support this pairing method.",
+    "pairing_error_format_unsupported": "The device only offers QR pairing, which Music Assistant cannot scan.",
     "pairing_error_aborted": "The device aborted the pairing attempt.",
     "pairing_error_failed": "Pairing failed. Please check the details and try again.",
     "pairing_error_handshake": "The secure connection to the device failed during pairing. Please try again.",

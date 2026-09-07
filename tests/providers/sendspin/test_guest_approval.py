@@ -17,7 +17,7 @@ from aiosendspin.noise.trust_store import (
 
 from music_assistant.providers.sendspin.provider import SendspinProvider
 
-from .test_pin_session import _FakeMass
+from .test_pairing_code_session import _FakeMass
 
 if TYPE_CHECKING:
     from aiosendspin.server import SendspinServer

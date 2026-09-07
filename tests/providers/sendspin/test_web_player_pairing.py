@@ -10,7 +10,7 @@ import pytest
 from aiosendspin.models.types import PairMethod
 from aiosendspin.noise.keys import PSK_SIZE, b64url_encode
 from aiosendspin.noise.pairing import PairingError
-from aiosendspin.noise.pairing_token import PSKPairingToken, encode_token
+from aiosendspin.noise.pairing_token import PSKPairingToken, encode_psk_token
 from aiosendspin.noise.trust_store import PskCategory
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.errors import InvalidCommand
@@ -19,7 +19,7 @@ import music_assistant.providers.sendspin.provider as provider_module
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.providers.sendspin.player import SendspinBasePlayer
 
-from .test_pin_session import _FakeServerApi, _make_provider
+from .test_pairing_code_session import _FakeServerApi, _make_provider
 
 if TYPE_CHECKING:
     from aiosendspin.server.client import SendspinClient
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 _CLIENT_ID = b64url_encode(bytes(range(32)))
 _PAIRING_PSK = bytes(range(100, 100 + PSK_SIZE))
-_TOKEN = encode_token(PSKPairingToken(client_id=_CLIENT_ID, pairing_psk=_PAIRING_PSK))
+_TOKEN = encode_psk_token(PSKPairingToken(client_id=_CLIENT_ID, pairing_psk=_PAIRING_PSK))
 
 
 class _FakePairingStore:
@@ -56,7 +56,7 @@ class _WebPlayerServerApi(_FakeServerApi):
     def __init__(
         self, *, connected: bool = True, paired: bool = False, record_owner: str | None = None
     ) -> None:
-        super().__init__([], await_pin=False, connected=connected)
+        super().__init__([], await_pairing_code=False, connected=connected)
         self.pairing_store = _FakePairingStore(paired=paired, record_owner=record_owner)
 
 

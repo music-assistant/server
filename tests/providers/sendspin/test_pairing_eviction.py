@@ -20,7 +20,7 @@ from music_assistant.providers.sendspin.provider import (
     _evict_stale_pairings,
 )
 
-from .test_pin_session import _FakeMass, _timers
+from .test_pairing_code_session import _FakeMass, _timers
 
 if TYPE_CHECKING:
     import pytest

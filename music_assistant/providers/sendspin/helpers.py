@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from aiosendspin.models.core import PairMethodDescriptor
@@ -43,8 +43,7 @@ _PAIR_ABORT_KEYS = {
     PairAbortReason.ATTEMPT_TIMEOUT: "pairing_error_timeout",
     PairAbortReason.CONCURRENT_ATTEMPT: "pairing_error_concurrent",
     PairAbortReason.METHOD_NOT_SUPPORTED: "pairing_error_method_unsupported",
-    PairAbortReason.PIN_LENGTH_UNACCEPTABLE: "pairing_error_pin_length",
-    PairAbortReason.PIN_MISMATCH: "pairing_error_pin_mismatch",
+    PairAbortReason.PAIRING_CODE_MISMATCH: "pairing_error_pin_mismatch",
     PairAbortReason.USER_CANCELLED: "pairing_error_cancelled",
 }
 
@@ -80,7 +79,8 @@ def action_entry(action: str, *, advanced: bool = False) -> ConfigEntry:
 
 
 def effective_pair_methods(
-    info: ClientHelloPayload | None, config: ManagementResultData | None
+    info: ClientHelloPayload | None,
+    config: ManagementResultData | None,
 ) -> list[PairMethodDescriptor]:
     """
     Return the pairing methods the device currently offers.
@@ -96,44 +96,32 @@ def effective_pair_methods(
     methods: list[PairMethodDescriptor] = []
     for method, method_config in (
         (PairMethod.PAIRING_PSK, config.pairing_psk),
-        (PairMethod.STATIC_PIN, config.static_pin),
-        (PairMethod.DYNAMIC_PIN, config.dynamic_pin),
+        (PairMethod.STATIC_PAIRING_CODE, config.static_pairing_code),
+        (PairMethod.DYNAMIC_PAIRING_CODE, config.dynamic_pairing_code),
     ):
         if method_config is None or not method_config.enabled:
             continue
-        descriptor = advertised.get(method) or PairMethodDescriptor(method=method)
-        methods.append(replace(descriptor, min_pin_length=method_config.min_pin_length))
+        descriptor = advertised.get(method)
+        if descriptor is None:
+            descriptor = PairMethodDescriptor(
+                method=method,
+                formats=["digits"] if method is PairMethod.DYNAMIC_PAIRING_CODE else None,
+            )
+        methods.append(descriptor)
     return methods
 
 
-def negotiated_pin_length(descriptor: PairMethodDescriptor | None, server_min: int) -> int:
-    """
-    Return the dynamic PIN length this session will use.
-
-    Mirrors the server's own negotiation so the operator prompt can name the digit count
-    before the device reports it.
-    """
-    client_min = descriptor.min_pin_length if descriptor is not None else None
-    return max(client_min or 0, server_min)
-
-
-def pin_code_format(length: int) -> str:
-    """Return the PAIRING_CODE entry format for a numeric PIN of `length` digits."""
-    if length >= 6 and length % 2 == 0:
-        half = length // 2
-        return f"{'#' * half}-{'#' * half}"
-    return "#" * length
-
-
 def pair_method_descriptor(
-    methods: Iterable[PairMethodDescriptor], method: PairMethod
+    methods: Iterable[PairMethodDescriptor],
+    method: PairMethod,
 ) -> PairMethodDescriptor | None:
     """Return the descriptor for ``method``, or None when the device does not offer it."""
     return next((d for d in methods if d.method is method), None)
 
 
 def effective_unpaired_access(
-    info: ClientHelloPayload | None, config: ManagementResultData | None
+    info: ClientHelloPayload | None,
+    config: ManagementResultData | None,
 ) -> bool:
     """
     Whether the device currently offers unpaired access.
