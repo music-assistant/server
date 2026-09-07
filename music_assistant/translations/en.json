@@ -1838,7 +1838,7 @@
   "provider.overcast.setup_flow.abort.overcast_unreachable": "Overcast could not be reached.",
   "provider.overcast.setup_flow.credentials.description": "Only works for accounts that have an email address and password set.",
   "provider.overcast.setup_flow.credentials.title": "Sign in to Overcast",
-  "provider.overcast.setup_flow.scan_qr.description": "Point your iPhone camera at the code and open the link to approve it in the Overcast app. On the phone itself, tap the code instead. A fresh code appears automatically if this one is left too long.",
+  "provider.overcast.setup_flow.scan_qr.description": "Point your iPhone camera at the code and open the link to approve it in the Overcast app. A fresh code appears automatically if this one is left too long.",
   "provider.overcast.setup_flow.scan_qr.progress_text": "Waiting for you to approve this in the Overcast app...",
   "provider.overcast.setup_flow.scan_qr.title": "Scan to connect",
   "provider.overcast.setup_flow.user.description": "Choose how to sign in to your Overcast account.",

@@ -31,7 +31,7 @@
     },
     "scan_qr": {
       "title": "Scan to connect",
-      "description": "Point your iPhone camera at the code and open the link to approve it in the Overcast app. On the phone itself, tap the code instead. A fresh code appears automatically if this one is left too long.",
+      "description": "Point your iPhone camera at the code and open the link to approve it in the Overcast app. A fresh code appears automatically if this one is left too long.",
       "progress_text": "Waiting for you to approve this in the Overcast app..."
     },
     "credentials": {
