@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import subprocess
 from array import array
 from collections.abc import AsyncGenerator, Sequence
 from math import sqrt
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from music_assistant_models.enums import ContentType
@@ -32,6 +34,7 @@ from music_assistant.helpers.ffmpeg import (
     parse_ffmpeg_duration,
     parse_ffmpeg_stream_info,
 )
+from music_assistant.models.music_provider import ProviderStreamLimitError
 
 
 def test_get_ffmpeg_args_does_not_mutate_filters() -> None:
@@ -594,6 +597,42 @@ async def test_ffmpeg_stream_surfaces_stdin_feeder_error(source_error: Exception
         )
 
     assert err.value.__cause__ is source_error
+
+
+async def test_ffmpeg_stream_logs_provider_stream_limit_at_debug(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A provider capacity error from the input generator is not logged as a warning."""
+    provider = Mock(max_concurrent_streams=1, instance_id="spotify--test")
+    provider.name = "Spotify"
+    limit_error = ProviderStreamLimitError(provider, 5.0)
+
+    async def busy_input() -> AsyncGenerator[bytes]:
+        yield b"\x00" * _BYTES_PER_SECOND
+        raise limit_error
+
+    caplog.set_level(logging.DEBUG)
+    with pytest.raises(AudioError) as err:
+        await _collect_chunks(
+            get_ffmpeg_stream(
+                audio_input=busy_input(),
+                input_format=AudioFormat(
+                    content_type=ContentType.PCM_S16LE,
+                    sample_rate=44100,
+                    bit_depth=16,
+                    channels=2,
+                ),
+                output_format=_PCM_FORMAT,
+            )
+        )
+
+    # the typed error still surfaces to the caller
+    assert err.value.__cause__ is limit_error
+    feeder_records = [
+        record for record in caplog.records if "stdin feeder task ended" in record.getMessage()
+    ]
+    assert feeder_records
+    assert all(record.levelno == logging.DEBUG for record in feeder_records)
 
 
 async def test_ffmpeg_stream_ignores_cancelled_stdin_feeder() -> None:

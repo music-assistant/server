@@ -206,6 +206,18 @@ class TidalMediaManager:
             albums.extend(_parse_items(parse_album_v2, self.provider, doc))
         return albums
 
+    async def get_artist_tracks(self, prov_artist_id: str) -> list[Track]:
+        """Get all artist tracks."""
+        tracks: list[Track] = []
+        async for doc in self.api.paginate_jsonapi(
+            f"artists/{prov_artist_id}/relationships/tracks",
+            params={"collapseBy": "FINGERPRINT"},
+            include=["tracks.artists", "tracks.albums.coverArt"],
+            replace_media="tracks",
+        ):
+            tracks.extend(_parse_items(parse_track_v2, self.provider, doc))
+        return tracks
+
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get artist top tracks."""
         # Top tracks are a bounded, ranked list: the first page is enough.

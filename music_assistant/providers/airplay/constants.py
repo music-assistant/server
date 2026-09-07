@@ -99,6 +99,10 @@ MRP_DISCOVERY_TYPE: Final[str] = "_mediaremotetv._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
+# Fallback ports for the two streaming services above, for when discovery has none.
+AIRPLAY_DEFAULT_PORT: Final[int] = 7000
+RAOP_DEFAULT_PORT: Final[int] = 5000
+
 # Floor for a late joiner's anchor, and the one it rests on whenever the binary
 # reports no readiness projection ([STATUS] clock_ready). A joiner cannot
 # honour an instant in the past, and that second case has no device evidence at
