@@ -981,6 +981,15 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
             tags["----:com.apple.iTunes:REPLAYGAIN_ALBUM_GAIN"]
         )
 
+    # the original release date has no atom of its own, so taggers store it as a freeform
+    # tag in whatever casing they favour, and ffprobe does not expose freeform atoms at all
+    for atom, values in tags.items():  # type: ignore[no-untyped-call]
+        if not atom.startswith("----:com.apple.iTunes:"):
+            continue
+        name = atom.removeprefix("----:com.apple.iTunes:").lower()
+        if name in ("originaldate", "originalyear"):
+            result[name] = _decode_mp4_freeform_single(values)
+
     return result
 
 

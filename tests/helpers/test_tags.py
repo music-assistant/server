@@ -10,6 +10,7 @@ import mutagen
 import pytest
 from music_assistant_models.errors import InvalidDataError
 from mutagen.id3 import ID3, TDOR, TDRC, UFID
+from mutagen.mp4 import MP4, MP4FreeForm
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers import tags
@@ -1005,6 +1006,21 @@ async def test_original_release_date_is_read_from_an_id3_file(tmp_path: pathlib.
     id3.setall("TDRC", [TDRC(encoding=3, text=["2015-03-07"])])  # type: ignore[no-untyped-call]
     id3.setall("TDOR", [TDOR(encoding=3, text=["1978-06-01"])])  # type: ignore[no-untyped-call]
     id3.save(v2_version=4)
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert _tags.release_date == datetime(1978, 6, 1, tzinfo=UTC)
+    assert _tags.year == 2015
+
+
+async def test_original_release_date_is_read_from_an_m4a_file(tmp_path: pathlib.Path) -> None:
+    """The original date sits in an iTunes freeform atom, which ffprobe drops."""
+    dest = tmp_path / "original_date.m4a"
+    shutil.copy(FILE_M4A, dest)
+    mp4 = MP4(str(dest))  # type: ignore[no-untyped-call]
+    mp4["\xa9day"] = ["2015-03-07"]
+    mp4["----:com.apple.iTunes:originaldate"] = [MP4FreeForm(b"1978-06-01")]  # type: ignore[no-untyped-call]
+    mp4.save()  # type: ignore[no-untyped-call]
 
     _tags = await tags.async_parse_tags(str(dest))
 
