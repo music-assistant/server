@@ -11,11 +11,13 @@ from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
     find_episode_stream_url,
     get_cached_podcast,
+    get_episode_positions,
     get_podcastparser_dict,
     get_stream_url_from_episode,
     parse_chapters_from_json,
     parse_podcast_episode,
     parse_podcast_persons,
+    rank_episodes_by_date,
     refresh_cached_podcast,
 )
 
@@ -41,7 +43,7 @@ def _parse(episode: dict[str, Any]) -> PodcastEpisode | None:
     return parse_podcast_episode(
         episode=episode,
         prov_podcast_id="podcast-1",
-        episode_cnt=1,
+        position=1,
         instance_id="podcastfeed--test",
         domain="podcastfeed",
     )
@@ -192,7 +194,7 @@ def test_podcast_reference_uses_podcast_name() -> None:
     mass_episode = parse_podcast_episode(
         episode=_episode(title="Episode 1"),
         prov_podcast_id="podcast-1",
-        episode_cnt=1,
+        position=1,
         podcast_name="My Show",
         instance_id="podcastfeed--test",
         domain="podcastfeed",
@@ -209,21 +211,97 @@ def test_podcast_reference_falls_back_to_episode_title() -> None:
     assert mass_episode.podcast.name == "Some Episode"
 
 
-# --- episode position (itunes:episode number) -----------------------------------------------
+# --- episode position -----------------------------------------------------------------------
 
 
-def test_episode_position_uses_itunes_episode_number() -> None:
-    """A declared itunes:episode number drives the episode position over the feed order."""
-    mass_episode = _parse(_episode(number=5))
+def test_episode_position_uses_caller_supplied_position() -> None:
+    """The episode position is determined by the caller."""
+    mass_episode = parse_podcast_episode(
+        episode=_episode(),
+        prov_podcast_id="podcast-1",
+        position=5,
+        instance_id="podcastfeed--test",
+        domain="podcastfeed",
+    )
     assert mass_episode is not None
     assert mass_episode.position == 5
 
 
-def test_episode_position_falls_back_to_feed_order() -> None:
-    """Without an episode number, position falls back to the feed enumeration order (cnt=1)."""
-    mass_episode = _parse(_episode())
-    assert mass_episode is not None
-    assert mass_episode.position == 1
+def test_positions_use_episode_numbers_when_all_numbered() -> None:
+    """A fully numbered feed keeps its own itunes:episode numbers."""
+    episodes = [_episode(number=3), _episode(number=1), _episode(number=2)]
+    assert get_episode_positions(episodes) == [3, 1, 2]
+
+
+def test_positions_ignore_partial_numbering() -> None:
+    """A feed that numbers only some episodes has all of its numbers ignored."""
+    episodes = [
+        _episode(number=1, published=300),
+        _episode(published=100),
+        _episode(number=3, published=200),
+    ]
+    assert get_episode_positions(episodes) == [3, 1, 2]
+
+
+def test_positions_rank_newest_highest_by_published() -> None:
+    """Dated feeds are ranked oldest to newest regardless of the order they are listed in."""
+    episodes = [_episode(published=300), _episode(published=100), _episode(published=200)]
+    assert get_episode_positions(episodes) == [3, 1, 2]
+
+
+def test_positions_rank_serial_feeds_oldest_first() -> None:
+    """An oldest-first (itunes:type=serial) feed still gives the newest episode the top spot."""
+    episodes = [_episode(published=100), _episode(published=200), _episode(published=300)]
+    assert get_episode_positions(episodes) == [1, 2, 3]
+
+
+def test_positions_ignore_numbering_that_restarts_each_season() -> None:
+    """Seasoned feeds restart their numbering, so the dates decide instead."""
+    episodes = [
+        _episode(number=1, season=2, published=300),
+        _episode(number=2, season=1, published=100),
+        _episode(number=1, season=1, published=200),
+    ]
+    assert get_episode_positions(episodes) == [3, 1, 2]
+
+
+def test_positions_use_numbers_for_a_single_season() -> None:
+    """A feed that declares one season keeps its own episode numbers."""
+    episodes = [_episode(number=2, season=1), _episode(number=1, season=1)]
+    assert get_episode_positions(episodes) == [2, 1]
+
+
+def test_positions_prefer_numbers_over_dates() -> None:
+    """Episode numbers win over the publication dates when the feed carries both."""
+    episodes = [_episode(number=7, published=100), _episode(number=9, published=200)]
+    assert get_episode_positions(episodes) == [7, 9]
+
+
+def test_rank_by_date_keeps_feed_order_among_undated() -> None:
+    """Undated episodes rank oldest and hold their listing order between themselves."""
+    assert rank_episodes_by_date([None, 300, None, 100]) == [1, 4, 2, 3]
+
+
+def test_rank_by_date_accepts_string_dates() -> None:
+    """Providers reporting dates as sortable strings are ranked the same way."""
+    assert rank_episodes_by_date(["2026-03-01", "2024-01-01", "2025-02-01"]) == [3, 1, 2]
+
+
+def test_positions_rank_undated_episodes_as_oldest() -> None:
+    """Episodes missing a publication date rank below every dated one."""
+    episodes = [_episode(published=200), _episode(), _episode(published=100)]
+    assert get_episode_positions(episodes) == [3, 1, 2]
+
+
+def test_positions_assume_newest_first_without_dates() -> None:
+    """Without publication dates the feed order is assumed to be newest-first."""
+    episodes = [_episode(), _episode(), _episode()]
+    assert get_episode_positions(episodes) == [3, 2, 1]
+
+
+def test_positions_empty_feed() -> None:
+    """An empty feed yields no positions."""
+    assert get_episode_positions([]) == []
 
 
 # --- inline (Podlove Simple Chapters) --------------------------------------------------------

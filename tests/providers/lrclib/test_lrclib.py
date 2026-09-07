@@ -8,6 +8,7 @@ from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.lrclib import SUPPORTED_FEATURES, LrclibProvider
+from tests.common import use_real_create_task
 
 
 @pytest.fixture
@@ -15,9 +16,9 @@ def provider() -> LrclibProvider:
     """Return an LrclibProvider with mocked dependencies and a cold cache."""
     mass = AsyncMock()
     mass.http_session = MagicMock()
-    # force a cache miss so the wrapped fetch always runs, and swallow the store task
+    # force a cache miss so the wrapped fetch always runs
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
-    mass.create_task = MagicMock(side_effect=lambda coro, **_: coro.close())
+    use_real_create_task(mass)
     manifest = MagicMock()
     manifest.domain = "lrclib"
     config = MagicMock()

@@ -17,9 +17,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.player import OutputProtocol, PlayerMedia
+from music_assistant_models.player import PlayerMedia
 
 from music_assistant.controllers.players import PlayerController
+from music_assistant.models.player import LinkedOutputProtocol
 from tests.common import MockPlayer, MockProvider
 
 
@@ -57,7 +58,7 @@ def mock_mass() -> MagicMock:
             return 0
         if key == "max_volume":
             return 100
-        return default if default is not None else "auto"
+        return default
 
     mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_player_config_value)
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
@@ -98,9 +99,8 @@ def _make_player_with_protocol(
     controller._players = {"player_1": player, "proto_1": protocol_player}
     player.set_linked_output_protocols(
         [
-            OutputProtocol(
+            LinkedOutputProtocol(
                 output_protocol_id="proto_1",
-                name="Sendspin",
                 protocol_domain="sendspin",
                 priority=40,
             )

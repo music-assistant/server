@@ -70,7 +70,7 @@ def test_dump_handles_self_reference_without_recursion_error() -> None:  # noqa:
 def test_dump_max_depth_truncates() -> None:  # noqa: D103
     deep: dict[str, Any] = {}
     current = deep
-    for i in range(10):
+    for _ in range(10):
         current["next"] = {}
         current = current["next"]
     current["leaf"] = "value"

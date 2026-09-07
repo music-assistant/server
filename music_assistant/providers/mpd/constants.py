@@ -18,7 +18,7 @@ CONF_ENTRY_OUTPUT_CODEC_MPD = ConfigEntry.from_dict(
         "options": [
             {"title": "MP3 (lossy)", "value": "mp3"},
             {"title": "AAC (lossy)", "value": "aac"},
-            {"title": "WAV (lossless, uncompressed)", "value": "wav"},
+            {"title": "WAV (uncompressed PCM)", "value": "wav"},
         ],
     }
 )

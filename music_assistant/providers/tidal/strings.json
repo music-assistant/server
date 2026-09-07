@@ -11,18 +11,15 @@
         "LOSSLESS": "16-bit / 44.1 kHz — CD quality, plays on any device.",
         "HI_RES_LOSSLESS": "Up to 24-bit / 192 kHz — hi-res; needs a player/DAC that supports it."
       }
-    },
-    "oops_url": {
-      "label": "Redirect URL from Tidal"
-    },
-    "auth_instructions": {
-      "label": "Use the link icon to open Tidal and sign in. Afterwards you land on a page that says 'Page Not Found' - that is expected. Copy the full URL from your browser's address bar and paste it below."
     }
   },
   "setup_flow": {
-    "user": {
+    "device_login": {
       "title": "Link your Tidal account",
-      "description": "Open the Tidal sign-in page with the link icon. After signing in you land on a 'Page Not Found' page — copy that URL from the address bar and paste it below."
+      "description": "Your code is {0}. Use the button below to open Tidal with the code already filled in, or go to link.tidal.com on another device and enter it there. This screen updates automatically once you approve."
+    },
+    "abort": {
+      "login_failed": "Could not link your Tidal account. Please start the setup again."
     }
   },
   "media": {

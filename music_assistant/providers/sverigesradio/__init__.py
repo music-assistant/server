@@ -59,6 +59,11 @@ async def setup(
 class SverigesRadio(MusicProvider):
     """Sveriges Radio music provider."""
 
+    @property
+    def max_concurrent_streams(self) -> None:
+        """Allow unlimited concurrent upstream source streams."""
+        return None
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider (none required)."""
         return ()

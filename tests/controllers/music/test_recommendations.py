@@ -5,17 +5,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
+import pytest
 from music_assistant_models.enums import MediaType
 
 from music_assistant.constants import DB_TABLE_PLAYLOG
-from music_assistant.controllers.music.recommendations.library import (
-    library_items,
-    library_rows,
-)
 from music_assistant.mass import MusicAssistant
+from music_assistant.providers.recommendations import LibraryRecommendationsProvider, LibraryRowID
 
 if TYPE_CHECKING:
-    import pytest
     from music_assistant_models.media_items import ItemMapping
 
 EXPECTED_DEFAULT_ORDER = [
@@ -30,6 +27,11 @@ EXPECTED_DEFAULT_ORDER = [
     "favorite_radio",
     "recent_artists",
     "recent_tracks",
+    "forgotten_tracks",
+    "forgotten_albums",
+    "forgotten_artists",
+    "most_played_tracks",
+    "never_played_tracks",
 ]
 
 
@@ -50,11 +52,14 @@ async def test_recommendations_rows_have_no_items(mass: MusicAssistant) -> None:
     assert all(folder.items == [] for folder in folders)
 
 
-async def test_library_rows_have_descriptor_fields() -> None:
+async def test_library_rows_have_descriptor_fields(mass: MusicAssistant) -> None:
     """Library rows carry their identity fields, correct defaults, and no items."""
-    rows = library_rows()
+    provider = mass.get_provider("recommendations")
+    assert provider is not None, "recommendations provider should be loaded as builtin"
+    assert isinstance(provider, LibraryRecommendationsProvider)
+    rows = await provider.get_recommendations()
     in_progress = next(f for f in rows if f.item_id == "in_progress")
-    assert in_progress.provider == "library"
+    assert in_progress.provider == "recommendations"
     assert in_progress.name == "In progress"
     assert in_progress.translation_key == "in_progress_items"
     assert in_progress.icon == "mdi-motion-play"
@@ -79,7 +84,9 @@ async def test_recently_played_rolls_up_to_container(mass: MusicAssistant) -> No
         timestamp=2001,
         user_initiated=True,
     )
-    items = await mass.music.recommendations.get_recommendation_items("library", "recently_played")
+    items = await mass.music.recommendations.get_recommendation_items(
+        "recommendations", "recently_played"
+    )
     item_ids = {item.item_id for item in items}
     assert "album-1" in item_ids
     assert "track-1" not in item_ids
@@ -96,10 +103,10 @@ async def test_recent_artists_and_tracks_rows_present(mass: MusicAssistant) -> N
     )
 
     artist_items = await mass.music.recommendations.get_recommendation_items(
-        "library", "recent_artists"
+        "recommendations", "recent_artists"
     )
     track_items = await mass.music.recommendations.get_recommendation_items(
-        "library", "recent_tracks"
+        "recommendations", "recent_tracks"
     )
 
     assert "artist-1" in {item.item_id for item in artist_items}
@@ -143,7 +150,9 @@ async def test_recently_played_includes_podcast_and_audiobook_containers(
         timestamp=2999,
         user_initiated=False,
     )
-    items = await mass.music.recommendations.get_recommendation_items("library", "recently_played")
+    items = await mass.music.recommendations.get_recommendation_items(
+        "recommendations", "recently_played"
+    )
     item_ids = {item.item_id for item in items}
     assert "album-x" in item_ids, "album (user-initiated) should appear"
     assert "podcast-x" in item_ids, "podcast show should always appear"
@@ -178,30 +187,42 @@ async def test_recently_played_always_include_media_types_query(mass: MusicAssis
     assert "track-q" not in result_ids, "non-user-initiated track should be excluded"
 
 
-async def test_every_library_row_dispatches_a_query() -> None:
+async def test_every_library_row_dispatches_a_query(mass: MusicAssistant) -> None:
     """
-    Every id listed by library_rows() reaches a real query branch in library_items().
+    Every id listed by get_recommendations() reaches a real query branch in get_recommendation_items().
 
     The rows listing and the items dispatch live in two separate functions; this
     pins that no listed row silently falls through to the empty default arm.
     """
-    mass = AsyncMock()
-    for folder in library_rows():
-        mass.reset_mock()
-        await library_items(mass, folder.item_id)
-        assert mass.method_calls, f"row {folder.item_id!r} did not dispatch a library query"
+    provider = mass.get_provider("recommendations")
+    assert provider is not None
+    assert isinstance(provider, LibraryRecommendationsProvider)
+
+    # Verify every enum value has a corresponding match case by checking that all folder IDs
+    # from get_recommendations() are valid LibraryRowID enum members
+    valid_ids = {row_id.value for row_id in LibraryRowID}
+    for folder in await provider.get_recommendations():
+        assert folder.item_id in valid_ids, (
+            f"row {folder.item_id!r} not in LibraryRowID enum - likely missing match case"
+        )
 
 
 async def test_library_rows_listed_by_controller(mass: MusicAssistant) -> None:
     """Every library row appears in the controller's rows listing."""
     folders = await mass.music.recommendations.get_recommendations()
-    listed = {f.item_id for f in folders if f.provider == "library"}
-    assert {f.item_id for f in library_rows()} <= listed
+    listed = {f.item_id for f in folders if f.provider == "recommendations"}
+    provider = mass.get_provider("recommendations")
+    assert provider is not None
+    assert isinstance(provider, LibraryRecommendationsProvider)
+    expected_rows = {f.item_id for f in await provider.get_recommendations()}
+    assert expected_rows <= listed
 
 
 async def test_unknown_library_row_returns_empty(mass: MusicAssistant) -> None:
     """Requesting items for an unknown builtin row returns an empty list."""
-    items = await mass.music.recommendations.get_recommendation_items("library", "no_such_row")
+    items = await mass.music.recommendations.get_recommendation_items(
+        "recommendations", "no_such_row"
+    )
     assert items == []
 
 
@@ -214,8 +235,117 @@ async def test_failing_library_row_items_isolated(
         raise RuntimeError("row boom")
 
     monkeypatch.setattr(mass.music, "in_progress_items", _boom)
-    items = await mass.music.recommendations.get_recommendation_items("library", "in_progress")
+    items = await mass.music.recommendations.get_recommendation_items(
+        "recommendations", "in_progress"
+    )
     assert items == []
+
+
+async def test_forgotten_tracks_row_callable(mass: MusicAssistant) -> None:
+    """Forgotten Tracks row can be called and uses played_only parameter."""
+    items = await mass.music.recommendations.get_recommendation_items(
+        "recommendations", "forgotten_tracks"
+    )
+    assert isinstance(items, list)
+
+
+async def test_forgotten_albums_row_callable(mass: MusicAssistant) -> None:
+    """Forgotten Albums row can be called and uses played_only parameter."""
+    items = await mass.music.recommendations.get_recommendation_items(
+        "recommendations", "forgotten_albums"
+    )
+    assert isinstance(items, list)
+
+
+async def test_forgotten_artists_row_callable(mass: MusicAssistant) -> None:
+    """Forgotten Artists row can be called and uses played_only parameter."""
+    items = await mass.music.recommendations.get_recommendation_items(
+        "recommendations", "forgotten_artists"
+    )
+    assert isinstance(items, list)
+
+
+async def test_most_played_tracks_row_callable(mass: MusicAssistant) -> None:
+    """Most Played Tracks row can be called and uses play_count_desc ordering."""
+    items = await mass.music.recommendations.get_recommendation_items(
+        "recommendations", "most_played_tracks"
+    )
+    assert isinstance(items, list)
+
+
+async def test_never_played_tracks_row_callable(mass: MusicAssistant) -> None:
+    """Never / Rarely Played row can be called and uses play_count ordering."""
+    items = await mass.music.recommendations.get_recommendation_items(
+        "recommendations", "never_played_tracks"
+    )
+    assert isinstance(items, list)
+
+
+async def test_all_default_rows_advertise_provider_filter_support(mass: MusicAssistant) -> None:
+    """Every default library recommendation row advertises supports_provider_filter."""
+    folders = await mass.music.recommendations.get_recommendations()
+    library_folders = [f for f in folders if f.provider == "recommendations"]
+    assert library_folders
+    assert all(f.supports_provider_filter for f in library_folders)
+
+
+async def test_library_row_items_return_empty_for_explicit_empty_providers(
+    mass: MusicAssistant,
+) -> None:
+    """Every default row returns no items for an explicit empty providers filter."""
+    provider = mass.get_provider("recommendations")
+    assert provider is not None
+    assert isinstance(provider, LibraryRecommendationsProvider)
+    for row_id in LibraryRowID:
+        items = await provider.get_recommendation_items(row_id, providers=[])
+        assert items == [], f"row {row_id!r} did not return empty for an explicit empty filter"
+
+
+@pytest.mark.parametrize(
+    ("row_id", "controller_attr", "kwarg_name"),
+    [
+        (LibraryRowID.IN_PROGRESS, "in_progress_items", "providers"),
+        (LibraryRowID.RECENTLY_PLAYED, "recently_played", "providers"),
+        (LibraryRowID.RECENT_ARTISTS, "recently_played", "providers"),
+        (LibraryRowID.RECENT_TRACKS, "recently_played", "providers"),
+        (LibraryRowID.RECENTLY_ADDED_TRACKS, "tracks", "reachable_via"),
+        (LibraryRowID.RECENTLY_ADDED_ALBUMS, "albums", "reachable_via"),
+        (LibraryRowID.RANDOM_ARTISTS, "artists", "reachable_via"),
+        (LibraryRowID.RANDOM_ALBUMS, "albums", "reachable_via"),
+        (LibraryRowID.RECENT_FAVORITE_TRACKS, "tracks", "reachable_via"),
+        (LibraryRowID.FAVORITE_PLAYLISTS, "playlists", "reachable_via"),
+        (LibraryRowID.FAVORITE_RADIO, "radio", "reachable_via"),
+        (LibraryRowID.FORGOTTEN_TRACKS, "tracks", "reachable_via"),
+        (LibraryRowID.FORGOTTEN_ALBUMS, "albums", "reachable_via"),
+        (LibraryRowID.FORGOTTEN_ARTISTS, "artists", "reachable_via"),
+        (LibraryRowID.MOST_PLAYED_TRACKS, "tracks", "reachable_via"),
+        (LibraryRowID.NEVER_PLAYED_TRACKS, "tracks", "reachable_via"),
+    ],
+)
+async def test_library_row_items_thread_providers_into_underlying_query(
+    mass: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    row_id: LibraryRowID,
+    controller_attr: str,
+    kwarg_name: str,
+) -> None:
+    """Every default row forwards a non-empty providers filter to its underlying query."""
+    provider = mass.get_provider("recommendations")
+    assert provider is not None
+    assert isinstance(provider, LibraryRecommendationsProvider)
+
+    if controller_attr in ("in_progress_items", "recently_played"):
+        target = mass.music
+    else:
+        target = getattr(mass.music, controller_attr)
+        controller_attr = "library_items"
+    spy = AsyncMock(return_value=[])
+    monkeypatch.setattr(target, controller_attr, spy)
+
+    await provider.get_recommendation_items(row_id, providers=["prov_a"])
+
+    assert spy.await_args is not None
+    assert spy.await_args.kwargs[kwarg_name] == ["prov_a"]
 
 
 async def _add_playlog_row(

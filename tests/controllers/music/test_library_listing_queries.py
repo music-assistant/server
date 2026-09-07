@@ -19,7 +19,8 @@ from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
-from music_assistant_models.enums import AlbumType, MediaType
+from music_assistant_models.enums import AlbumType, ArtistType, MediaType
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -39,7 +40,6 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
 )
 from music_assistant.controllers.music.media.base import MediaControllerBase
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.mass import MusicAssistant
 
 pytestmark = pytest.mark.asyncio
@@ -414,6 +414,57 @@ async def test_track_listing_artist_join_matches_legacy(seeded_mass: MusicAssist
     assert len(new_items) > 0
 
 
+async def test_track_artist_name_sorting(seeded_mass: MusicAssistant) -> None:
+    """Tracks can be sorted by artist name, with secondary sorting by track name."""
+    # Test ascending artist name sort
+    tracks_asc = await seeded_mass.music.tracks.library_items(order_by="track_artist_name")
+    # Build list of (artist_name, track_name) tuples for validation
+    artist_track_pairs_asc = [(t.artists[0].name, t.name) for t in tracks_asc if t.artists]
+    # Sort should be by artist name first, then track name
+    expected_asc = sorted(artist_track_pairs_asc, key=lambda x: (x[0], x[1]))
+    assert artist_track_pairs_asc == expected_asc, "Should sort by artist name, then track name"
+    assert len(artist_track_pairs_asc) > 0, "Should return tracks with artists"
+
+    # Test descending artist name sort
+    tracks_desc = await seeded_mass.music.tracks.library_items(order_by="track_artist_name_desc")
+    artist_track_pairs_desc = [(t.artists[0].name, t.name) for t in tracks_desc if t.artists]
+    # DESC sort: artist name descending, but track name still ascending within each artist
+    grouped: dict[str, list[str]] = {}
+    for pair in artist_track_pairs_asc:
+        artist, track = pair
+        if artist not in grouped:
+            grouped[artist] = []
+        grouped[artist].append(track)
+    # Sort artists descending, tracks within artist ascending
+    expected_desc = []
+    for artist in sorted(grouped.keys(), reverse=True):
+        for track in sorted(grouped[artist]):
+            expected_desc.append((artist, track))
+    assert artist_track_pairs_desc == expected_desc, "Should sort by artist name descending"
+
+
+async def test_album_artist_name_sorting(seeded_mass: MusicAssistant) -> None:
+    """Albums can be sorted by artist name, with secondary sorting by year."""
+    # Test ascending artist name sort
+    albums_asc = await seeded_mass.music.albums.library_items(order_by="album_artist_name")
+    # Build list of (artist_name, album_name, year) tuples for validation
+    artist_album_pairs_asc = [(a.artists[0].name, a.name, a.year) for a in albums_asc if a.artists]
+    # Sort should be by artist name first, then year descending
+    expected_asc = sorted(artist_album_pairs_asc, key=lambda x: (x[0], -x[2] if x[2] else 0))
+    assert artist_album_pairs_asc == expected_asc, "Should sort by artist name, then year desc"
+    assert len(artist_album_pairs_asc) > 0, "Should return albums with artists"
+
+    # Test descending artist name sort
+    albums_desc = await seeded_mass.music.albums.library_items(order_by="album_artist_name_desc")
+    artist_album_pairs_desc = [
+        (a.artists[0].name, a.name, a.year) for a in albums_desc if a.artists
+    ]
+    # SQL: artists.search_name DESC, year DESC - both descending
+    expected_desc = sorted(artist_album_pairs_asc, key=lambda x: x[2] or 0, reverse=True)
+    expected_desc = sorted(expected_desc, key=lambda x: x[0], reverse=True)
+    assert artist_album_pairs_desc == expected_desc, "Should sort by artist name descending"
+
+
 async def test_hidden_track_excluded_from_library_listing(seeded_mass: MusicAssistant) -> None:
     """A track whose only mapping has in_library=0 is hidden from library listings."""
     items = await seeded_mass.music.tracks.get_library_items_by_query(in_library_only=True)
@@ -583,6 +634,63 @@ async def test_audiobook_collections_collapse_and_preserve_order(
     collection = await controller.get_collection(collections["Alpha Series"].item_id)
     assert [item.name for item in collection.items] == ["Alpha 1", "Alpha 1.5", "Alpha 2"]
     assert all(isinstance(item, Audiobook) for item in collection.items)
+
+
+async def test_artist_audiobooks_collapse_collections(
+    mass: MusicAssistant,
+) -> None:
+    """Artist audiobook listings collapse collections while preserving the artist scope."""
+    author = Artist(
+        item_id="0",
+        provider="library",
+        name="Test Author",
+        provider_mappings={_mapping()},
+        artist_type=ArtistType.AUTHOR,
+    )
+    author = await mass.music.artists.add_item_to_library(author)
+
+    for name, sequence in (("Book 2", 2), ("Book 1", 1)):
+        await mass.music.audiobooks.add_item_to_library(
+            Audiobook(
+                item_id="0",
+                provider="library",
+                name=name,
+                provider_mappings={_mapping()},
+                authors=UniqueList([author]),
+                metadata=MediaItemMetadata(
+                    collections=UniqueList(
+                        [MediaItemCollection(title="Test Collection", sequence=sequence)]
+                    )
+                ),
+            )
+        )
+
+    await mass.music.audiobooks.add_item_to_library(
+        Audiobook(
+            item_id="0",
+            provider="library",
+            name="Standalone",
+            provider_mappings={_mapping()},
+            authors=UniqueList([author]),
+        )
+    )
+
+    result = await mass.music.artists.audiobooks(
+        author.item_id,
+        author.provider,
+        author.artist_type,
+        in_library_only=True,
+        collapse_collections=True,
+    )
+
+    assert len(result) == 2
+
+    collection = next(item for item in result if isinstance(item, MediaCollection))
+    standalone = next(item for item in result if isinstance(item, Audiobook))
+
+    assert collection.name == "Test Collection"
+    assert [item.name for item in collection.items] == ["Book 1", "Book 2"]
+    assert standalone.name == "Standalone"
 
 
 async def test_listing_queries_stream_from_sort_index(seeded_mass: MusicAssistant) -> None:

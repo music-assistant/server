@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, cast, overload
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
+    ConfigActionResult,
     ConfigEntry,
     ConfigValueType,
     CoreConfig,
@@ -49,10 +50,7 @@ class CoreConfigMixin:
             if include_values
             else cast(
                 "CoreConfig",
-                CoreConfig.parse(
-                    [],
-                    self.get(f"{CONF_CORE}/{core_controller}", {"domain": core_controller}),
-                ),
+                CoreConfig.parse([], self._get_raw_core_config(core_controller)),
             )
             for core_controller in CONFIGURABLE_CORE_CONTROLLERS
         ]
@@ -60,11 +58,7 @@ class CoreConfigMixin:
     @api_command("config/core/get", required_scope=Scope.CONFIG_CORE_READ)
     async def get_core_config(self, domain: str) -> CoreConfig:
         """Return configuration for a single core controller."""
-        raw_conf = self.get(f"{CONF_CORE}/{domain}", {})
-        if not isinstance(raw_conf, dict):
-            raw_conf = {}
-        if "domain" not in raw_conf:
-            raw_conf = {**raw_conf, "domain": domain}
+        raw_conf = self._get_raw_core_config(domain)
         # build the schema straight from the controller (no dynamic UI options):
         # CoreConfig.parse stamps the translation owner itself
         controller: CoreController = getattr(self.mass, domain)
@@ -149,17 +143,26 @@ class CoreConfigMixin:
         )
 
     @api_command("config/core/invoke_action", required_scope=Scope.CONFIG_CORE_WRITE)
-    async def invoke_core_config_action(self, domain: str, action: str) -> list[ConfigEntry]:
+    async def invoke_core_config_action(
+        self, domain: str, action: str
+    ) -> list[ConfigEntry] | ConfigActionResult:
         """
-        Run a one-shot action button from a core module's config and return the entries.
+        Run a one-shot action button from a core module's config.
+
+        A ``ConfigActionResult`` holds the outcome to report to the user; an empty list
+        means the action ran with nothing to report; a non-empty list holds the entries
+        the config form should re-render with.
 
         :param domain: The core controller domain.
         :param action: The action id of the pressed button.
         """
         controller: CoreController = getattr(self.mass, domain)
-        return await self._resolve_core_config_entries(
-            domain, await controller.handle_config_action(action)
-        )
+        if (result := await controller.handle_config_action(action)) is None:
+            return []
+        if isinstance(result, ConfigActionResult):
+            result.translation_owner = result.translation_owner or f"core.{domain}"
+            return result
+        return await self._resolve_core_config_entries(domain, result)
 
     @api_command("config/core/save", required_scope=Scope.CONFIG_CORE_WRITE)
     async def save_core_config(
@@ -231,15 +234,42 @@ class CoreConfigMixin:
 
         Note that this only stores the (raw) value without any validation or default.
         """
-        if not self.get(f"{CONF_CORE}/{core_module}"):
-            # create base object first if needed
-            self.set(f"{CONF_CORE}/{core_module}", CoreConfig({}, core_module).to_raw())
+        self.ensure_core_config_base(core_module)
         self.set(f"{CONF_CORE}/{core_module}/values/{key}", value)
         # also update the controller's in-place config copy (if any) so
         # object-local value reads stay in sync with raw writes
         controller = getattr(self.mass, core_module, None)
         if (config := getattr(controller, "config", None)) and (entry := config.values.get(key)):
             entry.value = value
+
+    def ensure_core_config_base(self, core_module: str) -> None:
+        """
+        Create or repair the stored config block of a core controller.
+
+        Call this before storing a raw value in the block, so the block is left in a state
+        that still parses as a CoreConfig.
+
+        :param core_module: The domain of the core controller.
+        """
+        raw_conf = self.get(f"{CONF_CORE}/{core_module}")
+        if not isinstance(raw_conf, dict) or not raw_conf:
+            self.set(f"{CONF_CORE}/{core_module}", CoreConfig({}, core_module).to_raw())
+        elif "domain" not in raw_conf:
+            self.set(f"{CONF_CORE}/{core_module}/domain", core_module)
+
+    def _get_raw_core_config(self, domain: str) -> dict[str, Any]:
+        """
+        Return the stored raw config of a core controller, ready to parse as a CoreConfig.
+
+        :param domain: The domain of the core controller.
+        """
+        raw_conf = self.get(f"{CONF_CORE}/{domain}", {})
+        if not isinstance(raw_conf, dict):
+            raw_conf = {}
+        if "domain" not in raw_conf:
+            # older versions could store the block without its mandatory domain key
+            return {**raw_conf, "domain": domain}
+        return raw_conf
 
     async def _resolve_core_config_entries(
         self, domain: str, entries: tuple[ConfigEntry, ...]

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import PlaybackState, ProviderFeature
+from music_assistant_models.auth import Scope
+from music_assistant_models.enums import EventType, PlaybackState, ProviderFeature
 from music_assistant_models.errors import (
     InvalidDataError,
     PlayerUnavailableError,
@@ -21,9 +23,10 @@ from music_assistant.providers.ai_radio import provider as ai_radio_provider
 from music_assistant.providers.ai_radio.constants import (
     CONF_AI_ENGINE,
     CONF_TTS_ENGINE,
+    ENGINE_RETRY_DELAY,
     MAX_FINISHED_SESSIONS,
 )
-from music_assistant.providers.ai_radio.models import SessionState
+from music_assistant.providers.ai_radio.models import DJQueueState, SessionState
 from music_assistant.providers.ai_radio.provider import AIRadioProvider
 
 
@@ -70,6 +73,20 @@ def _make_dynamic_provider(player_obj: object | None, default_player_id: str) ->
     return provider
 
 
+@pytest.fixture
+def provider(tmp_path: Path) -> AIRadioProvider:
+    """Build a minimal AIRadioProvider instance for host/station CRUD tests."""
+    instance = AIRadioProvider.__new__(AIRadioProvider)
+    instance.logger = logging.getLogger("test.ai_radio.provider")
+    instance._station_lock = asyncio.Lock()
+    instance._stations = {}
+    instance._hosts = {}
+    instance._dj_queues = {}
+    instance._hosts_file = tmp_path / "hosts.json"
+    instance._sections = {item["id"]: item for item in instance._default_sections_template()}
+    return instance
+
+
 def test_resolve_session_for_stop_by_session_id() -> None:
     """Resolve explicit session id directly."""
     provider = _make_provider()
@@ -112,6 +129,20 @@ def test_resolve_session_for_stop_raises_when_nothing_running() -> None:
 
     with pytest.raises(KeyError, match="No active AI Radio run found"):
         provider._resolve_session_for_stop(session_id=None, station_id=None)
+
+
+def test_session_state_as_dict_reports_the_resolved_queue() -> None:
+    """Serialize the queue id once a run has resolved its target queue."""
+    session = SessionState(session_id="s1", station_id="st", queue_id="living_room")
+
+    assert session.as_dict()["queue_id"] == "living_room"
+
+
+def test_session_state_as_dict_reports_no_queue_before_resolution() -> None:
+    """Report no queue id before a run resolves its target queue."""
+    session = SessionState(session_id="s1", station_id="st")
+
+    assert session.as_dict()["queue_id"] is None
 
 
 @pytest.mark.asyncio
@@ -225,8 +256,11 @@ async def test_start_run_prunes_oldest_finished_sessions() -> None:
             "source_playlist_id": "1",
             "source_playlist_provider": "library",
             "default_player_id": "living_room",
+            "host_id": "host_a",
         }
     }
+    provider._hosts = {"host_a": {"id": "host_a", "name": "Host A"}}
+    provider._sections = {}
     provider.mass = cast(
         "Any",
         SimpleNamespace(
@@ -255,46 +289,137 @@ async def test_start_run_prunes_oldest_finished_sessions() -> None:
 
 @pytest.mark.asyncio
 async def test_validate_station_does_not_mutate_shared_sections() -> None:
-    """Keep shared sections untouched when a station payload is only validated."""
+    """Keep shared hosts and sections untouched when a station payload is only validated."""
     provider = _make_provider()
     provider._stations = {}
     provider._sections = {}
+    provider._hosts = {"host_a": {"id": "host_a", "name": "Host A"}}
     provider._station_lock = asyncio.Lock()
     station = {
         "id": "station_a",
         "name": "Station A",
         "source_playlist_id": "playlist-1",
-        "sections": [{"id": "s1", "name": "S1", "type": "ai_text", "prompt": "Prompt"}],
-        "section_order": [{"when": "between_songs", "flow": [{"MUST": "s1"}]}],
+        "source_playlist_provider": "library",
+        "host_id": "host_a",
     }
 
     normalized = await provider.validate_station(station)
 
-    assert normalized["section_ids"] == ["s1"]
+    assert normalized["host_id"] == "host_a"
     assert provider._sections == {}
+    assert provider._hosts == {"host_a": {"id": "host_a", "name": "Host A"}}
 
 
 @pytest.mark.asyncio
-async def test_save_station_discards_section_changes_when_station_invalid() -> None:
-    """Roll back section upserts when the station payload fails validation."""
-    provider = _make_provider()
-    provider._stations = {}
-    provider._sections = {
-        "s1": {"id": "s1", "name": "S1", "type": "ai_text", "prompt": "Original prompt"}
+async def test_station_template_points_at_an_existing_host(provider: Any) -> None:
+    """The template's host has to be one the install really has, or saving it is rejected."""
+    provider._hosts = {
+        "music_nerd": {"id": "music_nerd", "name": "Music nerd"},
+        "chill_dj": {"id": "chill_dj", "name": "Chill DJ"},
     }
-    provider._station_lock = asyncio.Lock()
-    invalid_station = {
+
+    template = await provider.station_template()
+
+    # lowest by name, the order hosts are listed in
+    assert template["host_id"] == "chill_dj"
+    # the station validator rejects any other host, playlist aside
+    filled_in = {**template, "source_playlist_id": "playlist-1"}
+    assert (await provider.validate_station(filled_in))["host_id"] == "chill_dj"
+
+
+@pytest.mark.asyncio
+async def test_station_template_falls_back_to_the_host_template_id(provider: Any) -> None:
+    """With no hosts yet, the template pairs with the host the host template creates."""
+    template = await provider.station_template()
+
+    assert template["host_id"] == "default_host"
+
+
+@pytest.mark.asyncio
+async def test_host_crud_roundtrip(provider: Any) -> None:
+    """Create, list, fetch and delete a host through the public CRUD API."""
+    template = await provider.host_template()
+    saved = await provider.save_host(template)
+    assert saved["id"] == "default_host"
+    assert [h["id"] for h in await provider.list_hosts()] == ["default_host"]
+    fetched = await provider.get_host("default_host")
+    assert fetched["name"] == saved["name"]
+    await provider.delete_host("default_host")
+    assert await provider.list_hosts() == []
+
+
+@pytest.mark.asyncio
+async def test_list_host_presets_returns_every_preset_with_sections(provider: Any) -> None:
+    """The presets command returns each bundled preset paired with its sections."""
+    expected = provider._default_preset_hosts()
+
+    presets = await provider.list_host_presets()
+
+    assert len(presets) == len(expected)
+    assert {entry["host"]["id"] for entry in presets} == {host["id"] for host, _ in expected}
+    for entry in presets:
+        assert set(entry) == {"host", "sections"}
+        assert entry["sections"]
+
+
+@pytest.mark.asyncio
+async def test_list_host_presets_does_not_mutate_stored_state(provider: Any) -> None:
+    """Presets are templates: fetching them must not touch stored hosts or sections."""
+    presets = await provider.list_host_presets()
+
+    presets[0]["host"]["name"] = "mutated"
+    presets[0]["sections"][0]["name"] = "mutated"
+
+    assert provider._hosts == {}
+    fresh = await provider.list_host_presets()
+    assert fresh[0]["host"]["name"] != "mutated"
+    assert fresh[0]["sections"][0]["name"] != "mutated"
+
+
+@pytest.mark.asyncio
+async def test_save_section_leaves_the_stations_file_alone(provider: Any, tmp_path: Path) -> None:
+    """Sections no longer live inside stations, so saving one must not rewrite them."""
+    provider._sections_file = tmp_path / "sections.json"
+    provider._stations_file = tmp_path / "stations.json"
+    provider._stations_file.write_text("untouched")
+
+    await provider.save_section(
+        {"id": "New_Section", "name": "New Section", "type": "ai_text", "prompt": "Say something"}
+    )
+
+    assert "New_Section" in provider._sections
+    assert provider._stations_file.read_text() == "untouched"
+
+
+async def test_delete_host_refuses_when_station_references_it(provider: Any) -> None:
+    """Refuse to delete a host that a station still references."""
+    saved = await provider.save_host(await provider.host_template())
+    provider._stations["station_a"] = {
         "id": "station_a",
-        "name": "",
-        "source_playlist_id": "playlist-1",
-        "sections": [{"id": "s1", "name": "S1", "type": "ai_text", "prompt": "Changed prompt"}],
-        "section_order": [{"when": "between_songs", "flow": [{"MUST": "s1"}]}],
+        "name": "Station A",
+        "source_playlist_id": "p1",
+        "source_playlist_provider": "library",
+        "default_player_id": "",
+        "max_duration_minutes": 0.0,
+        "shuffle_source_tracks": True,
+        "host_id": saved["id"],
     }
+    with pytest.raises(InvalidDataError):
+        await provider.delete_host(saved["id"])
 
-    with pytest.raises(InvalidDataError, match="Station name is required"):
-        await provider.save_station(invalid_station)
 
-    assert provider._sections["s1"]["prompt"] == "Original prompt"
+@pytest.mark.asyncio
+async def test_delete_host_refuses_when_it_is_an_active_queue_dj(provider: Any) -> None:
+    """Refuse to delete a host that is the active DJ on a queue."""
+    saved = await provider.save_host(await provider.host_template())
+    provider._dj_queues["queue-1"] = DJQueueState(
+        queue_id="queue-1",
+        host_id=saved["id"],
+        dj_session_id="dj0123456789",
+    )
+
+    with pytest.raises(InvalidDataError, match="is the active DJ on queues: queue-1"):
+        await provider.delete_host(saved["id"])
 
 
 @pytest.mark.asyncio
@@ -313,13 +438,17 @@ async def test_concurrent_start_run_calls_respect_the_run_limit() -> None:
             "id": "station_a",
             "name": "Station A",
             "default_player_id": "living_room",
+            "host_id": "host_a",
         },
         "station_b": {
             "id": "station_b",
             "name": "Station B",
             "default_player_id": "living_room",
+            "host_id": "host_a",
         },
     }
+    provider._hosts = {"host_a": {"id": "host_a", "name": "Host A"}}
+    provider._sections = {}
     provider.mass = cast(
         "Any",
         SimpleNamespace(
@@ -429,16 +558,36 @@ def _make_engine_provider(
         return [plugin for plugin in plugins if getattr(plugin, attribute).return_value]
 
     mass = MagicMock()
+    mass.closing = False
     mass.subscribe.side_effect = _subscribe
+    # mirror mass.create_task, which runs the coroutine up to its first suspension
+    # before handing back the task
+    mass.create_task.side_effect = lambda coro, **_kwargs: asyncio.Task(
+        coro, loop=asyncio.get_running_loop(), eager_start=True
+    )
     mass.get_providers_supporting_feature.side_effect = _providers
     mass.config.get_provider_setup_value.side_effect = lambda _instance_id, key, default=None: (
         stored.get(key, default)
     )
     provider.mass = cast("Any", mass)
+    provider.logger = logging.getLogger("test.ai_radio")
+    provider._dj_queues = {}
+    provider._unloading = False
+    provider._engine_recheck_task = None
+    provider._unregister_handles = []
     provider._update_setup_data = cast(  # type: ignore[method-assign]
         "Any", lambda key, value, **_kwargs: stored.__setitem__(key, value)
     )
     return provider, subscribers, stored
+
+
+def _record_unload_with_error(provider: AIRadioProvider) -> list[Any]:
+    """Capture the errors the provider unloads itself with instead of really unloading."""
+    errors: list[Any] = []
+    provider.unload_with_error = cast(  # type: ignore[method-assign]
+        "Any", errors.append
+    )
+    return errors
 
 
 def _make_engine_plugin(instance_id: str, ai_ids: list[str], tts_ids: list[str]) -> MagicMock:
@@ -486,7 +635,8 @@ async def test_wait_for_engines_fails_the_load_when_no_engine_appears(
     monkeypatch.setattr(ai_radio_provider, "ENGINE_DISCOVERY_TIMEOUT", 0.05)
 
     with pytest.raises(SetupFailedError) as error:
-        await provider._wait_for_engines()
+        async with asyncio.timeout(1):
+            await provider._wait_for_engines()
 
     assert error.value.translation_key == "ai_radio_no_ai_engine"
     assert stored == {}
@@ -501,7 +651,8 @@ async def test_wait_for_engines_fails_when_only_the_tts_engine_is_missing(
     monkeypatch.setattr(ai_radio_provider, "ENGINE_DISCOVERY_TIMEOUT", 0.05)
 
     with pytest.raises(SetupFailedError) as error:
-        await provider._wait_for_engines()
+        async with asyncio.timeout(1):
+            await provider._wait_for_engines()
 
     assert error.value.translation_key == "ai_radio_no_tts_engine"
 
@@ -535,7 +686,261 @@ async def test_wait_for_engines_rejects_a_configured_engine_that_disappeared(
     monkeypatch.setattr(ai_radio_provider, "ENGINE_DISCOVERY_TIMEOUT", 0.05)
 
     with pytest.raises(SetupFailedError) as error:
-        await provider._wait_for_engines()
+        async with asyncio.timeout(1):
+            await provider._wait_for_engines()
 
     assert error.value.translation_key == "ai_radio_no_ai_engine"
     assert stored[CONF_AI_ENGINE] == "p1/gone"
+
+
+async def test_providers_updated_leaves_a_healthy_selection_alone() -> None:
+    """A providers change that does not affect the engines is a no-op."""
+    provider, _, _ = _make_engine_provider(
+        [_make_engine_plugin("p1", ["ai"], ["tts"])],
+        setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"},
+    )
+    errors = _record_unload_with_error(provider)
+
+    await provider._on_providers_updated(MagicMock())
+
+    assert provider._engine_recheck_task is None
+    assert errors == []
+
+
+async def test_providers_updated_unloads_when_an_engine_stays_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An engine removed after the load surfaces as a provider error instead of at playtime."""
+    plugins: list[Any] = [_make_engine_plugin("p1", ["ai"], ["tts"])]
+    provider, _, _ = _make_engine_provider(
+        plugins,
+        setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"},
+    )
+    errors = _record_unload_with_error(provider)
+    monkeypatch.setattr(ai_radio_provider, "ENGINE_RECHECK_GRACE", 0.05)
+    plugins.clear()
+
+    await provider._on_providers_updated(MagicMock())
+    assert provider._engine_recheck_task is not None
+    async with asyncio.timeout(1):
+        await provider._engine_recheck_task
+
+    assert [error.translation_key for error in errors] == ["ai_radio_no_ai_engine"]
+
+
+async def test_providers_updated_survives_a_supplier_reload() -> None:
+    """A plugin reload briefly takes its engines with it, which must not unload AI Radio."""
+    plugins: list[Any] = []
+    provider, subscribers, _ = _make_engine_provider(
+        plugins,
+        setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"},
+    )
+    errors = _record_unload_with_error(provider)
+
+    await provider._on_providers_updated(MagicMock())
+    assert provider._engine_recheck_task is not None
+    assert subscribers
+    plugins.append(_make_engine_plugin("p1", ["ai"], ["tts"]))
+    for callback in list(subscribers):
+        callback(MagicMock())
+    await provider._engine_recheck_task
+
+    assert errors == []
+    assert subscribers == []
+
+
+async def test_providers_updated_ignored_while_closing() -> None:
+    """The watch does not act on a providers change while the server is closing."""
+    provider, _, _ = _make_engine_provider(
+        [], setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"}
+    )
+    errors = _record_unload_with_error(provider)
+    cast("Any", provider.mass).closing = True
+
+    await provider._on_providers_updated(MagicMock())
+
+    assert provider._engine_recheck_task is None
+    assert errors == []
+
+
+async def test_providers_updated_ignored_while_unloading() -> None:
+    """A providers change landing during our own unload is not acted on."""
+    provider, _, _ = _make_engine_provider(
+        [], setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"}
+    )
+    errors = _record_unload_with_error(provider)
+    provider._unloading = True
+
+    await provider._on_providers_updated(MagicMock())
+
+    assert provider._engine_recheck_task is None
+    assert errors == []
+
+
+async def test_providers_updated_keeps_a_single_recheck_in_flight() -> None:
+    """Providers changes arriving during the grace period do not stack up rechecks."""
+    plugins: list[Any] = []
+    provider, subscribers, _ = _make_engine_provider(
+        plugins,
+        setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"},
+    )
+    _record_unload_with_error(provider)
+
+    await provider._on_providers_updated(MagicMock())
+    first_task = provider._engine_recheck_task
+    assert first_task is not None
+    assert subscribers
+    await provider._on_providers_updated(MagicMock())
+
+    assert provider._engine_recheck_task is first_task
+    assert cast("Any", provider.mass).create_task.call_count == 1
+    plugins.append(_make_engine_plugin("p1", ["ai"], ["tts"]))
+    for callback in list(subscribers):
+        callback(MagicMock())
+    await first_task
+
+
+async def test_loaded_in_mass_watches_the_loaded_providers() -> None:
+    """Loading the provider wires up the engine watch, and unloading tears it down."""
+    provider, subscribers, _ = _make_engine_provider(
+        [_make_engine_plugin("p1", ["ai"], ["tts"])],
+        setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"},
+    )
+
+    await provider.loaded_in_mass()
+
+    subscribe_calls = cast("Any", provider.mass).subscribe.call_args_list
+    assert subscribe_calls[0].args == (
+        provider._on_providers_updated,
+        EventType.PROVIDERS_UPDATED,
+    )
+    assert subscribe_calls[1].args == (
+        provider._on_dj_queue_event,
+        (EventType.QUEUE_ADDED, EventType.QUEUE_ITEMS_UPDATED, EventType.PLAYER_REMOVED),
+    )
+    assert subscribers == [provider._on_providers_updated, provider._on_dj_queue_event]
+
+    await provider.unload()
+
+    assert subscribers == []
+
+
+async def test_queue_dj_commands_are_registered_as_queue_control() -> None:
+    """Reading and arming the queue DJ menu are both queue-scoped, not provider config."""
+    provider, _, _ = _make_engine_provider(
+        [_make_engine_plugin("p1", ["ai"], ["tts"])],
+        setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"},
+    )
+
+    await provider.loaded_in_mass()
+
+    scopes = {
+        call.args[0]: call.kwargs["required_scope"]
+        for call in cast("Any", provider.mass).register_api_command.call_args_list
+    }
+    assert scopes["ai_radio/queue_dj/set"] == Scope.QUEUES_CONTROL
+    assert scopes["ai_radio/queue_dj/status"] == Scope.QUEUES_CONTROL
+    assert scopes["ai_radio/status"] == Scope.CONFIG_PROVIDERS_READ
+
+
+async def test_unload_cancels_an_in_flight_engine_recheck() -> None:
+    """Unloading stops a running grace period instead of letting it report an error."""
+    provider, subscribers, _ = _make_engine_provider(
+        [], setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"}
+    )
+    errors = _record_unload_with_error(provider)
+
+    await provider._on_providers_updated(MagicMock())
+    recheck_task = provider._engine_recheck_task
+    assert recheck_task is not None
+    assert subscribers
+    await provider.unload()
+
+    with pytest.raises(asyncio.CancelledError):
+        await recheck_task
+    assert provider._unloading is True
+    assert errors == []
+
+
+async def test_unload_cancels_an_in_flight_queue_dj_replan() -> None:
+    """Unloading stops replan work that is still running for an armed queue."""
+    provider, _, _ = _make_engine_provider([])
+
+    async def _never_returns() -> None:
+        await asyncio.sleep(3600)
+
+    replan_task = asyncio.ensure_future(_never_returns())
+    provider._dj_queues["queue-1"] = DJQueueState(
+        queue_id="queue-1",
+        host_id="rick",
+        dj_session_id="dj0123456789",
+        task=replan_task,
+    )
+
+    await provider.unload()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(replan_task, timeout=5)
+
+
+async def test_engine_recheck_stays_silent_when_the_provider_unloads_during_the_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unload surfacing as the wait's timeout is not reported as an engine error."""
+    provider, _, _ = _make_engine_provider(
+        [], setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"}
+    )
+    errors = _record_unload_with_error(provider)
+    monkeypatch.setattr(ai_radio_provider, "ENGINE_RECHECK_GRACE", 0.05)
+
+    await provider._on_providers_updated(MagicMock())
+    recheck_task = provider._engine_recheck_task
+    assert recheck_task is not None
+    provider._unloading = True
+    await recheck_task
+
+    assert errors == []
+    assert cast("Any", provider.mass).call_later.call_count == 0
+
+
+async def test_engine_recheck_stays_silent_when_the_server_closes_during_the_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A shutdown surfacing as the wait's timeout is not reported as an engine error."""
+    provider, _, _ = _make_engine_provider(
+        [], setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"}
+    )
+    errors = _record_unload_with_error(provider)
+    monkeypatch.setattr(ai_radio_provider, "ENGINE_RECHECK_GRACE", 0.05)
+
+    await provider._on_providers_updated(MagicMock())
+    recheck_task = provider._engine_recheck_task
+    assert recheck_task is not None
+    cast("Any", provider.mass).closing = True
+    await recheck_task
+
+    assert errors == []
+    assert cast("Any", provider.mass).call_later.call_count == 0
+
+
+async def test_engine_watchdog_arms_a_reload_after_unloading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The unload arms the reload that picks the provider back up once engines return."""
+    provider, _, _ = _make_engine_provider(
+        [], setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"}
+    )
+    errors = _record_unload_with_error(provider)
+    monkeypatch.setattr(ai_radio_provider, "ENGINE_RECHECK_GRACE", 0.05)
+
+    await provider._on_providers_updated(MagicMock())
+    recheck_task = provider._engine_recheck_task
+    assert recheck_task is not None
+    # the watch waits out the grace, not the (much shorter) discovery timeout of the load
+    async with asyncio.timeout(1):
+        await recheck_task
+
+    assert [error.translation_key for error in errors] == ["ai_radio_no_ai_engine"]
+    retry = cast("Any", provider.mass).call_later.call_args
+    assert retry.args == (ENGINE_RETRY_DELAY, provider.mass.load_provider, "ai_radio")
+    assert retry.kwargs == {"allow_retry": True, "task_id": "load_provider_ai_radio"}

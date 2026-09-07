@@ -381,30 +381,6 @@ class ZvukMusicProvider(MusicProvider):
 
     # Library methods
 
-    async def _iter_batched(
-        self,
-        ids: list[str],
-        fetcher: Any,
-        parser: Any,
-        item_type: str,
-    ) -> AsyncGenerator[Any]:
-        """
-        Yield parsed items by fetching ``ids`` in batches of DEFAULT_LIMIT.
-
-        :param ids: List of item IDs to fetch.
-        :param fetcher: Async callable that accepts a list of IDs and returns a list of raw items.
-        :param parser: Callable(provider, raw_item) → MA media item.
-        :param item_type: Human-readable type name for debug log messages.
-        """
-        for i in range(0, len(ids), DEFAULT_LIMIT):
-            batch = ids[i : i + DEFAULT_LIMIT]
-            items = await fetcher(batch)
-            for item in items:
-                try:
-                    yield parser(self, item)
-                except InvalidDataError as err:
-                    self.logger.debug("Error parsing library %s: %s", item_type, err)
-
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from Zvuk Music."""
         collection = await self.client.get_collection()
@@ -412,7 +388,7 @@ class ZvukMusicProvider(MusicProvider):
             return
         ids = [str(item.id) for item in collection.artists if item.id]
         async for artist in self._iter_batched(
-            ids, self.client.get_artists, parse_artist, "artist"
+            ids, self.client.get_artists, parse_artist, MediaType.ARTIST
         ):
             yield artist
 
@@ -422,7 +398,9 @@ class ZvukMusicProvider(MusicProvider):
         if not collection or not collection.releases:
             return
         ids = [str(item.id) for item in collection.releases if item.id]
-        async for album in self._iter_batched(ids, self.client.get_releases, parse_album, "album"):
+        async for album in self._iter_batched(
+            ids, self.client.get_releases, parse_album, MediaType.ALBUM
+        ):
             yield album
 
     async def get_library_tracks(self) -> AsyncGenerator[Track]:
@@ -431,7 +409,9 @@ class ZvukMusicProvider(MusicProvider):
         if not collection or not collection.tracks:
             return
         ids = [str(item.id) for item in collection.tracks if item.id]
-        async for track in self._iter_batched(ids, self.client.get_tracks, parse_track, "track"):
+        async for track in self._iter_batched(
+            ids, self.client.get_tracks, parse_track, MediaType.TRACK
+        ):
             yield track
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
@@ -445,7 +425,7 @@ class ZvukMusicProvider(MusicProvider):
         if collection_items:
             ids = [str(item.id) for item in collection_items if item.id]
             async for playlist in self._iter_batched(
-                ids, self.client.get_playlists, parse_playlist, "playlist"
+                ids, self.client.get_playlists, parse_playlist, MediaType.PLAYLIST
             ):
                 yield playlist
 
@@ -455,32 +435,7 @@ class ZvukMusicProvider(MusicProvider):
             try:
                 yield parse_playlist(self, simple_pl)
             except InvalidDataError as err:
-                self.logger.debug("Error parsing synthesis playlist: %s", err)
-
-    async def _get_for_you_playlists(self) -> list[Playlist]:
-        """Fetch and parse Zvuk's personalized synthesis playlists («Плейлисты для вас»)."""
-        synthesis_playlists = await self.client.get_short_playlists(SYNTHESIS_PLAYLIST_IDS)
-        result: list[Playlist] = []
-        for simple_pl in synthesis_playlists:
-            try:
-                result.append(parse_playlist(self, simple_pl))
-            except InvalidDataError as err:
-                self.logger.debug("Error parsing synthesis playlist: %s", err)
-        return result
-
-    async def _get_editorial_playlists(self) -> list[Playlist]:
-        """Fetch and parse Zvuk's editorial curated playlists («Подборки»)."""
-        editorial_ids = await self.client.get_editorial_playlist_ids()
-        if not editorial_ids:
-            return []
-        full_playlists = await self.client.get_playlists(editorial_ids[:DEFAULT_LIMIT])
-        result: list[Playlist] = []
-        for full_pl in full_playlists:
-            try:
-                result.append(parse_playlist(self, full_pl))
-            except InvalidDataError as err:
-                self.logger.debug("Error parsing editorial playlist: %s", err)
-        return result
+                self.report_skipped_sync_item(MediaType.PLAYLIST, str(simple_pl.id), err)
 
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """
@@ -691,13 +646,6 @@ class ZvukMusicProvider(MusicProvider):
             return await self.client.unlike_playlist(prov_item_id)
         return False
 
-    def _get_provider_item_id(self, item: MediaItemType) -> str | None:
-        """Get provider item ID from media item."""
-        for mapping in item.provider_mappings:
-            if mapping.provider_instance == self.instance_id:
-                return mapping.item_id
-        return item.item_id if item.provider == self.instance_id else None
-
     # Playlist management
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
@@ -835,3 +783,70 @@ class ZvukMusicProvider(MusicProvider):
             allow_seek=True,
             can_seek=True,
         )
+
+    async def _iter_batched(
+        self,
+        ids: list[str],
+        fetcher: Any,
+        parser: Any,
+        media_type: MediaType,
+    ) -> AsyncGenerator[Any]:
+        """
+        Yield parsed items by fetching ``ids`` in batches of DEFAULT_LIMIT.
+
+        :param ids: List of item IDs to fetch.
+        :param fetcher: Async callable that accepts a list of IDs and returns a list of raw items.
+        :param parser: Callable(provider, raw_item) → MA media item.
+        :param media_type: Media type of the items, for skip reporting.
+        """
+        for i in range(0, len(ids), DEFAULT_LIMIT):
+            batch = ids[i : i + DEFAULT_LIMIT]
+            items = await fetcher(batch)
+            fetched_ids: set[str] = set()
+            for item in items:
+                fetched_ids.add(str(item.id))
+                try:
+                    yield parser(self, item)
+                except InvalidDataError as err:
+                    self.report_skipped_sync_item(media_type, str(item.id), err)
+            # the id's come from the user's own collection, so anything the fetch left out
+            # (a whole batch is dropped when it raises NotFound) is still in the library
+            for missing_id in batch:
+                if missing_id not in fetched_ids:
+                    self.report_skipped_sync_item(
+                        media_type,
+                        missing_id,
+                        MediaNotFoundError(f"Zvuk did not return {media_type.value} {missing_id}"),
+                    )
+
+    async def _get_for_you_playlists(self) -> list[Playlist]:
+        """Fetch and parse Zvuk's personalized synthesis playlists («Плейлисты для вас»)."""
+        synthesis_playlists = await self.client.get_short_playlists(SYNTHESIS_PLAYLIST_IDS)
+        result: list[Playlist] = []
+        for simple_pl in synthesis_playlists:
+            try:
+                result.append(parse_playlist(self, simple_pl))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing synthesis playlist: %s", err)
+        return result
+
+    async def _get_editorial_playlists(self) -> list[Playlist]:
+        """Fetch and parse Zvuk's editorial curated playlists («Подборки»)."""
+        editorial_ids = await self.client.get_editorial_playlist_ids()
+        if not editorial_ids:
+            return []
+        full_playlists = await self.client.get_playlists(editorial_ids[:DEFAULT_LIMIT])
+        result: list[Playlist] = []
+        for full_pl in full_playlists:
+            try:
+                result.append(parse_playlist(self, full_pl))
+            except InvalidDataError as err:
+                self.logger.debug("Error parsing editorial playlist: %s", err)
+        return result
+
+    def _get_provider_item_id(self, item: MediaItemType) -> str | None:
+        """Get provider item ID from media item."""
+        for mapping in item.provider_mappings:
+            if mapping.provider_instance == self.instance_id:
+                return mapping.item_id
+        return item.item_id if item.provider == self.instance_id else None

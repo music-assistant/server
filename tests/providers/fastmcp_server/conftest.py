@@ -170,7 +170,7 @@ def mock_mass(mock_user: MagicMock) -> MagicMock:
     mass.player_queues.seek = AsyncMock()
     mass.player_queues.play_index = AsyncMock()
     mass.player_queues.set_shuffle = AsyncMock()
-    mass.player_queues.set_repeat = MagicMock()
+    mass.player_queues.set_repeat = AsyncMock()
     mass.player_queues.transfer_queue = AsyncMock()
     mass.player_queues.clear = MagicMock()
     mass.player_queues.delete_item = MagicMock()
@@ -295,6 +295,18 @@ def fake_event_emitter(mock_mass: MagicMock) -> Any:
             holder["cb"](event)
 
     return _Emitter()
+
+
+@pytest.fixture
+def library_server(mock_mass: Any) -> Any:
+    """Build a root FastMCP with only the library sub-server mounted."""
+    from fastmcp import FastMCP
+
+    from music_assistant.providers.fastmcp_server.tools.library import build_library_server
+
+    mcp = FastMCP(name="t")
+    mcp.mount(build_library_server(mock_mass), namespace="library")
+    return mcp
 
 
 @pytest.fixture

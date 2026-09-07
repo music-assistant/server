@@ -19,6 +19,8 @@ from music_assistant.models.plugin import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
+    from music_assistant_models.config_entries import ConfigValueType
+
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.provider import Provider
 
@@ -45,6 +47,16 @@ async def get_tts_engines(mass: MusicAssistant) -> list[TTSEngine]:
     return await _collect_engines(
         mass, ProviderFeature.TTS, lambda provider: provider.get_tts_engines()
     )
+
+
+def engine_display_name(engine: PluginEngine) -> str:
+    """
+    Return the name to show for an engine, naming the plugin it comes from.
+
+    :param engine: The engine to name. Engine names alone are ambiguous, since the same
+        name can be exposed by more than one plugin.
+    """
+    return f"{engine.provider.name} | {engine.name}"
 
 
 async def resolve_ai_engine(mass: MusicAssistant, selected: str | None) -> AIEngine | None:
@@ -83,7 +95,7 @@ async def select_ai_engine(
     :param in_setup_data: Store in (and read from) the provider's setup_data instead of its
         regular config values.
     """
-    return await _select_engine(
+    return _select_provider_engine(
         provider, key, await get_ai_engines(provider.mass), in_setup_data=in_setup_data
     )
 
@@ -102,13 +114,38 @@ async def select_tts_engine(
     :param in_setup_data: Store in (and read from) the provider's setup_data instead of its
         regular config values.
     """
-    return await _select_engine(
+    return _select_provider_engine(
         provider, key, await get_tts_engines(provider.mass), in_setup_data=in_setup_data
     )
 
 
+async def select_core_tts_engine(mass: MusicAssistant, domain: str, key: str) -> TTSEngine | None:
+    """
+    Return a core controller's TTS engine, adopting the first available one when it has none yet.
+
+    A selection that was made explicitly is honoured or, when that engine no longer exists,
+    reported as missing - another engine is never substituted for it.
+
+    :param mass: The Music Assistant instance to query.
+    :param domain: The domain of the core controller whose selection to read and, if unset, persist.
+    :param key: The config key holding the selected engine uid.
+    """
+    config = mass.config
+    return _select_engine(
+        await get_tts_engines(mass),
+        config.get_raw_core_config_value(domain, key),
+        lambda uid: config.set_raw_core_config_value(domain, key, uid),
+        domain,
+        key,
+    )
+
+
 async def create_ai_engine_config_entries(
-    mass: MusicAssistant, key: str, depends_on: str | None = None, required: bool = False
+    mass: MusicAssistant,
+    key: str,
+    depends_on: str | None = None,
+    required: bool = False,
+    category: str = "features",
 ) -> tuple[ConfigEntry, ...]:
     """
     Return the config entries letting the user pick an AI engine.
@@ -120,12 +157,24 @@ async def create_ai_engine_config_entries(
     :param depends_on: Optional key of the entry this picker should be shown for.
     :param required: Reject a submission that leaves the picker empty. Only for setup flows;
         an options entry must stay optional so a provider with no selection still loads.
+    :param category: The settings category to show the entries under.
     """
-    return _create_engine_config_entries(await get_ai_engines(mass), key, depends_on, required)
+    return _create_engine_config_entries(
+        await get_ai_engines(mass),
+        key,
+        depends_on,
+        required,
+        category,
+        unavailable_translation_key="ai_engine_unavailable",
+    )
 
 
 async def create_tts_engine_config_entries(
-    mass: MusicAssistant, key: str, depends_on: str | None = None, required: bool = False
+    mass: MusicAssistant,
+    key: str,
+    depends_on: str | None = None,
+    required: bool = False,
+    category: str = "features",
 ) -> tuple[ConfigEntry, ...]:
     """
     Return the config entries letting the user pick a TTS engine.
@@ -137,8 +186,16 @@ async def create_tts_engine_config_entries(
     :param depends_on: Optional key of the entry this picker should be shown for.
     :param required: Reject a submission that leaves the picker empty. Only for setup flows;
         an options entry must stay optional so a provider with no selection still loads.
+    :param category: The settings category to show the entries under.
     """
-    return _create_engine_config_entries(await get_tts_engines(mass), key, depends_on, required)
+    return _create_engine_config_entries(
+        await get_tts_engines(mass),
+        key,
+        depends_on,
+        required,
+        category,
+        unavailable_translation_key="tts_engine_unavailable",
+    )
 
 
 async def _collect_engines[EngineT: PluginEngine](
@@ -172,31 +229,40 @@ def _resolve[EngineT: PluginEngine](engines: list[EngineT], selected: str | None
     return next((engine for engine in engines if engine.uid == selected), None)
 
 
-async def _select_engine[EngineT: PluginEngine](
+def _select_engine[EngineT: PluginEngine](
+    engines: list[EngineT],
+    stored: ConfigValueType,
+    persist: Callable[[str], None],
+    owner: str,
+    key: str,
+) -> EngineT | None:
+    """Return the stored engine, or persist and return the first available one."""
+    if isinstance(stored, str) and stored:
+        return _resolve(engines, stored)
+    if not engines:
+        return None
+    engine = engines[0]
+    persist(engine.uid)
+    LOGGER.debug("Selected engine %s as %s for %s", engine.uid, key, owner)
+    return engine
+
+
+def _select_provider_engine[EngineT: PluginEngine](
     provider: Provider,
     key: str,
     engines: list[EngineT],
     *,
     in_setup_data: bool,
 ) -> EngineT | None:
-    """Return the stored engine, or persist and return the first available one."""
+    """Return the provider's stored engine, or persist and return the first available one."""
     config = provider.mass.config
     stored = (
         config.get_provider_setup_value(provider.instance_id, key)
         if in_setup_data
         else config.get_raw_provider_config_value(provider.instance_id, key)
     )
-    if isinstance(stored, str) and stored:
-        return _resolve(engines, stored)
-    if not engines:
-        return None
-    engine = engines[0]
-    if in_setup_data:
-        provider._update_setup_data(key, engine.uid)
-    else:
-        provider._update_config_value(key, engine.uid)
-    LOGGER.debug("Selected engine %s as %s for %s", engine.uid, key, provider.instance_id)
-    return engine
+    persist = provider._update_setup_data if in_setup_data else provider._update_config_value
+    return _select_engine(engines, stored, lambda uid: persist(key, uid), provider.instance_id, key)
 
 
 def _create_engine_config_entries(
@@ -204,6 +270,9 @@ def _create_engine_config_entries(
     key: str,
     depends_on: str | None,
     required: bool = False,
+    category: str = "features",
+    *,
+    unavailable_translation_key: str,
 ) -> tuple[ConfigEntry, ...]:
     """Build the picker (and unavailable alert) config entries for the given engines."""
     entry = ConfigEntry(
@@ -213,14 +282,11 @@ def _create_engine_config_entries(
         # a concrete default would make the seeded selection equal to it and therefore
         # not persisted (to_raw only stores values differing from the default)
         default_value=None,
-        # the picker aggregates engines from every plugin, so each option names the
-        # plugin it came from - engine names alone are ambiguous across providers
         options=[
-            ConfigValueOption(engine.uid, title=f"{engine.provider.name} | {engine.name}")
-            for engine in engines
+            ConfigValueOption(engine.uid, title=engine_display_name(engine)) for engine in engines
         ],
         depends_on=depends_on,
-        category="features",
+        category=category,
         read_only=not engines,
     )
     if engines:
@@ -231,5 +297,9 @@ def _create_engine_config_entries(
             key=f"{key}_unavailable",
             type=ConfigEntryType.ALERT,
             depends_on=depends_on,
+            category=category,
+            # the alert text does not depend on what the picker is used for, so every
+            # caller shares one source string instead of authoring its own copy
+            translation_key=unavailable_translation_key,
         ),
     )

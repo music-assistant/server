@@ -4,7 +4,18 @@ from __future__ import annotations
 
 import struct
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import MagicMock
+
+from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.streamdetails import StreamDetails
+
+from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.controllers.streams.constants import (
+    STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY,
+    STREAMDETAILS_INBAND_TITLE_KEY,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -158,6 +169,42 @@ async def _collect_metadata(chunks: list[bytes]) -> list[dict[str, str]]:
         pass
 
     return metadata_updates
+
+
+def _stream_details(*, opt_in: bool) -> StreamDetails:
+    """Return stream details for testing the Ogg metadata handoff."""
+    return StreamDetails(
+        item_id="radio1",
+        provider="test",
+        audio_format=AudioFormat(content_type=ContentType.FLAC, channels=2),
+        media_type=MediaType.RADIO,
+        stream_type=StreamType.IN_BAND,
+        path="https://example.invalid/test.ogg",
+        duration=0,
+        data={STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY: True} if opt_in else None,
+        stream_metadata_update_callback=MagicMock(),
+    )
+
+
+def test_ogg_metadata_handoff_requires_explicit_opt_in() -> None:
+    """Only opted-in providers receive chained-Ogg titles through StreamDetails.data."""
+    audio = StreamsAudio(MagicMock())
+    metadata = {"title": "Some Song", "artist": "Some Artist"}
+
+    opted_in = _stream_details(opt_in=True)
+    audio._handle_inband_metadata(opted_in, metadata)
+    assert opted_in.data is not None
+    assert opted_in.data[STREAMDETAILS_INBAND_TITLE_KEY] == "Some Artist - Some Song"
+    assert opted_in.stream_metadata is None
+
+    legacy = _stream_details(opt_in=False)
+    legacy_mass = cast("Any", audio.mass)
+    legacy_mass.metadata.normalize_radio_artist_name.side_effect = lambda artist: artist
+    legacy_mass.metadata.get_radio_stream_station_image.return_value = None
+    audio._handle_inband_metadata(legacy, metadata)
+    assert legacy.stream_metadata is not None
+    assert legacy.stream_metadata.title == "Some Song"
+    assert legacy.stream_metadata.artist == "Some Artist"
 
 
 async def test_vorbis_comment_page_emits_metadata() -> None:

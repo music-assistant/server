@@ -12,7 +12,7 @@ from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 
 from music_assistant.providers.filesystem_cloud.base import CloudFileSystemProvider, RawItem
-from music_assistant.providers.filesystem_local.helpers import FileSystemItem
+from music_assistant.providers.filesystem_local.helpers import FileSystemItem, ScanErrors
 
 if TYPE_CHECKING:
     from aiohttp import ClientResponse
@@ -24,12 +24,12 @@ ROOT_ID = "root-id"
 # a small two-level tree: /Artist/track.mp3 + /cover.jpg
 TREE: dict[str, list[RawItem]] = {
     ROOT_ID: [
-        ("artist-id", "Artist", True, "2026-01-01", None),
-        ("cover-id", "cover.jpg", False, "2026-01-01", 4),
-        ("notes-id", "notes.txt", False, "2026-01-01", 2),
+        ("artist-id", "Artist", True, "2026-01-01", None, None),
+        ("cover-id", "cover.jpg", False, "2026-01-01", 4, None),
+        ("notes-id", "notes.txt", False, "2026-01-01", 2, None),
     ],
     "artist-id": [
-        ("track-id", "track.mp3", False, "2026-01-02", 1000),
+        ("track-id", "track.mp3", False, "2026-01-02", 1000, None),
     ],
 }
 FILE_DATA = {"cover-id": b"image-bytes", "track-id": b"audio-bytes", "notes-id": b"n"}
@@ -74,6 +74,7 @@ def _make_provider(tree: dict[str, list[RawItem]] | None = None) -> _StubCloudPr
     provider.config.get_value = MagicMock(return_value=False)
     provider.mass = MagicMock()
     provider.mass.streams.base_url = BASE_URL
+    provider.mass.music.tracks.get_library_item_by_prov_id = AsyncMock(return_value=None)
     provider.tree = TREE if tree is None else tree
     provider.file_data = FILE_DATA
     provider.fail_list = set()
@@ -86,7 +87,7 @@ def _make_provider(tree: dict[str, list[RawItem]] | None = None) -> _StubCloudPr
 async def _run_enumerate(
     provider: _StubCloudProvider,
     *,
-    root_scan_errors: list[OSError] | None = None,
+    scan_errors: ScanErrors | None = None,
 ) -> None:
     """Drive _enumerate_files_for_sync with empty sync buckets."""
     await provider._enumerate_files_for_sync(
@@ -96,7 +97,8 @@ async def _run_enumerate(
         items_to_process=[],
         unchanged_cue_items=[],
         cue_stems=set(),
-        root_scan_errors=root_scan_errors if root_scan_errors is not None else [],
+        scan_errors=scan_errors if scan_errors is not None else ScanErrors(),
+        metadata_files=[],
     )
 
 
@@ -122,7 +124,9 @@ async def test_scandir_converts_raw_items() -> None:
 async def test_scandir_skips_duplicate_names() -> None:
     """Clouds may allow duplicate names in a folder; only the first wins."""
     provider = _make_provider(
-        tree={ROOT_ID: [("id1", "a.mp3", False, "1", 1), ("id2", "a.mp3", False, "2", 2)]}
+        tree={
+            ROOT_ID: [("id1", "a.mp3", False, "1", 1, None), ("id2", "a.mp3", False, "2", 2, None)]
+        }
     )
     logger = MagicMock()
     provider.logger = logger
@@ -136,7 +140,7 @@ async def test_scandir_skips_duplicate_names() -> None:
 
 async def test_scandir_sanitizes_slashes_in_names() -> None:
     """Slashes in cloud file names would corrupt the path scheme."""
-    provider = _make_provider(tree={ROOT_ID: [("id1", "AC/DC", True, "1", None)]})
+    provider = _make_provider(tree={ROOT_ID: [("id1", "AC/DC", True, "1", None, None)]})
 
     items = await provider._scandir("")
 
@@ -302,17 +306,18 @@ async def test_resolve_image_embedded_art_missing(monkeypatch: pytest.MonkeyPatc
 
 
 async def test_enumerate_classifies_supported_files_only() -> None:
-    """The sync walk visits all folders and classifies only supported extensions."""
+    """The sync walk visits all folders and classifies media plus local metadata files."""
     provider = _make_provider()
     provider._classify_scan_item = MagicMock()  # type: ignore[method-assign]
 
     await _run_enumerate(provider)
 
-    # cover.jpg and notes.txt are not sync candidates; folder art is handled separately
+    # cover.jpg is a recognized metadata file (routed to metadata-file change detection, never
+    # imported as media); notes.txt is neither media nor a recognized metadata file
     classified = [
         call.args[0].relative_path for call in provider._classify_scan_item.call_args_list
     ]
-    assert classified == ["Artist/track.mp3"]
+    assert classified == ["Artist/track.mp3", "cover.jpg"]
 
 
 async def test_enumerate_subfolder_error_is_skipped() -> None:
@@ -320,21 +325,22 @@ async def test_enumerate_subfolder_error_is_skipped() -> None:
     provider = _make_provider(
         tree={
             ROOT_ID: [
-                ("bad-id", "Bad", True, "1", None),
-                ("artist-id", "Artist", True, "1", None),
+                ("bad-id", "Bad", True, "1", None, None),
+                ("artist-id", "Artist", True, "1", None, None),
             ],
-            "artist-id": [("track-id", "track.mp3", False, "1", 1)],
+            "artist-id": [("track-id", "track.mp3", False, "1", 1, None)],
         }
     )
     provider.fail_list = {"bad-id"}
     provider._classify_scan_item = MagicMock()  # type: ignore[method-assign]
     logger = MagicMock()
     provider.logger = logger
-    root_scan_errors: list[OSError] = []
+    scan_errors = ScanErrors()
 
-    await _run_enumerate(provider, root_scan_errors=root_scan_errors)
+    await _run_enumerate(provider, scan_errors=scan_errors)
 
-    assert not root_scan_errors
+    assert not scan_errors.fatal
+    assert scan_errors.failed_dirs == 1
     logger.warning.assert_called_once()
     assert provider._classify_scan_item.call_count == 1
 
@@ -343,11 +349,22 @@ async def test_enumerate_root_error_aborts() -> None:
     """A root-level listing failure is reported so the sync aborts."""
     provider = _make_provider()
     provider.fail_list = {ROOT_ID}
-    root_scan_errors: list[OSError] = []
+    scan_errors = ScanErrors()
 
-    await _run_enumerate(provider, root_scan_errors=root_scan_errors)
+    await _run_enumerate(provider, scan_errors=scan_errors)
 
-    assert len(root_scan_errors) == 1
+    assert scan_errors.fatal is not None
+
+
+async def test_is_reachable_asks_the_api_for_the_root() -> None:
+    """Cloud storage has no local path to stat, so reachability is a live root listing."""
+    provider = _make_provider()
+
+    assert await provider._is_reachable() is True
+
+    provider.fail_list = {ROOT_ID}
+    with pytest.raises(ProviderUnavailableError):
+        await provider._is_reachable()
 
 
 async def test_enumerate_stops_on_directory_cycle() -> None:
@@ -445,14 +462,14 @@ async def test_unload_without_registered_route() -> None:
 # tree with a playlist folder next to the music: /Playlists/list.m3u + /Artist/track.mp3
 PLAYLIST_TREE: dict[str, list[RawItem]] = {
     ROOT_ID: [
-        ("playlists-id", "Playlists", True, "2026-01-01", None),
-        ("artist-id", "Artist", True, "2026-01-01", None),
+        ("playlists-id", "Playlists", True, "2026-01-01", None, None),
+        ("artist-id", "Artist", True, "2026-01-01", None, None),
     ],
     "playlists-id": [
-        ("list-id", "list.m3u", False, "2026-01-01", 10),
+        ("list-id", "list.m3u", False, "2026-01-01", 10, None),
     ],
     "artist-id": [
-        ("track-id", "track.mp3", False, "2026-01-02", 1000),
+        ("track-id", "track.mp3", False, "2026-01-02", 1000, None),
     ],
 }
 

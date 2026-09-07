@@ -33,6 +33,8 @@ from music_assistant_models.errors import (
     UnsupportedFeaturedException,
 )
 
+from music_assistant.helpers.util import join_task
+
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
@@ -41,7 +43,6 @@ if TYPE_CHECKING:
 SENDSPIN_DOMAIN = "sendspin"
 REMOTE_CREATION_CLEANUP_TIMEOUT = 15.0
 REMOTE_REMOVAL_CLEANUP_DELAYS = (0.0, 1.0, 5.0)
-REMOTE_REMOVAL_CLEANUP_TIMEOUT = 5.0
 
 LOGGER = logging.getLogger(__name__)
 
@@ -144,7 +145,9 @@ class SharedPlaybackSession:
             cls._cancel_and_observe_creation(mass, sendspin, creation_task)
             raise
         try:
-            player_id = await asyncio.shield(creation_task)
+            # join: cancelling the caller must not abort the creation halfway, or the
+            # cleanup task can no longer remove the player it left behind
+            player_id = await join_task(creation_task)
         except asyncio.CancelledError:
             cleanup_required.set_result(True)
             raise
@@ -330,8 +333,11 @@ class SharedPlaybackSession:
             try:
                 if not sendspin.is_virtual_player(player_id):
                     return
-                async with asyncio.timeout(REMOTE_REMOVAL_CLEANUP_TIMEOUT):
-                    await sendspin.remove_virtual_player(player_id)
+                # awaited to completion on purpose: a timeout is no reliable bound on
+                # the teardown - parts of it swallow the cancellation (see
+                # AsyncProcess.close), and one that does land leaves the player
+                # half torn down for the next attempt to trip over
+                await sendspin.remove_virtual_player(player_id)
                 return
             except Exception as err:
                 last_error = err

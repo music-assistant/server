@@ -184,10 +184,10 @@ def test_context_tier_folds_kick_anchor_like_the_old_planner() -> None:
     # ...but the tier keys on the kick-folded window: only 6 downbeats fit
     # before the kick anchor, so the tail is not blendable
     assert context.tier is TransitionTier.QUICK_FADE
-    # the early anchor's rungs overtrim the audible tail and get rejected; the
-    # rescue pass re-anchors near the audible end, re-deriving the tier there
+    # the early kick-folded anchor strands a large audible gap behind it, so
+    # trim-closing directly re-anchors at the audible boundary itself
+    # (re-deriving the tier there) - no rescue-pass fallback needed
     plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
     assert plan.tier is TransitionTier.FULL_BLEND
-    assert plan.fade_out_window == pytest.approx(43.0, abs=1.0)
+    assert plan.fade_out_window == pytest.approx(context.audio_end, abs=0.1)
     assert plan.metrics.audible_outgoing_trim <= plan.crossfade_duration
-    assert plan.metrics.anchor_on_downbeat

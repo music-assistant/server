@@ -113,6 +113,10 @@ class MockMass:
         """Record call_later invocations."""
         self.call_later_calls.append((args, kwargs))
 
+    def get_providers_supporting_feature(self, *args: Any, **kwargs: Any) -> list[Any]:
+        """Report no loaded providers, so engine-backed config entries stay empty."""
+        return []
+
 
 class MockConfig:
     """Mock config for testing CoreController."""

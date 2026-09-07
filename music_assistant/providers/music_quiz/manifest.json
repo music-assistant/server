@@ -1,6 +1,6 @@
 {
   "type": "plugin",
-  "stage": "experimental",
+  "stage": "beta",
   "domain": "music_quiz",
   "name": "Music Quiz",
   "description": "Host a multiplayer music quiz game where guests join with a QR code.",

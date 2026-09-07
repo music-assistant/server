@@ -15,6 +15,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Any, Final
 
 from colorlog import ColoredFormatter
@@ -43,7 +44,7 @@ def get_arguments() -> argparse.Namespace:
     if xdg_data_home := os.getenv("XDG_DATA_HOME"):
         default_data_dir = os.path.join(xdg_data_home, "music-assistant")
     else:
-        default_data_dir = os.path.join(os.path.expanduser("~"), ".musicassistant")
+        default_data_dir = os.path.join(Path("~").expanduser(), ".musicassistant")
     # determine default cache directory
     if xdg_cache_home := os.getenv("XDG_CACHE_HOME"):
         default_cache_dir = os.path.join(xdg_cache_home, "music-assistant")
@@ -187,7 +188,7 @@ def _enable_posix_spawn() -> None:
     # and will use fork() instead of posix_spawn() which significantly
     # less efficient. This is a workaround to force posix_spawn()
     # on Alpine Linux which is supported by musl.
-    subprocess._USE_POSIX_SPAWN = os.path.exists(ALPINE_RELEASE_FILE)  # type: ignore[misc]
+    subprocess._USE_POSIX_SPAWN = Path(ALPINE_RELEASE_FILE).exists()  # type: ignore[misc]
 
 
 def _global_loop_exception_handler(_: Any, context: dict[str, Any]) -> None:
@@ -222,12 +223,12 @@ def main() -> None:
     data_dir = args.data_dir
     cache_dir = args.cache_dir
 
-    os.makedirs(data_dir, exist_ok=True)
-    os.makedirs(cache_dir, exist_ok=True)
+    Path(data_dir).mkdir(parents=True, exist_ok=True)
+    Path(cache_dir).mkdir(parents=True, exist_ok=True)
 
     # Override options though hass add-on config file
     hass_options_file = os.path.join(data_dir, "options.json")
-    if os.path.isfile(hass_options_file):
+    if Path(hass_options_file).is_file():
         # we are running as a hass add-on
         with open(hass_options_file, "rb") as _file:
             hass_options = json_loads(_file.read())

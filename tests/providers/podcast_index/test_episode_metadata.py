@@ -27,7 +27,7 @@ def _episode_data(**overrides: Any) -> dict[str, Any]:
 
 
 def _parse(data: dict[str, Any]) -> PodcastEpisode | None:
-    return parse_episode_from_data(data, "feed-1", 0, "podcast_index--test", "podcast_index")
+    return parse_episode_from_data(data, "feed-1", "podcast_index--test", "podcast_index")
 
 
 # --- parse_episode_from_data: persons / links ------------------------------------------------

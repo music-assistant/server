@@ -28,15 +28,12 @@ def build_test_candidate(  # noqa: PLR0913
     vocal_fade: float = 0.0,
     on_downbeat: bool = True,
     duration: float = 20.0,
-    one_sided: str | None = None,
     tier: TransitionTier = TransitionTier.FULL_BLEND,
     fadein_trim: float | None = None,
     fade_end: float | None = None,
 ) -> Candidate:
     """Build a minimal ``Candidate`` with only the fields a policy under test reads."""
-    spec = CandidateSpec(
-        tier=tier, bars=bars, anchor_s=None, entry_s=None, one_sided_vocal=one_sided
-    )
+    spec = CandidateSpec(tier=tier, bars=bars, anchor_s=None, entry_s=None)
     plan = TransitionPlan(
         tier=tier,
         fade_out_window=fade_end if fade_end is not None else duration,

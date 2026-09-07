@@ -102,12 +102,13 @@ def _build_audio_action(
     prefix: str,
     player_id: str,
     track_uri: str,
+    token: str,
     device_param: str = "",
     from_playlist: bool = False,
 ) -> str:
     """Build audio action URL for MSX playback."""
     # Standard HTTP streaming mode
-    audio_url = f"{prefix}/msx/audio/{player_id}?uri={quote(track_uri, safe='')}"
+    audio_url = f"{prefix}/msx/audio/{player_id}?uri={quote(track_uri, safe='')}&token={token}"
     if from_playlist:
         audio_url += "&from_playlist=1"
     audio_url = append_device_param(audio_url, device_param)
@@ -146,6 +147,7 @@ def map_track_to_msx(
             prefix=prefix,
             player_id=player_id,
             track_uri=track.uri,
+            token=provider.get_stream_token(player_id),
             device_param=device_param,
         )
 
@@ -179,6 +181,7 @@ def map_tracks_to_msx_playlist(
     :param qr_cover_base: When set (active party), item backgrounds are routed
         through this QR-compositing endpoint so the join QR shows on covers.
     """
+    token = provider.get_stream_token(player_id)
     msx_items = []
     for track in tracks:
         duration = getattr(track, "duration", 0) or 0
@@ -203,6 +206,7 @@ def map_tracks_to_msx_playlist(
             prefix=prefix,
             player_id=player_id,
             track_uri=track.uri,
+            token=token,
             device_param=device_param,
             from_playlist=True,
         )

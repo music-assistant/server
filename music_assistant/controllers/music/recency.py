@@ -17,10 +17,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType
+from music_assistant_models.helpers import create_safe_string
 
 from music_assistant.constants import DB_TABLE_PLAYLOG
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.util import parse_title_and_version
 

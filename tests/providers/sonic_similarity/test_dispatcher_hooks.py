@@ -9,6 +9,7 @@ import pytest
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import RecommendationFolder
 
+from tests.common import use_real_create_task
 from tests.providers.sonic_similarity.conftest import make_item_mapping, make_track
 
 if TYPE_CHECKING:
@@ -189,6 +190,11 @@ class TestGetRecommendations:
 
 class TestGetRecommendationItems:
     """Tests for SonicSimilarityPlugin.get_recommendation_items."""
+
+    @pytest.fixture(autouse=True)
+    def _real_create_task(self, mock_mass: MagicMock) -> None:
+        """Let the @use_cache decorator on the row fetch dispatch through a real task."""
+        use_real_create_task(mock_mass)
 
     @pytest.mark.asyncio
     async def test_unknown_item_id_returns_empty_without_backend_io(

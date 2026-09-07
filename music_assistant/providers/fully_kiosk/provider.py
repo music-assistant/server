@@ -11,6 +11,7 @@ from music_assistant_models.enums import ConfigEntryType
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_LOG_LEVEL
 from music_assistant.models.player_provider import PlayerProvider
 
+from .dashboard import FullyKioskDashboards
 from .player import DEFAULT_PORT, FullyKioskPlayer
 
 CONF_MANUAL_IPS = CONF_ENTRY_MANUAL_DISCOVERY_IPS.key
@@ -49,6 +50,8 @@ class FullyKioskProvider(PlayerProvider):
     optional SSL options) are configured on the player itself.
     """
 
+    dashboards: FullyKioskDashboards
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
         return (
@@ -63,6 +66,7 @@ class FullyKioskProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        self.dashboards = FullyKioskDashboards(self)
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             logging.getLogger("fullykiosk").setLevel(logging.DEBUG)
         else:
@@ -114,3 +118,8 @@ class FullyKioskProvider(PlayerProvider):
             if new_entries != entries:
                 self._update_config_value(CONF_MANUAL_IPS, new_entries)
         await self.mass.players.unregister(player_id, True)
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        await self.dashboards.unload()
+        await super().unload(is_removed)

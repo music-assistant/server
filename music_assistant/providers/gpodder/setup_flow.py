@@ -154,22 +154,11 @@ async def _run_nextcloud(session: SetupSession) -> None:
         except Exception:
             errors = {"base": "not_a_nextcloud_instance"}
             continue
-        # surface the login URL (link icon) so the user can approve in Nextcloud
-        await session.form(
-            [
-                ConfigEntry(
-                    key="nc_approve",
-                    type=ConfigEntryType.LABEL,
-                    help_link=login_url,
-                )
-            ],
-            step_id="nc_approve",
-        )
         try:
-            app_password = await session.progress_until(
+            app_password = await session.external_until(
                 _nc_poll(session.mass.http_session, poll_endpoint, poll_token, verify_ssl),
-                step_id="nc_polling",
-                text="waiting_for_approval",
+                url=login_url,
+                step_id="nc_approve",
                 expires_in=_NC_LOGIN_TIMEOUT,
             )
         except StepExpiredError:

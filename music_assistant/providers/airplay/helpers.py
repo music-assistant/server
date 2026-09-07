@@ -7,6 +7,7 @@ import os
 import platform
 import plistlib
 import re
+from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientError, ClientTimeout
@@ -15,6 +16,8 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.util import format_ip_for_url
+
+from .constants import AIRPLAY_BUFFER_DEPTH_DEFAULTS
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
@@ -165,6 +168,40 @@ def is_apple_tv(manufacturer: str, model: str) -> bool:
     (e.g. "Apple TV 4K", "Apple TV Gen4").
     """
     return manufacturer.lower().startswith("apple") and "apple tv" in model.lower()
+
+
+def default_hires_enabled(manufacturer: str, model: str) -> bool:
+    """
+    Return whether 24-bit playback should be enabled by default for a device.
+
+    :param manufacturer: Device manufacturer from discovery.
+    :param model: Device model from discovery.
+    """
+    # HomePods are WiFi-only receivers on the realtime (UDP) stream, whose
+    # 24-bit audio packets regularly exceed the network MTU; on a lossy WiFi
+    # link that surfaces as intermittent crackling, so they default to 16-bit.
+    return not (manufacturer.lower().startswith("apple") and "homepod" in model.lower())
+
+
+def default_buffer_depth(manufacturer: str, model: str, fv: str | None) -> int:
+    """
+    Return the default receiver buffer depth in ms for a device, 0 for automatic.
+
+    :param manufacturer: Device manufacturer from discovery.
+    :param model: Device model from discovery.
+    :param fv: The device's _airplay fv (firmware) TXT record, when known.
+    """
+    for manufacturer_match, model_match, fv_match, depth_ms in AIRPLAY_BUFFER_DEPTH_DEFAULTS:
+        # fnmatchcase with both sides lowered: plain fnmatch only normalizes
+        # case on case-insensitive platforms, so a capitalized table row would
+        # match on macOS and silently fail on Linux.
+        if (
+            fnmatchcase(manufacturer.lower(), manufacturer_match.lower())
+            and fnmatchcase(model.lower(), model_match.lower())
+            and fnmatchcase((fv or "").lower(), fv_match.lower())
+        ):
+            return depth_ms
+    return 0
 
 
 def get_decoded_property(discovery_info: AsyncServiceInfo, key: str) -> str | None:

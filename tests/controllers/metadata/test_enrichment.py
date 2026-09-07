@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import aiohttp
 import pytest
 from music_assistant_models.enums import ExternalID, ProviderFeature
-from music_assistant_models.media_items import Album, Artist, Track
+from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track
 from music_assistant_models.media_items.metadata import MediaItemMetadata
 
 from music_assistant.controllers.metadata.constants import CONF_ENABLE_ONLINE_METADATA
@@ -60,6 +60,44 @@ async def test_album_enrichment_survives_provider_error() -> None:
     good.get_album_metadata.assert_awaited_once()  # loop continued past the failing provider
     enrichment.logger.warning.assert_called_once()
     enrichment.mass.music.albums.update_item_in_library.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_album_enrichment_backfills_external_ids() -> None:
+    """External ids fetched from the provider item (e.g. a barcode) reach the album."""
+    enrichment = MetadataEnrichmentMixin()
+    enrichment.logger = MagicMock()
+    enrichment.mass = MagicMock()
+    enrichment.config = MagicMock()
+    enrichment.config.get_value = _online_metadata_only
+    enrichment.providers = []  # type: ignore[misc]
+    enrichment.mass.music.albums.update_item_in_library = AsyncMock()
+
+    prov_item = Album(
+        item_id="prov1",
+        provider="spotify_1",
+        name="Test Album",
+        provider_mappings=set(),
+        external_ids={(ExternalID.BARCODE, "0602577915181")},
+        metadata=MediaItemMetadata(),
+    )
+    enrichment.mass.music.albums.get_provider_item = AsyncMock(return_value=prov_item)
+
+    album = Album(
+        item_id="1",
+        provider="library",
+        name="Test Album",
+        provider_mappings={
+            ProviderMapping(
+                item_id="prov1", provider_domain="spotify", provider_instance="spotify_1"
+            )
+        },
+        metadata=MediaItemMetadata(),
+    )
+
+    await enrichment._update_album_metadata(album, force_refresh=True)
+
+    assert (ExternalID.BARCODE, "0602577915181") in album.external_ids
 
 
 @pytest.mark.asyncio

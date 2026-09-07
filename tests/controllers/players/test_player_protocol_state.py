@@ -11,7 +11,9 @@ import time
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import MediaType, PlaybackState, PlayerType
+from music_assistant_models.audio_processing import ActiveSourceAudioDetails
+from music_assistant_models.enums import ContentType, PlaybackState, PlayerType
+from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.controllers.players import PlayerController
 from tests.common import MockPlayer, MockProvider
@@ -25,7 +27,9 @@ def mock_mass() -> MagicMock:
     mass.loop = None
     mass.config = MagicMock()
     mass.config.get = MagicMock(return_value=[])
-    mass.config.get_raw_player_config_value = MagicMock(return_value="auto")
+    mass.config.get_raw_player_config_value = MagicMock(
+        side_effect=lambda _player_id, _key, default=None: default
+    )
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
     mass.config.set = MagicMock()
     mass.signal_event = MagicMock()
@@ -41,12 +45,6 @@ def controller(mock_mass: MagicMock) -> PlayerController:
     ctrl = PlayerController(mock_mass)
     mock_mass.players = ctrl
     return ctrl
-
-
-@pytest.fixture
-def provider(mock_mass: MagicMock) -> MockProvider:
-    """Create a mock provider."""
-    return MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
 
 
 class TestFinalPlaybackStateWithActiveProtocol:
@@ -108,6 +106,30 @@ class TestFinalPlaybackStateWithActiveProtocol:
 
         assert player.state.playback_state == PlaybackState.IDLE
 
+    def test_protocol_player_inherits_parent_source_audio(
+        self,
+        provider: MockProvider,
+        controller: PlayerController,
+    ) -> None:
+        """A protocol player publishes the live source audio details of its parent."""
+        details = ActiveSourceAudioDetails(
+            input_format=AudioFormat(
+                content_type=ContentType.FLAC,
+                sample_rate=44100,
+                bit_depth=16,
+                channels=2,
+            )
+        )
+        parent = MockPlayer(provider, "player_1", "Player")
+        parent._state.active_source_audio = details
+        protocol_player = MockPlayer(provider, "ap_1", "AirPlay", player_type=PlayerType.PROTOCOL)
+        controller._players = {"player_1": parent, "ap_1": protocol_player}
+        protocol_player.set_protocol_parent_id("player_1")
+
+        protocol_player.refresh_state(signal_event=False)
+
+        assert protocol_player.state.active_source_audio == details
+
     def test_no_active_protocol_uses_native_state(
         self,
         provider: MockProvider,
@@ -145,47 +167,38 @@ class TestFinalPlaybackStateWithActiveProtocol:
         assert player.state.elapsed_time == 0
 
 
-def _audio_source_queue(elapsed: float, updated: float) -> MagicMock:
-    """Build a mock queue whose current item is an AudioSource carrying a source clock."""
+def _source_session(elapsed: float | None, updated: float | None, player_id: str) -> MagicMock:
+    """Build a mock session whose source reports the given clock."""
     stream_metadata = MagicMock()
     stream_metadata.elapsed_time = elapsed
     stream_metadata.elapsed_time_last_updated = updated
-    streamdetails = MagicMock()
-    streamdetails.media_type = MediaType.AUDIO_SOURCE
-    streamdetails.stream_metadata = stream_metadata
-    current_item = MagicMock()
-    current_item.streamdetails = streamdetails
-    queue = MagicMock()
-    queue.current_item = current_item
-    return queue
-
-
-def _empty_queue() -> MagicMock:
-    """Build a mock queue with no current item (no AudioSource source clock)."""
-    queue = MagicMock()
-    queue.current_item = None
-    return queue
+    session = MagicMock()
+    session.player_id = player_id
+    session.stream_metadata = stream_metadata
+    session.source_uri = f"test_instance://audio_source/{player_id}"
+    session.source.image = None
+    return session
 
 
 class TestFinalPlaybackStateAudioSourceElapsed:
-    """The AudioSource source-clock override, including the group own-queue fallback."""
+    """The source-clock override for a live external source playing on a player."""
 
-    def test_standalone_uses_active_source_audio_source_elapsed(
+    def test_standalone_uses_its_sources_clock(
         self,
         provider: MockProvider,
         controller: PlayerController,
         mock_mass: MagicMock,
     ) -> None:
-        """A standalone player reports the AudioSource source clock from its active queue."""
+        """A standalone player reports the position its live source reports."""
         player = MockPlayer(provider, "player_1", "Player")
         player._attr_playback_state = PlaybackState.PLAYING
         player._attr_active_source = "player_1"
         player._attr_elapsed_time = 0.0
         player._attr_elapsed_time_last_updated = time.time()
 
-        own_queue = _audio_source_queue(42.0, time.time())
-        mock_mass.player_queues.get = MagicMock(
-            side_effect=lambda qid: {"player_1": own_queue}.get(qid)
+        session = _source_session(42.0, time.time(), "player_1")
+        mock_mass.players.get_audio_source_session = MagicMock(
+            side_effect=lambda pid: {"player_1": session}.get(pid)
         )
         controller._players = {"player_1": player}
 
@@ -193,18 +206,17 @@ class TestFinalPlaybackStateAudioSourceElapsed:
 
         assert player.state.elapsed_time == 42.0
 
-    def test_group_falls_back_to_own_queue_audio_source_elapsed(
+    def test_group_uses_its_sources_clock_not_the_leaders(
         self,
         provider: MockProvider,
         controller: PlayerController,
         mock_mass: MagicMock,
     ) -> None:
         """
-        A group reports the AudioSource source clock from its own queue.
+        A group reports its own source's position, not the clock copied from its leader.
 
-        The group's active source resolves to the sync leader, whose queue does not
-        carry the AudioSource, so without the own-queue fallback the group would report
-        the leader's byte clock instead of the source's logical position.
+        The session belongs to the group that owns the source, so it is found directly
+        on the group and the leader never has to be consulted.
         """
         group = MockPlayer(provider, "group_1", "Group", player_type=PlayerType.GROUP)
         group._attr_playback_state = PlaybackState.PLAYING
@@ -213,10 +225,9 @@ class TestFinalPlaybackStateAudioSourceElapsed:
         group._attr_elapsed_time = 999.0
         group._attr_elapsed_time_last_updated = time.time()
 
-        leader_queue = _empty_queue()
-        own_queue = _audio_source_queue(42.0, time.time())
-        mock_mass.player_queues.get = MagicMock(
-            side_effect=lambda qid: {"leader_1": leader_queue, "group_1": own_queue}.get(qid)
+        session = _source_session(42.0, time.time(), "group_1")
+        mock_mass.players.get_audio_source_session = MagicMock(
+            side_effect=lambda pid: {"group_1": session}.get(pid)
         )
         controller._players = {"group_1": group}
 
@@ -224,23 +235,22 @@ class TestFinalPlaybackStateAudioSourceElapsed:
 
         assert group.state.elapsed_time == 42.0
 
-    def test_non_group_does_not_use_own_queue_fallback(
+    def test_a_player_without_a_source_keeps_its_own_clock(
         self,
         provider: MockProvider,
         controller: PlayerController,
         mock_mass: MagicMock,
     ) -> None:
-        """A non-group player ignores an AudioSource sitting on its own (inactive) queue."""
+        """A player with no live source of its own is not given another player's position."""
         player = MockPlayer(provider, "player_1", "Player")
         player._attr_playback_state = PlaybackState.PLAYING
         player._attr_active_source = "other_src"
         player._attr_elapsed_time = 5.0
         player._attr_elapsed_time_last_updated = time.time()
 
-        other_queue = _empty_queue()
-        own_queue = _audio_source_queue(42.0, time.time())
-        mock_mass.player_queues.get = MagicMock(
-            side_effect=lambda qid: {"other_src": other_queue, "player_1": own_queue}.get(qid)
+        elsewhere = _source_session(42.0, time.time(), "other_player")
+        mock_mass.players.get_audio_source_session = MagicMock(
+            side_effect=lambda pid: {"other_player": elsewhere}.get(pid)
         )
         controller._players = {"player_1": player}
 

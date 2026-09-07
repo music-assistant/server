@@ -414,7 +414,7 @@ def parse_search_results(
 
         return song_title
 
-    artists: list[Artist] = _parse_artists(provider, media_types)
+    artists: list[Artist] = _parse_artists(provider, media_types, search_term)
     albums: list[Album] = _parse_albums(provider, search_data, media_types, contains_search_term)
     tracks: list[Track] = _parse_tracks(
         provider, search_data, media_types, contains_search_term, strip_performance_indicators
@@ -426,10 +426,14 @@ def parse_search_results(
     return artists, albums, tracks, playlists
 
 
-def _parse_artists(provider: MusicProvider, media_types: list[MediaType]) -> list[Artist]:
+def _parse_artists(
+    provider: MusicProvider, media_types: list[MediaType], search_term: str
+) -> list[Artist]:
     """Parse artists from search results."""
     artists: list[Artist] = []
-    if MediaType.ARTIST in media_types:
+    # Phish.in hosts a single artist and its api has no artist search, so only
+    # claim a match when the query is the start of its name.
+    if MediaType.ARTIST in media_types and PHISH_ARTIST_NAME.lower().startswith(search_term):
         metadata = MediaItemMetadata(
             images=UniqueList(
                 [

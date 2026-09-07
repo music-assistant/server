@@ -36,8 +36,7 @@ async def _wait_until_sync_idle(mass: MusicAssistant, timeout: float = 60.0) -> 
 async def test_no_change_resync_is_hydration_free(e2e_mass: MusicAssistant) -> None:
     """A re-sync where nothing changed performs no writes and hydrates no media items."""
     mass = e2e_mass
-    # the initial sync is auto-scheduled when the test provider loads;
-    # wait for it (and the follow-up genre scan) to fully complete
+    # wait for the initial sync (and the follow-up genre scan) to fully complete
     async with wait_for_sync_completion(mass):
         await mass.music.start_sync()
     await _wait_until_sync_idle(mass)
