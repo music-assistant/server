@@ -31,6 +31,12 @@ BUMP_TITLE_PATTERN = re.compile(r"^(?:⬆️\s*)?(?:Update|Bump)\s+`?([^\s`]+)`?
 # that use them.
 INLINED_BUMP_DEPS = {"music-assistant-frontend", "music-assistant-models"}
 
+# Only the commit title identifies the PR a commit was merged through; the body
+# is never scanned because cherry-pick notes and "fixes #..." trailers reference
+# PRs that did not ship in this comparison.
+MERGE_COMMIT_PR_PATTERN = re.compile(r"Merge pull request #(\d+)")
+SQUASH_COMMIT_PR_PATTERN = re.compile(r"\(#(\d+)\)\s*$")
+
 
 def load_config() -> dict[str, Any]:
     """Load the release-notes-config.yml configuration."""
@@ -58,27 +64,26 @@ def get_tag_date(repo, tag_name) -> datetime | None:
         return None
 
 
+def get_pr_number_from_commit(message: str) -> int | None:
+    """Return the PR number a commit was merged through, or None if it can't be determined."""
+    title = message.split("\n", 1)[0]
+    match = MERGE_COMMIT_PR_PATTERN.search(title) or SQUASH_COMMIT_PR_PATTERN.search(title)
+    return int(match.group(1)) if match else None
+
+
 def get_released_pr_numbers(repo, merge_base_sha, previous_tag) -> set[int]:
     """Get PR numbers that already shipped on the previous tag's (diverged) branch."""
-    merge_pattern = re.compile(r"Merge pull request #(\d+)")
-    squash_pattern = re.compile(r"\(#(\d+)\)\s*$")
     released = set()
     comparison = repo.compare(merge_base_sha, previous_tag)
     for commit in comparison.commits:
-        # Only the first line (squash/merge commit title) identifies the released
-        # PR; the body may reference unrelated PRs/issues.
-        title = commit.commit.message.split("\n", 1)[0]
-        match = merge_pattern.search(title) or squash_pattern.search(title)
-        if match:
-            released.add(int(match.group(1)))
+        pr_number = get_pr_number_from_commit(commit.commit.message)
+        if pr_number is not None:
+            released.add(pr_number)
     return released
 
 
 def get_prs_between_tags(repo, previous_tag, head_sha) -> list[Any]:
     """Get all merged PRs between the previous tag and exact source commit."""
-    pr_pattern = re.compile(r"#(\d+)")
-    merge_pattern = re.compile(r"Merge pull request #(\d+)")
-
     cutoff_date = None
     released_pr_numbers = set()
     if not previous_tag:
@@ -118,15 +123,9 @@ def get_prs_between_tags(repo, previous_tag, head_sha) -> list[Any]:
     pr_numbers = set()
 
     for commit in commits:
-        message = commit.commit.message
-        # First check for merge commits
-        merge_match = merge_pattern.search(message)
-        if merge_match:
-            pr_numbers.add(int(merge_match.group(1)))
-        else:
-            # Look for PR references in the message
-            for match in pr_pattern.finditer(message):
-                pr_numbers.add(int(match.group(1)))
+        pr_number = get_pr_number_from_commit(commit.commit.message)
+        if pr_number is not None:
+            pr_numbers.add(pr_number)
 
     print(f"Found {len(pr_numbers)} unique PRs")  # noqa: T201
 

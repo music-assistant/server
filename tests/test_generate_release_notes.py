@@ -153,6 +153,33 @@ def test_linear_release_filters_prs_merged_before_previous_tag(
     assert [pr.number for pr in prs] == [200]
 
 
+def test_pr_number_only_taken_from_commit_title_not_body(
+    generate_notes: types.ModuleType,
+) -> None:
+    """PRs merely mentioned in a commit body did not ship in this comparison."""
+    tag_commit = FakeCommit("tagsha", "2.10.1 release", datetime(2026, 1, 1, tzinfo=UTC))
+    comparison = FakeComparison(
+        commits=[
+            FakeCommit(
+                "aaa",
+                "Skip a Spotify track Spotify refuses (#6171)\n\n"
+                "the dynamic-refill test file belongs to #5557, "
+                "an enhancement that is not on stable",
+            ),
+        ],
+    )
+    repo = FakeRepo(
+        comparisons={("2.10.1", "headsha"): comparison},
+        pulls={6171: FakePR(6171, datetime(2026, 2, 1, tzinfo=UTC))},
+        tag_commits={"2.10.1": tag_commit},
+    )
+
+    prs = generate_notes.get_prs_between_tags(repo, "2.10.1", "headsha")
+
+    assert [pr.number for pr in prs] == [6171]
+    assert 5557 not in repo.fetched_pulls
+
+
 def test_minor_release_with_diverged_previous_tag(
     generate_notes: types.ModuleType,
 ) -> None:
