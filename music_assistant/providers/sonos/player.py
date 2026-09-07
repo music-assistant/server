@@ -681,11 +681,25 @@ class SonosPlayer(Player):
 
     def on_player_event(self, event: SonosEvent | None) -> None:
         """Handle incoming event from player."""
+        # DIAGNOSTIC BUILD for support#6329 — record every speaker event and the state
+        # transition it causes, so an incident window shows whether events still flow
+        # and what the speaker claims its state/position is.
+        prev_state = self._attr_playback_state
+        prev_elapsed = self._attr_elapsed_time
         try:
             self.update_attributes()
         except Exception:
             self.logger.exception("Failed to update player attributes")
             return
+        self.logger.debug(
+            "DIAG#6329: event %s for %s: state %s -> %s, elapsed %s -> %s",
+            event.event_type if event else None,
+            self.display_name,
+            prev_state,
+            self._attr_playback_state,
+            prev_elapsed,
+            self._attr_elapsed_time,
+        )
         try:
             self.update_state()
         except Exception:

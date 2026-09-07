@@ -215,9 +215,10 @@ class SonosPlayerProvider(PlayerProvider):
 
     def _set_aiosonos_log_level(self) -> None:
         """Align aiosonos's log level with the provider's log level."""
-        # aiosonos is very chatty at debug level, so only pass through its
-        # debug logging when verbose logging is enabled
-        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+        # DIAGNOSTIC BUILD for support#6329 — pass aiosonos debug logging through at
+        # provider DEBUG too (normally verbose-only), so speaker-side playbackError
+        # and unhandled events reach the log during an incident.
+        if self.logger.isEnabledFor(logging.DEBUG):
             logging.getLogger("aiosonos").setLevel(logging.DEBUG)
         else:
             logging.getLogger("aiosonos").setLevel(self.logger.level + 10)
@@ -340,6 +341,20 @@ class SonosPlayerProvider(PlayerProvider):
                 self._parse_sonos_queue_item(player, x, wire_generation) for x in window.items
             ],
         }
+        # DIAGNOSTIC BUILD for support#6329 — record what window the speaker asked for
+        # and what it was told, so a stale/ghost item at an incident is visible.
+        self.logger.debug(
+            "DIAG#6329: itemWindow for %s: center=%s -> served %d item(s) %s "
+            "(version=%s generation=%s begin=%s end=%s)",
+            player.display_name,
+            request.query.get("itemId"),
+            len(window.items),
+            [x.queue_item_id for x in window.items],
+            queue_version,
+            wire_generation,
+            window.includes_beginning,
+            window.includes_end,
+        )
         return web.json_response(result)
 
     async def _handle_sonos_queue_version(
@@ -410,6 +425,14 @@ class SonosPlayerProvider(PlayerProvider):
         https://docs.sonos.com/reference/timeplayed
         """
         json_body = await request.json()
+        # DIAGNOSTIC BUILD for support#6329 — the speaker's own progress reports are the
+        # only view of its playhead during a silent-but-PLAYING incident; log them all,
+        # including reports the id filter below would silently drop.
+        self.logger.debug(
+            "DIAG#6329: timePlayed report from %s: %s",
+            player.display_name,
+            json_body.get("items"),
+        )
         for item in json_body["items"]:
             if item["type"] != "update":
                 continue

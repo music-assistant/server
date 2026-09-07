@@ -969,8 +969,27 @@ class StreamsController(CoreController):
                 # behind it) is torn down immediately when the player disconnects
                 # mid-stream, instead of lingering until garbage collection finalizes
                 # the abandoned generator.
+                # DIAGNOSTIC BUILD for support#6329 — timing telemetry around the serve
+                # loop: encoder stalls (producer side) and blocked writes (player not
+                # reading) both starve the player's buffer and are invisible otherwise.
+                loop = asyncio.get_running_loop()
+                serve_started = loop.time()
+                last_chunk_time = serve_started
+                max_chunk_gap = 0.0
+                max_write_block = 0.0
+                end_reason = "completed"
                 async with aclosing(audio_bytes):
                     async for chunk in audio_bytes:
+                        chunk_gap = loop.time() - last_chunk_time
+                        max_chunk_gap = max(max_chunk_gap, chunk_gap)
+                        if chunk_gap > 2.0:
+                            self.logger.debug(
+                                "DIAG#6329: encoder stalled %.1fs mid-stream for %s "
+                                "(%.1f MB sent so far)",
+                                chunk_gap,
+                                queue_item.name,
+                                bytes_sent / 1e6,
+                            )
                         if pq_data.session_id != session_id:
                             # playback moved on (or stopped) while this response was open;
                             # the flow path checks the same thing per chunk
@@ -979,9 +998,23 @@ class StreamsController(CoreController):
                                 queue_item.name,
                                 session_id,
                             )
+                            end_reason = "session-superseded"
                             break
                         try:
+                            write_started = loop.time()
                             await resp.write(chunk)
+                            write_block = loop.time() - write_started
+                            max_write_block = max(max_write_block, write_block)
+                            if write_block > 1.0:
+                                self.logger.debug(
+                                    "DIAG#6329: player %s blocked the stream write for "
+                                    "%.1fs on %s (%.1f MB sent so far)",
+                                    queue.display_name,
+                                    write_block,
+                                    queue_item.name,
+                                    bytes_sent / 1e6,
+                                )
+                            last_chunk_time = loop.time()
                             bytes_sent += len(chunk)
                             if not first_chunk_received:
                                 first_chunk_received = True
@@ -991,6 +1024,7 @@ class StreamsController(CoreController):
                                     queue_item.queue_id, queue_item.queue_item_id
                                 )
                         except (BrokenPipeError, ConnectionResetError, ConnectionError) as err:
+                            end_reason = f"player-disconnected ({err.__class__.__name__})"
                             if pq_data.session_id != session_id:
                                 # deliberately aborted: playback moved on and the stale
                                 # response was closed under the player
@@ -1024,8 +1058,23 @@ class StreamsController(CoreController):
                 # failure it is stays with the layer that knows, which has already
                 # flagged the item when the audio was this item's own.
                 stream_failure = err
+                end_reason = "audio-error"
             finally:
                 self._active_output_streams -= 1
+            # DIAGNOSTIC BUILD for support#6329 — one summary line per served track so a
+            # normal-looking incident window still tells us how each transfer ended.
+            self.logger.debug(
+                "DIAG#6329: stream for %s to %s ended (%s): %.1f MB in %.1fs "
+                "(track duration %ss, max encoder gap %.2fs, max write block %.2fs)",
+                queue_item.name,
+                queue.display_name,
+                end_reason,
+                bytes_sent / 1e6,
+                loop.time() - serve_started,
+                queue_item.streamdetails.duration if queue_item.streamdetails else "?",
+                max_chunk_gap,
+                max_write_block,
+            )
             if stream_failure is not None or queue_item.streamdetails.stream_error:
                 # every stage in between replaces the message with one of its own, so
                 # the reason worth reporting is the one at the bottom of the chain
