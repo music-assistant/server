@@ -3,8 +3,9 @@ Tests for the Spotify provider's playback backend selection and wiring.
 
 The playback backend is an explicit per-instance choice stored in setup_data:
 configs predating the choice (key unset) must stay on librespot, "soloist"
-selects the single-track Soloist backend. The concurrency budget (the same on
-either backend) and librespot's URI translation are locked down here as well.
+selects the single-track Soloist backend. The concurrency budget (three librespot
+fetches, one soloist run) and librespot's URI translation are locked down here
+as well.
 """
 
 from __future__ import annotations
@@ -55,11 +56,19 @@ def test_backend_soloist_is_selected() -> None:
     assert isinstance(prov._create_backend(), SoloistBackend)
 
 
-def test_max_concurrent_streams_is_two_on_either_backend() -> None:
-    """Two source streams either way: parallel librespot fetches, or one session handover."""
-    assert _make_provider({}).max_concurrent_streams == 2
-    assert _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_LIBRESPOT}).max_concurrent_streams == 2
-    assert _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST}).max_concurrent_streams == 2
+def test_max_concurrent_streams_follows_the_backend_choice() -> None:
+    """Three parallel librespot fetches; the soloist engine serves one run at a time."""
+    assert _make_provider({}).max_concurrent_streams == 3
+    assert _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_LIBRESPOT}).max_concurrent_streams == 3
+    assert _make_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST}).max_concurrent_streams == 1
+
+
+async def test_the_soloist_choice_sizes_the_stream_semaphore() -> None:
+    """The single-run budget is live at construction time, sized from the stored choice."""
+    prov = _construct_provider({CONF_PLAYBACK_BACKEND: BACKEND_SOLOIST})
+    async with prov.acquire_stream_slot(0.1):
+        assert not prov.has_available_stream_slot
+    assert prov.has_available_stream_slot
 
 
 async def test_the_quality_option_is_offered_for_soloist_only() -> None:
@@ -262,6 +271,19 @@ def _make_provider(setup_data: dict[str, Any]) -> SpotifyProvider:
     mass.config.decrypt_string = MagicMock(side_effect=lambda value: value)
     prov.mass = mass
     return prov
+
+
+def _construct_provider(setup_data: dict[str, Any]) -> SpotifyProvider:
+    """Return a SpotifyProvider built through the real constructor with the given setup_data."""
+    mass = MagicMock()
+    mass.config.get = MagicMock(return_value=setup_data)
+    mass.config.get_raw_provider_config_value = MagicMock(return_value=None)
+    mass.config.decrypt_string = MagicMock(side_effect=lambda value: value)
+    manifest = MagicMock(domain="spotify")
+    config = MagicMock(instance_id="spotify--test")
+    config.get_value = MagicMock(return_value=None)
+    config.values = {}
+    return SpotifyProvider(mass, manifest, config)
 
 
 def _make_librespot_backend(tmp_path: Path) -> LibrespotBackend:
