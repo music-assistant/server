@@ -890,7 +890,7 @@ class Adaptor:
                 if context.force_type and type(result) is not context.force_type:
                     msg = (
                         f"Expected forced type of {context.force_type} but received "
-                        "{type(result)} using {type(converter)}"
+                        f"{type(result)} using {type(converter)}"
                     )
                     raise ConversionError(msg)
                 msg = (
