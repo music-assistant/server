@@ -296,6 +296,7 @@ class StationConverter(BaseConverter):
             "Failed to convert station %s.%s: %s",
             type(source_obj).__module__,
             type(source_obj).__name__,
+            source_obj,
         )
         self.logger.error(msg)
         raise ConversionError(msg)
