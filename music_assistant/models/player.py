@@ -3292,9 +3292,11 @@ class Player(ABC):
                 # that would otherwise reintroduce it.
                 return False
             # Don't include (playing) players that have group members (they are group leaders)
+            # Use the normalized members: a solo player that reports itself as its only
+            # member (e.g. a detached Sendspin client) is not a group leader.
             if (  # noqa: SIM103
                 player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
-                and player.group_members
+                and player.state.group_members
             ):
                 return False
             return True
