@@ -535,11 +535,11 @@ class PodcastConverter(BaseConverter):
         """
         duration = self._get_attr(show, "duration.value")
         container = self._get_attr(show, "container")
-        if self.context.force_type == Track:
-            return True
+        if self.context.force_type:
+            return self.context.force_type is Track
         if duration and duration < _Constants.TRACK_DURATION_THRESHOLD:
             return True
-        return bool(not container)
+        return not container
 
     async def _convert_radio_show(self, show: RadioShow) -> MAPodcastEpisode | Track:
         duration = self._get_attr(show, "duration.value")
