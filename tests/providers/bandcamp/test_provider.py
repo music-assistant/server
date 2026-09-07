@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, Mock, call, patch
 
 import pytest
 from bandcamp_async_api import (
+    BandcampAPIClient,
     BandcampAPIError,
     BandcampMustBeLoggedInError,
     BandcampNotFoundError,
@@ -17,6 +18,7 @@ from bandcamp_async_api import (
 )
 from bandcamp_async_api.models import CollectionType
 from music_assistant_models.enums import (
+    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -35,10 +37,11 @@ from music_assistant_models.media_items import Album, Artist, BrowseFolder, Trac
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager
-from music_assistant.providers.bandcamp import BandcampProvider, split_id
+from music_assistant.providers.bandcamp import BandcampProvider, setup, split_id
 from music_assistant.providers.bandcamp.constants import (
     CACHE_EMPTY_RESULTS,
     CACHE_USER_LISTS,
+    CONF_GET_LYRICS,
     DEFAULT_TOP_TRACKS_LIMIT,
     SUPPORTED_FEATURES,
 )
@@ -137,6 +140,32 @@ async def test_provider_initialization(
         await provider.handle_async_init()
 
         assert provider.top_tracks_limit == DEFAULT_TOP_TRACKS_LIMIT
+
+
+async def test_setup_declares_lyrics_feature_only_when_enabled(
+    mass_mock: Mock, manifest_mock: Mock, config_mock: Mock
+) -> None:
+    """setup() adds ProviderFeature.LYRICS only while the get_lyrics setting is on."""
+    provider = await setup(mass_mock, manifest_mock, config_mock)
+    assert ProviderFeature.LYRICS not in provider.supported_features
+
+    original_side_effect = config_mock.get_value.side_effect
+    config_mock.get_value.side_effect = lambda key, default=None: (
+        True if key == CONF_GET_LYRICS else original_side_effect(key, default)
+    )
+    provider = await setup(mass_mock, manifest_mock, config_mock)
+    assert ProviderFeature.LYRICS in provider.supported_features
+    # the module-level feature set must stay unchanged
+    assert ProviderFeature.LYRICS not in SUPPORTED_FEATURES
+
+
+async def test_get_config_entries_includes_lyrics_toggle(provider: BandcampProvider) -> None:
+    """The lyrics toggle is a plain boolean setting, off by default, not advanced."""
+    entries = await provider.get_config_entries()
+    entry = next(entry for entry in entries if entry.key == CONF_GET_LYRICS)
+    assert entry.type == ConfigEntryType.BOOLEAN
+    assert entry.default_value is False
+    assert entry.advanced is False
 
 
 async def test_handle_async_init_with_identity(provider: BandcampProvider) -> None:
@@ -1001,7 +1030,7 @@ async def test_get_album_success(provider: BandcampProvider) -> None:
 
 
 async def test_get_track_success(provider: BandcampProvider) -> None:
-    """Test successful track retrieval."""
+    """Test successful track retrieval, end to end through the album-listing path."""
     mock_album = Mock()
     mock_track = Mock()
     mock_album.tracks = [mock_track]
@@ -1015,7 +1044,7 @@ async def test_get_track_success(provider: BandcampProvider) -> None:
         patch.object(provider._converters, "track_from_api") as mock_converter,
     ):
         mock_get_album.return_value = mock_album
-        mock_converter.return_value = Mock()
+        mock_converter.return_value = Mock(item_id="123-456-789")
 
         result = await provider.get_track("123-456-789")
 
@@ -1097,6 +1126,268 @@ async def test_get_track_not_found(provider: BandcampProvider) -> None:
         pytest.raises(MediaNotFoundError, match=r"Track 123-456-789 not found on Bandcamp"),
     ):
         await provider.get_track("123-456-789")
+
+
+def test_installed_client_serves_every_method_the_provider_calls() -> None:
+    """
+    The installed bandcamp-async-api carries every client method the provider calls.
+
+    The provider fixtures mock the client, so a method missing from the
+    installed library would never fail a mocked test; this pins the real
+    API surface (get_album_lyrics/get_track_lyrics arrived in 0.2.4).
+    """
+    for name in (
+        "search",
+        "get_album",
+        "get_track",
+        "get_artist",
+        "get_artist_discography",
+        "get_collection_summary",
+        "get_collection_items",
+        "get_feed",
+        "get_album_lyrics",
+        "get_track_lyrics",
+    ):
+        assert callable(getattr(BandcampAPIClient, name, None)), name
+
+
+def _enable_lyrics(provider: BandcampProvider) -> None:
+    """Flip the get_lyrics setting on for an already-built provider fixture."""
+    get_value = cast("Mock", provider.config.get_value)
+    original = get_value.side_effect
+    get_value.side_effect = lambda key, default=None: (
+        True if key == CONF_GET_LYRICS else original(key, default)
+    )
+
+
+async def test_get_track_album_path_reuses_album_listing(provider: BandcampProvider) -> None:
+    """The album path picks the track from the cached album listing, not a fresh fetch."""
+    with (
+        patch.object(provider, "get_album_tracks", new_callable=AsyncMock) as mock_album_tracks,
+        patch.object(provider, "_fetch_api_track", new_callable=AsyncMock) as mock_fetch,
+    ):
+        mock_album_tracks.return_value = [
+            Mock(item_id="123-456-788"),
+            Mock(item_id="123-456-789"),
+        ]
+
+        result = await provider.get_track("123-456-789")
+
+        mock_album_tracks.assert_awaited_once_with("123-456")
+        mock_fetch.assert_not_awaited()
+        assert result.item_id == "123-456-789"
+
+
+async def test_get_track_album_path_falls_back_when_track_missing(
+    provider: BandcampProvider,
+) -> None:
+    """A track absent from the album listing (e.g. no streaming URL) uses the fresh path."""
+    mock_album = Mock()
+    mock_track = Mock()
+    mock_track.id = 789
+    mock_album.tracks = [mock_track]
+    mock_album.artist.id = 123
+    mock_album.artist.name = "Test Band"
+    mock_album.tralbum_artist = None
+
+    with (
+        patch.object(provider, "get_album_tracks", new_callable=AsyncMock) as mock_album_tracks,
+        patch.object(provider._client, "get_album", new_callable=AsyncMock) as mock_get_album,
+        patch.object(provider._converters, "track_from_api") as mock_converter,
+    ):
+        mock_album_tracks.return_value = [Mock(item_id="123-456-788")]
+        mock_get_album.return_value = mock_album
+        mock_converter.return_value = Mock(item_id="123-456-789")
+
+        result = await provider.get_track("123-456-789")
+
+        mock_get_album.assert_called_once_with(123, 456)
+        assert result.item_id == "123-456-789"
+
+
+async def test_get_track_attaches_lyrics_when_enabled(provider: BandcampProvider) -> None:
+    """With the setting on, the album path fills metadata.lyrics from one album-wide request."""
+    _enable_lyrics(provider)
+    with (
+        patch.object(provider._client, "get_album_lyrics", new_callable=AsyncMock) as mock_lyrics,
+        patch.object(provider, "_get_track_base", new_callable=AsyncMock) as mock_base,
+    ):
+        mock_base.return_value = Mock(item_id="123-456-789")
+        mock_lyrics.return_value = {789: "la la", 788: None}
+
+        track = await provider.get_track("123-456-789")
+
+        mock_lyrics.assert_awaited_once_with(456)
+        assert track.metadata.lyrics == "la la"
+
+
+async def test_get_track_lyrics_standalone_uses_track_method(
+    provider: BandcampProvider,
+) -> None:
+    """A standalone track (album_id=0) asks the track lyrics method with its own id."""
+    _enable_lyrics(provider)
+    with (
+        patch.object(provider._client, "get_track_lyrics", new_callable=AsyncMock) as mock_lyrics,
+        patch.object(provider, "_get_track_base", new_callable=AsyncMock) as mock_base,
+    ):
+        mock_base.return_value = Mock(item_id="123-0-789")
+        mock_lyrics.return_value = {789: "text"}
+
+        track = await provider.get_track("123-0-789")
+
+        mock_lyrics.assert_awaited_once_with(789)
+        assert track.metadata.lyrics == "text"
+
+
+async def test_get_track_no_lyrics_calls_when_disabled(provider: BandcampProvider) -> None:
+    """With the setting off (the default), get_track makes zero lyrics requests."""
+    with (
+        patch.object(
+            provider._client, "get_album_lyrics", new_callable=AsyncMock
+        ) as mock_album_lyrics,
+        patch.object(
+            provider._client, "get_track_lyrics", new_callable=AsyncMock
+        ) as mock_track_lyrics,
+        patch.object(provider, "_get_track_base", new_callable=AsyncMock) as mock_base,
+    ):
+        mock_base.return_value = Mock(item_id="123-456-789")
+
+        await provider.get_track("123-456-789")
+
+        mock_album_lyrics.assert_not_awaited()
+        mock_track_lyrics.assert_not_awaited()
+
+
+async def test_get_track_lyrics_error_does_not_fail(provider: BandcampProvider) -> None:
+    """A lyrics failure is swallowed: the lookup succeeds and existing text is untouched."""
+    _enable_lyrics(provider)
+    base_track = Mock(item_id="123-456-789")
+    base_track.metadata.lyrics = "existing text"
+    with (
+        patch.object(provider, "_get_track_base", new_callable=AsyncMock) as mock_base,
+        patch.object(
+            provider._client, "get_album_lyrics", side_effect=BandcampAPIError("boom")
+        ) as mock_lyrics,
+    ):
+        mock_base.return_value = base_track
+
+        track = await provider.get_track("123-456-789")
+
+        mock_lyrics.assert_awaited_once()
+        assert track is base_track
+        assert track.metadata.lyrics == "existing text"
+
+
+async def test_get_track_lyrics_none_entry_keeps_existing_text(
+    provider: BandcampProvider,
+) -> None:
+    """A track without lyrics in the map does not clobber text set by the converters."""
+    _enable_lyrics(provider)
+    base_track = Mock(item_id="123-456-789")
+    base_track.metadata.lyrics = "from converter"
+    with (
+        patch.object(provider._client, "get_album_lyrics", new_callable=AsyncMock) as mock_lyrics,
+        patch.object(provider, "_get_track_base", new_callable=AsyncMock) as mock_base,
+    ):
+        mock_base.return_value = base_track
+        mock_lyrics.return_value = {789: None}
+
+        track = await provider.get_track("123-456-789")
+
+        assert track.metadata.lyrics == "from converter"
+
+
+async def test_get_track_lyrics_two_part_id_uses_track_method(
+    provider: BandcampProvider,
+) -> None:
+    """A two-part id (artist-track) normalizes to a standalone track for the lyrics lookup."""
+    _enable_lyrics(provider)
+    with (
+        patch.object(provider._client, "get_track_lyrics", new_callable=AsyncMock) as mock_lyrics,
+        patch.object(provider, "_get_track_base", new_callable=AsyncMock) as mock_base,
+    ):
+        mock_base.return_value = Mock(item_id="123-789")
+        mock_lyrics.return_value = {789: "text"}
+
+        track = await provider.get_track("123-789")
+
+        mock_lyrics.assert_awaited_once_with(789)
+        assert track.metadata.lyrics == "text"
+
+
+async def test_get_tralbum_lyrics_routes_and_str_keys(provider: BandcampProvider) -> None:
+    """The map layer routes album and track ids to the right client method and str-keys."""
+    with (
+        patch.object(provider._client, "get_album_lyrics", new_callable=AsyncMock) as mock_album,
+        patch.object(provider._client, "get_track_lyrics", new_callable=AsyncMock) as mock_track,
+    ):
+        mock_album.return_value = {788: "one", 789: None}
+        mock_track.return_value = {789: "solo"}
+
+        assert await provider._get_tralbum_lyrics(456, True) == {"788": "one", "789": None}
+        mock_album.assert_awaited_once_with(456)
+        mock_track.assert_not_awaited()
+
+        assert await provider._get_tralbum_lyrics(789, False) == {"789": "solo"}
+        mock_track.assert_awaited_once_with(789)
+
+
+async def test_get_track_lyrics_track_as_album_id_attaches(
+    provider: BandcampProvider,
+) -> None:
+    """
+    A track-as-album compound id (X-X shape) routes to the album method and reads its own key.
+
+    Measured: for a standalone track asked as an album, the API answers
+    album.id == tracks[0].id. The internal track fallback itself is the
+    library's and is pinned by the library's own tests.
+    """
+    _enable_lyrics(provider)
+    with (
+        patch.object(provider._client, "get_album_lyrics", new_callable=AsyncMock) as mock_lyrics,
+        patch.object(provider, "_get_track_base", new_callable=AsyncMock) as mock_base,
+    ):
+        mock_base.return_value = Mock(item_id="123-456-456")
+        mock_lyrics.return_value = {456: "the text"}
+
+        track = await provider.get_track("123-456-456")
+
+        mock_lyrics.assert_awaited_once_with(456)
+        assert track.metadata.lyrics == "the text"
+
+
+async def test_tralbum_lyrics_cached_between_tracks(
+    provider: BandcampProvider, mass_mock: Mock
+) -> None:
+    """The second track of the same album reuses the cached lyrics map: one request total."""
+    cache_data: dict[str, object] = {}
+
+    async def fake_get_with_freshness(key: str, **_kwargs: object) -> tuple[object, bool, bool]:
+        return (cache_data.get(key), True, key in cache_data)
+
+    async def fake_set(key: str, data: object, **_kwargs: object) -> None:
+        cache_data[key] = data
+
+    mass_mock.cache.get_with_freshness.side_effect = fake_get_with_freshness
+    mass_mock.cache.set.side_effect = fake_set
+    _enable_lyrics(provider)
+
+    with (
+        patch.object(provider._client, "get_album_lyrics", new_callable=AsyncMock) as mock_lyrics,
+        patch.object(provider, "_get_track_base", new_callable=AsyncMock) as mock_base,
+    ):
+        mock_base.side_effect = lambda prov_track_id: Mock(item_id=prov_track_id)
+        mock_lyrics.return_value = {788: "one", 789: "two"}
+
+        first = await provider.get_track("123-456-788")
+        # the cache store runs as a background task; let it finish
+        for _ in range(3):
+            await asyncio.sleep(0)
+        second = await provider.get_track("123-456-789")
+
+        mock_lyrics.assert_awaited_once_with(456)
+        assert first.metadata.lyrics == "one"
+        assert second.metadata.lyrics == "two"
 
 
 async def test_get_album_tracks_success(provider: BandcampProvider) -> None:

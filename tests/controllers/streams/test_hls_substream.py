@@ -73,3 +73,33 @@ class TestGetHlsSubstream:
         controller = _streams_audio(raw_data, charset="utf-8")
         substream = await controller.get_hls_substream("https://radio.example.com/master.m3u8")
         assert substream.path == "https://radio.example.com/high.m3u8"
+
+    @pytest.mark.asyncio
+    async def test_resolves_root_relative_child(self) -> None:
+        """Root-relative child playlists should resolve against the master URL origin."""
+        playlist = (
+            "#EXTM3U\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=128000\n"
+            "/music/:/transcode/session/children/stream.m3u8?X-Plex-Token=token\n"
+        )
+        controller = _streams_audio(playlist.encode(), charset="utf-8")
+
+        substream = await controller.get_hls_substream(
+            "http://plex.local:32400/music/:/transcode/universal/start.m3u8?path=%2Flibrary%2F1"
+        )
+
+        assert (
+            substream.path
+            == "http://plex.local:32400/music/:/transcode/session/children/stream.m3u8?"
+            "X-Plex-Token=token"
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolves_directory_relative_child(self) -> None:
+        """Directory-relative child playlists should resolve against the master URL."""
+        playlist = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=128000\nchildren/stream.m3u8\n"
+        controller = _streams_audio(playlist.encode(), charset="utf-8")
+
+        substream = await controller.get_hls_substream("http://media.local/live/master.m3u8")
+
+        assert substream.path == "http://media.local/live/children/stream.m3u8"

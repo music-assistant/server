@@ -1,0 +1,14 @@
+{
+  "type": "music",
+  "domain": "yoto",
+  "name": "Yoto",
+  "stage": "beta",
+  "description": "Stream music, audiobooks, or podcasts, purchased from the Yoto store or provided free by the service.",
+  "codeowners": [
+    "@pantsman0"
+  ],
+  "multi_instance": true,
+  "credits": ["[Yoto API](https://github.com/cdnninja/yoto_api)"],
+  "requirements": ["yoto-api==4.3.4", "pkce==1.0.3"],
+  "documentation": "https://music-assistant.io/music-providers/yoto/"
+}

@@ -45,10 +45,17 @@ PLAY_ACTION_TRACK_DEFAULT_VALUE = PLAY_ACTION_PLAY_FROM_HERE
 CONF_AUTOPLAY_LABEL = "autoplay_label"
 CONF_AUTOPLAY_MODE = "autoplay_mode"
 CONF_AUTOPLAY_PLAYLIST = "autoplay_playlist"
+CONF_AUTOPLAY_ENABLED = "autoplay_enabled"
 CONF_CROSSFADE_LABEL = "crossfade_label"
+CONF_CROSSFADE_ENABLED = "crossfade_enabled"
+
+# global defaults the per-queue autoplay/crossfade toggles follow when not overridden
+DEFAULT_AUTOPLAY_ENABLED = True
+DEFAULT_CROSSFADE_ENABLED = False
 
 CONF_SMART_SHUFFLE_LABEL = "smart_shuffle_label"
 CONF_SMART_SHUFFLE_ENABLED = "smart_shuffle_enabled"
+CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES = "smart_shuffle_optimize_smart_fades"
 CONF_SMART_SHUFFLE_SONG_RECENCY = "smart_shuffle_song_recency"
 CONF_SMART_SHUFFLE_ARTIST_RECENCY = "smart_shuffle_artist_recency"
 CONF_SMART_SHUFFLE_DUPLICATE_GAP = "smart_shuffle_duplicate_gap"

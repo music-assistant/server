@@ -7,7 +7,7 @@ import contextlib
 import hashlib
 import logging
 import secrets
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError, OperationalError
 from typing import TYPE_CHECKING, Any, cast
@@ -63,6 +63,8 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
+PREF_SIDEBAR_SHORTCUTS = "sidebar.shortcuts"
+
 # Database schema version
 DB_SCHEMA_VERSION = 5
 
@@ -76,6 +78,8 @@ TOKEN_GUEST_EXPIRATION = 1  # Guest sessions: short fixed lifetime, no renewal
 HA_TOKEN_ROTATION_MARGIN = 7
 # Minimum age of a token's stored last_used_at before token activity is persisted again
 TOKEN_ACTIVITY_PERSIST_INTERVAL = timedelta(hours=1)
+# Max number of (newest first) tokens returned by the auth/tokens command
+TOKEN_LIST_LIMIT = 100
 
 HA_TOKEN_SETTING_KEY = "ha_integration_token"
 HA_TOKEN_NAME = "Home Assistant Integration"
@@ -151,7 +155,10 @@ class AuthenticationManager:
         # repair filters that were left pointing at removed providers/players
         await self._prune_stale_user_filters()
 
-        self._schedule_join_code_cleanup()
+        # clear rows left behind by user deletions from before those were cleaned up
+        await self._prune_orphaned_user_rows()
+
+        self._schedule_periodic_cleanup()
 
         self.logger.info(
             "Authentication manager initialized (providers=%d)", len(self.login_providers)
@@ -742,7 +749,7 @@ class AuthenticationManager:
 
     async def revoke_tokens_for_user(self, user: User) -> int:
         """
-        Revoke all auth tokens for a user.
+        Revoke all auth tokens for a user and disconnect their active connections.
 
         This is an internal method for programmatic use (e.g., when disabling guest access).
         Unlike revoke_token(), this does not require an authenticated user context.
@@ -750,26 +757,22 @@ class AuthenticationManager:
         :param user: The user whose tokens should be revoked.
         :return: Number of tokens revoked.
         """
-        token_rows = await self.database.get_rows("auth_tokens", {"user_id": user.user_id})
+        cursor = await self.database.execute(
+            "DELETE FROM auth_tokens WHERE user_id = :user_id",
+            {"user_id": user.user_id},
+        )
+        await self.database.commit()
+        self.webserver.disconnect_websockets_for_user(user.user_id)
 
-        # Disconnect any WebSocket connections using these tokens
-        for token_row in token_rows:
-            self.webserver.disconnect_websockets_for_token(token_row["token_id"])
-
-        if token_rows:
-            # Delete all tokens in one go
-            await self.database.execute(
-                "DELETE FROM auth_tokens WHERE user_id = :user_id",
-                {"user_id": user.user_id},
-            )
-            await self.database.commit()
-            self.logger.info("Revoked %d token(s) for user '%s'", len(token_rows), user.username)
+        count = int(cursor.rowcount)
+        if count > 0:
+            self.logger.info("Revoked %d token(s) for user '%s'", count, user.username)
 
         # Notify even with no tokens left: subscribers may hold credentials tied to
         # this user's access that must be withdrawn regardless.
         self._notify_user_access_revoked(user)
 
-        return len(token_rows)
+        return count
 
     @api_command("auth/tokens")
     async def get_user_tokens(self, user_id: str | None = None) -> list[AuthToken]:
@@ -780,7 +783,7 @@ class AuthenticationManager:
         actual token usage by up to an hour.
 
         :param user_id: Optional user ID to get tokens for (admin only).
-        :return: List of auth tokens.
+        :return: The user's newest tokens first, capped at TOKEN_LIST_LIMIT.
         """
         current_user = get_current_user()
         if not current_user:
@@ -798,7 +801,10 @@ class AuthenticationManager:
             target_user = current_user
 
         token_rows = await self.database.get_rows(
-            "auth_tokens", {"user_id": target_user.user_id}, limit=100
+            "auth_tokens",
+            {"user_id": target_user.user_id},
+            order_by="created_at DESC",
+            limit=TOKEN_LIST_LIMIT,
         )
         return [AuthToken.from_dict(dict(row)) for row in token_rows]
 
@@ -1199,15 +1205,18 @@ class AuthenticationManager:
         if not user_row:
             raise InvalidDataError("User not found")
 
-        # Delete user from database
+        # The ON DELETE CASCADE clauses on the dependent tables never fire, since foreign
+        # key enforcement is off on our connections, so remove those rows here.
+        for table in ("auth_tokens", "join_codes", "user_auth_providers"):
+            await self.database.delete(table, {"user_id": user_id})
         await self.database.delete("users", {"user_id": user_id})
         await self.database.commit()
 
         # Disconnect all WebSocket connections for this user
         self.webserver.disconnect_websockets_for_user(user_id)
 
-        # Deletion cascades the user's tokens away, so it must announce the access
-        # withdrawal itself for credentials bound to this user.
+        # The token rows are removed directly rather than through revoke_tokens_for_user,
+        # so nothing else announces the withdrawal for credentials bound to this user.
         self._notify_user_access_revoked(
             User(user_id=user_row["user_id"], username=user_row["username"], role=user_row["role"])
         )
@@ -1284,6 +1293,55 @@ class AuthenticationManager:
             else None,
             keep_player=(lambda x: x not in player_ids) if player_ids else None,
         )
+
+    async def cleanup_user_shortcuts(
+        self,
+        rewrite: Callable[[str], Awaitable[str | None]],
+    ) -> None:
+        """
+        Rewrite or remove sidebar shortcuts from all users' preferences.
+
+        :param rewrite: Called for each shortcut URI. Return the URI to keep it,
+            a different URI to rewrite it, or None to drop it.
+        """
+        async with self._user_filter_lock:
+            for row in await self.database.get_rows("users", limit=0):
+                prefs: dict[str, Any] = json_loads(row["preferences"]) if row["preferences"] else {}
+                shortcuts: list[str] = prefs.get(PREF_SIDEBAR_SHORTCUTS, [])
+                if not shortcuts:
+                    continue
+                remaining: list[str] = []
+                dropped: list[str] = []
+                rewritten: list[str] = []
+                for uri in shortcuts:
+                    new_uri = await rewrite(uri)
+                    if new_uri is None:
+                        dropped.append(uri)
+                    elif new_uri != uri:
+                        remaining.append(new_uri)
+                        rewritten.append(f"{uri} -> {new_uri}")
+                    else:
+                        remaining.append(uri)
+                if remaining == shortcuts:
+                    continue
+                prefs[PREF_SIDEBAR_SHORTCUTS] = remaining
+                await self.database.update(
+                    "users",
+                    {"user_id": row["user_id"]},
+                    {"preferences": json_dumps(prefs)},
+                )
+                if dropped:
+                    LOGGER.info(
+                        "Removed shortcuts from user '%s': %s",
+                        row["username"],
+                        ", ".join(dropped),
+                    )
+                if rewritten:
+                    LOGGER.info(
+                        "Rewrote shortcuts for user '%s': %s",
+                        row["username"],
+                        ", ".join(rewritten),
+                    )
 
     async def replace_player_in_user_filters(
         self,
@@ -1974,6 +2032,22 @@ class AuthenticationManager:
                 "Updated Home Assistant system user role to %s", UserRole.SERVICE.value
             )
 
+    async def _prune_orphaned_user_rows(self) -> None:
+        """Drop rows in the user-linked tables whose user no longer exists."""
+        # this is optional hygiene, so a failure must never take the server down with it
+        try:
+            total = 0
+            for table in ("auth_tokens", "join_codes", "user_auth_providers"):
+                cursor = await self.database.execute(
+                    f"DELETE FROM {table} WHERE user_id NOT IN (SELECT user_id FROM users)"
+                )
+                total += int(cursor.rowcount)
+            await self.database.commit()
+            if total > 0:
+                self.logger.info("Cleaned up %d row(s) of deleted user(s)", total)
+        except Exception as err:
+            self.logger.warning("Failed to clean up rows of deleted users: %s", err)
+
     async def _prune_stale_user_filters(self) -> None:
         """Drop user access filter entries for providers or players that no longer exist."""
         known_providers = set(self.mass.config.get(CONF_PROVIDERS, {}))
@@ -2199,9 +2273,7 @@ class AuthenticationManager:
 
         user = await self.get_user(row["user_id"])
         if not user:
-            self.logger.error(
-                "User not found for join code despite FK constraint (user_id=%s)", row["user_id"]
-            )
+            self.logger.error("User not found for join code (user_id=%s)", row["user_id"])
             return None
 
         device_name = row["device_name"] or "Short Code Login"
@@ -2233,10 +2305,34 @@ class AuthenticationManager:
         if count > 0:
             self.logger.debug("Cleaned up %d expired/exhausted join code(s)", count)
 
-    def _schedule_join_code_cleanup(self) -> None:
-        """Schedule periodic cleanup of expired join codes."""
+    async def _cleanup_expired_tokens(self) -> None:
+        """Delete short-lived auth tokens that expired or outlived their absolute cap."""
+        now = utc()
+        # Both conditions mirror a deletion authenticate_with_token already performs when the
+        # token is used: the sliding expiry, and the absolute cap, which a token renewed late
+        # in its life outlives. Long-lived tokens are left to the user to revoke: they are few
+        # and deliberately created, so they are not what grows this table.
+        cursor = await self.database.execute(
+            """
+            DELETE FROM auth_tokens
+            WHERE is_long_lived = 0
+              AND (expires_at < :now OR created_at < :max_lifetime)
+            """,
+            {
+                "now": now.isoformat(),
+                "max_lifetime": (now - timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION)).isoformat(),
+            },
+        )
+        await self.database.commit()
+        count = int(cursor.rowcount)
+        if count > 0:
+            self.logger.debug("Cleaned up %d expired auth token(s)", count)
+
+    def _schedule_periodic_cleanup(self) -> None:
+        """Schedule periodic cleanup of expired join codes and auth tokens."""
         self.mass.create_task(self._cleanup_expired_join_codes())
-        self.mass.call_later(86400, self._schedule_join_code_cleanup)
+        self.mass.create_task(self._cleanup_expired_tokens())
+        self.mass.call_later(86400, self._schedule_periodic_cleanup)
 
     async def _refresh_token_expiration(
         self, token_row: Mapping[str, Any], user: User, is_long_lived: bool

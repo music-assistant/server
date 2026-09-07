@@ -428,6 +428,11 @@ class Player(ABC):
     # apart from a real pause - time is then the only signal left. Leave at None for
     # devices that report a source they no longer play as stopped by themselves.
     _attr_external_pause_idle_timeout: int | None = None
+    # Set this on players that play upcoming tracks from their own cached copy of the
+    # queue (which may not be refreshable, e.g. the Sonos cloud queue): a stream request
+    # for a queue item away from the playhead is then refused, so the player re-reads
+    # the queue instead of silently playing a stale cached track.
+    _attr_strict_queue_item_requests: bool = False
 
     def __init__(self, provider: PlayerProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -627,23 +632,34 @@ class Player(ABC):
         return type(self).run_setup_flow is not Player.run_setup_flow
 
     @property
+    def setup_flow_available(self) -> bool:
+        """
+        Return if this player's setup flow currently has anything to offer.
+
+        Override to hide the reconfigure action while there is nothing left to set up,
+        so the user is not sent into a flow that can only abort. Only consulted for a
+        player that implements a flow of its own.
+        """
+        return True
+
+    @property
     @final
     def has_setup_flow(self) -> bool:
         """
         Return if an interactive setup flow can be started for this player.
 
-        True when the player implements its own setup flow, or when it wraps a
-        (non-native) protocol child player that does. Unlike ``needs_setup`` this stays
-        True once setup completed, so the UI can offer to re-run the flow on demand
-        (e.g. to redo a pairing step that was skipped).
+        True when the player implements its own setup flow and that flow currently has
+        something to offer, or when it wraps a (non-native) protocol child player that
+        does. Unlike ``needs_setup`` this stays True once setup completed, so the UI can
+        offer to re-run the flow on demand (e.g. to redo a pairing step that was skipped).
         """
         if self.implements_setup_flow:
-            return True
+            return self.setup_flow_available
         for output_protocol in self.output_protocols:
             if output_protocol.is_native:
                 continue
             child = self.mass.players.get_player(output_protocol.output_protocol_id)
-            if child is not None and child.implements_setup_flow:
+            if child is not None and child.has_setup_flow:
                 return True
         return False
 
@@ -1695,6 +1711,18 @@ class Player(ABC):
         Otherwise checks the native player's GAPLESS_PLAYBACK feature.
         """
         return self._check_feature_with_active_protocol(PlayerFeature.GAPLESS_PLAYBACK)
+
+    @property
+    @final
+    def strict_queue_item_requests(self) -> bool:
+        """
+        Return whether queue item stream requests must match the queue's playhead.
+
+        When set, a stream request for a queue item the queue no longer places at or
+        around the playhead is refused, so the player re-reads the queue instead of
+        playing a track out of a stale cached copy of it.
+        """
+        return self._attr_strict_queue_item_requests
 
     @property
     @final

@@ -622,7 +622,8 @@ def sorted_scandir(base_path: str, sub_path: str, sort: bool = False) -> list[Fi
 
     def nat_key(name: str) -> tuple[int | str, ...]:
         """Sort key for natural sorting, case insensitive to match the frontend sorting."""
-        return tuple(int(s) if s.isdigit() else s.casefold() for s in re.split(r"(\d+)", name))
+        # isdigit() also matches characters like superscripts which int() cannot convert
+        return tuple(int(s) if s.isdecimal() else s.casefold() for s in re.split(r"(\d+)", name))
 
     if base_path not in sub_path:
         sub_path = os.path.join(base_path, sub_path)
