@@ -370,6 +370,41 @@ def test_migrate_provider_setup_data_moves_and_encrypts(monkeypatch: pytest.Monk
     assert cfg["setup_data"]["port"] == 8096
 
 
+def test_migrate_provider_setup_data_moves_spotify_credentials() -> None:
+    """
+    A spotify instance configured before setup flows gets its credentials into setup_data.
+
+    Regression: the provider reads these with get_setup_value, which falls back to the
+    declared config entries only. None of them are declared, so on an upgraded install
+    they all resolved to None and the provider failed to load.
+    """
+    data: dict[str, Any] = {
+        "providers": {
+            "spotify--abc": {
+                "domain": "spotify",
+                "values": {
+                    "refresh_token_global": "global-token",
+                    "refresh_token_dev": "dev-token",
+                    "librespot_credentials": "playback-blob",
+                    "client_id": "dev-client-id",
+                    "account_id": "bob",
+                    "refresh_token": "legacy-token",
+                    "sync_podcast_progress": True,
+                },
+            }
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    cfg = data["providers"]["spotify--abc"]
+    setup_data = cfg["setup_data"]
+    assert setup_data["refresh_token_global"] == ENCRYPT_SUFFIX + "global-token"
+    assert setup_data["refresh_token_dev"] == ENCRYPT_SUFFIX + "dev-token"
+    assert setup_data["librespot_credentials"] == ENCRYPT_SUFFIX + "playback-blob"
+    assert setup_data["client_id"] == ENCRYPT_SUFFIX + "dev-client-id"
+    assert setup_data["account_id"] == ENCRYPT_SUFFIX + "bob"
+    assert cfg["values"] == {"refresh_token": "legacy-token", "sync_podcast_progress": True}
+
+
 def test_setup_flow_defaults_are_owned_keys() -> None:
     """Every key with a fallback default is also a key the migration owns."""
     for domain, defaults in PROVIDER_SETUP_FLOW_DEFAULTS.items():

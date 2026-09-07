@@ -455,31 +455,26 @@ class WebserverController(CoreController):
         self.clients.discard(client)
 
     def disconnect_websockets_for_token(self, token_id: str) -> None:
-        """Disconnect all WebSocket clients using a specific token."""
-        for client in list(self.clients):
-            if hasattr(client, "_token_id") and client._token_id == token_id:
-                username = (
-                    client._authenticated_user.username if client._authenticated_user else "unknown"
-                )
-                self.logger.warning(
-                    "Disconnecting WebSocket client due to token revocation: %s",
-                    username,
-                )
-                client._cancel()
+        """
+        Disconnect all WebSocket clients that authenticated with the given token.
+
+        :param token_id: Id of the token that is no longer valid.
+        """
+        self._disconnect_websockets(lambda client: client.token_id == token_id, "token revocation")
 
     def disconnect_websockets_for_user(self, user_id: str) -> None:
-        """Disconnect all WebSocket clients for a specific user."""
-        for client in list(self.clients):
-            if (
-                hasattr(client, "_authenticated_user")
-                and client._authenticated_user
-                and client._authenticated_user.user_id == user_id
-            ):
-                self.logger.warning(
-                    "Disconnecting WebSocket client due to user action: %s",
-                    client._authenticated_user.username,
-                )
-                client._cancel()
+        """
+        Disconnect all WebSocket clients of the given user.
+
+        :param user_id: Id of the user whose sessions must be closed.
+        """
+        self._disconnect_websockets(
+            lambda client: (
+                client.authenticated_user is not None
+                and client.authenticated_user.user_id == user_id
+            ),
+            "user action",
+        )
 
     def update_active_user_filters(
         self,
@@ -498,7 +493,7 @@ class WebserverController(CoreController):
         :param provider_filter: The new provider filter, or None to leave it untouched.
         """
         for client in list(self.clients):
-            user = client._authenticated_user
+            user = client.authenticated_user
             if user is None or user.user_id != user_id:
                 continue
             # updated in place: the connection's context holds this very object
@@ -522,13 +517,14 @@ class WebserverController(CoreController):
         :param player_id: The sendspin player ID to set.
         """
         for client in list(self.clients):
-            if client._current_token != token:
+            if not client.matches_token(token):
                 continue
-            client._sendspin_player_id = player_id
+            client.bind_sendspin_player(player_id)
+            user = client.authenticated_user
             self.logger.debug(
                 "Set sendspin player %s for websocket client of user %s",
                 player_id,
-                client._authenticated_user.username if client._authenticated_user else "unknown",
+                user.username if user else "unknown",
             )
 
     def set_sendspin_player_for_webrtc_session(self, session_id: str, player_id: str) -> None:
@@ -542,13 +538,10 @@ class WebserverController(CoreController):
         :param player_id: The sendspin player ID to set.
         """
         for client in list(self.clients):
-            if client._webrtc_session_id == session_id:
-                client._sendspin_player_id = player_id
-                username = (
-                    client._authenticated_user.username
-                    if client._authenticated_user
-                    else "unauthenticated"
-                )
+            if client.webrtc_session_id == session_id:
+                client.bind_sendspin_player(player_id)
+                user = client.authenticated_user
+                username = user.username if user else "unauthenticated"
                 self.logger.debug(
                     "Set sendspin player %s for WebRTC session %s (user: %s)",
                     player_id,
@@ -1357,6 +1350,26 @@ class WebserverController(CoreController):
             del self._preview_tokens[token]
             return None
         return provider_instance_id_or_domain, item_id
+
+    def _disconnect_websockets(
+        self, predicate: Callable[[WebsocketClientHandler], bool], reason: str
+    ) -> None:
+        """
+        Disconnect every live WebSocket client the given predicate selects.
+
+        :param predicate: Returns True for each client that must be disconnected.
+        :param reason: What ended the sessions, included in the log message.
+        """
+        for client in list(self.clients):
+            if not predicate(client):
+                continue
+            user = client.authenticated_user
+            self.logger.warning(
+                "Disconnecting WebSocket client due to %s: %s",
+                reason,
+                user.username if user else "unknown",
+            )
+            client.cancel()
 
 
 def _serialize_script_value(value: str) -> str:

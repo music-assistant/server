@@ -59,6 +59,9 @@ if TYPE_CHECKING:
 class YouSeeMusikProvider(RecommendationPayloadMixin, MusicProvider):
     """Provider implementation for YouSee Musik."""
 
+    # YouSee playlists reject adding a track that is already in the playlist
+    playlist_duplicates_supported = False
+
     # the personalized sections barely change intraday; keep the pre-refactor 24h interval
     recommendation_payload_ttl = 3600 * 24
 

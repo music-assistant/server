@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Coroutine
+from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -572,6 +573,324 @@ async def test_planning_axis_stays_anchored_to_real_queue_positions(tmp_path: Pa
     # the window still opens on track 1, so the appended tracks keep their absolute positions
     assert state.songs_before_window == 1
     assert [song for song, _minute in state.history["Song_Transition"]] == [2, 3, 4, 5]
+
+
+async def test_forward_axis_progress_leaves_history_untouched(tmp_path: Path) -> None:
+    """A pass whose planning axis only moves forward must not touch the guard history."""
+    tracks = [_track(index) for index in range(6)]
+    dummy = _make_replan_dj(tmp_path, list(tracks), host=_optional_host(1))
+
+    await dummy._replan_queue("queue-1")
+    state = dummy._dj_queues["queue-1"]
+    assert state.songs_before_window == 1
+    history_before = {section_id: list(events) for section_id, events in state.history.items()}
+    assert history_before  # sanity: something is actually there to protect
+
+    dummy.player_queues._queue.current_index = 1
+    dummy.player_queues._queue.index_in_buffer = 1
+    await dummy._replan_queue("queue-1")
+
+    # more songs sit behind the window now, yet no event shifted with it
+    assert state.songs_before_window == 2
+    assert state.history == history_before
+
+
+async def test_queue_clear_and_refill_speaks_again(tmp_path: Path) -> None:
+    """A queue clear followed by a refill must not leave the DJ permanently muted."""
+    tracks = [_track(index) for index in range(10)]
+    dummy = _make_replan_dj(
+        tmp_path, list(tracks), current_index=5, index_in_buffer=5, host=_optional_host(3)
+    )
+
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    assert queues.loads
+    loaded_before_clear = len(queues.loads)
+
+    # clearing the queue leaves nothing to plan against, so the pass is a no-op
+    queues._items = []
+    queues._queue.current_index = None
+    queues._queue.index_in_buffer = None
+    await dummy._replan_queue("queue-1")
+    assert len(queues.loads) == loaded_before_clear
+
+    fresh = [_track(index) for index in range(8)]
+    queues._items = fresh
+    queues._queue.current_index = 0
+    queues._queue.index_in_buffer = 0
+    await dummy._replan_queue("queue-1")
+
+    new_loads = queues.loads[loaded_before_clear:]
+    assert new_loads
+    # the discarded break never aired, so nothing but the buffer guard holds the DJ back
+    assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == fresh[2].queue_item_id
+
+
+async def test_clear_and_refill_at_the_same_position_speaks_again(tmp_path: Path) -> None:
+    """A clear and refill that lands the player back on the same position must not mute the DJ."""
+    tracks = [_track(index) for index in range(10)]
+    dummy = _make_replan_dj(tmp_path, list(tracks), host=_optional_host(3))
+
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    assert queues.loads
+    loaded_before_clear = len(queues.loads)
+
+    queues._items = []
+    queues._queue.current_index = None
+    queues._queue.index_in_buffer = None
+    await dummy._replan_queue("queue-1")
+
+    # same track count behind the window as before, so the offsets cannot tell them apart
+    fresh = [_track(index) for index in range(8)]
+    queues._items = fresh
+    queues._queue.current_index = 0
+    queues._queue.index_in_buffer = 0
+    await dummy._replan_queue("queue-1")
+
+    new_loads = queues.loads[loaded_before_clear:]
+    assert new_loads
+    assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == fresh[2].queue_item_id
+
+
+async def test_a_break_that_aired_still_holds_the_dj_back_after_a_clear(tmp_path: Path) -> None:
+    """A break the listener actually heard keeps its distance across a clear and refill."""
+    tracks = [_track(index) for index in range(10)]
+    dummy = _make_replan_dj(tmp_path, list(tracks), host=_optional_host(3))
+
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    # playback reaches the track the first break announced, so that break has aired
+    clip = next(item for item in queues._items if item.extra_attributes.get(ATTR_QUEUE_DJ))
+    aired_index = next(
+        index
+        for index, item in enumerate(queues._items)
+        if item.queue_item_id == clip.extra_attributes[ATTR_GAP_NEXT_ID]
+    )
+    queues._queue.current_index = aired_index
+    queues._queue.index_in_buffer = aired_index
+    await dummy._replan_queue("queue-1")
+    loaded_before_clear = len(queues.loads)
+
+    queues._items = []
+    queues._queue.current_index = None
+    queues._queue.index_in_buffer = None
+    await dummy._replan_queue("queue-1")
+
+    fresh = [_track(index) for index in range(10)]
+    queues._items = fresh
+    queues._queue.current_index = 0
+    queues._queue.index_in_buffer = 0
+    await dummy._replan_queue("queue-1")
+
+    new_loads = queues.loads[loaded_before_clear:]
+    assert new_loads
+    # the aired break moved with the queue, so its guard still applies from the new start:
+    # it sat one song behind the window and keeps that distance on the fresh queue
+    assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == fresh[3].queue_item_id
+
+
+async def test_a_pending_break_at_the_buffer_edge_holds_nothing_after_a_clear(
+    tmp_path: Path,
+) -> None:
+    """A clear that discards a break sitting right at the buffer edge frees its budget too."""
+    tracks = [_track(index) for index in range(10)]
+    dummy = _make_replan_dj(tmp_path, list(tracks), host=_optional_host(3))
+
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    # playback advances to the track right before the first staged clip, so the clip sits
+    # one slot past the buffer and its event lands exactly on the recorded window start
+    queues._queue.current_index = 1
+    queues._queue.index_in_buffer = 1
+    await dummy._replan_queue("queue-1")
+    state = dummy._dj_queues["queue-1"]
+    assert state.songs_before_window == 2
+    loaded_before_clear = len(queues.loads)
+
+    queues._items = []
+    queues._queue.current_index = None
+    queues._queue.index_in_buffer = None
+    await dummy._replan_queue("queue-1")
+
+    fresh = [_track(index) for index in range(8)]
+    queues._items = fresh
+    queues._queue.current_index = 0
+    queues._queue.index_in_buffer = 0
+    await dummy._replan_queue("queue-1")
+
+    new_loads = queues.loads[loaded_before_clear:]
+    assert new_loads
+    # the discarded clip never aired, so nothing holds the DJ past the first allowed gap
+    assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == fresh[2].queue_item_id
+
+
+async def test_an_airing_break_still_holds_the_dj_back_when_the_tail_is_swapped(
+    tmp_path: Path,
+) -> None:
+    """A break the player owns keeps its guard weight when every upcoming track is swapped."""
+    tracks = [_track(index) for index in range(10)]
+    dummy = _make_replan_dj(tmp_path, list(tracks), host=_optional_host(3))
+
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    # the first staged clip reaches the player and starts airing
+    clip_index = next(
+        index
+        for index, item in enumerate(queues._items)
+        if item.extra_attributes.get(ATTR_QUEUE_DJ)
+    )
+    queues._queue.current_index = clip_index
+    queues._queue.index_in_buffer = clip_index
+    await dummy._replan_queue("queue-1")
+    state = dummy._dj_queues["queue-1"]
+    assert state.songs_before_window == 2
+    loaded_before_swap = len(queues.loads)
+
+    # everything behind the airing clip is swapped out, so no decided track is left
+    head = queues._items[: clip_index + 1]
+    fresh = [_track(20 + index) for index in range(8)]
+    queues._items = [*head, *fresh]
+    await dummy._replan_queue("queue-1")
+
+    new_loads = queues.loads[loaded_before_swap:]
+    assert new_loads
+    # the listener is hearing that break right now, so the guard clears three songs later
+    assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == fresh[3].queue_item_id
+
+
+async def test_jump_to_top_speaks_in_head_gaps_without_redeciding_the_tail(
+    tmp_path: Path,
+) -> None:
+    """Jumping playback back to the top opens the head gaps without re-deciding the tail."""
+    tracks = [_track(index) for index in range(10)]
+    dummy = _make_replan_dj(
+        tmp_path, list(tracks), current_index=5, index_in_buffer=5, host=_optional_host(3)
+    )
+
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    assert queues.loads
+    loaded_before_jump = len(queues.loads)
+    tail_gap_ids = {
+        item.extra_attributes[ATTR_GAP_NEXT_ID]
+        for item in queues._items
+        if item.extra_attributes.get(ATTR_QUEUE_DJ)
+    }
+
+    queues._queue.current_index = 0
+    queues._queue.index_in_buffer = 0
+    await dummy._replan_queue("queue-1")
+
+    new_loads = queues.loads[loaded_before_jump:]
+    assert new_loads
+    new_gap_ids = {load[0][0].extra_attributes[ATTR_GAP_NEXT_ID] for load in new_loads}
+    # the history is capped at the head's first gap, so the guard clears three songs later
+    assert new_gap_ids == {tracks[4].queue_item_id}
+    assert new_gap_ids.isdisjoint(tail_gap_ids)
+
+
+async def test_stepping_back_a_track_keeps_staged_breaks_apart(tmp_path: Path) -> None:
+    """A break staged further down the queue still spaces the ones planned behind it."""
+    tracks = [_track(index) for index in range(12)]
+    dummy = _make_replan_dj(
+        tmp_path, list(tracks), current_index=5, index_in_buffer=5, host=_optional_host(3)
+    )
+
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+
+    # the listener steps back a track, which reopens the gaps behind the staged clips
+    queues._queue.current_index = 4
+    queues._queue.index_in_buffer = 4
+    await dummy._replan_queue("queue-1")
+
+    clip_positions = [
+        index
+        for index, item in enumerate(queues._items)
+        if item.extra_attributes.get(ATTR_QUEUE_DJ)
+    ]
+    for before, after in pairwise(clip_positions):
+        tracks_between = sum(
+            1
+            for item in queues._items[before + 1 : after]
+            if not item.extra_attributes.get(ATTR_QUEUE_DJ)
+        )
+        assert tracks_between >= 3
+
+
+async def test_a_probed_duration_alone_does_not_move_the_history(tmp_path: Path) -> None:
+    """A track duration correcting downwards is not a queue that rewound."""
+    tracks = [_track(index) for index in range(10)]
+    dummy = _make_replan_dj(tmp_path, list(tracks), current_index=4, index_in_buffer=4)
+
+    await dummy._replan_queue("queue-1")
+    state = dummy._dj_queues["queue-1"]
+    history_before = {section_id: list(events) for section_id, events in state.history.items()}
+    minutes_before = state.minutes_before_window
+    assert history_before
+
+    # a shorter probed duration replaces the estimate, so only the minute count drops
+    tracks[0].duration = 30
+    await dummy._replan_queue("queue-1")
+
+    assert state.minutes_before_window < minutes_before
+    assert state.songs_before_window == 5
+    assert state.history == history_before
+
+
+async def test_hourly_host_speaks_again_after_a_clear_and_refill(tmp_path: Path) -> None:
+    """A max_per_60min guard must not keep muting the DJ off the old queue's high-water mark."""
+    old_items = [_track(index) for index in range(24)]
+    dummy = _make_replan_dj(
+        tmp_path, list(old_items), current_index=19, index_in_buffer=19, host=_hourly_host()
+    )
+    for section in _hourly_sections():
+        dummy._sections[section["id"]] = section
+
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    assert queues.loads
+    loaded_before_clear = len(queues.loads)
+
+    queues._items = []
+    queues._queue.current_index = None
+    queues._queue.index_in_buffer = None
+    await dummy._replan_queue("queue-1")
+    assert len(queues.loads) == loaded_before_clear
+
+    fresh = [_track(index) for index in range(6)]
+    queues._items = fresh
+    queues._queue.current_index = 0
+    queues._queue.index_in_buffer = 0
+    await dummy._replan_queue("queue-1")
+
+    new_loads = queues.loads[loaded_before_clear:]
+    assert new_loads
+    # the discarded break never aired, so it spends none of the once-per-hour budget
+    assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == fresh[2].queue_item_id
+
+
+async def test_replacing_the_upcoming_tracks_reanchors_the_guard(tmp_path: Path) -> None:
+    """Swapping every upcoming track leaves the DJ speaking at its normal gap, not silent."""
+    tracks_v1 = [_track(index) for index in range(6)]
+    dummy = _make_replan_dj(
+        tmp_path, list(tracks_v1), current_index=0, index_in_buffer=0, host=_optional_host(2)
+    )
+
+    await dummy._replan_queue("queue-1")
+    queues = dummy.player_queues
+    assert queues.loads
+    loaded_after_pass1 = len(queues.loads)
+
+    # the playing track stays, so the axis holds still and only the history's tracks go
+    new_tail = [_track(20 + index) for index in range(5)]
+    queues._items = [tracks_v1[0], *new_tail]
+    await dummy._replan_queue("queue-1")
+
+    new_loads = queues.loads[loaded_after_pass1:]
+    assert new_loads
+    assert new_loads[0][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == new_tail[1].queue_item_id
 
 
 async def test_scheduled_replan_serves_requests_landing_during_a_pass(tmp_path: Path) -> None:

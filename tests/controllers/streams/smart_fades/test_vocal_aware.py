@@ -187,12 +187,18 @@ class TestVocalCollisionAvoidance:
 
 
 class TestShortVocalHandoff:
-    """When every phrased candidate collides, ship the click-free equal-power fallback."""
+    """A collision too severe even for the fallback crossfade ships the click-free handoff."""
 
     def test_short_handoff_when_every_candidate_collides(self) -> None:
-        """Vocals spanning almost the whole tail/head collide at every ladder rung."""
-        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(200.0, 239.9)])
-        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 40.0)])
+        """
+        A sung outro tail against a sung intro head collides at every ladder rung.
+
+        Both masks stay structured (no saturation abstention), yet every
+        rung's overlap collides and the fallback crossfade breaches its
+        severity ceiling, so the click-free handoff ships as the last resort.
+        """
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(225.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 20.0)])
         plan = _plan(out, inc)
 
         assert plan.metrics.strategy is TransitionStrategy.SHORT_VOCAL_HANDOFF
@@ -209,8 +215,8 @@ class TestShortVocalHandoff:
 
     def test_handoff_still_uses_the_qsin_crossfade_filter(self) -> None:
         """The handoff plan renders through the same equal-power StreamingCrossfadeFilter as any other."""
-        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(200.0, 239.9)])
-        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 40.0)])
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(225.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 20.0)])
         plan = _plan(out, inc)
         assert plan.metrics.strategy is TransitionStrategy.SHORT_VOCAL_HANDOFF
 
@@ -222,6 +228,38 @@ class TestShortVocalHandoff:
         )
         crossfade_filters = [f for f in filters if isinstance(f, StreamingCrossfadeFilter)]
         assert len(crossfade_filters) == 1
+
+
+class TestSaturatedVocalAbstention:
+    """Near-continuous vocal on both decks makes the collision guard abstain, not veto."""
+
+    def test_both_decks_saturated_ships_a_normal_blend(self) -> None:
+        """Wall-to-wall masks on both decks carry no structure: a phrased blend still ships."""
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(196.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 41.0)])
+
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        assert not ctx.vocal_collision_reliable
+
+        plan = _plan(out, inc)
+        assert plan.metrics.strategy is TransitionStrategy.ENERGY_ALIGNED
+        assert plan.crossfade_duration > 1.0
+
+    def test_one_sided_saturation_keeps_the_guard(self) -> None:
+        """A single saturated deck leaves the collision guard fully armed."""
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(196.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 20.0)])
+
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        assert ctx.vocal_collision_reliable
+
+    def test_short_incoming_track_saturates_over_its_own_span(self) -> None:
+        """A wall-to-wall mask on a sub-45s incoming track still reads saturated."""
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(196.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=30.0), [(0.0, 30.0)])
+
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        assert not ctx.vocal_collision_reliable
 
 
 class TestOutgoingVocalRetention:

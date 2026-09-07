@@ -21,6 +21,7 @@ from music_assistant_models.media_items import (
     Podcast,
     PodcastEpisode,
     Radio,
+    SoundEffect,
     Track,
     UniqueList,
 )
@@ -328,6 +329,22 @@ async def test_queue_ending_on_live_source_appends_nothing() -> None:
 
         loader._fill_autoplay_music_tracks.assert_not_awaited()
         loader._fill_autoplay_next_in_series.assert_not_awaited()
+
+
+async def test_queue_ending_on_a_sound_effect_appends_nothing() -> None:
+    """A one-off clip (a notification, a TTS message) is not music to continue from."""
+    effect = SoundEffect(
+        item_id="http://example.com/notification.mp3",
+        provider="builtin",
+        name="notification",
+        provider_mappings=_mappings("http://example.com/notification.mp3", "builtin"),
+    )
+    loader = _loader(_queue_item(effect), seeds=[_track()])
+
+    await QueueLoaderMixin._fill_autoplay_tracks(loader, "q1")
+
+    loader._fill_autoplay_music_tracks.assert_not_awaited()
+    loader._fill_autoplay_next_in_series.assert_not_awaited()
 
 
 async def test_autoplay_disabled_appends_nothing() -> None:

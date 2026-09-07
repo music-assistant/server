@@ -6,7 +6,8 @@ build the immutable ``TransitionContext``, let the generators propose
 candidate specs, build each into a timed candidate, score them all with the
 rejection/penalty policies, finalize the winner's EQ - or, when every
 candidate is rejected, retry with late-anchored rescue candidates (the
-ungated audible-end ladder plus a modest rescue rung) before falling back to
+ungated audible-end ladder plus a modest rescue rung), then ship a plain
+equal-power fallback crossfade - or, when even that collides too severely,
 the click-free emergency handoff as a last resort. Alternative strategies
 slot in as sibling ``TransitionPlanner`` subclasses.
 """
@@ -21,7 +22,7 @@ from typing import TYPE_CHECKING
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.smart_fades.models import SmartFadeNotApplicable
 
-from .assembly import EmergencyHandoffFactory, PlanAssembler
+from .assembly import EmergencyHandoffFactory, FallbackCrossfadeFactory, PlanAssembler
 from .candidates import (
     CandidateFactory,
     RescueAnchorGenerator,
@@ -122,8 +123,15 @@ class SmartCrossFadePlanner(TransitionPlanner):
                     winner.candidate.spec.source,
                 )
         if winner is None:
-            self.logger.debug("shipping click-free emergency handoff")
-            plan = EmergencyHandoffFactory(ctx, factory, self.logger).build()
+            # a plain volume crossfade reads far less abrupt than the click-free
+            # handoff, so it ships unless its vocal collision is too severe
+            fallback = FallbackCrossfadeFactory(ctx, factory, self.logger).build()
+            if fallback is not None:
+                self.logger.debug("shipping plain fallback crossfade")
+                plan = fallback
+            else:
+                self.logger.debug("shipping click-free emergency handoff")
+                plan = EmergencyHandoffFactory(ctx, factory, self.logger).build()
         else:
             plan = PlanAssembler(ctx, self.logger).finalize(winner.candidate)
         # the caller reads the outgoing grid off the planner after a successful

@@ -71,7 +71,9 @@ playing state and the next `playing` event re-streams (`stream_ends_on_pause` is
 With `external_volume` set the daemon starts its Connect device state at 100% and ignores
 `initial_volume`; the provider pushes the target player's live volume when a session
 becomes active and when the source is claimed, so the Spotify app's slider adopts the
-player's actual volume instead of snapping it to a value computed from 100%.
+player's actual volume instead of snapping it to a value computed from 100%. A group holds
+no level of its own, so its group volume is pushed instead. That is the level its own volume
+commands interpolate the members from.
 
 ## Taking playback back
 
