@@ -27,7 +27,7 @@ UNAPPROVED = "0"
 
 # shaped like the real login page, whose attribute order and spacing we do not control
 LOGIN_PAGE = (
-    '<div id="qrcode" data-token="RJW9kozxtNtJNB9O1KAX" data-then="podcasts"></div>\n'
+    '<div data-then = "podcasts" id="qrcode" data-token = "RJW9kozxtNtJNB9O1KAX"></div>\n'
     '<a id="qrdirectlink" data-target-url="overcast:///auth?t=RJW9kozxtNtJNB9O1KAX&l=browser">'
     "Authenticate with Overcast app</a>"
 )
