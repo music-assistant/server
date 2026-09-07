@@ -2528,6 +2528,7 @@ class LocalFileSystemProvider(MusicProvider):
         if tags.track:
             track.track_number = tags.track
         track.metadata.copyright = tags.get("copyright")
+        track.metadata.release_date = tags.release_date
         track.metadata.lyrics = tags.lyrics
         track.metadata.grouping = tags.get("grouping")
         track.metadata.description = tags.get("comment")
