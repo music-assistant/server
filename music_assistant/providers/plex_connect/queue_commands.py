@@ -88,7 +88,8 @@ class QueueCommandsMixin:
 
         The Plex server caps each response to ~200 items regardless of the requested
         window size. We use playQueueTotalCount to detect truncation and keep fetching
-        forward pages until we have every item, up to :data:`MAX_QUEUE_ITEMS`.
+        forward pages until we hold :data:`MAX_QUEUE_ITEMS` items counting from the
+        selected item, or the queue is exhausted.
 
         :param queue_id: The Plex PlayQueue ID to fetch.
         :return: A PlayQueue whose items list contains the tracks (capped), or None.
@@ -111,10 +112,16 @@ class QueueCommandsMixin:
         all_items = list(playqueue.items)
         seen_ids = {item.playQueueItemID for item in all_items}
 
+        # Anchor pagination and capping on the selected item rather than the queue head,
+        # so a selection past MAX_QUEUE_ITEMS is never truncated away.
+        anchor = self._selected_item_anchor(
+            all_items, getattr(playqueue, "playQueueSelectedItemID", None)
+        )
+
         # playQueueTotalCount is absent for track-radio queues; fall back to the
         # number of items we already have so pagination simply stops.
         total_count = playqueue.playQueueTotalCount or len(all_items)
-        target_count = min(total_count, MAX_QUEUE_ITEMS)
+        target_count = min(total_count, anchor + MAX_QUEUE_ITEMS)
         while len(all_items) < target_count:
             last_id = all_items[-1].playQueueItemID
 
@@ -142,14 +149,40 @@ class QueueCommandsMixin:
             seen_ids.update(i.playQueueItemID for i in new_items)
 
         if len(all_items) > MAX_QUEUE_ITEMS:
+            selected_offset = getattr(playqueue, "playQueueSelectedItemOffset", None)
+            capped_items = self._cap_to_selected_window(all_items, anchor, selected_offset)
             LOGGER.info(
-                "Capping Plex play queue from %d to %d items", len(all_items), MAX_QUEUE_ITEMS
+                "Capping Plex play queue from %d to %d items", len(all_items), len(capped_items)
             )
-            all_items = all_items[:MAX_QUEUE_ITEMS]
+            all_items = capped_items
 
         # Patch the cached items property on the PlayQueue object.
         playqueue.__dict__["items"] = all_items
         return playqueue
+
+    @staticmethod
+    def _selected_item_anchor(items: list[Any], selected_id: int | None) -> int:
+        """Return the index of the item matching selected_id, or 0 if absent/not found."""
+        if selected_id is not None:
+            for index, item in enumerate(items):
+                if getattr(item, "playQueueItemID", None) == selected_id:
+                    return index
+        return 0
+
+    @staticmethod
+    def _cap_to_selected_window(
+        all_items: list[Any], anchor: int, selected_offset: int | None
+    ) -> list[Any]:
+        """Cap items to MAX_QUEUE_ITEMS, keeping the selected item and what follows."""
+        tail = all_items[anchor : anchor + MAX_QUEUE_ITEMS]
+        room = MAX_QUEUE_ITEMS - len(tail)
+        # Only fill from the head when this window is known to start at the true queue
+        # head (offset 0 == anchor); otherwise all_items[0] is just an earlier page item.
+        if room > 0 and selected_offset is not None and selected_offset == anchor:
+            head = all_items[: min(room, anchor)]
+        else:
+            head = []
+        return head + tail
 
     def _selected_item_index(self, playqueue: PlayQueue) -> int:
         """Return the selected item's index within the fetched queue window."""
@@ -491,7 +524,13 @@ class QueueCommandsMixin:
                         len(playqueue.items),
                         MAX_QUEUE_ITEMS,
                     )
-                    playqueue.__dict__["items"] = playqueue.items[:MAX_QUEUE_ITEMS]
+                    anchor = self._selected_item_anchor(
+                        playqueue.items, getattr(playqueue, "playQueueSelectedItemID", None)
+                    )
+                    selected_offset = getattr(playqueue, "playQueueSelectedItemOffset", None)
+                    playqueue.__dict__["items"] = self._cap_to_selected_window(
+                        list(playqueue.items), anchor, selected_offset
+                    )
 
                 LOGGER.info(
                     f"Created play queue {self.play_queue_id} with {len(playqueue.items)} items"
