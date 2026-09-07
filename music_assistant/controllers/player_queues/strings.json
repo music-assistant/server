@@ -5,8 +5,8 @@
   },
   "config_entries": {
     "autoplay_enabled": {
-      "label": "Autoplay",
-      "description": "Whether a queue has Autoplay on by default. Each queue's player controls can still turn it on or off individually."
+      "label": "Enable Autoplay by default",
+      "description": "Each queue's player controls can still turn it on or off individually."
     },
     "autoplay_label": {
       "label": "Autoplay keeps the music going: when your queue runs out, Music Assistant automatically adds more tracks so playback never stops. Turn Autoplay on or off from the player controls — the setting below controls how the extra tracks are chosen.\n\nNOTE: Autoplay is always active when you're playing a dynamic playlist, regardless of this setting."
@@ -33,8 +33,8 @@
       "description": "The playlist Autoplay pulls tracks from to keep the music going."
     },
     "crossfade_enabled": {
-      "label": "Crossfade",
-      "description": "Whether a queue has crossfade on by default. Each queue's player controls can still turn it on or off individually."
+      "label": "Enable crossfade by default",
+      "description": "Each queue's player controls can still turn it on or off individually."
     },
     "crossfade_label": {
       "label": "Crossfade overlaps the end of each track with the start of the next so playback flows without gaps or abrupt cuts — handy for parties, mixes and continuous listening. Turn crossfade on or off per queue from the player controls; choose the crossfade mode below (on more powerful systems a 'Smart crossfade' option beat-matches the two tracks for even smoother, DJ-style transitions)."
