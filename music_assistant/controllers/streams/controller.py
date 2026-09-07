@@ -87,7 +87,6 @@ from music_assistant.controllers.streams.constants import (
     FLOW_STREAM_LEAD_OUT_SECONDS,
     OUTCOME_ONLY_NORMALIZATION_MODES,
     BufferSize,
-    PacingProfile,
     get_available_buffer_sizes,
     output_pacing_args,
 )
@@ -943,20 +942,21 @@ class StreamsController(CoreController):
             ):
                 audio_bytes = _wav_passthrough_stream(audio_input, output_format)
             else:
-                pacing: PacingProfile
+                # DIAGNOSTIC BUILD for support#6329 — do not merge.
+                # Regular tracks are served UNPACED (pre-2.10 behavior) to test whether
+                # the readrate pacing causes the end-of-track garble/silence on Sonos.
+                extra_input_args: list[str] = []
                 if queue_item.media_type == MediaType.AUDIO_SOURCE:
-                    pacing = "low_latency"
+                    extra_input_args = output_pacing_args("low_latency")
                 elif player.provider.domain == "musiccast":
                     # the one known exception; more belong in a per-player table, not here
-                    pacing = "gapless_burst"
-                else:
-                    pacing = "default"
+                    extra_input_args = output_pacing_args("gapless_burst")
                 audio_bytes = get_ffmpeg_stream(
                     audio_input=audio_input,
                     input_format=pcm_format,
                     output_format=output_format,
                     filter_params=filter_params,
-                    extra_input_args=output_pacing_args(pacing),
+                    extra_input_args=extra_input_args,
                 )
             first_chunk_received = False
             bytes_sent = 0
