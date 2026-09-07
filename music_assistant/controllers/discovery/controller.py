@@ -199,7 +199,8 @@ class DiscoveryController(CoreController):
                     remaining = deadline - asyncio.get_event_loop().time()
                     if remaining <= 0:
                         return None
-                    attempt_timeout = remaining / (len(candidates) - index + 1)
+rescan_share = 1 if name_filter_lower is None else 0
+                    attempt_timeout = remaining / (len(candidates) - index + rescan_share)
                     info = AsyncServiceInfo(service_type, mdns_name)
                     if await info.async_request(self.aiozc.zeroconf, attempt_timeout * 1000):
                         return info
