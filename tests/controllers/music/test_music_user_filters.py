@@ -140,7 +140,29 @@ async def test_verify_item_uri_resolves_domain_against_instance_filter(
         get_item.assert_awaited_once_with(
             media_type=MediaType.TRACK,
             item_id="abc",
-            provider_instance_id_or_domain="spotify",
+            provider_instance_id_or_domain="spotify--TPf9JZ2K",
+            allow_update_metadata=False,
+        )
+
+
+@patch("music_assistant.controllers.music.controller.get_current_user")
+async def test_verify_item_uri_binds_lookup_to_allowed_instance(mock_get_user: Mock) -> None:
+    """A domain uri must never be served by a same-domain instance outside the filter."""
+    mock_get_user.return_value = Mock(provider_filter=["spotify--TPf9JZ2K"])
+    denied = _make_prov("spotify--AAAAAAAA", ProviderType.MUSIC)
+    denied.domain = "spotify"
+    allowed = _make_prov("spotify--TPf9JZ2K", ProviderType.MUSIC)
+    allowed.domain = "spotify"
+    controller = MusicController.__new__(MusicController)
+    # the denied instance is listed first, so an unbound domain lookup would resolve to it
+    controller.mass = Mock(providers=[denied, allowed])
+
+    with patch.object(MusicController, "get_item", AsyncMock(return_value=Mock())) as get_item:
+        assert await controller._handle_verify_item_uri("spotify://track/abc") is True
+        get_item.assert_awaited_once_with(
+            media_type=MediaType.TRACK,
+            item_id="abc",
+            provider_instance_id_or_domain="spotify--TPf9JZ2K",
             allow_update_metadata=False,
         )
 

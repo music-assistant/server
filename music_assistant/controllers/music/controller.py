@@ -3432,9 +3432,15 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             and media_type != MediaType.UNKNOWN
             and user
             and user.provider_filter
-            and not self._user_may_access_provider(provider_instance_id_or_domain, user)
         ):
-            return False
+            allowed_instance = self._resolve_allowed_provider_instance(
+                provider_instance_id_or_domain, user
+            )
+            if allowed_instance is None:
+                return False
+            # bind the lookup to the allowed instance, so a same-domain instance outside
+            # the filter never serves the verification
+            provider_instance_id_or_domain = allowed_instance
 
         # verify that item itself exists
         try:
@@ -3464,12 +3470,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         return False
 
-    def _user_may_access_provider(self, provider_instance_id_or_domain: str, user: User) -> bool:
-        """Check a uri's provider instance id or domain against the user's provider filter."""
+    def _resolve_allowed_provider_instance(
+        self, provider_instance_id_or_domain: str, user: User
+    ) -> str | None:
+        """Resolve a uri's provider instance id or domain against the user's provider filter."""
         if provider_instance_id_or_domain in user.provider_filter:
-            return True
-        return any(
-            prov.instance_id in user.provider_filter
+            return provider_instance_id_or_domain
+        allowed_instances = [
+            prov
             for prov in self.mass.providers
             if prov.domain == provider_instance_id_or_domain
-        )
+            and prov.instance_id in user.provider_filter
+        ]
+        for prov in allowed_instances:
+            if prov.available:
+                return prov.instance_id
+        return allowed_instances[0].instance_id if allowed_instances else None
