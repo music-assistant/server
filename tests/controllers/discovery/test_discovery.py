@@ -285,6 +285,40 @@ async def test_async_find_mdns_service_tries_past_a_stale_record(mass: MusicAssi
     assert result.name == attempts[1]
 
 
+async def test_async_find_mdns_service_rescans_after_a_stale_request(
+    mass: MusicAssistant,
+) -> None:
+    """An instance announcing itself while a stale record is being resolved must still be found."""
+    cache = mass.discovery.aiozc.zeroconf.cache.cache = {
+        "amplipi-stale._amplipi._tcp.local.": {},
+    }
+    attempts: list[str] = []
+
+    class _Info:
+        def __init__(self, _service_type: str, name: str) -> None:
+            self.name = name
+
+        async def async_request(self, _zeroconf: object, timeout: float) -> bool:
+            attempts.append(self.name)
+            if "stale" in self.name:
+                # the live instance announces itself midway through the stale request
+                cache["amplipi-live._amplipi._tcp.local."] = {}
+                for waiter in mass.discovery._mdns_waiters:
+                    waiter.set()
+                await asyncio.sleep(timeout / 1000)
+                return False
+            return True
+
+    with patch(
+        "music_assistant.controllers.discovery.controller.AsyncServiceInfo",
+        new=_Info,
+    ):
+        result = await mass.discovery.async_find_mdns_service("_amplipi._tcp.local.", timeout=0.2)
+
+    assert result is not None
+    assert result.name == "amplipi-live._amplipi._tcp.local."
+
+
 async def test_async_find_mdns_service_preserves_at_sign_in_name(mass: MusicAssistant) -> None:
     """Only a RAOP MAC prefix is stripped, so device names containing '@' still match."""
     mass.discovery.aiozc.zeroconf.cache.cache = {

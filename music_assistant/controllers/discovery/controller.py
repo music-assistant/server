@@ -191,13 +191,15 @@ class DiscoveryController(CoreController):
                             continue
                     candidates.append(mdns_name)
                 for index, mdns_name in enumerate(candidates):
-                    # Share what is left of the budget between the candidates still to try, so a
-                    # stale record that never answers can neither push the wait past the caller's
-                    # timeout nor starve a live record behind it in the (unordered) cache.
+                    # Share what is left of the budget between the candidates still to try, plus
+                    # one share held back for a rescan. A record that never answers can then
+                    # neither push the wait past the caller's timeout, nor starve a live record
+                    # behind it in the (unordered) cache, nor swallow the whole deadline while an
+                    # instance announcing itself mid-request waits to be picked up.
                     remaining = deadline - asyncio.get_event_loop().time()
                     if remaining <= 0:
                         return None
-                    attempt_timeout = remaining / (len(candidates) - index)
+                    attempt_timeout = remaining / (len(candidates) - index + 1)
                     info = AsyncServiceInfo(service_type, mdns_name)
                     if await info.async_request(self.aiozc.zeroconf, attempt_timeout * 1000):
                         return info
