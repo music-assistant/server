@@ -138,3 +138,15 @@ class TestBrowse:
         """Test invalid dispatch paths raise an exception."""
         with pytest.raises(KeyError, match="Invalid subpath"):
             await provider.browse(invalid_paths)
+
+    async def test_playlist_path_is_handled_as_a_playlist(
+        self, provider: BBCSoundsProvider, provider_domain: str
+    ) -> None:
+        """
+        Test the playlist browse handling.
+
+        Check a direct link (via Top Picks mainly) is handled by the correct playlist handler.
+        """
+        provider._get_playlist = AsyncMock()  # type: ignore[method-assign]
+        await provider.browse(f"{provider_domain}playlists/pid")
+        provider._get_playlist.assert_awaited_once_with("pid")
