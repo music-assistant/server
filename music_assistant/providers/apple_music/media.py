@@ -15,7 +15,12 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.external_ids import barcode_to_upc, normalize_external_id
+from music_assistant.helpers.external_ids import (
+    barcode_to_upc,
+    is_valid_barcode,
+    is_valid_isrc,
+    normalize_external_id,
+)
 from music_assistant.helpers.track_filter import filter_tracks
 
 from .constants import ARTWORK_CACHE_EXPIRATION, PARSED_ITEM_CACHE_CHECKSUM
@@ -196,6 +201,8 @@ class AppleMusicMediaManager:
             return None
 
         endpoint = f"catalog/{self.provider._storefront}/songs"
+        if not is_valid_isrc(external_id):
+            return None
         normalized_isrc = normalize_external_id(ExternalID.ISRC, external_id)
         try:
             response = await self.api.get_data(endpoint, **{"filter[isrc]": normalized_isrc})
@@ -217,6 +224,8 @@ class AppleMusicMediaManager:
             return None
 
         endpoint = f"catalog/{self.provider._storefront}/albums"
+        if not is_valid_barcode(external_id):
+            return None
         normalized_upc = barcode_to_upc(external_id)
         try:
             response = await self.api.get_data(endpoint, **{"filter[upc]": normalized_upc})

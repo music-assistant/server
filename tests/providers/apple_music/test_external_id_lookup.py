@@ -84,6 +84,17 @@ async def test_get_track_by_wrong_id_type() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_track_by_invalid_isrc() -> None:
+    """Track lookup does not call the API for an invalid ISRC."""
+    manager, api_mock = _make_media_manager()
+
+    result = await manager.get_track_by_external_id("invalid-isrc", ExternalID.ISRC)
+
+    assert result is None
+    api_mock.get_data.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_get_album_by_upc() -> None:
     """Album lookup by UPC calls the correct API endpoint."""
     manager, api_mock = _make_media_manager()
@@ -141,6 +152,17 @@ async def test_get_album_by_wrong_id_type() -> None:
     manager, api_mock = _make_media_manager()
 
     result = await manager.get_album_by_external_id("USTEST1234567", ExternalID.ISRC)
+
+    assert result is None
+    api_mock.get_data.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_album_by_invalid_barcode() -> None:
+    """Album lookup does not call the API for an invalid barcode."""
+    manager, api_mock = _make_media_manager()
+
+    result = await manager.get_album_by_external_id("invalid-barcode", ExternalID.BARCODE)
 
     assert result is None
     api_mock.get_data.assert_not_called()
