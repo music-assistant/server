@@ -191,15 +191,17 @@ class DiscoveryController(CoreController):
                             continue
                     candidates.append(mdns_name)
                 for index, mdns_name in enumerate(candidates):
-                    # Share what is left of the budget between the candidates still to try, plus
-                    # one share held back for a rescan. A record that never answers can then
-                    # neither push the wait past the caller's timeout, nor starve a live record
-                    # behind it in the (unordered) cache, nor swallow the whole deadline while an
-                    # instance announcing itself mid-request waits to be picked up.
+                    # Share what is left of the budget between the candidates still to try, so a
+                    # record that never answers can neither push the wait past the caller's
+                    # timeout nor starve a live one behind it in the (unordered) cache.
                     remaining = deadline - asyncio.get_event_loop().time()
                     if remaining <= 0:
                         return None
-rescan_share = 1 if name_filter_lower is None else 0
+                    # An unfiltered lookup keeps one share back so a candidate that goes
+                    # unanswered cannot swallow the deadline an instance announcing itself
+                    # mid-request needs to be rescanned into. A named lookup wants one specific
+                    # record, which no rescan can produce sooner, so it spends the lot.
+                    rescan_share = 1 if name_filter_lower is None else 0
                     attempt_timeout = remaining / (len(candidates) - index + rescan_share)
                     info = AsyncServiceInfo(service_type, mdns_name)
                     if await info.async_request(self.aiozc.zeroconf, attempt_timeout * 1000):
