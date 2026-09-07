@@ -92,6 +92,7 @@ from .constants import (
     CONF_CONNECT_METHOD,
     CONF_PAIRING_METHOD,
     CONF_PAIRING_PIN,
+    CONF_PAIRING_TOKEN,
     CONF_SENDSPIN_STATIC_DELAY,
     CONF_SOURCE_APPROVAL_DISMISSED,
     CONF_SOURCE_AUTOSTART_TARGET,
@@ -102,6 +103,7 @@ from .constants import (
     PAIR_METHOD_DYNAMIC_PIN,
     PAIR_METHOD_PIN,
     PAIR_METHOD_STATIC_PIN,
+    PAIR_METHOD_TOKEN,
     SOURCE_AUTOSTART_OFF,
     SOURCE_INPUT_DISMISS,
     SOURCE_INPUT_PAIR,
@@ -213,6 +215,10 @@ PAIR_PIN_ENTRY_TIMEOUT = 120.0
 PAIR_CONFIRM_TIMEOUT = 30.0
 # Seconds a Cast-bridged member gets to report its Sendspin app ready.
 CAST_APP_READY_TIMEOUT = 30.0
+
+# Longest gap since elapsed_time_last_updated across which corrected_elapsed_time
+# is still trusted for metadata progress.
+MAX_PROGRESS_EXTRAPOLATION = 30.0
 
 # Terminal pairing-error slugs that map to a dedicated setup_flow.abort reason;
 # anything else falls back to the generic "pairing_failed" abort.
@@ -491,7 +497,12 @@ class SendspinBasePlayer(Player):
                 step_id="select_method",
             )
             method = str(values[CONF_PAIRING_METHOD])
-        await self._run_pin_pairing_flow(session, provider, static=method == PAIR_METHOD_STATIC_PIN)
+        if method == PAIR_METHOD_TOKEN:
+            await self._run_token_pairing_flow(session, provider)
+        else:
+            await self._run_pin_pairing_flow(
+                session, provider, static=method == PAIR_METHOD_STATIC_PIN
+            )
         await session.finish({})
 
     def _get_source_autostart_config_entries(self) -> list[ConfigEntry]:
@@ -967,8 +978,12 @@ class SendspinBasePlayer(Player):
             options.append(PAIR_METHOD_DYNAMIC_PIN if both_pin_methods else PAIR_METHOD_PIN)
             if both_pin_methods:
                 options.append(PAIR_METHOD_STATIC_PIN)
-        # Token pairing is deliberately absent: it is how a server enrols itself (the web
-        # player does exactly that), not something an operator can carry out by hand.
+        if not options and any(
+            descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods
+        ):
+            # Token pairing is machine-to-machine only and must never be user facing
+            # when a proper pairing method (PIN) is available.
+            options.append(PAIR_METHOD_TOKEN)
         return options
 
     def _no_options_abort_reason(self, provider: SendspinProvider) -> str:
@@ -1088,6 +1103,32 @@ class SendspinBasePlayer(Player):
                 provider.clear_pin_session(self.player_id)
             elif provider.get_pin_session(self.player_id) is not None:
                 await provider.cancel_pin_pairing(self.player_id)
+
+    async def _run_token_pairing_flow(
+        self, session: SetupSession, provider: SendspinProvider
+    ) -> None:
+        """Pair via a pasted pairing token, re-rendering the form on a recoverable failure."""
+        errors: dict[str, str] | None = None
+        while True:
+            token_values = await session.form(
+                [ConfigEntry(key=CONF_PAIRING_TOKEN, type=ConfigEntryType.STRING, required=True)],
+                step_id="enter_token",
+                errors=errors,
+            )
+            try:
+                await provider.pair_with_token(
+                    self.player_id, str(token_values[CONF_PAIRING_TOKEN]).strip()
+                )
+            except (
+                SecurityActionError,
+                PairingError,
+                HandshakeAbortedError,
+                TimeoutError,
+                OSError,
+            ) as err:
+                errors = {"base": error_alert(err).key}
+                continue
+            return
 
     async def _await_pin_request(
         self,
@@ -1594,6 +1635,9 @@ class SendspinPlayer(SendspinBasePlayer):
         shuffle = queue.shuffle_enabled if queue else False
         is_playing = self.state.playback_state == PlaybackState.PLAYING
         track_progress = self._compute_track_progress_ms(current_media, is_playing=is_playing)
+        # A progress beyond the track length is never meaningful to clients.
+        if track_duration:
+            track_progress = min(track_progress, int(track_duration * 1000))
 
         metadata = Metadata(
             title=current_media.title,
@@ -2048,8 +2092,10 @@ class SendspinPlayer(SendspinBasePlayer):
         elapsed_time: float | None = (
             float(current_media.elapsed_time) if current_media.elapsed_time is not None else None
         )
-        if is_playing and current_media.corrected_elapsed_time is not None:
-            elapsed_time = current_media.corrected_elapsed_time
+        if is_playing and (corrected := current_media.corrected_elapsed_time) is not None:
+            # Only trust the extrapolation across a fresh window.
+            if elapsed_time is None or corrected - elapsed_time <= MAX_PROGRESS_EXTRAPOLATION:
+                elapsed_time = corrected
         if elapsed_time is None:
             elapsed_time = self.corrected_elapsed_time if is_playing else self.elapsed_time
         return max(0, int(elapsed_time * 1000)) if elapsed_time is not None else 0

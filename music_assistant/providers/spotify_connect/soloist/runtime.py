@@ -33,7 +33,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Final
 
 import aiofiles
-from aiohttp import ClientError, ClientTimeout, ClientWebSocketResponse, WSMsgType
+from aiohttp import ClientError, ClientTimeout, ClientWebSocketResponse, ClientWSTimeout, WSMsgType
 from mashumaro import DataClassDictMixin
 from mashumaro.exceptions import InvalidFieldValue, MissingField
 from music_assistant_models.errors import MusicAssistantError
@@ -778,7 +778,12 @@ class SoloistClient:
         ws: ClientWebSocketResponse | None = None
         try:
             async with self.mass.http_session.ws_connect(
-                f"ws://{host}:{port}/", heartbeat=_WS_HEARTBEAT
+                f"ws://{host}:{port}/",
+                heartbeat=_WS_HEARTBEAT,
+                # the daemon is often already gone when this closes (a
+                # single-track run exits at its item's end); the default 10s
+                # close-handshake wait would stall every teardown by that much
+                timeout=ClientWSTimeout(ws_close=1.0),
             ) as ws:
                 self._ws = ws
                 self.logger.debug("Connected to the soloist websocket at %s:%s", addr, port)
@@ -1030,7 +1035,7 @@ def _validate_download_url(url: str) -> None:
 
 def _extract_binary_from_archive(archive_path: Path, dest_path: Path) -> None:
     """
-    Validate the release archive and extract its single soloist binary (blocking).
+    Validate the release archive and extract its soloist binary (blocking).
 
     :raises InvalidArchiveError: The archive is corrupt, unsafe, or does not
         contain exactly one regular ``soloist`` file.
@@ -1045,15 +1050,17 @@ def _extract_binary_from_archive(archive_path: Path, dest_path: Path) -> None:
                     raise InvalidArchiveError(f"unsafe path in soloist archive: {member.name}")
                 if member.isdir():
                     continue
+                total_size += member.size
+                if total_size > _MAX_EXTRACTED_SIZE:
+                    raise InvalidArchiveError("soloist archive exceeds the extracted size limit")
+                # the release ships docs (CHANGELOG.md, THIRD_PARTY_LICENSES.txt) next to
+                # the binary, so we skip siblings instead of refusing the whole archive
+                if name.name != "soloist":
+                    continue
                 if not member.isreg():
                     raise InvalidArchiveError(
                         f"unsupported member type in soloist archive: {member.name}"
                     )
-                total_size += member.size
-                if total_size > _MAX_EXTRACTED_SIZE:
-                    raise InvalidArchiveError("soloist archive exceeds the extracted size limit")
-                if name.name != "soloist":
-                    raise InvalidArchiveError(f"unexpected file in soloist archive: {member.name}")
                 if binary_member is not None:
                     raise InvalidArchiveError("soloist archive contains multiple binaries")
                 binary_member = member

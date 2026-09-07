@@ -55,6 +55,7 @@ DEFAULT_CROSSFADE_ENABLED = False
 
 CONF_SMART_SHUFFLE_LABEL = "smart_shuffle_label"
 CONF_SMART_SHUFFLE_ENABLED = "smart_shuffle_enabled"
+CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES = "smart_shuffle_optimize_smart_fades"
 CONF_SMART_SHUFFLE_SONG_RECENCY = "smart_shuffle_song_recency"
 CONF_SMART_SHUFFLE_ARTIST_RECENCY = "smart_shuffle_artist_recency"
 CONF_SMART_SHUFFLE_DUPLICATE_GAP = "smart_shuffle_duplicate_gap"

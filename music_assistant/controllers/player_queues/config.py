@@ -74,6 +74,7 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_SMART_SHUFFLE_DUPLICATE_GAP,
     CONF_SMART_SHUFFLE_ENABLED,
     CONF_SMART_SHUFFLE_LABEL,
+    CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES,
     CONF_SMART_SHUFFLE_SONG_RECENCY,
     DEFAULT_AUTOPLAY_ENABLED,
     DEFAULT_CROSSFADE_ENABLED,
@@ -303,6 +304,12 @@ def _smart_shuffle_entries(*, per_queue: bool) -> list[ConfigEntry]:
         ),
         _onoff_entry(
             CONF_SMART_SHUFFLE_ENABLED,
+            CATEGORY_SMART_SHUFFLE,
+            per_queue=per_queue,
+            global_default=CONF_VALUE_DISABLED,
+        ),
+        _onoff_entry(
+            CONF_SMART_SHUFFLE_OPTIMIZE_SMART_FADES,
             CATEGORY_SMART_SHUFFLE,
             per_queue=per_queue,
             global_default=CONF_VALUE_DISABLED,

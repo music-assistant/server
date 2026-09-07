@@ -7,6 +7,7 @@ import inspect
 import logging
 import os
 import pathlib
+import random
 import threading
 import time
 from base64 import b64encode
@@ -121,6 +122,9 @@ PROVIDER_SETUP_TIMEOUT = 120
 # provider fails to load instead of holding up startup forever.
 PROVIDER_ASYNC_INIT_TIMEOUT = 300
 PROVIDER_LOAD_CONCURRENCY = 8
+# Seconds before each retry of a failed provider load; the last delay repeats.
+PROVIDER_RETRY_DELAYS = (10, 30, 60, 120)
+PROVIDER_RETRY_JITTER = 3
 
 _R = TypeVar("_R")
 _ProviderT = TypeVar("_ProviderT", bound=ProviderInstanceType)
@@ -962,8 +966,17 @@ class MusicAssistant:
         instance_id: str,
         allow_retry: bool = False,
         remove_if_unsupported: bool = False,
+        retry_attempt: int = 0,
     ) -> None:
-        """Try to load a provider and catch errors."""
+        """
+        Try to load a provider and catch errors.
+
+        :param instance_id: Instance ID of the provider to load.
+        :param allow_retry: Schedule a delayed retry if the load fails with a handled error.
+        :param remove_if_unsupported: Drop the config if the host can not run this provider.
+        :param retry_attempt: How many retries of this load already failed, which decides
+            how long the next one waits.
+        """
         try:
             prov_conf = await self.config.get_provider_config(instance_id)
         except KeyError:
@@ -1021,19 +1034,33 @@ class MusicAssistant:
                     (AuthenticationRequired, AuthenticationFailed, LoginFailed, InvalidToken),
                 )
             )
-            if will_retry:
-                self.call_later(
-                    120,
-                    self.load_provider,
-                    instance_id,
-                    allow_retry,
-                    task_id=task_id,
+            error_msg = str(exc) or exc.__class__.__name__
+            prov_name = prov_conf.name or prov_conf.instance_id
+            if not will_retry:
+                LOGGER.warning(
+                    "Error loading provider(instance) %s: %s",
+                    prov_name,
+                    error_msg,
+                    exc_info=_provider_error_traceback(exc),
                 )
+                return
+            retry_delay = round(
+                PROVIDER_RETRY_DELAYS[min(retry_attempt, len(PROVIDER_RETRY_DELAYS) - 1)]
+                + random.uniform(-PROVIDER_RETRY_JITTER, PROVIDER_RETRY_JITTER)
+            )
+            self.call_later(
+                retry_delay,
+                self.load_provider,
+                instance_id,
+                allow_retry,
+                retry_attempt=retry_attempt + 1,
+                task_id=task_id,
+            )
             LOGGER.warning(
-                "Error loading provider(instance) %s: %s%s",
-                prov_conf.name or prov_conf.instance_id,
-                str(exc) or exc.__class__.__name__,
-                " (will be retried later)" if will_retry else "",
+                "Error loading provider(instance) %s: %s (will be retried in %s seconds)",
+                prov_name,
+                error_msg,
+                retry_delay,
                 exc_info=_provider_error_traceback(exc),
             )
             return

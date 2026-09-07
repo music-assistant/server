@@ -1062,9 +1062,10 @@ class PlayerConfigMixin:
                         # the key is per-protocol (dynamic), so pin a static catalog key
                         translation_key=enabled_translation_key,
                         translation_params=[base_name] if base_name else None,
-                        # a derived protocol cannot be active while its base is disabled
+                        # A derived protocol follows the base enabled state in the UI; saving
+                        # an enable while the base is disabled is rejected by the save validator.
                         value=bool(protocol_player_enabled) and base_enabled,
-                        read_only=not base_enabled,
+                        read_only=False,
                         default_value=not experimental_note,
                         category=protocol_category,
                         category_translation_key=category_translation_key,
@@ -1135,6 +1136,39 @@ class PlayerConfigMixin:
             protocol_values[protocol_player_id][actual_key] = value
             # remove from main values dict
             del values[key]
+        # Validate every dependency before saving any protocol configuration. This keeps a
+        # contradictory request (for example, enabling a derived protocol while disabling its
+        # underlying player) from becoming order-dependent or leaving a partial update behind.
+        for protocol_player_id, proto_values in protocol_values.items():
+            if not proto_values.get(CONF_ENABLED):
+                continue
+            underlying_player_id = self.get_raw_player_config_value(
+                protocol_player_id, CONF_UNDERLYING_PLAYER_ID
+            )
+            if (
+                not isinstance(underlying_player_id, str)
+                or underlying_player_id == protocol_player_id
+            ):
+                continue
+            underlying_values = protocol_values.get(underlying_player_id)
+            underlying_enabled = (
+                underlying_values[CONF_ENABLED]
+                if underlying_values and CONF_ENABLED in underlying_values
+                else self.get_raw_player_config_value(underlying_player_id, CONF_ENABLED, True)
+            )
+            if not underlying_enabled:
+                raise RuntimeError(
+                    f"Can not enable {protocol_player_id}: underlying player "
+                    f"{underlying_player_id} is disabled"
+                )
+            underlying_config = self.get(f"{CONF_PLAYERS}/{underlying_player_id}") or {}
+            provider_id = underlying_config.get("provider")
+            if not isinstance(provider_id, str) or self.mass.get_provider(provider_id) is None:
+                raise RuntimeError(
+                    f"Can not enable {protocol_player_id}: underlying player provider "
+                    f"for {underlying_player_id} is disabled"
+                )
+
         for protocol_player_id, proto_values in protocol_values.items():
             await self.save_player_config(protocol_player_id, proto_values)
             if proto_values.get(CONF_ENABLED):
