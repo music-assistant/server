@@ -114,6 +114,12 @@ SUPPRESS_MEDIA_ITEM_UPDATES: ContextVar[bool] = ContextVar(
     "SUPPRESS_MEDIA_ITEM_UPDATES", default=False
 )
 
+PROVIDER_FEATURE_BY_MEDIA_TYPE = {
+    MediaType.TRACK: ProviderFeature.TRACK_BY_EXTERNAL_ID,
+    MediaType.ALBUM: ProviderFeature.ALBUM_BY_EXTERNAL_ID,
+    MediaType.ARTIST: ProviderFeature.ARTIST_BY_EXTERNAL_ID,
+}
+
 SORT_KEYS = {
     # sqlite has no builtin support for natural sorting
     # so we have use an additional column for this
@@ -909,13 +915,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if external_id_type is None:
             return None
 
-        provider_feature_map = {
-            MediaType.TRACK: ProviderFeature.TRACK_BY_EXTERNAL_ID,
-            MediaType.ALBUM: ProviderFeature.ALBUM_BY_EXTERNAL_ID,
-            MediaType.ARTIST: ProviderFeature.ARTIST_BY_EXTERNAL_ID,
-        }
-
-        if (feature := provider_feature_map.get(self.media_type)) is None:
+        if (feature := PROVIDER_FEATURE_BY_MEDIA_TYPE.get(self.media_type)) is None:
             return None
 
         for prov in self.mass.music.providers:
@@ -928,19 +928,17 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     case MediaType.TRACK:
                         result = cast(
                             "ItemCls | None",
-                            await prov.get_track_by_external_id(external_id, str(external_id_type)),
+                            await prov.get_track_by_external_id(external_id, external_id_type),
                         )
                     case MediaType.ALBUM:
                         result = cast(
                             "ItemCls | None",
-                            await prov.get_album_by_external_id(external_id, str(external_id_type)),
+                            await prov.get_album_by_external_id(external_id, external_id_type),
                         )
                     case MediaType.ARTIST:
                         result = cast(
                             "ItemCls | None",
-                            await prov.get_artist_by_external_id(
-                                external_id, str(external_id_type)
-                            ),
+                            await prov.get_artist_by_external_id(external_id, external_id_type),
                         )
 
                 if result:
@@ -950,11 +948,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         await self.get_library_item_by_prov_id(result.item_id, result.provider)
                         or result
                     )
-            except (NotImplementedError, MediaNotFoundError):  # fmt: skip
+            except NotImplementedError, MediaNotFoundError:
                 continue
             except ProviderUnavailableError as err:
                 self.logger.debug(
-                    "Provider %s unavailable for external ID lookup: %s",
+                    "Provider %s (%s) unavailable for external ID lookup: %s",
+                    prov.instance_id,
                     prov.domain,
                     err,
                 )
