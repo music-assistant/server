@@ -87,21 +87,22 @@ async def run_setup(session: SetupSession) -> None:
             step_id="user",
             errors=errors,
         )
-        collected: dict[str, ConfigValueType]
-        if str(values[CONF_METHOD]) == METHOD_QR:
-            collected = {CONF_SESSION_COOKIE: await _qr_login(session)}
-        else:
-            collected = await _collect_credentials(session)
+        if str(values[CONF_METHOD]) == METHOD_PASSWORD:
+            await _login_with_credentials(session)
+            return
         try:
-            await session.finish(collected)
+            await session.finish({CONF_SESSION_COOKIE: await _qr_login(session)})
             return
         except SetupFlowError as err:
             errors = {"base": err.translation_key or str(err)}
 
 
-async def _collect_credentials(session: SetupSession) -> dict[str, ConfigValueType]:
+async def _login_with_credentials(session: SetupSession) -> None:
     """
-    Collect the email address and password of an Overcast account that has them.
+    Collect the email address and password of an Overcast account and link it.
+
+    A rejected login keeps the user on the same form, with the values they entered,
+    until the account is accepted.
 
     :param session: The setup session driving the flow.
     """
@@ -115,10 +116,15 @@ async def _collect_credentials(session: SetupSession) -> dict[str, ConfigValueTy
         submitted = await session.form(
             entries, step_id="credentials", errors=errors, last_step=True
         )
-        if submitted[CONF_USERNAME] and submitted[CONF_PASSWORD]:
-            return dict(submitted)
         setup_data.update(submitted)
-        errors = {"base": "credentials_required"}
+        if not (submitted[CONF_USERNAME] and submitted[CONF_PASSWORD]):
+            errors = {"base": "credentials_required"}
+            continue
+        try:
+            await session.finish(dict(submitted))
+            return
+        except SetupFlowError as err:
+            errors = {"base": err.translation_key or str(err)}
 
 
 async def _qr_login(session: SetupSession) -> str:
