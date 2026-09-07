@@ -63,7 +63,7 @@ CORE_CONTROLLER_ATTRS = (
 )
 
 type DiagnosticsSectionCallback = Callable[
-    [], dict[str, SerializableType] | None | Awaitable[dict[str, SerializableType] | None]
+    [], dict[str, SerializableType] | Awaitable[dict[str, SerializableType] | None] | None
 ]
 
 

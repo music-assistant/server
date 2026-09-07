@@ -25,13 +25,14 @@ from music_assistant.models.setup_flow import (
 )
 from music_assistant.providers.sendspin import player as player_module
 from music_assistant.providers.sendspin.constants import (
-    CONF_PAIR_DEVICE,
+    CONF_CONNECT_METHOD,
     CONF_PAIRING_METHOD,
     CONF_PAIRING_PIN,
     CONF_PAIRING_TOKEN,
     CONF_SOURCE_APPROVAL_DISMISSED,
     CONF_SOURCE_INPUT_ACTION,
-    CONF_SOURCE_INPUT_NOTE,
+    CONNECT_METHOD_PAIR,
+    CONNECT_METHOD_UNPAIRED,
     PAIR_METHOD_DYNAMIC_PIN,
     PAIR_METHOD_PIN,
     PAIR_METHOD_STATIC_PIN,
@@ -445,8 +446,8 @@ async def test_consent_step_grants_trust() -> None:
 
     task = asyncio.create_task(player.run_setup_flow(session))
     step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device")
-    assert [entry.key for entry in step.entries] == [CONF_PAIR_DEVICE]
-    session.handle_submit({})
+    assert [entry.key for entry in step.entries] == [CONF_CONNECT_METHOD]
+    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_UNPAIRED})
 
     await _wait_for(lambda: session.finished)
     await task
@@ -484,9 +485,10 @@ async def test_consent_on_combo_declines_the_input_in_one_click() -> None:
     mass = _attach_mass(player)
 
     task = asyncio.create_task(player.run_setup_flow(session))
-    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device")
-    assert [entry.key for entry in step.entries] == [CONF_PAIR_DEVICE, CONF_SOURCE_INPUT_NOTE]
-    session.handle_submit({})
+    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
+    assert [entry.key for entry in step.entries] == [CONF_CONNECT_METHOD]
+    assert step.last_step is True
+    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_UNPAIRED})
 
     await _wait_for(lambda: session.finished)
     await task
@@ -507,7 +509,7 @@ async def test_consent_opting_into_pairing_pairs_instead() -> None:
 
     task = asyncio.create_task(player.run_setup_flow(session))
     await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device")
-    session.handle_submit({CONF_PAIR_DEVICE: True})
+    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_PAIR})
 
     step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="select_method")
     assert {option.value for option in step.entries[0].options} == {
@@ -542,9 +544,39 @@ def _combo_api_with_pending_source() -> _FakeApi:
     return api
 
 
-async def test_source_input_dismiss_persists_and_finishes() -> None:
-    """Declining the audio input persists the choice and asks nothing further."""
+async def test_guest_device_with_an_input_consents_and_keeps_guest_access() -> None:
+    """
+    A guest device with a pending input consents on the approval step, not the input picker.
+
+    Guest access already carries playback, so the only choice left is the optional upgrade
+    to a pairing; finishing keeps guest access and leaves the input off.
+    """
     api = _combo_api_with_pending_source()
+    provider = _FakeProvider(api)
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider)
+    mass = _attach_mass(player)
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
+    assert [entry.key for entry in step.entries] == [CONF_CONNECT_METHOD]
+    assert step.last_step is True
+    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_UNPAIRED})
+
+    await _wait_for(lambda: session.finished)
+    await task
+    mass.config.set_raw_player_config_value.assert_called_once_with(
+        "client-1", CONF_SOURCE_APPROVAL_DISMISSED, True
+    )
+    assert provider.trust_calls == [True]
+    assert provider.start_calls == 0
+    assert session.finish_step_id == FINISH_STEP_SILENT
+
+
+async def test_input_picker_serves_a_device_that_withdrew_guest_access() -> None:
+    """Without guest access on offer, a pending input still gets the pair-or-decline picker."""
+    api = _combo_api_with_pending_source()
+    api.info_or_none.unpaired_access = SimpleNamespace(enabled=False)
     provider = _FakeProvider(api)
     session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
@@ -564,12 +596,11 @@ async def test_source_input_dismiss_persists_and_finishes() -> None:
         "client-1", CONF_SOURCE_APPROVAL_DISMISSED, True
     )
     assert provider.trust_calls == []
-    assert provider.start_calls == 0
     assert session.finish_step_id == FINISH_STEP_SILENT
 
 
-async def test_source_input_pair_offers_only_pair_methods() -> None:
-    """Choosing to pair for the audio input never re-offers unpaired access or ignore."""
+async def test_opting_into_pairing_for_the_input_offers_only_pair_methods() -> None:
+    """Ticking the pairing box on the approval step never re-offers unpaired access or ignore."""
     api = _combo_api_with_pending_source()
     api.info_or_none.supported_pair_methods = [
         _desc(PairMethod.DYNAMIC_PIN),
@@ -581,8 +612,8 @@ async def test_source_input_pair_offers_only_pair_methods() -> None:
     _attach_mass(player)
 
     task = asyncio.create_task(player.run_setup_flow(session))
-    await _wait_step(session, step_type=FlowStepType.FORM, step_id="source_input")
-    session.handle_submit({CONF_SOURCE_INPUT_ACTION: SOURCE_INPUT_PAIR})
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="approve_device_source")
+    session.handle_submit({CONF_CONNECT_METHOD: CONNECT_METHOD_PAIR})
 
     step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="select_method")
     assert {option.value for option in step.entries[0].options} == {
@@ -749,10 +780,8 @@ async def test_static_pin_form_hints_where_the_pin_lives() -> None:
     task = asyncio.create_task(player.run_setup_flow(session))
     step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
     # The unknown location is ignored rather than rendered as a missing translation.
-    assert [entry.key for entry in step.entries] == [
-        "static_pin_location_device",
-        CONF_PAIRING_PIN,
-    ]
+    assert [entry.key for entry in step.entries] == [CONF_PAIRING_PIN]
+    assert step.entries[0].translation_key == "static_pin_location_device"
     # A static PIN is always exactly 8 digits (enforced by aiosendspin).
     pin_entry = next(entry for entry in step.entries if entry.key == CONF_PAIRING_PIN)
     assert pin_entry.type is ConfigEntryType.PAIRING_CODE
@@ -772,29 +801,24 @@ async def test_dynamic_pin_form_hints_how_the_pin_arrives() -> None:
     task = asyncio.create_task(player.run_setup_flow(session))
     step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
     # "other" says nothing an operator can act on, so it renders no hint.
-    assert [entry.key for entry in step.entries] == [
-        "dynamic_pin_channel_speaker",
-        CONF_PAIRING_PIN,
-    ]
+    assert [entry.key for entry in step.entries] == [CONF_PAIRING_PIN]
+    assert step.entries[0].translation_key == "dynamic_pin_channel_speaker"
     session.handle_submit({CONF_PAIRING_PIN: "123456"})
     await _wait_for(lambda: session.finished)
     await task
 
 
-async def test_token_form_hints_where_the_token_lives() -> None:
-    """A token form surfaces the device's own hint about where its pairing secret is printed."""
-    api = _FakeApi([_desc(PairMethod.PAIRING_PSK, locations=["leaflet"])])
+async def test_dynamic_pin_form_names_both_channels_when_the_device_offers_both() -> None:
+    """A PIN carried on screen and aloud is labelled with both, since either one works."""
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN, out_channels=["display", "speaker"])])
     provider = _FakeProvider(api)
     session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
 
     task = asyncio.create_task(player.run_setup_flow(session))
-    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_token")
-    assert [entry.key for entry in step.entries] == [
-        "pairing_psk_location_leaflet",
-        CONF_PAIRING_TOKEN,
-    ]
-    session.handle_submit({CONF_PAIRING_TOKEN: "tok-1"})
+    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
+    assert step.entries[0].translation_key == "dynamic_pin_channel_display_speaker"
+    session.handle_submit({CONF_PAIRING_PIN: "123456"})
     await _wait_for(lambda: session.finished)
     await task
 
@@ -818,14 +842,33 @@ async def test_abort_mid_pairing_runs_cleanup() -> None:
     assert not session.finished
 
 
+async def test_token_only_device_pairs_with_token() -> None:
+    """A token-only device goes straight to the pairing-token form and can pair."""
+    api = _FakeApi([_desc(PairMethod.PAIRING_PSK)])
+    provider = _FakeProvider(api)
+    session, mass = _make_session(_ok_finish)
+    player = _make_player(api, provider)
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_token")
+    assert not any(s.step_id == "select_method" for s in _published_steps(mass))
+    session.handle_submit({CONF_PAIRING_TOKEN: "  SP:0TEST  "})
+
+    await _wait_for(lambda: session.finished)
+    await task
+    assert provider.tokens == ["SP:0TEST"]
+
+
 async def test_token_hidden_when_the_device_can_pair_by_pin() -> None:
-    """A device offering both goes straight to its PIN, never showing the token as a choice."""
+    """Token pairing is machine-to-machine only and stays hidden while PIN pairing works."""
     api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN), _desc(PairMethod.PAIRING_PSK)])
     provider = _FakeProvider(api)
     session, mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
 
     task = asyncio.create_task(player.run_setup_flow(session))
+    # PIN is the only operator-facing option, so the flow skips straight past the
+    # method picker instead of offering a choice between PIN and token.
     await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
     assert not any(s.step_id == "select_method" for s in _published_steps(mass))
     session.handle_submit({CONF_PAIRING_PIN: "123456"})
@@ -833,52 +876,6 @@ async def test_token_hidden_when_the_device_can_pair_by_pin() -> None:
     await _wait_for(lambda: session.finished)
     await task
     assert provider.tokens == []
-
-
-async def test_token_pairing_success() -> None:
-    """A token-only device drives the token form and pairs on submit."""
-    collected: dict[str, Any] = {}
-
-    async def finish(_s: SetupSession, values: dict[str, Any]) -> dict[str, str]:
-        collected["values"] = values
-        return {"player_id": "client-1"}
-
-    api = _FakeApi([_desc(PairMethod.PAIRING_PSK)])
-    provider = _FakeProvider(api)
-    session, mass = _make_session(finish)
-    player = _make_player(api, provider)
-
-    task = asyncio.create_task(player.run_setup_flow(session))
-    await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_token")
-    assert not any(s.step_id == "select_method" for s in _published_steps(mass))
-    session.handle_submit({CONF_PAIRING_TOKEN: "tok-123"})
-
-    await _wait_for(lambda: session.finished)
-    await task
-    assert provider.tokens == ["tok-123"]
-    assert collected["values"] == {}
-
-
-async def test_token_invalid_re_renders_then_succeeds() -> None:
-    """An invalid token re-renders the token form with a base error, then pairs on retry."""
-    api = _FakeApi([_desc(PairMethod.PAIRING_PSK)])
-    provider = _FakeProvider(api, token_errors=[SecurityActionError("pairing_error_token_invalid")])
-    session, _mass = _make_session(_ok_finish)
-    player = _make_player(api, provider)
-
-    task = asyncio.create_task(player.run_setup_flow(session))
-    await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_token")
-    session.handle_submit({CONF_PAIRING_TOKEN: "bad"})
-
-    error_step = await _wait_step(
-        session, step_type=FlowStepType.FORM, step_id="enter_token", with_errors=True
-    )
-    assert error_step.errors == {"base": "pairing_error_token_invalid"}
-    session.handle_submit({CONF_PAIRING_TOKEN: "good"})
-
-    await _wait_for(lambda: session.finished)
-    await task
-    assert provider.tokens == ["bad", "good"]
 
 
 async def test_no_pair_methods_aborts() -> None:
@@ -908,7 +905,7 @@ async def test_unencrypted_connection_aborts() -> None:
 
 
 def test_pairing_method_options_derivation() -> None:
-    """Static PIN needs both PIN methods usable; the token yields to any usable PIN."""
+    """Derive PIN choices and expose pairing_psk as an operator-facing token option."""
     api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN), _desc(PairMethod.STATIC_PIN)])
     provider = _FakeProvider(api)
     player = _make_player(api, provider)
@@ -919,16 +916,18 @@ def test_pairing_method_options_derivation() -> None:
         PAIR_METHOD_STATIC_PIN,
     ]
 
+    # Token pairing is machine-to-machine only, so it stays hidden while PIN pairing
+    # is usable, even though the device also advertises pairing_psk.
     api_single = _FakeApi(
         [_desc(PairMethod.STATIC_PIN), _desc(PairMethod.PAIRING_PSK)], unpaired_access=True
     )
     provider_single = _FakeProvider(api_single)
     player_single = _make_player(api_single, provider_single)
     assert player_single._pairing_method_options(cast("SendspinProvider", provider_single)) == [
-        PAIR_METHOD_PIN
+        PAIR_METHOD_PIN,
     ]
 
-    # Without a PIN to fall back on the token is the only way in, so it returns to the list.
+    # A token-only device goes directly to the token entry form.
     api_token = _FakeApi([_desc(PairMethod.PAIRING_PSK)], unpaired_access=True)
     provider_token = _FakeProvider(api_token)
     player_token = _make_player(api_token, provider_token)
