@@ -269,7 +269,11 @@ class PocketCastsProvider(MusicProvider):
                 position=position,
             )
             if episode_item:
-                episode_item.metadata.has_transcript = episode_data.get("uuid") in transcripts
+                # None keeps the flag unknown when the index could not be read, so a
+                # transient failure does not hide transcripts for the whole podcast
+                episode_item.metadata.has_transcript = (
+                    None if transcripts is None else episode_data.get("uuid") in transcripts
+                )
                 self._enrich_episode_with_status(
                     episode_item, episode_data, in_progress_map, history_map
                 )
@@ -373,7 +377,9 @@ class PocketCastsProvider(MusicProvider):
         episode_item.resume_position_ms = 0 if completed else played_up_to * 1000
 
         transcripts = await self._get_episode_transcripts(podcast_uuid)
-        episode_item.metadata.has_transcript = episode_uuid in transcripts
+        episode_item.metadata.has_transcript = (
+            None if transcripts is None else episode_uuid in transcripts
+        )
 
         return episode_item
 
@@ -390,7 +396,7 @@ class PocketCastsProvider(MusicProvider):
         return await get_episode_transcript(
             mass=self.mass,
             provider_instance_id=self.instance_id,
-            transcripts=transcripts.get(episode_uuid),
+            transcripts=transcripts.get(episode_uuid) if transcripts else None,
         )
 
     async def get_resume_position(
@@ -545,9 +551,9 @@ class PocketCastsProvider(MusicProvider):
 
     async def _get_episode_transcripts(
         self, prov_podcast_id: str
-    ) -> dict[str, list[dict[str, Any]]]:
+    ) -> dict[str, list[dict[str, Any]]] | None:
         """
-        Return the available transcripts per episode uuid, empty when they cannot be read.
+        Return the available transcripts per episode uuid, or None when they cannot be read.
 
         :param prov_podcast_id: The provider podcast id.
         """
@@ -562,7 +568,7 @@ class PocketCastsProvider(MusicProvider):
             RetriesExhausted,
         ) as err:
             self.logger.debug("Could not retrieve transcripts for %s: %s", prov_podcast_id, err)
-            return {}
+            return None
 
     @use_cache(3600 * 24)
     async def _fetch_show_notes(self, prov_podcast_id: str) -> dict[str, dict[str, Any]]:

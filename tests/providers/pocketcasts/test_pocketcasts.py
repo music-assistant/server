@@ -358,7 +358,7 @@ async def test_sync_flags_episodes_that_have_a_transcript(
 async def test_sync_survives_unavailable_transcripts(
     provider: PocketCastsProvider, client: AsyncMock
 ) -> None:
-    """A failing transcript lookup must not abort the episode listing."""
+    """A failing transcript lookup must not abort the listing, and leaves the flag unknown."""
     client.get_podcast_episodes.return_value = ("Podcast One", [_feed_episode(uuid="episode-1")])
     client.get_in_progress_episodes.return_value = []
     client.get_history.return_value = []
@@ -367,7 +367,7 @@ async def test_sync_survives_unavailable_transcripts(
     episodes = [episode async for episode in provider.get_podcast_episodes("podcast-1")]
 
     assert [episode.item_id for episode in episodes] == ["podcast-1:episode-1"]
-    assert episodes[0].metadata.has_transcript is False
+    assert episodes[0].metadata.has_transcript is None
 
 
 async def test_sync_survives_exhausted_transcript_retries(
