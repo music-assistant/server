@@ -954,7 +954,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 continue
             except ProviderUnavailableError as err:
                 self.logger.debug(
-                    "Provider %s unavailable for external ID lookup: %s",
+                    "Provider %s (%s) unavailable for external ID lookup: %s",
+                    prov.instance_id,
                     prov.domain,
                     err,
                 )
