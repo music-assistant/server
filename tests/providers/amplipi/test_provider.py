@@ -13,8 +13,9 @@ from music_assistant_models.errors import PlayerCommandFailed, SetupFailedError
 from pyamplipi.error import AmpliPiUnreachableError
 from zeroconf import IPVersion
 
-from music_assistant.providers.amplipi import setup_flow
+from music_assistant.providers.amplipi import setup, setup_flow
 from music_assistant.providers.amplipi.constants import (
+    CONF_HOST,
     DEFAULT_HOST,
     MA_STREAM_NAME,
     MA_STREAM_TYPE,
@@ -472,3 +473,66 @@ class TestHostDiscovery:
         """The provider builds "http://<host>/api", which needs a bracketed IPv6 literal."""
         session = _setup_session(_discovery_info(server="", address=None, v6_address="fd00::1"))
         assert await setup_flow._discover_host(session) == "[fd00::1]"
+
+
+class TestSetupFlowPrefill:
+    """Test that the collected host form is seeded from discovery."""
+
+    @staticmethod
+    def _session(setup_data: dict[str, str]) -> MagicMock:
+        """Build a session that submits whatever the form was prefilled with."""
+        session = MagicMock()
+        session.context.setup_data = setup_data
+        session.finish = AsyncMock(return_value={})
+
+        async def _form(entries: list[object], **_kwargs: object) -> dict[str, object]:
+            host = next(e for e in entries if e.key == CONF_HOST)  # type: ignore[attr-defined]
+            return {CONF_HOST: host.value}  # type: ignore[attr-defined]
+
+        session.form = AsyncMock(side_effect=_form)
+        return session
+
+    async def test_form_is_prefilled_with_the_discovered_host(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A fresh setup should offer the discovered controller rather than an empty field."""
+        monkeypatch.setattr(setup_flow, "_discover_host", AsyncMock(return_value="amplipi.local"))
+        session = self._session({})
+        await setup_flow.run_setup(session)
+        entries = session.form.await_args.args[0]
+        host = next(e for e in entries if e.key == CONF_HOST)
+        assert host.value == "amplipi.local"
+
+    async def test_a_known_host_is_not_rediscovered(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Reconfiguring keeps the host already collected, without searching the network."""
+        discover = AsyncMock(return_value="amplipi.local")
+        monkeypatch.setattr(setup_flow, "_discover_host", discover)
+        session = self._session({CONF_HOST: "10.0.0.5"})
+        await setup_flow.run_setup(session)
+        discover.assert_not_awaited()
+        entries = session.form.await_args.args[0]
+        host = next(e for e in entries if e.key == CONF_HOST)
+        assert host.value == "10.0.0.5"
+
+
+class TestModuleEntryPoints:
+    """Test the provider module setup / config entry hooks."""
+
+    async def test_setup_returns_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """setup() should construct and return an AmpliPiPlayerProvider."""
+        monkeypatch.setattr(
+            "music_assistant.providers.amplipi.AmpliPiPlayerProvider",
+            lambda *_args: "PROVIDER",
+        )
+        result = await setup(MagicMock(), MagicMock(), MagicMock())
+        assert result == "PROVIDER"  # type: ignore[comparison-overlap]
+
+    async def test_get_config_entries_has_no_setup_entries(self) -> None:
+        """The host moved to the setup flow, so the options entries no longer expose it."""
+        entries = await _provider().get_config_entries()
+        assert all(e.key != CONF_HOST for e in entries)
+
+    async def test_setup_flow_exposes_host(self) -> None:
+        """The setup flow must collect a required Host entry."""
+        host = next(e for e in setup_flow._ENTRIES if e.key == CONF_HOST)
+        assert host.required is True

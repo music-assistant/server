@@ -173,7 +173,8 @@ class DiscoveryController(CoreController):
             while True:
                 # Clear before scanning so events arriving during the scan are not lost
                 event.clear()
-                # Check cache for a matching entry
+                # Check cache for matching entries
+                candidates: list[str] = []
                 for mdns_name in set(self.aiozc.zeroconf.cache.cache):
                     if service_type_lower not in mdns_name or mdns_name == service_type_lower:
                         continue
@@ -188,13 +189,17 @@ class DiscoveryController(CoreController):
                         device_name = RAOP_MAC_PREFIX.sub("", device_part, count=1)
                         if device_name != name_filter_lower:
                             continue
-                    # Spend only what is left of the budget, so a stale record that no longer
-                    # answers cannot extend the wait past the caller's timeout.
+                    candidates.append(mdns_name)
+                for index, mdns_name in enumerate(candidates):
+                    # Share what is left of the budget between the candidates still to try, so a
+                    # stale record that never answers can neither push the wait past the caller's
+                    # timeout nor starve a live record behind it in the (unordered) cache.
                     remaining = deadline - asyncio.get_event_loop().time()
                     if remaining <= 0:
                         return None
+                    attempt_timeout = remaining / (len(candidates) - index)
                     info = AsyncServiceInfo(service_type, mdns_name)
-                    if await info.async_request(self.aiozc.zeroconf, remaining * 1000):
+                    if await info.async_request(self.aiozc.zeroconf, attempt_timeout * 1000):
                         return info
                 remaining = deadline - asyncio.get_event_loop().time()
                 if remaining <= 0:
