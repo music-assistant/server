@@ -1149,12 +1149,14 @@ def _hires_capable_audio() -> tuple[StreamsAudio, MagicMock]:
     return StreamsAudio(cast("Any", mass)), player
 
 
-@pytest.mark.parametrize(("source_bit_depth", "expected"), [(24, 24), (16, 16), (8, 16)])
+@pytest.mark.parametrize(
+    ("source_bit_depth", "expected"), [(24, 24), (16, 16), (8, 16), (20, 24), (32, 24)]
+)
 @pytest.mark.asyncio
 async def test_output_format_caps_non_track_media_at_source_depth(
     source_bit_depth: int, expected: int
 ) -> None:
-    """Radio follows the source bit depth, never going above it nor below 16."""
+    """Radio follows the source bit depth, rounded up to a container width."""
     audio, player = _hires_capable_audio()
 
     # 32 bit content depth: the internal PCM is float once normalization runs on radio

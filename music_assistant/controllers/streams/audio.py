@@ -1380,8 +1380,8 @@ class StreamsAudio:
         if media_type not in (MediaType.TRACK, MediaType.AUDIO_SOURCE, MediaType.FLOW_STREAM):
             # content_bit_depth is the internal PCM depth (32 bit float once normalization
             # or DSP runs), so cap on the source instead: a lossy station or TTS stays
-            # 16 bit while a hi-res radio stream keeps its own depth. 16 stays the floor,
-            # since the encoders and the content length headers assume at least that.
+            # 16 bit while a hi-res radio stream keeps its own depth. Round up to a
+            # container width, which is what the encoders and content length headers assume.
             source_container_bit_depth = (
                 16 if source_bit_depth <= 16 else 24 if source_bit_depth <= 24 else 32
             )
