@@ -31,9 +31,8 @@ BUMP_TITLE_PATTERN = re.compile(r"^(?:⬆️\s*)?(?:Update|Bump)\s+`?([^\s`]+)`?
 # that use them.
 INLINED_BUMP_DEPS = {"music-assistant-frontend", "music-assistant-models"}
 
-# Only the commit title identifies the PR a commit was merged through; the body
-# is never scanned because cherry-pick notes and "fixes #..." trailers reference
-# PRs that did not ship in this comparison.
+# Match the PR a commit was merged through against its title: GitHub merge commits
+# ("Merge pull request #123 from ...") and squash commits ("Fix thing (#123)").
 MERGE_COMMIT_PR_PATTERN = re.compile(r"Merge pull request #(\d+)")
 SQUASH_COMMIT_PR_PATTERN = re.compile(r"\(#(\d+)\)\s*$")
 
@@ -64,8 +63,10 @@ def get_tag_date(repo, tag_name) -> datetime | None:
         return None
 
 
-def get_pr_number_from_commit(message: str) -> int | None:
-    """Return the PR number a commit was merged through, or None if it can't be determined."""
+def get_pr_number_from_commit_message(message: str) -> int | None:
+    """Return the PR number a commit was merged through, or None if its title names none."""
+    # Only the title is considered: cherry-pick notes and "fixes #..." trailers in the
+    # body reference PRs that did not ship in this comparison.
     title = message.split("\n", 1)[0]
     match = MERGE_COMMIT_PR_PATTERN.search(title) or SQUASH_COMMIT_PR_PATTERN.search(title)
     return int(match.group(1)) if match else None
@@ -76,7 +77,7 @@ def get_released_pr_numbers(repo, merge_base_sha, previous_tag) -> set[int]:
     released = set()
     comparison = repo.compare(merge_base_sha, previous_tag)
     for commit in comparison.commits:
-        pr_number = get_pr_number_from_commit(commit.commit.message)
+        pr_number = get_pr_number_from_commit_message(commit.commit.message)
         if pr_number is not None:
             released.add(pr_number)
     return released
@@ -123,9 +124,12 @@ def get_prs_between_tags(repo, previous_tag, head_sha) -> list[Any]:
     pr_numbers = set()
 
     for commit in commits:
-        pr_number = get_pr_number_from_commit(commit.commit.message)
-        if pr_number is not None:
-            pr_numbers.add(pr_number)
+        pr_number = get_pr_number_from_commit_message(commit.commit.message)
+        if pr_number is None:
+            title = commit.commit.message.split("\n", 1)[0]
+            print(f"Warning: no PR number in commit title: {title}")  # noqa: T201
+            continue
+        pr_numbers.add(pr_number)
 
     print(f"Found {len(pr_numbers)} unique PRs")  # noqa: T201
 

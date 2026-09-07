@@ -136,7 +136,7 @@ def test_linear_release_filters_prs_merged_before_previous_tag(
     comparison = FakeComparison(
         commits=[
             FakeCommit("aaa", "Add feature (#200)"),
-            FakeCommit("bbb", "Improve thing\n\nfixes #150"),
+            FakeCommit("bbb", "Improve thing (#150)"),
         ],
     )
     repo = FakeRepo(
@@ -170,7 +170,10 @@ def test_pr_number_only_taken_from_commit_title_not_body(
     )
     repo = FakeRepo(
         comparisons={("2.10.1", "headsha"): comparison},
-        pulls={6171: FakePR(6171, datetime(2026, 2, 1, tzinfo=UTC))},
+        pulls={
+            6171: FakePR(6171, datetime(2026, 2, 1, tzinfo=UTC)),
+            5557: FakePR(5557, datetime(2026, 2, 1, tzinfo=UTC)),
+        },
         tag_commits={"2.10.1": tag_commit},
     )
 
@@ -198,7 +201,7 @@ def test_minor_release_with_diverged_previous_tag(
             FakeCommit("aaa", "Add feature X (#100)"),
             # Cherry-picked to stable and released as a 2.8.x patch: must be excluded
             FakeCommit("bbb", "Fix bug Y (#50)"),
-            # Body references an old PR merged before the branch point: must be excluded
+            # Only the title counts, so the PR referenced in the body is not included
             FakeCommit("ccc", "Improve Z (#120)\n\nfixes #10"),
         ],
         behind_by=3,
