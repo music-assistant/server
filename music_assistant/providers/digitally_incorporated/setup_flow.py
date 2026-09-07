@@ -1,4 +1,4 @@
-"""Setup flow for the Digitally Incorporated provider."""
+"""Setup flow for the Digitally Imported provider."""
 
 from __future__ import annotations
 
