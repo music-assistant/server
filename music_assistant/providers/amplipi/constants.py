@@ -16,11 +16,8 @@ AMPLIPI_API_ERRORS = (AmpliPiError, aiohttp.ClientError, TimeoutError, Validatio
 
 CONF_HOST = "host"
 
-# AmpliPi advertises itself over mDNS under its own service type, as an instance named
-# "amplipi-<mac>" (e.g. "amplipi-b8:27:eb:8f:8d:85._amplipi._tcp.local."), so the setup
-# flow matches on the type and takes whichever instance answers rather than on a fixed
-# name. The record's hostname is preferred over its IP address, which is typically a DHCP
-# lease and goes stale once it is reassigned.
+# AmpliPi advertises under its own service type, as an instance named "amplipi-<mac>"
+# (e.g. "amplipi-b8:27:eb:8f:8d:85._amplipi._tcp.local.").
 MDNS_TYPE = "_amplipi._tcp.local."
 DEFAULT_HOST = "amplipi.local"
 

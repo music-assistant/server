@@ -60,6 +60,7 @@ async def _discover_host(session: SetupSession) -> str:
     if discovery_info is None:
         LOGGER.debug("No %s service found on mDNS, offering %s", MDNS_TYPE, DEFAULT_HOST)
         return DEFAULT_HOST
+    # the hostname outlives the advertised address, which is typically a DHCP lease
     if hostname := (discovery_info.server or "").rstrip("."):
         LOGGER.debug("Discovered AmpliPi at %s", hostname)
         return hostname
