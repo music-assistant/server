@@ -847,21 +847,6 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             ]
         return []
 
-    async def _get_station_menu(
-        self,
-        station_id: str,
-        path_parts: list[str],
-    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Lookup the full schedule menu for a station."""
-        schedules = await self.client.stations.get_station_menu(station_id)
-        item_list: list[MediaItemType | ItemMapping | BrowseFolder] = []
-        if schedules and schedules.sub_items:
-            for folder in schedules.sub_items:
-                new_folder = await self._render_browse_item(folder, path_parts=path_parts)
-                if new_folder:
-                    item_list.append(new_folder)
-        return item_list
-
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch the recommendation menu folders, with items."""
         self.logger.debug("Getting recommendations from API")

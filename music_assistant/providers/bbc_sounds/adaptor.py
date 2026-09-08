@@ -914,16 +914,17 @@ class Adaptor:
                         type(converter),
                     )
                     raise ConversionError(msg)
-                msg = (
-                    "Successfully converted %s to %s",
-                    type(source_obj).__name__,
-                    type(result).__name__,
-                )
+                msg = "Successfully converted %s to %s"
+                args = [type(source_obj).__name__, type(result).__name__]
+
                 if hasattr(result, "item_id"):
-                    msg += (" item_id: %s", result.item_id)
+                    msg += " item_id: %s"
+                    args.append(result.item_id)
                 if hasattr(result, "urn"):
-                    msg += (" urn: %s", result.urn)
-                self.logger.debug(msg)
+                    msg += " urn: %s"
+                    args.append(result.urn)
+
+                self.logger.debug(msg, *args)
                 self.logger.log(VERBOSE_LOG_LEVEL, result)
                 return result
             self.logger.log(
