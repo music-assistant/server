@@ -535,11 +535,11 @@ class PodcastConverter(BaseConverter):
         """
         duration = self._get_attr(show, "duration.value")
         container = self._get_attr(show, "container")
-        if self.context.force_type == Track:
-            return True
+        if self.context.force_type:
+            return self.context.force_type is Track
         if duration and duration < _Constants.TRACK_DURATION_THRESHOLD:
             return True
-        return bool(not container)
+        return not container
 
     async def _convert_radio_show(self, show: RadioShow) -> MAPodcastEpisode | Track:
         duration = self._get_attr(show, "duration.value")
@@ -694,8 +694,9 @@ class BrowseConverter(BaseConverter):
         """Convert Category, Collection or Playlist to BrowseFolder."""
         if isinstance(item, Playlist):
             if not isinstance(self.context.path_parts, list):
-                raise ConversionError("Path not provided for Playlist item")
-            path = "/".join([*self.context.path_parts, item.item_id])
+                path = f"{self.context.provider_domain}://playlists/{item.item_id}"
+            else:
+                path = "/".join([*self.context.path_parts, item.item_id])
         else:
             path_prefix = "categories" if isinstance(item, Category) else "collections"
             path = f"{self.context.provider_domain}://{path_prefix}/{item.item_id}"
