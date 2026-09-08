@@ -222,3 +222,166 @@ async def test_prepare_next_gives_up_softly_on_a_capacity_failure() -> None:
     await mass.create_task.call_args.args[0]()
 
     assert next_item.available
+
+
+async def test_preload_waits_for_a_current_item_that_is_not_set_yet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Preload must wait out a briefly-unset current item instead of abandoning the queue.
+
+    Right after a queue replace the player still reports the previous queue's track, so
+    index_by_id() finds no index and current_item is transiently None. Giving up there leaves
+    nothing enqueued and playback stops at the end of the current track.
+    """
+    controller = PlayerQueuesController.__new__(PlayerQueuesController)
+    controller.logger = MagicMock()
+
+    buffered_item = _make_queue_item("q1", "buffered")
+    next_item = _make_queue_item("q1", "next")
+    queue = PlayerQueue(
+        queue_id="q1",
+        active=True,
+        display_name="Q1",
+        available=True,
+        items=2,
+        state=PlaybackState.PLAYING,
+        current_index=None,
+        index_in_buffer=0,
+        current_item=None,
+    )
+    controller._queue_data = {
+        "q1": PlayerQueueData(
+            queue=queue,
+            items=[buffered_item, next_item],
+            session_id="session-1",
+        )
+    }
+    controller.get_item = MagicMock(return_value=buffered_item)  # type: ignore[method-assign]
+    controller.load_next_queue_item = AsyncMock(return_value=next_item)  # type: ignore[method-assign]
+    controller._enqueue_next_item = MagicMock()  # type: ignore[method-assign]
+    mass = MagicMock()
+    controller.mass = mass
+
+    # the queue's current item appears a couple of ticks later, once the player stops
+    # reporting the replaced queue's track
+    slept = 0
+
+    async def _fake_sleep(_delay: float) -> None:
+        nonlocal slept
+        slept += 1
+        if slept == 2:
+            queue.current_item = buffered_item
+
+    monkeypatch.setattr(
+        "music_assistant.controllers.player_queues.stream_feeder.asyncio.sleep",
+        _fake_sleep,
+    )
+
+    controller._preload_next_item("q1", "buffered")
+    preload = mass.create_task.call_args.args[0]
+    await preload(mass.create_task.call_args.args[1])
+
+    controller.load_next_queue_item.assert_awaited_once_with("q1", "buffered")
+    controller._enqueue_next_item.assert_called_once_with("q1", next_item)
+
+
+async def test_preload_stops_once_a_queue_that_had_a_current_item_drains() -> None:
+    """A current item that disappears after being seen means the queue drained: stop waiting."""
+    controller = PlayerQueuesController.__new__(PlayerQueuesController)
+    controller.logger = MagicMock()
+
+    buffered_item = _make_queue_item("q1", "buffered")
+    other_item = _make_queue_item("q1", "other")
+    queue = PlayerQueue(
+        queue_id="q1",
+        active=True,
+        display_name="Q1",
+        available=True,
+        items=2,
+        state=PlaybackState.PLAYING,
+        current_index=0,
+        index_in_buffer=0,
+        # a different item than the buffered one, so the wait loop keeps going
+        current_item=other_item,
+    )
+    controller._queue_data = {
+        "q1": PlayerQueueData(
+            queue=queue,
+            items=[buffered_item, other_item],
+            session_id="session-1",
+        )
+    }
+    controller.get_item = MagicMock(return_value=buffered_item)  # type: ignore[method-assign]
+    controller.load_next_queue_item = AsyncMock()  # type: ignore[method-assign]
+    controller._enqueue_next_item = MagicMock()  # type: ignore[method-assign]
+    mass = MagicMock()
+    controller.mass = mass
+
+    async def _drain_then_sleep(_delay: float) -> None:
+        queue.current_item = None
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            "music_assistant.controllers.player_queues.stream_feeder.asyncio.sleep",
+            _drain_then_sleep,
+        )
+        controller._preload_next_item("q1", "buffered")
+        preload = mass.create_task.call_args.args[0]
+        await preload(mass.create_task.call_args.args[1])
+
+    controller.load_next_queue_item.assert_not_awaited()
+    controller._enqueue_next_item.assert_not_called()
+
+
+async def test_preload_gives_up_when_a_current_item_never_appears(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Exhausting the wait without ever seeing a current item means playback never started.
+
+    Falling through to the load would do provider I/O (with the throttler bypassed) and could
+    flip items to unavailable on a queue nothing is playing - give up instead.
+    """
+    controller = PlayerQueuesController.__new__(PlayerQueuesController)
+    controller.logger = MagicMock()
+
+    buffered_item = _make_queue_item("q1", "buffered")
+    queue = PlayerQueue(
+        queue_id="q1",
+        active=True,
+        display_name="Q1",
+        available=True,
+        items=1,
+        state=PlaybackState.IDLE,
+        current_index=None,
+        index_in_buffer=0,
+        current_item=None,
+    )
+    controller._queue_data = {
+        "q1": PlayerQueueData(
+            queue=queue,
+            items=[buffered_item],
+            session_id="session-1",
+        )
+    }
+    controller.get_item = MagicMock(return_value=buffered_item)  # type: ignore[method-assign]
+    controller.load_next_queue_item = AsyncMock()  # type: ignore[method-assign]
+    controller._enqueue_next_item = MagicMock()  # type: ignore[method-assign]
+    mass = MagicMock()
+    controller.mass = mass
+
+    async def _never_appears(_delay: float) -> None:
+        return
+
+    monkeypatch.setattr(
+        "music_assistant.controllers.player_queues.stream_feeder.asyncio.sleep",
+        _never_appears,
+    )
+
+    controller._preload_next_item("q1", "buffered")
+    preload = mass.create_task.call_args.args[0]
+    await preload(mass.create_task.call_args.args[1])
+
+    controller.load_next_queue_item.assert_not_awaited()
+    controller._enqueue_next_item.assert_not_called()

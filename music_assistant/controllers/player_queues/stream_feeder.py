@@ -200,24 +200,42 @@ class StreamFeederMixin(_PlayerQueuesBase):
         """
         queue = self._queue_data[queue_id].queue
 
+        if not (buffered_item := self.get_item(queue_id, item_id_in_buffer)):
+            # this should not happen, but guard anyways
+            return
+        if buffered_item.media_type == MediaType.RADIO or not buffered_item.duration:
+            # radio items or no duration, nothing to do
+            return
+
         async def _preload_streamdetails(item_id_in_buffer: str) -> None:
             try:
                 # wait for the item that was loaded in the buffer is the actually playing item
                 # this prevents a race condition when we preload the next item too soon
                 # while the player is actually preloading the previously enqueued item.
-                current_item = queue.current_item
-                if current_item is None:
-                    return  # guard
-                retries = max(120, int(current_item.duration or 0) + 10)
+                retries = max(120, int(buffered_item.duration or 0) + 10)
+                seen_current_item = False
                 for _ in range(retries):
-                    # the queue can drain to empty while we sleep (e.g. all remaining
-                    # items skipped as unplayable); stop waiting once it has no current item
                     current_item = queue.current_item
                     if current_item is None:
-                        return
+                        if seen_current_item:
+                            # the queue drained to empty while we waited (e.g. all remaining
+                            # items skipped as unplayable): nothing left to preload
+                            return
+                        # the queue has no current item YET: right after a queue replace the
+                        # player still reports the previous queue's track, which maps to no
+                        # index in the new queue. that is transient, so wait for it to appear.
+                        # abandoning the preload here would leave nothing enqueued on the
+                        # player and playback would stop at the end of the current track.
+                        await asyncio.sleep(1)
+                        continue
+                    seen_current_item = True
                     if current_item.queue_item_id == item_id_in_buffer:
                         break
                     await asyncio.sleep(1)
+                if not seen_current_item:
+                    # the wait ran out without a current item ever appearing, so playback
+                    # never actually started - don't load (and enqueue) a next item for it
+                    return
                 if next_item := await self.load_next_queue_item(queue_id, item_id_in_buffer):
                     self.logger.debug(
                         "Preloaded next item %s for queue %s",
@@ -229,13 +247,6 @@ class StreamFeederMixin(_PlayerQueuesBase):
 
             except QueueEmpty:
                 return
-
-        if not (current_item := self.get_item(queue_id, item_id_in_buffer)):
-            # this should not happen, but guard anyways
-            return
-        if current_item.media_type == MediaType.RADIO or not current_item.duration:
-            # radio items or no duration, nothing to do
-            return
 
         task_id = f"preload_next_item_{queue_id}"
         self.mass.create_task(
