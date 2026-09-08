@@ -153,18 +153,19 @@ class DiscoveryController(CoreController):
         self._schedule_periodic_upnp_discovery()
 
     async def async_find_mdns_service(
-        self, service_type: str, name_filter: str, timeout: float = 3.0
+        self, service_type: str, name_filter: str | None = None, timeout: float = 3.0
     ) -> AsyncServiceInfo | None:
         """
-        Find an mDNS service by exact device name match, checking cache first then waiting.
+        Find an mDNS service of the given type, checking cache first then waiting.
 
         :param service_type: The mDNS service type (e.g., "_raop._tcp.local.").
-        :param name_filter: Device name that must exactly match the service name portion.
+        :param name_filter: Device name that must exactly match the service name portion,
+            or None to accept whichever instance of the service type answers first.
         :param timeout: Maximum time to wait in seconds.
         """
         deadline = asyncio.get_event_loop().time() + timeout
         # Cache keys are lowercased DNS names, so we must match case-insensitively
-        name_filter_lower = name_filter.lower()
+        name_filter_lower = None if name_filter is None else name_filter.lower()
         service_type_lower = service_type.lower()
         event = asyncio.Event()
         self._mdns_waiters.append(event)
@@ -172,21 +173,38 @@ class DiscoveryController(CoreController):
             while True:
                 # Clear before scanning so events arriving during the scan are not lost
                 event.clear()
-                # Check cache for a matching entry
+                # Check cache for matching entries
+                candidates: list[str] = []
                 for mdns_name in set(self.aiozc.zeroconf.cache.cache):
                     if service_type_lower not in mdns_name or mdns_name == service_type_lower:
                         continue
-                    # Use exact matching on the device name portion to prevent a device named
-                    # "Foo" from cross-matching another device named "ATV Foo".
-                    # mDNS names are either "MAC@DeviceName.service.local." or "DeviceName.service.local."
-                    # Strip the MAC prefix only when present, so device names that legitimately
-                    # contain "@" are not truncated.
-                    device_part = mdns_name.split(".")[0]
-                    device_name = RAOP_MAC_PREFIX.sub("", device_part, count=1)
-                    if device_name != name_filter_lower:
-                        continue
+                    if name_filter_lower is not None:
+                        # Use exact matching on the device name portion to prevent a device named
+                        # "Foo" from cross-matching another device named "ATV Foo".
+                        # mDNS names are either "MAC@DeviceName.service.local."
+                        # or "DeviceName.service.local".
+                        # Strip the MAC prefix only when present, so device names that legitimately
+                        # contain "@" are not truncated.
+                        device_part = mdns_name.split(".")[0]
+                        device_name = RAOP_MAC_PREFIX.sub("", device_part, count=1)
+                        if device_name != name_filter_lower:
+                            continue
+                    candidates.append(mdns_name)
+                for index, mdns_name in enumerate(candidates):
+                    # Share what is left of the budget between the candidates still to try, so a
+                    # record that never answers can neither push the wait past the caller's
+                    # timeout nor starve a live one behind it in the (unordered) cache.
+                    remaining = deadline - asyncio.get_event_loop().time()
+                    if remaining <= 0:
+                        return None
+                    # An unfiltered lookup keeps one share back so a candidate that goes
+                    # unanswered cannot swallow the deadline an instance announcing itself
+                    # mid-request needs to be rescanned into. A named lookup wants one specific
+                    # record, which no rescan can produce sooner, so it spends the lot.
+                    rescan_share = 1 if name_filter_lower is None else 0
+                    attempt_timeout = remaining / (len(candidates) - index + rescan_share)
                     info = AsyncServiceInfo(service_type, mdns_name)
-                    if await info.async_request(self.aiozc.zeroconf, 3000):
+                    if await info.async_request(self.aiozc.zeroconf, attempt_timeout * 1000):
                         return info
                 remaining = deadline - asyncio.get_event_loop().time()
                 if remaining <= 0:

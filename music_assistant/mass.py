@@ -330,6 +330,12 @@ class MusicAssistant:
         # and must precede the provider load so its tombstone never flashes a banner.
         # TODO: remove after 2.11 release
         await cleanup_retired_local_audio(self)
+        # repair sidebar shortcuts left pointing at a provider instance that no longer exists:
+        # those never resolve, so the frontend cannot render them and the user cannot remove
+        # them. Reads the provider config, so it must not wait for the providers to load.
+        # Only needed for installs broken before provider removal started cleaning up.
+        # TODO: remove after 2.11 release
+        await self.music.cleanup_stale_provider_shortcuts()
         # load builtin providers (always needed, also in safe mode)
         await self._load_builtin_providers()
         # load regular providers (skip when in safe mode)
