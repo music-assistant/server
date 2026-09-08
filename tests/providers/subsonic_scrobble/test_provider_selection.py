@@ -7,9 +7,10 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import ProviderMapping, Track
+from music_assistant_models.media_items import Podcast, PodcastEpisode, ProviderMapping, Track
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
+from music_assistant.providers.opensubsonic.parsers import EP_CHAN_SEP
 from music_assistant.providers.opensubsonic.sonic_provider import OpenSonicProvider
 from music_assistant.providers.subsonic_scrobble import SubsonicScrobbleEventHandler
 
@@ -30,6 +31,33 @@ def _track() -> Track:
             ),
             ProviderMapping(
                 item_id="b-42", provider_domain="opensubsonic", provider_instance=INSTANCE_B
+            ),
+        },
+    )
+
+
+def _episode() -> PodcastEpisode:
+    """Build a library podcast episode whose Subsonic id carries the channel id (see parse_episode)."""
+    podcast = Podcast(
+        item_id="10",
+        provider="library",
+        name="Podcast",
+        provider_mappings={
+            ProviderMapping(
+                item_id="chan-1", provider_domain="opensubsonic", provider_instance=INSTANCE_B
+            ),
+        },
+    )
+    return PodcastEpisode(
+        item_id="7",
+        provider="library",
+        name="Episode",
+        podcast=podcast,
+        provider_mappings={
+            ProviderMapping(
+                item_id=f"chan-1{EP_CHAN_SEP}ep-7",
+                provider_domain="opensubsonic",
+                provider_instance=INSTANCE_B,
             ),
         },
     )
@@ -162,3 +190,82 @@ async def test_scrobble_reaches_the_users_instance(
     providers[INSTANCE_B].conn.scrobble.assert_awaited_once()
     providers[INSTANCE_A].conn.scrobble.assert_not_awaited()
     assert providers[INSTANCE_B].conn.scrobble.await_args.args[0] == "b-42"
+
+
+async def test_library_item_without_subsonic_mapping_skips_user_lookup(
+    handler: SubsonicScrobbleEventHandler, mass: Mock
+) -> None:
+    """No Subsonic mapping at all: nothing to report, and the user is not even looked up."""
+    mass.music.get_library_item_by_prov_id.return_value = Track(
+        item_id="1",
+        provider="library",
+        name="Track",
+        provider_mappings={
+            ProviderMapping(
+                item_id="f-1", provider_domain="filesystem_local", provider_instance="fs"
+            )
+        },
+    )
+
+    prov, item_id = await handler._get_subsonic_provider_and_item_id(
+        MediaType.TRACK, "library", "1", USER_ID
+    )
+
+    assert prov is None
+    assert item_id == "1"
+    mass.webserver.auth.get_user.assert_not_awaited()
+
+
+async def test_deleted_or_disabled_user_keeps_previous_behaviour(
+    handler: SubsonicScrobbleEventHandler, mass: Mock, providers: dict[str, Mock]
+) -> None:
+    """A user id that no longer resolves expresses no preference: any mapped instance, as before."""
+    mass.webserver.auth.get_user.return_value = None
+
+    prov, item_id = await handler._get_subsonic_provider_and_item_id(
+        MediaType.TRACK, "library", "1", "user-gone"
+    )
+
+    assert prov in providers.values()
+    assert item_id in {"a-42", "b-42"}
+    mass.webserver.auth.get_user.assert_awaited_once_with("user-gone")
+
+
+async def test_user_without_filter_keeps_previous_behaviour(
+    handler: SubsonicScrobbleEventHandler, mass: Mock, providers: dict[str, Mock]
+) -> None:
+    """A user with an empty provider filter is not restricted to any instance."""
+    mass.webserver.auth.get_user.return_value = _user_with_filter([])
+
+    prov, _ = await handler._get_subsonic_provider_and_item_id(
+        MediaType.TRACK, "library", "1", USER_ID
+    )
+
+    assert prov in providers.values()
+
+
+async def test_library_podcast_episode_id_drops_the_channel_prefix(
+    handler: SubsonicScrobbleEventHandler, mass: Mock, providers: dict[str, Mock]
+) -> None:
+    """A library episode is credited to the user's instance with the bare Subsonic episode id."""
+    mass.music.get_library_item_by_prov_id.return_value = _episode()
+    mass.webserver.auth.get_user.return_value = _user_with_filter([INSTANCE_B])
+
+    prov, item_id = await handler._get_subsonic_provider_and_item_id(
+        MediaType.PODCAST_EPISODE, "library", "7", USER_ID
+    )
+
+    assert prov is providers[INSTANCE_B]
+    assert item_id == "ep-7"
+
+
+async def test_provider_podcast_episode_id_drops_the_channel_prefix(
+    handler: SubsonicScrobbleEventHandler, providers: dict[str, Mock]
+) -> None:
+    """An episode played straight from an instance also loses the channel id before the report."""
+    prov, item_id = await handler._get_subsonic_provider_and_item_id(
+        MediaType.PODCAST_EPISODE, INSTANCE_A, f"chan-1{EP_CHAN_SEP}ep-3", USER_ID
+    )
+
+    assert prov is providers[INSTANCE_A]
+    assert item_id == "ep-3"

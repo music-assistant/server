@@ -131,6 +131,9 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
                 for mapping in library_item.provider_mappings
                 if mapping.provider_domain.startswith("opensubsonic")
             ]
+            if not sonic_mappings:
+                # no subsonic mapping has been found in library item, ignore...
+                return None, item_id
             # One library item can map to several instances of the same Subsonic server (one
             # instance per account of that server). provider_mappings is a set, so without a
             # preference the account that receives the scrobble is arbitrary; the instance in
@@ -159,7 +162,7 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
                 else:
                     ret_id = mapping.item_id
                 return prov, ret_id
-            # no subsonic mapping has been found in library item, ignore...
+            # mappings exist, but none of the allowed instances is loaded: nothing to report to
             return None, item_id
         if provider_instance_id_or_domain.startswith("opensubsonic"):
             # found a subsonic mapping, proceed...
