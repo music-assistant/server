@@ -68,8 +68,10 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.music.constants import (
     CACHE_CATEGORY_SEARCH_RESULTS,
+    CONF_DEFAULT_GENRES,
     CONF_DELETED_PROVIDERS,
     CONF_RESET_DB,
+    CONF_TAG_GENRES_AS_MAIN,
     CONF_TRACK_RECONCILIATION_CURSOR,
     CONF_TRACK_RECONCILIATION_RESCAN_DUE,
     DATABASE_CLEANUP_TASK_ID,
@@ -297,12 +299,49 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """Return all Config Entries for this core module (if any)."""
         return (
             ConfigEntry(
+                key=CONF_DEFAULT_GENRES,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                category="genres",
+            ),
+            ConfigEntry(
+                key=CONF_TAG_GENRES_AS_MAIN,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                category="genres",
+            ),
+            ConfigEntry(
                 key=CONF_RESET_DB,
                 type=ConfigEntryType.ACTION,
                 category="generic",
                 advanced=True,
             ),
         )
+
+    @property
+    def use_default_genres(self) -> bool:
+        """Return whether the built-in genre catalog is seeded and used for classification."""
+        return self.mass.config.get_raw_core_config_value(self.domain, CONF_DEFAULT_GENRES, True)
+
+    @property
+    def tag_genres_as_main(self) -> bool:
+        """Return whether genre names found in tags are imported as main genres."""
+        return self.mass.config.get_raw_core_config_value(
+            self.domain, CONF_TAG_GENRES_AS_MAIN, False
+        )
+
+    async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        await super().update_config(config, changed_keys)
+        genre_keys = {f"values/{CONF_DEFAULT_GENRES}", f"values/{CONF_TAG_GENRES_AS_MAIN}"}
+        if not genre_keys & changed_keys:
+            return
+        # both toggles change how incoming tags resolve, so the cached taxonomy snapshot
+        # the per-item sync resolves against must not survive the change
+        self.genres.clear_sync_lookup_cache()
+        if f"values/{CONF_DEFAULT_GENRES}" in changed_keys and self.use_default_genres:
+            # catalog was (re)enabled - seed whatever is missing
+            await self.genres.restore_default_genres()
 
     async def handle_config_action(
         self, action: str

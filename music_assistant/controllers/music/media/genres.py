@@ -663,6 +663,10 @@ class GenreController(MediaControllerBase[Genre]):
         """No provider matching for genres at this time."""
         return
 
+    def clear_sync_lookup_cache(self) -> None:
+        """Drop the cached per-taxonomy genre lookups used by sync_media_item_genres."""
+        self._sync_lookup_cache.clear()
+
     async def restore_default_genres(
         self, full_restore: bool = False, content_type: str | None = None
     ) -> list[Genre]:
@@ -695,10 +699,11 @@ class GenreController(MediaControllerBase[Genre]):
                 raise ValueError(msg)
 
         created_ids: list[int] = []
-        for taxonomy_content_type, mapping in taxonomies:
-            created_ids.extend(
-                await self._seed_default_genres(taxonomy_content_type, mapping, full_restore)
-            )
+        if self.mass.music.use_default_genres:
+            for taxonomy_content_type, mapping in taxonomies:
+                created_ids.extend(
+                    await self._seed_default_genres(taxonomy_content_type, mapping, full_restore)
+                )
 
         if created_ids:
             await self.mass.music.database.commit()
@@ -1413,6 +1418,7 @@ class GenreController(MediaControllerBase[Genre]):
         db = self.mass.music.database
         excl = DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION
         total_resolved = 0
+        tag_genres_as_main = self.mass.music.tag_genres_as_main
 
         for content_type, tables in GENRE_BUCKETS:
             # Build alias and primary-name lookups for this taxonomy. Primary-name match takes
@@ -1441,7 +1447,7 @@ class GenreController(MediaControllerBase[Genre]):
                     continue
                 if norm in primary_name_to_genre:
                     raw_name_to_genres[raw_name] = [primary_name_to_genre[norm]]
-                elif norm in alias_to_genre:
+                elif not tag_genres_as_main and norm in alias_to_genre:
                     raw_name_to_genres[raw_name] = alias_to_genre[norm]
                 else:
                     resolved_ids = await self._find_genres_for_alias(raw_name, content_type)
@@ -1611,6 +1617,7 @@ class GenreController(MediaControllerBase[Genre]):
         excl = DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION
         count_before = await db.get_count(gm)
         mapped_any = False
+        tag_genres_as_main = self.mass.music.tag_genres_as_main
 
         # Resolve and map each taxonomy (music / audiobook / podcast) separately so genre
         # names only resolve against — and new genres are created within — their own namespace.
@@ -1643,7 +1650,7 @@ class GenreController(MediaControllerBase[Genre]):
                     continue
                 if norm in primary_name_to_genre:
                     raw_name_to_genres[raw_name] = [primary_name_to_genre[norm]]
-                elif norm in alias_to_genre:
+                elif not tag_genres_as_main and norm in alias_to_genre:
                     raw_name_to_genres[raw_name] = alias_to_genre[norm]
                 else:
                     resolved_ids = await self._find_genres_for_alias(raw_name, content_type)
@@ -1949,6 +1956,7 @@ class GenreController(MediaControllerBase[Genre]):
             lookup = await self._build_sync_genre_lookup(content_type)
             self._sync_lookup_cache[cache_key] = lookup
         target_ids: set[int] = set()
+        tag_genres_as_main = self.mass.music.tag_genres_as_main
         for name in genre_names:
             if not (normalized := self._normalize_genre_name(name)):
                 continue
@@ -1958,7 +1966,7 @@ class GenreController(MediaControllerBase[Genre]):
             # _find_genres_for_alias, which the full path uses)
             if (genre_id := lookup.primary_name_to_genre.get(search_name)) is not None:
                 target_ids.add(genre_id)
-            elif genre_ids := lookup.alias_to_genre.get(search_name):
+            elif not tag_genres_as_main and (genre_ids := lookup.alias_to_genre.get(search_name)):
                 target_ids.update(genre_ids)
             elif search_name not in lookup.excluded_names:
                 return None
@@ -2012,7 +2020,7 @@ class GenreController(MediaControllerBase[Genre]):
         normalized = self._normalize_genre_name(name)
         if not normalized:
             return []
-        name_value, sort_name, search_name, search_sort_name = normalized
+        name_value, _, search_name, _ = normalized
         content_type_value = content_type.value if content_type else None
 
         async with self._db_add_lock:
@@ -2031,6 +2039,11 @@ class GenreController(MediaControllerBase[Genre]):
             )
             if primary:
                 return [int(primary[0]["item_id"])]
+
+            if self.mass.music.tag_genres_as_main:
+                # tags are imported as-is: skip alias resolution entirely so a name that is
+                # only claimed as someone else's alias becomes a genre of its own instead
+                return await self._create_genre(normalized, content_type)
 
             # Search genre_aliases JSON columns (case-insensitive, can match multiple)
             rows = await self.mass.music.database.get_rows_from_query(
@@ -2068,37 +2081,52 @@ class GenreController(MediaControllerBase[Genre]):
             if found_ids:
                 return found_ids
 
-            # Check if this name was deliberately excluded in this taxonomy before creating
-            excluded = await self.mass.music.database.get_rows_from_query(
-                f"SELECT item_id FROM {DB_TABLE_GENRES} "
-                "WHERE search_name = :search_name AND is_excluded = 1 "
-                "AND content_type IS :content_type",
-                {"search_name": search_name, "content_type": content_type_value},
-                limit=1,
-            )
-            if excluded:
-                return []
+            return await self._create_genre(normalized, content_type)
 
-            # No genre owns this alias — create a new one in this taxonomy
-            new_id = await self.mass.music.database.insert(
-                DB_TABLE_GENRES,
-                {
-                    "name": name_value,
-                    "sort_name": sort_name,
-                    "description": None,
-                    "favorite": 0,
-                    "metadata": serialize_to_json({}),
-                    "genre_aliases": serialize_to_json([name_value]),
-                    "play_count": 0,
-                    "last_played": 0,
-                    "search_name": search_name,
-                    "search_sort_name": search_sort_name,
-                    "timestamp_added": UNSET,
-                    "is_default": 0,
-                    "content_type": content_type_value,
-                },
-            )
-            return [new_id]
+    async def _create_genre(
+        self, normalized: tuple[str, str, str, str], content_type: MediaType | None
+    ) -> list[int]:
+        """
+        Create a new genre for an unclaimed name, unless the name was deliberately excluded.
+
+        Must be called with ``_db_add_lock`` held.
+
+        :param normalized: The name as returned by ``_normalize_genre_name``.
+        :param content_type: Taxonomy to create the genre in (None = music/general).
+        :return: A single-item list with the new genre id, or an empty list when excluded.
+        """
+        name_value, sort_name, search_name, search_sort_name = normalized
+        content_type_value = content_type.value if content_type else None
+
+        excluded = await self.mass.music.database.get_rows_from_query(
+            f"SELECT item_id FROM {DB_TABLE_GENRES} "
+            "WHERE search_name = :search_name AND is_excluded = 1 "
+            "AND content_type IS :content_type",
+            {"search_name": search_name, "content_type": content_type_value},
+            limit=1,
+        )
+        if excluded:
+            return []
+
+        new_id = await self.mass.music.database.insert(
+            DB_TABLE_GENRES,
+            {
+                "name": name_value,
+                "sort_name": sort_name,
+                "description": None,
+                "favorite": 0,
+                "metadata": serialize_to_json({}),
+                "genre_aliases": serialize_to_json([name_value]),
+                "play_count": 0,
+                "last_played": 0,
+                "search_name": search_name,
+                "search_sort_name": search_sort_name,
+                "timestamp_added": UNSET,
+                "is_default": 0,
+                "content_type": content_type_value,
+            },
+        )
+        return [new_id]
 
     async def _get_description(self, item_id: int) -> str | None:
         if db_row := await self.mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": item_id}):

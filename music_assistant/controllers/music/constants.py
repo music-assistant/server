@@ -9,6 +9,13 @@ DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 
+# whether the built-in (curated) genre catalog is seeded and used to classify
+# incoming genre tags through its aliases
+CONF_DEFAULT_GENRES: Final[str] = "default_genres"
+# whether every distinct genre name found in tags becomes a main genre of its own
+# instead of being folded into the genre that claims it as an alias
+CONF_TAG_GENRES_AS_MAIN: Final[str] = "tag_genres_as_main"
+
 DB_SCHEMA_VERSION: Final[int] = 58
 
 # tracks longer that this will not be included in radio mode

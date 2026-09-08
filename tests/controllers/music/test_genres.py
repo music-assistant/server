@@ -43,6 +43,10 @@ from music_assistant.constants import (
     DEFAULT_GENRE_MAPPING,
     DEFAULT_PODCAST_GENRE_MAPPING,
 )
+from music_assistant.controllers.music.constants import (
+    CONF_DEFAULT_GENRES,
+    CONF_TAG_GENRES_AS_MAIN,
+)
 from music_assistant.controllers.music.media.genres import GenreController
 from music_assistant.mass import MusicAssistant
 
@@ -2890,3 +2894,111 @@ class TestGenreIconMetadata:
             "music_assistant.controllers.music.media.genres.RESOURCES_DIR", tmp_path
         )
         assert GenreController._get_genre_icon_metadata("nope", MediaType.PODCAST) is None
+
+
+# Group P: genre import toggles (default catalog / tags as main genres)
+
+
+class TestGenreImportToggles:
+    """The two music config toggles that steer how tag genres are imported."""
+
+    @staticmethod
+    def _set_toggles(
+        mass: MusicAssistant,
+        genre_ctrl: GenreController,
+        *,
+        default_genres: bool = True,
+        tag_genres_as_main: bool = False,
+    ) -> None:
+        mass.config.set_raw_core_config_value("music", CONF_DEFAULT_GENRES, default_genres)
+        mass.config.set_raw_core_config_value("music", CONF_TAG_GENRES_AS_MAIN, tag_genres_as_main)
+        genre_ctrl.clear_sync_lookup_cache()
+
+    async def test_alias_folds_into_catalog_genre_by_default(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """With the defaults, a tag that is only a curated alias maps to its parent genre."""
+        self._set_toggles(mass, genre_ctrl)
+        track = await _add_test_track(mass, "Toggle Track Default")
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"Britcore"})
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT g.name FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} m "
+            f"JOIN {DB_TABLE_GENRES} g ON g.item_id = m.genre_id "
+            "WHERE m.media_id = :mid AND m.media_type = 'track'",
+            {"mid": int(track.item_id)},
+            limit=0,
+        )
+        assert [row["name"] for row in rows] == ["hip hop"]
+        assert not await mass.music.database.get_rows_from_query(
+            f"SELECT item_id FROM {DB_TABLE_GENRES} WHERE search_name = 'britcore'", limit=1
+        )
+
+    async def test_tags_as_main_creates_its_own_genre(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """With tags imported as main genres, the alias becomes a genre of its own."""
+        self._set_toggles(mass, genre_ctrl, tag_genres_as_main=True)
+        track = await _add_test_track(mass, "Toggle Track As Main")
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"Rap"})
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT g.name FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} m "
+            f"JOIN {DB_TABLE_GENRES} g ON g.item_id = m.genre_id "
+            "WHERE m.media_id = :mid AND m.media_type = 'track'",
+            {"mid": int(track.item_id)},
+            limit=0,
+        )
+        assert [row["name"] for row in rows] == ["Rap"]
+
+    async def test_tags_as_main_still_reuses_exact_genre(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A tag matching a genre's own name maps to it rather than duplicating it."""
+        self._set_toggles(mass, genre_ctrl, tag_genres_as_main=True)
+        track = await _add_test_track(mass, "Toggle Track Exact")
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"Hip Hop"})
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT item_id FROM {DB_TABLE_GENRES} WHERE search_name = 'hiphop'", limit=0
+        )
+        assert len(rows) == 1
+
+    async def test_tags_as_main_respects_exclusions(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """An excluded name is still not imported when tags are taken as-is."""
+        self._set_toggles(mass, genre_ctrl, tag_genres_as_main=True)
+        genre = await genre_ctrl.add_item_to_library(_make_genre("ToggleExcluded"))
+        await mass.music.database.update(
+            DB_TABLE_GENRES, {"item_id": int(genre.item_id)}, {"is_excluded": 1}
+        )
+        await mass.music.database.commit()
+        genre_ctrl.clear_sync_lookup_cache()
+        track = await _add_test_track(mass, "Toggle Track Excluded")
+        await genre_ctrl.sync_media_item_genres(MediaType.TRACK, track.item_id, {"ToggleExcluded"})
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_id = :mid AND media_type = 'track'",
+            {"mid": int(track.item_id)},
+            limit=0,
+        )
+        assert len(rows) == 0
+
+    async def test_catalog_disabled_seeds_nothing(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """A full restore with the catalog off leaves the curated genres out."""
+        self._set_toggles(mass, genre_ctrl, default_genres=False)
+        assert await genre_ctrl.restore_default_genres(full_restore=True) == []
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT item_id FROM {DB_TABLE_GENRES} WHERE is_default = 1", limit=1
+        )
+        assert not rows
+
+    async def test_enabling_catalog_reseeds(self, mass: MusicAssistant) -> None:
+        """Turning the catalog back on seeds the curated genres again."""
+        mass.config.set_raw_core_config_value("music", CONF_DEFAULT_GENRES, False)
+        await mass.music.genres.restore_default_genres(full_restore=True)
+        await mass.config.save_core_config("music", {CONF_DEFAULT_GENRES: True})
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT item_id FROM {DB_TABLE_GENRES} WHERE is_default = 1", limit=0
+        )
+        assert len(rows) > 1

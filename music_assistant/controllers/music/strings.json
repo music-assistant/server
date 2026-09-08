@@ -4,6 +4,14 @@
     "description": "Configuration of the core music (library) management module"
   },
   "config_entries": {
+    "default_genres": {
+      "label": "Use the built-in genre catalog",
+      "description": "Music Assistant ships with a curated list of genres and their aliases, and folds the genres it finds in your tags into it (a track tagged 'Rap' is filed under Hip-Hop). Turn this off to keep the catalog out of your library and let your own tags stand on their own."
+    },
+    "tag_genres_as_main": {
+      "label": "Import genres from tags as main genres",
+      "description": "Import every genre name found in your tags as a genre in its own right, instead of merging it into the genre that lists it as an alias. Existing genre mappings are left alone; only new scans and syncs are affected."
+    },
     "reset_db": {
       "label": "Reset library database",
       "description": "This will issue a full reset of the library database and trigger a full sync. Only use this option as a last resort if you are seeing issues with the library database."
