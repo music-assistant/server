@@ -1,8 +1,9 @@
 """Test BBC Sounds provider adaptor that converts auntie-sounds objects to Music Assistant objects."""
 
-from music_assistant_models.media_items import PodcastEpisode, Track
+from music_assistant_models.media_items import BrowseFolder, Track
+from music_assistant_models.media_items import PodcastEpisode as MAPodcastEpisode
 from sounds import Podcast
-from sounds.models import RadioShow
+from sounds.models import Playlist, RadioShow
 
 from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 from music_assistant.providers.bbc_sounds.constants import _Constants
@@ -41,7 +42,7 @@ class TestMenuLoading:
                 urn="urn:bbc:radio:brand:p07f4d9w",
             ),
         )
-        assert type(await provider.adaptor.new_object(show)) is PodcastEpisode
+        assert type(await provider.adaptor.new_object(show)) is MAPodcastEpisode
 
     async def test_long_radioshow_with_no_container_is_converted_to_track(
         self, provider: BBCSoundsProvider
@@ -54,3 +55,30 @@ class TestMenuLoading:
             pid="pid",
         )
         assert type(await provider.adaptor.new_object(show)) is Track
+
+    async def test_short_radio_show_with_podcast_container_can_be_forced_to_podcast_episode(
+        self, provider: BBCSoundsProvider
+    ) -> None:
+        """
+        Regression test for forced podcast episode.
+
+        Ensure a show radio show with a valid podcast container doesn't get converted to
+        a Track when it's force type is a podcast episode.
+        """
+        show = RadioShow(
+            id="id",
+            duration={"value": _Constants.TRACK_DURATION_THRESHOLD - 1},
+            titles={"entity_title": "Track name"},
+            pid="pid",
+            container=Podcast(id="podcast"),
+        )
+        assert type(await provider.adaptor.new_object(show, force_type=MAPodcastEpisode))
+
+    async def test_playlist_is_converted_to_browse_folder(
+        self, provider: BBCSoundsProvider
+    ) -> None:
+        """Test that a Playlist object is converted to a BrowseFolder by default."""
+        playlist = Playlist(
+            id="playlist",
+        )
+        assert type(await provider.adaptor.new_object(playlist)) is BrowseFolder
