@@ -34,6 +34,10 @@ With this repository cloned locally, execute the following commands in a termina
 * Make sure, that the python interpreter in VS Code is set to the newly generated venv.
 * Debug: Hit (Fn +) F5 to start Music Assistant locally (VS Code), or run `python -m music_assistant --log-level debug` from the command line
 * The pre-compiled UI of Music Assistant will be available at `localhost:8095` 🎉
+* When validating an FFmpeg upgrade locally, build the public base stage first and smoke-test it before touching the release pins:
+
+      docker build --target base-runtime -f Dockerfile.base -t music-assistant/base:ffmpeg-candidate .
+      docker run --rm music-assistant/base:ffmpeg-candidate ffmpeg -version
 
 NOTE: Always re-run the setup script after you fetch the latest code because requirements could have changed.
 

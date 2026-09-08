@@ -1,0 +1,148 @@
+name: FFmpeg candidate
+
+on:
+  pull_request:
+    branches:
+      - stable
+      - dev
+    paths:
+      - Dockerfile.base
+      - Dockerfile
+      - .python-version
+      - pyproject.toml
+      - requirements_all.txt
+      - music_assistant/providers/sendspin/manifest.json
+      - .github/workflows/build-base-image.yml
+      - .github/workflows/release.yml
+      - .github/workflows/ffmpeg.yml
+      - DEVELOPMENT.md
+      - music_assistant/helpers/**
+      - music_assistant/controllers/streams/smart_fades/**
+      - music_assistant/providers/smart_fades/**
+      - tests/helpers/**
+      - tests/conftest.py
+      - tests/controllers/streams/smart_fades/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  URLLIB3_NO_OVERRIDE: "1"
+
+jobs:
+  build-and-smoke-test:
+    name: Build and smoke-test base runtime on ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Check out code from GitHub
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Read Python version
+        id: python
+        run: echo "version=$(cat .python-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Build the public runtime stage
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile.base
+          target: base-runtime
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: music-assistant/base:ffmpeg-candidate-${{ matrix.arch }}
+          build-args: |
+            PYTHON_VERSION=${{ steps.python.outputs.version }}
+          cache-from: type=gha,scope=ffmpeg-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=ffmpeg-${{ matrix.arch }}
+
+      - name: Smoke-test the candidate image
+        run: |
+          docker run --rm -i \
+            --volume "$PWD:/work:ro" \
+            --workdir /work \
+            --env URLLIB3_NO_OVERRIDE=1 \
+            --entrypoint bash \
+            music-assistant/base:ffmpeg-candidate-${{ matrix.arch }} \
+            -s <<'EOF'
+          set -eu
+
+          apt-get update
+          apt-get install -y --no-install-recommends git build-essential libssl-dev pkg-config
+
+          python -m pip install uv
+          uv venv /opt/test-venv
+
+          uv pip install \
+            --python /opt/test-venv/bin/python \
+            --index-strategy unsafe-best-match \
+            --no-binary urllib3-future \
+            -r pyproject.toml --extra test -r requirements_all.txt
+
+          uv pip install \
+            --python /opt/test-venv/bin/python \
+            --force-reinstall \
+            --no-deps \
+            /usr/local/share/pyav-wheels/av*.whl
+
+          /opt/test-venv/bin/python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import re
+          import subprocess
+
+          import av
+
+          def parse_versions(command: list[str]) -> dict[str, tuple[int, int, int]]:
+              versions: dict[str, tuple[int, int, int]] = {}
+              for line in subprocess.check_output(command, text=True).splitlines():
+                  match = re.match(
+                      r"^(lib(?:av|sw)\w+)\s+\d+\.\s*\d+\.\s*\d+\s*/\s*(\d+)\.\s*(\d+)\.\s*(\d+)",
+                      line.strip(),
+                  )
+                  if match:
+                      versions[match.group(1)] = tuple(int(part) for part in match.groups()[1:])
+              return versions
+
+          ffmpeg_versions = parse_versions(["ffmpeg", "-version"])
+          ffprobe_versions = parse_versions(["ffprobe", "-version"])
+
+          with open("music_assistant/providers/sendspin/manifest.json") as manifest_file:
+              requirements = json.load(manifest_file)["requirements"]
+          required_av = next(req.removeprefix("av==") for req in requirements if req.startswith("av=="))
+
+          assert ffmpeg_versions, "FFmpeg did not report library versions"
+          assert ffmpeg_versions == ffprobe_versions
+          assert av.__version__ == required_av
+          assert dict(av.library_versions) == ffmpeg_versions
+
+          print("PyAV", av.__version__, "matches", ffmpeg_versions["libavcodec"])
+          PY
+
+          useradd -m tester
+          setpriv --reuid=tester --regid=tester --init-groups \
+            env HOME=/home/tester LD_PRELOAD=libstdc++.so.6 \
+            /opt/test-venv/bin/pytest -p numpy -p no:cacheprovider \
+            -n auto --dist loadfile --max-worker-restart=0 --durations 10 \
+            tests/helpers/test_ffmpeg.py \
+            tests/helpers/test_audio.py \
+            tests/helpers/test_dsp.py \
+            tests/helpers/test_tags.py \
+            tests/controllers/streams/smart_fades/test_filters.py \
+            tests/controllers/streams/smart_fades/test_render_integration.py
+          EOF

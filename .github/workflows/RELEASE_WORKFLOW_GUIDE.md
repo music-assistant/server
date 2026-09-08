@@ -26,6 +26,12 @@ early while an RC newer than the latest stable tag exists; dispatch the next sta
 release manually via the Create Release workflow instead. Nightlies require at least two
 commits after the previous nightly tag.
 
+For the FFmpeg 9 upgrade, validate the public `base-runtime` stage on amd64 and
+arm64 with `.github/workflows/ffmpeg.yml`, then publish base image `1.7.0` using
+Build base image from the same revision. Publish it before merging the beta/nightly
+pin changes or dispatching their releases. Stable and RC remain on `1.6.3` until
+the upgrade is promoted to the stable branch.
+
 ## Publishing sequence
 
 Only one release workflow runs at a time, and queued runs are never cancelled.
