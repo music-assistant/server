@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
+import pytest
 from music_assistant_models.enums import ContentType, MediaType, VolumeNormalizationMode
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
@@ -199,6 +200,56 @@ def test_a_mixed_multipart_stream_is_not_assumed_to_be_dsd() -> None:
 
     assert pcm.content_type == ContentType.PCM_S16LE
     assert pcm.bit_depth == 16
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/music/Album #1/track.dff",
+        "/music/Album ?/track.dff",
+    ],
+    ids=["hash", "question-mark"],
+)
+def test_dff_detection_preserves_url_delimiters_in_local_paths(path: str) -> None:
+    """URL delimiters are valid local filename characters and must remain intact."""
+    from music_assistant.helpers.audio import is_dsd_stream  # noqa: PLC0415
+
+    streamdetails = _streamdetails(
+        AudioFormat(content_type=ContentType.UNKNOWN, codec_type=ContentType.UNKNOWN),
+        None,
+    )
+    streamdetails.path = path
+
+    assert is_dsd_stream(streamdetails)
+
+
+def test_dff_detection_preserves_url_delimiters_in_multipart_paths() -> None:
+    """Multipart local DFF paths may also contain URL delimiter characters."""
+    from music_assistant.helpers.audio import is_dsd_stream  # noqa: PLC0415
+
+    streamdetails = _streamdetails(
+        AudioFormat(content_type=ContentType.UNKNOWN, codec_type=ContentType.UNKNOWN),
+        None,
+    )
+    streamdetails.path = [
+        MultiPartPath(path="/music/Album #1/disc1.dff"),
+        MultiPartPath(path="/music/Album ?/disc2.dff"),
+    ]
+
+    assert is_dsd_stream(streamdetails)
+
+
+def test_dff_detection_ignores_an_http_query_string() -> None:
+    """The HTTP resource path, rather than its query string, identifies the format."""
+    from music_assistant.helpers.audio import is_dsd_stream  # noqa: PLC0415
+
+    streamdetails = _streamdetails(
+        AudioFormat(content_type=ContentType.UNKNOWN, codec_type=ContentType.UNKNOWN),
+        None,
+    )
+    streamdetails.path = "https://example.com/track.dff?token=abc"
+
+    assert is_dsd_stream(streamdetails)
 
 
 def test_the_flow_depth_uses_ffmpegs_decoded_dsd_depth() -> None:

@@ -780,13 +780,15 @@ def is_dsd_stream(streamdetails: StreamDetails) -> bool:
     if is_dsd_audio_format(streamdetails.audio_format):
         return True
     path = streamdetails.path
-    if isinstance(path, str):
-        return urllib.parse.urlparse(path).path.lower().endswith(".dff")
-    return (
-        isinstance(path, list)
-        and bool(path)
-        and all(urllib.parse.urlparse(part.path).path.lower().endswith(".dff") for part in path)
-    )
+    if not path:
+        return False
+    paths = [path] if isinstance(path, str) else [part.path for part in path]
+    for file_path in paths:
+        parsed = urllib.parse.urlparse(file_path)
+        comparison_path = parsed.path if parsed.scheme in ("http", "https") else file_path
+        if not comparison_path.lower().endswith(".dff"):
+            return False
+    return True
 
 
 def decoded_pcm_format(streamdetails: StreamDetails) -> AudioFormat:
