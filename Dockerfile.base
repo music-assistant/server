@@ -176,7 +176,7 @@ RUN set -x \
 
 ##################################################################################################
 
-FROM python:${PYTHON_VERSION}-slim-trixie AS base-runtime
+FROM python:${PYTHON_VERSION}-slim-trixie
 
 # Ensure UTF-8 encoding across system
 ENV LANG=C.UTF-8
@@ -315,8 +315,6 @@ COPY --from=pyav-builder /wheels/ /usr/local/share/pyav-wheels/
 
 # Update shared library cache and verify FFmpeg
 RUN ldconfig && ffmpeg -version && ffprobe -version
-
-FROM base-runtime
 
 # Copy widevine client files to container
 RUN mkdir -p /usr/local/bin/widevine_cdm
