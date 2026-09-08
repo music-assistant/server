@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
+import weakref
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
@@ -13,6 +15,7 @@ from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.controllers.players import PlayerController
 
 QUEUE_ID = "q1"
 DURATION = 3600
@@ -25,6 +28,7 @@ def _controller(
     state: PlaybackState = PlaybackState.PLAYING,
     playback_speed: float = 1.0,
     duration: int | None = DURATION,
+    real_lock: bool = False,
 ) -> tuple[PlayerQueuesController, PlayerQueue, AsyncMock]:
     """Build a bare controller playing a single audiobook-sized item, with seek stubbed out."""
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
@@ -42,11 +46,25 @@ def _controller(
     queue_data.items = [item]
     ctrl._queue_data = {QUEUE_ID: queue_data}
     ctrl.mass = MagicMock()
-    ctrl.mass.players.get_player_lock = MagicMock()
+    # a MagicMock satisfies `async with` but serializes nothing, so the tests that care about
+    # overlapping presses ask for the real lock instead
+    ctrl.mass.players.get_player_lock = (
+        _lock_provider().get_player_lock if real_lock else MagicMock()
+    )
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
+    ctrl.on_player_update = Mock()  # type: ignore[method-assign]
     seek = AsyncMock()
     ctrl.seek = seek  # type: ignore[method-assign]
     return ctrl, queue, seek
+
+
+def _lock_provider() -> PlayerController:
+    """Return a bare players controller, carrying just enough state for its real lock."""
+    players = PlayerController.__new__(PlayerController)
+    players._player_command_locks = {}
+    players._task_held_locks = weakref.WeakKeyDictionary()
+    players.logger = MagicMock()
+    return players
 
 
 def _seeked_position(seek: AsyncMock) -> int:
@@ -103,6 +121,26 @@ async def test_skip_back_past_the_start_clamps_to_zero() -> None:
     await ctrl.skip(QUEUE_ID, -30)
 
     assert _seeked_position(seek) == 0
+
+
+async def test_repeated_presses_accumulate() -> None:
+    """Each press must start from where the previous one left off, not the same stale position."""
+    ctrl, queue, _seek = _controller(elapsed_time=100.0, anchor_age=0.0, real_lock=True)
+    positions: list[int] = []
+
+    async def _fake_seek(_queue_id: str, position: int) -> None:
+        positions.append(position)
+        # stand in for the stream rebuild, then anchor the queue the way play_index does
+        await asyncio.sleep(0.01)
+        queue.elapsed_time = position
+        queue.elapsed_time_last_updated = time.time()
+
+    ctrl.seek = AsyncMock(side_effect=_fake_seek)  # type: ignore[method-assign]
+
+    await asyncio.gather(*(ctrl.skip(QUEUE_ID, -10) for _ in range(3)))
+
+    # without the playback lock all three read ~100 before any of them writes, giving [90, 90, 90]
+    assert positions == [90, 80, 70]
 
 
 async def test_skip_requires_an_item_with_a_duration() -> None:
