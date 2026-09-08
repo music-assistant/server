@@ -80,19 +80,17 @@ class PlexGDMAdvertiser:
         try:
             self._listen_socket = self._create_listen_socket()
         except OSError as e:
-            LOGGER.error(f"Failed to create GDM listen socket: {e}")
+            LOGGER.error("Failed to create GDM listen socket: %s", e)
         else:
             self._listener_task = asyncio.create_task(self._listen_loop())
 
-        LOGGER.info(f"Started GDM advertising and listening at {self._local_ip}:{self.port}")
+        LOGGER.info("Started GDM advertising and listening at %s:%s", self._local_ip, self.port)
 
     async def stop(self) -> None:
         """Stop GDM advertising and listening."""
         self._running = False
 
-        # Announce our departure to the client register group
-        await asyncio.to_thread(self._send_bye)
-
+        # Stop the periodic advertiser and listener first so no HELLO can follow the BYE
         if self._broadcast_task:
             self._broadcast_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -102,6 +100,9 @@ class PlexGDMAdvertiser:
             self._listener_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._listener_task
+
+        # Announce our departure to the client register group
+        await asyncio.to_thread(self._send_bye)
 
         # Close reusable sockets
         if self._broadcast_socket:
@@ -154,7 +155,7 @@ class PlexGDMAdvertiser:
         try:
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
         except OSError as e:
-            LOGGER.debug(f"Could not join GDM multicast group: {e}")
+            LOGGER.debug("Could not join GDM multicast group: %s", e)
 
         sock.settimeout(1.0)  # 1 second timeout for checking _running
         return sock
@@ -200,7 +201,7 @@ class PlexGDMAdvertiser:
                     return
                 except Exception as e:
                     if self._running:
-                        LOGGER.debug(f"Error receiving GDM request: {e}")
+                        LOGGER.debug("Error receiving GDM request: %s", e)
 
         await asyncio.to_thread(listen)
 
@@ -215,7 +216,7 @@ class PlexGDMAdvertiser:
             self._listen_socket.sendto(self._response_message, addr)
 
         except Exception as e:
-            LOGGER.warning(f"Failed to send GDM response to {addr}: {e}")
+            LOGGER.warning("Failed to send GDM response to %s: %s", addr, e)
 
     async def _send_announcement(self) -> None:
         """Send a GDM announcement broadcast (uses pre-built message)."""
@@ -248,4 +249,4 @@ class PlexGDMAdvertiser:
             try:
                 self._broadcast_socket.sendto(message, target)
             except Exception as e:
-                LOGGER.debug(f"Failed to send GDM announcement to {target}: {e}")
+                LOGGER.debug("Failed to send GDM announcement to %s: %s", target, e)

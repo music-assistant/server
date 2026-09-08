@@ -11,6 +11,7 @@ Multiple instances can be created to expose multiple MA players to Plex.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
@@ -19,7 +20,7 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, EventType, ProviderFeature
 from music_assistant_models.errors import ActionUnavailable
 
-from music_assistant.helpers.util import is_port_in_use, select_free_port
+from music_assistant.helpers.util import format_ip_for_url, is_port_in_use, select_free_port
 from music_assistant.models.plugin import PluginProvider
 
 from .plextv import (
@@ -100,6 +101,7 @@ class PlexConnectProvider(PluginProvider):
         self._allocated_port: int | None = None
         self._plextv_pin: PlexPin | None = None
         self._plextv_device_id: str | None = None
+        self._plextv_register_task: asyncio.Task[None] | None = None
         self._stop_called: bool = False
         self._on_unload_callbacks: list[Callable[..., None]] = []
 
@@ -179,6 +181,14 @@ class PlexConnectProvider(PluginProvider):
         :param is_removed: Whether the provider is being removed.
         """
         self._stop_called = True
+
+        # Cancel any in-flight plex.tv registration so it cannot publish a stale URI
+        # after this instance is reloaded or removed
+        if self._plextv_register_task and not self._plextv_register_task.done():
+            self._plextv_register_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._plextv_register_task
+        self._plextv_register_task = None
 
         if is_removed:
             try:
@@ -337,7 +347,7 @@ class PlexConnectProvider(PluginProvider):
         # persist immediately (encrypted, survives without a separate save) and register now
         self._update_setup_data(CONF_PLEXTV_TOKEN, token)
         self._plextv_pin = None
-        self.mass.create_task(self._register_on_plextv())
+        self._plextv_register_task = self.mass.create_task(self._register_on_plextv())
         return None, None
 
     async def _plextv_unlink(self) -> tuple[str | None, list[str] | None]:
@@ -352,6 +362,17 @@ class PlexConnectProvider(PluginProvider):
         self._plextv_pin = None
         self._plextv_device_id = None
         return None, None
+
+    def _plextv_token(self) -> str | None:
+        """Return the stored plex.tv device token, if any."""
+        if token := cast("str | None", self.get_setup_value(CONF_PLEXTV_TOKEN)):
+            return token
+        # during provider removal the stored config is already deleted; fall back to the
+        # in-memory (encrypted) setup_data copy so best-effort deregistration still runs
+        value = self.config.setup_data.get(CONF_PLEXTV_TOKEN)
+        if isinstance(value, str) and value:
+            return self.mass.config.decrypt_string(value)
+        return None
 
     def _plextv_client(self) -> PlexTvClient:
         """Return a plex.tv client presenting this instance's player identity."""
@@ -368,7 +389,7 @@ class PlexConnectProvider(PluginProvider):
 
     async def _register_on_plextv(self) -> None:
         """Verify the plex.tv registration and (re)publish this player's connection URI."""
-        token = cast("str | None", self.get_setup_value(CONF_PLEXTV_TOKEN))
+        token = self._plextv_token()
         if not token:
             self.logger.debug(
                 "Not linked with plex.tv: this player will not be visible in the Plexamp "
@@ -388,7 +409,7 @@ class PlexConnectProvider(PluginProvider):
                 )
                 return
             self._plextv_device_id = device_id
-            uri = f"http://{self.mass.streams.publish_ip}:{self._allocated_port}"
+            uri = f"http://{format_ip_for_url(self.mass.streams.publish_ip)}:{self._allocated_port}"
             await client.publish_connection(token, device_id, uri)
             self.logger.info("Published plex.tv connection %s for Plexamp mobile discovery", uri)
         except PlexTvAuthError:
@@ -405,7 +426,7 @@ class PlexConnectProvider(PluginProvider):
 
     async def _unregister_from_plextv(self, *, swallow_errors: bool = True) -> None:
         """Remove this player from the plex.tv device registry."""
-        token = cast("str | None", self.get_setup_value(CONF_PLEXTV_TOKEN))
+        token = self._plextv_token()
         if not token:
             self.logger.debug("No plex.tv device token known, skipping deregistration")
             return
@@ -499,7 +520,7 @@ class PlexConnectProvider(PluginProvider):
             return
 
         # (Re)publish the plex.tv registration in the background (never blocks startup)
-        self.mass.create_task(self._register_on_plextv())
+        self._plextv_register_task = self.mass.create_task(self._register_on_plextv())
 
     async def _teardown_player_instance(self) -> None:
         """Tear down the Plex remote control instance."""
