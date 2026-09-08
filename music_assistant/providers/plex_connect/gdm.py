@@ -207,9 +207,6 @@ class PlexGDMAdvertiser:
                     if self._running:
                         LOGGER.debug("GDM listen socket closed unexpectedly")
                     return
-                except Exception as e:
-                    if self._running:
-                        LOGGER.debug("Error receiving GDM request: %s", e)
 
         await asyncio.to_thread(listen)
 
@@ -223,7 +220,7 @@ class PlexGDMAdvertiser:
             # reply from the listen socket so the source port is the GDM port
             self._listen_socket.sendto(self._response_message, addr)
 
-        except Exception as e:
+        except OSError as e:
             LOGGER.warning("Failed to send GDM response to %s: %s", addr, e)
 
     async def _send_announcement(self) -> None:
@@ -256,5 +253,5 @@ class PlexGDMAdvertiser:
         ):
             try:
                 self._broadcast_socket.sendto(message, target)
-            except Exception as e:
+            except OSError as e:
                 LOGGER.debug("Failed to send GDM announcement to %s: %s", target, e)
