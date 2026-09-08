@@ -916,12 +916,14 @@ class Adaptor:
             self.logger.debug(
                 "Converter %s could not convert %s.%s",
                 converter,
-                type(source_obj).__module,
-                type(source_obj).__name,
+                type(source_obj).__module__,
+                type(source_obj).__name__,
             )
 
         self.logger.warning(
-            "No converter found for type %s.%s", type(source_obj).__module, type(source_obj).__name
+            "No converter found for type %s.%s",
+            type(source_obj).__module__,
+            type(source_obj).__name__,
         )
         self.logger.debug(str(source_obj))
         return None
