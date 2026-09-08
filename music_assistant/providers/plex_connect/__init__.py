@@ -342,19 +342,16 @@ class PlexConnectProvider(PluginProvider):
 
     async def _plextv_unlink(self) -> tuple[str | None, list[str] | None]:
         """Unlink this player from plex.tv and forget the stored device token."""
-        status_key: str | None = None
-        status_params: list[str] | None = None
         try:
             await self._unregister_from_plextv(swallow_errors=False)
         except PlexTvAuthError:
             pass
         except (PlexTvError, aiohttp.ClientError, TimeoutError) as err:
-            status_key = "plextv_status_unreachable"
-            status_params = [str(err)]
+            return "plextv_status_unreachable", [str(err)]
         self._update_setup_data(CONF_PLEXTV_TOKEN, None)
         self._plextv_pin = None
         self._plextv_device_id = None
-        return status_key, status_params
+        return None, None
 
     def _plextv_client(self) -> PlexTvClient:
         """Return a plex.tv client presenting this instance's player identity."""

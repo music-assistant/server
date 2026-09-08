@@ -6,6 +6,7 @@ from collections.abc import Generator
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
 from music_assistant_models.errors import ActionUnavailable
 
@@ -18,6 +19,7 @@ from music_assistant.providers.plex_connect import (
 )
 from music_assistant.providers.plex_connect.plextv import (
     PlexPin,
+    PlexTvAuthError,
     PlexTvError,
     PlexTvPinExpiredError,
 )
@@ -71,6 +73,8 @@ def plextv_client() -> Generator[MagicMock]:
     client = MagicMock()
     client.create_pin = AsyncMock(return_value=PlexPin(id=12345, code="ABCD"))
     client.check_pin = AsyncMock(return_value="devtoken")
+    client.get_device_id = AsyncMock(return_value="222")
+    client.delete_device = AsyncMock()
     with patch.object(plex_connect, "PlexTvClient", return_value=client):
         yield client
 
@@ -191,15 +195,77 @@ async def test_complete_link_expired_resets(plextv_client: MagicMock) -> None:
     assert status.translation_key == "plextv_status_expired"
 
 
-async def test_unlink_clears_token() -> None:
+async def test_unlink_clears_token(plextv_client: MagicMock) -> None:
     """The unlink action clears the stored token and returns to the intro state."""
     provider = _make_provider(token="devtoken")
 
     entries = await provider.handle_config_action(CONF_ACTION_UNLINK)
 
+    plextv_client.delete_device.assert_awaited_once_with("devtoken", "222")
     assert provider.config.setup_data["plextv_token"] is None
     assert _entry(entries, "plextv_link_intro")
     assert _entry(entries, CONF_ACTION_START_LINK)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        PlexTvError("Device removal failed"),
+        aiohttp.ClientError("Connection failed"),
+        TimeoutError("Request timed out"),
+    ],
+)
+@pytest.mark.parametrize("failure_stage", ["get_device_id", "delete_device"])
+async def test_failed_unlink_preserves_credentials(
+    plextv_client: MagicMock, error: Exception, failure_stage: str
+) -> None:
+    """A failed deregistration keeps the link available for retry."""
+    provider = _make_provider(token="devtoken")
+    device_id = "222" if failure_stage == "delete_device" else None
+    provider._plextv_device_id = device_id
+    getattr(plextv_client, failure_stage).side_effect = error
+
+    entries = await provider.handle_config_action(CONF_ACTION_UNLINK)
+
+    assert provider.config.setup_data["plextv_token"] == "devtoken"
+    assert provider._plextv_device_id == device_id
+    provider.mass.config.set.assert_not_called()
+    assert _entry(entries, CONF_ACTION_UNLINK)
+    assert _entry(entries, CONF_ACTION_START_LINK) is None
+    status = _entry(entries, "plextv_link_status")
+    assert status is not None
+    assert status.translation_key == "plextv_status_unreachable"
+    assert status.translation_params == [str(error)]
+
+
+async def test_unlink_can_retry_after_failure(plextv_client: MagicMock) -> None:
+    """A successful retry removes the device and clears its credentials."""
+    provider = _make_provider(token="devtoken")
+    provider._plextv_device_id = "222"
+    plextv_client.delete_device.side_effect = [aiohttp.ClientError("Offline"), None]
+
+    await provider.handle_config_action(CONF_ACTION_UNLINK)
+    entries = await provider.handle_config_action(CONF_ACTION_UNLINK)
+
+    assert plextv_client.delete_device.await_count == 2
+    assert provider.config.setup_data["plextv_token"] is None
+    assert provider._plextv_device_id is None
+    assert _entry(entries, CONF_ACTION_START_LINK)
+    assert _entry(entries, "plextv_link_status") is None
+
+
+async def test_unlink_clears_revoked_token(plextv_client: MagicMock) -> None:
+    """A revoked token can be forgotten so the player can be linked again."""
+    provider = _make_provider(token="devtoken")
+    provider._plextv_device_id = "222"
+    plextv_client.delete_device.side_effect = PlexTvAuthError("Token revoked")
+
+    entries = await provider.handle_config_action(CONF_ACTION_UNLINK)
+
+    assert provider.config.setup_data["plextv_token"] is None
+    assert provider._plextv_device_id is None
+    assert _entry(entries, CONF_ACTION_START_LINK)
+    assert _entry(entries, "plextv_link_status") is None
 
 
 async def test_unknown_action_raises() -> None:
