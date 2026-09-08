@@ -2057,6 +2057,7 @@
   "provider.plex_connect.config_entries.unlink.action_label": "Unlink from plex.tv",
   "provider.plex_connect.config_entries.unlink.description": "Forget the plex.tv device token for this player. The device entry can also be removed from your Plex account's authorized devices.",
   "provider.plex_connect.config_entries.unlink.label": "Unlink from plex.tv",
+  "provider.plex_connect.errors.plextv_unlink_required": "Unlink from plex.tv in this provider's settings before changing the player or Plex music provider.",
   "provider.plex_connect.manifest.description": "Makes a Music Assistant player appear as a device in the official Plex apps.",
   "provider.plex_connect.setup_flow.abort.no_players": "No players are available yet. Add a player to Music Assistant first, then try again.",
   "provider.plex_connect.setup_flow.abort.no_plex_provider": "No Plex music provider is loaded. Make sure your Plex provider is set up and working, then try again.",

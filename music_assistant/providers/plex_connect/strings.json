@@ -87,6 +87,9 @@
       "no_players": "No players are available yet. Add a player to Music Assistant first, then try again."
     }
   },
+  "errors": {
+    "plextv_unlink_required": "Unlink from plex.tv in this provider's settings before changing the player or Plex music provider."
+  },
   "manifest": {
     "description": "Makes a Music Assistant player appear as a device in the official Plex apps."
   }
