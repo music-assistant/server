@@ -823,8 +823,8 @@ class Adaptor:
             if converter.can_convert(source_obj):
                 try:
                     stream_details = await converter.get_stream_details(source_obj)
-                except AttributeError as e:
-                    self.logger.error(f"Error converting object: {e!s}")
+                except AttributeError:
+                    self.logger.exception("Error converting object %s", source_obj)
                     return None
                 self.provider.logger.debug(
                     "Successfully converted %s to %s",
