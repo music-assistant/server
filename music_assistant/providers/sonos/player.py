@@ -108,6 +108,9 @@ class SonosPlayer(Player):
         # Clock-seeded (nanoseconds), so a recreated player never reuses a
         # generation the speaker may still hold items under
         self.cloud_queue_item_generation = time.time_ns()
+        # the speaker's playback session, mirrored here because the aiosonos group object
+        # that normally holds it is rebuilt from scratch on every regroup and reconnect
+        self._playback_session_id: str | None = None
         self._announcement_media: PlayerMedia | None = None
 
     @property
@@ -281,6 +284,7 @@ class SonosPlayer(Player):
             return
         await self.group_controller.stop()
         self.cloud_queue_id = None
+        self._playback_session_id = None
         self._announcement_media = None
         self.update_state()
 
@@ -366,6 +370,7 @@ class SonosPlayer(Player):
             )
         # for now always reset the active session
         self.group_controller.active_session_id = None
+        self._playback_session_id = None
         # what is playing stays described until its replacement is loaded below: there are
         # awaits in between, and an empty window served in that gap stops the current queue
         self._announcement_media = None
@@ -389,6 +394,7 @@ class SonosPlayer(Player):
                 # admitting there is none - its session was reset above either way
                 self._announcement_media = None
                 raise
+            self._remember_playback_session()
             return
 
         if not self.flow_mode and media.source_id and media.queue_item_id:
@@ -406,6 +412,7 @@ class SonosPlayer(Player):
                 # admitting there is none - its session was reset above either way
                 self.cloud_queue_id = None
                 raise
+            self._remember_playback_session()
             # only now that the speaker accepted the load: it keeps playing the old
             # audio until the cutover, but it will not act on the load while its
             # current stream connection is still open, and a response blocked in a
@@ -443,6 +450,7 @@ class SonosPlayer(Player):
         if media.image_url:
             container["imageUrl"] = media.image_url
         await self.group_controller.play_stream_url(stream_url, container)
+        self._remember_playback_session()
         # same post-success sweep as the cloud-queue branch: a forced-flow queue
         # (overlay) streams through here and its replaced session's response must
         # die now that the speaker accepted the new stream
@@ -459,6 +467,7 @@ class SonosPlayer(Player):
         """
         # whatever the source turns out to be, it is not the cloud queue any more
         self.cloud_queue_id = None
+        self._playback_session_id = None
         self._announcement_media = None
         if source == SOURCE_LINE_IN:
             await self.group_controller.load_line_in(play_on_completion=True)
@@ -533,20 +542,24 @@ class SonosPlayer(Player):
             self.logger.debug("Not refreshing the cloud queue: not connected to the speaker")
             return
         group = self.client.player.group
-        if group is None or not group.active_session_id:
-            # the session id lives in aiosonos and does not survive a reconnect or regroup,
-            # while the speaker's session (and its cached queue window) plays on - from here
-            # the stream request gate is what keeps a stale cached track off the speaker
+        # aiosonos rebuilds its group objects from scratch on a reconnect and on every
+        # regroup (grouping in the Sonos app included), losing the session id with them,
+        # while the speaker's session - and the queue window it cached - plays on. Falling
+        # back to the id we remembered keeps the nudge reaching the speaker, instead of
+        # leaving it to play out a stale window until it re-reads the queue on its own.
+        session_id = (group.active_session_id if group else None) or self._playback_session_id
+        if not session_id:
             self.logger.debug("Not refreshing the cloud queue: no active playback session known")
             return
         try:
-            await self.client.api.playback_session.refresh_cloud_queue(group.active_session_id)
+            await self.client.api.playback_session.refresh_cloud_queue(session_id)
         except FailedCommand as err:
             # an app outside MA can take the session over, leaving us with a session id the
             # speaker no longer knows. Only a nudge is lost: it reads a live window regardless.
+            self._playback_session_id = None
             self.logger.debug("Could not refresh the cloud queue: %s", err)
         else:
-            self.logger.debug("Refreshed the cloud queue for session %s", group.active_session_id)
+            self.logger.debug("Refreshed the cloud queue for session %s", session_id)
 
     async def build_cloud_queue_window(
         self,
@@ -985,6 +998,11 @@ class SonosPlayer(Player):
         if self.client:
             await self.client.disconnect()
         self.logger.debug("Disconnected from player API")
+
+    def _remember_playback_session(self) -> None:
+        """Store the session the speaker just accepted a load in, for later commands."""
+        group = self.client.player.group
+        self._playback_session_id = group.active_session_id if group else None
 
     async def _player_media_for_speaker(self, queue_item: QueueItem) -> PlayerMedia:
         """Return the media for a queue item, with its stream URL resolved for this player."""

@@ -92,6 +92,7 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     player.cloud_queue_id = QUEUE_ID
     player.cloud_queue_version = 1.0
     player.cloud_queue_item_generation = 0
+    player._playback_session_id = None
     player._announcement_media = None
     return player, queues
 
@@ -236,6 +237,36 @@ async def test_refresh_without_a_session_only_bumps_the_version() -> None:
     client.api.playback_session.refresh_cloud_queue.assert_not_awaited()
 
 
+async def test_refresh_uses_the_remembered_session_after_a_regroup() -> None:
+    """Test a regroup that resets the group object does not silence the refresh."""
+    player, _ = _make_player([_make_queue_item("track0")])
+    client = MagicMock()
+    # aiosonos builds a fresh group object on a regroup or reconnect, so the id it holds
+    # is gone while the speaker keeps playing our cloud queue in that very session
+    client.player.group.active_session_id = None
+    client.api.playback_session.refresh_cloud_queue = AsyncMock()
+    player.client = client
+    player._playback_session_id = "session1"
+
+    await player.refresh_cloud_queue()
+
+    client.api.playback_session.refresh_cloud_queue.assert_awaited_once_with("session1")
+
+
+async def test_refresh_prefers_the_session_the_group_reports() -> None:
+    """Test a live session id wins over the one remembered from an earlier load."""
+    player, _ = _make_player([_make_queue_item("track0")])
+    client = MagicMock()
+    client.player.group.active_session_id = "session2"
+    client.api.playback_session.refresh_cloud_queue = AsyncMock()
+    player.client = client
+    player._playback_session_id = "session1"
+
+    await player.refresh_cloud_queue()
+
+    client.api.playback_session.refresh_cloud_queue.assert_awaited_once_with("session2")
+
+
 async def test_stop_forgets_the_cloud_queue() -> None:
     """Test a stopped speaker is no longer signalled about that queue."""
     player, _ = _make_player([_make_queue_item("track0")])
@@ -252,6 +283,7 @@ async def test_stop_forgets_the_cloud_queue() -> None:
     await player.stop()
 
     assert player.cloud_queue_id is None
+    assert player._playback_session_id is None
     assert player._announcement_media is None
 
 
@@ -268,6 +300,8 @@ async def test_refresh_survives_a_session_the_speaker_forgot() -> None:
     await player.refresh_cloud_queue()
 
     client.api.playback_session.refresh_cloud_queue.assert_awaited_once()
+    # the speaker does not know this session, so it is not worth remembering
+    assert player._playback_session_id is None
 
 
 def _make_provider() -> SonosPlayerProvider:
