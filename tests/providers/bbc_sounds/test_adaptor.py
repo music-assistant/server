@@ -56,6 +56,24 @@ class TestMenuLoading:
         )
         assert type(await provider.adaptor.new_object(show)) is Track
 
+    async def test_short_radio_show_with_podcast_container_can_be_forced_to_podcast_episode(
+        self, provider: BBCSoundsProvider
+    ) -> None:
+        """
+        Regression test for forced podcast episode.
+
+        Ensure a show radio show with a valid podcast container doesn't get converted to
+        a Track when it's force type is a podcast episode.
+        """
+        show = RadioShow(
+            id="id",
+            duration={"value": _Constants.TRACK_DURATION_THRESHOLD},
+            titles={"entity_title": "Track name"},
+            pid="pid",
+            container=Podcast(id="podcast"),
+        )
+        assert type(await provider.adaptor.new_object(show, force_type=MAPodcastEpisode))
+
     async def test_playlist_is_converted_to_browse_folder(
         self, provider: BBCSoundsProvider
     ) -> None:
