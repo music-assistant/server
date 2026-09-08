@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ExternalID
+from music_assistant_models.enums import ExternalID, ProviderFeature, ProviderType
+from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import Album, Artist, ProviderMapping, UniqueList
 
 from music_assistant.constants import DB_TABLE_EXTERNAL_ID_LOOKUP
@@ -201,6 +203,40 @@ async def test_get_library_item_by_external_id(music: MusicController) -> None:
     assert await music.tracks.get_library_item_by_external_id(ISRC, ExternalID.BARCODE) is None
     assert await music.tracks.get_library_item_by_external_id("something-else") is None
     assert await music.tracks.get_library_item_by_external_id(ISRC[:-1]) is None
+
+
+async def test_get_item_by_external_id_provider_fallback_logs_instance(
+    music: MusicController, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Provider fallback resolves a remote match and logs the failed instance ID for diagnostics."""
+    unavailable = MagicMock()
+    unavailable.type = ProviderType.MUSIC
+    unavailable.available = True
+    unavailable.domain = "spotify"
+    unavailable.instance_id = "spotify_1"
+    unavailable.supported_features = {ProviderFeature.TRACK_BY_EXTERNAL_ID}
+    unavailable.get_track_by_external_id = AsyncMock(
+        side_effect=ProviderUnavailableError("offline")
+    )
+
+    remote = MagicMock()
+    remote.type = ProviderType.MUSIC
+    remote.available = True
+    remote.domain = "spotify"
+    remote.instance_id = "spotify_2"
+    remote.supported_features = {ProviderFeature.TRACK_BY_EXTERNAL_ID}
+    remote_track = create_track("spotify_2", "track_remote")
+    remote.get_track_by_external_id = AsyncMock(return_value=remote_track)
+
+    music.mass._providers = {"spotify_1": unavailable, "spotify_2": remote}
+
+    result = await music.tracks.get_item_by_external_id(ISRC, ExternalID.ISRC)
+
+    assert result is not None
+    assert result.item_id == remote_track.item_id
+    assert "spotify_1" in caplog.text
+    unavailable.get_track_by_external_id.assert_awaited_once()
+    remote.get_track_by_external_id.assert_awaited_once()
 
 
 async def test_external_id_lookup_rows_follow_item_updates(music: MusicController) -> None:

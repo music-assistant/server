@@ -14,21 +14,29 @@ from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from deezer_python_gql import DeezerGQLClient, GraphQLClientError
+from deezer_python_gql import DeezerGQLClient, GraphQLClientAuthError, GraphQLClientError
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.models.music_provider import MusicProvider, sync_run_state
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .browse import DeezerBrowseManager
 from .constants import (
     CONF_PERSONAL_METADATA_VERSION,
+    DECRYPT_KEY_ERROR,
+    DECRYPT_KEY_LENGTH,
     PERSONAL_ALBUM_PREFIX,
     PERSONAL_METADATA_VERSION,
 )
-from .gw_client import DeezerGWError, GWClient
+from .gw_client import (
+    DeezerGWAuthError,
+    DeezerGWError,
+    DeezerGWNoSubscriptionError,
+    GWClient,
+)
 from .media import DeezerMediaManager
 from .streaming import DeezerStreamingManager
 
@@ -118,8 +126,37 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
             self.user_id = me.id
             self.gw_client = GWClient(self.mass.http_session, arl_token)
             await self.gw_client.setup()
+        except DeezerGWNoSubscriptionError as err:
+            self.logger.error("Deezer account has no streamable subscription: %s", err)
+            raise LoginFailed(
+                "This Deezer account has no subscription that Music Assistant can stream from.",
+                translation_key="no_subscription",
+                translation_owner=self.translation_owner,
+            ) from err
+        except DeezerGWAuthError as err:
+            self.logger.error("Deezer GW authentication failed: %s", err)
+            raise LoginFailed(
+                "Deezer could not establish a playback session for this account.",
+                translation_key="gw_no_session",
+                translation_owner=self.translation_owner,
+            ) from err
+        except GraphQLClientAuthError as err:
+            self.logger.error("Deezer ARL authentication failed: %s", err)
+            raise LoginFailed(
+                "Deezer could not authenticate with the supplied ARL token.",
+                translation_key="arl_rejected",
+                translation_owner=self.translation_owner,
+            ) from err
         except (GraphQLClientError, DeezerGWError) as err:
-            raise LoginFailed("Deezer authentication failed. Please check your ARL token.") from err
+            self.logger.error("Deezer authentication failed: %s", err)
+            raise LoginFailed(
+                "Deezer authentication failed. See the Music Assistant log for the reason.",
+                translation_key="auth_failed",
+                translation_owner=self.translation_owner,
+            ) from err
+
+        if len(app_var("deezer_decrypt_key")) != DECRYPT_KEY_LENGTH:
+            self.logger.warning(DECRYPT_KEY_ERROR)
 
         self.media_manager = DeezerMediaManager(self)
         self.browse_manager = DeezerBrowseManager(self)
