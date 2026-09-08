@@ -29,7 +29,7 @@ _NON_CUE_BLOCKS = ("WEBVTT", "NOTE", "STYLE", "REGION")
 # of the next. Short repeats are left alone because they are usually really said twice.
 _MIN_REPEATED_PREFIX = 15
 # words a cue could not have been spoken in its own time span did not come from the audio.
-# Fast speech runs to roughly 25 characters a second.
+# Fast speech runs to roughly 25 characters a second, so 40 leaves headroom for real speech.
 _MAX_SPOKEN_CHARS_PER_SECOND = 40
 
 
