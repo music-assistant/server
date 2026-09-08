@@ -93,6 +93,9 @@ class PlexGDMAdvertiser:
 
     async def stop(self) -> None:
         """Stop GDM advertising and listening."""
+        # concurrent teardown paths (player removal, provider unload) may both call this
+        if not self._running:
+            return
         self._running = False
 
         # Stop the periodic advertiser and listener first so no HELLO can follow the BYE
