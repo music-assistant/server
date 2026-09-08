@@ -337,7 +337,7 @@ def _is_plex_lyrics_json(content: str) -> bool:
     """
     try:
         data = json.loads(content)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return False
     return isinstance(data, dict) and isinstance(data.get("MediaContainer"), dict)
 
@@ -350,7 +350,7 @@ def _lyrics_from_plex_json(content: str) -> tuple[str, bool] | None:
     """
     try:
         data = json.loads(content)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
     if not isinstance(data, dict):
         return None
