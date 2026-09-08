@@ -287,6 +287,8 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         if dispatch_menu == "stations":
             return await self._browse_stations(path_parts)
         if dispatch_menu == "playlists":
+            if len(path_parts) < 3:
+                raise KeyError("Invalid subpath")
             return await self._get_playlist(path_parts[2])
         if (
             dispatch_menu != ""
