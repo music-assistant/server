@@ -826,6 +826,7 @@ class StreamsController(CoreController):
                 content_sample_rate=pcm_format.sample_rate,
                 content_bit_depth=pcm_format.bit_depth,
                 media_type=queue_item.media_type,
+                source_bit_depth=queue_item.streamdetails.audio_format.bit_depth,
             )
 
             # prepare request, add some DLNA/UPNP compatible headers
@@ -1236,6 +1237,11 @@ class StreamsController(CoreController):
             content_sample_rate=flow_pcm_format.sample_rate,
             content_bit_depth=flow_pcm_format.bit_depth,
             media_type=start_queue_item.media_type,
+            source_bit_depth=(
+                start_queue_item.streamdetails.audio_format.bit_depth
+                if start_queue_item.streamdetails
+                else 16
+            ),
         )
         # work out ICY metadata support
         icy_preference = self.mass.config.get_raw_player_config_value(
