@@ -1,27 +1,28 @@
 {
   "config_entries": {
     "ym_instance": {
-      "label": "Yandex Music source",
-      "description": "Borrow OAuth credentials from a linked Yandex Music provider instance, or use your own credentials (QR-scan login or manual token paste). Per-instance own credentials let you bind separate players to separate Yandex accounts without sharing tokens with a Yandex Music provider.",
-      "options": {
-        "__own__": "Use own credentials (QR or token)"
-      }
-    },
-    "remember_session": {
-      "label": "Remember session (auto-refresh token)",
-      "description": "Store a long-lived session token (x_token) alongside the music token so this plugin can refresh on its own when the token expires. Disable to keep only the short-lived music token (re-QR required on expiry)."
+      "label": "Yandex Music account",
+      "description": "The configured Yandex Music provider instance whose account Ynison uses. To use another Yandex account, configure another Yandex Music instance first."
     },
     "mass_player_id": {
       "label": "[%key:common::config_entries::mass_player_id::label%]",
-      "description": "The Music Assistant player connected to this Ynison plugin. When playback is directed to this device in the Yandex Music app, the audio will play on the selected player."
+      "description": "The Music Assistant player connected to this Ynison plugin. Its current name is advertised in Yandex Music, and playback is always directed to this player unless manual switching is enabled."
     },
     "allow_player_switch": {
       "label": "Allow manual player switching",
       "description": "When enabled, you can select this plugin as a source on any player to switch playback to that player. When disabled, playback is fixed to the configured default player."
     },
+    "stream_mode": {
+      "label": "Stream mode",
+      "description": "Stable keeps one PCM format for uninterrupted playback. Maximum quality (dynamic) follows each track's native PCM and restarts the source only when the effective player format changes. Dynamic mode requires Yandex Music Superb quality and Auto output format settings.",
+      "options": {
+        "stable": "Stable (continuous)",
+        "max_quality_dynamic": "Maximum quality (dynamic)"
+      }
+    },
     "output_sample_rate": {
       "label": "Output sample rate",
-      "description": "Sample rate for PCM output to the player. 'Auto' selects 44.1 kHz for lossy or 48 kHz for lossless sources.",
+      "description": "Sample rate for PCM output to the player. 'Auto' starts at 44.1 kHz and adapts to the real track format and target player when available.",
       "options": {
         "auto": "Auto (from source quality)",
         "44100": "44100 Hz (CD)",
@@ -44,21 +45,16 @@
   },
   "setup_flow": {
     "user": {
-      "title": "Yandex Music account",
-      "description": "Choose the Yandex Music account and the target player."
-    },
-    "scan_qr": {
-      "title": "Scan to sign in",
-      "description": "Scan the QR code with the Yandex app and confirm the login. A fresh code is shown automatically if it expires.",
-      "progress_text": "Waiting for you to scan and confirm in the Yandex app..."
+      "title": "Configure Yandex Music Connect",
+      "description": "Choose the linked Yandex Music account and the target Music Assistant player. The player's current name is published to the Yandex Music app."
     },
     "abort": {
-      "no_players": "No players are available yet. Add a player to Music Assistant first, then try again."
+      "no_players": "No players are available yet. Add a player to Music Assistant first, then try again.",
+      "missing_dependency": "Configure and authenticate a Yandex Music provider before adding or reconfiguring Ynison."
     }
   },
   "errors": {
-    "no_music_token": "Login succeeded but Yandex returned no music token. Please try again.",
-    "no_connected_player": "No connected Music Assistant player is configured. Run the setup again to select one."
+    "no_connected_player": "No connected Music Assistant player is configured. Run setup again to select one."
   },
   "manifest": {
     "description": "Makes a Music Assistant player appear as a device in the Yandex Music app via the Ynison protocol."

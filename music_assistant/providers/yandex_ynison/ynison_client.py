@@ -9,13 +9,15 @@ import random
 import secrets
 import time
 import uuid
+from collections import deque
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, ResourceTemporarilyUnavailable
 
 if TYPE_CHECKING:
     from ya_passport_auth import SecretStr
@@ -27,10 +29,17 @@ from .constants import (
     RECONNECT_DELAYS,
     WS_CONNECT_TIMEOUT,
     WS_HEARTBEAT,
+    YNISON_DEVICE_SERVER_DISCONNECT,
     YNISON_ORIGIN,
     YNISON_RECONNECT_ERROR_CODES,
     YNISON_REDIRECT_URL,
     YNISON_STATE_PATH,
+)
+from .queue_model import (
+    YnisonQueueView,
+    insert_shuffle_indices,
+    move_shuffle_index,
+    remove_shuffle_index,
 )
 
 
@@ -47,6 +56,10 @@ class YnisonSendError(ConnectionError):
     Inherits from ``ConnectionError`` so existing broad transport-error
     handlers continue to catch it.
     """
+
+
+class YnisonEmptyRedirectError(ConnectionError):
+    """Raised when the redirector accepts a token but returns no connection ticket."""
 
 
 def make_version_block(device_id: str) -> dict[str, Any]:
@@ -104,6 +117,17 @@ class YnisonDeviceInfo:
     type: str = DEVICE_TYPE_WEB
     app_name: str = DEFAULT_APP_NAME
     app_version: str = DEFAULT_APP_VERSION
+
+
+@dataclass(frozen=True)
+class _StatusWatermark:
+    """Record one successfully sent playing-status update."""
+
+    track_id: str
+    progress_ms: int
+    duration_ms: int
+    paused: bool
+    sent_at: float
 
 
 @dataclass
@@ -199,6 +223,7 @@ class YnisonClient:
         self._stop_event = asyncio.Event()
         self._connected = False
         self._has_connected_once = False
+        self._status_watermarks: deque[_StatusWatermark] = deque(maxlen=8)
 
         # Latest state from server
         self.state = YnisonState()
@@ -332,7 +357,18 @@ class YnisonClient:
                 },
             },
         }
-        await self._send(msg, strict=strict)
+        if await self._send(msg, strict=strict):
+            track_id = self.state.current_track_id
+            if track_id is not None:
+                self._status_watermarks.append(
+                    _StatusWatermark(
+                        track_id=track_id,
+                        progress_ms=progress_ms,
+                        duration_ms=duration_ms,
+                        paused=paused,
+                        sent_at=time.monotonic(),
+                    )
+                )
 
     async def update_active_device(self, device_id: str) -> None:
         """Request playback transfer to this device."""
@@ -416,6 +452,134 @@ class YnisonClient:
         self._logger.debug("Sending player state: %s", json.dumps(msg)[:500])
         await self._send(msg, strict=strict)
 
+    async def add_playables_next(self, playables: list[dict[str, Any]]) -> None:
+        """Insert playables immediately after the current queue position."""
+        player_state = deepcopy(self.state.player_state)
+        queue = player_state.get("player_queue")
+        if not isinstance(queue, dict):
+            raise ValueError("Current player state has no queue")  # noqa: TRY004
+        playable_list = queue.get("playable_list")
+        if not isinstance(playable_list, list):
+            raise ValueError("Current player queue has no playable list")  # noqa: TRY004
+        current_index = queue.get("current_playable_index")
+        if not isinstance(current_index, int) or not 0 <= current_index < len(playable_list):
+            raise ValueError("Current playable index is out of range")
+
+        shuffle = queue.get("shuffle_optional")
+        order = list(YnisonQueueView(queue).order)
+        playable_list[current_index + 1 : current_index + 1] = deepcopy(playables)
+        if isinstance(shuffle, dict) and isinstance(shuffle.get("playable_indices"), list):
+            shuffle["playable_indices"] = insert_shuffle_indices(
+                order,
+                current_index + 1,
+                len(playables),
+                after_current=current_index,
+            )
+        queue["version"] = make_version_block(self.device_id)
+        await self.update_player_state(player_state, strict=True)
+
+    async def add_playables_last(self, playables: list[dict[str, Any]]) -> None:
+        """Append playables to the current queue."""
+        player_state = deepcopy(self.state.player_state)
+        queue = player_state.get("player_queue")
+        if not isinstance(queue, dict):
+            raise ValueError("Current player state has no queue")  # noqa: TRY004
+        playable_list = queue.get("playable_list")
+        if not isinstance(playable_list, list):
+            raise ValueError("Current player queue has no playable list")  # noqa: TRY004
+        current_index = queue.get("current_playable_index")
+        if not isinstance(current_index, int) or not (
+            (current_index == -1 and not playable_list) or 0 <= current_index < len(playable_list)
+        ):
+            raise ValueError("Current playable index is out of range")
+
+        shuffle = queue.get("shuffle_optional")
+        order = list(YnisonQueueView(queue).order)
+        playable_list.extend(deepcopy(playables))
+        if isinstance(shuffle, dict) and isinstance(shuffle.get("playable_indices"), list):
+            shuffle["playable_indices"] = insert_shuffle_indices(
+                order, len(playable_list) - len(playables), len(playables)
+            )
+        queue["version"] = make_version_block(self.device_id)
+        await self.update_player_state(player_state, strict=True)
+
+    async def remove_queue_position(self, position: int) -> None:
+        """Remove an original playable-list position from the current queue."""
+        player_state = deepcopy(self.state.player_state)
+        queue = player_state.get("player_queue")
+        if not isinstance(queue, dict):
+            raise ValueError("Current player state has no queue")  # noqa: TRY004
+        playable_list = queue.get("playable_list")
+        if not isinstance(playable_list, list):
+            raise ValueError("Current player queue has no playable list")  # noqa: TRY004
+        if not isinstance(position, int) or not 0 <= position < len(playable_list):
+            raise ValueError("Queue position is out of range")
+        current_index = queue.get("current_playable_index")
+        if not isinstance(current_index, int) or not 0 <= current_index < len(playable_list):
+            raise ValueError("Current playable index is out of range")
+
+        shuffle = queue.get("shuffle_optional")
+        order = list(YnisonQueueView(queue).order)
+        logical_successor = None
+        if position == current_index:
+            logical_position = order.index(current_index)
+            if logical_position + 1 < len(order):
+                logical_successor = order[logical_position + 1]
+        playable_list.pop(position)
+        if position < current_index:
+            queue["current_playable_index"] = current_index - 1
+        elif position == current_index:
+            if logical_successor is not None:
+                queue["current_playable_index"] = (
+                    logical_successor - 1 if logical_successor > position else logical_successor
+                )
+            else:
+                queue["current_playable_index"] = min(current_index, len(playable_list) - 1)
+            status = player_state.get("status")
+            if isinstance(status, dict):
+                status["progress_ms"] = "0"
+                status["duration_ms"] = "0"
+                status["version"] = make_version_block(self.device_id)
+        if isinstance(shuffle, dict) and isinstance(shuffle.get("playable_indices"), list):
+            shuffle["playable_indices"] = remove_shuffle_index(order, position)
+        queue["version"] = make_version_block(self.device_id)
+        await self.update_player_state(player_state, strict=True)
+
+    async def move_queue_position(self, from_position: int, to_position: int) -> None:
+        """Move a playable between original playable-list positions."""
+        player_state = deepcopy(self.state.player_state)
+        queue = player_state.get("player_queue")
+        if not isinstance(queue, dict):
+            raise ValueError("Current player state has no queue")  # noqa: TRY004
+        playable_list = queue.get("playable_list")
+        if not isinstance(playable_list, list):
+            raise ValueError("Current player queue has no playable list")  # noqa: TRY004
+        if (
+            not isinstance(from_position, int)
+            or not isinstance(to_position, int)
+            or not 0 <= from_position < len(playable_list)
+            or not 0 <= to_position < len(playable_list)
+        ):
+            raise ValueError("Queue position is out of range")
+        current_index = queue.get("current_playable_index")
+        if not isinstance(current_index, int) or not 0 <= current_index < len(playable_list):
+            raise ValueError("Current playable index is out of range")
+
+        shuffle = queue.get("shuffle_optional")
+        order = list(YnisonQueueView(queue).order)
+        playable = playable_list.pop(from_position)
+        playable_list.insert(to_position, playable)
+        if current_index == from_position:
+            queue["current_playable_index"] = to_position
+        elif from_position < current_index <= to_position:
+            queue["current_playable_index"] = current_index - 1
+        elif to_position <= current_index < from_position:
+            queue["current_playable_index"] = current_index + 1
+        if isinstance(shuffle, dict) and isinstance(shuffle.get("playable_indices"), list):
+            shuffle["playable_indices"] = move_shuffle_index(order, from_position, to_position)
+        queue["version"] = make_version_block(self.device_id)
+        await self.update_player_state(player_state, strict=True)
+
     async def send_full_state(
         self,
         player_state: dict[str, Any] | None = None,
@@ -446,30 +610,46 @@ class YnisonClient:
             "activity_interception_type": "DO_NOT_INTERCEPT_BY_DEFAULT",
         }
 
-    def _classify_state_as_echo(self, incoming_ps: dict[str, Any]) -> bool:
+    def _classify_state_as_echo(self, incoming_ps: dict[str, Any]) -> tuple[bool, bool]:
         """
-        Return True iff `incoming_ps` is our own broadcast round-tripping.
+        Classify an inbound state as an echo and whether its status is stale.
 
-        Uses author check on BOTH queue.version.device_id and
-        status.version.device_id — only an update where every block was
-        authored by us is treated as echo. AND-logic is critical: a peer
-        queue change combined with our own status echo would otherwise
-        be silently swallowed (RC-1 in v1.9.1 live testing).
-
-        Why only `device_id` and not `version` value: Ynison's protobuf
-        comment marks `version.version` as `random(int64)`. The server
-        re-stamps it after every `update_playing_status` (we send blank,
-        server fills in). Comparing inbound `version` against an outbound
-        watermark is therefore meaningless — our own restamped echo can
-        carry any value. `device_id` is unique and preserved end-to-end,
-        so authorship is the only reliable echo signal.
+        Full state broadcasts require both queue and status authorship. Ynison
+        normalizes playing-status heartbeats to an empty/zero version, so a
+        status-only response may instead match one recent successful send.
         """
         own_id = self._device_info.device_id
         queue_block = (incoming_ps.get("player_queue") or {}).get("version") or {}
         status_block = (incoming_ps.get("status") or {}).get("version") or {}
         queue_is_ours = queue_block.get("device_id") == own_id
         status_is_ours = status_block.get("device_id") == own_id
-        return queue_is_ours and status_is_ours
+        if queue_is_ours and status_is_ours:
+            return True, False
+        incoming_queue = incoming_ps.get("player_queue")
+        queue_changed = (
+            incoming_queue is not None
+            and incoming_queue != self.state.player_state.get("player_queue")
+        )
+        if queue_changed or status_block != {
+            "device_id": "",
+            "version": "0",
+            "timestamp_ms": "0",
+        }:
+            return False, False
+
+        status = incoming_ps.get("status") or {}
+        current_track = self.state.current_track_id
+        now = time.monotonic()
+        for watermark in reversed(self._status_watermarks):
+            if (
+                now - watermark.sent_at <= 2.0
+                and current_track == watermark.track_id
+                and abs(int(status.get("progress_ms", -2)) - watermark.progress_ms) <= 1
+                and int(status.get("duration_ms", -1)) == watermark.duration_ms
+                and status.get("paused") is watermark.paused
+            ):
+                return True, True
+        return False, False
 
     # ------------------------------------------------------------------
     # Connection internals
@@ -575,7 +755,7 @@ class YnisonClient:
         session_id = int(data.get("session_id", 0))
 
         if not host or not ticket:
-            raise ConnectionError("Redirector response missing host or ticket")
+            raise YnisonEmptyRedirectError("Redirector response missing host or ticket")
 
         self._logger.debug("Ynison redirect: host=%s, session_id=%d", host, session_id)
         return host, ticket, session_id
@@ -730,20 +910,29 @@ class YnisonClient:
             # messages, and stored state is round-tripped via send_full_state
             # (on reconnect) and update_player_state (on queue edits).
             normalize_player_state_timestamps(incoming_ps)
+            is_echo, suppress_status = self._classify_state_as_echo(incoming_ps)
             existing_ps = self.state.player_state
             for key, value in incoming_ps.items():
+                if suppress_status and key == "status":
+                    continue
                 existing_ps[key] = value
-            # Echo detection: a state is our echo iff BOTH the queue and
-            # status version-blocks are authored by our `device_id`. See
-            # `_classify_state_as_echo` for why version values are not
-            # part of the check (Ynison documents `version.version` as
-            # `random(int64)` and the server re-stamps it).
-            self.state.last_update_is_echo = self._classify_state_as_echo(incoming_ps)
+            self.state.last_update_is_echo = is_echo
         else:
             self.state.last_update_is_echo = False
-        self.state.active_device_id = data.get(
-            "active_device_id_optional", self.state.active_device_id
+        incoming_status_author = (
+            incoming_ps.get("status", {}).get("version", {}).get("device_id")
+            if isinstance(incoming_ps, dict)
+            else None
         )
+        if (
+            "active_device_id_optional" not in data
+            and incoming_status_author == YNISON_DEVICE_SERVER_DISCONNECT
+        ):
+            self.state.active_device_id = None
+        else:
+            self.state.active_device_id = data.get(
+                "active_device_id_optional", self.state.active_device_id
+            )
         self.state.devices = data.get("devices", self.state.devices)
 
         new_track = self.state.current_track_id
@@ -781,6 +970,7 @@ class YnisonClient:
         reconnection; a reliable long-running plugin never permanently gives up.
         """
         attempt = 0
+        refresh_attempted = False
         while not self._stop_event.is_set():
             delay = RECONNECT_DELAYS[min(attempt, len(RECONNECT_DELAYS) - 1)]
             # Add ±20% jitter to prevent thundering-herd reconnects
@@ -813,21 +1003,28 @@ class YnisonClient:
                 await self._connect_state(host, ticket, session_id)
                 self._logger.info("Ynison reconnected successfully")
                 return
-            except LoginFailed:
+            except LoginFailed, YnisonEmptyRedirectError:
                 self._logger.warning("Ynison reconnect attempt %d failed: auth error", attempt)
-                if self._on_auth_failure:
+                if self._on_auth_failure and not refresh_attempted:
                     try:
                         new_token = await self._on_auth_failure()
                         self._token = new_token
+                        refresh_attempted = True
                         self._logger.info("Token refreshed, will retry with new token")
-                    except Exception:
-                        self._logger.warning("Token refresh failed", exc_info=True)
+                    except ResourceTemporarilyUnavailable:
+                        self._logger.warning(
+                            "Token refresh temporarily unavailable, will retry after backoff",
+                            exc_info=True,
+                        )
+                    except LoginFailed:
+                        refresh_attempted = True
+                        self._logger.warning("Token refresh permanently failed", exc_info=True)
             except asyncio.CancelledError:
                 return
             except Exception:
                 self._logger.warning("Ynison reconnect attempt %d failed", attempt, exc_info=True)
 
-    async def _send(self, msg: dict[str, Any], *, strict: bool = False) -> None:
+    async def _send(self, msg: dict[str, Any], *, strict: bool = False) -> bool:
         """
         Send a JSON message to the state service (thread-safe).
 
@@ -842,15 +1039,17 @@ class YnisonClient:
                 self._logger.debug("Cannot send to Ynison — not connected")
                 if strict:
                     raise YnisonSendError("Ynison WebSocket not connected")
-                return
+                return False
             try:
                 await self._ws.send_str(json.dumps(msg))
+                return True
             except (ConnectionError, aiohttp.ClientError, RuntimeError, OSError) as exc:
                 self._logger.warning("Failed to send message to Ynison, scheduling reconnect")
                 self._connected = False
                 self._schedule_reconnect()
                 if strict:
                     raise YnisonSendError("Ynison send failed") from exc
+                return False
 
     def _schedule_reconnect(self) -> None:
         """
