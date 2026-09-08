@@ -74,7 +74,8 @@ async def test_parse_metadata_from_id3tags() -> None:
     _tags = await tags.async_parse_tags(filename)
     assert _tags.album == "MyAlbum"
     assert _tags.title == "MyTitle"
-    assert _tags.duration == 1.032
+    # FFmpeg versions differ on whether MP3 encoder delay/padding counts toward duration.
+    assert _tags.duration in (1.0, 1.032)
     assert _tags.album_artists == ("MyArtist",)
     assert _tags.artists == ("MyArtist", "MyArtist2")
     assert _tags.genres == ("Genre1", "Genre2")
@@ -225,7 +226,7 @@ async def test_parse_metadata_from_filename() -> None:
     _tags = await tags.async_parse_tags(filename)
     assert _tags.album is None
     assert _tags.title == "MyTitle without Tags"
-    assert _tags.duration == 1.032
+    assert _tags.duration in (1.0, 1.032)
     assert _tags.album_artists == ()
     assert _tags.artists == ("MyArtist",)
     assert _tags.genres == ()
@@ -241,7 +242,7 @@ async def test_parse_metadata_from_invalid_filename() -> None:
     _tags = await tags.async_parse_tags(filename)
     assert _tags.album is None
     assert _tags.title == "test"
-    assert _tags.duration == 1.032
+    assert _tags.duration in (1.0, 1.032)
     assert _tags.album_artists == ()
     assert _tags.artists == (UNKNOWN_ARTIST,)
     assert _tags.genres == ()

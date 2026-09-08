@@ -14,7 +14,7 @@ aiojellyfin==0.14.1
 aiolibdatachannel @ git+https://github.com/music-assistant/aiolibdatachannel@feat/certpem-testdrive
 aiomusiccast==0.15.0
 aiosendspin[server]==9.1.1
-aioslimproto==3.1.9
+aioslimproto==3.2.0
 aiosonos==0.1.12
 aiosqlite==0.22.1
 aiosxm==0.3.0
@@ -23,7 +23,7 @@ alexapy==1.30.0
 async-upnp-client==0.48.0
 audible==0.10.0
 auntie-sounds==2.0.9
-av==16.1.0
+av==18.1.0
 awesomeversion>=24.6.0
 bandcamp-async-api==0.2.4
 beat-this==1.1.0
