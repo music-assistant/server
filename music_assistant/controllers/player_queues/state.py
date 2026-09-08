@@ -79,12 +79,6 @@ class PlayerQueueData:
     flow_mode_stream_log: list[PlayLogEntry] = field(default_factory=list)
     # queue_item_id most recently handed to the player as the next item
     next_item_id_enqueued: str | None = None
-    # (session_id, queue_item_id) whose queued natural-end recovery still belongs to the session
-    end_of_track_recovery_key: tuple[str, str] | None = None
-    # session_id for which a user stop/pause suppresses natural-end recovery
-    end_of_track_recovery_suppressed_session_id: str | None = None
-    # queue_item_id whose natural-end next-track recovery was most recently attempted
-    last_recovered_finished_item_id: str | None = None
     # set when the queue items changed since the last cache write; the debounced saver writes the
     # (heavier) items payload only when this is set
     items_cache_dirty: bool = False

@@ -197,11 +197,6 @@ audio goes with them.
 Data flow: current index → next-item computation → stream-detail resolution → player enqueue-next.
 (Next-track audio-buffer warming is driven separately by the streams pipeline near track end.)
 
-If a finite, non-flow track ends before its next-item handoff, the queue can recover through
-`play_index` once per finished item. Recovery rechecks the session, playhead, and player under the
-playback lock; a stop, pause, power-off, or replacement playback prevents stale recovery. The
-one-second enqueue debounce stays independent of this fallback.
-
 ## Radio and Dynamic Continuation
 
 When a queue has one or more dynamic sources (its `sources`) or autoplay enabled, the controller

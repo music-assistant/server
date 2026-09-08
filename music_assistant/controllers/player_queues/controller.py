@@ -695,7 +695,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         - queue_id: queue_id of the playerqueue to handle the command.
         """
         self._check_player_permission(queue_id)
-        self._suppress_end_of_track_recovery(queue_id)
         await self._handle_stop(queue_id)
 
     @api_command("player_queues/play", required_scope=Scope.QUEUES_CONTROL)
@@ -723,7 +722,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._set_transitioning(queue_id, False)
         if not (queue := self.get(queue_id)):
             return
-        self._suppress_end_of_track_recovery(queue_id)
         queue_active = queue.active
         if queue.active and queue.state == PlaybackState.PLAYING:
             queue.resume_pos = int(queue.corrected_elapsed_time)
@@ -970,18 +968,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 if temp_index is None:
                     raise InvalidDataError(f"Item {index} not found in queue")
                 index = temp_index
-            if (
-                (queue_item := self.get_item(queue_id, index))
-                and queue_data.last_recovered_finished_item_id == queue_item.queue_item_id
-                and (
-                    queue_data.end_of_track_recovery_key
-                    != (queue_data.session_id, queue_item.queue_item_id)
-                    or queue_data.end_of_track_recovery_suppressed_session_id
-                    == queue_data.session_id
-                )
-            ):
-                queue_data.last_recovered_finished_item_id = None
-                queue_data.end_of_track_recovery_key = None
             # At this point index is guaranteed to be int
             queue.index_in_buffer = index
             queue_data.flow_mode_stream_log = []
@@ -991,7 +977,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             if target_player is None:
                 raise PlayerUnavailableError(f"Player {queue_id} is not available")
             queue_data.next_item_id_enqueued = None
-            queue_data.end_of_track_recovery_suppressed_session_id = None
             # always update session id when we start a new playback session
             queue_data.session_id = shortuuid.random(length=8)
             self.mass.streams.audio_processing.start_session(
@@ -1890,8 +1875,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._set_transitioning(queue_id, False)
         queue_data = self._queue_data[queue_id]
         session_id = queue_data.session_id
-        queue = self.get(queue_id)
-        if queue and queue.active:
+        if (queue := self.get(queue_id)) and queue.active:
             if queue.state == PlaybackState.PLAYING:
                 queue.resume_pos = int(queue.corrected_elapsed_time)
         try:
@@ -1909,18 +1893,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 # started while this stop was still waiting on the device
                 if queue_data.session_id == session_id:
                     queue_data.session_id = None
-                    queue_data.end_of_track_recovery_key = None
-                    queue_data.end_of_track_recovery_suppressed_session_id = None
-                    if queue and queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
-                        queue_data.last_recovered_finished_item_id = None
                 self.mass.streams.audio_processing.clear(queue_id, session_id)
                 self.mass.create_task(self._cleanup_queue_audio_data(queue_id, session_id))
 
     @handle_play_action
     async def _handle_play(self, queue_id: str) -> None:
         """Handle play without acquiring the queue lock."""
-        if (queue_data := self._queue_data.get(queue_id)) is not None:
-            queue_data.end_of_track_recovery_suppressed_session_id = None
         queue_player = self.mass.players.get_player(queue_id, True)
         if queue_player is None:
             raise PlayerUnavailableError(f"Player {queue_id} is not available")
@@ -1942,14 +1920,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Mark (or clear) whether a queue is mid-transition (no-op if it is not registered)."""
         if (queue_data := self._queue_data.get(queue_id)) is not None:
             queue_data.transitioning = value
-
-    def _suppress_end_of_track_recovery(self, queue_id: str) -> None:
-        """Suppress natural-end recovery for the queue's current playback session."""
-        if (
-            queue_data := self._queue_data.get(queue_id)
-        ) is not None and queue_data.session_id is not None:
-            queue_data.end_of_track_recovery_suppressed_session_id = queue_data.session_id
-            queue_data.end_of_track_recovery_key = None
 
     def _clear(self, queue_id: str, skip_stop: bool = False) -> None:
         """Drop the queue's items and playback position, leaving user settings untouched."""

@@ -43,7 +43,6 @@ from music_assistant.controllers.player_queues.helpers import (
     find_dynamic_source,
     get_current_playback_speed,
 )
-from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_user,
 )
@@ -434,6 +433,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             and new_state["state"] == PlaybackState.IDLE
         ):
             return
+        # check if no more items in the queue (next_item should be None at end of queue)
+        if queue.next_item is not None:
+            return
         # check if we had a previous item playing
         if prev_state["current_item_id"] is None:
             return
@@ -443,11 +445,6 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         prev_item = prev_state["current_item"]
 
         if prev_item is not None and prev_item.media_type in UNENDABLE_MEDIA_TYPES:
-            return
-        # a finite track can end before the delayed next-track handoff reaches the player;
-        # recover that missed handoff once through play_index, but leave flow mode alone
-        if queue.next_item is not None:
-            self._recover_next_item_after_natural_end(queue, queue_data, prev_state)
             return
 
         async def _settle_or_resume_delayed() -> None:
@@ -566,95 +563,6 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         # only clear if the last track was played to near completion (within 5 seconds of end)
         if seconds_played >= (duration or 3600) - 5:
             self.mass.create_task(_settle_or_resume_delayed())
-
-    def _recover_next_item_after_natural_end(
-        self, queue: PlayerQueue, queue_data: PlayerQueueData, prev_state: CompareState
-    ) -> None:
-        """Recover a missed next-track handoff after a natural finite-track end."""
-        if (
-            queue.flow_mode
-            or not queue.active
-            or not queue.available
-            or queue.current_index is None
-        ):
-            return
-        if prev_state["state"] != PlaybackState.PLAYING:
-            return
-        if queue_data.session_id is None or queue_data.play_action_refcount:
-            return
-        if queue_data.end_of_track_recovery_suppressed_session_id == queue_data.session_id:
-            return
-        if queue_data.transitioning:
-            return
-        finished_item = prev_state["current_item"]
-        finished_item_id = prev_state["current_item_id"]
-        if finished_item is None or finished_item_id is None:
-            return
-        duration = (
-            finished_item.streamdetails.duration
-            if finished_item.streamdetails and finished_item.streamdetails.duration
-            else finished_item.duration
-        )
-        if not duration:
-            return
-        seconds_played = int(prev_state["last_playing_elapsed_time"])
-        if seconds_played < max(int(duration) - 5, 0):
-            return
-        if self.get_next_item(queue.queue_id, queue.current_index) is None:
-            return
-        if queue_data.last_recovered_finished_item_id == finished_item_id:
-            return
-        recovery_key = (queue_data.session_id, finished_item_id)
-        if queue_data.end_of_track_recovery_key == recovery_key:
-            return
-        queue_data.end_of_track_recovery_key = recovery_key
-        session_id = queue_data.session_id
-        queue_id = queue.queue_id
-
-        async def _start_recovered_next_item() -> None:
-            async with self.mass.players.get_player_lock(queue_id, PlayerLockPurpose.PLAYBACK):
-                if self._queue_data.get(queue_id) is not queue_data:
-                    return
-                if queue_data.session_id != session_id:
-                    return
-                if queue_data.end_of_track_recovery_key != recovery_key:
-                    return
-                if queue_data.end_of_track_recovery_suppressed_session_id == session_id:
-                    return
-                if queue_data.play_action_refcount or queue_data.transitioning:
-                    return
-                if not queue.active or not queue.available or queue.flow_mode:
-                    return
-                if queue.state != PlaybackState.IDLE or queue.current_index is None:
-                    return
-                if (
-                    queue.current_item is None
-                    or queue.current_item.queue_item_id != finished_item_id
-                ):
-                    return
-                current_next = self.get_next_item(queue_id, queue.current_index)
-                if current_next is None:
-                    return
-                player = self.mass.players.get_player(queue_id)
-                if (
-                    player is None
-                    or player.state.powered is False
-                    or player.state.playback_state != PlaybackState.IDLE
-                    or player.state.active_source not in (queue_id, None)
-                ):
-                    return
-                queue_data.last_recovered_finished_item_id = finished_item_id
-                try:
-                    await self.play_index(queue_id, current_next.queue_item_id)
-                except MusicAssistantError as err:
-                    self.logger.warning(
-                        "Failed to recover next track %s on queue %s: %s",
-                        current_next.name,
-                        queue.display_name,
-                        err,
-                    )
-
-        self.mass.create_task(_start_recovered_next_item())
 
     def _finish_queue(self, queue: PlayerQueue, prev_item: QueueItem | None) -> None:
         """
