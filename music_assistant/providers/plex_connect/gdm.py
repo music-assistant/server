@@ -101,10 +101,15 @@ class PlexGDMAdvertiser:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._broadcast_task
 
+        # Closing the socket unblocks the listener thread; awaiting the (uncancelled)
+        # task joins that thread, so no M-SEARCH reply can be sent after the BYE below
+        if self._listen_socket:
+            self._listen_socket.close()
+            self._listen_socket = None
         if self._listener_task:
-            self._listener_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._listener_task
+            self._listener_task = None
 
         # Announce our departure to the client register group; the send executor
         # guarantees any in-flight HELLO completes before the BYE goes out
@@ -115,10 +120,6 @@ class PlexGDMAdvertiser:
         if self._broadcast_socket:
             self._broadcast_socket.close()
             self._broadcast_socket = None
-
-        if self._listen_socket:
-            self._listen_socket.close()
-            self._listen_socket = None
 
         LOGGER.info("Stopped GDM advertising")
 

@@ -56,6 +56,9 @@
     "plextv_status_unreachable": {
       "label": "Could not reach plex.tv: {0}"
     },
+    "plextv_status_unlink_remote_failed": {
+      "label": "Unlinked, but the device could not be removed from plex.tv ({0}). Remove it manually via Authorized Devices in your Plex account settings."
+    },
     "start_link": {
       "label": "Link with plex.tv",
       "description": "Requests a link code from plex.tv. Enter the code at plex.tv/link (while signed in to your Plex account) to register this player.",

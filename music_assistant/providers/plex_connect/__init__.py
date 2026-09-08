@@ -352,16 +352,19 @@ class PlexConnectProvider(PluginProvider):
 
     async def _plextv_unlink(self) -> tuple[str | None, list[str] | None]:
         """Unlink this player from plex.tv and forget the stored device token."""
+        status: tuple[str | None, list[str] | None] = (None, None)
         try:
             await self._unregister_from_plextv(swallow_errors=False)
         except PlexTvAuthError:
             pass
         except (PlexTvError, aiohttp.ClientError, TimeoutError) as err:
-            return "plextv_status_unreachable", [str(err)]
+            # remote deletion is best-effort: always unlink locally so the player is
+            # never stuck linked, and point the user at manual cleanup on plex.tv
+            status = ("plextv_status_unlink_remote_failed", [str(err)])
         self._update_setup_data(CONF_PLEXTV_TOKEN, None)
         self._plextv_pin = None
         self._plextv_device_id = None
-        return None, None
+        return status
 
     def _plextv_token(self) -> str | None:
         """Return the stored plex.tv device token, if any."""
