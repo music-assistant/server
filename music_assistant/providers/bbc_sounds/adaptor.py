@@ -907,13 +907,12 @@ class Adaptor:
                     self.logger.error("Error converting object: %s", e)
                     return None
                 if context.force_type and type(result) is not context.force_type:
-                    msg = (
+                    raise ConversionError(
                         "Expected forced type of %s but received %s using %s",
                         context.force_type,
                         type(result),
                         type(converter),
                     )
-                    raise ConversionError(msg)
                 msg = "Successfully converted %s to %s"
                 args = [type(source_obj).__name__, type(result).__name__]
 
