@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 from music_assistant_models.config_entries import UI_ONLY
 
+from music_assistant.controllers.config.migrations import migrate_provider_setup_data
 from music_assistant.providers.kion_music.constants import (
     CONF_BASE_URL,
     CONF_CODECS,
@@ -49,3 +50,22 @@ async def test_get_config_entries_resolve_without_user_input() -> None:
         for entry in entries
         if entry.required and entry.default_value is None and entry.type not in UI_ONLY
     ]
+
+
+def test_legacy_token_migrates_to_setup_data_before_rehydration() -> None:
+    """Current core preserves a legacy KION token before options are reparsed."""
+    raw_config = {
+        "providers": {
+            "kion_music--legacy": {
+                "domain": "kion_music",
+                "values": {"token": "legacy-token", "quality": "balanced"},
+            }
+        }
+    }
+
+    changed = migrate_provider_setup_data(raw_config, lambda value: f"encrypted:{value}")
+
+    provider_config = raw_config["providers"]["kion_music--legacy"]
+    assert changed is True
+    assert provider_config["values"] == {"quality": "balanced"}
+    assert provider_config["setup_data"] == {"token": "encrypted:legacy-token"}
