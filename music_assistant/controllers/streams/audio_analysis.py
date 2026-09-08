@@ -787,11 +787,18 @@ class AudioAnalysisController:
         """
         Stream audio_analysis rows for a given aa_provider_domain.
 
+        analysis_data is yielded as raw bytes rather than str, and may hold data
+        that fails a strict UTF-8 decode; callers are responsible for handling that.
+
         :param aa_provider_domain: Domain of the AA provider whose rows to yield.
         :param media_type: The media type to filter rows by.
         """
+        # fetch as blob: the sqlite driver raises OperationalError on corrupt
+        # non-UTF-8 TEXT; raw bytes defer decoding to the consumer
         query = (
-            f"SELECT * FROM {DB_TABLE_AUDIO_ANALYSIS} "
+            f"SELECT id, media_type, item_id, provider, aa_provider_domain, "
+            f"CAST(analysis_data AS BLOB) AS analysis_data, analysis_version, timestamp_created "
+            f"FROM {DB_TABLE_AUDIO_ANALYSIS} "
             f"WHERE aa_provider_domain = :aa_provider_domain AND media_type = :media_type"
         )
         async for row in self.mass.music.database.iter_rows_from_query(
@@ -842,7 +849,10 @@ class AudioAnalysisController:
         # EXISTS subquery scopes to the primary domain's universe at the DB level;
         # ORDER BY (item_id, provider, ts) lets us fold each track in one streaming pass.
         query = (
-            f"SELECT item_id, provider, aa_provider_domain, analysis_data, id "
+            f"SELECT item_id, provider, aa_provider_domain, "
+            # fetch as blob: the sqlite driver raises OperationalError on corrupt
+            # non-UTF-8 TEXT; raw bytes let _parse_row skip just the bad row
+            f"CAST(aa1.analysis_data AS BLOB) AS analysis_data, id "
             f"FROM {DB_TABLE_AUDIO_ANALYSIS} aa1 "
             f"WHERE aa1.media_type = :media_type "
             f"AND EXISTS ("
