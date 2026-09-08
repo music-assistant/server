@@ -58,12 +58,12 @@ def uk_menu() -> Menu:
             MenuItem(id="listen_live", title="Listen Live"),
             MenuItem(id="stations", title="Station & Schedules"),
             MenuItem(id="continue_listening", title="Continue Listening"),
-            MenuItem(id="latest_news", title="Latest News Playlist"),
-            MenuItem(id="editors_picks", title="Editor's Picks"),
-            MenuItem(id="from_your_area", title="From Your Area"),
+            MenuItem(id="latest_playables_for_curation_lllll", title="Latest News Playlist"),
+            MenuItem(id="editorial_collection", title="Editor's Picks"),
+            MenuItem(id="local_rail", title="From Your Area"),
             MenuItem(id="collections", title="Collections"),
             MenuItem(id="categories", title="Categories"),
-            MenuItem(id="explore_all", title="Explore All"),
+            MenuItem(id="explore", title="Explore All"),
         ]
     )
 
@@ -77,6 +77,6 @@ def international_menu() -> Menu:
             MenuItem(id="stations", title="Station & Schedules"),
             MenuItem(id="collections", title="Collections"),
             MenuItem(id="categories", title="Categories"),
-            MenuItem(id="explore_all", title="Explore All"),
+            MenuItem(id="explore", title="Explore All"),
         ]
     )

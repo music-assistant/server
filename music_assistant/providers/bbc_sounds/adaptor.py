@@ -344,7 +344,7 @@ class StationConverter(BaseConverter):
 class PodcastConverter(BaseConverter):
     """Converts podcast-related objects."""
 
-    ConvertableTypes = Podcast | PodcastEpisode | RadioShow | RadioClip | RadioSeries | Playlist
+    ConvertableTypes = Podcast | PodcastEpisode | RadioShow | RadioClip | RadioSeries
     OutputTypes = MAPodcast | MAPodcastEpisode | Track
     SCHEDULE_ITEM_FORMAT = "{start} {show_name} • {show_title} ({date})"
     SCHEDULE_ITEM_DEFAULT_FORMAT = "{show_name} • {show_title}"
@@ -654,10 +654,7 @@ class BrowseConverter(BaseConverter):
             return self._convert_category_or_collection(source_obj)
         if isinstance(source_obj, Schedule):
             return self._convert_schedule(source_obj)
-        if (
-            isinstance(source_obj, RecommendedMenuItem)
-            or self.context.force_type is RecommendationFolder
-        ):
+        if isinstance(source_obj, RecommendedMenuItem):
             return await self._convert_recommended_item(source_obj)
         self.logger.error(f"Failed to convert browse object {type(source_obj)}: {source_obj}")
         raise ConversionError(f"Browse conversion failed: {source_obj}")
@@ -811,9 +808,9 @@ class Adaptor:
         context = self._create_context(path_parts, force_type)
 
         converters = [
-            BrowseConverter(context),
             StationConverter(context),
             PodcastConverter(context),
+            BrowseConverter(context),
         ]
 
         for converter in converters:
@@ -876,9 +873,9 @@ class Adaptor:
         context = self._create_context(path_parts, force_type)
 
         converters = [
-            BrowseConverter(context),
             StationConverter(context),
             PodcastConverter(context),
+            BrowseConverter(context),
         ]
         for converter in converters:
             self.logger.log(
@@ -896,7 +893,7 @@ class Adaptor:
                         f"Expected forced type of {context.force_type} but received "
                         f"{type(result)} using {type(converter)}"
                     )
-                    self.logger.warning(msg)
+                    raise ConversionError(msg)
                 msg = (
                     f"Successfully converted {type(source_obj).__name__} to {type(result).__name__}"
                 )
