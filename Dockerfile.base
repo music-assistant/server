@@ -313,8 +313,12 @@ COPY --from=shairport-builder /usr/local/bin/shairport-sync /usr/local/bin/
 # Copy pre-built PyAV wheel for use by downstream images
 COPY --from=pyav-builder /wheels/ /usr/local/share/pyav-wheels/
 
-# Update shared library cache and verify FFmpeg
-RUN ldconfig && ffmpeg -version && ffprobe -version
+# Verify FFmpeg and the custom PyAV wheel with all codec runtime libraries available.
+RUN ldconfig && ffmpeg -version && ffprobe -version \
+    && python -m pip install --no-cache-dir --no-index --no-deps \
+        --target /tmp/pyav-check /usr/local/share/pyav-wheels/av*.whl \
+    && PYTHONPATH=/tmp/pyav-check python -c "import av; print(av.library_versions)" \
+    && rm -rf /tmp/pyav-check
 
 # Copy widevine client files to container
 RUN mkdir -p /usr/local/bin/widevine_cdm
