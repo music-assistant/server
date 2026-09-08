@@ -91,7 +91,7 @@ class PlexGDMAdvertiser:
         self._running = False
 
         # Announce our departure to the client register group
-        self._send_bye()
+        await asyncio.to_thread(self._send_bye)
 
         if self._broadcast_task:
             self._broadcast_task.cancel()

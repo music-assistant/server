@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import socket
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -105,3 +106,36 @@ def test_bye_sent_on_stop(advertiser: PlexGDMAdvertiser) -> None:
     messages = [call.args[0] for call in broadcast_socket.sendto.call_args_list]
     assert messages
     assert all(message == advertiser._bye_message for message in messages)
+
+
+@pytest.mark.parametrize("fail_send", [False, True])
+async def test_stop_sends_bye_off_loop_before_closing_sockets(
+    advertiser: PlexGDMAdvertiser, fail_send: bool
+) -> None:
+    """Shutdown sends BYE off-loop and closes sockets even when the send fails."""
+    broadcast_socket = MagicMock()
+    listen_socket = MagicMock()
+    sends: list[tuple[int, bool]] = []
+    event_loop_thread = threading.get_ident()
+
+    def sendto(_message: bytes, _target: tuple[str, int]) -> None:
+        sends.append((threading.get_ident(), broadcast_socket.close.called))
+        if fail_send:
+            raise OSError("Network unavailable")
+
+    broadcast_socket.sendto.side_effect = sendto
+    with (
+        patch.object(advertiser, "_broadcast_socket", broadcast_socket),
+        patch.object(advertiser, "_listen_socket", listen_socket),
+    ):
+        advertiser._running = True
+
+        await advertiser.stop()
+
+        assert len(sends) == 2
+        assert all(thread != event_loop_thread and not closed for thread, closed in sends)
+        broadcast_socket.close.assert_called_once()
+        listen_socket.close.assert_called_once()
+        assert advertiser._broadcast_socket is None
+        assert advertiser._listen_socket is None
+        assert not advertiser._running
