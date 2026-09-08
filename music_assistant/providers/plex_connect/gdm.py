@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import socket
+from concurrent.futures import ThreadPoolExecutor
 
 LOGGER = logging.getLogger(__name__)
 
@@ -60,6 +61,10 @@ class PlexGDMAdvertiser:
         self._broadcast_socket: socket.socket | None = None
         self._listen_socket: socket.socket | None = None
 
+        # Single worker serializes all HELLO/BYE sends, so the shutdown BYE is always
+        # the last message even when an announcement task is cancelled mid-send
+        self._send_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gdm-send")
+
         # Cached publish IP
         self._local_ip = publish_ip
 
@@ -101,8 +106,10 @@ class PlexGDMAdvertiser:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._listener_task
 
-        # Announce our departure to the client register group
-        await asyncio.to_thread(self._send_bye)
+        # Announce our departure to the client register group; the send executor
+        # guarantees any in-flight HELLO completes before the BYE goes out
+        await asyncio.get_running_loop().run_in_executor(self._send_executor, self._send_bye)
+        self._send_executor.shutdown(wait=False)
 
         # Close reusable sockets
         if self._broadcast_socket:
@@ -220,7 +227,7 @@ class PlexGDMAdvertiser:
 
     async def _send_announcement(self) -> None:
         """Send a GDM announcement broadcast (uses pre-built message)."""
-        await asyncio.get_event_loop().run_in_executor(None, self._send_udp)
+        await asyncio.get_running_loop().run_in_executor(self._send_executor, self._send_udp)
 
     def _send_udp(self) -> None:
         """Send UDP HELLO announcement (uses cached socket and message)."""
