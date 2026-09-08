@@ -6,19 +6,17 @@ import base64
 import hashlib
 from contextlib import suppress
 from sqlite3 import OperationalError
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
-from music_assistant_models.enums import ContentType, ExternalID, StreamType
+from music_assistant_models.enums import ContentType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
-from .constants import CACHE_CATEGORY_ISRC_MAP, CONF_QUALITY, OPEN_API_URL
+from .constants import CONF_QUALITY
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import Track
-
     from .provider import TidalProvider
 
 # Seconds of idle buffer after which a DASH manifest route is cleaned up.
@@ -45,24 +43,26 @@ class TidalStreamingManager:
         try:
             track = await self.provider.get_track(item_id)
         except MediaNotFoundError:
-            # 2. Fallback to ISRC lookup
-            if isrc_track := await self._get_track_by_isrc(item_id):
-                track = isrc_track
-            else:
+            # 2. Fallback to ISRC-based resolution (also heals the library DB)
+            live_id = await self.provider.resolve_live_track_id(item_id)
+            if not live_id:
                 raise MediaNotFoundError(f"Track {item_id} not found")
+            track = await self.provider.get_track(live_id)
 
         quality = self.provider.config.get_value(CONF_QUALITY)
 
         # 3. Get playback info
-        async with self.api.throttler.bypass():
-            stream_data = await self.api.get(
-                f"tracks/{track.item_id}/playbackinfopostpaywall",
-                params={
-                    "playbackmode": "STREAM",
-                    "assetpresentation": "FULL",
-                    "audioquality": quality,
-                },
-            )
+        try:
+            stream_data = await self._fetch_playback_info(track.item_id, quality)
+        except MediaNotFoundError:
+            # The track lookup is cached for days, so a track that churned after
+            # being cached passes step 1 and the 404 first surfaces here. Heal
+            # (also rewrites the stored mapping) and retry once with the live id.
+            live_id = await self.provider.resolve_live_track_id(item_id)
+            if not live_id or live_id == track.item_id:
+                raise
+            track = await self.provider.get_track(live_id)
+            stream_data = await self._fetch_playback_info(live_id, quality)
 
         # 4. Parse stream URL
         manifest_type = stream_data.get("manifestMimeType", "")
@@ -145,6 +145,13 @@ class TidalStreamingManager:
             )
         )
 
+        self.provider.play_reporting.register_stream(
+            item_id=track.item_id,
+            quality=stream_data.get("audioQuality", "LOSSLESS"),
+            asset_presentation=stream_data.get("assetPresentation", "FULL"),
+            audio_mode=stream_data.get("audioMode", "STEREO"),
+        )
+
         return StreamDetails(
             item_id=track.item_id,
             provider=self.provider.instance_id,
@@ -155,6 +162,18 @@ class TidalStreamingManager:
             can_seek=True,
             allow_seek=True,
         )
+
+    async def _fetch_playback_info(self, track_id: str, quality: Any) -> dict[str, Any]:
+        """Fetch the (unofficial) playback info for a track."""
+        async with self.api.throttler.bypass():
+            return await self.api.get(
+                f"tracks/{track_id}/playbackinfopostpaywall",
+                params={
+                    "playbackmode": "STREAM",
+                    "assetpresentation": "FULL",
+                    "audioquality": quality,
+                },
+            )
 
     async def _async_update_provider_mapping_audio_format(
         self,
@@ -202,51 +221,6 @@ class TidalStreamingManager:
                 provider_track_id,
                 self.provider.instance_id,
             )
-
-    async def _get_track_by_isrc(self, item_id: str) -> Track | None:
-        """Lookup track by ISRC with caching."""
-        # Check cache
-        if cached_id := await self.mass.cache.get(
-            item_id, provider=self.provider.instance_id, category=CACHE_CATEGORY_ISRC_MAP
-        ):
-            try:
-                return await self.provider.get_track(cached_id)
-            except MediaNotFoundError:
-                await self.mass.cache.delete(
-                    item_id, provider=self.provider.instance_id, category=CACHE_CATEGORY_ISRC_MAP
-                )
-
-        # Get library item to find ISRC
-        lib_track = await self.mass.music.tracks.get_library_item_by_prov_id(
-            item_id, self.provider.instance_id
-        )
-        if not lib_track:
-            return None
-
-        isrc = next((x[1] for x in lib_track.external_ids if x[0] == ExternalID.ISRC), None)
-        if not isrc:
-            return None
-
-        # Lookup by ISRC
-        data = await self.api.get("tracks", params={"filter[isrc]": isrc}, base_url=OPEN_API_URL)
-
-        data_items = data.get("data", [])
-        if not data_items:
-            return None
-
-        track_id = str(data_items[0]["id"])
-
-        # Cache result
-        await self.mass.cache.set(
-            key=item_id,
-            data=track_id,
-            provider=self.provider.instance_id,
-            category=CACHE_CATEGORY_ISRC_MAP,
-            persistent=True,
-            expiration=86400 * 90,
-        )
-
-        return await self.provider.get_track(track_id)
 
     def _remove_dash_route(self, route_path: str) -> None:
         """Remove a DASH manifest route from the stream server."""

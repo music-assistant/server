@@ -6,7 +6,7 @@ import re
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
-from mashumaro.exceptions import MissingField
+from mashumaro.exceptions import InvalidFieldValue, MissingField
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ArtistEntityType, ConfigEntryType, ExternalID, LinkType
 from music_assistant_models.errors import InvalidDataError
@@ -16,6 +16,12 @@ from music_assistant_models.media_items.metadata import LifeSpan
 from music_assistant.constants import VARIOUS_ARTISTS_MBID
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.external_ids import (
+    external_id_lookup_values,
+    is_valid_barcode,
+    is_valid_isrc,
+    normalize_external_id,
+)
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.metadata_provider import MetadataProvider
 
@@ -29,6 +35,7 @@ from .constants import (
 )
 from .models import (
     MusicBrainzArtist,
+    MusicBrainzBarcodeRelease,
     MusicBrainzRecording,
     MusicBrainzRelation,
     MusicBrainzRelease,
@@ -292,9 +299,9 @@ class MusicbrainzProvider(MetadataProvider):
         :param isrc: ISRC of the recording, with or without separators.
         :return: Recordings tagged with this ISRC, or empty list if not found.
         """
-        safe_isrc = isrc.replace("-", "").strip()
-        if not safe_isrc.isalnum():
+        if not is_valid_isrc(isrc):
             return []
+        safe_isrc = normalize_external_id(ExternalID.ISRC, isrc)
         # the isrc resource rejects inc= parameters and already carries the release dates
         result = await self._api_client.get_data(f"isrc/{safe_isrc}")
         if not result or not (recordings := result.get("recordings")):
@@ -334,6 +341,46 @@ class MusicbrainzProvider(MetadataProvider):
                 raise InvalidDataError from err
         msg = "Invalid MusicBrainz Album ID provided"
         raise InvalidDataError(msg)
+
+    async def get_releases_by_barcode(self, barcode: str) -> list[MusicBrainzBarcodeRelease]:
+        """
+        Get the releases MusicBrainz has on file for a barcode/UPC.
+
+        The result is complete: a truncated page or a release entry that cannot be parsed
+        raises :class:`InvalidDataError` so the caller abstains instead of mistaking a
+        partial release/group set for the whole set.
+
+        :param barcode: Album barcode (UPC/EAN/GTIN), with or without separators.
+        :return: Releases carrying this barcode, or an empty list if none are found.
+        """
+        if not is_valid_barcode(barcode):
+            return []
+        # a UPC-12 and its zero-padded EAN-13/GTIN forms are the same physical barcode,
+        # so query every compatible form to also resolve a provider's shorter/longer notation
+        barcodes = [
+            value
+            for value in external_id_lookup_values(ExternalID.BARCODE, barcode)
+            if value.isdigit()
+        ]
+        query = " OR ".join(f"barcode:{value}" for value in barcodes)
+        # a barcode identifies a single physical product, so one generously-sized page
+        # returns every release carrying it
+        result = await self._api_client.get_data("release", query=query, limit="100")
+        if not result or not (releases := result.get("releases")):
+            return []
+        if result.get("count", len(releases)) > len(releases):
+            msg = "MusicBrainz barcode result is truncated"
+            raise InvalidDataError(msg)
+        parsed: list[MusicBrainzBarcodeRelease] = []
+        for release in releases:
+            try:
+                parsed.append(MusicBrainzBarcodeRelease.from_raw(release))
+            except (MissingField, InvalidFieldValue) as err:
+                # dropping a malformed row would make the release/group set look complete
+                # when it is not, so the whole lookup is treated as unusable
+                msg = "MusicBrainz barcode result has an unparsable release"
+                raise InvalidDataError(msg) from err
+        return parsed
 
     async def get_releasegroup_details(self, releasegroup_id: str) -> MusicBrainzReleaseGroup:
         """Get ReleaseGroup details by providing a MusicBrainz ReleaseGroup id."""

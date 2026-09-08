@@ -14,10 +14,12 @@ from music_assistant.helpers.datetime import host_timezone_name
 
 from .constants import (
     CONF_TIMEZONE,
+    CONF_TTS_LOUDNESS_BOOST,
     CONF_WEATHER_CITY,
     CONF_WEATHER_COUNTRY,
     CONF_WEATHER_PROVIDER,
     CONF_WEATHER_TIMEOUT,
+    DEFAULT_TTS_LOUDNESS_BOOST,
     DEFAULT_WEATHER_PROVIDER,
     DEFAULT_WEATHER_TIMEOUT_SECONDS,
 )
@@ -57,6 +59,13 @@ async def get_config_entries(
             key=CONF_WEATHER_TIMEOUT,
             type=ConfigEntryType.INTEGER,
             default_value=DEFAULT_WEATHER_TIMEOUT_SECONDS,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_TTS_LOUDNESS_BOOST,
+            type=ConfigEntryType.INTEGER,
+            default_value=DEFAULT_TTS_LOUDNESS_BOOST,
+            range=(0, 6),
             advanced=True,
         ),
     )

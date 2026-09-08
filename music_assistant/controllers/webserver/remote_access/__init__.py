@@ -298,8 +298,8 @@ class RemoteAccessManager:
                     hass_client.version,
                 )
             self.logger.debug("HA Cloud available but no ICE servers returned")
-        except Exception as err:
-            self.logger.exception("Error getting HA Cloud status: %s", err)
+        except Exception:
+            self.logger.exception("Error getting HA Cloud status")
         return False, None
 
     def _register_api_commands(self) -> None:

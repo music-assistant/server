@@ -19,7 +19,7 @@ from math import ceil
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.constants import PLAYER_CONTROL_NONE
+from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     MediaType,
     PlaybackState,
@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from music_assistant import MusicAssistant
+    from music_assistant.controllers.streams.announcements import AnnouncementRender
 
 # the caller waits for this command and it holds the player's playback lock while it runs,
 # so a wedged engine must give up well before the generic (background) engine timeout
@@ -126,7 +127,9 @@ class AnnouncementsMixin:
 
         async def _handle_cmd_stop(self, player_id: str) -> None: ...
 
-        async def _handle_cmd_volume_set(self, player_id: str, volume_level: int) -> None: ...
+        async def _handle_cmd_volume_set(
+            self, player_id: str, volume_level: int, *, record_target: bool = True
+        ) -> None: ...
 
         async def _handle_cmd_volume_mute(
             self, player: Player, mute_control: str, muted: bool
@@ -266,7 +269,7 @@ class AnnouncementsMixin:
                 pre_announce,
                 url,
             )
-            announce_player = self._resolve_announce_player(player)
+            announce_player = await self._resolve_ready_announce_player(player, render, url)
             native_announce_support = announce_player is not None
             if announce_player is None:
                 announce_player = player
@@ -283,14 +286,6 @@ class AnnouncementsMixin:
             )
             # handle native announce support (player or linked protocol)
             if native_announce_support:
-                # hand the url to the player as soon as there is audio to serve from;
-                # its exact length is resolved further downstream, while it plays
-                if not await render.wait_ready():
-                    self.logger.warning(
-                        "Announcement to player %s - no audio available for %s",
-                        player.state.name,
-                        url,
-                    )
                 await self._play_native_announcement(
                     player, announce_player, announcement, volume_level
                 )
@@ -372,34 +367,68 @@ class AnnouncementsMixin:
 
         :param player: The player the announcement is played on.
         """
+        if PlayerFeature.PLAY_ANNOUNCEMENT in player.supported_features:
+            # The device's own announcement handler is built for exactly this and
+            # overlays the clip on whatever the speaker is playing - including the
+            # stream a linked protocol renders into it (e.g. Sonos audioClip while
+            # the Sonos plays through its AirPlay child), so it always wins.
+            return player
         if announce_player := self._get_control_target(
             player,
             required_feature=PlayerFeature.PLAY_ANNOUNCEMENT,
             require_active=True,
         ):
-            # The output that is ACTIVELY rendering can announce: the
-            # announcement rides the same audio path as the music (e.g. a
-            # Sonos playing through its AirPlay child gets the clip mixed
-            # into that live stream, in sync with the rest of the group)
-            # instead of a second mechanism firing beside the playback.
+            # No native handler, so the output that is ACTIVELY rendering announces:
+            # the announcement rides the same audio path as the music (mixed into
+            # that live stream, in sync with the rest of the group) instead of a
+            # second mechanism firing beside the playback.
             return announce_player
-        if PlayerFeature.PLAY_ANNOUNCEMENT in player.supported_features:
-            # Not playing through an announce-capable output: the player's
-            # own native support (e.g. Sonos audioClip, which overlays the
-            # clip on whatever source is playing) is the next-best path.
-            return player
         if player.state.playback_state != PlaybackState.PLAYING:
             # An idle player may announce through any linked protocol. A
             # PLAYING player deliberately gets no such fallback: routing to
             # an idle linked protocol (e.g. the AirPlay child of a WiiM
             # playing natively) would seize the device from the active
             # output, with nothing restoring that playback afterwards.
+            # The pick is deliberately not published as the active output
+            # protocol: the player would then mirror that protocol's playback
+            # state, report PLAYING for the length of the clip and so fail
+            # the check above on the next announcement.
             return self._get_control_target(
                 player,
                 required_feature=PlayerFeature.PLAY_ANNOUNCEMENT,
                 require_active=False,
             )
         return None
+
+    async def _resolve_ready_announce_player(
+        self, player: Player, render: AnnouncementRender, url: str
+    ) -> Player | None:
+        """
+        Return the player that plays the announcement natively, once its audio is ready.
+
+        Returns None when nothing in the chain announces natively (any more), so the
+        caller has to fall back to the default implementation.
+
+        :param player: The player the announcement is played on.
+        :param render: The announcement audio being rendered.
+        :param url: URL of the announcement, for logging.
+        """
+        if (announce_player := self._resolve_announce_player(player)) is None:
+            return None
+        # hand the url to the player as soon as there is audio to serve from;
+        # its exact length is resolved further downstream, while it plays
+        if not await render.wait_ready():
+            self.logger.warning(
+                "Announcement to player %s - no audio available for %s",
+                player.state.name,
+                url,
+            )
+        if PlayerFeature.PLAY_ANNOUNCEMENT not in announce_player.supported_features:
+            # Rendering the audio can take a while. An output that announces by mixing
+            # the clip into what it is already playing stops offering the feature once
+            # that playback ended, and the default implementation takes over.
+            return None
+        return announce_player
 
     async def _render_announcement_message(
         self, message: str, tts_engine: str | None, language: str | None
@@ -461,14 +490,33 @@ class AnnouncementsMixin:
             for member_id in player.state.group_members or (player.player_id,)
             if (muted_player := self.get_player(member_id)) and muted_player.state.volume_muted
         ]
+        # filled while the announcement volume is applied below
+        prev_volumes: dict[str, int] = {}
         try:
             async with TaskManager(self.mass) as tg:
                 for muted_player in muted_players:
                     tg.create_task(self._set_announcement_mute(muted_player, False))
             announcement_volume = self.get_announcement_volume(player.player_id, volume_level)
+            if (
+                announcement_volume is not None
+                and not announce_player.applies_announcement_volume
+                and not self._output_owns_volume(player, announce_player)
+            ):
+                # The level is resolved on the scale of the control that owns the player's
+                # volume, so an output that does not own it cannot apply it: whatever that
+                # output sets is either discarded or stacks on top of the control that is
+                # already attenuating on the device. Apply it through the control instead
+                # and let the provider announce at the level the device now plays at.
+                await self._set_announcement_volume(player, announcement_volume, prev_volumes)
+                announcement_volume = None
             await announce_player.play_announcement(announcement, announcement_volume)
         finally:
             # the provider only returns once the announcement finished playing
+            async with TaskManager(self.mass) as tg:
+                for volume_player_id, prev_volume in prev_volumes.items():
+                    tg.create_task(self._handle_cmd_volume_set(volume_player_id, prev_volume))
+            # restore mute after the volume: a fake mute is simulated with the volume itself,
+            # so it only sticks once the level it hides behind is back in place
             async with TaskManager(self.mass) as tg:
                 for muted_player in muted_players:
                     tg.create_task(self._set_announcement_mute(muted_player, True))
@@ -720,7 +768,8 @@ class AnnouncementsMixin:
         async with TaskManager(self.mass) as tg:
             for volume_player_id, prev_volume in prev_volumes.items():
                 tg.create_task(self._handle_cmd_volume_set(volume_player_id, prev_volume))
-        # restore mute after the volume, because setting a volume unmutes the player again
+        # restore mute after the volume: a fake mute is simulated with the volume itself,
+        # so it only sticks once the level it hides behind is back in place
         async with TaskManager(self.mass) as tg:
             for muted_player_id in prev_muted:
                 if not (muted_player := self.get_player(muted_player_id)):
@@ -814,6 +863,50 @@ class AnnouncementsMixin:
             announcement_volume,
         )
         await self._handle_cmd_volume_set(volume_player.player_id, announcement_volume)
+
+    def _output_owns_volume(self, player: Player, announce_player: Player) -> bool:
+        """
+        Return True if the announcing output can apply the announcement volume itself.
+
+        :param player: The player the announcement is played on.
+        :param announce_player: The player (or linked protocol) that plays the announcement.
+        """
+        volume_control = player.volume_control_for_output(announce_player.player_id)
+        if volume_control == PLAYER_CONTROL_NATIVE:
+            # A native volume lives on the player itself, so only its own output can
+            # apply it: a linked protocol rendering the audio has no way to reach it.
+            return announce_player.player_id == player.player_id
+        if volume_control == announce_player.player_id:
+            # the volume lives on the device the announcing output talks to
+            return True
+        # a bridge player riding on the announcing output forwards its volume to it
+        if control_player := self.get_player(volume_control):
+            return control_player.underlying_player_id == announce_player.player_id
+        return False
+
+    async def _set_announcement_volume(
+        self, player: Player, announcement_volume: int, prev_volumes: dict[str, int]
+    ) -> None:
+        """
+        Apply the announcement volume through the player's own volume control.
+
+        :param player: The player to set the announcement volume on.
+        :param announcement_volume: The resolved announcement volume level.
+        :param prev_volumes: Mapping that is filled in-place with the previous volume level
+            per player id, so the caller can restore the volume even if this call fails.
+        """
+        if player.state.volume_control == PLAYER_CONTROL_NONE:
+            # nothing in the signal path can set a volume at all
+            return
+        if (prev_volume := player.state.volume_level) is None or prev_volume == announcement_volume:
+            return
+        prev_volumes[player.player_id] = prev_volume
+        self.logger.debug(
+            "Announcement to player %s - setting temporary volume (%s)...",
+            player.state.name,
+            announcement_volume,
+        )
+        await self._handle_cmd_volume_set(player.player_id, announcement_volume)
 
     async def _set_announcement_mute(self, player: Player, muted: bool) -> None:
         """

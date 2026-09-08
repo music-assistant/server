@@ -103,7 +103,7 @@ Supporting modules in `helpers/`:
 2. Buffer starts filling from get_media_stream() in background
 3. Analysis (loudness, smart fades) reads the same buffer in parallel, at lower priority
 4. Player requests stream -> get_queue_item_stream() calls buffer.get_stream()
-5. ~30s before track end: prepare_next_audio_buffer() pre-fills next track
+5. 60s before the end of the source stream: prepare_next_audio_buffer() pre-fills next track
 6. _cleanup_stale_queue_buffers() clears old buffers to free memory
 ```
 
@@ -121,7 +121,7 @@ Supporting modules in `helpers/`:
 - **Queue streaming**: `get_queue_item_stream`, `get_queue_item_stream_with_smartfade`, `get_queue_flow_stream`
 - **Format selection**: `get_output_format`, `select_pcm_format`, `select_flow_format`
 - **DSP and output plans**: `get_player_output_plan`, `get_player_dsp_details`, `get_stream_dsp_details`
-- **Crossfade management**: `crossfade_allowed`, `clear_crossfade_data`
+- **Crossfade management**: `crossfade_allowed`, `clear_crossfade_handover`
 - **Loudness analysis**: `attach_loudness_analyzer` (via buffer callbacks)
 
 `AudioProcessingManager`, initialized as `self.audio_processing` on the

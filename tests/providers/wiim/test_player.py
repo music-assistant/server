@@ -1,15 +1,42 @@
 """Tests for WiiM player provider."""
 
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature
 from wiim import PlayingStatus
-from wiim.exceptions import WiimDeviceException, WiimRequestException
+from wiim.exceptions import (
+    WiimDeviceException,
+    WiimInvalidDataException,
+    WiimRequestException,
+)
 
 from music_assistant.models.player import PlayerMedia
-from music_assistant.providers.wiim.constants import SOURCE_NETWORK
+from music_assistant.providers.wiim.constants import (
+    PLAYER_ID_PREFIX,
+    SOURCE_NETWORK,
+    SOURCE_UNKNOWN,
+)
+from music_assistant.providers.wiim.grouping import NativeGroupRole
 from music_assistant.providers.wiim.player import SDK_TO_MA_STATE, WiimPlayer
+
+
+def _mock_native_groups() -> MagicMock:
+    """Create a coordinator mock that reports a standalone topology by default."""
+    groups = MagicMock()
+    groups.role_of.return_value = NativeGroupRole.STANDALONE
+    groups.members_of.return_value = []
+    groups.can_group_with.return_value = set()
+    groups.refresh_leader = AsyncMock()
+    groups.reconcile = AsyncMock()
+    groups.set_members = AsyncMock()
+    groups.schedule_reconcile = MagicMock()
+    groups.schedule_republish = MagicMock()
+    groups.unregister = MagicMock()
+    groups.is_unknown_leader_follower = MagicMock(return_value=False)
+    groups.set_self_role = MagicMock(return_value=False)
+    return groups
 
 
 @pytest.fixture
@@ -37,6 +64,7 @@ def mock_wiim_device() -> MagicMock:
     device.async_set_mute = AsyncMock()
     device.async_set_play_mode = AsyncMock()
     device.sync_device_duration_and_position = AsyncMock()
+    device.async_update_http_status = AsyncMock()
     device.disconnect = AsyncMock()
     device.ensure_subscriptions = AsyncMock()
     device.general_event_callback = None
@@ -73,6 +101,8 @@ def mock_provider(mock_controller: MagicMock) -> MagicMock:
     provider.manifest.domain = "wiim"
     provider.mass = MagicMock()
     provider.mass.players = MagicMock()
+    provider.players = []
+    provider.native_groups = _mock_native_groups()
 
     config = MagicMock()
     config.name = None
@@ -225,6 +255,56 @@ class TestFalsePlayingFilter:
         assert player._attr_playback_state == PlaybackState.IDLE
 
 
+class TestActiveSourceMapping:
+    """Network mode must resolve an active source with or without a registered queue."""
+
+    def test_state_completes_before_the_queue_exists(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """
+        A poll landing before the PlayerQueue is registered must still publish state.
+
+        The player is initialised a moment before its queue, so the first poll after
+        a restart finds no queue; aborting there left the player with no active
+        source and no state update at all.
+        """
+        mock_provider.mass.player_queues.get.return_value = None
+        mock_wiim_device.play_mode = SOURCE_NETWORK
+        player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player._attr_active_source == SOURCE_UNKNOWN
+        player.update_state.assert_called_once()
+
+    def test_queue_with_current_item_is_the_active_source(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A queue that holds a current item makes the player itself the source."""
+        mock_provider.mass.player_queues.get.return_value.current_item = MagicMock()
+        mock_wiim_device.play_mode = SOURCE_NETWORK
+        player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player._attr_active_source == player.player_id
+
+    def test_idle_queue_falls_back_to_unknown(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A registered queue with nothing loaded is not the active source."""
+        mock_provider.mass.player_queues.get.return_value.current_item = None
+        mock_wiim_device.play_mode = SOURCE_NETWORK
+        player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player._attr_active_source == SOURCE_UNKNOWN
+
+
 class TestSupportedFeatures:
     """Test that required features are declared."""
 
@@ -247,6 +327,110 @@ class TestSupportedFeatures:
         """SELECT_SOURCE should be in supported features."""
         player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
         assert PlayerFeature.SELECT_SOURCE in player._attr_supported_features
+
+
+class TestGroupMembers:
+    """Group membership is published from the coordinator's resolved topology."""
+
+    def test_leader_publishes_coordinator_members(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A leader publishes exactly the members the coordinator resolved for it."""
+        leader_player_id = f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}"
+        managed_player_id = f"{PLAYER_ID_PREFIX}uuid:test-wiim-002"
+        mock_provider.native_groups.members_of.return_value = [
+            leader_player_id,
+            managed_player_id,
+        ]
+        player = WiimPlayer(
+            provider=mock_provider,
+            player_id=leader_player_id,
+            device=mock_wiim_device,
+        )
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player._attr_group_members == [leader_player_id, managed_player_id]
+
+    def test_follower_publishes_no_members(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A follower manages no members and clears its own delegated playback state."""
+        mock_provider.native_groups.role_of.return_value = NativeGroupRole.FOLLOWER
+        player = WiimPlayer(
+            provider=mock_provider,
+            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
+            device=mock_wiim_device,
+        )
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        player._attr_group_members = ["stale"]
+        pre_group_state: PlaybackState = PlaybackState.PLAYING
+        player._attr_playback_state = pre_group_state
+        pre_group_media: PlayerMedia | None = cast("PlayerMedia", MagicMock())
+        player._attr_current_media = pre_group_media
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player._attr_group_members == []
+        assert player._attr_playback_state == PlaybackState.IDLE
+        assert player._attr_current_media is None
+        assert player._attr_active_source is None
+
+    def test_unknown_leader_follower_locks_grouping(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A follower of an undiscovered group withdraws grouping so it is not regrouped."""
+        mock_provider.native_groups.is_unknown_leader_follower.return_value = True
+        player = WiimPlayer(
+            provider=mock_provider,
+            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
+            device=mock_wiim_device,
+        )
+        mock_provider.native_groups.is_unknown_leader_follower.return_value = True
+        locked_when_unknown = player.grouping_locked
+        mock_provider.native_groups.is_unknown_leader_follower.return_value = False
+        locked_when_known = player.grouping_locked
+        assert locked_when_unknown is True
+        assert locked_when_known is False
+
+    def test_becoming_follower_clears_active_output_protocol(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """An official device drops a still-active output when it becomes a native follower."""
+        mock_provider.native_groups.role_of.return_value = NativeGroupRole.FOLLOWER
+        player = WiimPlayer(
+            provider=mock_provider,
+            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
+            device=mock_wiim_device,
+        )
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        player.set_active_output_protocol("airplay_x")
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player.active_output_protocol is None
+        assert player._attr_playback_state == PlaybackState.IDLE
+
+    def test_leaving_follower_keeps_output_cleared(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """The dropped output is not restored once the device leaves the group."""
+        mock_provider.native_groups.role_of.return_value = NativeGroupRole.FOLLOWER
+        player = WiimPlayer(
+            provider=mock_provider,
+            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
+            device=mock_wiim_device,
+        )
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        player.set_active_output_protocol("airplay_x")
+        player._update_ma_state_from_sdk_cache()
+        assert player.active_output_protocol is None
+
+        mock_provider.native_groups.role_of.return_value = NativeGroupRole.STANDALONE
+        player._update_ma_state_from_sdk_cache()
+
+        assert player.active_output_protocol is None
 
 
 class TestSourceList:
@@ -287,6 +471,27 @@ class TestSourceList:
         assert "futuremode" not in source_ids
 
 
+class TestVolumeCommand:
+    """Test the volume command reaches the device."""
+
+    @pytest.mark.asyncio
+    async def test_volume_set_delegates_to_device(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """Setting the volume should reach the device and land in the player state."""
+        player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+
+        async def _apply_volume(volume_level: int) -> None:
+            mock_wiim_device.volume = volume_level
+
+        mock_wiim_device.async_set_volume = AsyncMock(side_effect=_apply_volume)
+        await player.volume_set(42)
+
+        mock_wiim_device.async_set_volume.assert_awaited_once_with(42)
+        assert player._attr_volume_level == 42
+
+
 class TestErrorHandling:
     """Test that command errors mark device unavailable."""
 
@@ -302,10 +507,6 @@ class TestErrorHandling:
         assert player._attr_available is True
         player.update_state.assert_called()
 
-    @pytest.mark.skip(
-        reason="volume_set inlines the HTTP fix from wiim PR#18 and no longer calls "
-        "async_set_volume; re-enable when wiim-sdk 0.1.5+ has been released"
-    )
     @pytest.mark.asyncio
     async def test_volume_set_error_refreshes_state(
         self, mock_provider: MagicMock, mock_wiim_device: MagicMock
@@ -317,6 +518,32 @@ class TestErrorHandling:
         await player.volume_set(50)
         assert player._attr_available is True
         player.update_state.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_volume_set_survives_invalid_data_from_device(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A speaker answering a volume command with something other than OK must not throw."""
+        mock_wiim_device.async_set_volume = AsyncMock(
+            side_effect=WiimInvalidDataException("did not return 'OK'")
+        )
+        player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        await player.volume_set(42)
+        assert player._attr_available is True
+
+    @pytest.mark.asyncio
+    async def test_select_source_survives_invalid_data_from_device(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A speaker rejecting a source change must not throw out of the command."""
+        mock_wiim_device.async_set_play_mode = AsyncMock(
+            side_effect=WiimInvalidDataException("did not return 'OK'")
+        )
+        player = WiimPlayer(provider=mock_provider, player_id="uuid:test", device=mock_wiim_device)
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        await player.select_source("bluetooth")
+        assert player._attr_available is True
 
     @pytest.mark.asyncio
     async def test_stop_error_refreshes_state(
@@ -516,3 +743,132 @@ class TestStalePositionOnNewStream:
 
         assert player._attr_elapsed_time == 42
         assert player._attr_elapsed_time_last_updated > 1000.0
+
+
+class TestPollRefreshesTransportState:
+    """Polling must correct state the device stopped pushing events for."""
+
+    def _make_player(self, provider: MagicMock, device: MagicMock) -> WiimPlayer:
+        player = WiimPlayer(provider=provider, player_id="uuid:test", device=device)
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        return player
+
+    @pytest.mark.asyncio
+    async def test_poll_fetches_device_status(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A poll must ask the device for its transport state, not just its position."""
+        player = self._make_player(mock_provider, mock_wiim_device)
+
+        await player.poll()
+
+        mock_wiim_device.async_update_http_status.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_poll_applies_stop_reported_after_missed_events(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A device that went to stop while events were lost must no longer read as paused."""
+        player = self._make_player(mock_provider, mock_wiim_device)
+        player._attr_playback_state = PlaybackState.PAUSED
+        mock_wiim_device.play_mode = SOURCE_NETWORK
+
+        async def _report_stopped() -> None:
+            mock_wiim_device.playing_status = PlayingStatus.STOPPED
+
+        mock_wiim_device.async_update_http_status = AsyncMock(side_effect=_report_stopped)
+
+        await player.poll()
+
+        assert player._attr_playback_state == PlaybackState.IDLE
+
+    @pytest.mark.asyncio
+    async def test_poll_survives_invalid_data_from_device(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A 'Failed' or unparsable status response must not escape the poll."""
+        mock_wiim_device.async_update_http_status = AsyncMock(
+            side_effect=WiimInvalidDataException("Command getStatusEx returned 'Failed'")
+        )
+        player = self._make_player(mock_provider, mock_wiim_device)
+
+        await player.poll()
+
+        mock_wiim_device.sync_device_duration_and_position.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_poll_skips_status_of_unavailable_device(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A device the SDK already gave up on must not be queried again by the poll."""
+        mock_wiim_device.available = False
+        player = self._make_player(mock_provider, mock_wiim_device)
+
+        await player.poll()
+
+        mock_wiim_device.async_update_http_status.assert_not_awaited()
+
+
+class TestSetMembersDelegation:
+    """The official player delegates grouping to the shared coordinator."""
+
+    async def test_set_members_delegates_to_coordinator(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """set_members forwards the add/remove batch to the coordinator unchanged."""
+        leader = WiimPlayer(
+            provider=mock_provider,
+            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
+            device=mock_wiim_device,
+        )
+
+        await leader.set_members(
+            player_ids_to_add=["wiim_uuid:add"], player_ids_to_remove=["wiim_uuid:remove"]
+        )
+
+        mock_provider.native_groups.set_members.assert_awaited_once_with(
+            leader, ["wiim_uuid:add"], ["wiim_uuid:remove"]
+        )
+
+
+class TestAvailabilityRepublish:
+    """A native-availability flip re-publishes peers so their candidate sets don't go stale."""
+
+    def test_availability_flip_republishes_peers(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """When the device becomes unavailable, every native peer is re-published."""
+        player = WiimPlayer(
+            provider=mock_provider,
+            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
+            device=mock_wiim_device,
+        )
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        player._attr_available = True
+        mock_wiim_device.available = False
+
+        player._update_ma_state_from_sdk_cache()
+
+        mock_provider.native_groups.schedule_republish.assert_called()
+
+
+class TestTopologyRefreshDebounce:
+    """A RenderingControl Slave event burst is coalesced into one forced topology refresh."""
+
+    def test_schedule_topology_refresh_dedups_via_task_id(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """The refresh is a leading-edge throttle: a shared task_id, without cancelling a run."""
+        player = WiimPlayer(
+            provider=mock_provider,
+            player_id=f"{PLAYER_ID_PREFIX}{mock_wiim_device.udn}",
+            device=mock_wiim_device,
+        )
+
+        player._schedule_topology_refresh()
+
+        mock_provider.mass.create_task.assert_called_once()
+        kwargs = mock_provider.mass.create_task.call_args.kwargs
+        assert kwargs["task_id"] == f"wiim_topology_{player.player_id}"
+        assert kwargs["force"] is True
+        assert kwargs.get("abort_existing", False) is False

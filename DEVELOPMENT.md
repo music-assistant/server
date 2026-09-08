@@ -5,13 +5,13 @@ Developer docs
 * ffmpeg (minimum version 6.1, version 7 recommended), must be available in the path so install at OS level
 * Python 3.14 is minimal required (the exact pinned runtime lives in `.python-version` at the repo root — that file is the single source of truth for all tools)
 * [Python venv](https://docs.python.org/3/library/venv.html)
-* libchromaprint and PortAudio, also at OS level. Install both if you want to run the `acoustid_lookup` and `local_audio` providers: without libchromaprint AcoustID refuses to load, and without PortAudio local audio loads but finds no output devices. The test suite does not need either: the AcoustID tests drive a fake fingerprinter and the local audio tests that need PortAudio are skipped.
+* libchromaprint, also at OS level. Install it if you want to run the `acoustid_lookup` provider: without libchromaprint AcoustID refuses to load. The test suite does not need it: the AcoustID tests drive a fake fingerprinter.
 
       # macOS
-      brew install chromaprint portaudio
+      brew install chromaprint
 
       # Debian/Ubuntu
-      sudo apt-get install libchromaprint1 libportaudio2
+      sudo apt-get install libchromaprint1
 
     On Apple Silicon, Homebrew installs into `/opt/homebrew`, which is not on the dynamic loader's default search path. `pyacoustid` opens libchromaprint by bare filename, so installing the package is not enough — add this to your shell profile as well:
 
@@ -111,6 +111,7 @@ The easiest way to get start is to copy the contents of the manifest of an exist
 Create a file called `__init__.py` inside the folder of your provider. This file will contain the logic for the provider. All Music Providers must inherit from the [`MusicProvider`](./music_assistant/models/music_provider.py) base class and override the necessary functions where applicable. A few things to note:
 * The `setup()` function is called by Music Assistant upon initialization of the provider. It gives you the opportunity the prepare the provider for usage. For example, logging in a user or obtaining a token can be done in this function.
 * A provider should let Music Assistant know which [`ProviderFeature`](https://github.com/music-assistant/models/blob/main/music_assistant_models/enums.py) it supports by implementing the property `supported_features`, which returns a list of `ProviderFeature`.
+* A podcast provider must set each episode's `position` so that the oldest episode has the lowest number and the newest the highest. The episode listing is sorted on it and "play from here" queues the selected episode plus everything newer, so a provider that numbers episodes by the order its API happens to return them will show them backwards. Rank on the publication date using `rank_episodes_by_date()` in [`podcast_parsers`](./music_assistant/helpers/podcast_parsers.py), and leave the position at 0 where it is unknown.
 * The actual playback of audio in Music Assistant happens in two phases:
     1. `get_stream_details()` is called to obtain information about the audio, like the quality, format, # of channels etc.
     2. `get_audio_stream()` is called to stream raw bytes of audio to the player. There are a few [helpers](./music_assistant/helpers/audio.py) to help you with this. Note that this function is not applicable to direct url streams.
@@ -119,6 +120,36 @@ Create a file called `__init__.py` inside the folder of your provider. This file
     2. Streaming a direct URL, see the [Youtube Music](./music_assistant/providers/ytmusic/__init__.py) provider as an example
     3. Streaming an https stream that uses an expiring URL, see the [Qobuz](./music_assistant/providers/qobuz/__init__.py) provider as an example
 
+
+**Rules for providers that stream from a music service**
+
+Music Assistant plays music to your own speakers; it is not a way to download or keep
+copies of it. See the [usage policy](https://github.com/music-assistant/.github/blob/main/USAGE_POLICY.md).
+A provider that talks to a music service must therefore:
+
+* **Authenticate as the user.** Fetch audio the way an ordinary client would, using the
+  account the user configured. Do not bypass a subscription tier or regional availability.
+* **Decode only what the user is entitled to.** Where a service protects its audio, obtain the
+  key or licence the way its own client does, for the account the user configured. Decode in
+  order to play, never to produce a file. Where there is no licence path for the account, skip
+  the item rather than reaching for one.
+* **Be a well-behaved client of the API.** Put a
+  [`Throttler` or `ThrottlerManager`](./music_assistant/helpers/throttle_retry.py) in front of a
+  service's API and set it to what that service actually tolerates, and put
+  [`@use_cache`](./music_assistant/controllers/cache/helpers.py) on the lookups that repeat
+  instead of asking again. Back off on a 429 rather than retrying into it.
+  A provider that hammers a service puts every Music Assistant user's account at risk, not just
+  the developer's.
+* **Keep the provider's audio address inside the server.** Return it in `StreamDetails`, which
+  does not serialize it. Never place it on a media item, an API result, or a route that hands
+  it to a caller.
+* **Do not persist decoded audio.** Streaming providers must return a stream, not bytes cached
+  to disk.
+* **Honour the service's own limits.** Where a service states how many streams one account may
+  run at once, override `max_concurrent_streams` with that number — see
+  [`MusicProvider`](./music_assistant/models/music_provider.py).
+
+Changes that weaken any of these will not be accepted, however useful they are otherwise.
 
 ## ▶️ Building your own Player Provider
 A Player Provider is the provider type that adds support for a 'target of playback' to Music Assistant. Sonos, Chromecast and AirPlay are examples of a Player Provider.

@@ -36,6 +36,7 @@ from music_assistant.providers.filesystem_local.constants import (
     PODCAST_EPISODE_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
     TRACK_EXTENSIONS,
+    WALK_EXTENSIONS,
 )
 from music_assistant.providers.filesystem_local.helpers import FileSystemItem, ScanErrors
 
@@ -49,8 +50,11 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.setup_flow import SetupSession
 
-# (id, name, is_dir, checksum, size) as returned by _api_list_children
-RawItem = tuple[str, str, bool, str, int | None]
+# (id, name, is_dir, checksum, size, metadata_token) as returned by _api_list_children.
+# metadata_token is an optional higher-precision token (e.g. a stronger hash a provider
+# also computes) used only to detect a metadata file (NFO/image) changing; it never
+# substitutes for checksum, which stays whatever it always was for imported media.
+RawItem = tuple[str, str, bool, str, int | None, str | None]
 
 # extensions the stream route will serve; playlists/cue/images are read
 # server-side and never fetched over HTTP, so audio is all it needs to proxy
@@ -183,6 +187,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        await super().unload(is_removed)
         if self._unregister_stream_route is not None:
             self._unregister_stream_route()
 
@@ -264,6 +269,13 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
     # filesystem hooks (these are what the parent calls)
     # ------------------------------------------------------------------
 
+    async def _is_reachable(self) -> bool:
+        """Return whether the cloud storage can be read."""
+        # this provider has no local path to stat, so ask the API for the root listing;
+        # an outage (or expired credentials) surfaces as a raised error
+        await self._scandir("", use_cache=False)
+        return True
+
     async def _scandir(self, path: str, use_cache: bool = True) -> list[FileSystemItem]:
         """
         List the children of a cloud folder.
@@ -306,12 +318,13 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         self,
         *,
         file_checksums: dict[str, str],
-        cue_file_checksums: dict[str, str],
+        cue_file_checksums: dict[str, set[str]],
         cur_filenames: set[str],
         items_to_process: list[tuple[FileSystemItem, str | None]],
         unchanged_cue_items: list[FileSystemItem],
         cue_stems: set[str],
         scan_errors: ScanErrors,
+        metadata_files: list[FileSystemItem],
     ) -> None:
         """Walk the cloud folder tree via the API and populate the sync buckets."""
         ignore_album_playlists = self.media_content_type == "music" and bool(
@@ -345,7 +358,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
                     if scan_errors.aborted:
                         return
                     continue
-                if item.ext not in SUPPORTED_EXTENSIONS:
+                if item.ext not in WALK_EXTENSIONS:
                     continue
                 scanned[0] += 1
                 if scanned[0] % 500 == 0:
@@ -359,6 +372,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
                     unchanged_cue_items=unchanged_cue_items,
                     cue_stems=cue_stems,
                     ignore_album_playlists=ignore_album_playlists,
+                    metadata_files=metadata_files,
                 )
 
         await _walk("", is_root=True)
@@ -474,7 +488,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
 
     def _to_item(self, raw: RawItem, parent_path: str, name: str) -> FileSystemItem:
         """Convert a raw API listing entry to a FileSystemItem."""
-        _, _, is_dir, checksum, size = raw
+        _, _, is_dir, checksum, size, metadata_token = raw
         relative_path = f"{parent_path}/{name}" if parent_path else name
         return FileSystemItem(
             filename=name,
@@ -486,4 +500,5 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
             is_dir=is_dir,
             checksum=checksum,
             file_size=size,
+            metadata_token=metadata_token,
         )

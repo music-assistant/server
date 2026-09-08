@@ -723,6 +723,9 @@ def _make_streamdetails(
     streamdetails.audio_format = AudioFormat(
         sample_rate=sample_rate, bit_depth=bit_depth, channels=channels
     )
+    # a real StreamDetails leaves this unset unless the provider handed over
+    # already-decoded audio, and a MagicMock attribute would read as one
+    streamdetails.decoded_audio_format = None
     streamdetails.volume_normalization_mode = volume_normalization_mode
     streamdetails.media_type = media_type
     return streamdetails

@@ -536,17 +536,20 @@ async def test_delayed_autostart_stream_cannot_override_manual_selection(
     await _settle()
 
     queues = get_queues(provider)
-    queues.stop_started = asyncio.Event()
-    queues.release_stop = asyncio.Event()
+    # the handoff suspends while it releases the autostart player, which is where the
+    # delayed request has to arrive for this to be the race it is testing
+    players = get_players(provider)
+    players.stop_started = asyncio.Event()
+    players.release_stop = asyncio.Event()
     manual = asyncio.create_task(
         provider.on_source_selected("client-1", "player-2", "queue-2", "session-1")
     )
-    await queues.stop_started.wait()
+    await players.stop_started.wait()
     delayed = asyncio.create_task(
         provider.on_source_selected("client-1", "client-1", "client-1", "session-2")
     )
     await asyncio.sleep(0)
-    queues.release_stop.set()
+    players.release_stop.set()
     await manual
     with pytest.raises(RuntimeError, match="Superseded autostart"):
         await delayed
@@ -601,8 +604,9 @@ async def test_signal_loss_stops_a_running_source(fake_client: _FakeClient) -> N
     fake_client.emit(_signal(SignalState.PRESENT))
     fake_client.emit(_signal(SignalState.ABSENT))
     await _settle()
-    # Stopping the queue, not the player, also clears its pending preload timers.
-    assert get_queues(provider).stopped == ["queue-1"]
+    # the source is given up on the player that owns it, so the player stops saying
+    # it is playing something that has gone quiet
+    assert get_players(provider).deselected == ["queue-1"]
 
 
 async def test_signal_return_cancels_pending_autostop(
@@ -629,7 +633,7 @@ async def test_a_reconnect_does_not_defuse_a_pending_autostop(fake_client: _Fake
     fake_client.emit(_signal(SignalState.ABSENT))
     await provider.on_source_selected("client-1", "player-1", "queue-1", "session-2")
     await _settle()
-    assert get_queues(provider).stopped == ["queue-1"]
+    assert get_players(provider).deselected == ["queue-1"]
 
 
 async def test_deferred_reconnect_does_not_rewatch_after_unload(fake_client: _FakeClient) -> None:

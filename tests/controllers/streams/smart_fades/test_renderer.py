@@ -9,13 +9,13 @@ from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.controllers.streams.smart_fades.filters import (
-    CrossfadeFilter,
     FadeInTrimFilter,
     FadeOutTrimFilter,
     GradualTimeStretchFilter,
     PeakFilter,
     ShelfFilter,
     ShelfType,
+    StreamingCrossfadeFilter,
 )
 from music_assistant.controllers.streams.smart_fades.models import (
     EqPlan,
@@ -75,7 +75,7 @@ class TestTransitionRenderer:
             FadeInTrimFilter,
             ShelfFilter,  # B low
             ShelfFilter,  # B high
-            CrossfadeFilter,
+            StreamingCrossfadeFilter,
         ]
 
     def test_minimal_chain_is_shelves_then_crossfade(self) -> None:
@@ -86,7 +86,7 @@ class TestTransitionRenderer:
             ShelfFilter,
             ShelfFilter,
             ShelfFilter,
-            CrossfadeFilter,
+            StreamingCrossfadeFilter,
         ]
 
     def test_bypassed_low_shelves_are_skipped(self) -> None:
@@ -98,7 +98,7 @@ class TestTransitionRenderer:
         assert [type(f) for f in filters] == [
             ShelfFilter,  # A high
             ShelfFilter,  # B high
-            CrossfadeFilter,
+            StreamingCrossfadeFilter,
         ]
 
     def test_all_shelves_bypassed_leaves_only_crossfade(self) -> None:
@@ -109,7 +109,7 @@ class TestTransitionRenderer:
         eq_plan.high_out = None
         eq_plan.high_in = None
         filters, _ = TransitionRenderer(LOGGER).render(_plan(eq_plan=eq_plan), PCM, _seconds(45))
-        assert [type(f) for f in filters] == [CrossfadeFilter]
+        assert [type(f) for f in filters] == [StreamingCrossfadeFilter]
 
     def test_timing_accounts_for_both_tracks(self) -> None:
         """PRE+CF spans the fade-out, TRIM+CF+POST spans the fade-in."""
@@ -143,7 +143,7 @@ class TestTransitionRenderer:
         plan = _plan(crossfade_duration=10.0, fadein_trim_start=1.0)
         filters, timing = TransitionRenderer(LOGGER).render(plan, PCM, _seconds(5))
         crossfade = filters[-1]
-        assert isinstance(crossfade, CrossfadeFilter)
+        assert isinstance(crossfade, StreamingCrossfadeFilter)
         # 5s buffer minus the 1s trim leaves 4s of incoming audio
         assert crossfade.crossfade_samples == 4 * PCM.sample_rate
         assert timing.crossfade_duration == pytest.approx(4.0)
@@ -152,17 +152,17 @@ class TestTransitionRenderer:
         """With full buffers the filter carries the plan duration, frame-exact."""
         filters, timing = TransitionRenderer(LOGGER).render(_plan(), PCM, _seconds(45))
         crossfade = filters[-1]
-        assert isinstance(crossfade, CrossfadeFilter)
+        assert isinstance(crossfade, StreamingCrossfadeFilter)
         assert crossfade.crossfade_samples == 10 * PCM.sample_rate
         assert timing.crossfade_duration == pytest.approx(10.0)
 
     def test_fadeout_curve_flows_into_the_crossfade_filter(self) -> None:
-        """The plan's fadeout_curve becomes the acrossfade filter's c1 curve."""
+        """The plan's fadeout_curve becomes the outgoing stream's fade curve."""
         plan = _plan(fadeout_curve="nofade")
         filters, _ = TransitionRenderer(LOGGER).render(plan, PCM, _seconds(45))
         crossfade = filters[-1]
-        assert isinstance(crossfade, CrossfadeFilter)
-        assert "c1=nofade" in crossfade.apply("[fadein]", "[fadeout]")[0]
+        assert isinstance(crossfade, StreamingCrossfadeFilter)
+        assert "curve=nofade" in crossfade.apply("[fadein]", "[fadeout]")[0]
 
     def test_stretch_savings_shorten_fadeout_accounting(self) -> None:
         """A speed-up ramp removes time from the rendered fade-out total."""
@@ -190,7 +190,7 @@ class TestMidSwapRendering:
             ShelfFilter,  # B low
             ShelfFilter,  # B high
             PeakFilter,  # B mid
-            CrossfadeFilter,
+            StreamingCrossfadeFilter,
         ]
 
     def test_mid_none_is_skipped(self) -> None:

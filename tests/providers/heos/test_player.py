@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import MagicMock
+from typing import cast
+from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant_models.enums import MediaType
 from pyheos import PlayState as HeosPlayState
@@ -103,6 +104,90 @@ def test_external_source_now_playing_still_updates_media() -> None:
     player._update_player_current_media()
 
     assert player._attr_current_media.title == "External Track"
+
+
+def test_external_source_is_ignored_during_ma_playback_transition() -> None:
+    """Suppress external-source media updates while MA playback is starting."""
+    player = _make_player(_external_now_playing(None))
+    player._ma_playback_starting = True
+    player._ma_controls_playback = True
+    current_media = PlayerMedia(
+        uri="http://ma/stream/foo", media_type=MediaType.TRACK, title="MA Track"
+    )
+    player._attr_current_media = current_media
+
+    player._update_player_current_media()
+
+    assert player._ma_playback_starting is True
+    assert player._ma_controls_playback is True
+    assert player._attr_current_media.title == "MA Track"
+
+    player._finish_ma_playback_transition()
+
+    assert player._attr_current_media.title == "External Track"
+    assert player._ma_controls_playback is False
+
+
+async def test_new_ma_playback_cancels_previous_transition() -> None:
+    """Keep a new MA playback transition protected from the previous timer."""
+    player = _make_player(_url_stream_now_playing())
+    mass = cast("MagicMock", player.mass)
+    device = cast("MagicMock", player._device)
+    transition_pending = True
+
+    def cancel_timer(task_id: str) -> None:
+        nonlocal transition_pending
+        assert task_id == f"heos_playback_transition_{player.player_id}"
+        transition_pending = False
+
+    async def play_url(_: str) -> None:
+        if transition_pending:
+            player._finish_ma_playback_transition()
+
+    mass.cancel_timer.side_effect = cancel_timer
+    mass.streams.resolve_stream_url = AsyncMock(return_value="http://ma/stream/new")
+    device.play_url = AsyncMock(side_effect=play_url)
+    player._ma_playback_starting = True
+
+    await player.play_media(
+        PlayerMedia(
+            uri="library://track/2",
+            media_type=MediaType.TRACK,
+            title="New MA Track",
+        )
+    )
+
+    assert player._ma_playback_starting is True
+    mass.cancel_timer.assert_called_once_with(f"heos_playback_transition_{player.player_id}")
+
+
+async def test_select_source_ends_ma_playback_transition() -> None:
+    """Allow an explicit source change to update HEOS media immediately."""
+    player = _make_player(_url_stream_now_playing())
+    mass = cast("MagicMock", player.mass)
+    device = cast("MagicMock", player._device)
+    player._ma_playback_starting = True
+
+    async def play_input_source(_: str) -> None:
+        assert player._ma_playback_starting is False
+
+    device.play_input_source = AsyncMock(side_effect=play_input_source)
+
+    await player.select_source("aux_in_1")
+
+    mass.cancel_timer.assert_called_once_with(f"heos_playback_transition_{player.player_id}")
+
+
+async def test_player_unload_cancels_playback_transition() -> None:
+    """Cancel the playback transition when the player unloads."""
+    player = _make_player(_url_stream_now_playing())
+    mass = cast("MagicMock", player.mass)
+    player._ma_playback_starting = True
+
+    await player.on_unload()
+
+    mass.cancel_timer.assert_any_call(f"heos_playback_transition_{player.player_id}")
+    assert player._ma_playback_starting is False
 
 
 def test_media_position_and_duration_reported_in_seconds() -> None:

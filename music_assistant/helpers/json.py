@@ -45,6 +45,29 @@ def get_serializable_value(obj: Any) -> Any:
     return obj
 
 
+def make_utf8_safe(value: str) -> str:
+    """
+    Return the given string made encodable if it is not valid UTF-8.
+
+    Lone surrogates, as the os module returns for undecodable filesystem paths, come
+    back as their backslash escapes.
+
+    :param value: The string to make safe.
+    """
+    try:
+        value.encode()
+    except UnicodeEncodeError:
+        try:
+            # a surrogate escape stands for one raw byte, so map it back to show
+            # the actual filename bytes instead of the surrogates
+            raw = value.encode("utf-8", "surrogateescape")
+        except UnicodeEncodeError:
+            # any other lone surrogate has no byte to map back to
+            return value.encode("utf-8", "backslashreplace").decode()
+        return raw.decode("utf-8", "backslashreplace")
+    return value
+
+
 def serialize_to_json(obj: Any) -> Any:
     """Serialize a value (or a list of values) to json."""
     if obj is None:

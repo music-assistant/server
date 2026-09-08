@@ -278,7 +278,7 @@ async def test_provider_bytes_use_disk_cache_across_restart(
     assert len(fetch_calls) == 1
     cache_key = create_thumb_hash("fake--1", "some/prov/path.jpg")
     src_file = os.path.join(mass_minimal.cache_path, "thumbnails", f"{cache_key}_src")
-    assert os.path.isfile(src_file)
+    assert Path(src_file).is_file()
 
     # simulate a restart: memory tier gone, disk entry remains
     images._source_memory_cache.clear()
@@ -312,7 +312,7 @@ async def test_local_file_read_cached_on_disk(
     cache_key = create_thumb_hash("builtin", image_path)
     assert cache_key in images._source_memory_cache.entries
     src_file = os.path.join(mass_minimal.cache_path, "thumbnails", f"{cache_key}_src")
-    assert os.path.isfile(src_file)
+    assert Path(src_file).is_file()
 
     # after a restart the disk entry serves the bytes without touching the origin
     # (which may live on a network mount) - local entries have no TTL
@@ -339,7 +339,7 @@ async def test_remote_disk_entry_expires_after_ttl(
     assert len(fetch_calls) == 1
     cache_key = create_thumb_hash("builtin", remote_url)
     src_file = os.path.join(mass_minimal.cache_path, "thumbnails", f"{cache_key}_src")
-    assert os.path.isfile(src_file)
+    assert Path(src_file).is_file()
 
     # a fresh disk entry is used after a restart...
     images._source_memory_cache.clear()
@@ -622,7 +622,7 @@ async def test_embedded_art_retag_flow(
     assert len(fetch_calls) == 1
     cache_key = create_thumb_hash("builtin", track_path)
     src_file = os.path.join(mass_minimal.cache_path, "thumbnails", f"{cache_key}_src")
-    assert os.path.isfile(src_file)  # ffmpeg extraction is disk-cache worthy
+    assert Path(src_file).is_file()  # ffmpeg extraction is disk-cache worthy
 
     # a restart later, the disk entry avoids re-running ffmpeg
     images._source_memory_cache.clear()
@@ -635,7 +635,7 @@ async def test_embedded_art_retag_flow(
     assert len(fetch_calls) == 1
     # ...until it is invalidated, after which the new art is extracted
     await invalidate_cached_image(mass_minimal, "builtin", track_path)
-    assert not os.path.exists(src_file)
+    assert not Path(src_file).exists()
     new_art = await get_image_data(mass_minimal, track_path, "builtin")
     assert len(fetch_calls) == 2
     assert new_art != original_art

@@ -11,9 +11,6 @@ on:
   push:
     branches:
       - dev
-    paths:
-      - pyproject.toml
-      - requirements_all.txt
   # Manual escape hatch to drain a stranded bump PR without a human merge commit
   workflow_dispatch:
 

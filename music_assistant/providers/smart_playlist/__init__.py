@@ -21,7 +21,8 @@ from contextlib import suppress
 from dataclasses import replace as dc_replace
 from itertools import zip_longest
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from types import EllipsisType
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
@@ -47,6 +48,7 @@ from music_assistant_models.media_items.metadata import MediaItemImage, MediaIte
 
 from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
 from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.music.constants import DYNAMIC_RADIO_BASE_SAMPLE_SIZE
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.plugin_engines import (
     create_ai_engine_config_entries,
@@ -74,10 +76,13 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
+    from music_assistant.providers.radio_playlist import RadioPlaylistProvider
 
 FETCH_LIMIT = 2000
 CACHE_CATEGORY_DYNAMIC_SAMPLE = 0
 DYNAMIC_SAMPLE_CACHE_EXPIRATION = 24 * 3600  # 24h; stale entries are still served via SWR
+
+EVENT_RECOMMENDATIONS_UPDATED = "recommendations_updated"
 
 CONF_AI_DESCRIPTIONS = "ai_descriptions"
 CONF_AI_ENGINE = "ai_engine"
@@ -319,7 +324,14 @@ class SmartPlaylistProvider(PluginProvider):
         if item_id != "smart_playlists":
             return items
         for pid, rules in self._rules_store.items():
-            items.append(await self._build_playlist(pid, rules))
+            library_item = await self.mass.music.playlists.get_library_item_by_prov_id(
+                pid, self.instance_id
+            )
+            if library_item:
+                items.append(ItemMapping.from_item(library_item))
+            else:
+                playlist = await self._build_playlist(pid, rules, library_item)
+                items.append(playlist)
         return items
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
@@ -441,6 +453,7 @@ class SmartPlaylistProvider(PluginProvider):
                 self._descriptions_store.pop(prov_id, None)
                 await self._invalidate_dynamic_sample_cache(prov_id)
                 await self._flush_rules_to_disk()
+                self.signal_provider_event({"event": EVENT_RECOMMENDATIONS_UPDATED})
                 break
 
     async def _on_media_item_updated(self, event: MassEvent) -> None:
@@ -493,6 +506,7 @@ class SmartPlaylistProvider(PluginProvider):
         library_playlist = await self.mass.music.playlists.add_item_to_library(playlist)
         self.mass.metadata.schedule_update_metadata(library_playlist)
         self._schedule_ai_description_refresh(playlist_id)
+        self.signal_provider_event({"event": EVENT_RECOMMENDATIONS_UPDATED})
         return library_playlist
 
     async def generate_playlist(
@@ -690,7 +704,12 @@ class SmartPlaylistProvider(PluginProvider):
             self.logger.debug("Could not resolve playlist id %s: %s", playlist_id, err)
         return None
 
-    async def _build_playlist(self, playlist_id: str, rules: SmartPlaylistRules) -> Playlist:
+    async def _build_playlist(
+        self,
+        playlist_id: str,
+        rules: SmartPlaylistRules,
+        library_item: Playlist | EllipsisType | None = ...,
+    ) -> Playlist:
         """Build a Playlist object from stored rules."""
         name = self._names_store.get(playlist_id, playlist_id)
         playlist = Playlist(
@@ -712,15 +731,18 @@ class SmartPlaylistProvider(PluginProvider):
         playlist.is_dynamic = rules.is_dynamic
         playlist.metadata = MediaItemMetadata(
             description=self._description_for(playlist_id, rules),
-            images=await self._images_for(playlist_id),
+            images=await self._images_for(playlist_id, library_item),
         )
         return playlist
 
-    async def _images_for(self, playlist_id: str) -> UniqueList[MediaItemImage]:
+    async def _images_for(
+        self, playlist_id: str, library_item: Playlist | EllipsisType | None = ...
+    ) -> UniqueList[MediaItemImage]:
         """Return images for the playlist from the library, or empty list if none available."""
-        library_item = await self.mass.music.playlists.get_library_item_by_prov_id(
-            playlist_id, self.instance_id
-        )
+        if library_item is ...:
+            library_item = await self.mass.music.playlists.get_library_item_by_prov_id(
+                playlist_id, self.instance_id
+            )
         if library_item and library_item.metadata and library_item.metadata.images:
             return library_item.metadata.images
         return UniqueList([])
@@ -747,7 +769,9 @@ class SmartPlaylistProvider(PluginProvider):
         if seed_uris:
             # Seed mode: a similar-tracks pool derived from the seeds is the exclusive source.
             # artist_ids and album_ids are ignored per design.
-            tracks = await self._tracks_from_seeds(seed_uris, target_size=rules.limit)
+            tracks = await self._tracks_from_seeds(
+                seed_uris, target_size=rules.limit, is_dynamic=rules.is_dynamic
+            )
             tracks = await self._apply_seed_post_filters(tracks, rules)
         else:
             if rules.logic == LOGIC_AND:
@@ -1272,7 +1296,9 @@ class SmartPlaylistProvider(PluginProvider):
             summary=False,
         )
 
-    async def _tracks_from_seeds(self, seed_uris: list[str], target_size: int) -> list[Track]:
+    async def _tracks_from_seeds(
+        self, seed_uris: list[str], target_size: int, is_dynamic: bool
+    ) -> list[Track]:
         """Build a pool of each seed's own tracks plus tracks similar to them."""
         seeds: list[MediaItemType] = []
         for uri in seed_uris:
@@ -1288,37 +1314,75 @@ class SmartPlaylistProvider(PluginProvider):
                 self.logger.warning("Could not resolve seed %s: %s", uri, exc)
         if not seeds:
             return []
-        # round-robin each seed's own pool so seeds contribute evenly; `seen` dedupes across them
+
+        radio_prov = self.mass.get_provider("radio_playlist")
+        if radio_prov is None:
+            return []
+        radio_provider = cast("RadioPlaylistProvider", radio_prov)
+
         pool_cap = target_size * 3
-        per_seed_cap = -(-pool_cap // len(seeds))  # ceil, so the pools can still fill the cap
+        # dynamic playlists deliberately keep a tight single-batch budget; static (one-shot)
+        # generation accumulates up to the full pool cap so post-filters keep headroom
+        per_seed_budget = target_size if is_dynamic else pool_cap
+        per_seed_target = -(-per_seed_budget // len(seeds))  # ceil
+        # a productive batch adds at least its freshly sampled base tracks, so bounding rounds
+        # by that minimum yield lets the no-new-tracks break do the real termination
+        max_rounds = -(-per_seed_target // DYNAMIC_RADIO_BASE_SAMPLE_SIZE) + 2
+
+        per_seed_pools = await asyncio.gather(
+            *(
+                self._seed_dynamic_pool(
+                    radio_provider, seed, target_size, per_seed_target, max_rounds
+                )
+                for seed in seeds
+            )
+        )
+
+        # round-robin each seed's own pool so seeds contribute evenly; `seen` dedupes across them
         seen: set[Track] = set()
-        per_seed_pools: list[list[Track]] = []
-        for seed in seeds:
-            seed_pool: list[Track] = []
-            with suppress(MusicAssistantError):
-                seed_tracks = await self.mass.player_queues.get_tracks_for_playback(seed)
-                # shuffle so seeds are drawn from across the whole playlist, not just its top
-                random.shuffle(seed_tracks)
-                for base in seed_tracks:
-                    if len(seed_pool) >= per_seed_cap:
-                        break
-                    if base not in seen:
-                        seen.add(base)
-                        seed_pool.append(base)
-                    with suppress(MusicAssistantError):
-                        for track in await self.mass.music.tracks.similar_tracks(
-                            base.item_id, base.provider
-                        ):
-                            if len(seed_pool) >= per_seed_cap:
-                                break
-                            if track not in seen:
-                                seen.add(track)
-                                seed_pool.append(track)
-            per_seed_pools.append(seed_pool)
+        deduped_pools: list[list[Track]] = []
+        for seed_pool in per_seed_pools:
+            deduped: list[Track] = []
+            for track in seed_pool:
+                if track not in seen:
+                    seen.add(track)
+                    deduped.append(track)
+            deduped_pools.append(deduped)
         pool: list[Track] = []
-        for round_tracks in zip_longest(*per_seed_pools):
+        for round_tracks in zip_longest(*deduped_pools):
             pool.extend(track for track in round_tracks if track is not None)
         return pool[:pool_cap]
+
+    async def _seed_dynamic_pool(
+        self,
+        provider: RadioPlaylistProvider,
+        seed: MediaItemType,
+        target_size: int,
+        per_seed_target: int,
+        max_rounds: int,
+    ) -> list[Track]:
+        """Accumulate one seed's endless-mix batches until it reaches its share of the pool."""
+        seen: set[Track] = set()
+        pool: list[Track] = []
+        # a single batch tops out around ~55 tracks (5 base + ~50 similar), so a larger static
+        # target needs several batches; each batch re-samples base tracks so the endless-mix
+        # base/similar ratio holds at any scale
+        for _ in range(max_rounds):
+            try:
+                batch = await provider.get_dynamic_tracks(
+                    [seed], include_base_tracks=True, target_size=target_size
+                )
+            except MusicAssistantError:
+                break
+            added = False
+            for track in batch:
+                if track not in seen:
+                    seen.add(track)
+                    pool.append(track)
+                    added = True
+            if len(pool) >= per_seed_target or not added:
+                break
+        return pool
 
     async def _update_playlist_description(
         self, library_item_id: int | str, description: str

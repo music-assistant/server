@@ -14,11 +14,10 @@ music_assistant/providers/audible/audible_helper.py	21
 music_assistant/providers/audiobookshelf/__init__.py	10
 music_assistant/providers/audiobookshelf/helpers.py	4
 music_assistant/providers/bandcamp/__init__.py	11
-music_assistant/providers/bbc_sounds/__init__.py	9
+music_assistant/providers/bbc_sounds/__init__.py	1
 music_assistant/providers/bbc_sounds/adaptor.py	5
 music_assistant/providers/bluesound/player.py	3
 music_assistant/providers/deezer/browse.py	3
-music_assistant/providers/deezer/gw_client.py	5
 music_assistant/providers/deezer/media.py	27
 music_assistant/providers/deezer/streaming.py	2
 music_assistant/providers/digitally_incorporated/__init__.py	2
@@ -48,7 +47,6 @@ music_assistant/providers/nicovideo/helpers/hls_seek_optimizer.py	1
 music_assistant/providers/nicovideo/services/search.py	1
 music_assistant/providers/nugs/__init__.py	2
 music_assistant/providers/orf_radiothek/__init__.py	9
-music_assistant/providers/pandora/provider.py	6
 music_assistant/providers/party/__init__.py	4
 music_assistant/providers/phishin/provider.py	4
 music_assistant/providers/plex_connect/playback.py	10
@@ -65,9 +63,6 @@ music_assistant/providers/sonic_analysis/vendored_clap/clap_wrapper.py	4
 music_assistant/providers/sonic_analysis/vendored_clap/models/htsat.py	7
 music_assistant/providers/sonic_similarity/provider.py	1
 music_assistant/providers/soundcloud/__init__.py	7
-music_assistant/providers/tidal/api_client.py	1
-music_assistant/providers/tidal/media.py	5
-music_assistant/providers/tidal/provider.py	25
 music_assistant/providers/tidal/tidal_page_parser.py	2
 music_assistant/providers/tunein/__init__.py	2
 music_assistant/providers/vban_receiver/stats.py	2

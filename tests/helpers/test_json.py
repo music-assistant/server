@@ -12,9 +12,15 @@ import pytest
 from music_assistant.helpers.json import (
     get_serializable_value,
     json_dumps,
+    make_utf8_safe,
     serialize_to_json,
     strip_code_fence,
 )
+
+# a filename byte that is not valid UTF-8 arrives as a lone surrogate, here the
+# latin-1 encoded "ß" of a folder named "Straße"
+UNDECODABLE_PATH = "Musik/Stra\udcdfe/cover.jpg"
+ESCAPED_PATH = "Musik/Stra\\xdfe/cover.jpg"
 
 
 @pytest.mark.parametrize(
@@ -130,3 +136,16 @@ def test_get_serializable_value_still_returns_unhandled_values() -> None:
     """The direct helper stays lenient, only the orjson hook raises."""
     obj = _Unhandled()
     assert get_serializable_value(obj) is obj
+
+
+def test_make_utf8_safe_escapes_lone_surrogates() -> None:
+    """Strings that are not valid UTF-8 are replaced by their escaped form."""
+    assert make_utf8_safe(UNDECODABLE_PATH) == ESCAPED_PATH
+    # a lone surrogate that does not stand for a byte has to be escaped as itself
+    assert make_utf8_safe("half a pair: \ud800").encode() == b"half a pair: \\ud800"
+
+
+@pytest.mark.parametrize("value", ["plain", "Straße", "日本語", ""])
+def test_make_utf8_safe_leaves_valid_strings_untouched(value: str) -> None:
+    """Anything that is already valid UTF-8 comes back unchanged."""
+    assert make_utf8_safe(value) == value

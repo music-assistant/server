@@ -159,8 +159,8 @@ async def _seed_playlist_and_radio(mass: MusicAssistant) -> None:
 async def test_library_summary_items_parity(e2e_mass: MusicAssistant) -> None:
     """Summary items must match their full counterparts on every retained field."""
     mass = e2e_mass
-    # wait for the initial (auto-scheduled) sync of the test provider and the
-    # follow-up genre scan so the library is fully populated
+    # wait for the sync of the test provider and the follow-up genre scan
+    # so the library is fully populated
     async with wait_for_sync_completion(mass):
         await mass.music.start_sync()
     await wait_for(lambda: not mass.music.active_sync_tasks)

@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import Final
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, ImageType
 
 CONF_MISSING_ALBUM_ARTIST_ACTION = "missing_album_artist_action"
 CONF_CONTENT_TYPE = "content_type"
@@ -158,6 +158,20 @@ SUPPORTED_EXTENSIONS = {
     *CUE_EXTENSIONS,
 }
 
+# local metadata files (Kodi-style NFO and recognized folder images) are never imported as
+# media: they carry no provider mapping of their own and only feed the lightweight change
+# detection that reparses their representative track when one of them changes on disk
+NFO_FILENAMES = {"album.nfo", "artist.nfo"}
+METADATA_IMAGE_STEMS = {image_type.value for image_type in ImageType} | {
+    "folder",
+    "cover",
+    "album",
+    "artist",
+}
+METADATA_FILE_EXTENSIONS = {"nfo", *IMAGE_EXTENSIONS}
+# the walk collects both imported media and local metadata files in a single pass
+WALK_EXTENSIONS = SUPPORTED_EXTENSIONS | METADATA_FILE_EXTENSIONS
+
 
 class IsChapterFile(Exception):
     """Exception to indicate that a file is part of a multi-part media (e.g. audiobook chapter)."""
@@ -171,9 +185,21 @@ CACHE_CATEGORY_PODCAST_METADATA: Final[int] = 5
 CACHE_CATEGORY_CUE_SHEETS: Final[int] = 6
 CACHE_CATEGORY_SOUND_EFFECTS: Final[int] = 7
 CACHE_CATEGORY_PODCAST_EPISODES: Final[int] = 8
+# tracks the current change token + representative track of a local metadata file (NFO or
+# folder image); derivative and non-authoritative, so a cache miss is simply ignored
+CACHE_CATEGORY_METADATA_FILE: Final[int] = 9
+
+# a registration is only ever refreshed by actually reading the file again, never on a timer,
+# so it must not expire under normal operation: an infrequently-touched item (an unchanged NFO
+# for months) would otherwise silently fall back to "untracked" once the entry expired
+METADATA_FILE_CACHE_EXPIRATION: Final[int] = 86400 * 365 * 10  # ~permanent for the provider's life
 
 # how long a podcast episode listing that lost a file to a parse failure is cached for:
 # the missing episode cannot reappear any sooner than this
 PARTIAL_LISTING_CACHE_EXPIRATION: Final[int] = 300
 
 DEFAULT_AUDIOBOOK_PODCAST_GENRE: Final[str] = "Spoken Word"
+
+# how often storage that went away during a scan is re-checked, so the provider comes
+# back within minutes instead of waiting for the next scheduled sync
+AVAILABILITY_PROBE_INTERVAL: Final[int] = 300

@@ -10,7 +10,9 @@ import subprocess
 from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from json import JSONDecodeError
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -38,6 +40,15 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
 # the slash is also a common splitter but causes collisions with
 # artists actually containing a slash in the name, such as AC/DC
 TAG_SPLITTER = ";"
+
+# Date tags in preference order, original before the reissue and full dates before bare years.
+# ffmpeg maps the common date fields onto "date" for us, but has no mapping for the two ID3 frames
+# holding the original release, so TDOR (ID3v2.4) and TORY (ID3v2.3) arrive under their raw names.
+_RELEASE_DATE_TAGS = ("originaldate", "tdor", "originalyear", "tory", "date")
+
+# The album carries the date of the release itself, so the reissue date comes first here and the
+# original release is only a fallback. This is the reverse of the track order above.
+_ALBUM_DATE_TAGS = ("date", "originaldate", "tdor", "originalyear", "tory")
 
 
 def clean_tuple(values: Iterable[str]) -> tuple[str, ...]:
@@ -442,13 +453,18 @@ class AudioTags:
 
     @property
     def year(self) -> int | None:
-        """Return album's year if present, parsed from date."""
-        if tag := self.tags.get("originalyear"):
-            return try_parse_int(tag.split("-")[0], None)
-        if tag := self.tags.get("originaldate"):
-            return try_parse_int(tag.split("-")[0], None)
-        if tag := self.tags.get("date"):
-            return try_parse_int(tag.split("-")[0], None)
+        """Return the year the album was released, if present."""
+        for tag_name in _ALBUM_DATE_TAGS:
+            if (tag := self.tags.get(tag_name)) and (parsed := _parse_release_date(tag)):
+                return parsed.year
+        return None
+
+    @property
+    def release_date(self) -> datetime | None:
+        """Return the date the track was originally released, if present."""
+        for tag_name in _RELEASE_DATE_TAGS:
+            if (tag := self.tags.get(tag_name)) and (parsed := _parse_release_date(tag)):
+                return parsed
         return None
 
     @property
@@ -733,7 +749,7 @@ def parse_tags(
 
         # we parse all (basic) tags for all file formats using ffmpeg
         # but we also try to extract some extra tags for local files using mutagen
-        if not input_file.startswith("http") and os.path.isfile(input_file):
+        if not input_file.startswith("http") and Path(input_file).is_file():
             extra_tags = parse_tags_mutagen(input_file)
             if extra_tags:
                 tags.tags.update(extra_tags)
@@ -964,6 +980,15 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
         result["replaygainalbumgain"] = _decode_mp4_freeform_single(
             tags["----:com.apple.iTunes:REPLAYGAIN_ALBUM_GAIN"]
         )
+
+    # the original release date has no atom of its own, so taggers store it as a freeform
+    # tag in whatever casing they favour, and ffprobe does not expose freeform atoms at all
+    for atom, values in tags.items():  # type: ignore[no-untyped-call]
+        if not atom.startswith("----:com.apple.iTunes:"):
+            continue
+        name = atom.removeprefix("----:com.apple.iTunes:").lower()
+        if name in ("originaldate", "originalyear"):
+            result[name] = _decode_mp4_freeform_single(values)
 
     return result
 
@@ -1463,7 +1488,7 @@ async def get_embedded_image(input_file: str) -> bytes | None:
     # For APEv2-only formats, use mutagen since FFmpeg cannot extract APEv2 cover art
     # Only check files with extensions that exclusively use APEv2 tags to avoid
     # unnecessary blocking I/O for MP3/FLAC/OGG/etc files
-    if not input_file.startswith(("http://", "https://")) and os.path.isfile(input_file):
+    if not input_file.startswith(("http://", "https://")) and Path(input_file).is_file():
         # Check file extension to determine if it's an APEv2-only format
         ext = input_file.lower().rsplit(".", 1)[-1] if "." in input_file else ""
         if _format_uses_apev2(ext):
@@ -1778,3 +1803,19 @@ def _apply_artist_mbid_tag(tags: Any, artist_mbids: list[str]) -> bool:
     except Exception as err:
         LOGGER.warning("unexpected failure applying MusicBrainz Artist Id: %s", err)
         return False
+
+
+def _parse_release_date(value: str) -> datetime | None:
+    """Return a date tag as a datetime, or None if it does not hold a date."""
+    value = value.strip()
+    with suppress(ValueError):
+        parsed = datetime.fromisoformat(value)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    # a date can be tagged to the month or to the year alone, which taggers write through as is
+    if len(value) >= 7:
+        with suppress(ValueError):
+            return datetime.strptime(value[:7], "%Y-%m").replace(tzinfo=UTC)
+    if len(value) >= 4 and (year := try_parse_int(value[:4], None)):
+        with suppress(ValueError):
+            return datetime(year, 1, 1, tzinfo=UTC)
+    return None

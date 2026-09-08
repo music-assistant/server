@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import hmac
 import logging
+import secrets
 import time
 from collections import deque
 from collections.abc import AsyncIterator
@@ -276,6 +279,7 @@ class MSXBridgeProvider(PlayerProvider):
     bridge_manager: MSXSendspinBridgeManager | None = None
     _player_last_activity: dict[str, float]
     _pending_unregisters: dict[str, asyncio.Event]
+    _stream_token_secret: bytes
     _timeout_task: asyncio.Task[None] | None = None
     _owner_username: str | None = None
     _shared_streams: dict[str, SharedGroupStream]  # group_id -> SharedGroupStream
@@ -287,6 +291,8 @@ class MSXBridgeProvider(PlayerProvider):
         super().__init__(*args, **kwargs)
         self._player_last_activity = {}
         self._pending_unregisters = {}
+        # one secret per provider instance; the per-player tokens derive from it
+        self._stream_token_secret = secrets.token_bytes(32)
         self._shared_streams = {}
         self._shared_stream_lock = asyncio.Lock()
         self._background_tasks = set()
@@ -606,6 +612,20 @@ class MSXBridgeProvider(PlayerProvider):
         proxy/ffmpeg pipeline. See also ``get_ma_stream_url()``.
         """
         return self.group_stream_mode == GROUP_STREAM_MODE_REDIRECT
+
+    def get_stream_token(self, player_id: str) -> str:
+        """
+        Return the token that authorizes the audio routes for the given player.
+
+        Derived rather than stored, so a caller cannot grow provider state by asking for
+        tokens under new player ids. It stays the same for the provider's lifetime: an
+        idle TV is unregistered after the configured timeout, and changing the token there
+        would strand the URLs a long-running kiosk has already cached.
+
+        :param player_id: The player to build an audio URL for.
+        """
+        digest = hmac.new(self._stream_token_secret, player_id.encode(), hashlib.sha256)
+        return digest.hexdigest()[:32]
 
     def get_group_id_for_player(self, player: MSXPlayer) -> str | None:
         """

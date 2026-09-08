@@ -45,11 +45,12 @@ import ast
 import json
 import os
 import sys
+from pathlib import Path
 
 # ruff: noqa: T201
 
 # repo paths (this file lives at <repo>/scripts/check_config_entries.py)
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_REPO_ROOT = str(Path(__file__).resolve().parents[1])
 PACKAGE_ROOT = os.path.join(_REPO_ROOT, "music_assistant")
 
 # constructor name -> (localized text fields, whether an f-string also counts, strings.json target).
@@ -148,7 +149,7 @@ def _iter_python_files() -> list[str]:
     """Return all shipped provider/controller Python files (skipping ``_*``/``test`` templates)."""
     result: list[str] = []
     for root, dirs, files in os.walk(PACKAGE_ROOT):
-        parts = root.split(os.sep)
+        parts = Path(root).parts
         if "providers" in parts:
             index = parts.index("providers")
             if len(parts) > index + 1 and (

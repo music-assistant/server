@@ -48,7 +48,7 @@ def _media(media_type: MediaType) -> PlayerMedia:
         media_type=media_type,
         source_id="queue-1",
         queue_item_id="item-1",
-        custom_data={"session_id": "session-1"},
+        queue_session_id="session-1",
     )
 
 

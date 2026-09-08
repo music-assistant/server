@@ -13,11 +13,12 @@ from music_assistant.constants import (
 from music_assistant.controllers.streams.controller import StreamsController
 from music_assistant.mass import MusicAssistant
 
-# TEST-NET-3 (RFC 5737) is never assigned to a host, so binding it always fails
+# TEST-NET-3 (RFC 5737) represents an unavailable configured address
 UNBINDABLE_IP = "203.0.113.7"
 # a publish IP does not have to exist on this host at all (NAT/port forward setups)
 EXTERNAL_PUBLISH_IP = "203.0.113.9"
 LOOPBACK_IP = "127.0.0.1"
+FALLBACK_PORT = 8097
 # the address the tests bind is deliberately absent here, so a publish IP that follows
 # the bind address can never be mistaken for the one auto-detection would have picked
 ALL_ADDRESSES = ("192.168.1.10", "10.0.0.5", "fd00::10")
@@ -101,11 +102,23 @@ async def test_configured_publish_ip_outranks_bind_ip(
 
 
 async def test_unavailable_bind_ip_publishes_dialable_address(
-    streams_controller: StreamsController, mass_minimal: MusicAssistant
+    streams_controller: StreamsController,
+    mass_minimal: MusicAssistant,
+    streamserver_fallback: AsyncMock,
 ) -> None:
     """A bind that fell back to all interfaces advertises a reachable address, not the failed one."""
-    await _setup_streams(streams_controller, mass_minimal, bind_ip=UNBINDABLE_IP)
+    await _setup_streams(
+        streams_controller,
+        mass_minimal,
+        bind_ip=UNBINDABLE_IP,
+        bind_port=FALLBACK_PORT,
+    )
 
+    streamserver_fallback.assert_awaited_once()
+    assert (setup_call := streamserver_fallback.await_args) is not None
+    assert setup_call.kwargs["bind_ip"] == UNBINDABLE_IP
+    assert setup_call.kwargs["bind_port"] == FALLBACK_PORT
+    assert streams_controller.bind_ip == "0.0.0.0"
     assert streams_controller.publish_ip == ALL_ADDRESSES[0]
     assert (
         streams_controller.base_url

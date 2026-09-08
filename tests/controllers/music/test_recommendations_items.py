@@ -200,3 +200,34 @@ async def test_rows_restricted_provider_returns_no_rows(
     monkeypatch.setattr(mass, "get_providers_supporting_feature", lambda *_a, **_k: [restricted])
     folders = await mass.music.recommendations.get_recommendations()
     assert not any(f.provider == "restricted_instance" for f in folders)
+
+
+async def test_items_providers_forwarded_to_builtin_provider(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The providers filter is forwarded to the builtin library recommendations provider."""
+    builtin_provider = mass.get_provider("recommendations")
+    assert builtin_provider is not None
+    assert isinstance(builtin_provider, LibraryRecommendationsProvider)
+    spy = AsyncMock(return_value=UniqueList())
+    monkeypatch.setattr(builtin_provider, "get_recommendation_items", spy)
+
+    await mass.music.recommendations.get_recommendation_items(
+        "recommendations", "recently_played", providers=["prov_a"]
+    )
+
+    spy.assert_awaited_once_with("recently_played", providers=["prov_a"])
+
+
+async def test_items_providers_ignored_for_external_provider(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An external provider row's SPI is unchanged: it never receives the providers filter."""
+    provider = _build(_RowsProvider)
+    monkeypatch.setattr(mass, "get_provider", lambda *_a, **_k: provider)
+
+    items = await mass.music.recommendations.get_recommendation_items(
+        "fake_instance", "row1", providers=["prov_a"]
+    )
+
+    assert [item.item_id for item in items] == ["prov-item"]

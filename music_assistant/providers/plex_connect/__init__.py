@@ -119,7 +119,7 @@ class PlexConnectProvider(PluginProvider):
         elif action == CONF_ACTION_COMPLETE_LINK:
             status_key, status_params = await self._plextv_complete_link()
         elif action == CONF_ACTION_UNLINK:
-            status_key, status_params = self._plextv_unlink()
+            status_key, status_params = await self._plextv_unlink()
         else:
             raise ActionUnavailable(f"Unknown action: {action}")
         linked = bool(self.get_setup_value(CONF_PLEXTV_TOKEN))
@@ -181,7 +181,13 @@ class PlexConnectProvider(PluginProvider):
         self._stop_called = True
 
         if is_removed:
-            await self._unregister_from_plextv()
+            try:
+                async with asyncio.timeout(5):
+                    await self._unregister_from_plextv()
+            except TimeoutError:
+                self.logger.warning(
+                    "Timed out removing this player from plex.tv during provider removal"
+                )
 
         # Stop player instance
         if self._player_instance:
@@ -334,12 +340,21 @@ class PlexConnectProvider(PluginProvider):
         self.mass.create_task(self._register_on_plextv())
         return None, None
 
-    def _plextv_unlink(self) -> tuple[str | None, list[str] | None]:
-        """Forget the stored plex.tv device token for this player."""
+    async def _plextv_unlink(self) -> tuple[str | None, list[str] | None]:
+        """Unlink this player from plex.tv and forget the stored device token."""
+        status_key: str | None = None
+        status_params: list[str] | None = None
+        try:
+            await self._unregister_from_plextv(swallow_errors=False)
+        except PlexTvAuthError:
+            pass
+        except (PlexTvError, aiohttp.ClientError, TimeoutError) as err:
+            status_key = "plextv_status_unreachable"
+            status_params = [str(err)]
         self._update_setup_data(CONF_PLEXTV_TOKEN, None)
         self._plextv_pin = None
         self._plextv_device_id = None
-        return None, None
+        return status_key, status_params
 
     def _plextv_client(self) -> PlexTvClient:
         """Return a plex.tv client presenting this instance's player identity."""
@@ -358,7 +373,7 @@ class PlexConnectProvider(PluginProvider):
         """Verify the plex.tv registration and (re)publish this player's connection URI."""
         token = cast("str | None", self.get_setup_value(CONF_PLEXTV_TOKEN))
         if not token:
-            self.logger.info(
+            self.logger.debug(
                 "Not linked with plex.tv: this player will not be visible in the Plexamp "
                 "mobile apps. Use 'Link with plex.tv' in the plugin settings to enable this."
             )
@@ -391,8 +406,8 @@ class PlexConnectProvider(PluginProvider):
                 err,
             )
 
-    async def _unregister_from_plextv(self) -> None:
-        """Best-effort removal of this player from the plex.tv device registry."""
+    async def _unregister_from_plextv(self, *, swallow_errors: bool = True) -> None:
+        """Remove this player from the plex.tv device registry."""
         token = cast("str | None", self.get_setup_value(CONF_PLEXTV_TOKEN))
         if not token:
             self.logger.debug("No plex.tv device token known, skipping deregistration")
@@ -403,7 +418,12 @@ class PlexConnectProvider(PluginProvider):
             if device_id:
                 await client.delete_device(token, device_id)
                 self.logger.debug("Removed this player from the plex.tv device registry")
-        except Exception as err:
+        except PlexTvAuthError:
+            if not swallow_errors:
+                raise
+        except (PlexTvError, aiohttp.ClientError, TimeoutError) as err:
+            if not swallow_errors:
+                raise
             self.logger.debug(
                 "Could not remove this player from plex.tv (%s) - "
                 "the device can be removed manually from the Plex account settings",
@@ -476,8 +496,8 @@ class PlexConnectProvider(PluginProvider):
                 f"Plex Connect ready: '{player_name}' is now available in Plex apps "
                 f"on port {self._allocated_port}"
             )
-        except Exception as e:
-            self.logger.exception(f"Failed to start Plex remote control: {e}")
+        except Exception:
+            self.logger.exception("Failed to start Plex remote control")
             self._player_instance = None
             return
 

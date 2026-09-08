@@ -30,6 +30,7 @@ from music_assistant.controllers.config.dsp import DSPConfigMixin
 from music_assistant.controllers.config.flows import SetupFlowMixin
 from music_assistant.controllers.config.migrations import (
     migrate,
+    migrate_connected_player_plugins,
     migrate_hass_engine_selection,
     migrate_nfs_subfolder_into_export_path,
     migrate_provider_setup_data,
@@ -93,7 +94,15 @@ class ConfigController(
         nfs_subfolder_migrated = migrate_nfs_subfolder_into_export_path(
             self._data, self.encrypt_string, self.decrypt_string
         )
-        if setup_data_migrated or nfs_subfolder_migrated:
+        # one-off: move the connected-player plugins to the player-bound model (collapse
+        # spotify_connect/airplay_receiver instances, enforce the mandatory player on
+        # ariacast_receiver/yandex_ynison). Runs after the setup-data move above so a
+        # legacy install's keys have landed in setup_data by now.
+        # TODO: remove after 2.12 release
+        connected_plugins_migrated = migrate_connected_player_plugins(
+            self._data, self.decrypt_string, self.mass.storage_path
+        )
+        if setup_data_migrated or nfs_subfolder_migrated or connected_plugins_migrated:
             self.save(immediate=True)
         # one-off: hand the Home Assistant plugin's former single TTS/AI entity choice over to
         # the providers that select their own engine now. Runs here for the same reason: the

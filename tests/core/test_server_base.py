@@ -32,6 +32,16 @@ async def test_start_and_stop_server(mass: MusicAssistant) -> None:
     assert domains.issuperset(core_providers)
 
 
+async def test_server_info(mass: MusicAssistant) -> None:
+    """Test that the server info advertises the webserver details."""
+    server_info = mass.get_server_info()
+    assert server_info.name is not None
+    assert "Music Assistant" in server_info.name
+    assert server_info.internal_url == mass.webserver.base_url
+    assert server_info.external_url is None
+    assert server_info.has_remote_access is False
+
+
 async def test_events(mass: MusicAssistant) -> None:
     """Test that events sent by signal_event can be seen by subscribe."""
     filters: list[tuple[EventType | tuple[EventType, ...] | None, str | tuple[str, ...] | None]] = [

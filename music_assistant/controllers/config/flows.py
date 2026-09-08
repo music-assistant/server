@@ -12,7 +12,13 @@ from uuid import uuid4
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType, EventType, FlowStepType, MediaType
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    EventType,
+    FlowStepType,
+    MediaType,
+    ProviderStage,
+)
 from music_assistant_models.errors import (
     ActionUnavailable,
     InsufficientPermissions,
@@ -129,6 +135,10 @@ class SetupFlowMixin:
             raise KeyError(msg)
         owner = f"provider.{provider_domain}"
         # fail fast on conditions that would otherwise only surface at save
+        if manifest.stage == ProviderStage.DEPRECATED:
+            # a retired provider can never be set up again; its own strings explain
+            # what to use instead
+            return self._synthesized_step(FlowStepType.ABORT, owner, reason="provider_retired")
         existing = await self.get_provider_configs(provider_domain=provider_domain)
         if existing and not manifest.multi_instance:
             return self._synthesized_step(FlowStepType.ABORT, owner, reason="already_configured")
@@ -524,7 +534,7 @@ class SetupFlowMixin:
         self, player: Player, *, needing_only: bool
     ) -> list[Player]:
         """
-        Return the player's protocol child players that implement a setup flow.
+        Return the player's protocol child players whose setup flow is available.
 
         Covers the wrapper case: a universal player, or a native player wrapping
         protocol children, whose own setup is a no-op but whose linked protocol
@@ -541,7 +551,7 @@ class SetupFlowMixin:
                 continue
             seen.add(child_id)
             child = self.mass.players.get_player(child_id)
-            if child is None or not child.implements_setup_flow:
+            if child is None or not child.has_setup_flow:
                 continue
             if needing_only and not child.needs_setup:
                 continue

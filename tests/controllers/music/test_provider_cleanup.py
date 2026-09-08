@@ -9,16 +9,24 @@ import pytest
 from music_assistant_models.enums import EventType, ImageType
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
+    Album,
     Artist,
     Audiobook,
     MediaItemImage,
     Playlist,
     Podcast,
     ProviderMapping,
+    Track,
     UniqueList,
 )
 
-from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
+from music_assistant.constants import (
+    DB_TABLE_ALBUM_ARTISTS,
+    DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_PROVIDER_MAPPINGS,
+    DB_TABLE_TRACK_ARTISTS,
+    DB_TABLE_TRACKS,
+)
 from music_assistant.controllers.music.media.base import MediaControllerBase
 from music_assistant.mass import MusicAssistant
 
@@ -377,3 +385,68 @@ async def test_item_without_provider_mappings_raises_media_not_found(
     with pytest.raises(MediaNotFoundError):
         async for _ in playlists.tracks(str(db_id), "library"):
             pass
+
+
+async def test_database_cleanup_removes_relations_of_deleted_items(mass: MusicAssistant) -> None:
+    """Relation rows left pointing at a deleted item are swept, sparing the ones still in use."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="rel-artist",
+            provider=FS_INSTANCE,
+            name="Relation Artist",
+            provider_mappings={
+                ProviderMapping(
+                    item_id="rel-artist",
+                    provider_domain="filesystem_local",
+                    provider_instance=FS_INSTANCE,
+                )
+            },
+        )
+    )
+    album = await mass.music.albums.add_item_to_library(
+        Album(
+            item_id="rel-album",
+            provider=FS_INSTANCE,
+            name="Relation Album",
+            artists=UniqueList([artist]),
+            provider_mappings={
+                ProviderMapping(
+                    item_id="rel-album",
+                    provider_domain="filesystem_local",
+                    provider_instance=FS_INSTANCE,
+                )
+            },
+        )
+    )
+    track = await mass.music.tracks.add_item_to_library(
+        Track(
+            item_id="rel-track",
+            provider=FS_INSTANCE,
+            name="Relation Track",
+            artists=UniqueList([artist]),
+            album=album,
+            provider_mappings={
+                ProviderMapping(
+                    item_id="rel-track",
+                    provider_domain="filesystem_local",
+                    provider_instance=FS_INSTANCE,
+                )
+            },
+        )
+    )
+    track_id = int(track.item_id)
+    assert await mass.music.database.get_rows(DB_TABLE_ALBUM_TRACKS, {"track_id": track_id})
+    assert await mass.music.database.get_rows(DB_TABLE_TRACK_ARTISTS, {"track_id": track_id})
+
+    # drop the track row itself, the way a removal that only deletes its own side leaves it
+    await mass.music.database.delete(DB_TABLE_TRACKS, {"item_id": track_id})
+
+    await mass.music._cleanup_database()
+
+    assert not await mass.music.database.get_rows(DB_TABLE_ALBUM_TRACKS, {"track_id": track_id})
+    assert not await mass.music.database.get_rows(DB_TABLE_TRACK_ARTISTS, {"track_id": track_id})
+    # the album is still there with its artist, so that relation must survive
+    assert await mass.music.database.get_rows(
+        DB_TABLE_ALBUM_ARTISTS,
+        {"album_id": int(album.item_id), "artist_id": int(artist.item_id)},
+    )

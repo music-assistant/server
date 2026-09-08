@@ -409,6 +409,12 @@ for more details.
         """Supported artist types."""
         return {ArtistType.AUTHOR, ArtistType.NARRATOR}
 
+    @property
+    def unskippable_sync_errors(self) -> tuple[type[Exception], ...]:
+        """Return the errors a library sync must not swallow as an item failure."""
+        # handle_refresh_token needs to see this to renew the token and retry
+        return (RefreshTokenExpiredError,)
+
     @handle_refresh_token
     async def sync_library(self, media_type: MediaType) -> None:
         """Obtain audiobook library ids and podcast library ids."""

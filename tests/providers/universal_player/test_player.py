@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType, RepeatMode
 
 from music_assistant.models.player import DeviceInfo, Player
+from music_assistant.models.protocol_backed_player import ProtocolBackedPlayer
 from music_assistant.providers.universal_player.player import UniversalPlayer
 from music_assistant.providers.universal_player.provider import UniversalPlayerProvider
 
@@ -49,7 +51,7 @@ def _make_universal_provider(mock_mass: MagicMock) -> UniversalPlayerProvider:
     config.instance_id = "universal_player"
     config.name = None
     provider.config = config
-    provider._universal_player_locks = {}
+    provider._lock = asyncio.Lock()
     return provider
 
 
@@ -97,6 +99,8 @@ def _make_chromecast_player(
     player.next_track = AsyncMock()
     player.previous_track = AsyncMock()
     player.seek = AsyncMock()
+    player.set_shuffle = AsyncMock()
+    player.set_repeat = AsyncMock()
     _register_players(mass, player)
     return player
 
@@ -178,6 +182,24 @@ async def test_transport_proxied_to_external_source(
     chromecast.pause.assert_awaited_once_with()
 
 
+async def test_ordering_proxied_to_external_source(
+    setup: tuple[UniversalPlayer, MagicMock],
+) -> None:
+    """
+    Shuffle and repeat reach the protocol player playing the source.
+
+    The source_list is taken from that player too, so the capability it declares and
+    the command that acts on it must arrive at the same place.
+    """
+    universal, chromecast = setup
+
+    await universal.set_shuffle(True)
+    await universal.set_repeat(RepeatMode.ALL)
+
+    chromecast.set_shuffle.assert_awaited_once_with(True)
+    chromecast.set_repeat.assert_awaited_once_with(RepeatMode.ALL)
+
+
 def test_no_features_without_external_source() -> None:
     """Without an active external source the universal player advertises nothing of its own."""
     mass = _make_mock_mass()
@@ -189,6 +211,46 @@ def test_no_features_without_external_source() -> None:
     )
     universal = _make_universal_player(mass, ["cc_1"])
     assert universal.supported_features == set()
+
+
+def test_native_feature_survives_external_source() -> None:
+    """
+    A protocol-backed subclass keeps its own native features during external playback.
+
+    The neutral base unions this player's native capabilities with the forwardable
+    transport controls of the active external source, so a subclass that owns e.g. native
+    grouping (SET_MEMBERS) still advertises it while a linked protocol plays Spotify.
+    """
+    mass = _make_mock_mass()
+    _make_chromecast_player(
+        mass,
+        "cc_1",
+        active_source="spotify_connect",
+        features={PlayerFeature.PAUSE, PlayerFeature.SEEK, PlayerFeature.VOLUME_SET},
+    )
+    provider = _make_universal_provider(mass)
+    base_cfg = MagicMock()
+    base_cfg.name = None
+    base_cfg.default_name = "Shell"
+    mass.config.get_base_player_config.return_value = base_cfg
+
+    class _NativeShell(ProtocolBackedPlayer):
+        def __init__(self) -> None:
+            super().__init__(provider, "shell_1")
+            self._attr_supported_features = {PlayerFeature.SET_MEMBERS}
+
+        def _backing_protocol_player_ids(self) -> list[str]:
+            return ["cc_1"]
+
+    shell = _NativeShell()
+    shell._cache.clear()
+    shell.set_initialized()
+    # native SET_MEMBERS survives, and the external source's forwardable transport is added
+    assert shell.supported_features == {
+        PlayerFeature.SET_MEMBERS,
+        PlayerFeature.PAUSE,
+        PlayerFeature.SEEK,
+    }
 
 
 def test_setup_needed_when_only_protocol_awaits_setup() -> None:

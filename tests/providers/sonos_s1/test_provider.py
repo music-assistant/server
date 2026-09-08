@@ -230,17 +230,19 @@ async def test_invisible_speaker_is_not_interrogated() -> None:
     player_cls.assert_not_called()
 
 
-async def test_new_speaker_is_registered() -> None:
-    """A newly discovered speaker is built and set up."""
+@pytest.mark.parametrize("fixed_volume", [False, True])
+async def test_new_speaker_is_registered(fixed_volume: bool) -> None:
+    """A newly discovered speaker is built with the volume mode it was interrogated for."""
     provider, _ = _make_provider()
     soco = _make_soco()
+    soco.fixed_volume = fixed_volume
 
     with patch("music_assistant.providers.sonos_s1.provider.SonosPlayer") as player_cls:
         player_cls.return_value.setup = AsyncMock()
         await provider._setup_player(soco)
 
     soco.get_speaker_info.assert_called_once()
-    player_cls.assert_called_once_with(provider, soco)
+    player_cls.assert_called_once_with(provider, soco, fixed_volume=fixed_volume)
     player_cls.return_value.setup.assert_awaited_once()
 
 

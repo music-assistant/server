@@ -1,13 +1,11 @@
 """
-plex.tv device registration for the Plex Connect plugin.
+plex.tv registration support for the Plex Connect plugin's optional mobile workaround.
 
-Mobile Plex clients (Plexamp on iOS/Android) do not use GDM discovery: they build
-their cast list exclusively from the players registered in the plex.tv device
-registry and then control them over their published local connection (the HTTP
-companion endpoints this plugin already implements). This module registers a
-plugin player instance on plex.tv via the official PIN link flow and publishes
-its local connection URI, using the exact same identity (client identifier,
-name, product, version) as the GDM advertisement and the companion server.
+Some Plexamp mobile clients only list Plex Connect players that are registered on
+plex.tv. This opt-in flow links a plugin player instance through the official PIN
+flow and publishes its local connection URI, using the same identity as the GDM
+advertisement and companion server while leaving unlinked players on the normal
+local-discovery path.
 """
 
 from __future__ import annotations
@@ -125,7 +123,14 @@ class PlexTvClient:
         )
         if status not in (200, 201) or not isinstance(data, dict):
             raise PlexTvError(f"PIN creation failed (HTTP {status})")
-        return PlexPin(id=int(str(data["id"])), code=str(data["code"]))
+        try:
+            pin_id = int(str(data["id"]))
+            code = data["code"]
+        except (KeyError, TypeError, ValueError) as err:
+            raise PlexTvError("PIN creation returned an invalid response") from err
+        if not isinstance(code, str) or not code:
+            raise PlexTvError("PIN creation returned an invalid response")
+        return PlexPin(id=pin_id, code=code)
 
     async def check_pin(self, pin_id: int) -> str | None:
         """
@@ -151,7 +156,10 @@ class PlexTvClient:
         status, text = await self._request("GET", PLEXTV_DEVICES_URL, token=token)
         if status != 200 or not isinstance(text, str):
             raise PlexTvError(f"Device listing failed (HTTP {status})")
-        root = DefusedET.fromstring(text)
+        try:
+            root = DefusedET.fromstring(text)
+        except DefusedET.ParseError as err:
+            raise PlexTvError("Device listing returned invalid XML") from err
         for device in root.iter("Device"):
             if device.get("clientIdentifier") == self.identity.client_id:
                 device_id: str | None = device.get("id")

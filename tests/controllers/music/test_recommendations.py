@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 
+import pytest
 from music_assistant_models.enums import MediaType
 
 from music_assistant.constants import DB_TABLE_PLAYLOG
@@ -11,7 +13,6 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.providers.recommendations import LibraryRecommendationsProvider, LibraryRowID
 
 if TYPE_CHECKING:
-    import pytest
     from music_assistant_models.media_items import ItemMapping
 
 EXPECTED_DEFAULT_ORDER = [
@@ -278,6 +279,73 @@ async def test_never_played_tracks_row_callable(mass: MusicAssistant) -> None:
         "recommendations", "never_played_tracks"
     )
     assert isinstance(items, list)
+
+
+async def test_all_default_rows_advertise_provider_filter_support(mass: MusicAssistant) -> None:
+    """Every default library recommendation row advertises supports_provider_filter."""
+    folders = await mass.music.recommendations.get_recommendations()
+    library_folders = [f for f in folders if f.provider == "recommendations"]
+    assert library_folders
+    assert all(f.supports_provider_filter for f in library_folders)
+
+
+async def test_library_row_items_return_empty_for_explicit_empty_providers(
+    mass: MusicAssistant,
+) -> None:
+    """Every default row returns no items for an explicit empty providers filter."""
+    provider = mass.get_provider("recommendations")
+    assert provider is not None
+    assert isinstance(provider, LibraryRecommendationsProvider)
+    for row_id in LibraryRowID:
+        items = await provider.get_recommendation_items(row_id, providers=[])
+        assert items == [], f"row {row_id!r} did not return empty for an explicit empty filter"
+
+
+@pytest.mark.parametrize(
+    ("row_id", "controller_attr", "kwarg_name"),
+    [
+        (LibraryRowID.IN_PROGRESS, "in_progress_items", "providers"),
+        (LibraryRowID.RECENTLY_PLAYED, "recently_played", "providers"),
+        (LibraryRowID.RECENT_ARTISTS, "recently_played", "providers"),
+        (LibraryRowID.RECENT_TRACKS, "recently_played", "providers"),
+        (LibraryRowID.RECENTLY_ADDED_TRACKS, "tracks", "reachable_via"),
+        (LibraryRowID.RECENTLY_ADDED_ALBUMS, "albums", "reachable_via"),
+        (LibraryRowID.RANDOM_ARTISTS, "artists", "reachable_via"),
+        (LibraryRowID.RANDOM_ALBUMS, "albums", "reachable_via"),
+        (LibraryRowID.RECENT_FAVORITE_TRACKS, "tracks", "reachable_via"),
+        (LibraryRowID.FAVORITE_PLAYLISTS, "playlists", "reachable_via"),
+        (LibraryRowID.FAVORITE_RADIO, "radio", "reachable_via"),
+        (LibraryRowID.FORGOTTEN_TRACKS, "tracks", "reachable_via"),
+        (LibraryRowID.FORGOTTEN_ALBUMS, "albums", "reachable_via"),
+        (LibraryRowID.FORGOTTEN_ARTISTS, "artists", "reachable_via"),
+        (LibraryRowID.MOST_PLAYED_TRACKS, "tracks", "reachable_via"),
+        (LibraryRowID.NEVER_PLAYED_TRACKS, "tracks", "reachable_via"),
+    ],
+)
+async def test_library_row_items_thread_providers_into_underlying_query(
+    mass: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    row_id: LibraryRowID,
+    controller_attr: str,
+    kwarg_name: str,
+) -> None:
+    """Every default row forwards a non-empty providers filter to its underlying query."""
+    provider = mass.get_provider("recommendations")
+    assert provider is not None
+    assert isinstance(provider, LibraryRecommendationsProvider)
+
+    if controller_attr in ("in_progress_items", "recently_played"):
+        target = mass.music
+    else:
+        target = getattr(mass.music, controller_attr)
+        controller_attr = "library_items"
+    spy = AsyncMock(return_value=[])
+    monkeypatch.setattr(target, controller_attr, spy)
+
+    await provider.get_recommendation_items(row_id, providers=["prov_a"])
+
+    assert spy.await_args is not None
+    assert spy.await_args.kwargs[kwarg_name] == ["prov_a"]
 
 
 async def _add_playlog_row(

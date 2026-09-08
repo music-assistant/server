@@ -170,8 +170,8 @@ class PlexGDMAdvertiser:
                 await self._send_announcement()
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                LOGGER.exception(f"Error sending GDM announcement: {e}")
+            except Exception:
+                LOGGER.exception("Error sending GDM announcement")
                 await asyncio.sleep(30)
 
     async def _listen_loop(self) -> None:
@@ -191,7 +191,6 @@ class PlexGDMAdvertiser:
                     if "M-SEARCH" in message:
                         # Send response - addr contains the actual client's IP and port
                         self._send_discovery_response(addr)
-
                 except TimeoutError:
                     continue
                 except OSError:

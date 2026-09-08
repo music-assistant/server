@@ -1,9 +1,11 @@
 """
-Tests for Player model final volume/mute state fallback logic.
+Tests for Player model final volume/mute state resolution.
 
-Covers the fallback-to-native behavior in __final_volume_level and
-__final_volume_muted_state when a configured volume/mute control is
-unavailable or returns None.
+Covers __final_volume_level and __final_volume_muted_state, which read the
+final volume/mute exclusively from whichever control volume_control/mute_control
+resolves to (native, a protocol player, or an external player control). The
+final state is None (unknown) whenever that resolved control itself reports
+no value.
 """
 
 from __future__ import annotations
@@ -14,7 +16,6 @@ import pytest
 from music_assistant_models.enums import PlayerFeature
 
 from music_assistant.constants import CONF_MUTE_CONTROL, CONF_VOLUME_CONTROL
-from music_assistant.models.player import LinkedOutputProtocol
 from tests.common import MockPlayer, MockProvider
 
 
@@ -34,7 +35,7 @@ def mock_mass() -> MagicMock:
 
 
 class TestFinalVolumeLevel:
-    """Test __final_volume_level fallback behaviour."""
+    """Test __final_volume_level resolution against the control volume_control resolves to."""
 
     def test_uses_control_player_when_available(self, mock_mass: MagicMock) -> None:
         """Final volume uses the control player's volume when it is present."""
@@ -76,8 +77,8 @@ class TestFinalVolumeLevel:
         player.update_state(signal_event=False)
         assert player.state.volume_level == 55
 
-    def test_falls_back_to_native_when_control_returns_none(self, mock_mass: MagicMock) -> None:
-        """Final volume falls back to native when the control player's volume is None."""
+    def test_reports_unknown_when_control_has_no_volume(self, mock_mass: MagicMock) -> None:
+        """Final volume is unknown when the resolved control's volume is None."""
         mock_mass.config.get_raw_player_config_value = MagicMock(
             side_effect=lambda _pid, key, *_a: (
                 "control_player" if key == CONF_VOLUME_CONTROL else None
@@ -95,64 +96,7 @@ class TestFinalVolumeLevel:
         mock_mass.players.scale_volume_from_device = MagicMock(side_effect=lambda _pid, vol: vol)
 
         player.update_state(signal_event=False)
-        assert player.state.volume_level == 42
-
-    def test_ignores_zero_from_idle_linked_protocol(self, mock_mass: MagicMock) -> None:
-        """Volume 0 from a linked protocol that is not the active output is not authoritative."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
-            side_effect=lambda _pid, key, *_a: "cast_child" if key == CONF_VOLUME_CONTROL else None
-        )
-        provider = MockProvider("test", mass=mock_mass)
-        player = MockPlayer(provider, "main_player", "Main")
-        player._attr_volume_level = 55
-        player.set_linked_output_protocols(
-            [
-                LinkedOutputProtocol(
-                    output_protocol_id="cast_child",
-                    protocol_domain="chromecast",
-                )
-            ]
-        )
-
-        control = MagicMock()
-        control.player_id = "cast_child"
-        control.volume_level = 0
-        mock_mass.players.get_player = MagicMock(return_value=control)
-        mock_mass.players.get_player_control = MagicMock(return_value=None)
-        # With default min=0, max=100, scaling is identity
-        mock_mass.players.scale_volume_from_device = MagicMock(side_effect=lambda _pid, vol: vol)
-
-        player.update_state(signal_event=False)
-        assert player.state.volume_level == 55
-
-    def test_uses_zero_from_active_linked_protocol(self, mock_mass: MagicMock) -> None:
-        """Volume 0 from the linked protocol that is actively rendering is trusted."""
-        mock_mass.config.get_raw_player_config_value = MagicMock(
-            side_effect=lambda _pid, key, *_a: "cast_child" if key == CONF_VOLUME_CONTROL else None
-        )
-        provider = MockProvider("test", mass=mock_mass)
-        player = MockPlayer(provider, "main_player", "Main")
-        player._attr_volume_level = 55
-        player.set_linked_output_protocols(
-            [
-                LinkedOutputProtocol(
-                    output_protocol_id="cast_child",
-                    protocol_domain="chromecast",
-                )
-            ]
-        )
-
-        control = MagicMock()
-        control.player_id = "cast_child"
-        control.volume_level = 0
-        mock_mass.players.get_player = MagicMock(return_value=control)
-        mock_mass.players.get_player_control = MagicMock(return_value=None)
-        # With default min=0, max=100, scaling is identity
-        mock_mass.players.scale_volume_from_device = MagicMock(side_effect=lambda _pid, vol: vol)
-
-        player.set_active_output_protocol("cast_child")
-        player.update_state(signal_event=False)
-        assert player.state.volume_level == 0
+        assert player.state.volume_level is None
 
     def test_uses_zero_from_external_control_player(self, mock_mass: MagicMock) -> None:
         """Volume 0 from an external (non-linked) control player is trusted as genuine."""
@@ -176,7 +120,7 @@ class TestFinalVolumeLevel:
 
 
 class TestFinalVolumeMutedState:
-    """Test __final_volume_muted_state fallback behaviour."""
+    """Test __final_volume_muted_state resolution against the control mute_control resolves to."""
 
     def test_uses_control_player_when_available(self, mock_mass: MagicMock) -> None:
         """Final mute state uses the control player's mute state when present."""
@@ -228,8 +172,8 @@ class TestFinalVolumeMutedState:
         player.update_state(signal_event=False)
         assert player.state.volume_muted is True
 
-    def test_falls_back_to_native_when_control_returns_none(self, mock_mass: MagicMock) -> None:
-        """Final mute state falls back to native when the control's mute is None."""
+    def test_reports_unknown_when_control_has_no_mute_state(self, mock_mass: MagicMock) -> None:
+        """Final mute state is unknown when the resolved control's mute state is None."""
         mock_mass.config.get_raw_player_config_value = MagicMock(
             side_effect=lambda _pid, key, default=None: (
                 "control_player"
@@ -252,4 +196,4 @@ class TestFinalVolumeMutedState:
         mock_mass.players.get_player_control = MagicMock(return_value=None)
 
         player.update_state(signal_event=False)
-        assert player.state.volume_muted is False
+        assert player.state.volume_muted is None

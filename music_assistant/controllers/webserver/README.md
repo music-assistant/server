@@ -296,7 +296,9 @@ applied on top. `http_proxy` carries nothing else, so there the reply is a JSON 
 (`type`, `id`, `status`, `headers`, `size`) followed by the body as raw binary messages — the
 image costs its own size and no more. Those binary messages carry no request id, so the
 gateway holds the channel for a whole reply: replies go out one at a time rather than
-interleaving, which a channel that sends one message at a time would do anyway.
+interleaving, which a channel that sends one message at a time would do anyway. A client that
+stops draining is given a bounded time per frame, after which the reply is abandoned where it
+stands — so a reply can end short of its announced `size`, and the next header is what follows.
 
 `ma-api` and `http_proxy` size their bulk frames to the channel's `max_message_size`, the lower of
 our own 256 KiB ceiling and what the peer advertises in its SDP — and libdatachannel assumes
@@ -461,6 +463,7 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 ```python
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 
+
 @api_command("my_command")
 async def my_command():
     user = get_current_user()
@@ -473,6 +476,7 @@ async def my_command():
 ```python
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_token
 
+
 @api_command("my_command")
 async def my_command():
     token = get_current_token()
@@ -482,6 +486,7 @@ async def my_command():
 **Requiring a scope:**
 ```python
 from music_assistant_models.auth import Scope
+
 
 @api_command("admin_only_command", required_scope=Scope.CONFIG_CORE_WRITE)
 async def admin_command():

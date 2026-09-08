@@ -388,7 +388,7 @@ class ZvukMusicProvider(MusicProvider):
             return
         ids = [str(item.id) for item in collection.artists if item.id]
         async for artist in self._iter_batched(
-            ids, self.client.get_artists, parse_artist, "artist"
+            ids, self.client.get_artists, parse_artist, MediaType.ARTIST
         ):
             yield artist
 
@@ -398,7 +398,9 @@ class ZvukMusicProvider(MusicProvider):
         if not collection or not collection.releases:
             return
         ids = [str(item.id) for item in collection.releases if item.id]
-        async for album in self._iter_batched(ids, self.client.get_releases, parse_album, "album"):
+        async for album in self._iter_batched(
+            ids, self.client.get_releases, parse_album, MediaType.ALBUM
+        ):
             yield album
 
     async def get_library_tracks(self) -> AsyncGenerator[Track]:
@@ -407,7 +409,9 @@ class ZvukMusicProvider(MusicProvider):
         if not collection or not collection.tracks:
             return
         ids = [str(item.id) for item in collection.tracks if item.id]
-        async for track in self._iter_batched(ids, self.client.get_tracks, parse_track, "track"):
+        async for track in self._iter_batched(
+            ids, self.client.get_tracks, parse_track, MediaType.TRACK
+        ):
             yield track
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
@@ -421,7 +425,7 @@ class ZvukMusicProvider(MusicProvider):
         if collection_items:
             ids = [str(item.id) for item in collection_items if item.id]
             async for playlist in self._iter_batched(
-                ids, self.client.get_playlists, parse_playlist, "playlist"
+                ids, self.client.get_playlists, parse_playlist, MediaType.PLAYLIST
             ):
                 yield playlist
 
@@ -431,7 +435,7 @@ class ZvukMusicProvider(MusicProvider):
             try:
                 yield parse_playlist(self, simple_pl)
             except InvalidDataError as err:
-                self.logger.debug("Error parsing synthesis playlist: %s", err)
+                self.report_skipped_sync_item(MediaType.PLAYLIST, str(simple_pl.id), err)
 
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """
@@ -785,7 +789,7 @@ class ZvukMusicProvider(MusicProvider):
         ids: list[str],
         fetcher: Any,
         parser: Any,
-        item_type: str,
+        media_type: MediaType,
     ) -> AsyncGenerator[Any]:
         """
         Yield parsed items by fetching ``ids`` in batches of DEFAULT_LIMIT.
@@ -793,16 +797,27 @@ class ZvukMusicProvider(MusicProvider):
         :param ids: List of item IDs to fetch.
         :param fetcher: Async callable that accepts a list of IDs and returns a list of raw items.
         :param parser: Callable(provider, raw_item) → MA media item.
-        :param item_type: Human-readable type name for debug log messages.
+        :param media_type: Media type of the items, for skip reporting.
         """
         for i in range(0, len(ids), DEFAULT_LIMIT):
             batch = ids[i : i + DEFAULT_LIMIT]
             items = await fetcher(batch)
+            fetched_ids: set[str] = set()
             for item in items:
+                fetched_ids.add(str(item.id))
                 try:
                     yield parser(self, item)
                 except InvalidDataError as err:
-                    self.logger.debug("Error parsing library %s: %s", item_type, err)
+                    self.report_skipped_sync_item(media_type, str(item.id), err)
+            # the id's come from the user's own collection, so anything the fetch left out
+            # (a whole batch is dropped when it raises NotFound) is still in the library
+            for missing_id in batch:
+                if missing_id not in fetched_ids:
+                    self.report_skipped_sync_item(
+                        media_type,
+                        missing_id,
+                        MediaNotFoundError(f"Zvuk did not return {media_type.value} {missing_id}"),
+                    )
 
     async def _get_for_you_playlists(self) -> list[Playlist]:
         """Fetch and parse Zvuk's personalized synthesis playlists («Плейлисты для вас»)."""

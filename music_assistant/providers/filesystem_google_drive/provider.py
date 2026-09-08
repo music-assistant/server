@@ -165,6 +165,7 @@ class GoogleDriveFileSystemProvider(CloudFileSystemProvider):
                             f.get("mimeType") == FOLDER_MIME_TYPE,
                             f.get("modifiedTime", "unknown"),
                             int(f["size"]) if f.get("size") else None,
+                            None,
                         )
                     )
                 page_token = result.get("nextPageToken")

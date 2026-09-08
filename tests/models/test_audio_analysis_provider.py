@@ -604,3 +604,210 @@ async def test_start_analysis_rejects_when_model_load_fails() -> None:
     assert await provider.start_analysis("s", streamdetails, MagicMock()) is False
     provider._start_analysis.assert_not_awaited()
     assert provider._models_loaded is False
+
+
+@pytest.mark.asyncio
+async def test_unload_cancels_in_flight_finalize_before_freeing_models() -> None:
+    """unload() cancels a running finalize and frees the models only once it has unwound."""
+    provider = _make_provider()
+    provider.has_unloadable_models = True
+    started = asyncio.Event()
+    running = False
+    cancelled = False
+    freed_while_running = False
+
+    async def _finalize(session_id: str) -> AudioAnalysisData | None:  # noqa: ARG001
+        nonlocal running, cancelled
+        running = True
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        finally:
+            running = False
+        return None
+
+    def _free() -> None:
+        nonlocal freed_while_running
+        if running:
+            freed_while_running = True
+
+    provider._load_models = AsyncMock()  # type: ignore[method-assign]
+    provider._free_models = _free  # type: ignore[method-assign]
+    provider._finalize = _finalize  # type: ignore[method-assign]
+
+    await provider.ensure_models_loaded()
+    task = asyncio.create_task(provider.finalize("s-inflight"))
+    await started.wait()
+    assert provider._finalize_tasks == {task}
+
+    await asyncio.wait_for(provider.unload(), timeout=5)
+
+    assert cancelled is True
+    assert freed_while_running is False
+    assert task.cancelled()
+    assert not provider._finalize_tasks
+    assert provider._models_loaded is False
+    recorder = cast("AsyncMock", provider.mass.streams.audio_analysis.record_analysis_failure)
+    recorder.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unload_frees_models_when_no_finalize_in_flight() -> None:
+    """unload() with nothing in flight frees the models as before."""
+    provider = _make_provider()
+    provider.has_unloadable_models = True
+    free_calls = 0
+
+    def _free() -> None:
+        nonlocal free_calls
+        free_calls += 1
+
+    provider._load_models = AsyncMock()  # type: ignore[method-assign]
+    provider._free_models = _free  # type: ignore[method-assign]
+
+    await provider.ensure_models_loaded()
+    assert provider._models_loaded is True
+
+    await asyncio.wait_for(provider.unload(), timeout=5)
+
+    assert free_calls == 1
+    assert provider._models_loaded is False
+
+
+@pytest.mark.asyncio
+async def test_unload_from_within_finalize_does_not_cancel_itself() -> None:
+    """A finalize that reaches unload() must not cancel the task it is running on."""
+    provider = _make_provider()
+    provider.has_unloadable_models = True
+
+    async def _finalize(session_id: str) -> AudioAnalysisData | None:  # noqa: ARG001
+        await provider.unload()
+        return None
+
+    provider._load_models = AsyncMock()  # type: ignore[method-assign]
+    provider._free_models = MagicMock()  # type: ignore[method-assign]
+    provider._finalize = _finalize  # type: ignore[method-assign]
+
+    await provider.ensure_models_loaded()
+    await asyncio.wait_for(provider.finalize("s-self"), timeout=5)
+
+    assert provider._models_loaded is False
+    assert not provider._finalize_tasks
+
+
+@pytest.mark.asyncio
+async def test_finalize_is_skipped_while_unloading() -> None:
+    """A finalize issued while unloading runs no inference, registers nothing, clears its session."""
+    provider = _make_provider()
+    provider._finalize = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    provider._sessions["s-gate"] = MagicMock()
+    provider.unloading = True
+
+    await provider.finalize("s-gate")
+
+    provider._finalize.assert_not_awaited()
+    assert not provider._finalize_tasks
+    assert "s-gate" not in provider._sessions
+
+
+@pytest.mark.asyncio
+async def test_finalize_started_during_unload_does_not_run_inference() -> None:
+    """A finalize registered while unload() unwinds must not infer against models being freed."""
+    provider = _make_provider()
+    provider.has_unloadable_models = True
+    finalized: list[str] = []
+    late_task: asyncio.Task[None] | None = None
+    started = asyncio.Event()
+
+    async def _finalize(session_id: str) -> AudioAnalysisData | None:
+        nonlocal late_task
+        finalized.append(session_id)
+        if session_id != "s-first":
+            return None
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            # mirrors the controller resolving the provider and finalizing another session
+            # while unload() is suspended awaiting this cancellation
+            late_task = asyncio.create_task(provider.finalize("s-late"))
+            raise
+        return None
+
+    provider._load_models = AsyncMock()  # type: ignore[method-assign]
+    provider._free_models = MagicMock()  # type: ignore[method-assign]
+    provider._finalize = _finalize  # type: ignore[method-assign]
+
+    await provider.ensure_models_loaded()
+    first = asyncio.create_task(provider.finalize("s-first"))
+    await started.wait()
+
+    # mass.unload_provider sets this before it awaits provider.unload()
+    provider.unloading = True
+    await asyncio.wait_for(provider.unload(), timeout=5)
+
+    assert late_task is not None
+    await asyncio.wait_for(late_task, timeout=5)
+    assert finalized == ["s-first"]
+    assert first.cancelled()
+    assert not provider._finalize_tasks
+
+
+@pytest.mark.asyncio
+async def test_start_analysis_declines_while_unloading() -> None:
+    """A session arriving from a stale provider snapshot must not start on a dying provider."""
+    provider = _make_provider()
+    provider._start_analysis = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    provider.unloading = True
+
+    accepted = await provider.start_analysis("s", MagicMock(), MagicMock())
+
+    assert accepted is False
+    provider._start_analysis.assert_not_awaited()
+    # The gate comes first, so nothing downstream of it runs either.
+    version_lookup = provider.mass.streams.audio_analysis.get_audio_analysis_version
+    version_lookup.assert_not_awaited()  # type: ignore[attr-defined]
+    assert "s" not in provider._sessions
+
+
+@pytest.mark.asyncio
+async def test_ensure_models_loaded_declines_while_unloading() -> None:
+    """Models must never be reloaded onto a provider that is on its way out."""
+    provider = _make_provider()
+    provider._load_models = AsyncMock()  # type: ignore[method-assign]
+    provider.unloading = True
+
+    assert await provider.ensure_models_loaded() is False
+    provider._load_models.assert_not_awaited()
+    assert provider._models_loaded is False
+
+
+@pytest.mark.asyncio
+async def test_ensure_models_loaded_declines_when_queued_behind_unload() -> None:
+    """A loader already waiting on the models lock must decline once unload() has run."""
+    provider = _make_provider()
+    provider.has_unloadable_models = True
+    loaded = False
+
+    async def _load() -> None:
+        nonlocal loaded
+        loaded = True
+
+    provider._load_models = _load  # type: ignore[method-assign]
+    provider._free_models = MagicMock()  # type: ignore[method-assign]
+
+    # Hold the lock so the loader is queued behind the unload that follows.
+    await provider._models_lock.acquire()
+    loader = asyncio.create_task(provider.ensure_models_loaded())
+    await asyncio.sleep(0)
+    # mass.unload_provider sets this before it awaits provider.unload()
+    provider.unloading = True
+    provider._models_lock.release()
+    await provider.unload()
+
+    assert await loader is False
+    assert loaded is False
+    assert provider._models_loaded is False

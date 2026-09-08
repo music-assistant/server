@@ -88,7 +88,8 @@ class QueueCommandsMixin:
 
         The Plex server caps each response to ~200 items regardless of the requested
         window size. We use playQueueTotalCount to detect truncation and keep fetching
-        forward pages until we have every item, up to :data:`MAX_QUEUE_ITEMS`.
+        forward pages until we hold :data:`MAX_QUEUE_ITEMS` items counting from the
+        selected item, or the queue is exhausted.
 
         :param queue_id: The Plex PlayQueue ID to fetch.
         :return: A PlayQueue whose items list contains the tracks (capped), or None.
@@ -111,24 +112,36 @@ class QueueCommandsMixin:
         all_items = list(playqueue.items)
         seen_ids = {item.playQueueItemID for item in all_items}
 
+        # Anchor pagination and capping on the selected item rather than the queue head,
+        # so a selection past MAX_QUEUE_ITEMS is never truncated away.
+        anchor = self._selected_item_anchor(
+            all_items, getattr(playqueue, "playQueueSelectedItemID", None)
+        )
+
         # playQueueTotalCount is absent for track-radio queues; fall back to the
         # number of items we already have so pagination simply stops.
         total_count = playqueue.playQueueTotalCount or len(all_items)
-        target_count = min(total_count, MAX_QUEUE_ITEMS)
+        target_count = min(total_count, anchor + MAX_QUEUE_ITEMS)
         while len(all_items) < target_count:
             last_id = all_items[-1].playQueueItemID
 
-            def fetch_next(_last_id: int = last_id) -> PlayQueue:
+            def fetch_next(_last_id: int = last_id) -> PlayQueue | None:
                 # own=False — we already claimed ownership on the first fetch.
                 # includeBefore=False — only items strictly after center are returned.
-                return PlayQueue.get(
-                    plex_server,
-                    playQueueID=queue_id,
-                    own=False,
-                    center=_last_id,
-                    window=page_size,
-                    includeBefore=False,
-                )
+                try:
+                    return PlayQueue.get(
+                        plex_server,
+                        playQueueID=queue_id,
+                        own=False,
+                        center=_last_id,
+                        window=page_size,
+                        includeBefore=False,
+                    )
+                except IndexError, TypeError:
+                    # plexapi resolves selectedItem by indexing the returned window with
+                    # the queue-absolute selected offset, which can fall outside a
+                    # forward-only page; treat such a page as the end of pagination.
+                    return None
 
             next_page = await asyncio.to_thread(fetch_next)
             if next_page is None or not next_page.items:
@@ -141,15 +154,48 @@ class QueueCommandsMixin:
             all_items.extend(new_items)
             seen_ids.update(i.playQueueItemID for i in new_items)
 
+        self._cap_playqueue_items(playqueue, all_items)
+        return playqueue
+
+    @staticmethod
+    def _selected_item_anchor(items: list[Any], selected_id: int | None) -> int:
+        """Return the index of the item matching selected_id, or 0 if absent/not found."""
+        if selected_id is not None:
+            for index, item in enumerate(items):
+                if getattr(item, "playQueueItemID", None) == selected_id:
+                    return index
+        return 0
+
+    @staticmethod
+    def _cap_to_selected_window(
+        all_items: list[Any], anchor: int, selected_offset: int | None
+    ) -> list[Any]:
+        """Cap items to MAX_QUEUE_ITEMS, keeping the selected item and what follows."""
+        tail = all_items[anchor : anchor + MAX_QUEUE_ITEMS]
+        room = MAX_QUEUE_ITEMS - len(tail)
+        # Only fill from the head when this window is known to start at the true queue
+        # head (offset 0 == anchor); otherwise all_items[0] is just an earlier page item.
+        if room > 0 and selected_offset is not None and selected_offset == anchor:
+            head = all_items[: min(room, anchor)]
+        else:
+            head = []
+        return head + tail
+
+    def _cap_playqueue_items(self, playqueue: PlayQueue, all_items: list[Any]) -> None:
+        """Cap items around the selected item and patch them onto the PlayQueue."""
         if len(all_items) > MAX_QUEUE_ITEMS:
-            LOGGER.info(
-                "Capping Plex play queue from %d to %d items", len(all_items), MAX_QUEUE_ITEMS
+            anchor = self._selected_item_anchor(
+                all_items, getattr(playqueue, "playQueueSelectedItemID", None)
             )
-            all_items = all_items[:MAX_QUEUE_ITEMS]
+            selected_offset = getattr(playqueue, "playQueueSelectedItemOffset", None)
+            capped_items = self._cap_to_selected_window(all_items, anchor, selected_offset)
+            LOGGER.info(
+                "Capping Plex play queue from %d to %d items", len(all_items), len(capped_items)
+            )
+            all_items = capped_items
 
         # Patch the cached items property on the PlayQueue object.
         playqueue.__dict__["items"] = all_items
-        return playqueue
 
     def _selected_item_index(self, playqueue: PlayQueue) -> int:
         """Return the selected item's index within the fetched queue window."""
@@ -219,6 +265,9 @@ class QueueCommandsMixin:
                 queue_id=player_id,
                 media=source_media,
                 option=QueueOption.REPLACE,
+                # the deferred task below applies MA's shuffle; loading the source already
+                # shuffled would leave the queue's own order out of step with the Plex one
+                shuffle=False,
             )
             if offset > 0:
                 await self._seek_to_offset_after_playback(player_id, offset)
@@ -325,6 +374,10 @@ class QueueCommandsMixin:
                         queue_id=player_id,
                         media=first_track,
                         option=QueueOption.REPLACE,
+                        # Plex owns the order and a shuffled play queue already arrives
+                        # shuffled, so the remaining tracks must be appended to an unshuffled
+                        # queue; _load_remaining_queue_tracks sets the flag once they landed
+                        shuffle=False,
                     )
 
                     if offset > 0:
@@ -341,8 +394,8 @@ class QueueCommandsMixin:
                         )
                     )
 
-                except Exception as e:
-                    LOGGER.exception(f"Error starting playback with first track: {e}")
+                except Exception:
+                    LOGGER.exception("Error starting playback with first track")
                     if starting_key:
                         await self._play_single_track(player_id, starting_key)
             else:
@@ -350,8 +403,8 @@ class QueueCommandsMixin:
                 if starting_key:
                     await self._play_single_track(player_id, starting_key)
 
-        except Exception as e:
-            LOGGER.exception(f"Error playing from queue: {e}")
+        except Exception:
+            LOGGER.exception("Error playing from queue")
             if starting_key:
                 await self._play_single_track(player_id, starting_key)
 
@@ -402,6 +455,7 @@ class QueueCommandsMixin:
                         queue_id=player_id,
                         media=media,
                         option=QueueOption.REPLACE,
+                        shuffle=shuffle,
                     )
             elif container_key:
                 self.play_queue_id = None
@@ -411,6 +465,7 @@ class QueueCommandsMixin:
                     queue_id=player_id,
                     media=media_to_play,
                     option=QueueOption.REPLACE,
+                    shuffle=shuffle,
                 )
             else:
                 self.play_queue_id = None
@@ -420,6 +475,7 @@ class QueueCommandsMixin:
                     queue_id=player_id,
                     media=media,
                     option=QueueOption.REPLACE,
+                    shuffle=shuffle,
                 )
 
             # Always sync shuffle state so that a previously enabled MA shuffle
@@ -432,8 +488,8 @@ class QueueCommandsMixin:
             await self._broadcast_timeline()
             return web.Response(status=200)
 
-        except Exception as e:
-            LOGGER.exception(f"Error handling playMedia: {e}")
+        except Exception:
+            LOGGER.exception("Error handling playMedia")
             return web.Response(status=500, text="Internal error")
         finally:
             self._updating_from_plex = False
@@ -475,20 +531,17 @@ class QueueCommandsMixin:
                 self.play_queue_id = str(playqueue.playQueueID)
                 self.play_queue_version = 1
 
-                if len(playqueue.items) > MAX_QUEUE_ITEMS:
-                    LOGGER.info(
-                        "Capping created Plex play queue from %d to %d items",
-                        len(playqueue.items),
-                        MAX_QUEUE_ITEMS,
-                    )
-                    playqueue.__dict__["items"] = playqueue.items[:MAX_QUEUE_ITEMS]
+                self._cap_playqueue_items(playqueue, list(playqueue.items))
 
                 LOGGER.info(
                     f"Created play queue {self.play_queue_id} with {len(playqueue.items)} items"
                 )
 
                 self.play_queue_item_ids = {}
-                first_item = playqueue.items[0]
+                # A created queue may select a mid-queue item (e.g. a single track expanded
+                # to its album context), so start playback at the selected item.
+                selected_index = self._selected_item_index(playqueue)
+                first_item = playqueue.items[selected_index]
                 first_track_key, first_play_queue_item_id = plex_item_fields(first_item)
 
                 if not first_track_key:
@@ -506,25 +559,29 @@ class QueueCommandsMixin:
                         queue_id=player_id,
                         media=first_track,
                         option=QueueOption.REPLACE,
+                        # as above: the tracks that follow are appended in Plex's order
+                        shuffle=False,
                     )
 
                     if len(playqueue.items) > 1:
                         self.provider.mass.create_task(
-                            self._load_remaining_queue_tracks(player_id, playqueue, 0, shuffle)
+                            self._load_remaining_queue_tracks(
+                                player_id, playqueue, selected_index, shuffle
+                            )
                         )
 
                     await self._broadcast_timeline()
                     return web.Response(status=200)
 
-                except Exception as e:
-                    LOGGER.exception(f"Error starting playback with first track: {e}")
+                except Exception:
+                    LOGGER.exception("Error starting playback with first track")
                     return web.Response(status=500, text="Failed to start playback")
             else:
                 LOGGER.error("Failed to create play queue or queue is empty")
                 return web.Response(status=500, text="Failed to create play queue")
 
-        except Exception as e:
-            LOGGER.exception(f"Error handling createPlayQueue: {e}")
+        except Exception:
+            LOGGER.exception("Error handling createPlayQueue")
             return web.Response(status=500, text="Internal error")
         finally:
             self._updating_from_plex = False
@@ -611,8 +668,8 @@ class QueueCommandsMixin:
 
             return web.Response(status=200)
 
-        except Exception as e:
-            LOGGER.exception(f"Error handling refreshPlayQueue: {e}")
+        except Exception:
+            LOGGER.exception("Error handling refreshPlayQueue")
             return web.Response(status=500, text="Internal error")
         finally:
             self._updating_from_plex = False

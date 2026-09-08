@@ -54,7 +54,9 @@ class SyncGroupPlayer(Player):
     ) -> None:
         """Initialize SyncGroupPlayer instance."""
         super().__init__(provider, player_id)
-        self._attr_name = self.config.name or self.config.default_name or f"SyncGroup {player_id}"
+        # the default name, not the custom one: display_name already prefers the
+        # custom name, while update_state persists this one as the default name
+        self._attr_name = self.config.default_name or self.config.name or f"SyncGroup {player_id}"
         self._attr_available = True
         self._attr_device_info = DeviceInfo(model=provider.name, manufacturer=APPLICATION_NAME)
         # Group players default to "no opinion" on power. The session lifecycle
@@ -423,7 +425,12 @@ class SyncGroupPlayer(Player):
             # bypassing group/sync redirect that would loop back to this player.
             # Hold the group's playback lock until the leader confirms playback
             # (see play()) so a concurrent (un)group command can't race the start.
-            async with self._await_leader_playback():
+            async with (
+                self.mass.players.get_player_lock(
+                    sync_leader.player_id, PlayerLockPurpose.PLAYBACK
+                ),
+                self._await_leader_playback(),
+            ):
                 await self.mass.players._handle_play_media(sync_leader.player_id, media)
         else:
             raise RuntimeError("An empty group cannot play media, consider adding members first")
@@ -745,13 +752,25 @@ class SyncGroupPlayer(Player):
         # stamp the start: device state is unreliable while a start settles, so
         # group-command decisions treat this window as playing (see set_members)
         self._playback_start_at = time.monotonic()
-        async with self.mass.players.wait_for_player_update(
-            leader.player_id,
-            attribute_name="playback_state",
-            attribute_value=PlaybackState.PLAYING,
-            timeout=PLAYBACK_START_TIMEOUT,
-        ):
-            yield
+        try:
+            async with self.mass.players.wait_for_player_update(
+                leader.player_id,
+                attribute_name="playback_state",
+                attribute_value=PlaybackState.PLAYING,
+                timeout=PLAYBACK_START_TIMEOUT,
+            ):
+                yield
+        finally:
+            # a start that never reaches PLAYING has no PLAYING -> IDLE transition to
+            # arm the idle-grace dissolve, leaving the group formed forever; arm it
+            # here instead (a start that settles late cancels it again on PLAYING)
+            if (
+                self._attr_powered is not True
+                and self.sync_leader is not None
+                and self.sync_leader.state.playback_state
+                not in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+            ):
+                self._schedule_idle_grace_timer()
 
     async def _dissolve_syncgroup(self) -> None:
         """Dissolve the current syncgroup by ungrouping all members."""

@@ -173,7 +173,7 @@ class PlaylistMetadataProvider(MetadataProvider):
         if not real_file_path.startswith(real_images_dir + os.sep):
             msg = f"Invalid image path: {path}"
             raise FileNotFoundError(msg)
-        if not os.path.isfile(real_file_path):
+        if not Path(real_file_path).is_file():
             msg = f"Playlist art image not found: {path}"
             raise FileNotFoundError(msg)
         # Return bytes directly so MA never passes a bare filename to ffmpeg
@@ -971,7 +971,7 @@ def _get_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
         "/Windows/Fonts/arialbd.ttf",
     ]
     for path in font_search_paths:
-        if os.path.exists(path):
+        if Path(path).exists():
             try:
                 return ImageFont.truetype(path, size)
             except OSError:

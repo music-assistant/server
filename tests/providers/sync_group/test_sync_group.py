@@ -13,6 +13,7 @@ from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerTyp
 from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_PLAYERS, PROTOCOL_PRIORITY
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.models.player import LinkedOutputProtocol
 from music_assistant.providers.sync_group.player import SyncGroupPlayer
 
@@ -1830,6 +1831,79 @@ class TestIdleGraceTimer:
         assert sgp._idle_grace_task is None
 
 
+class TestIdleGraceOnFailedStart:
+    """A group formed for a start that never materializes must arm the grace dissolve."""
+
+    @pytest.mark.asyncio
+    async def test_grace_scheduled_when_leader_never_starts_playing(self) -> None:
+        """play_media where the leader stays IDLE (e.g. 404 media) arms the grace timer."""
+        mass = _make_mock_mass()
+        sentinel = MagicMock()
+        mass.create_task = MagicMock(return_value=sentinel)
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp._attr_group_members = ["leader"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp.play_media(MagicMock(source_id="src", uri="x"))
+
+        # the leader stayed IDLE, so the failed start must leave a pending dissolve
+        assert sgp._idle_grace_task is sentinel
+
+    @pytest.mark.asyncio
+    async def test_no_grace_when_leader_confirms_playback(self) -> None:
+        """play_media where the leader reports PLAYING must not arm the grace timer."""
+        mass = _make_mock_mass()
+        mass.create_task = MagicMock()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player(
+            "leader", provider_domain="sonos", playback_state=PlaybackState.PLAYING
+        )
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp._attr_group_members = ["leader"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp.play_media(MagicMock(source_id="src", uri="x"))
+
+        assert sgp._idle_grace_task is None
+        mass.create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_grace_on_failed_start_when_pinned(self) -> None:
+        """No grace timer on a failed start when the user pinned the group with Fake power."""
+        mass = _make_mock_mass()
+        mass.create_task = MagicMock()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp._attr_group_members = ["leader"]
+        sgp._attr_powered = True  # explicit pin via Fake power control
+
+        with patch.object(sgp, "update_state"):
+            await sgp.play_media(MagicMock(source_id="src", uri="x"))
+
+        assert sgp._idle_grace_task is None
+        mass.create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_grace_scheduled_when_play_command_raises(self) -> None:
+        """A play command that raises still arms the grace timer for the formed group."""
+        mass = _make_mock_mass()
+        sentinel = MagicMock()
+        mass.create_task = MagicMock(return_value=sentinel)
+        mass.players._handle_play_media = AsyncMock(side_effect=RuntimeError("boom"))
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp._attr_group_members = ["leader"]
+
+        with patch.object(sgp, "update_state"), pytest.raises(RuntimeError):
+            await sgp.play_media(MagicMock(source_id="src", uri="x"))
+
+        assert sgp._idle_grace_task is sentinel
+
+
 class TestFormWaitsForLeaderUnsynced:
     """The form path must wait for a stale leader to report synced_to=None."""
 
@@ -2094,6 +2168,7 @@ class TestLeaderPlaybackAwaited:
             "play_media",
             "await",
         ]
+        mass.players.get_player_lock.assert_any_call("leader", PlayerLockPurpose.PLAYBACK)
 
     @pytest.mark.asyncio
     async def test_no_wait_when_group_has_no_leader(self) -> None:

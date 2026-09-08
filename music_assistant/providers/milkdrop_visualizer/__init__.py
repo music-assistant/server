@@ -1,10 +1,10 @@
 """
 MilkDrop Visualizer Plugin for Music Assistant.
 
-Taps the audio of playing Sendspin groups in-process (via the Sendspin
-provider's bridge visualizer role) and relays time-domain waveform frames
-over a WebSocket endpoint on the MA webserver. The MA web frontend feeds
-these frames to the Butterchurn (MilkDrop) renderer in the now-playing views.
+Reads the PCM Music Assistant already decodes for a playing player and relays
+time-domain waveform frames over a WebSocket endpoint on the MA webserver. The
+MA web frontend feeds these frames to the Butterchurn (MilkDrop) renderer in
+the now-playing views.
 """
 
 from __future__ import annotations

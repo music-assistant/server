@@ -86,12 +86,18 @@ def _create_client_context(
     ssl_cipher_list: SSLCipherList = SSLCipherList.PYTHON_DEFAULT,
 ) -> ssl.SSLContext:
     """Return an independent SSL context for making requests."""
-    # Reuse environment variable definition from requests, since it's already a
-    # requirement. If the environment variable has no value, fall back to using
-    # certs from certifi package.
-    cafile = environ.get("REQUESTS_CA_BUNDLE", certifi.where())
-
-    sslcontext = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=cafile)
+    if env_cafile := environ.get("REQUESTS_CA_BUNDLE"):
+        # explicit override: an env var pointing at a CA bundle replaces the trust
+        # store entirely (the requests' semantics we deliberately reuse).
+        sslcontext = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=env_cafile)
+    else:
+        # no explicit override: trust the platform's CAs (system trust store, e.g.
+        # /etc/ssl/certs from update-ca-certificates, the HAOS /ssl add-on slot, or a
+        # corporate CA installed in the container) *in addition to* the certifi bundle.
+        # create_default_context() without cafile loads the system store; without this
+        # we would ignore any CA the user installed on the host/container.
+        sslcontext = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH)
+        sslcontext.load_verify_locations(cafile=certifi.where())
     if ssl_cipher_list != SSLCipherList.PYTHON_DEFAULT:
         sslcontext.set_ciphers(SSL_CIPHER_LISTS[ssl_cipher_list])
 

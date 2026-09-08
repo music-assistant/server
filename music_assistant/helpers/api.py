@@ -181,7 +181,7 @@ def parse_arguments(
     final_args = {}
     # ignore extra args if not strict
     if strict:
-        for key, value in args.items():
+        for key in args:
             if key not in func_sig.parameters:
                 raise KeyError(f"Invalid parameter: '{key}'")
     # parse arguments to correct type

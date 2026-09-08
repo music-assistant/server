@@ -28,6 +28,7 @@
     "add_playlist_tracks": "Add items to playlist {0}",
     "remove_playlist_tracks": "Remove items from playlist {0}",
     "import_playlist_matching": "Import playlist {0}",
-    "import_radios": "Import {0} radio stations"
+    "import_radios": "Import {0} radio stations",
+    "reconcile_duplicate_tracks": "Reconcile duplicate tracks"
   }
 }

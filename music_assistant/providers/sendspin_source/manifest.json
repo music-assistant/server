@@ -9,5 +9,5 @@
   "depends_on": "sendspin",
   "requirements": ["soxr==1.1.0"],
   "builtin": true,
-  "icon": "audio-input-rca"
+  "icon": "audio-input-stereo-minijack"
 }

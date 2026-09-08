@@ -44,6 +44,7 @@ from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import iso_from_utc_timestamp
 from music_assistant.helpers.json import SerializableType
+from music_assistant.helpers.tts import TTSLanguageNotSupportedError
 from music_assistant.helpers.util import lock, try_parse_int
 from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
 
@@ -686,7 +687,7 @@ class HomeAssistantProvider(PluginProvider):
         async with http_session.post(
             f"{ha_url}/api/tts_get_url", headers=headers, json=payload
         ) as response:
-            await self._raise_for_tts_error(response)
+            await self._raise_for_tts_error(response, entity_id, language)
             data = await response.json()
         url = str(data["url"])
         return StreamDetails(
@@ -825,7 +826,7 @@ class HomeAssistantProvider(PluginProvider):
             if not hass_state:
                 control.volume_muted = False
             elif entity_platform == "media_player":
-                control.volume_muted = hass_state["attributes"].get("volume_muted")
+                control.volume_muted = bool(hass_state["attributes"].get("is_volume_muted"))
             else:
                 control.volume_muted = hass_state["state"] not in OFF_STATES
             control.mute_set = partial(self._handle_player_control_mute_set, entity_id)
@@ -915,7 +916,7 @@ class HomeAssistantProvider(PluginProvider):
             if player_control.supports_volume and "volume_level" in attributes:
                 player_control.volume_level = int(attributes.get("volume_level", 0) * 100)
             if player_control.supports_mute and "is_volume_muted" in attributes:
-                player_control.volume_muted = attributes.get("is_volume_muted")
+                player_control.volume_muted = bool(attributes.get("is_volume_muted"))
         self.mass.players.update_player_control(entity_id)
 
     async def _fetch_states(self, entity_ids: list[str]) -> list[State]:
@@ -955,8 +956,10 @@ class HomeAssistantProvider(PluginProvider):
         http_session = self.mass.http_session if ssl else self.mass.http_session_no_ssl
         return ha_url, headers, http_session
 
-    async def _raise_for_tts_error(self, response: ClientResponse) -> None:
-        """Raise for a failed tts_get_url response without masking a language rejection."""
+    async def _raise_for_tts_error(
+        self, response: ClientResponse, entity_id: str, language: str | None
+    ) -> None:
+        """Raise a classified error for a failed tts_get_url response."""
         if response.ok:
             return
         try:
@@ -965,10 +968,27 @@ class HomeAssistantProvider(PluginProvider):
         except ValueError:
             body = None
         error_message = body.get("error") if isinstance(body, dict) else None
-        # HA returns the same 400 for a rejected option and an unsupported language
-        if isinstance(error_message, str) and "Invalid options found" in error_message:
+        if isinstance(error_message, str):
+            if error_message.startswith("Language '") and error_message.endswith("' not supported"):
+                raise TTSLanguageNotSupportedError(f"TTS engine '{entity_id}': {error_message}")
             raise MusicAssistantError(error_message)
-        response.raise_for_status()
+        if response.status == 500 and language:
+            # HA masks tts_get_url validation errors as a bare 500 (the error body fails
+            # to serialize), so a rejected language is the one recoverable cause left
+            raise TTSLanguageNotSupportedError(
+                f"TTS request to engine '{entity_id}' for language '{language}' failed "
+                f"(HTTP {response.status} from Home Assistant, which hides the reason, "
+                "possibly an unsupported language)"
+            )
+        failure = (
+            f"TTS request to engine '{entity_id}' failed: Home Assistant returned "
+            f"HTTP {response.status} ({response.reason}) on tts_get_url."
+        )
+        if response.status in (401, 403):
+            raise MusicAssistantError(
+                f"{failure} Check your Home Assistant connection settings and access token."
+            )
+        raise MusicAssistantError(f"{failure} Check the Home Assistant core log for the reason.")
 
     async def _disconnect_hass(self) -> None:
         """Stop listening for Home Assistant events and disconnect the client."""

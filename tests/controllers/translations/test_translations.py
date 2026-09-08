@@ -618,6 +618,25 @@ def test_error_result_message_provider_specific_override() -> None:
         assert msg.to_dict()["details"] == "Je Spotify-sessie is verlopen."
 
 
+def test_error_result_message_provider_stream_limit() -> None:
+    """The provider stream limit error resolves with provider name and limit interpolated."""
+    ctrl = _make_controller()
+    ctrl._source = build_translations_source()
+    msg = ErrorResultMessage(
+        "m",
+        7,
+        "Spotify has reached its limit of 5 concurrent source streams.",
+        translation_key="provider_stream_limit",
+        translation_args=["Spotify", 5],
+    )
+    with _active_resolver(ctrl, None):
+        details = msg.to_dict()["details"]
+    assert details == (
+        "Spotify has reached its limit of 5 simultaneous streams. "
+        "Stop playback on another player and try again."
+    )
+
+
 def test_error_result_message_unresolved_key_keeps_details() -> None:
     """An unresolvable or absent translation_key leaves the raw `details` string intact."""
     ctrl = _nl_controller()

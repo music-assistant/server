@@ -29,6 +29,7 @@ from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PROPAGATE_GENRES,
     SUPPORTED_EXTENSIONS,
+    WALK_EXTENSIONS,
     content_type_config_entry,
 )
 from music_assistant.providers.filesystem_local.helpers import FileSystemItem, ScanErrors
@@ -182,14 +183,17 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             is_dir=webdav_item.is_dir,
             checksum=webdav_item.last_modified or "unknown",
             file_size=webdav_item.size,
+            metadata_token=webdav_item.etag,
         )
 
-    async def _scandir(self, path: str) -> list[FileSystemItem]:
+    async def _scandir(self, path: str, use_cache: bool = True) -> list[FileSystemItem]:
         """List WebDAV directory contents with caching."""
         cache_key = f"scandir_{path}"
-        # bypass the cache during sync so edits are picked up immediately;
-        # the fresh result is still written back for subsequent browse/exists calls
-        if not self.sync_running:
+        # bypass the cache during sync (edits must be picked up immediately) or when the
+        # caller explicitly asks not to use it (e.g. an on-demand NFO lookup honoring a manual
+        # "Refresh item"); the fresh result is still written back for subsequent browse/exists
+        # calls
+        if use_cache and not self.sync_running:
             if cached := await self.cache.get(
                 key=cache_key,
                 provider=self.instance_id,
@@ -273,6 +277,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                     is_dir=item.is_dir,
                     checksum=item.last_modified or "unknown",
                     file_size=item.size,
+                    metadata_token=item.etag,
                 )
             )
         return result
@@ -302,12 +307,13 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         self,
         *,
         file_checksums: dict[str, str],
-        cue_file_checksums: dict[str, str],
+        cue_file_checksums: dict[str, set[str]],
         cur_filenames: set[str],
         items_to_process: list[tuple[FileSystemItem, str | None]],
         unchanged_cue_items: list[FileSystemItem],
         cue_stems: set[str],
         scan_errors: ScanErrors,
+        metadata_files: list[FileSystemItem],
     ) -> None:
         """Walk the WebDAV tree via PROPFIND and populate the sync buckets."""
         ignore_album_playlists = self.media_content_type == "music" and bool(
@@ -341,7 +347,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                     if scan_errors.aborted:
                         return
                     continue
-                if item.ext not in SUPPORTED_EXTENSIONS:
+                if item.ext not in WALK_EXTENSIONS:
                     continue
                 scanned[0] += 1
                 if scanned[0] % 500 == 0:
@@ -355,6 +361,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                     unchanged_cue_items=unchanged_cue_items,
                     cue_stems=cue_stems,
                     ignore_album_playlists=ignore_album_playlists,
+                    metadata_files=metadata_files,
                 )
 
         await _walk("", is_root=True)
@@ -362,3 +369,11 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
     def _get_chapter_path(self, relative_path: str) -> str:
         """Return authenticated WebDAV URL for a chapter file."""
         return self._build_authenticated_url(relative_path)
+
+    async def _is_reachable(self) -> bool:
+        """Return whether the WebDAV server can be reached."""
+        # base_path is the server url here, so the parent's directory stat cannot answer this
+        await webdav_test_connection(
+            self._session, self.base_url, self.username, self.password, timeout=10
+        )
+        return True

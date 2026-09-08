@@ -112,16 +112,29 @@ to target) the same feature-bit test the binary uses is mirrored in
 `supports_airplay2()`: any device advertising AirPlay 2 gets AirPlay 2, RAOP is
 only used for devices that do not support it.
 
-### Force RAOP (escape hatch)
+### Streaming mode (escape hatch)
 
-The only user override is the advanced per-player `force_raop` boolean. It is
-offered **only** for AirPlay-2-capable non-Apple receivers that also advertise a
-RAOP service — an escape hatch for a device whose AirPlay 2 implementation
-misbehaves. When enabled, the stream is sent with `--protocol raop`.
+The only user override is the advanced per-player `streaming_mode` selector. It
+pins the protocol/timing lane for a device whose automatic route misbehaves, and
+each option is offered only when the device can actually use it: the AirPlay 2
+lanes need AirPlay 2 support, legacy RAOP needs an advertised `_raop` service,
+and Apple receivers get every lane except NTP timing (they render silence on an
+NTP-timed realtime stream). The modes map
+onto the binary's `--protocol`/`--timing` arguments. Music Assistant never
+writes the setting itself: when an automatic route conclusively fails (a device
+that advertises PTP but never answers a clock probe, or a native control
+channel that fails after its keepalive retries) it logs a warning pointing at
+this selector and leaves the choice to the user. The usual cause of a control
+channel failure is a network dropout, and a persisted automatic switch would
+outlive it and pin the player to a lane the device may not even accept.
 
-The toggle is deliberately not offered where it would be meaningless: genuine
-Apple devices (HomePod / Apple TV) are always AirPlay 2 (a stray persisted value
-is ignored), and RAOP-only / AirPlay-2-only devices have nothing to force.
+The selector is hidden only for RAOP-only devices (no alternative lane; a
+stray persisted value is ignored). Apple devices (HomePod / Apple TV) get
+every lane except NTP timing — they render silence on an NTP-timed realtime
+stream (hardware-measured) — leaving pinned PTP, the compatibility flow and
+legacy RAOP as escape hatches for networks where the PTP ports are blocked.
+AirPlay-2-only devices get the AirPlay 2 lanes without RAOP: they are the
+class the NTP escape exists for.
 
 ## Discovery and Player Setup
 
@@ -263,6 +276,29 @@ AirPlay uses **flow mode** streaming, which means:
 - Supports crossfade between tracks
 - Once started, the stream continues until explicitly stopped
 
+### Announcements
+
+An announcement is mixed into the audio the player is already rendering: the binary
+overlays the clip on the outgoing stream with the music ducked underneath, without a
+flush or a re-anchor, so the group timeline is untouched. Native announcement support
+is therefore only offered while there is live playback to mix into — an idle player
+gets the generic announcement handling from the players controller instead.
+
+The clip file is wrapped in ducked silence, because the binary holds the duck for the
+whole file:
+
+| Part | What happens |
+|---|---|
+| lead-in | music already ducked, nothing said yet — the announcement volume is raised here |
+| clip | the announcement itself, at the announcement volume |
+| tail | music still ducked — the volume is put back here |
+
+Both volume changes are timed on the audible instant the binary acks, and they travel
+through the players controller so they land on whichever control owns the output (see
+[Volume Ownership](#volume-ownership)). Neither is ever heard as the music changing
+level. The duck is deepened by exactly the size of the volume bump, so the music keeps
+the same perceived level underneath while the clip gets louder.
+
 
 ## Multi-Room Synchronization
 
@@ -334,9 +370,17 @@ Handled in `_handle_dacp_request()` in [provider.py](provider.py):
 | `device-prevent-playback=1` | Device switched to another source or powered off |
 | `device-prevent-playback=0` | Device ready for playback again |
 
+### Volume Ownership
+
+An AirPlay volume command sets the receiver's own volume, and that level stays behind on the device after the session ends. Music Assistant therefore only sends one when nothing else owns the volume of this output: on a device that is also reachable through a native provider or another protocol (a Sonos speaker, an AV receiver), the stream simply plays at the level the device is already set to, and volume stays with that provider.
+
+A volume is still sent when the AirPlay output itself is the resolved volume control, and when a mute has to travel with the stream.
+
 ### Volume Feedback
 
 Devices can report their own volume changes back over DACP; Music Assistant applies them unless `ignore_volume` is set. Genuine Apple devices are auto-set to ignore these reports (they manage volume internally).
+
+A receiver also echoes back every level it is handed, and an echo that arrives after the next level was sent would be read as the user reaching for the volume and written straight back to the device. Reports are therefore ignored for a short window after Music Assistant sends a volume itself, and for the whole span of an announcement.
 
 **Config option**: `ignore_volume` (default: `False`, auto-enabled for Apple devices)
 - Useful when device volume reports are unreliable
@@ -420,8 +464,11 @@ the command pipe. `START_UNIX_MS` is a plain unix epoch millisecond meaning
 protocol path (RAOP, AirPlay 2 RAOP-compat and native).
 
 1. Start every CLI and wait until every group member reports connected
-2. Wire each member's ffmpeg into its persistent stdin, begin feeding PCM and
-   wait until every member confirms the feed flowing (`[STATUS] audio`)
+2. Wire each member's ffmpeg into its persistent stdin and begin feeding PCM.
+   The source's own first bytes are waited for first (up to
+   `AIRPLAY_FEED_START_TIMEOUT`, 25 s, because a seek can land seconds ahead of
+   what the source has produced), and only then does each member get its 5 s
+   budget to confirm the feed flowing (`[STATUS] audio`)
 3. Send one shared `START` (now + 400 ms solo / 500 ms warm group / 2500 ms cold
    group, see `AIRPLAY_COLD_GROUP_START_LEAD_MS`) to every member; readiness is
    event-confirmed so a warm anchor covers only the receiver re-anchor, and the
@@ -431,7 +478,12 @@ protocol path (RAOP, AirPlay 2 RAOP-compat and native).
    stdin), sends `ACTION=FLUSH` to every member and awaits `[STATUS] flushed`,
    then feeds a fresh ffmpeg into the same stdin, awaits `[STATUS] audio` and
    sends one shared `START`.
-   Standby keeps each protocol connection alive for the same flush-refill resume
+   Standby keeps each protocol connection alive for the same flush-refill resume.
+   A flow that ends because it is being superseded leaves the stdin open for the
+   replacement rather than closing it, since closing it ends the stream for good.
+   The EOF is sent anyway once the queue stops loading that replacement, or at
+   `AIRPLAY_REPLACEMENT_EOF_TIMEOUT` at the latest, so a transition that failed
+   still lets the binary play out and the player report idle
 5. Sendspin starts ride the same persistent-stdin flush-refill (cold connect +
    `START`, warm `FLUSH` + `START`) instead of a cold reconnect. They anchor as
    a join, so the binary reports the instant it really scheduled and the bridge
@@ -535,7 +587,7 @@ keeps their exposed player id stable and their Universal Player merging intact.
 ## Configuration Options
 
 ### Protocol Selection
-- **`force_raop`**: Advanced per-player escape hatch to force the legacy RAOP protocol (default: off). Only offered for AirPlay 2-capable non-Apple devices that also advertise RAOP; route selection is otherwise fully automatic (the binary resolves it from the mDNS TXT)
+- **`streaming_mode`**: Advanced per-player pin of the protocol/timing lane (default: Automatic). Options are offered per advertised capability; route selection is otherwise fully automatic (the binary resolves it from the mDNS TXT). Only ever written by the user; a conclusively failing automatic route is reported in the log, never switched away from
 
 ### General
 - **`password`**: Device password, stored encrypted (hidden). It is entered through the player's setup flow, not the settings form: a device that announces password protection without one stored - or that rejects the stored one - is marked as needing setup, which offers the password step again

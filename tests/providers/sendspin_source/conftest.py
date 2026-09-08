@@ -122,12 +122,30 @@ class _FakePlayers:
         self.players: dict[str, _FakePlayer] = {}
         self.stop_started: asyncio.Event | None = None
         self.release_stop: asyncio.Event | None = None
+        # live source sessions, keyed on the player playing one
+        self.source_sessions: dict[str, Any] = {}
+        self.deselected: list[str] = []
 
     def get_player(self, player_id: str, *args: Any, **kwargs: Any) -> _FakePlayer | None:
         return self.players.get(player_id)
 
     def get_active_queue(self, player: _FakePlayer) -> _FakeQueue:
         return player.queue
+
+    def get_audio_source_session(self, player_id: str) -> Any:
+        return self.source_sessions.get(player_id)
+
+    async def deselect_source(
+        self,
+        player_id: str,
+        stop_playback: bool = True,
+        provider_instance_id: str | None = None,
+        source_id: str | None = None,
+        playback_session_id: str | None = None,
+    ) -> None:
+        self.deselected.append(player_id)
+        if stop_playback:
+            await self.cmd_stop(player_id)
 
     async def cmd_stop(self, player_id: str) -> None:
         self.stopped.append(player_id)

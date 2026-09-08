@@ -45,7 +45,8 @@ from .constants import (
     MASS_APP_ID,
     SENDSPIN_CAST_APP_ID,
 )
-from .helpers import CastStatusListener, ChromecastInfo
+from .helpers import CastStatusListener, ChromecastInfo, disconnect_cast
+from .receiver_commands import MassCastCommandController
 
 if TYPE_CHECKING:
     from pychromecast import Chromecast
@@ -88,6 +89,7 @@ class ChromecastPlayer(Player):
         self.status_listener: CastStatusListener | None
         self.cast_info = cast_info
         self.mz_controller: MultizoneController | None = None
+        self.command_controller: MassCastCommandController | None = None
         self.on_app_status_changed: Callable[[str | None], None] | None = None
         self.last_poll = 0.0
         self.last_multichannel_check = 0.0
@@ -138,6 +140,9 @@ class ChromecastPlayer(Player):
             mz_controller = MultizoneController(cast_info.uuid)
             self.cc.register_handler(mz_controller)
             self.mz_controller = mz_controller
+        command_controller = MassCastCommandController(self._handle_receiver_command)
+        self.cc.register_handler(command_controller)
+        self.command_controller = command_controller
 
     async def async_setup(self) -> None:
         """Start the chromecast socket client (must be called after __init__)."""
@@ -289,14 +294,17 @@ class ChromecastPlayer(Player):
         if self.status_listener is not None:
             self.status_listener.invalidate()
         self.status_listener = None
+        if self.command_controller is not None:
+            self.cc.unregister_handler(self.command_controller)
+            self.command_controller = None
         self.logger.debug("Disconnecting from chromecast socket %s", self.display_name)
         if self.mass.closing:
             # Non-blocking disconnect: close socket, don't wait for thread.
             # Socket threads are daemon threads and die on process exit.
             # Blocking disconnect can stall shutdown if threads are slow to exit.
-            self.cc.disconnect(0)
+            disconnect_cast(self.cc, 0)
         else:
-            await asyncio.to_thread(self.cc.disconnect, 10)
+            await asyncio.to_thread(disconnect_cast, self.cc, 10)
 
     ### Callbacks from Chromecast Statuslistener
 
@@ -382,11 +390,12 @@ class ChromecastPlayer(Player):
                     media_controller.send_message, data=queuedata, inc_session_id=True
                 )
 
-            if len(getattr(media_controller.status, "items", [])) < 2:
+            if len(getattr(media_controller.status, "items", [])) < 2 and (
+                cmd_next_url := self.mass.streams.get_command_url(self.player_id, "next")
+            ):
                 # In flow mode, all queue tracks are sent to the player as continuous stream.
                 # add a special 'command' item to the queue
                 # this allows for on-player next buttons/commands to still work
-                cmd_next_url = self.mass.streams.get_command_url(self.player_id, "next")
                 msg = {
                     "type": "QUEUE_INSERT",
                     "mediaSessionId": media_controller.status.media_session_id,
@@ -398,7 +407,10 @@ class ChromecastPlayer(Player):
                                     "uri": cmd_next_url,
                                     "queue_item_id": cmd_next_url,
                                 },
-                                "contentType": "audio/flac",
+                                # must match the silence file the command url actually
+                                # serves: strict (vendor) cast stacks error out on a
+                                # contentType mismatch where Google's receiver is lenient
+                                "contentType": "audio/mpeg",
                                 "streamType": STREAM_TYPE_LIVE,
                                 "metadata": {},
                             },
@@ -590,7 +602,17 @@ class ChromecastPlayer(Player):
 
         # update player status
         self._attr_name = self.cast_info.friendly_name
-        self._attr_volume_level = round(status.volume_level * 100)
+        # A combo device exposes this cast endpoint next to its own protocol and can
+        # report volume 0 over it while its real volume is set through that other
+        # interface, so keep that unknown instead of reporting a hard mute. A cast
+        # device that is a player in its own right always reports its own volume.
+        volume_level = round(status.volume_level * 100)
+        cast_idle = self.cc.app_id in (None, IDLE_APP_ID)
+        self._attr_volume_level = (
+            None
+            if cast_idle and volume_level == 0 and self.type == PlayerType.PROTOCOL
+            else volume_level
+        )
         self._attr_volume_muted = status.volume_muted
         self.update_state()
         if self.on_app_status_changed is not None:
@@ -599,7 +621,7 @@ class ChromecastPlayer(Player):
             except Exception:
                 self.logger.exception("Error in app status callback for %s", self.display_name)
 
-    def _handle_media_status(self, status: MediaStatus) -> None:  # noqa: PLR0915
+    def _handle_media_status(self, status: MediaStatus) -> None:
         """Process MediaStatus on the event loop thread."""
         self.logger.log(
             VERBOSE_LOG_LEVEL,
@@ -611,9 +633,6 @@ class ChromecastPlayer(Player):
         group_player: ChromecastPlayer | None = None
         if self.active_cast_group is not None:
             player_obj = self.mass.players.get_player(self.active_cast_group)
-            if not player_obj:
-                return
-            # Now assert/check the type to satisfy MyPy
             if not isinstance(player_obj, ChromecastPlayer):
                 return
             group_player = player_obj
@@ -621,34 +640,11 @@ class ChromecastPlayer(Player):
 
         # never surface the receiver's dashboard keepalive as actual playback
         if status.content_id and status.content_id.endswith(DASHBOARD_KEEPALIVE_SUFFIXES):
-            self._attr_playback_state = PlaybackState.IDLE
-            self._attr_current_media = None
-            self._attr_active_source = None
-            self._attr_elapsed_time = 0
-            self._attr_elapsed_time_last_updated = time.time()
-            self.update_state()
+            self._reset_to_idle()
             return
 
-        # surface a media error reported by the receiver (e.g. after a failed LOAD),
-        # which otherwise only shows as a silent return to idle
-        if status.player_is_idle and status.idle_reason == "ERROR":
-            # a group forwards its status to every member, so only the group
-            # player itself reports the error
-            if (
-                group_player is None
-                and not self._media_error_reported
-                and not self._flow_stream_underrun()
-            ):
-                self._media_error_reported = True
-                self.logger.warning(
-                    "%s reported a media playback error for %s",
-                    self.display_name,
-                    status.content_id or "the loaded media",
-                )
-        else:
-            self._media_error_reported = False
+        self._report_media_error(status, group_player)
 
-        # player state
         # pychromecast reports BUFFERING as 'playing', so a Cast group that underruns the
         # LIVE flow stream at EOF never goes idle. Treat that case as idle so the queue
         # can resume/restart.
@@ -657,19 +653,71 @@ class ChromecastPlayer(Player):
         )
         is_playing = status.player_is_playing and not flow_underrun
         is_idle = status.player_is_idle or flow_underrun
-        prev_state = self._attr_playback_state
+
+        self._update_playback_state(status, is_playing)
+        self._update_elapsed_time(status, is_playing)
+        self._update_active_source(group_player)
+        self._update_current_media(status, is_idle)
+        self._update_multichannel_group_members()
+        self.update_state()
+
+    def _reset_to_idle(self) -> None:
+        """Drop all playback state and publish the player as idle."""
+        self._attr_playback_state = PlaybackState.IDLE
+        self._attr_current_media = None
+        self._attr_active_source = None
+        self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
+        self.update_state()
+
+    def _report_media_error(
+        self, status: MediaStatus, group_player: ChromecastPlayer | None
+    ) -> None:
+        """
+        Log a media error reported by the receiver, at most once per incident.
+
+        Such an error (e.g. after a failed LOAD) otherwise only shows as a silent
+        return to idle. Any other status ends the incident, so a later error is
+        reported again.
+
+        :param status: Media status as reported by the receiver.
+        :param group_player: Cast group player whose status is being followed, if any.
+        """
+        if not (status.player_is_idle and status.idle_reason == "ERROR"):
+            self._media_error_reported = False
+            return
+        # a group forwards its status to every member, so only the group
+        # player itself reports the error
+        if group_player is not None:
+            return
+        if self._media_error_reported or self._flow_stream_underrun():
+            return
+        self._media_error_reported = True
+        self.logger.warning(
+            "%s reported a media playback error for %s",
+            self.display_name,
+            status.content_id or "the loaded media",
+        )
+
+    def _update_playback_state(self, status: MediaStatus, is_playing: bool) -> None:
+        """
+        Apply the reported playback state, releasing the device once playback ended.
+
+        :param status: Media status as reported by the receiver.
+        :param is_playing: Whether the receiver is really playing audio.
+        """
+        prev_state = self._attr_playback_state
         if is_playing:
             self._attr_playback_state = PlaybackState.PLAYING
             self.set_current_media(uri=status.content_id or "", clear_all=True)
         elif status.player_is_paused:
             self._attr_playback_state = PlaybackState.PAUSED
+            # dropped so the metadata update below builds a fresh PlayerMedia instead of
+            # merging the new track into the previous one, which only truthy fields replace
             self._attr_current_media = None
-            self._attr_active_source = None
         else:
             self._attr_playback_state = PlaybackState.IDLE
             self._attr_current_media = None
-            self._attr_active_source = None
             if (
                 prev_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
                 and self.type != PlayerType.GROUP
@@ -681,15 +729,24 @@ class ChromecastPlayer(Player):
                 # power control does, and a group member follows the group's session.
                 self._schedule_app_release()
 
-        # elapsed time
-        self._attr_elapsed_time_last_updated = time.time()
-        self._attr_elapsed_time = status.adjusted_current_time
-        if is_playing:
-            self._attr_elapsed_time = status.adjusted_current_time
-        else:
-            self._attr_elapsed_time = status.current_time
+    def _update_elapsed_time(self, status: MediaStatus, is_playing: bool) -> None:
+        """
+        Apply the playback position reported by the receiver.
 
-        # active source
+        :param status: Media status as reported by the receiver.
+        :param is_playing: Whether the receiver is really playing audio.
+        """
+        self._attr_elapsed_time_last_updated = time.time()
+        self._attr_elapsed_time = (
+            status.adjusted_current_time if is_playing else status.current_time
+        )
+
+    def _update_active_source(self, group_player: ChromecastPlayer | None) -> None:
+        """
+        Apply the active source, exposing a foreign Cast app as a selectable source.
+
+        :param group_player: Cast group player whose status is being followed, if any.
+        """
         if group_player:
             self._attr_active_source = group_player.active_source or group_player.player_id
         elif self.cc.app_id in (MASS_APP_ID, APP_MEDIA_RECEIVER, SENDSPIN_CAST_APP_ID):
@@ -715,6 +772,13 @@ class ChromecastPlayer(Player):
                     )
                 )
 
+    def _update_current_media(self, status: MediaStatus, is_idle: bool) -> None:
+        """
+        Apply the media metadata reported by the receiver.
+
+        :param status: Media status as reported by the receiver.
+        :param is_idle: Whether the receiver has nothing playing.
+        """
         if status.content_id and not is_idle:
             self.set_current_media(
                 uri=status.content_id,
@@ -728,23 +792,26 @@ class ChromecastPlayer(Player):
         else:
             self._attr_current_media = None
 
-        # weird workaround which is needed for multichannel group childs
-        # (e.g. a stereo pair within a cast group)
-        # where it does not receive updates from the group,
-        # so we need to update the group child(s) manually
-        if self.type == PlayerType.GROUP and self.powered:
-            for child_id in self.group_members:
-                if child := self.mass.players.get_player(child_id):
-                    assert isinstance(child, ChromecastPlayer)  # for type checking
-                    if not child.cast_info.is_multichannel_group:
-                        continue
-                    child._attr_playback_state = self._attr_playback_state
-                    child._attr_current_media = self._attr_current_media
-                    child._attr_elapsed_time = self._attr_elapsed_time
-                    child._attr_elapsed_time_last_updated = self._attr_elapsed_time_last_updated
-                    child._attr_active_source = self.active_source
-                    child.update_state()
-        self.update_state()
+    def _update_multichannel_group_members(self) -> None:
+        """
+        Mirror this group's playback state onto its multichannel members.
+
+        A stereo pair within a cast group receives no updates from the group itself,
+        so its state has to be pushed out manually.
+        """
+        if self.type != PlayerType.GROUP or not self.powered:
+            return
+        for child_id in self.group_members:
+            if child := self.mass.players.get_player(child_id):
+                assert isinstance(child, ChromecastPlayer)  # for type checking
+                if not child.cast_info.is_multichannel_group:
+                    continue
+                child._attr_playback_state = self._attr_playback_state
+                child._attr_current_media = self._attr_current_media
+                child._attr_elapsed_time = self._attr_elapsed_time
+                child._attr_elapsed_time_last_updated = self._attr_elapsed_time_last_updated
+                child._attr_active_source = self.active_source
+                child.update_state()
 
     def _handle_load_media_failed(self, queue_item_id: int, error_code: int) -> None:
         """Process a failed media load on the event loop thread."""
@@ -844,3 +911,32 @@ class ChromecastPlayer(Player):
         # player that owns the queue. Only a native/standalone Cast owns its own queue.
         queue_id = self.active_cast_group or self.protocol_parent_id or self.player_id
         return self.mass.player_queues.flow_stream_finished(queue_id)
+
+    def _handle_receiver_command(self, command: str) -> None:
+        """
+        Handle a playback command forwarded by the Cast receiver app.
+
+        Called from the pychromecast socket thread.
+
+        :param command: Either "next" or "previous".
+        """
+        if self.mass.closing:
+            return
+        queue_command = (
+            self.mass.player_queues.next if command == "next" else self.mass.player_queues.previous
+        )
+
+        def dispatch() -> None:
+            if self.mass.closing:
+                return
+            # A stopped queue still reports active=True, so also reject IDLE or a
+            # press on a dashboard-only session would start playback.
+            queue = self.mass.players.get_active_queue(self)
+            if queue is None or not queue.active or queue.state == PlaybackState.IDLE:
+                self.logger.debug(
+                    "Ignoring %s command: no playing queue for %s", command, self.display_name
+                )
+                return
+            self.mass.create_task(queue_command(queue.queue_id))
+
+        self.mass.loop.call_soon_threadsafe(dispatch)

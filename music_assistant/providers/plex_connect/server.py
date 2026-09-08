@@ -13,7 +13,7 @@ from music_assistant_models.enums import EventType
 
 from .gdm import PlexGDMAdvertiser
 from .playback import PlaybackMixin
-from .plextv import compute_client_id
+from .plextv import build_version, compute_client_id
 from .queue_commands import QueueCommandsMixin
 from .queue_sync import QueueSyncMixin
 from .timeline import TimelineMixin
@@ -87,9 +87,7 @@ class PlayerRemoteInstance:
                 publish_ip=str(self.plex_provider.mass.streams.publish_ip),
                 name=self.player_name,
                 product="Music Assistant",
-                version=self.plex_provider.mass.version
-                if self.plex_provider.mass.version != "0.0.0"
-                else "1.0.0",
+                version=build_version(self.plex_provider.mass.version),
                 device_class=self.device_class,
             )
             self.gdm.start()
@@ -332,7 +330,7 @@ class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin,
             state = self._resolve_plex_state(player, queue)
 
         local_ip = self.provider.mass.streams.publish_ip
-        version = self.provider.mass.version if self.provider.mass.version != "0.0.0" else "1.0.0"
+        version = build_version(self.provider.mass.version)
 
         xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <MediaContainer>

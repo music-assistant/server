@@ -26,7 +26,7 @@ This is a complete, self-contained GitHub Action that handles everything:
 - `github-token`: GitHub token for API access
 
 **Outputs:**
-- `release-notes`: Complete release notes including server changes, frontend changes, and merged contributors
+- `release-notes-file`: Path to a file with the complete release notes including server changes, frontend changes, and merged contributors
 
 **What it does internally:**
 1. Generates base release notes from server PRs

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import MediaType
 
-from .constants import CACHE_CATEGORY_RECOMMENDATIONS
+from .constants import CACHE_CATEGORY_RECOMMENDATIONS, SKIPPABLE_ITEM_ERRORS
 from .parsers import parse_album, parse_artist, parse_playlist, parse_track
 
 if TYPE_CHECKING:
@@ -145,7 +145,7 @@ class TidalPageParser:
                     playlist = parse_playlist(self.provider, item, is_mix=is_mix)
                     result.append(playlist)
                     type_counts[MediaType.PLAYLIST] += 1
-                except (KeyError, ValueError, TypeError) as err:
+                except SKIPPABLE_ITEM_ERRORS as err:
                     self.logger.warning("Error parsing playlist: %s", err)
 
     def _process_track_list(
@@ -161,7 +161,7 @@ class TidalPageParser:
                     track = parse_track(self.provider, item)
                     result.append(track)
                     type_counts[MediaType.TRACK] += 1
-                except (KeyError, ValueError, TypeError) as err:
+                except SKIPPABLE_ITEM_ERRORS as err:
                     self.logger.warning("Error parsing track: %s", err)
 
     def _process_album_list(
@@ -177,7 +177,7 @@ class TidalPageParser:
                     album = parse_album(self.provider, item)
                     result.append(album)
                     type_counts[MediaType.ALBUM] += 1
-                except (KeyError, ValueError, TypeError) as err:
+                except SKIPPABLE_ITEM_ERRORS as err:
                     self.logger.warning("Error parsing album: %s", err)
 
     def _process_artist_list(
@@ -193,7 +193,7 @@ class TidalPageParser:
                     artist = parse_artist(self.provider, item)
                     result.append(artist)
                     type_counts[MediaType.ARTIST] += 1
-                except (KeyError, ValueError, TypeError) as err:
+                except SKIPPABLE_ITEM_ERRORS as err:
                     self.logger.warning("Error parsing artist: %s", err)
 
     def _process_mix_list(
@@ -209,7 +209,7 @@ class TidalPageParser:
                     mix = parse_playlist(self.provider, item, is_mix=True)
                     result.append(mix)
                     type_counts[MediaType.PLAYLIST] += 1
-                except (KeyError, ValueError, TypeError) as err:
+                except SKIPPABLE_ITEM_ERRORS as err:
                     self.logger.warning("Error parsing mix: %s", err)
 
     def _process_generic_items(
@@ -226,7 +226,7 @@ class TidalPageParser:
                     parsed_item = self._parse_item(item, type_counts)
                     if parsed_item:
                         result.append(parsed_item)
-                except (KeyError, ValueError, TypeError) as err:
+                except SKIPPABLE_ITEM_ERRORS as err:
                     self.logger.warning("Error parsing generic item: %s", err)
 
     def _log_module_results(
@@ -374,11 +374,8 @@ class TidalPageParser:
             self.logger.warning("Unknown item type, could not parse: %s", item)
             return None
 
-        except (KeyError, ValueError, TypeError) as err:
+        except SKIPPABLE_ITEM_ERRORS as err:
             self.logger.debug("Error parsing %s item: %s", item_type, err)
-            return None
-        except AttributeError as err:
-            self.logger.debug("Attribute error parsing %s item: %s", item_type, err)
             return None
         except (json.JSONDecodeError, UnicodeError) as err:
             self.logger.debug("JSON/Unicode error parsing %s item: %s", item_type, err)

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Sequence
+from contextlib import suppress
 from datetime import datetime
 from logging import getLevelName
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, cast
 from urllib.parse import quote, unquote
 
 import audible
@@ -19,7 +20,9 @@ from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audible.audible_helper import (
     AudibleHelper,
     cached_authenticator_from_file,
+    evict_cached_authenticator,
     refresh_access_token_compat,
+    remove_file,
 )
 
 if TYPE_CHECKING:
@@ -82,20 +85,12 @@ class Audibleprovider(MusicProvider):
         audible.log_helper.set_level(getLevelName(self.logger.level))
         await self._login()
 
-    # Cache for authenticators to avoid repeated file I/O
-    _AUTH_CACHE: ClassVar[dict[str, audible.Authenticator]] = {}
-
     async def _login(self) -> None:
         """Authenticate with Audible using the saved authentication file."""
         try:
-            auth = self._AUTH_CACHE.get(self.instance_id)
-
-            if auth is None:
-                self.logger.debug("Loading authenticator from file")
-                auth = await cached_authenticator_from_file(self.auth_file)
-                self._AUTH_CACHE[self.instance_id] = auth
-            else:
-                self.logger.debug("Using cached authenticator")
+            # the cache is keyed on the auth file path, so a reconfigure (which writes
+            # a new auth file) never reuses the previous registration's authenticator
+            auth = await cached_authenticator_from_file(self.auth_file, self.locale)
 
             # Check if we have signing auth (preferred, stable - not affected by API changes)
             has_signing_auth = auth.adp_token and auth.device_private_key
@@ -118,7 +113,6 @@ class Audibleprovider(MusicProvider):
                         )
                         auth._update_attrs(**refresh_data)
                         await asyncio.to_thread(auth.to_file, self.auth_file)
-                        self._AUTH_CACHE[self.instance_id] = auth
                         self.logger.debug("Token refreshed successfully")
                     else:
                         self.logger.warning("Cannot refresh: missing refresh_token or locale")
@@ -139,6 +133,7 @@ class Audibleprovider(MusicProvider):
                 client=self._client,
                 provider_instance=self.instance_id,
                 provider_domain=self.domain,
+                provider=self,
                 logger=self.logger,
             )
 
@@ -431,4 +426,9 @@ class Audibleprovider(MusicProvider):
         is_removed will be set to True when the provider is removed from the configuration.
         """
         if is_removed:
-            await self.helper.deregister()
+            try:
+                await self.helper.deregister()
+            finally:
+                evict_cached_authenticator(self.auth_file)
+                with suppress(OSError):
+                    await remove_file(self.auth_file)

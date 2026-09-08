@@ -1008,11 +1008,11 @@ def test_detect_external_base_url_prefers_matching_client() -> None:
     other = SimpleNamespace(user_id="u2", username="someone-else")
     clients = [
         SimpleNamespace(
-            _authenticated_user=other,
+            authenticated_user=other,
             base_url="https://wrong.example.com",
         ),
         SimpleNamespace(
-            _authenticated_user=user,
+            authenticated_user=user,
             base_url="https://ha.example.com/d5369777_music_assistant_dev",
         ),
     ]
@@ -1030,10 +1030,10 @@ def test_detect_external_base_url_returns_none_without_match() -> None:
     user = _matching_user()
     clients = [
         SimpleNamespace(
-            _authenticated_user=SimpleNamespace(user_id="other", username="other"),
+            authenticated_user=SimpleNamespace(user_id="other", username="other"),
             base_url="https://other.example.com",
         ),
-        SimpleNamespace(_authenticated_user=user, base_url=None),
+        SimpleNamespace(authenticated_user=user, base_url=None),
     ]
     mass = MagicMock()
     mass.webserver.clients = clients
@@ -1122,7 +1122,7 @@ async def test_dispatch_detects_ws_client_base_url(
     mass = MagicMock()
     mass.webserver.clients = [
         SimpleNamespace(
-            _authenticated_user=user,
+            authenticated_user=user,
             base_url="https://ha.example.com/d5369777_music_assistant_dev",
         )
     ]

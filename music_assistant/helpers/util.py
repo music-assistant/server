@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import functools
 import html
 import importlib
@@ -50,7 +51,6 @@ from music_assistant.helpers.process import check_output
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from chardet.resultdict import ResultDict
     from music_assistant_models.player import DeviceInfo
     from zeroconf.asyncio import AsyncServiceInfo
 
@@ -572,13 +572,30 @@ IGNORE_TITLE_PARTS = (
     "explicit",
 )
 WITH_TITLE_WORDS = (
-    # words that, when following "with", indicate this is part of the song title
-    # not a featuring credit.
+    # first words after "with" that should stay part of the title, not a credit
     "someone",
     "the",
     "u",
     "you",
     "no",
+)
+_TITLE_FEATURED_CREDIT_PATTERN = re.compile(
+    # require preceding title text so titles starting with "Featuring"/"Ft" stay intact
+    r"(?:[(\[]|(?<=\s))\b(?:feat(?:uring)?|ft)(?:(?:\.|:)\s*|\s+)"
+    r"(.+?)(?=\s*(?:\(|\[|\)|\]| - |$))",
+    re.IGNORECASE,
+)
+_TITLE_BRACKETED_WITH_CREDIT_PATTERN = re.compile(
+    r"(?:\(|\[)with\s+(?P<credit>.+?)(?:\)|\])",
+    re.IGNORECASE,
+)
+_TITLE_HYPHEN_WITH_CREDIT_PATTERN = re.compile(
+    r"\s+-\s+with\s+(?P<credit>.+?)(?=\s*(?:\(|\[| - |$))",
+    re.IGNORECASE,
+)
+_TITLE_WITH_CREDIT_PATTERNS = (
+    _TITLE_BRACKETED_WITH_CREDIT_PATTERN,
+    _TITLE_HYPHEN_WITH_CREDIT_PATTERN,
 )
 
 # Keywords for aggressive search cleaning (includes featuring).
@@ -601,15 +618,6 @@ _DISPLAY_STRIP_PATTERN = re.compile(
     r"(official\s+)?(lyric\s+|music\s+)?(video|audio|visualizer|clip)"
     r"[\)\]]$",
     re.IGNORECASE,
-)
-
-# Featuring patterns for stripping from titles (not in parentheses).
-_FEATURING_PATTERNS = (
-    " featuring ",
-    " feat. ",
-    " feat ",
-    " ft. ",
-    " ft ",
 )
 
 
@@ -682,6 +690,31 @@ def normalize_unicode(value: str | None) -> str | None:
     return unicodedata.normalize("NFC", value)
 
 
+@functools.lru_cache(maxsize=2048)
+def extract_title_artist_credits(title: str) -> tuple[str, ...]:
+    """Return artist credits embedded in a track title."""
+    matched_credits = [
+        *(
+            (match.start(), match.group(1).strip())
+            for match in _TITLE_FEATURED_CREDIT_PATTERN.finditer(title)
+        ),
+        *(
+            (match.start(), match.group("credit").strip())
+            for pattern in _TITLE_WITH_CREDIT_PATTERNS
+            for match in pattern.finditer(title)
+            if _is_with_artist_credit(match.group("credit"))
+        ),
+    ]
+    return tuple(credit for _, credit in sorted(matched_credits))
+
+
+def _is_with_artist_credit(value: str) -> bool:
+    """Return whether a with-suffix identifies an artist rather than title words."""
+    first_word = value.split(maxsplit=1)[0].casefold().strip(".,:;!?") if value else ""
+    return bool(first_word) and first_word not in WITH_TITLE_WORDS
+
+
+@functools.lru_cache(maxsize=2048)
 def parse_title_and_version(
     title: str,
     track_version: str | None = None,
@@ -696,36 +729,44 @@ def parse_title_and_version(
     :param strip_for_search: Aggressively strip for search matching.
     :param strip_for_display: Strip superfluous suffixes for display.
     """
-    version = track_version or ""
+    version_parts = [track_version] if track_version else []
+    version_keys = {track_version.casefold()} if track_version else set()
 
     # Strip featuring, bracketed version info, and hyphen suffixes (e.g. "- Remastered 2019")
     if strip_for_search:
+        with_credit_matches = [
+            match for pattern in _TITLE_WITH_CREDIT_PATTERNS for match in pattern.finditer(title)
+        ]
+        for match in sorted(with_credit_matches, key=lambda item: item.start(), reverse=True):
+            if _is_with_artist_credit(match.group("credit")):
+                title = f"{title[: match.start()]}{title[match.end() :]}"
         title = _SEARCH_PAREN_PATTERN.sub("", title)
         title = _SEARCH_HYPHEN_PATTERN.sub("", title)
-        # Strip bare featuring credits (not in parentheses)
-        title_lower = title.lower()
-        for pattern in _FEATURING_PATTERNS:
-            if pattern in title_lower:
-                idx = title_lower.find(pattern)
-                title = title[:idx]
-                break
+        # Strip bare featuring credits with the same pattern used for extraction.
+        if bare_credit_match := _TITLE_FEATURED_CREDIT_PATTERN.search(title):
+            title = title[: bare_credit_match.start()]
         # Clean up dangling hyphens and extra spaces
         title = re.sub(r"\s*-\s*$", "", title)
         title = re.sub(r"\s+", " ", title).strip()
-        return title, version
+        return title, track_version or ""
 
     # Strip video/audio suffixes like "(Official Video)"
     if strip_for_display:
         title = _DISPLAY_STRIP_PATTERN.sub("", title).strip()
-        return title, version
+        return title, track_version or ""
 
     # Standard version parsing
-    for parts in (
-        _balanced_bracket_groups(title, "(", ")"),
-        _balanced_bracket_groups(title, "[", "]"),
-        re.findall(r" - .*", title),
+    # each pass extracts from the current title so removals from
+    # earlier passes are taken into account
+    for extract_parts in (
+        lambda t: _balanced_bracket_groups(t, "(", ")"),
+        lambda t: _balanced_bracket_groups(t, "[", "]"),
+        lambda t: re.findall(r" - .*", t),
     ):
-        for title_part in parts:
+        for title_part in extract_parts(title):
+            # skip parts already consumed by an earlier removal in this pass
+            if title_part not in title:
+                continue
             # Extract the content without brackets/dashes for checking
             clean_part = title_part.translate(str.maketrans("", "", "()[]-")).strip().lower()
 
@@ -735,13 +776,7 @@ def parse_title_and_version(
                 if clean_part.startswith(ignore_str):
                     # Special handling for "with " - check if followed by title words
                     if ignore_str == "with ":
-                        # Extract the word after "with "
-                        after_with = (
-                            clean_part[len("with ") :].split()[0]
-                            if len(clean_part) > len("with ")
-                            else ""
-                        )
-                        if after_with in WITH_TITLE_WORDS:
+                        if not _is_with_artist_credit(clean_part[len("with ") :]):
                             # This is part of the title (e.g., "with you"), don't ignore
                             break
                     # Remove this part from the title
@@ -756,10 +791,14 @@ def parse_title_and_version(
             for version_str in VERSION_PARTS:
                 if version_str in clean_part:
                     # Preserve original casing (and any nested brackets) for output
-                    version = _strip_outer_markers(title_part)
+                    version_part = _strip_outer_markers(title_part)
+                    if version_part.casefold() not in version_keys:
+                        version_parts.append(version_part)
+                        version_keys.add(version_part.casefold())
                     title = title.replace(title_part, "").strip()
-                    return title, version
-    return title, version
+                    break
+    title = re.sub(r"\s{2,}", " ", title).strip()
+    return title, " ".join(version_parts)
 
 
 def _balanced_bracket_groups(text: str, open_char: str, close_char: str) -> list[str]:
@@ -1604,20 +1643,65 @@ async def close_async_generator(agen: AsyncGenerator[Any]) -> None:
     await agen.aclose()
 
 
-async def detect_charset(data: bytes, fallback: str = "utf-8") -> str:
-    """Detect charset of raw data."""
-    # imported here to keep chardet (~18MB) out of the idle import footprint:
-    # it is only needed on the rarely-hit playlist/radio charset fallback path
-    import chardet  # noqa: PLC0415
+async def detect_charset(data: bytes, fallback: str = "utf-8", preferred: str | None = None) -> str:
+    """
+    Detect the charset to decode the given raw text with.
+
+    :param data: The raw text bytes to inspect.
+    :param fallback: Charset to return when the charset can not be determined.
+    :param preferred: Charset declared by the source, taken over detection when usable.
+    """
+    # a BOM outranks the declared charset: it names the very same UTF-8 but, unlike
+    # the declared name, also gets the marker itself stripped off the decoded text
+    if data.startswith(codecs.BOM_UTF8):
+        return "utf-8-sig"
+
+    if preferred:
+        # a declared charset is only worth anything if Python can actually decode text with
+        # it: servers do send misspelled or plain made-up names in their Content-Type, and a
+        # handful of names that do resolve to a codec still cannot decode text (base64, idna)
+        try:
+            data[:16].decode(preferred, errors="replace")
+        except (LookupError, ValueError) as err:
+            LOGGER.debug("Ignoring unusable charset %s: %s", preferred, err)
+        else:
+            return preferred
 
     try:
-        detected: ResultDict = await asyncio.to_thread(chardet.detect, data)
-        if detected and detected["encoding"] and detected["confidence"] > 0.75:
-            assert isinstance(detected["encoding"], str)  # for type checking
-            return detected["encoding"]
+        data.decode()
+    except UnicodeDecodeError:
+        pass
+    else:
+        # valid UTF-8 is never a legacy charset by accident, so skip detection
+        return "utf-8"
+
+    # imported here to keep the detector out of the idle import footprint:
+    # it is only needed for the rare text that is not UTF-8
+    import chardet  # noqa: PLC0415
+    from chardet.enums import EncodingEra  # noqa: PLC0415
+
+    # the reported confidence is deliberately not gated on: CUE sheets and playlists
+    # are nearly all ASCII keywords, which holds the score far below any usable
+    # threshold even though the charset itself is named correctly (support #6093).
+    # With no score to weigh them against, DOS and mainframe codepages are dropped from
+    # the candidates so a stray weak match cannot outrank the Windows codepage these
+    # files are really written in. Only a superset is guaranteed to decode the bytes
+    # past the window the detector samples, so it wins ties over its subsets.
+    try:
+        detected = await asyncio.to_thread(
+            chardet.detect,
+            data,
+            encoding_era=EncodingEra.ALL & ~(EncodingEra.DOS | EncodingEra.MAINFRAME),
+            prefer_superset=True,
+            no_match_encoding=fallback,
+        )
     except Exception as err:
         LOGGER.debug("Failed to detect charset: %s", err)
-    return fallback
+        return fallback
+    if not (encoding := detected["encoding"]):
+        return fallback
+    LOGGER.debug("Detected charset %s (confidence %.2f)", encoding, detected["confidence"])
+    return encoding
 
 
 def parse_optional_bool(value: Any) -> bool | None:
@@ -2127,6 +2211,9 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
             task_id=task_id,
             abort_existing=False,
             eager_start=True,
+            # every caller awaits the flight below and so sees the failure itself; the
+            # task's own exception log would report a handled error as an unhandled one
+            log_exceptions=False,
             **kwargs,
         )
         return await join_task(task)

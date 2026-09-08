@@ -1,124 +1,153 @@
 """
-Sendspin side of the MilkDrop visualizer: the audio tap and its lifecycle.
+Audio tap for the MilkDrop visualizer: waveform frames straight from playback.
 
-An in-process bridge visualizer role (the pattern the Hue Lights Sync plugin
-uses) joins the target player's Sendspin group and turns its PCM into packed
-waveform frames. One tap is shared by every viewer of the same target player.
+Reads the decoded PCM that the streams controller already buffers for the item
+a player is playing, so any player produces a waveform whatever protocol it
+renders over. The read is passive - it takes no audio away from playback and
+changes nothing about grouping or output protocol - so watching the visualizer
+never interrupts what is playing.
+
+Frames carry a play-at timestamp in the relay's clock domain. The tap anchors
+the track's media timeline to that clock from the queue's reported position,
+so a viewer draws each frame around the time it is audible. How closely that
+matches depends on how precisely the player reports its position.
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
+import dataclasses
 import struct
+import time
 from collections import deque
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
-from aiosendspin.models.core import ClientHelloPayload
-from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
-from aiosendspin.models.visualizer import ClientHelloVisualizerSupport
-from aiosendspin.server.roles.registry import register_role
 from music_assistant_models.enums import PlaybackState
+from music_assistant_models.media_items import MediaItemPalette
+from orjson import dumps
 
-from music_assistant.providers.sendspin.bridge_role import BridgeVisualizerRole
+from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
+from music_assistant.controllers.streams.audio_buffer import AudioBufferDiscarded, AudioBufferEOF
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from music_assistant_models.media_items import AudioFormat
+    from music_assistant_models.player_queue import PlayerQueue
+    from music_assistant_models.queue_item import QueueItem
 
-    from aiosendspin.models.visualizer import BeatTiming
-    from aiosendspin.server import SendspinClient
-    from aiosendspin.server.roles import AudioChunk
-
-    from music_assistant.mass import MusicAssistant
-    from music_assistant.providers.sendspin.player import SendspinBasePlayer
-    from music_assistant.providers.sendspin.provider import SendspinProvider
+    from music_assistant.controllers.streams.audio_buffer import AudioBuffer
+    from music_assistant.models.audio_analysis import AudioAnalysisData
+    from music_assistant.models.player import Player
 
     from .provider import MilkdropVisualizerProvider
 
-MILKDROP_ROLE_ID = "visualizer@_milkdrop"
 WAVE_SAMPLES = 1024
-# How long a viewerless tap stays attached, so refreshes and the next track
-# rejoin instantly instead of hitting the mid-stream join gap.
-TAP_LINGER_SECONDS = 600
+CONF_COLOR_TINT = "color_tint"
+DEFAULT_COLOR_TINT = True
+# Derived from the model, so a field added upstream is forwarded automatically.
+COLOR_FIELDS = tuple(field.name for field in dataclasses.fields(MediaItemPalette))
+# How far ahead of the audible playhead the tap reads. Viewers schedule frames
+# by timestamp, so a lead is what lets them draw on time; it costs nothing,
+# since this audio is buffered already.
+LEAD_SECONDS = 5.0
+# Gap between where the anchor says the playhead is and where the queue reports
+# it that means the audio moved (a seek) rather than the player simply reporting
+# its position coarsely. Well above the ~1s quantization of the coarsest
+# reporters (DLNA), whose jitter would otherwise restart the frame flow.
+# Scaled by playback speed where compared: report jitter lives in wall-clock
+# time and inflates by the speed factor on its way into media time.
+RESYNC_THRESHOLD_SECONDS = 3.0
+# Poll interval while there is nothing to read: idle player, or the tap having
+# read as far ahead as it may.
+IDLE_POLL_SECONDS = 0.5
+# The neural beat tracker lands ~5-10s into a track, so a track that has beats
+# at all rarely has them at its first frame. Capped so a track that will never
+# have them stops asking.
+BEAT_RETRY_SECONDS = 3.0
+BEAT_RETRY_ATTEMPTS = 30
+# Frames a tap keeps to replay to a viewer that attaches mid-track, and the
+# ceiling on one viewer's outbound queue. The ring must span far more than
+# LEAD_SECONDS: on a track longer than the buffer's retained window, eviction
+# follows the player's stream pull (readrate 2x for HTTP players, ~30s commit
+# lead for Sendspin), so the tap is forced to read - and stamp - audio well
+# ahead of the audible playhead. The ring bridges that gap for attaching
+# viewers: ~95s at ~43 frames/s of ~1KB each (~4MB per tap). Beyond it the
+# audio is already evicted server-side, so no ring size can help; long tracks
+# spend their pinned phase there and that is an accepted limitation.
+RING_FRAMES = 4096
+VIEWER_QUEUE_FRAMES = 1024
+
+# Wire tags, matching the format documented in relay.py.
+WAVE_FRAME_TAG = 22
+BEAT_FRAME_TAG = 17
 
 
-def get_sendspin_provider(mass: MusicAssistant) -> SendspinProvider | None:
-    """Return the loaded Sendspin provider, if available."""
-    return cast("SendspinProvider | None", mass.get_provider("sendspin"))
+def server_now_us() -> int:
+    """Return the relay's clock in microseconds, the domain frame timestamps live in."""
+    # Monotonic: a viewer only ever needs the server's clock to be consistent
+    # with itself, and a wall clock stepping under NTP would strand every frame
+    # already scheduled.
+    return int(time.monotonic() * 1_000_000)
 
 
-class MilkdropWaveRole(BridgeVisualizerRole):
+def pack_wave_frame(timestamp_us: int, samples: bytes) -> bytes:
+    """Pack one waveform tail for the wire."""
+    return struct.pack(">Bq", WAVE_FRAME_TAG, timestamp_us) + samples
+
+
+def pack_beat_frame(timestamp_us: int, is_downbeat: bool) -> bytes:
+    """Pack one beat schedule entry for the wire."""
+    return struct.pack(">BqB", BEAT_FRAME_TAG, timestamp_us, 1 if is_downbeat else 0)
+
+
+def pcm_to_mono(data: bytes, pcm_format: AudioFormat) -> np.ndarray:
     """
-    Bridge visualizer role that emits raw waveform tails instead of features.
+    Return a PCM chunk as mono float32 in -1.0..1.0.
 
-    One 1024-sample mono uint8 offset-binary tail per audio chunk, timestamped
-    at chunk end in the server clock domain.
+    :param data: Raw interleaved PCM as the playback buffer holds it.
+    :param pcm_format: The buffer's PCM format, giving bit depth and channel count.
     """
-
-    def __init__(self, client: SendspinClient) -> None:
-        """
-        Initialize the wave tap role.
-
-        :param client: The Sendspin client this role belongs to.
-        """
-        super().__init__(client)
-        self._wave_cb: Callable[[int, bytes], None] | None = None
-        self._mono = np.zeros(0, dtype=np.float32)
-
-    @property
-    def role_id(self) -> str:
-        """Return role identifier."""
-        return MILKDROP_ROLE_ID
-
-    def set_wave_callback(self, wave_cb: Callable[[int, bytes], None]) -> None:
-        """
-        Set the callback receiving (timestamp_us, 1024 uint8 sample bytes).
-
-        :param wave_cb: Called once per audio chunk after warmup.
-        """
-        self._wave_cb = wave_cb
-
-    def on_stream_start(self) -> None:
-        """Reset the rolling buffer for a new stream (no feature extractor)."""
-        self._mono = np.zeros(0, dtype=np.float32)
-        if self._on_stream_start_cb:
-            self._on_stream_start_cb()
-
-    def on_audio_chunk(self, chunk: AudioChunk) -> None:
-        """Append PCM and emit the waveform tail ending at this chunk."""
-        if self._wave_cb is None:
-            return
-        raw = np.frombuffer(chunk.data, dtype="<i2")
-        # A truncated chunk must not raise into the push stream's delivery
-        # path: drop the dangling sample rather than fail the reshape.
-        if raw.size % 2:
-            raw = raw[:-1]
-        if raw.size == 0:
-            return
-        mono = raw.reshape(-1, 2).mean(axis=1, dtype=np.float32) / 32768.0
-        self._mono = np.concatenate([self._mono, mono])
-        if self._mono.size >= WAVE_SAMPLES:
-            tail = self._mono[-WAVE_SAMPLES:]
-            quantized: np.ndarray = np.rint(np.clip(tail, -1.0, 1.0) * 127.0 + 128.0)
-            ts_us = chunk.timestamp_us + chunk.duration_us
-            self._wave_cb(ts_us, quantized.astype(np.uint8).tobytes())
-            self._mono = self._mono[-WAVE_SAMPLES:]
-
-    def on_stream_clear(self) -> None:
-        """Reset the rolling buffer on seek/clear."""
-        self._mono = np.zeros(0, dtype=np.float32)
-        if self._on_stream_clear_cb:
-            self._on_stream_clear_cb()
-
-    def on_stream_end(self) -> None:
-        """Reset the rolling buffer at stream end."""
-        self._mono = np.zeros(0, dtype=np.float32)
-        if self._on_stream_end_cb:
-            self._on_stream_end_cb()
+    bit_depth = pcm_format.bit_depth
+    if bit_depth == 24:
+        # No numpy dtype covers packed 24-bit, so assemble the samples by byte.
+        packed = np.frombuffer(data, dtype=np.uint8)
+        packed = packed[: packed.size - packed.size % 3].reshape(-1, 3).astype(np.int32)
+        raw = packed[:, 0] | packed[:, 1] << 8 | packed[:, 2] << 16
+        raw[raw >= 1 << 23] -= 1 << 24
+        scale = float(1 << 23)
+    else:
+        dtype = "<i2" if bit_depth == 16 else "<i4"
+        width = np.dtype(dtype).itemsize
+        raw = np.frombuffer(data[: len(data) - len(data) % width], dtype=dtype)
+        scale = float(1 << (width * 8 - 1))
+    channels = max(1, pcm_format.channels)
+    mono: np.ndarray
+    if channels > 1:
+        # Fold to mono in one pass, straight to float32: converting the whole
+        # interleaved chunk first would cost twice the memory for no gain.
+        # A truncated chunk drops its dangling frame rather than failing here.
+        raw = raw[: raw.size - raw.size % channels]
+        mono = raw.reshape(-1, channels).mean(axis=1, dtype=np.float32)
+    else:
+        mono = raw.astype(np.float32)
+    mono /= scale
+    return mono
 
 
-register_role(MILKDROP_ROLE_ID, lambda client: MilkdropWaveRole(client=client))
+def palette_payload(palette: MediaItemPalette | None) -> dict[str, list[int] | None]:
+    """
+    Return a color@v1 payload for a track palette.
+
+    A track without a palette yields every field as null, so a viewer drops the
+    previous track's tint rather than keeping it over the new one.
+
+    :param palette: The palette resolved for the artwork now showing, if any.
+    """
+    payload: dict[str, list[int] | None] = {}
+    for name in COLOR_FIELDS:
+        value = getattr(palette, name, None) if palette is not None else None
+        payload[name] = list(value) if value else None
+    return payload
 
 
 class ViewerQueue:
@@ -130,7 +159,7 @@ class ViewerQueue:
     viewer animating stale audio after a seek or track change.
     """
 
-    def __init__(self, capacity: int = 4096) -> None:
+    def __init__(self, capacity: int = VIEWER_QUEUE_FRAMES) -> None:
         """
         Initialize the queue.
 
@@ -160,35 +189,96 @@ class ViewerQueue:
         return self._items.popleft()
 
 
-class Tap:
-    """One in-process tap client shared by all viewers of the same target player."""
+@dataclasses.dataclass
+class TrackCursor:
+    """Where a tap has read to in the current track, and how its media time maps to the clock."""
 
-    def __init__(self, client_id: str) -> None:
+    item_id: str
+    # Clock time at which this track's media time zero was (or will be) audible.
+    anchor_us: int
+    # Next 1-second buffer chunk to read; chunk N is second N of the track.
+    next_chunk: int
+    # Samples left over from the previous chunk, and the media time they start at.
+    carry: np.ndarray
+    carry_media: float
+    # Media seconds per wall-clock second (atempo, audiobooks/podcasts).
+    speed: float = 1.0
+
+    def playhead(self) -> float:
+        """Return where the anchor says the audible playhead is now, in media seconds."""
+        return (server_now_us() - self.anchor_us) / 1_000_000 * self.speed
+
+    def media_to_clock_us(self, media_seconds: float) -> int:
+        """Return the clock time at which a media position becomes audible."""
+        return self.anchor_us + int(media_seconds / self.speed * 1_000_000)
+
+
+class Tap:
+    """One reader of a player's audio, shared by every viewer watching that player."""
+
+    def __init__(self, player_id: str) -> None:
         """
         Initialize the tap.
 
-        :param client_id: Sendspin client id of the hidden tap player.
+        :param player_id: The player whose audio this tap follows.
         """
-        self.client_id = client_id
+        self.player_id = player_id
         self.queues: set[ViewerQueue] = set()
-        self.frames_seen = False
         # Beat frames with their scheduled timestamps, so viewers that attach
         # mid-track still receive the rest of the track's downbeats.
         self.beats: deque[tuple[int, bytes]] = deque(maxlen=4096)
-        # Rolling history of packed waveform frames (~100s at 40fps), replayed
-        # to a connecting viewer. Without it a late viewer only receives frames
-        # stamped at the production cursor, which on long-lead players runs
-        # tens of seconds ahead of what is audible.
-        self.ring: deque[bytes] = deque(maxlen=4096)
+        # Recent packed waveform frames, replayed to a connecting viewer so it
+        # has something to draw before the tap reaches its next chunk.
+        self.ring: deque[bytes] = deque(maxlen=RING_FRAMES)
+        # Latest color@v1 fields, replayed to viewers that attach mid-track.
+        self.last_color: dict[str, list[int] | None] = {}
+        # Beat analysis already fetched for the current item, so a re-anchor
+        # (a seek) rebuilds the schedule without querying again. Positive only:
+        # a cached miss would suppress analysis that lands late in the track.
+        self.beats_analysis: tuple[str, AudioAnalysisData] | None = None
+        # Set by the relay when a viewer attaches and finds only future-stamped
+        # frames; the reader consumes it by re-anchoring at the playhead.
+        self.realign_requested = False
+        self.task: asyncio.Task[None] | None = None
+        self.beats_task: asyncio.Task[None] | None = None
 
     def fan_out(self, frame: bytes | str) -> None:
         """Deliver a packed frame to every attached viewer queue."""
         for queue in self.queues:
             queue.push(frame)
 
+    def apply_color(self, payload: dict[str, list[int] | None]) -> None:
+        """Cache a color@v1 payload and fan it out."""
+        self.last_color = payload
+        self.fan_out(dumps({"type": "color", "payload": payload}).decode())
+
+    def has_only_future_frames(self) -> bool:
+        """
+        Return whether every buffered waveform frame is stamped ahead of now.
+
+        True when production is pinned at the buffer's eviction edge, ahead of
+        the audible playhead: the ring then holds nothing a fresh viewer could
+        draw yet, and re-anchoring at the playhead serves it better than a
+        replay would.
+        """
+        if not self.ring:
+            return False
+        timestamp_us: int = struct.unpack_from(">q", self.ring[0], 1)[0]
+        return timestamp_us > server_now_us()
+
+    def reset(self, message: str) -> None:
+        """Drop everything scheduled from a timeline that no longer applies."""
+        # a hydration still in flight would land beats for that dead timeline
+        if self.beats_task is not None:
+            self.beats_task.cancel()
+            self.beats_task = None
+        self.ring.clear()
+        self.beats.clear()
+        self.fan_out(message)
+
 
 class TapManager:
-    """Creates, shares and tears down the waveform taps."""
+    """Creates, shares and tears down the audio taps."""
 
     def __init__(self, provider: MilkdropVisualizerProvider) -> None:
         """
@@ -197,62 +287,48 @@ class TapManager:
         :param provider: The loaded MilkDrop visualizer provider instance.
         """
         self.mass = provider.mass
+        self.provider = provider
         self.logger = provider.logger.getChild("tap")
-        # One shared tap per target player id, refcounted by viewer queues.
+        # One shared tap per player id, refcounted by viewer queues.
         self._taps: dict[str, Tap] = {}
         self._lock = asyncio.Lock()
 
-    async def acquire(self, target: SendspinBasePlayer) -> Tap:
+    async def acquire(self, player: Player) -> Tap:
         """
-        Return the shared tap for a target player, creating it on first use.
+        Return the shared tap for a player, creating it on first use.
 
-        :param target: The Sendspin player whose group to tap.
+        :param player: The player whose audio to follow.
         """
         async with self._lock:
-            if (existing := self._taps.get(target.player_id)) is not None:
+            if (existing := self._taps.get(player.player_id)) is not None:
                 return existing
-            # Stable id: reconnects and multiple viewers reuse one hidden tap
-            # player. Hash the full id rather than slicing its tail, so two
-            # players sharing the same last characters cannot collide onto one
-            # Sendspin client id.
-            digest = hashlib.blake2s(target.player_id.encode(), digest_size=6).hexdigest()
-            tap = Tap(f"milkdrop-{digest}")
-            viz_client = self._register_client(tap)
-            await target.api.group.add_client(viz_client)
-            self._taps[target.player_id] = tap
-            self.logger.info(
-                "Waveform tap %s attached to group of %s (state=%s)",
-                tap.client_id,
-                target.display_name,
-                target.playback_state,
-            )
-            if target.playback_state == PlaybackState.PLAYING:
-                self.mass.create_task(self._late_join_watchdog(target, tap, viz_client))
+            tap = Tap(player.player_id)
+            self._taps[player.player_id] = tap
+            tap.task = self.mass.create_task(self._run(tap))
+            self.logger.info("Waveform tap following %s", player.display_name)
             return tap
 
-    def schedule_release(self, target_player_id: str) -> None:
+    def schedule_release(self, player_id: str) -> None:
         """
-        Start the linger countdown for a tap whose viewer just left.
+        Tear down a tap whose last viewer just left.
 
-        Keyed per target with abort_existing, so a target never accumulates
-        countdowns: an earlier one would otherwise still be sleeping and could
-        tear down a tap that a later viewer created.
+        Keyed per player with abort_existing, so a player never accumulates
+        releases: an earlier one could otherwise tear down a tap that a later
+        viewer created.
 
-        :param target_player_id: The player whose tap may now be idle.
+        :param player_id: The player whose tap may now be idle.
         """
         self.mass.create_task(
-            self._linger(target_player_id),
-            task_id=f"milkdrop_linger_{target_player_id}",
+            self._release(player_id),
+            task_id=f"milkdrop_release_{player_id}",
             abort_existing=True,
         )
 
     async def close(self) -> None:
         """Tear down every live tap."""
         async with self._lock:
-            sendspin = get_sendspin_provider(self.mass)
             for tap in self._taps.values():
-                if sendspin is not None:
-                    await sendspin.server_api.remove_client(tap.client_id)
+                self._stop(tap)
             self._taps.clear()
 
     def pending_beat_frames(self, tap: Tap) -> list[bytes]:
@@ -261,127 +337,257 @@ class TapManager:
 
         :param tap: The tap whose beat schedule to filter.
         """
-        sendspin = get_sendspin_provider(self.mass)
-        if sendspin is None or not tap.beats:
-            return []
-        now_us = sendspin.server_api.clock.now_us()
-        return [frame for ts_us, frame in tap.beats if ts_us > now_us]
+        now_us = server_now_us()
+        return [frame for timestamp_us, frame in tap.beats if timestamp_us > now_us]
 
-    async def _linger(self, target_player_id: str) -> None:
-        """
-        Remove a tap once it has been viewerless for the linger window.
-
-        The linger keeps the tap in the group across refreshes and track
-        changes during a viewing session, so subsequent streams are covered
-        from their start (avoiding the mid-stream join gap).
-        """
-        tap = self._taps.get(target_player_id)
-        if tap is None or tap.queues:
-            return
-        await asyncio.sleep(TAP_LINGER_SECONDS)
+    async def _release(self, player_id: str) -> None:
+        """Stop and forget a tap as soon as its last viewer goes."""
         async with self._lock:
-            tap = self._taps.get(target_player_id)
+            tap = self._taps.get(player_id)
             if tap is None or tap.queues:
                 return
-            self._taps.pop(target_player_id, None)
-            if (sendspin := get_sendspin_provider(self.mass)) is not None:
-                await sendspin.server_api.remove_client(tap.client_id)
-            self.logger.info("Waveform tap %s removed (viewers gone)", tap.client_id)
+            self._taps.pop(player_id, None)
+            self._stop(tap)
+            self.logger.info("Waveform tap for %s removed (viewers gone)", player_id)
 
-    def _register_client(self, tap: Tap) -> SendspinClient:
-        """Register the in-process tap client and wire its callbacks."""
+    def _stop(self, tap: Tap) -> None:
+        """Cancel a tap's reader and anything still working for it."""
+        for task in (tap.task, tap.beats_task):
+            if task is not None:
+                task.cancel()
+        tap.task = None
+        tap.beats_task = None
 
-        def on_wave(ts_us: int, samples: bytes) -> None:
-            tap.frames_seen = True
-            frame = struct.pack(">Bq", 22, ts_us) + samples
+    async def _run(self, tap: Tap) -> None:
+        """Read the player's audio for as long as the tap lives, packing frames for its viewers."""
+        cursor: TrackCursor | None = None
+        while True:
+            try:
+                cursor = await self._read_once(tap, cursor)
+            except Exception as err:
+                # a source that failed mid-track is a playback problem, not a
+                # reason for this tap to stop following the player
+                self.logger.debug("Tap for %s could not read: %s", tap.player_id, err)
+                cursor = None
+                await asyncio.sleep(IDLE_POLL_SECONDS)
+
+    async def _read_once(self, tap: Tap, cursor: TrackCursor | None) -> TrackCursor | None:
+        """
+        Advance a tap by at most one buffer chunk.
+
+        :param tap: The tap being fed.
+        :param cursor: The cursor from the previous pass, if it still has one.
+        :return: The cursor to carry into the next pass, or None to start over.
+        """
+        source = self._playing_source(tap.player_id)
+        if source is None:
+            if cursor is not None:
+                tap.reset('{"type": "stream/end"}')
+            await asyncio.sleep(IDLE_POLL_SECONDS)
+            return None
+        queue, item, buffer = source
+        self._sync_color(tap)
+        if tap.realign_requested:
+            # a viewer found only future-stamped frames; drop the cursor so the
+            # re-anchor below restarts at the playhead, but only while that
+            # chunk is still retained (past the edge a realign helps nobody)
+            tap.realign_requested = False
+            if queue.corrected_elapsed_time >= buffer.first_buffered_chunk:
+                cursor = None
+        cursor = self._align(
+            tap, cursor, item, queue.corrected_elapsed_time, buffer, queue.playback_speed
+        )
+        # Stay ahead of the listener, but never behind the buffer's retained
+        # window: a rolling (radio) buffer discards as playback consumes it, and
+        # what it is about to drop is the last chance to read that audio.
+        if (
+            cursor.next_chunk > cursor.playhead() + LEAD_SECONDS
+            and cursor.next_chunk > buffer.first_buffered_chunk
+        ):
+            await asyncio.sleep(IDLE_POLL_SECONDS)
+            return cursor
+        try:
+            pcm = await buffer.read_chunk_for_analysis(cursor.next_chunk)
+        except AudioBufferEOF:
+            # read past the end of a track that is still finishing; the next
+            # item takes over as soon as the queue moves on
+            await asyncio.sleep(IDLE_POLL_SECONDS)
+            return cursor
+        except AudioBufferDiscarded:
+            # the retained window moved past us (a stalled tap, or a rolling
+            # buffer outrunning it); pick the timeline up again where it is now
+            await asyncio.sleep(IDLE_POLL_SECONDS)
+            return None
+        self._emit_chunk(tap, cursor, pcm, buffer.pcm_format)
+        return cursor
+
+    def _playing_source(self, player_id: str) -> tuple[PlayerQueue, QueueItem, AudioBuffer] | None:
+        """Return the queue, item and PCM buffer of what a player is playing right now."""
+        queue = self.mass.player_queues.get_active_queue(player_id)
+        if queue is None or queue.state != PlaybackState.PLAYING:
+            return None
+        item = queue.current_item
+        if item is None or item.streamdetails is None:
+            return None
+        # An external source (a provider streaming straight to the device) has
+        # no buffer here, so there is no audio for us to read.
+        buffer = cast("AudioBuffer | None", item.streamdetails.buffer)
+        if buffer is None:
+            return None
+        return queue, item, buffer
+
+    def _align(
+        self,
+        tap: Tap,
+        cursor: TrackCursor | None,
+        item: QueueItem,
+        playhead: float,
+        buffer: AudioBuffer,
+        speed: float = 1.0,
+    ) -> TrackCursor:
+        """
+        Return a cursor whose timeline still matches what the player is playing.
+
+        A new track, a seek, a resume or a speed change re-anchors the media
+        timeline to the relay clock; so does falling behind the buffer's
+        retained window.
+
+        :param tap: The tap being fed.
+        :param cursor: The cursor in use, if the tap already has one.
+        :param item: The queue item now playing.
+        :param playhead: Media position the queue reports for it, in seconds.
+        :param buffer: The item's PCM buffer.
+        :param speed: Playback speed the queue plays the item at.
+        """
+        oldest = buffer.first_buffered_chunk
+        if (
+            cursor is not None
+            and cursor.item_id == item.queue_item_id
+            and cursor.speed == speed
+            and cursor.next_chunk >= oldest
+            and abs(cursor.playhead() - playhead) <= RESYNC_THRESHOLD_SECONDS * speed
+        ):
+            return cursor
+        start_chunk = max(int(max(0.0, playhead)), oldest)
+        cursor = TrackCursor(
+            item_id=item.queue_item_id,
+            anchor_us=server_now_us() - int(playhead / speed * 1_000_000),
+            next_chunk=start_chunk,
+            carry=np.zeros(0, dtype=np.float32),
+            carry_media=float(start_chunk),
+            speed=speed,
+        )
+        tap.reset('{"type": "stream/clear"}')
+        self._schedule_beats(tap, item, cursor.anchor_us, speed)
+        return cursor
+
+    def _emit_chunk(
+        self, tap: Tap, cursor: TrackCursor, pcm: bytes, pcm_format: AudioFormat
+    ) -> None:
+        """Turn one second of PCM into packed waveform frames and fan them out."""
+        sample_rate = pcm_format.sample_rate
+        mono = pcm_to_mono(pcm, pcm_format)
+        chunk_media = float(cursor.next_chunk)
+        if abs(cursor.carry_media + cursor.carry.size / sample_rate - chunk_media) > 0.001:
+            # the leftover belongs to audio we are no longer continuing from
+            cursor.carry = np.zeros(0, dtype=np.float32)
+            cursor.carry_media = chunk_media
+        mono = np.concatenate([cursor.carry, mono])
+        offset = 0
+        while mono.size - offset >= WAVE_SAMPLES:
+            window = mono[offset : offset + WAVE_SAMPLES]
+            offset += WAVE_SAMPLES
+            quantized = np.rint(np.clip(window, -1.0, 1.0) * 127.0 + 128.0).astype(np.uint8)
+            # stamped at the end of the window, the instant it finishes sounding
+            end_media = cursor.carry_media + offset / sample_rate
+            frame = pack_wave_frame(cursor.media_to_clock_us(end_media), quantized.tobytes())
             tap.ring.append(frame)
             tap.fan_out(frame)
+        cursor.carry = mono[offset:].copy()
+        cursor.carry_media += offset / sample_rate
+        cursor.next_chunk += 1
 
-        def on_beats(beats: list[BeatTiming]) -> None:
-            # Once per track, so cheap enough to keep: without it there is no
-            # way to tell a missing beat schedule from a viewer-side problem.
-            self.logger.debug(
-                "Tap %s received a schedule of %s beat(s), %s downbeat(s)",
-                tap.client_id,
-                len(beats),
-                sum(1 for beat in beats if beat.is_downbeat),
-            )
-            for beat in beats:
-                frame = struct.pack(">BqB", 17, beat.timestamp_us, 1 if beat.is_downbeat else 0)
-                tap.beats.append((beat.timestamp_us, frame))
-                tap.fan_out(frame)
+    def _sync_color(self, tap: Tap) -> None:
+        """Fan out the track palette whenever it changes (once per track, in practice)."""
+        if not self.provider.config.get_value(CONF_COLOR_TINT):
+            return
+        player = self.mass.players.get_player(tap.player_id)
+        media = player.state.current_media if player is not None else None
+        payload = palette_payload(media.palette if media is not None else None)
+        if payload != tap.last_color:
+            tap.apply_color(payload)
 
-        def on_stream_boundary(message: str) -> None:
-            # Buffered frames and the beat schedule both belong to the audio
-            # that just ended; drop them so viewers do not replay stale state.
-            tap.ring.clear()
-            tap.beats.clear()
-            tap.fan_out(message)
-
-        sendspin = get_sendspin_provider(self.mass)
-        if sendspin is None:
-            msg = "Sendspin provider is not available"
-            raise RuntimeError(msg)
-        # Taps must never surface as MA players (no group chips, no UI churn).
-        sendspin.register_headless_client(tap.client_id)
-        support = ClientHelloVisualizerSupport(buffer_capacity=65536, rate_max=60, types=["beat"])
-        hello = ClientHelloPayload(
-            client_id=tap.client_id,
-            name="MilkDrop Visualizer",
-            version=1,
-            supported_roles=[MILKDROP_ROLE_ID],
-            device_info=SendspinDeviceInfo(
-                manufacturer="Music Assistant", product_name="MilkDrop Visualizer"
-            ),
-            visualizer_support=support,
-        )
-        viz_client = sendspin.server_api.register_external_player(
-            hello, on_stream_start=lambda _req: None
-        )
-        role = cast("MilkdropWaveRole", viz_client.roles_by_family("visualizer")[0])
-        role.set_wave_callback(on_wave)
-        role.set_callbacks(
-            on_frame=lambda _frame: None,
-            on_beats=on_beats,
-            on_beats_clear=lambda: None,
-            on_stream_start=lambda: None,
-            # Forward stream boundaries so viewers drop buffered future frames
-            # immediately on skip/seek/stop instead of draining them.
-            on_stream_clear=lambda: on_stream_boundary('{"type": "stream/clear"}'),
-            on_stream_end=lambda: on_stream_boundary('{"type": "stream/end"}'),
-        )
-        role.setup_visualizer(support)
-        viz_client.attach_preinitialized_roles()
-        return viz_client
-
-    async def _late_join_watchdog(
-        self, target: SendspinBasePlayer, tap: Tap, viz_client: SendspinClient
+    def _schedule_beats(
+        self, tap: Tap, item: QueueItem, anchor_us: int, speed: float = 1.0
     ) -> None:
         """
-        Re-kick a tap that joined an active stream but received no audio.
+        (Re)build a tap's beat schedule for a track.
 
-        Workaround for an aiosendspin quirk: joining a running stream does not
-        always wire a fresh in-process role into ongoing chunk delivery, so
-        frames would only start at the next stream start. Delete this once it
-        is fixed upstream.
+        A re-anchor of an item whose analysis is already cached (a seek)
+        rebuilds the schedule in place, without a task or a new query.
+
+        :param tap: The tap to fan the beats out to.
+        :param item: The queue item now playing.
+        :param anchor_us: Clock time of that item's media time zero.
+        :param speed: Playback speed the queue plays the item at.
         """
-        await asyncio.sleep(2.5)
-        if tap.frames_seen or not tap.queues:
+        if tap.beats_analysis is not None and tap.beats_analysis[0] == item.queue_item_id:
+            self._fan_out_beats(tap, tap.beats_analysis[1], anchor_us, speed)
             return
-        # close() (a provider reload) may have removed this tap during the sleep;
-        # re-adding then would leave a stray client with no manager entry.
-        if self._taps.get(target.player_id) is not tap:
+        tap.beats_task = self.mass.create_task(
+            self._hydrate_beats(tap, item, anchor_us, speed),
+            task_id=f"milkdrop_beats_{tap.player_id}",
+            abort_existing=True,
+        )
+
+    async def _hydrate_beats(
+        self, tap: Tap, item: QueueItem, anchor_us: int, speed: float = 1.0
+    ) -> None:
+        """Wait for a track's beat analysis and schedule the beats that are still ahead."""
+        streamdetails = item.streamdetails
+        if streamdetails is None:
             return
-        self.logger.info("Waveform tap %s got no audio after late join, re-kicking", tap.client_id)
-        try:
-            await target.api.group.remove_client(viz_client)
-            await target.api.group.add_client(viz_client)
-        except Exception:
-            self.logger.exception("Waveform tap %s re-kick failed", tap.client_id)
+        # smart_fades is the only AA provider that produces beats. Without it,
+        # no amount of waiting will turn any up.
+        if not self.mass.streams.audio_analysis.smart_fades_provider_available:
             return
-        await asyncio.sleep(2.5)
-        if not tap.frames_seen and tap.queues:
-            self.logger.warning(
-                "Waveform tap %s still idle after re-kick; pause/resume playback to activate",
-                tap.client_id,
+        for _ in range(BEAT_RETRY_ATTEMPTS):
+            analysis = await self.mass.streams.audio_analysis.get_audio_analysis(
+                streamdetails.item_id,
+                streamdetails.provider,
+                media_type=streamdetails.media_type,
+                priority=(SMART_FADES_ANALYSIS_DOMAIN,),
             )
+            if analysis is not None and analysis.beats:
+                break
+            await asyncio.sleep(BEAT_RETRY_SECONDS)
+        else:
+            self.logger.debug("No beat analysis for %s", streamdetails.uri)
+            return
+        tap.beats_analysis = (item.queue_item_id, analysis)
+        self._fan_out_beats(tap, analysis, anchor_us, speed)
+
+    def _fan_out_beats(
+        self, tap: Tap, analysis: AudioAnalysisData, anchor_us: int, speed: float = 1.0
+    ) -> None:
+        """
+        Schedule the analysis beats that are still ahead and fan them out.
+
+        :param tap: The tap to fan the beats out to.
+        :param analysis: The beat analysis of the item now playing.
+        :param anchor_us: Clock time of that item's media time zero.
+        :param speed: Playback speed the queue plays the item at.
+        """
+        beats = analysis.beats or ()
+        downbeats = {float(value) for value in analysis.downbeats or ()}
+        now_us = server_now_us()
+        scheduled = 0
+        for beat in beats:
+            timestamp_us = anchor_us + int(float(beat) / speed * 1_000_000)
+            if timestamp_us <= now_us:
+                continue
+            frame = pack_beat_frame(timestamp_us, float(beat) in downbeats)
+            tap.beats.append((timestamp_us, frame))
+            tap.fan_out(frame)
+            scheduled += 1
+        self.logger.debug("Scheduled %s of %s beat(s)", scheduled, len(beats))

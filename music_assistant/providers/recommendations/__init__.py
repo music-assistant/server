@@ -182,13 +182,22 @@ class LibraryRecommendationsProvider(PluginProvider):
         ]
 
     async def get_recommendation_items(
-        self, item_id: str
+        self, item_id: str, providers: list[str] | None = None
     ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
-        """Get the items for a single library recommendation row."""
+        """
+        Get the items for a single library recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        :param providers: Restrict items to those reachable through one of these provider
+            instance ids (OR semantics). An explicit empty list returns no items; None
+            applies no filter.
+        """
+        if providers is not None and not providers:
+            return UniqueList()
         items: Sequence[MediaItemType | ItemMapping | BrowseFolder]
         match item_id:
             case LibraryRowID.IN_PROGRESS:
-                items = await self.mass.music.in_progress_items(limit=10)
+                items = await self.mass.music.in_progress_items(limit=10, providers=providers)
             case LibraryRowID.RECENTLY_PLAYED:
                 items = await self.mass.music.recently_played(
                     limit=10,
@@ -201,61 +210,73 @@ class LibraryRecommendationsProvider(PluginProvider):
                     ],
                     user_initiated_only=True,
                     always_include_media_types=[MediaType.PODCAST, MediaType.AUDIOBOOK],
+                    providers=providers,
                 )
             case LibraryRowID.RECENTLY_ADDED_TRACKS:
                 items = await self.mass.music.tracks.library_items(
-                    limit=10, order_by="timestamp_added_desc"
+                    limit=10, order_by="timestamp_added_desc", reachable_via=providers
                 )
             case LibraryRowID.RECENTLY_ADDED_ALBUMS:
                 items = await self.mass.music.albums.library_items(
-                    limit=10, order_by="timestamp_added_desc"
+                    limit=10, order_by="timestamp_added_desc", reachable_via=providers
                 )
             case LibraryRowID.RANDOM_ARTISTS:
                 items = await self.mass.music.artists.library_items(
-                    limit=10, order_by="random_play_count"
+                    limit=10, order_by="random_play_count", reachable_via=providers
                 )
             case LibraryRowID.RANDOM_ALBUMS:
                 items = await self.mass.music.albums.library_items(
-                    limit=10, order_by="random_play_count"
+                    limit=10, order_by="random_play_count", reachable_via=providers
                 )
             case LibraryRowID.RECENT_FAVORITE_TRACKS:
                 items = await self.mass.music.tracks.library_items(
-                    favorite=True, limit=10, order_by="timestamp_modified_desc"
+                    favorite=True,
+                    limit=10,
+                    order_by="timestamp_modified_desc",
+                    reachable_via=providers,
                 )
             case LibraryRowID.FAVORITE_PLAYLISTS:
                 items = await self.mass.music.playlists.library_items(
-                    favorite=True, limit=10, order_by="random"
+                    favorite=True, limit=10, order_by="random", reachable_via=providers
                 )
             case LibraryRowID.FAVORITE_RADIO:
                 items = await self.mass.music.radio.library_items(
-                    favorite=True, limit=10, order_by="play_count_desc"
+                    favorite=True, limit=10, order_by="play_count_desc", reachable_via=providers
                 )
             case LibraryRowID.RECENT_ARTISTS:
                 items = await self.mass.music.recently_played(
-                    limit=10, media_types=[MediaType.ARTIST], user_initiated_only=False
+                    limit=10,
+                    media_types=[MediaType.ARTIST],
+                    user_initiated_only=False,
+                    providers=providers,
                 )
             case LibraryRowID.RECENT_TRACKS:
                 items = await self.mass.music.recently_played(
-                    limit=10, media_types=[MediaType.TRACK], user_initiated_only=False
+                    limit=10,
+                    media_types=[MediaType.TRACK],
+                    user_initiated_only=False,
+                    providers=providers,
                 )
             case LibraryRowID.FORGOTTEN_TRACKS:
                 items = await self.mass.music.tracks.library_items(
-                    limit=10, order_by="last_played", played_only=True
+                    limit=10, order_by="last_played", played_only=True, reachable_via=providers
                 )
             case LibraryRowID.FORGOTTEN_ALBUMS:
                 items = await self.mass.music.albums.library_items(
-                    limit=10, order_by="last_played", played_only=True
+                    limit=10, order_by="last_played", played_only=True, reachable_via=providers
                 )
             case LibraryRowID.FORGOTTEN_ARTISTS:
                 items = await self.mass.music.artists.library_items(
-                    limit=10, order_by="last_played", played_only=True
+                    limit=10, order_by="last_played", played_only=True, reachable_via=providers
                 )
             case LibraryRowID.MOST_PLAYED_TRACKS:
                 items = await self.mass.music.tracks.library_items(
-                    limit=10, order_by="play_count_desc"
+                    limit=10, order_by="play_count_desc", reachable_via=providers
                 )
             case LibraryRowID.NEVER_PLAYED_TRACKS:
-                items = await self.mass.music.tracks.library_items(limit=10, order_by="play_count")
+                items = await self.mass.music.tracks.library_items(
+                    limit=10, order_by="play_count", reachable_via=providers
+                )
             case _:
                 items = []
         return UniqueList(items)
@@ -277,4 +298,5 @@ def _folder(
         icon=icon,
         enabled_by_default=enabled_by_default,
         uri=f"library://folder/{item_id.value}",
+        supports_provider_filter=True,
     )

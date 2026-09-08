@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import AsyncGenerator
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -90,3 +91,63 @@ def test_single_item_stream_forwards_the_seek_position(seek_position: int) -> No
     )
 
     assert call_kwargs["seek_position"] == seek_position
+
+
+async def _pcm_chunks() -> AsyncGenerator[bytes]:
+    """Yield two PCM chunks so the gauge can be observed mid-stream."""
+    yield b"chunk-1"
+    yield b"chunk-2"
+
+
+def _pcm_stream_controller() -> StreamsController:
+    """Build a controller whose single item stream yields real PCM chunks."""
+    controller, _ = _controller(_queue_item(0))
+    audio = cast("Any", controller.audio)
+    audio.get_queue_item_stream.side_effect = lambda **_kwargs: _pcm_chunks()
+    return controller
+
+
+@pytest.mark.asyncio
+async def test_direct_pcm_stream_counts_as_an_active_output_stream() -> None:
+    """A player consuming raw PCM registers as playing, so analysis yields CPU to it."""
+    controller = _pcm_stream_controller()
+
+    stream = controller.get_stream(
+        PlayerMedia(
+            uri="library://audiobook/1",
+            media_type=MediaType.AUDIOBOOK,
+            source_id=QUEUE_ID,
+            queue_item_id=QUEUE_ITEM_ID,
+        ),
+        PCM_FORMAT,
+    )
+    assert controller.output_stream_active() is False
+
+    chunks = []
+    async for chunk in stream:
+        chunks.append(chunk)
+        assert controller.output_stream_active() is True
+
+    assert chunks == [b"chunk-1", b"chunk-2"]
+    assert controller.output_stream_active() is False
+
+
+@pytest.mark.asyncio
+async def test_abandoned_direct_pcm_stream_releases_the_gauge() -> None:
+    """A consumer that stops mid-stream releases its count, so analysis regains its budget."""
+    controller = _pcm_stream_controller()
+
+    stream = controller.get_stream(
+        PlayerMedia(
+            uri="library://audiobook/1",
+            media_type=MediaType.AUDIOBOOK,
+            source_id=QUEUE_ID,
+            queue_item_id=QUEUE_ITEM_ID,
+        ),
+        PCM_FORMAT,
+    )
+    assert await anext(stream) == b"chunk-1"
+    assert controller.output_stream_active() is True
+
+    await stream.aclose()
+    assert controller.output_stream_active() is False
