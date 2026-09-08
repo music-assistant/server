@@ -434,6 +434,21 @@ class SonosPlayerProvider(PlayerProvider):
             json_body.get("items"),
         )
         for item in json_body["items"]:
+            if error := item.get("error"):
+                # the speaker failed to play (or stopped playing) this item; it keeps
+                # reporting PLAYING meanwhile, so this is the only signal we get
+                self.logger.warning(
+                    "Speaker %s reported a %s error (%s) for queue item %s "
+                    "(report=%s, played %sms, url=%s)",
+                    player.display_name,
+                    error.get("type"),
+                    error.get("status"),
+                    item.get("id"),
+                    item.get("type"),
+                    item.get("durationPlayedMillis"),
+                    item.get("mediaUrl"),
+                )
+                continue
             if item["type"] != "update":
                 continue
             if "positionMillis" not in item:
