@@ -19,10 +19,15 @@ from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import MusicProvider, sync_run_state
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .browse import DeezerBrowseManager
+from .constants import (
+    CONF_PERSONAL_METADATA_VERSION,
+    PERSONAL_ALBUM_PREFIX,
+    PERSONAL_METADATA_VERSION,
+)
 from .gw_client import DeezerGWError, GWClient
 from .media import DeezerMediaManager
 from .streaming import DeezerStreamingManager
@@ -46,6 +51,8 @@ if TYPE_CHECKING:
         UniqueList,
     )
     from music_assistant_models.streamdetails import StreamDetails
+
+    from music_assistant.controllers.music.media.base import LibraryItemSyncDetails
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -317,3 +324,43 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch the recommendation folders fed by the shared gql recommendations payload."""
         return await self.browse_manager._fetch_recommendation_payload()
+
+    async def _run_library_sync(self, media_type: MediaType) -> None:
+        """Sync the library and record completed personal metadata refreshes."""
+        await super()._run_library_sync(media_type)
+        if media_type not in (MediaType.TRACK, MediaType.ALBUM):
+            return
+        # Item failures do not abort the shared sync. Only a complete run may mark
+        # this media type as refreshed, so interrupted or partial runs are retried.
+        state = sync_run_state()
+        if state.failures or media_type in state.incomplete_media_types:
+            return
+        version_key = f"{CONF_PERSONAL_METADATA_VERSION}{media_type.value}"
+        if (
+            self.mass.config.get_raw_provider_config_value(self.instance_id, version_key)
+            != PERSONAL_METADATA_VERSION
+        ):
+            self.mass.config.set_raw_provider_config_value(
+                self.instance_id, version_key, PERSONAL_METADATA_VERSION
+            )
+
+    def _library_item_needs_update(
+        self, library_item: MediaItemType | LibraryItemSyncDetails, prov_item: MediaItemType
+    ) -> bool:
+        """Check for library changes, including outdated personal metadata."""
+        if super()._library_item_needs_update(library_item, prov_item):
+            return True
+        if not (
+            (prov_item.media_type == MediaType.TRACK and prov_item.item_id.startswith("-"))
+            or (
+                prov_item.media_type == MediaType.ALBUM
+                and prov_item.item_id.startswith(PERSONAL_ALBUM_PREFIX)
+            )
+        ):
+            return False
+        return (
+            self.mass.config.get_raw_provider_config_value(
+                self.instance_id, f"{CONF_PERSONAL_METADATA_VERSION}{prov_item.media_type.value}"
+            )
+            != PERSONAL_METADATA_VERSION
+        )

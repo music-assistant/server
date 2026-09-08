@@ -19,6 +19,10 @@ SHAKER_MIX_COVER = "https://cdn-assets.dzcdn.net/shaker/_next/static/media/group
 PERSONAL_ARTIST_PREFIX = "personal_artist_"
 PERSONAL_ALBUM_PREFIX = "personal_album_"
 
+# Bump when personal-item parsing changes so cached and library metadata are refreshed.
+PERSONAL_METADATA_VERSION = "1"
+CONF_PERSONAL_METADATA_VERSION = "personal_metadata_version_"
+
 # -- Pagination page sizes --
 
 FAVORITES_PAGE_SIZE = 50

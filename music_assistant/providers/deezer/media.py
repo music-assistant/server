@@ -35,6 +35,7 @@ from .constants import (
     FAVORITES_PAGE_SIZE,
     PERSONAL_ALBUM_PREFIX,
     PERSONAL_ARTIST_PREFIX,
+    PERSONAL_METADATA_VERSION,
 )
 from .helpers import fetch_all_audiobook_chapter_edges, fetch_all_bookmarks
 from .parsers import (
@@ -212,12 +213,18 @@ class DeezerMediaManager:
             yield item
         # Also include albums from user-uploaded personal songs
         personal_songs = await self._get_personal_songs()
-        seen_album_names: set[str] = set()
+        personal_albums: dict[tuple[str, tuple[str, ...]], Album] = {}
         for song in personal_songs:
             track = parse_gw_track(self.provider, song)
-            if isinstance(track.album, Album) and track.album.name not in seen_album_names:
-                seen_album_names.add(track.album.name)
-                yield track.album
+            if not isinstance(track.album, Album):
+                continue
+            album_key = (track.album.name, tuple(artist.name for artist in track.album.artists))
+            if album_key in personal_albums:
+                personal_albums[album_key].metadata.update(track.album.metadata)
+            else:
+                personal_albums[album_key] = track.album
+        for album in personal_albums.values():
+            yield album
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from Deezer."""
@@ -392,7 +399,7 @@ class DeezerMediaManager:
 
     # -- Item getters --
 
-    @use_cache(3600 * 24 * 30, allow_expired_cache=True)
+    @use_cache(3600 * 24 * 30, allow_expired_cache=True, cache_checksum=PERSONAL_METADATA_VERSION)
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         if prov_artist_id.startswith(PERSONAL_ARTIST_PREFIX):
@@ -410,7 +417,7 @@ class DeezerMediaManager:
         apply_web_url(item, result)
         return item
 
-    @use_cache(3600 * 24 * 30, allow_expired_cache=True)
+    @use_cache(3600 * 24 * 30, allow_expired_cache=True, cache_checksum=PERSONAL_METADATA_VERSION)
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         if prov_album_id.startswith(PERSONAL_ALBUM_PREFIX):
@@ -428,7 +435,7 @@ class DeezerMediaManager:
         apply_web_url(item, result)
         return item
 
-    @use_cache(3600 * 24 * 30, allow_expired_cache=True)
+    @use_cache(3600 * 24 * 30, allow_expired_cache=True, cache_checksum=PERSONAL_METADATA_VERSION)
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         try:
