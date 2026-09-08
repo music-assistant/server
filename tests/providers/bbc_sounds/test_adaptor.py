@@ -67,7 +67,7 @@ class TestMenuLoading:
         """
         show = RadioShow(
             id="id",
-            duration={"value": _Constants.TRACK_DURATION_THRESHOLD},
+            duration={"value": _Constants.TRACK_DURATION_THRESHOLD - 1},
             titles={"entity_title": "Track name"},
             pid="pid",
             container=Podcast(id="podcast"),
