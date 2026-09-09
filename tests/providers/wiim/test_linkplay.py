@@ -20,6 +20,7 @@ from music_assistant.models.player import LinkedOutputProtocol
 from music_assistant.providers.wiim.constants import PLAYER_ID_PREFIX
 from music_assistant.providers.wiim.grouping import NativeGroupRole
 from music_assistant.providers.wiim.helpers import (
+    is_official_device,
     is_official_manufacturer,
     linkplay_group_compatible,
     linkplay_slave_uuid_to_player_id,
@@ -92,6 +93,39 @@ class TestManufacturerClassification:
     def test_generic_manufacturers(self, manufacturer: str | None) -> None:
         """Everything else is treated as generic LinkPlay."""
         assert is_official_manufacturer(manufacturer) is False
+
+
+class TestOfficialDeviceRouting:
+    """A Linkplay manufacturer only selects the official backend for WiiM models."""
+
+    @pytest.mark.parametrize(
+        ("manufacturer", "model"),
+        [
+            ("Linkplay Technology Inc.", "WiiM Pro"),
+            ("Linkplay Technology Inc.", "WiiM Amp Ultra"),
+            ("Linkplay Technology Inc.", "wiim"),
+            ("Linkplay Technology Inc.", "Muzo_Mini"),
+            ("Audio Pro AB", "A10 MkII"),
+            ("Audio Pro AB", None),
+        ],
+    )
+    def test_official_devices(self, manufacturer: str, model: str | None) -> None:
+        """WiiM models and all Audio Pro devices use the official SDK."""
+        assert is_official_device(manufacturer, model) is True
+
+    @pytest.mark.parametrize(
+        ("manufacturer", "model"),
+        [
+            ("Linkplay Technology Inc.", "MUZO Cobblestone"),
+            ("Linkplay Technology Inc.", None),
+            ("Linkplay Technology Inc.", ""),
+            ("Edifier Inc", "WiiM Pro"),
+            (None, "WiiM Pro"),
+        ],
+    )
+    def test_generic_devices(self, manufacturer: str | None, model: str | None) -> None:
+        """Non-WiiM models behind a Linkplay manufacturer stay on the generic backend."""
+        assert is_official_device(manufacturer, model) is False
 
 
 def _slaves(uuids: list[str]) -> list[dict[str, str]]:
