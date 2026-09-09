@@ -1954,7 +1954,8 @@ def _missing_album_artist_tags() -> Any:
 async def test_parse_album_uses_nfo_album_artist_when_tag_is_missing() -> None:
     """A single albumartist in the album folder's album.nfo beats the configured fallback."""
     provider = _missing_album_artist_provider(
-        b"<album><title>My Album</title><albumartist>The Beatles</albumartist></album>",
+        b"<album><title>My Album</title><albumartist>The Beatles</albumartist>"
+        b"<year>1969</year></album>",
         fallback_action="track_artist",
     )
 
@@ -1963,6 +1964,7 @@ async def test_parse_album_uses_nfo_album_artist_when_tag_is_missing() -> None:
     )
 
     assert [artist.name for artist in album.artists] == ["The Beatles"]
+    assert album.year == 1969
     # the NFO is parsed once and shared with the metadata enrichment
     assert provider._read_file.await_count == 1
 

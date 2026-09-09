@@ -3238,8 +3238,8 @@ class LocalFileSystemProvider(MusicProvider):
                 )
                 and (nfo_artist_name := nfo_album_artist(album_nfo[1]))
             ):
-                # a single album artist named in the folder's album.nfo beats the configured
-                # fallback, the file was written for exactly this album
+                # a single album artist named in the album folder's own album.nfo beats the
+                # configured fallback, a disc subfolder's album.nfo is never consulted here
                 self.logger.warning(
                     "%s is missing ID3 tag [albumartist], using %s from %s as fallback",
                     track_path,

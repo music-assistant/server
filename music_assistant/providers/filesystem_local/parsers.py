@@ -44,12 +44,13 @@ def nfo_album_artist(nfo_album: dict[Any, Any]) -> str | None:
 
     :param nfo_album: The parsed 'album' element from the NFO file.
     """
-    # Jellyfin writes compilations as repeated <albumartist> elements (a list here) naming
-    # the track artists, so a list is never picked from
     value = nfo_album.get("albumartist")
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None
+    if not isinstance(value, str | list):
+        return None
+    # repeated elements (how Jellyfin writes compilations) and semicolon separated values
+    # both name more than one artist, so neither is trusted as the album artist
+    names = split_items(value)
+    return names[0] if len(names) == 1 else None
 
 
 def parse_artist_nfo(artist: Artist, nfo_artist: dict[Any, Any], source: str | None = None) -> None:

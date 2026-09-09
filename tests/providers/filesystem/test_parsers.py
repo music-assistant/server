@@ -109,8 +109,9 @@ def test_parse_artist_nfo() -> None:
 
 
 def test_nfo_album_artist() -> None:
-    """Only a single textual albumartist is used, repeated (compilation) entries never are."""
-    assert nfo_album_artist({"albumartist": " The Beatles "}) == "The Beatles"
+    """Only exactly one named album artist is used, anything ambiguous is not."""
+    assert nfo_album_artist({"albumartist": "The Beatles"}) == "The Beatles"
     assert nfo_album_artist({}) is None
-    assert nfo_album_artist({"albumartist": "   "}) is None
+    assert nfo_album_artist({"albumartist": None}) is None
     assert nfo_album_artist({"albumartist": ["Artist A", "Artist B"]}) is None
+    assert nfo_album_artist({"albumartist": "Artist A; Artist B"}) is None
