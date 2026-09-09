@@ -68,6 +68,16 @@ def test_parse_tags_reports_actionable_ffprobe_error(
     assert args[args.index("-loglevel") + 1] == "error"
 
 
+def test_parse_rejects_file_without_audio_channels() -> None:
+    """A file for which ffprobe reports zero channels is corrupt and must be skipped."""
+    raw = {
+        "format": {"filename": "corrupt.mp3", "format_name": "mp3", "duration": "0"},
+        "streams": [{"codec_type": "audio", "channels": 0, "sample_rate": "44100"}],
+    }
+    with pytest.raises(InvalidDataError, match="No audio channels found"):
+        tags.AudioTags.parse(raw)
+
+
 async def test_parse_metadata_from_id3tags() -> None:
     """Test parsing of parsing metadata from ID3 tags."""
     filename = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.mp3"))
