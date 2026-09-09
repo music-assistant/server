@@ -84,6 +84,7 @@ from music_assistant.controllers.music.constants import (
     SEARCH_PROVIDER_SOFT_TIMEOUT,
     TRACK_RECONCILIATION_BATCH_SIZE,
     TRACK_RECONCILIATION_MAX_DURATION_DELTA,
+    TRACK_RECONCILIATION_MAX_TITLE_ROWS,
     TRACK_RECONCILIATION_TASK_ID,
 )
 from music_assistant.controllers.music.database import (
@@ -194,14 +195,29 @@ def _album_title_match(base: str, other: str) -> str:
 # normalize to nothing (symbol-only album names) are excluded there, as they would match
 # every other such album. Rows that already share a provider are skipped, as a provider
 # listing the same recording twice is a separate (and far riskier) case.
+# Pairing the rows of a title is quadratic in their count, and the query runs on the single
+# library connection, where anything slow holds up every other library query. The self-join
+# is therefore confined to titles held by more than one provider, shared by a bounded number
+# of rows and not normalized to nothing, which every non-Latin title is.
 _DUPLICATE_TRACK_CANDIDATES_QUERY = f"""
+WITH candidate_titles AS (
+    SELECT t.search_name
+    FROM {DB_TABLE_TRACKS} t
+    JOIN {DB_TABLE_PROVIDER_MAPPINGS} pm
+      ON pm.media_type = 'track' AND pm.item_id = t.item_id
+    WHERE t.search_name != ''
+    GROUP BY t.search_name
+    HAVING count(DISTINCT pm.provider_domain) > 1
+       AND count(DISTINCT t.item_id) <= :max_title_rows
+)
 SELECT t1.item_id AS item_id_1, t2.item_id AS item_id_2
 FROM {DB_TABLE_TRACKS} t1
 JOIN {DB_TABLE_TRACKS} t2
   ON t2.search_name = t1.search_name
  AND t2.item_id > t1.item_id
  AND abs(t2.duration - t1.duration) <= :max_duration_delta
-WHERE (t1.item_id > :cursor_item_id_1
+WHERE t1.search_name IN (SELECT search_name FROM candidate_titles)
+  AND (t1.item_id > :cursor_item_id_1
        OR (t1.item_id = :cursor_item_id_1 AND t2.item_id > :cursor_item_id_2))
   AND EXISTS (
     SELECT 1 FROM {DB_TABLE_TRACK_ARTISTS} ta1
@@ -3021,6 +3037,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             _DUPLICATE_TRACK_CANDIDATES_QUERY,
             {
                 "max_duration_delta": TRACK_RECONCILIATION_MAX_DURATION_DELTA,
+                "max_title_rows": TRACK_RECONCILIATION_MAX_TITLE_ROWS,
                 "cursor_item_id_1": cursor[0],
                 "cursor_item_id_2": cursor[1],
             },

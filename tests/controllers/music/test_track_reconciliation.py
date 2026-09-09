@@ -434,6 +434,47 @@ async def test_ignores_tracks_from_the_same_provider(mass: MusicAssistant) -> No
     assert await mass.music.tracks.get_library_item(track_2.item_id)
 
 
+async def test_ignores_titles_that_normalize_to_nothing(mass: MusicAssistant) -> None:
+    """Titles outside the Latin alphabet all normalize to nothing, which pairs none of them."""
+    track_1, track_2 = await _build_duplicate_pair(mass)
+    for track in (track_1, track_2):
+        await mass.music.database.update(
+            DB_TABLE_TRACKS,
+            {"item_id": int(track.item_id)},
+            {"name": "காதல்", "sort_name": "காதல்", "search_name": "", "search_sort_name": ""},
+        )
+
+    await mass.music._reconcile_duplicate_tracks()
+
+    assert await mass.music.tracks.get_library_item(track_1.item_id)
+    assert await mass.music.tracks.get_library_item(track_2.item_id)
+
+
+async def test_skips_a_title_shared_by_too_many_rows(mass: MusicAssistant) -> None:
+    """A title held by more rows than the cap allows is a generic one, not a duplicate signal."""
+    track_1, track_2 = await _build_duplicate_pair(mass)
+    artist = await mass.music.artists.get_library_item(track_1.artists[0].item_id)
+    assert track_1.album is not None
+    album = await mass.music.albums.get_library_item(track_1.album.item_id)
+    third = await _add_track(mass, "spotify_instance", artist, album, name="Fixture Title 2")
+    await _make_titles_look_alike(mass, third, _DUPLICATE_NAME)
+    cap = "music_assistant.controllers.music.controller.TRACK_RECONCILIATION_MAX_TITLE_ROWS"
+
+    with patch(cap, 2):
+        await mass.music._reconcile_duplicate_tracks()
+
+    assert await mass.music.tracks.get_library_item(track_1.item_id)
+    assert await mass.music.tracks.get_library_item(track_2.item_id)
+
+    # the same pair merges once the title fits under the cap
+    mass.music._set_track_reconciliation_state((0, 0), False)
+    with patch(cap, 3):
+        await mass.music._reconcile_duplicate_tracks()
+
+    with pytest.raises(MediaNotFoundError):
+        await mass.music.tracks.get_library_item(track_2.item_id)
+
+
 async def test_requires_agreement_on_the_album(mass: MusicAssistant) -> None:
     """Tracks that sit on differently titled albums are not treated as duplicates."""
     track_1, track_2 = await _build_duplicate_pair(
