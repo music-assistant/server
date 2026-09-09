@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -9,6 +10,7 @@ from music_assistant_models.auth import UserRole
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.helpers import guest_access
+from music_assistant.models.plugin import GuestSession, PluginProvider
 
 
 def _create_mock_mass() -> MagicMock:
@@ -22,6 +24,59 @@ def _create_mock_mass() -> MagicMock:
     auth.revoke_join_codes = AsyncMock(return_value=0)
     auth.revoke_tokens_for_user = AsyncMock(return_value=0)
     return mass
+
+
+def _create_guest_session_plugin(instance_id: str) -> MagicMock:
+    """Create a plugin mock exposing no active guest session by default."""
+    provider = MagicMock(spec=PluginProvider)
+    provider.instance_id = instance_id
+    provider.available = True
+    provider.get_active_guest_session = AsyncMock(return_value=None)
+    return provider
+
+
+async def test_get_active_guest_sessions_collects_plugins_in_stable_order() -> None:
+    """Active sessions are collected by instance id and inactive plugins are omitted."""
+    first = _create_guest_session_plugin("plugin_a")
+    second = _create_guest_session_plugin("plugin_b")
+    inactive = _create_guest_session_plugin("plugin_c")
+    unavailable = _create_guest_session_plugin("plugin_d")
+    unavailable.available = False
+    first_session = GuestSession(provider=first, join_url="https://example.test/a")
+    second_session = GuestSession(provider=second, join_url="https://example.test/b")
+    first.get_active_guest_session.return_value = first_session
+    second.get_active_guest_session.return_value = second_session
+    mass = MagicMock(providers=[unavailable, inactive, second, first, MagicMock()])
+
+    assert await guest_access.get_active_guest_sessions(mass) == [first_session, second_session]
+    unavailable.get_active_guest_session.assert_not_awaited()
+
+
+async def test_get_active_guest_sessions_skips_failing_plugin() -> None:
+    """One broken guest-session provider does not hide sessions from healthy plugins."""
+    broken = _create_guest_session_plugin("plugin_a")
+    healthy = _create_guest_session_plugin("plugin_b")
+    session = GuestSession(provider=healthy, join_url="https://example.test/join")
+    broken.get_active_guest_session.side_effect = RuntimeError("boom")
+    healthy.get_active_guest_session.return_value = session
+    mass = MagicMock(providers=[healthy, broken])
+
+    assert await guest_access.get_active_guest_sessions(mass) == [session]
+
+
+async def test_get_active_guest_sessions_times_out_stalled_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stalled plugin cannot prevent a healthy plugin from returning its session."""
+    stalled = _create_guest_session_plugin("plugin_a")
+    healthy = _create_guest_session_plugin("plugin_b")
+    session = GuestSession(provider=healthy, join_url="https://example.test/join")
+    stalled.get_active_guest_session.side_effect = asyncio.Event().wait
+    healthy.get_active_guest_session.return_value = session
+    mass = MagicMock(providers=[stalled, healthy])
+    monkeypatch.setattr(guest_access, "GUEST_SESSION_TIMEOUT", 0.01)
+
+    assert await guest_access.get_active_guest_sessions(mass) == [session]
 
 
 async def test_get_or_create_guest_user_returns_existing() -> None:
