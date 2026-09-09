@@ -2,6 +2,7 @@
 
 import json
 import logging
+from collections import deque
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -623,3 +624,112 @@ def test_queue_change_only_reaches_the_speakers_playing_it() -> None:
     # the id must be per speaker, or one speaker's refresh cancels another's
     assert provider.mass.call_later.call_args.kwargs["task_id"] == _refresh_task_id("playing")
     assert provider._pending_refresh_tasks == {_refresh_task_id("playing")}
+
+
+def _error_report(report_type: str = "update", report_id: str = "report-1") -> dict[str, object]:
+    """
+    Build the report a speaker sends when it gives up on an item.
+
+    Shaped after a real one from support#6329: it carries no positionMillis, which
+    every healthy report has.
+    """
+    return {
+        "reportId": report_id,
+        "error": {"type": "playback", "status": "ERROR_LSE"},
+        "contextVersion": "1",
+        "id": "track0@3",
+        "type": report_type,
+        "positionMillisAtSegmentStart": 0,
+        "durationPlayedMillis": 4848,
+        "timeSincePlaybackMillis": 215,
+    }
+
+
+def _player_for_error_reports() -> MagicMock:
+    """Create a speaker whose current item is the one the reports name."""
+    player = MagicMock(spec=SonosPlayer)
+    player.cloud_queue_item_generation = 3
+    player.wire_item_id = lambda item_id, generation=None: SonosPlayer.wire_item_id(
+        player, item_id, generation
+    )
+    player.current_media = MagicMock()
+    player.current_media.queue_item_id = "track0"
+    player.current_media.title = "A Strange Happening"
+    player.display_name = "Huiskamer"
+    player.reported_playback_errors = deque(maxlen=16)
+    return player
+
+
+@pytest.mark.parametrize("report_type", ["update", "final"], ids=["update", "final"])
+async def test_a_speaker_giving_up_on_an_item_is_reported(
+    caplog: pytest.LogCaptureFixture, report_type: str
+) -> None:
+    """
+    A speaker that cannot play an item says so only here, so it must not pass silently.
+
+    Playback stops while Music Assistant still believes the track is playing, and the
+    speaker sends the failure as both an update and a final report.
+    """
+    player = _player_for_error_reports()
+    provider = _make_provider()
+    request = MagicMock()
+    request.json = AsyncMock(return_value={"items": [_error_report(report_type)]})
+
+    with caplog.at_level(logging.WARNING, logger="test.sonos.cloud_queue"):
+        await provider._handle_sonos_queue_time_played(player, request)
+
+    assert "ERROR_LSE" in caplog.text
+    assert "A Strange Happening" in caplog.text
+    player.update_elapsed_time.assert_not_called()
+
+
+async def test_the_speakers_retry_of_a_failure_is_not_reported_again(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The speaker re-sends the same report until it gives up, which is one failure."""
+    player = _player_for_error_reports()
+    provider = _make_provider()
+    request = MagicMock()
+    request.json = AsyncMock(return_value={"items": [_error_report()]})
+
+    with caplog.at_level(logging.WARNING, logger="test.sonos.cloud_queue"):
+        await provider._handle_sonos_queue_time_played(player, request)
+        request.json = AsyncMock(return_value={"items": [_error_report("final")]})
+        await provider._handle_sonos_queue_time_played(player, request)
+
+    assert caplog.text.count("ERROR_LSE") == 1
+
+
+async def test_a_batch_of_failures_resent_together_is_not_reported_again(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One report can carry several failures, and the speaker resends the whole batch."""
+    player = _player_for_error_reports()
+    provider = _make_provider()
+    batch = {"items": [_error_report(report_id="report-a"), _error_report(report_id="report-b")]}
+    request = MagicMock()
+    request.json = AsyncMock(return_value=batch)
+
+    with caplog.at_level(logging.WARNING, logger="test.sonos.cloud_queue"):
+        await provider._handle_sonos_queue_time_played(player, request)
+        request.json = AsyncMock(return_value=batch)
+        await provider._handle_sonos_queue_time_played(player, request)
+
+    assert caplog.text.count("ERROR_LSE") == 2
+
+
+async def test_a_later_failure_on_another_item_is_reported(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Only the repeat of one report is held back, never the next thing that fails."""
+    player = _player_for_error_reports()
+    provider = _make_provider()
+    request = MagicMock()
+
+    with caplog.at_level(logging.WARNING, logger="test.sonos.cloud_queue"):
+        request.json = AsyncMock(return_value={"items": [_error_report()]})
+        await provider._handle_sonos_queue_time_played(player, request)
+        request.json = AsyncMock(return_value={"items": [_error_report(report_id="report-2")]})
+        await provider._handle_sonos_queue_time_played(player, request)
+
+    assert caplog.text.count("ERROR_LSE") == 2
