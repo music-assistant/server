@@ -418,10 +418,12 @@ class AriaCastReceiver(PluginProvider):
                 self._audio_sender_ws = None
 
         self.logger.info("AriaCast sender disconnected from %s", request.remote)
-        # If we were the active stream, mark as not playing so get_audio_stream can exit cleanly
         if self._is_playing:
-            self.logger.debug("Sender disconnected while playing - clearing is_playing")
-            self._is_playing = False
+            # The sender vanished without ever sending a graceful is_playing=false
+            # (app killed outright, network drop): release the source the same way
+            # a normal stop would, so the owning queue/group is torn down properly
+            # instead of being left to starve silently on a stalled audio stream.
+            await self._handle_playback_state(False)
         return ws
 
     async def _ws_control(self, request: web.Request) -> web.WebSocketResponse:
