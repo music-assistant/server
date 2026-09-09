@@ -291,7 +291,7 @@ class PlaylistMetadataProvider(MetadataProvider):
             return False
         if img.provider == self.instance_id:
             return True
-        # we only ever write absolute paths, so anything relative belongs to someone else
+        # We only ever write absolute paths, so anything relative belongs to someone else
         img_path = Path(img.path)
         if not img_path.is_absolute():
             return False
