@@ -342,6 +342,15 @@ async def test_is_our_image_recognizes_own_images(
     )
     assert provider._is_our_image(builtin_asset) is False
 
+    # Cover file next to a filesystem playlist in a subfolder (relative path)
+    filesystem_cover = MediaItemImage(
+        type=ImageType.THUMB,
+        path="Playlists/My Playlist.png",
+        provider="filesystem_local--abc123",
+        remotely_accessible=False,
+    )
+    assert provider._is_our_image(filesystem_cover) is False
+
 
 @pytest.mark.asyncio
 async def test_analyze_playlist_genres_returns_most_common_genres(
