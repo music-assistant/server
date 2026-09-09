@@ -10,6 +10,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiohttp import web
 from music_assistant_models.enums import (
     ContentType,
     CrossfadeMode,
@@ -1643,6 +1644,7 @@ def _single_item_handler(
         streamdetails=streamdetails,
         media_item=None,
         media_type=MediaType.TRACK,
+        available=True,
         extra_attributes={},
         image=None,
     )
@@ -1773,6 +1775,27 @@ async def test_single_item_handler_paces_by_player(
         await controller.serve_queue_item_stream(request)
 
     assert seen["extra_input_args"] == output_pacing_args(profile)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("method", "still_available"),
+    [("HEAD", True), ("GET", False)],
+    ids=["head_probe", "playback_attempt"],
+)
+async def test_single_item_handler_condemns_an_item_only_on_a_playback_attempt(
+    method: str, still_available: bool
+) -> None:
+    """A failed streamdetails fetch 404s either way, but only a GET marks the item unplayable."""
+    controller, request, _seen = _single_item_handler(is_realtime=False)
+    request.method = method
+    queue_item = controller.mass.player_queues.get_item.return_value
+    queue_item.streamdetails = None
+    controller.audio.get_stream_details = AsyncMock(side_effect=AudioError("provider hiccup"))
+
+    with pytest.raises(web.HTTPNotFound):
+        await controller.serve_queue_item_stream(request)
+
+    assert queue_item.available is still_available
 
 
 def test_the_reported_cause_skips_an_empty_link_in_the_chain() -> None:
