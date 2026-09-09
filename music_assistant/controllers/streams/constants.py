@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Final
+from typing import Final, Literal
 
 from music_assistant_models.enums import VolumeNormalizationMode
 
@@ -58,14 +58,30 @@ BUFFER_SIZE_MAP: Final[dict[str, int]] = {
 # Buffer size for radio streams (short rolling buffer)
 RADIO_BUFFER_SIZE: Final[int] = 15
 
-# Ceiling on how fast a single queue item is handed to a player, once it has had its opening
-# burst. Music Assistant serves audio for listening, not for collecting: at twice playback the
-# player's buffer still grows in realtime, while pulling a whole catalogue takes about as long
-# as listening to it would. These are the fastest we go, not a target - a player that needs
-# feeding more gently (Chromecast is the known case) can be paced slower than this.
-# Do not remove this to "fix" slow buffering; raise the burst instead. See the usage policy.
-SINGLE_ITEM_READRATE: Final[str] = "1.2"
-SINGLE_ITEM_READRATE_INITIAL_BURST: Final[str] = "60"
+# Ceiling on how fast stream output is handed to a player, once it has had its opening
+# burst. Music Assistant serves audio for listening, not for collecting: barely above
+# playback speed the player's buffer still grows, while pulling a whole catalogue takes
+# about as long as listening to it would. A gentle feed also keeps a realtime source's
+# banked head start resident for its end-of-track crossfade, and spares players with a
+# small input buffer (Chromecast is the known case).
+# Do not remove this pacing to "fix" slow buffering. See the usage policy.
+#
+# gapless_burst: players that must hold a whole opening chunk before they play gapless
+# (MusicCast is the known case). low_latency: live AudioSource streams, where whatever
+# the burst hands over sits in the player's buffer as listening delay.
+PacingProfile = Literal["default", "gapless_burst", "low_latency"]
+_PACING: Final[dict[PacingProfile, tuple[str, str]]] = {
+    "default": ("1.02", "3"),
+    "gapless_burst": ("1.2", "60"),
+    "low_latency": ("1.02", "0.5"),
+}
+
+
+def output_pacing_args(profile: PacingProfile = "default") -> list[str]:
+    """Return the ffmpeg pacing arguments for a stream handed to a player."""
+    readrate, burst = _PACING[profile]
+    return ["-readrate", readrate, "-readrate_initial_burst", burst]
+
 
 # Time to keep the flow stream response open after the last audio byte of a queue.
 # Players buffer a few seconds ahead of what they actually render; some of them drop

@@ -32,6 +32,7 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     ImageType,
     MediaType,
+    ProviderFeature,
     StreamType,
 )
 from music_assistant_models.errors import (
@@ -74,6 +75,7 @@ from .constants import (
     CACHE_EMPTY_RESULTS,
     CACHE_METADATA,
     CACHE_USER_LISTS,
+    CONF_GET_LYRICS,
     CONF_IDENTITY,
     CONF_TOP_TRACKS_LIMIT,
     DEFAULT_TOP_TRACKS_LIMIT,
@@ -91,7 +93,11 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return BandcampProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    features = set(SUPPORTED_FEATURES)
+    # Declared conditionally: the controller skips the whole lyrics lookup while off.
+    if config.get_value(CONF_GET_LYRICS, False):
+        features.add(ProviderFeature.LYRICS)
+    return BandcampProvider(mass, manifest, config, features)
 
 
 def split_id(id_: str) -> tuple[int, int, int]:
@@ -109,6 +115,14 @@ def split_id(id_: str) -> tuple[int, int, int]:
     except (ValueError, IndexError) as error:
         raise InvalidDataError(f"Malformed Bandcamp ID: {id_}") from error
     return part_0, part_1, part_2
+
+
+def split_track_id(id_: str) -> tuple[int, int, int]:
+    """Split a compound track ID; a two-part ID means a standalone track (album_id=0)."""
+    artist_id, album_id, track_id = split_id(id_)
+    if not track_id:
+        album_id, track_id = 0, album_id
+    return artist_id, album_id, track_id
 
 
 class BandcampProvider(MusicProvider):
@@ -129,6 +143,12 @@ class BandcampProvider(MusicProvider):
         """Return Config entries to configure this provider."""
         return (
             CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_GET_LYRICS,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=False,
+            ),
             ConfigEntry(
                 key=CONF_TOP_TRACKS_LIMIT,
                 type=ConfigEntryType.INTEGER,
@@ -720,9 +740,7 @@ class BandcampProvider(MusicProvider):
 
         :param item_id: Compound track ID in the form artist_id-album_id-track_id.
         """
-        artist_id, album_id, track_id = split_id(item_id)
-        if not track_id:
-            album_id, track_id = 0, album_id
+        artist_id, album_id, track_id = split_track_id(item_id)
 
         try:
             if album_id:
@@ -743,9 +761,58 @@ class BandcampProvider(MusicProvider):
         except BandcampAPIError as error:
             raise MediaNotFoundError(f"Failed to get track {item_id}") from error
 
-    @use_cache(CACHE_METADATA)
     async def get_track(self, prov_track_id: str) -> Track:
-        """Get full track details by id."""
+        """Get full track details by id, with lyrics when the setting is on."""
+        track = await self._get_track_base(prov_track_id)
+        if self.config.get_value(CONF_GET_LYRICS, False):
+            # Lyrics stay out of the 30-day track cache; provider lookups
+            # follow the toggle at once.
+            await self._attach_lyrics(track, prov_track_id)
+        return track
+
+    async def _attach_lyrics(self, track: Track, prov_track_id: str) -> None:
+        """Attach the lyrics text to a track. A lyrics failure never fails the lookup."""
+        _, album_id, track_id = split_track_id(prov_track_id)
+        tralbum_id, is_album = (album_id, True) if album_id else (track_id, False)
+        try:
+            lyrics_map = await self._get_tralbum_lyrics(tralbum_id, is_album)
+        except Exception as error:
+            self.logger.debug("Failed to fetch lyrics for %s: %s", prov_track_id, error)
+            return
+        if text := lyrics_map.get(str(track_id)):
+            track.metadata.lyrics = text
+
+    @use_cache(CACHE_METADATA)
+    @throttle_with_retries
+    async def _get_tralbum_lyrics(self, tralbum_id: int, is_album: bool) -> dict[str, str | None]:
+        """
+        Fetch the lyrics map of a whole tralbum: one request per album.
+
+        Errors propagate so a failure is never cached; keys are strings
+        because the cache serializer refuses int keys.
+        """
+        try:
+            if is_album:
+                lyrics = await self._client.get_album_lyrics(tralbum_id)
+            else:
+                lyrics = await self._client.get_track_lyrics(tralbum_id)
+        except BandcampRateLimitError as error:
+            raise RateLimited(
+                "Bandcamp rate limit reached", backoff_time=error.retry_after
+            ) from error
+        return {str(track_id): text for track_id, text in lyrics.items()}
+
+    @use_cache(CACHE_METADATA)
+    async def _get_track_base(self, prov_track_id: str) -> Track:
+        """Get full track details by id, without the lyrics layer."""
+        artist_id, album_id, track_id = split_track_id(prov_track_id)
+        if album_id:
+            # One cached album listing serves every track of that album.
+            with suppress(MediaNotFoundError):
+                for album_track in await self.get_album_tracks(f"{artist_id}-{album_id}"):
+                    if split_id(album_track.item_id)[2] == track_id:
+                        return album_track
+            # Tracks without a streaming URL are absent from that listing.
         api_track, api_album = await self._fetch_api_track(prov_track_id)
         if api_album:
             artist_item_id = await self._resolve_artist_item_id(

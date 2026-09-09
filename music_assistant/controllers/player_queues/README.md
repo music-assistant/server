@@ -17,6 +17,7 @@ docstrings.
 - [Player-to-Queue State Reconciliation](#player-to-queue-state-reconciliation)
 - [Look-Ahead and Buffering](#look-ahead-and-buffering)
 - [Radio and Dynamic Continuation](#radio-and-dynamic-continuation)
+- [Smart Shuffle and Smart Fades Ordering](#smart-shuffle-and-smart-fades-ordering)
 - [Track Resolution](#track-resolution)
 - [Play Counting and Resume](#play-counting-and-resume)
 - [Module Layout](#module-layout)
@@ -227,6 +228,26 @@ Data flow: dynamic `sources` → managed pool (per-source fetch + weighted, rece
 → appended `QueueItem`s; autoplay flag → media-type dispatch → `Autoplay` (mode-based selection) or
 the next episode/book → appended `QueueItem`s.
 
+## Smart Shuffle and Smart Fades Ordering
+
+When the option is enabled and Smart crossfade is active, Smart Shuffle can use the analysis Smart
+Fades already has to improve the order of upcoming tracks. Recency stays in charge and no new tracks
+are selected.
+
+In Normal Mode, MA leaves the current/buffered part of the queue alone and reorders only the future
+part it already considers safe to move. Within each recency tier, the full movable population can
+be considered when choosing the next track. The last fixed track is used as the starting point.
+
+In Dynamic Mode, Managed Pool still picks the refill tracks. Smart Fades ordering then sorts that
+accepted batch from the existing queue tail. Both modes consider every remaining track in the run
+being ordered; Dynamic Mode simply orders one refill batch at a time.
+
+No analysis is started for this. Unknown data stays neutral. The score uses tempo, graded Camelot
+key affinity and end-to-start RMS energy. These are ranking signals, not filters. A silent outgoing
+tail is ignored for the energy part of the score.
+
+Close choices keep some randomness, and Smart Fades still decides the actual transition.
+
 ## Track Resolution
 
 Non-track media must be expanded into the actual tracks or episodes to enqueue. Each source type
@@ -268,6 +289,7 @@ player_queues/
 ├── autoplay.py     # Autoplay + AutoplayMode: resolves the per-queue autoplay mode and
 │                   #   produces the next batch of tracks for the library-/playlist-based modes
 ├── smart_shuffle.py # SmartShuffle: recency-aware, well-spaced ordering of the upcoming items
+├── smart_fade_ordering.py # stored-analysis-only local transition ordering shared by queue modes
 ├── managed_pool.py # ManagedPool: bounded dynamic-source pool, topped up + recency-gated, with
 │                   #   finite sources materialized to play through once
 ├── media_resolver.py # MediaResolver: resolves source media items (artist/album/genre/playlist/

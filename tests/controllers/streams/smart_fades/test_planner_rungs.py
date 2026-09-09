@@ -345,6 +345,8 @@ def test_lazy_overlay_wins_for_both_ambient_unblendable_pair() -> None:
     assert plan.metrics.strategy is TransitionStrategy.LAZY_OVERLAY
     assert plan.crossfade_duration >= 12.0
     assert plan.fadein_trim_start is None  # B keeps its intro
+    # the long overlay keeps its handover EQ despite riding the QUICK_FADE tier
+    assert plan.eq_plan.low_in is not None
 
 
 def test_lazy_overlay_not_emitted_for_vocal_material() -> None:

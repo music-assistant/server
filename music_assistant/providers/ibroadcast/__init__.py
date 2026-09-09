@@ -36,7 +36,10 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import (
+    DEFAULT_MAX_CONCURRENT_STREAMS,
+    MusicProvider,
+)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -70,6 +73,16 @@ class IBroadcastProvider(MusicProvider):
 
     _user_id: str
     _client: IBroadcastClient
+
+    @property
+    def is_streaming_provider(self) -> bool:
+        """Return False: the catalog is the account's own uploaded collection."""
+        return False
+
+    @property
+    def max_concurrent_streams(self) -> int:
+        """Keep the conservative streaming default, as this is a hosted service."""
+        return DEFAULT_MAX_CONCURRENT_STREAMS
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""

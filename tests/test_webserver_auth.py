@@ -9,9 +9,10 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
 from music_assistant_models.errors import (
     InsufficientPermissions,
@@ -51,6 +52,7 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
     BuiltinLoginProvider,
     LoginRateLimiter,
 )
+from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_loads
 from music_assistant.mass import MusicAssistant
@@ -2670,6 +2672,22 @@ async def _get_filters(
     return json_loads(row["provider_filter"]), json_loads(row["player_filter"])
 
 
+async def _create_ws_client(mass: MusicAssistant, user_id: str) -> WebsocketClientHandler:
+    """
+    Register a live websocket session authenticated as the given user.
+
+    :param mass: MusicAssistant instance whose webserver tracks the session.
+    :param user_id: Id of the user the session authenticated as.
+    """
+    user = await mass.webserver.auth.get_user(user_id)
+    assert user is not None
+    request = make_mocked_request("GET", "/ws", app=web.Application())
+    client = WebsocketClientHandler(mass.webserver, request)
+    client._authenticated_user = user
+    mass.webserver.register_websocket_client(client)
+    return client
+
+
 async def test_remove_from_user_filters(auth_manager: AuthenticationManager) -> None:
     """
     Test that a removed provider/player is stripped from the access filters of all users.
@@ -2742,14 +2760,14 @@ async def test_update_user_filters_updates_live_sessions(
     :param mass_minimal: Minimal MusicAssistant instance.
     """
     user = await auth_manager.create_user(username="unrestricted")
-    session = MagicMock(_authenticated_user=await auth_manager.get_user(user.user_id))
-    mass_minimal.webserver.clients.add(session)
+    session = await _create_ws_client(mass_minimal, user.user_id)
 
     await auth_manager.update_user_filters(user, ["kitchen"], None)
 
-    assert session._authenticated_user.player_filter == ["kitchen"]
+    assert session.authenticated_user is not None
+    assert session.authenticated_user.player_filter == ["kitchen"]
     # a filter that was not part of the update must be left alone
-    assert session._authenticated_user.provider_filter == []
+    assert session.authenticated_user.provider_filter == []
 
 
 async def test_replace_player_in_user_filters(auth_manager: AuthenticationManager) -> None:
@@ -2809,20 +2827,19 @@ async def test_user_filter_removal_updates_live_sessions(
         player_filter=["player_gone", "player_live"],
     )
     bystander = await auth_manager.create_user(username="bystander", player_filter=["player_other"])
-    session = MagicMock(_authenticated_user=await auth_manager.get_user(user.user_id))
-    bystander_session = MagicMock(
-        _authenticated_user=await auth_manager.get_user(bystander.user_id)
-    )
-    mass_minimal.webserver.clients.update({session, bystander_session})
+    session = await _create_ws_client(mass_minimal, user.user_id)
+    bystander_session = await _create_ws_client(mass_minimal, bystander.user_id)
 
     await auth_manager.remove_from_user_filters(
         provider_instance_ids=["spotify--old"], player_ids=["player_gone"]
     )
 
-    assert session._authenticated_user.provider_filter == ["jellyfin--live"]
-    assert session._authenticated_user.player_filter == ["player_live"]
+    assert session.authenticated_user is not None
+    assert session.authenticated_user.provider_filter == ["jellyfin--live"]
+    assert session.authenticated_user.player_filter == ["player_live"]
     # a session of another user must keep its own filters
-    assert bystander_session._authenticated_user.player_filter == ["player_other"]
+    assert bystander_session.authenticated_user is not None
+    assert bystander_session.authenticated_user.player_filter == ["player_other"]
 
 
 async def test_replace_player_in_user_filters_updates_live_sessions(
@@ -2835,14 +2852,14 @@ async def test_replace_player_in_user_filters_updates_live_sessions(
     :param mass_minimal: Minimal MusicAssistant instance.
     """
     user = await auth_manager.create_user(username="onlywrapper", player_filter=["up_old"])
-    session = MagicMock(_authenticated_user=await auth_manager.get_user(user.user_id))
-    mass_minimal.webserver.clients.add(session)
+    session = await _create_ws_client(mass_minimal, user.user_id)
 
     await auth_manager.replace_player_in_user_filters(
         "up_old", "sonos_1", removed_player_ids=["up_old"]
     )
 
-    assert session._authenticated_user.player_filter == ["sonos_1"]
+    assert session.authenticated_user is not None
+    assert session.authenticated_user.player_filter == ["sonos_1"]
 
 
 async def test_prune_stale_user_filters(auth_manager: AuthenticationManager) -> None:

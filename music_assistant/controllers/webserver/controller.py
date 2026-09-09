@@ -493,7 +493,7 @@ class WebserverController(CoreController):
         :param provider_filter: The new provider filter, or None to leave it untouched.
         """
         for client in list(self.clients):
-            user = client._authenticated_user
+            user = client.authenticated_user
             if user is None or user.user_id != user_id:
                 continue
             # updated in place: the connection's context holds this very object
@@ -517,13 +517,14 @@ class WebserverController(CoreController):
         :param player_id: The sendspin player ID to set.
         """
         for client in list(self.clients):
-            if client._current_token != token:
+            if not client.matches_token(token):
                 continue
-            client._sendspin_player_id = player_id
+            client.bind_sendspin_player(player_id)
+            user = client.authenticated_user
             self.logger.debug(
                 "Set sendspin player %s for websocket client of user %s",
                 player_id,
-                client._authenticated_user.username if client._authenticated_user else "unknown",
+                user.username if user else "unknown",
             )
 
     def set_sendspin_player_for_webrtc_session(self, session_id: str, player_id: str) -> None:
@@ -537,13 +538,10 @@ class WebserverController(CoreController):
         :param player_id: The sendspin player ID to set.
         """
         for client in list(self.clients):
-            if client._webrtc_session_id == session_id:
-                client._sendspin_player_id = player_id
-                username = (
-                    client._authenticated_user.username
-                    if client._authenticated_user
-                    else "unauthenticated"
-                )
+            if client.webrtc_session_id == session_id:
+                client.bind_sendspin_player(player_id)
+                user = client.authenticated_user
+                username = user.username if user else "unauthenticated"
                 self.logger.debug(
                     "Set sendspin player %s for WebRTC session %s (user: %s)",
                     player_id,
@@ -644,27 +642,6 @@ class WebserverController(CoreController):
                 requires_reload=False,
             ),
             ConfigEntry(
-                key=CONF_BASE_URL,
-                type=ConfigEntryType.STRING,
-                default_value=CONF_VALUE_AUTO,
-                requires_reload=False,
-            ),
-            ConfigEntry(
-                key=CONF_EXTERNAL_URL,
-                type=ConfigEntryType.STRING,
-                required=False,
-                requires_reload=False,
-            ),
-            ConfigEntry(
-                key=CONF_BIND_PORT,
-                type=ConfigEntryType.INTEGER,
-                default_value=DEFAULT_SERVER_PORT,
-                requires_reload=True,
-            ),
-            # the two alerts are mutually exclusive: the generic one while SSL is switched off,
-            # and the SSL specific one when a certificate failed to load and left the webserver
-            # on plain HTTP
-            ConfigEntry(
                 key="webserver_warn",
                 type=ConfigEntryType.ALERT,
                 required=False,
@@ -673,22 +650,46 @@ class WebserverController(CoreController):
                 depends_on_value=False,
             ),
             ConfigEntry(
-                key="ssl_inactive_warn",
-                type=ConfigEntryType.ALERT,
+                key=CONF_BASE_URL,
+                type=ConfigEntryType.STRING,
+                default_value=CONF_VALUE_AUTO,
+                advanced=True,
+                requires_reload=False,
+            ),
+            ConfigEntry(
+                key=CONF_EXTERNAL_URL,
+                type=ConfigEntryType.STRING,
                 required=False,
-                hidden=not self._ssl_configured or self._ssl_active,
-                depends_on=CONF_ENABLE_SSL,
+                advanced=True,
+                requires_reload=False,
+            ),
+            ConfigEntry(
+                key=CONF_BIND_PORT,
+                type=ConfigEntryType.INTEGER,
+                default_value=DEFAULT_SERVER_PORT,
+                advanced=True,
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_ENABLE_SSL,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
+                advanced=True,
                 requires_reload=True,
+            ),
+            ConfigEntry(
+                key="ssl_inactive_warn",
+                type=ConfigEntryType.ALERT,
+                required=False,
+                hidden=not self._ssl_configured or self._ssl_active,
+                advanced=True,
+                depends_on=CONF_ENABLE_SSL,
             ),
             ConfigEntry(
                 key=CONF_SSL_CERTIFICATE,
                 type=ConfigEntryType.STRING,
                 required=False,
+                advanced=True,
                 depends_on=CONF_ENABLE_SSL,
                 requires_reload=True,
             ),
@@ -696,6 +697,7 @@ class WebserverController(CoreController):
                 key=CONF_SSL_PRIVATE_KEY,
                 type=ConfigEntryType.SECURE_STRING,
                 required=False,
+                advanced=True,
                 depends_on=CONF_ENABLE_SSL,
                 requires_reload=True,
             ),
@@ -703,6 +705,7 @@ class WebserverController(CoreController):
                 key=CONF_ACTION_VERIFY_SSL,
                 type=ConfigEntryType.ACTION,
                 action=CONF_ACTION_VERIFY_SSL,
+                advanced=True,
                 depends_on=CONF_ENABLE_SSL,
                 required=False,
             ),
