@@ -191,14 +191,14 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         """Get track details for given track id."""
         return await self.media.get_track(prov_track_id)
 
-    @use_cache(3600 * 24 * 7, allow_expired_cache=True, cache_none=False)
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_track_by_external_id(
         self, external_id: str, external_id_type: ExternalID
     ) -> Track | None:
         """Retrieve track by external ID (ISRC)."""
         return await self.media.get_track_by_external_id(external_id, external_id_type)
 
-    @use_cache(3600 * 24 * 7, allow_expired_cache=True, cache_none=False)
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_album_by_external_id(
         self, external_id: str, external_id_type: ExternalID
     ) -> Album | None:
