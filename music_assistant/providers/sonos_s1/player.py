@@ -113,6 +113,7 @@ class SonosPlayer(Player):
         # Subscriptions and events
         self._subscriptions: list[SubscriptionBase] = []
         self._subscription_lock: asyncio.Lock = asyncio.Lock()
+        self._avtransport_event_lock: asyncio.Lock = asyncio.Lock()
         self._last_activity: float = NEVER_TIME
         self._resub_cooldown_expires_at: float | None = None
         self._poll_task_id: str = f"sonos_poll_{self.player_id}"
@@ -717,7 +718,7 @@ class SonosPlayer(Player):
             self.update_player()
             return
         if service_type == "AVTransport":
-            self._handle_avtransport_event(event)
+            self.mass.create_task(self._handle_avtransport_event(event))
             return
         if service_type == "RenderingControl":
             self._handle_rendering_control_event(event)
@@ -726,7 +727,7 @@ class SonosPlayer(Player):
             self._handle_zone_group_topology_event(event)
             return
 
-    def _handle_avtransport_event(self, event: SonosEvent) -> None:
+    async def _handle_avtransport_event(self, event: SonosEvent) -> None:
         """Update information about currently playing media from an event."""
         # NOTE: The new coordinator can be provided in a media update event but
         # before the ZoneGroupState updates. If this happens the playback
@@ -744,34 +745,38 @@ class SonosPlayer(Player):
             return
         self._attr_poll_interval = POLL_INTERVAL
 
-        evars = event.variables
-        new_status = _convert_state(evars["transport_state"])
-        state_changed = new_status != self._attr_playback_state
+        # the lock keeps a burst of events applied in the order they arrived
+        async with self._avtransport_event_lock:
+            evars = event.variables
+            new_status = _convert_state(evars["transport_state"])
+            state_changed = new_status != self._attr_playback_state
 
-        self._attr_playback_state = new_status
+            self._attr_playback_state = new_status
 
-        track_uri = evars["enqueued_transport_uri"] or evars["current_track_uri"]
-        audio_source = self.soco.music_source_from_uri(track_uri)
+            track_uri = evars["enqueued_transport_uri"] or evars["current_track_uri"]
+            audio_source = SoCo.music_source_from_uri(track_uri)
 
-        self._set_basic_track_info(update_position=state_changed)
-        ct_md = evars["current_track_meta_data"]
+            # querying the speaker must not block the loop. On a radio start it only answers
+            # once it has connected to the stream, which is served from this same loop
+            await asyncio.to_thread(self._set_basic_track_info, update_position=state_changed)
+            ct_md = evars["current_track_meta_data"]
 
-        et_uri_md = evars["enqueued_transport_uri_meta_data"]
+            et_uri_md = evars["enqueued_transport_uri_meta_data"]
 
-        channel = ""
-        if audio_source == MUSIC_SRC_RADIO:
-            if et_uri_md:
-                channel = et_uri_md.title
+            channel = ""
+            if audio_source == MUSIC_SRC_RADIO:
+                if et_uri_md:
+                    channel = et_uri_md.title
 
-            # Extra guards for S1 compatibility
-            if ct_md and hasattr(ct_md, "radio_show") and ct_md.radio_show:
-                radio_show = ct_md.radio_show.split(",")[0]
-                channel = " • ".join(filter(None, [channel, radio_show]))
+                # Extra guards for S1 compatibility
+                if ct_md and hasattr(ct_md, "radio_show") and ct_md.radio_show:
+                    radio_show = ct_md.radio_show.split(",")[0]
+                    channel = " • ".join(filter(None, [channel, radio_show]))
 
-            if isinstance(et_uri_md, DidlAudioBroadcast) and self._attr_current_media:
-                self._attr_current_media.title = self._attr_current_media.title or channel
+                if isinstance(et_uri_md, DidlAudioBroadcast) and self._attr_current_media:
+                    self._attr_current_media.title = self._attr_current_media.title or channel
 
-        self.update_player()
+            self.update_player()
 
     def _handle_rendering_control_event(self, event: SonosEvent) -> None:
         """Update information about currently volume settings."""
