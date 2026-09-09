@@ -190,7 +190,19 @@ class MusicDatabaseSetupMixin:
         except KeyError, ValueError:
             prev_version = 0
 
-        if prev_version not in (0, DB_SCHEMA_VERSION):
+        if prev_version > DB_SCHEMA_VERSION:
+            # database was written by a newer version and there is no downward migration:
+            # move it aside (including its wal/shm siblings) and start from scratch
+            self.logger.warning(
+                "Database schema version %s is newer than this version supports (%s) - "
+                "moving the database aside and starting with a fresh library database, "
+                "a full rescan will be performed, this can take a while!",
+                prev_version,
+                DB_SCHEMA_VERSION,
+            )
+            await self.__recreate_database(db_path, f"newer-{prev_version}")
+            prev_version = 0
+        elif prev_version not in (0, DB_SCHEMA_VERSION):
             # db version mismatch - we need to do a migration
             # make a backup of db file
             db_path_backup = db_path + ".backup"
@@ -216,12 +228,7 @@ class MusicDatabaseSetupMixin:
                 if not isinstance(err, MusicAssistantError):
                     self.logger.exception("Unexpected error during database migration")
 
-                await self._database.close()
-                await asyncio.to_thread(os.remove, db_path)
-                self._database = DatabaseConnection(db_path)
-                await self._database.setup()
-                await self.mass.cache.clear()
-                await self.__create_database_tables()
+                await self.__recreate_database(db_path, f"failed-{prev_version}")
                 prev_version = 0
 
         # store current schema version
@@ -260,6 +267,19 @@ class MusicDatabaseSetupMixin:
         await self._setup_database()
         # initiate full sync
         await self.start_sync()
+
+    async def __recreate_database(self, db_path: str, moved_suffix: str) -> None:
+        """Move the database (and its wal/shm siblings) aside and create an empty one."""
+        await self.database.close()
+        for suffix in ("", "-wal", "-shm"):
+            src_path = db_path + suffix
+            if not await asyncio.to_thread(os.path.exists, src_path):
+                continue
+            await asyncio.to_thread(os.replace, src_path, f"{src_path}.{moved_suffix}")
+        self._database = DatabaseConnection(db_path)
+        await self._database.setup()
+        await self.mass.cache.clear()
+        await self.__create_database_tables()
 
     async def __create_database_tables(self) -> None:
         """Create database tables."""
