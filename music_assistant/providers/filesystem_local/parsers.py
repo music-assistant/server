@@ -38,6 +38,20 @@ def parse_album_nfo(album: Album, nfo_album: dict[Any, Any], source: str | None 
         album.metadata.genres = set(split_items(genre))
 
 
+def nfo_album_artist(nfo_album: dict[Any, Any]) -> str | None:
+    """
+    Return the single album artist named in an album NFO, or None when absent or ambiguous.
+
+    :param nfo_album: The parsed 'album' element from the NFO file.
+    """
+    # Jellyfin writes compilations as repeated <albumartist> elements (a list here) naming
+    # the track artists, so a list is never picked from
+    value = nfo_album.get("albumartist")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
 def parse_artist_nfo(artist: Artist, nfo_artist: dict[Any, Any], source: str | None = None) -> None:
     """
     Enrich artist metadata from NFO file.
