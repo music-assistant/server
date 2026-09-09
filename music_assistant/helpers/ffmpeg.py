@@ -639,6 +639,11 @@ def get_ffmpeg_args(
             "flac",
             "-compression_level",
             "0",
+            # ffmpeg < 9 derives the FLAC block size from the compression level (1152 at
+            # level 0) while ffmpeg 9 uses 4096; Sonos speakers lose sync at gapless track
+            # boundaries on the small blocks, so pin the size the encoder uses either way
+            "-frame_size",
+            "4096",
         ]
     else:
         raise RuntimeError("Invalid/unsupported output format specified")
