@@ -2376,7 +2376,7 @@ class MusicController(CoreController):
         update_current_task_progress_text("Database cleanup finished")
         self.logger.debug("Database cleanup done")
 
-    async def _setup_database(self) -> None:
+    async def _setup_database(self) -> None:  # noqa: PLR0915
         """Initialize database."""
         db_path = os.path.join(self.mass.storage_path, "library.db")
         self._database = DatabaseConnection(db_path)
@@ -2392,7 +2392,28 @@ class MusicController(CoreController):
         except KeyError, ValueError:
             prev_version = 0
 
-        if prev_version not in (0, DB_SCHEMA_VERSION):
+        if prev_version > DB_SCHEMA_VERSION:
+            # database was written by a newer version and there is no downward migration:
+            # move it aside (including its wal/shm siblings) and start from scratch
+            self.logger.warning(
+                "Database schema version %s is newer than this version supports (%s) - "
+                "moving the database aside and starting with a fresh library database, "
+                "a full rescan will be performed, this can take a while!",
+                prev_version,
+                DB_SCHEMA_VERSION,
+            )
+            await self._database.close()
+            for suffix in ("", "-wal", "-shm"):
+                src_path = db_path + suffix
+                if not await asyncio.to_thread(os.path.exists, src_path):
+                    continue
+                await asyncio.to_thread(os.replace, src_path, f"{src_path}.newer-{prev_version}")
+            self._database = DatabaseConnection(db_path)
+            await self._database.setup()
+            await self.mass.cache.clear()
+            await self.__create_database_tables()
+            prev_version = 0
+        elif prev_version not in (0, DB_SCHEMA_VERSION):
             # db version mismatch - we need to do a migration
             # make a backup of db file
             db_path_backup = db_path + ".backup"
