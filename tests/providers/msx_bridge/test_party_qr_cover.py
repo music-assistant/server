@@ -7,6 +7,7 @@ import io
 import json
 import threading
 import time
+from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock
 from urllib.parse import parse_qs, urlencode, urlsplit
@@ -16,16 +17,15 @@ import segno
 from aiohttp import web
 from aiohttp.test_utils import TestClient as AiohttpTestClient
 from aiohttp.test_utils import TestServer, make_mocked_request
+from music_assistant_models.enums import ImageType
+from music_assistant_models.media_items import MediaItemImage
 from PIL import Image
 
 from music_assistant.helpers.util import join_task
-from music_assistant.providers.msx_bridge import http_server as http_server_module
-from music_assistant.providers.msx_bridge.http_server import (
-    MSXHTTPServer,
-    PartyInfo,
-    _stamp_qr_on_cover,
-)
-from music_assistant.providers.msx_bridge.mappers import map_tracks_to_msx_playlist
+from music_assistant.providers.msx_bridge import party as party_module
+from music_assistant.providers.msx_bridge.http_server import MSXHTTPServer, PartyInfo
+from music_assistant.providers.msx_bridge.mappers import PlaylistTrack, map_tracks_to_msx_playlist
+from music_assistant.providers.msx_bridge.party import COVER_FETCH_MAX_BYTES, stamp_qr_on_cover
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 from tests.common import collect_loop_errors
 
@@ -60,9 +60,13 @@ def _qr_png() -> bytes:
 
 def _http_session_mock(body: bytes, status: int = 200) -> Mock:
     """Return a mock aiohttp session whose get() yields the given body."""
+
+    async def _chunks(_size: int) -> AsyncGenerator[bytes]:
+        yield body
+
     resp = AsyncMock()
     resp.status = status
-    resp.read = AsyncMock(return_value=body)
+    resp.content.iter_chunked = Mock(side_effect=_chunks)
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=resp)
     cm.__aexit__ = AsyncMock(return_value=False)
@@ -74,13 +78,15 @@ def _http_session_mock(body: bytes, status: int = 200) -> Mock:
 def _failing_http_session_mock(release: asyncio.Event) -> Mock:
     """Return a mock session whose get() fails once released."""
 
-    async def _gated_read() -> bytes:
+    async def _gated_chunks(_size: int) -> AsyncGenerator[bytes]:
         await release.wait()
-        raise ConnectionResetError("connection reset while fetching the cover")
+        if release.is_set():
+            raise ConnectionResetError("connection reset while fetching the cover")
+        yield b""
 
     resp = AsyncMock()
     resp.status = 200
-    resp.read = _gated_read
+    resp.content.iter_chunked = Mock(side_effect=_gated_chunks)
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=resp)
     cm.__aexit__ = AsyncMock(return_value=False)
@@ -92,13 +98,13 @@ def _failing_http_session_mock(release: asyncio.Event) -> Mock:
 def _slow_http_session_mock(body: bytes, release: asyncio.Event) -> Mock:
     """Return a mock session whose get() blocks reading the body until released."""
 
-    async def _gated_read() -> bytes:
+    async def _gated_chunks(_size: int) -> AsyncGenerator[bytes]:
         await release.wait()
-        return body
+        yield body
 
     resp = AsyncMock()
     resp.status = 200
-    resp.read = _gated_read
+    resp.content.iter_chunked = Mock(side_effect=_gated_chunks)
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=resp)
     cm.__aexit__ = AsyncMock(return_value=False)
@@ -113,7 +119,7 @@ def _slow_http_session_mock(body: bytes, release: asyncio.Event) -> Mock:
 def test_stamp_qr_on_cover_composites() -> None:
     """The QR lands bottom-right with a white quiet zone; dimensions are preserved."""
     cover = _black_cover_png(200)
-    stamped = _stamp_qr_on_cover(cover, _qr_png())
+    stamped = stamp_qr_on_cover(cover, _qr_png())
 
     assert stamped != cover
     img = Image.open(io.BytesIO(stamped))
@@ -123,6 +129,27 @@ def test_stamp_qr_on_cover_composites() -> None:
     # bottom-right quadrant contains white QR quiet-zone pixels
     quadrant = img.convert("RGB").crop((100, 100, 200, 200))
     assert any(px == (255, 255, 255) for px in list(quadrant.getdata()))
+
+
+def test_stamp_qr_on_cover_resizes_large_cover() -> None:
+    """Large decoded covers are reduced before compositing and caching."""
+    stamped = stamp_qr_on_cover(_black_cover_png(2048), _qr_png())
+
+    assert Image.open(io.BytesIO(stamped)).size == (1024, 1024)
+
+
+def test_qr_cover_cache_enforces_byte_budget(
+    provider: MSXBridgeProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rendered covers evict least-recently-used entries by total bytes."""
+    monkeypatch.setattr(party_module, "COVER_CACHE_MAX_BYTES", 10)
+    server = MSXHTTPServer(provider, 0)
+
+    server.party._cache_qr_cover(("first", "v1"), b"123456")
+    server.party._cache_qr_cover(("second", "v1"), b"abcdef")
+
+    assert list(server.party.qr_cover_cache) == [("second", "v1")]
+    assert server.party._qr_cover_cache_bytes == 6
 
 
 # --- /api/party/qr-cover.png endpoint ---
@@ -162,9 +189,9 @@ async def test_qr_cover_composite_runs_off_event_loop(
 
     def _tracking_stamp(cover_bytes: bytes, qr_bytes: bytes) -> bytes:
         stamp_threads.append(threading.get_ident())
-        return _stamp_qr_on_cover(cover_bytes, qr_bytes)
+        return stamp_qr_on_cover(cover_bytes, qr_bytes)
 
-    monkeypatch.setattr(http_server_module, "_stamp_qr_on_cover", _tracking_stamp)
+    monkeypatch.setattr(party_module, "stamp_qr_on_cover", _tracking_stamp)
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
@@ -191,9 +218,9 @@ async def test_qr_cover_concurrent_misses_coalesce(
 
     def _tracking_stamp(cover_bytes: bytes, qr_bytes: bytes) -> bytes:
         stamp_calls.append(1)
-        return _stamp_qr_on_cover(cover_bytes, qr_bytes)
+        return stamp_qr_on_cover(cover_bytes, qr_bytes)
 
-    monkeypatch.setattr(http_server_module, "_stamp_qr_on_cover", _tracking_stamp)
+    monkeypatch.setattr(party_module, "stamp_qr_on_cover", _tracking_stamp)
     server = MSXHTTPServer(provider, 0)
     client = AiohttpTestClient(TestServer(server.app))
     await client.start_server()
@@ -216,6 +243,44 @@ async def test_qr_cover_concurrent_misses_coalesce(
         await client.close()
 
 
+async def test_qr_cover_rejects_excess_unique_renders(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """A third unique render redirects while both bounded slots are occupied."""
+    mass_mock.get_provider = Mock(return_value=_party_mock())
+    mass_mock.webserver.base_url = "http://ma.local:8095"
+    release = asyncio.Event()
+    mass_mock.http_session = _slow_http_session_mock(_black_cover_png(), release)
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    urls = [f"{COVER_URL}&id={index}" for index in range(3)]
+    try:
+        first = asyncio.create_task(
+            client.get("/api/party/qr-cover.png", params={"image": urls[0]}, allow_redirects=False)
+        )
+        second = asyncio.create_task(
+            client.get("/api/party/qr-cover.png", params={"image": urls[1]}, allow_redirects=False)
+        )
+        while len(server.party.qr_cover_inflight) < 2:
+            await asyncio.sleep(0)
+
+        excess = await client.get(
+            "/api/party/qr-cover.png", params={"image": urls[2]}, allow_redirects=False
+        )
+
+        assert excess.status == 302
+        assert excess.headers["Location"] == urls[2]
+        assert len(server.party.qr_cover_inflight) == 2
+        assert mass_mock.http_session.get.call_count == 2
+        release.set()
+        completed = await asyncio.gather(first, second)
+        assert all(response.status == 200 for response in completed)
+    finally:
+        release.set()
+        await client.close()
+
+
 async def test_qr_cover_render_survives_requester_cancellation(
     provider: MSXBridgeProvider, mass_mock: Mock
 ) -> None:
@@ -225,16 +290,16 @@ async def test_qr_cover_render_survives_requester_cancellation(
     server = MSXHTTPServer(provider, 0)
     cache_key = (COVER_URL, "v1")
 
-    task = server._qr_cover_task(cache_key, COVER_URL, JOIN_URL)
-    assert server._qr_cover_task(cache_key, COVER_URL, JOIN_URL) is task
+    task = server.party.qr_cover_task(cache_key, COVER_URL, JOIN_URL)
+    assert server.party.qr_cover_task(cache_key, COVER_URL, JOIN_URL) is task
     waiter = asyncio.ensure_future(join_task(task))
     await asyncio.sleep(0)
     waiter.cancel()
     release.set()
     rendered = await task
 
-    assert server._qr_cover_cache[cache_key] == rendered
-    assert cache_key not in server._qr_cover_inflight
+    assert server.party.qr_cover_cache[cache_key] == rendered
+    assert cache_key not in server.party.qr_cover_inflight
 
 
 async def test_qr_cover_render_failure_after_cancellation_logs_no_loop_error(
@@ -255,7 +320,7 @@ async def test_qr_cover_render_failure_after_cancellation_logs_no_loop_error(
         waiting = asyncio.create_task(
             server._handle_party_qr_cover(make_mocked_request("GET", path))
         )
-        while not server._qr_cover_inflight and not gave_up.done():
+        while not server.party.qr_cover_inflight and not gave_up.done():
             await asyncio.sleep(0)
         await asyncio.sleep(0)  # let the second TV join the same render
         gave_up.cancel()
@@ -286,6 +351,52 @@ async def test_qr_cover_no_party_redirects_to_original(
         )
         assert resp.status == 302
         assert resp.headers["Location"] == COVER_URL
+    finally:
+        await client.close()
+
+
+async def test_qr_cover_ignores_spoofed_request_host(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """A crafted Host header must not allow fetching from that host."""
+    mass_mock.get_provider = Mock(return_value=_party_mock())
+    mass_mock.webserver.base_url = "http://ma.local:8095"
+    mass_mock.http_session = _http_session_mock(_black_cover_png())
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        evil = "http://attacker.example:8099/img.png"
+        resp = await client.get(
+            "/api/party/qr-cover.png",
+            params={"image": evil},
+            headers={"Host": "attacker.example:8099"},
+            allow_redirects=False,
+        )
+        assert resp.status == 400
+        mass_mock.http_session.get.assert_not_called()
+    finally:
+        await client.close()
+
+
+async def test_qr_cover_rejects_oversized_body(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """A cover larger than the fetch cap must not be decoded."""
+    mass_mock.get_provider = Mock(return_value=_party_mock())
+    mass_mock.webserver.base_url = "http://ma.local:8095"
+    mass_mock.http_session = _http_session_mock(_black_cover_png())
+    resp = mass_mock.http_session.get.return_value.__aenter__.return_value
+    resp.headers = {"Content-Length": str(COVER_FETCH_MAX_BYTES + 1)}
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        result = await client.get(
+            "/api/party/qr-cover.png", params={"image": COVER_URL}, allow_redirects=False
+        )
+        assert result.status == 302
+        resp.content.iter_chunked.assert_not_called()
     finally:
         await client.close()
 
@@ -372,17 +483,44 @@ async def test_qr_cover_fetch_failure_redirects(
         await client.close()
 
 
+async def test_qr_cover_decompression_bomb_redirects(
+    provider: MSXBridgeProvider,
+    mass_mock: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An oversized Pillow image degrades to the original cover redirect."""
+    mass_mock.get_provider = Mock(return_value=_party_mock())
+    mass_mock.webserver.base_url = "http://ma.local:8095"
+    mass_mock.http_session = _http_session_mock(_black_cover_png())
+    monkeypatch.setattr(
+        Image,
+        "open",
+        Mock(side_effect=Image.DecompressionBombError("oversized cover")),
+    )
+    server = MSXHTTPServer(provider, 0)
+    client = AiohttpTestClient(TestServer(server.app))
+    await client.start_server()
+    try:
+        resp = await client.get(
+            "/api/party/qr-cover.png", params={"image": COVER_URL}, allow_redirects=False
+        )
+        assert resp.status == 302
+        assert resp.headers["Location"] == COVER_URL
+    finally:
+        await client.close()
+
+
 # --- Playlist background wiring ---
 
 
-def _track_mock() -> Mock:
-    track = Mock()
-    track.name = "Test Track"
-    track.uri = "library://track/1"
-    track.duration = 180
-    track.artist_str = "Artist"
-    track.image = Mock()
-    return track
+def _track_mock() -> PlaylistTrack:
+    return PlaylistTrack(
+        name="Test Track",
+        uri="library://track/1",
+        duration=180,
+        artist="Artist",
+        image=MediaItemImage(type=ImageType.THUMB, path="cover.jpg", provider="library"),
+    )
 
 
 def test_playlist_backgrounds_use_qr_cover_when_party_active(
@@ -459,7 +597,7 @@ async def test_broadcast_play_rewrites_image_when_party_cached(
 ) -> None:
     """broadcast_play stamps the QR into the play background while a party is active."""
     server = MSXHTTPServer(provider, 0)
-    server._party_cache = (
+    server.party.cache = (
         time.monotonic(),
         PartyInfo(join_url=JOIN_URL, name="My Party", qr_text=None, qr_version="abc123"),
     )

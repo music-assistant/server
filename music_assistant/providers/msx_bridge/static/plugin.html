@@ -50,6 +50,12 @@
         if (action.indexOf("request:interaction:/") === 0) {
             return action.replace("request:interaction:/", "request:interaction:" + BRIDGE + "/");
         }
+        if (action.indexOf("request:/") === 0) {
+            return action.replace("request:/", "request:" + BRIDGE + "/");
+        }
+        if (action.indexOf("execute:/") === 0) {
+            return action.replace("execute:/", "execute:" + BRIDGE + "/");
+        }
         if (action.indexOf("/") === 0) {
             return BRIDGE + action;
         }
@@ -63,6 +69,8 @@
     var positionStartValue = 0;
     var pausedByServer = false;
     var resumedByServer = false;
+    var pendingServerSeek = null;
+    var pendingServerSeekUntil = 0;
     var pausedAtPosition = 0;
     var monitoredElement = null;
     var mediaObserver = null;
@@ -74,18 +82,31 @@
         }
     }
 
+    function clearPendingServerSeek() {
+        pendingServerSeek = null;
+        pendingServerSeekUntil = 0;
+    }
+
+    function resetPlaybackClock() {
+        clearPendingServerSeek();
+        detachMediaListeners();
+        pausedAtPosition = 0;
+        startPositionTimer(0);
+    }
+
     function startPositionTimer(startPosition) {
         stopPositionTimer();
         positionStartValue = startPosition || 0;
         positionStartTime = Date.now() / 1000;
         positionTimer = setInterval(function() {
             if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-                var position;
+                var elapsed = positionStartValue + ((Date.now() / 1000) - positionStartTime);
+                var position = elapsed;
                 if (monitoredElement && !monitoredElement.paused) {
-                    position = monitoredElement.currentTime;
-                } else {
-                    var elapsed = (Date.now() / 1000) - positionStartTime;
-                    position = positionStartValue + elapsed;
+                    var mediaPos = monitoredElement.currentTime;
+                    if (mediaPos <= elapsed + 2) {
+                        position = mediaPos;
+                    }
                 }
                 try {
                     wsConnection.send(JSON.stringify({ type: "position", position: position }));
@@ -110,6 +131,7 @@
                 var msg = JSON.parse(ev.data);
                 if (msg.type === "stop" && typeof tvx.InteractionPlugin.executeAction === "function") {
                     stopPositionTimer();
+                    clearPendingServerSeek();
                     var action = msg.showNotification ? "eject" : "[player:eject|player:hide]";
                     tvx.InteractionPlugin.executeAction(action);
                 } else if (msg.type === "pause" && typeof tvx.InteractionPlugin.executeAction === "function") {
@@ -134,27 +156,27 @@
                     if (msg.duration != null && msg.duration > 0) data.duration = msg.duration;
                     if (msg.next_action) data.nextAction = resolveAction(msg.next_action);
                     if (msg.prev_action) data.prevAction = resolveAction(msg.prev_action);
-                    startPositionTimer(0);
+                    resetPlaybackClock();
 
                     var audioUrl = BRIDGE + msg.path;
                     var audioAction = "audio:" + audioUrl;
                     tvx.InteractionPlugin.executeAction(audioAction, data);
+                    scanForMediaElements();
                 } else if (msg.type === "playlist" && msg.url && typeof tvx.InteractionPlugin.executeAction === "function") {
                     var playlistUrl = BRIDGE + addDeviceParam(msg.url, deviceId);
-                    startPositionTimer(0);
+                    resetPlaybackClock();
                     tvx.InteractionPlugin.executeAction("playlist:" + playlistUrl);
-                } else if (msg.type === "sendspin" && msg.url && typeof tvx.InteractionPlugin.executeAction === "function") {
-                    // Sendspin bridge stream start: open the web kiosk in Sendspin
-                    // mode so its JS client takes over synchronized playback.
-                    stopPositionTimer();
-                    tvx.InteractionPlugin.executeAction("link:" + BRIDGE + msg.url);
+                    scanForMediaElements();
                 } else if (msg.type === "seek" && msg.position != null && typeof tvx.InteractionPlugin.executeAction === "function") {
                     var seekSecs = Math.round(msg.position);
                     startPositionTimer(seekSecs);
+                    pendingServerSeek = seekSecs;
+                    pendingServerSeekUntil = Date.now() + 2000;
                     tvx.InteractionPlugin.executeAction("player:seek:" + seekSecs);
                 } else if (msg.type === "goto_index" && msg.index != null && typeof tvx.InteractionPlugin.executeAction === "function") {
-                    startPositionTimer(0);
+                    resetPlaybackClock();
                     tvx.InteractionPlugin.executeAction("player:goto:index:" + msg.index);
+                    scanForMediaElements();
                 } else if (msg.type === "play_update" && typeof tvx.InteractionPlugin.executeAction === "function") {
                     // Update metadata of the currently playing item without restarting audio.
                     // 'player:set-data' or 'player:update' is not supported on all MSX clients.
@@ -237,18 +259,39 @@
         sendWsMessage({ type: "resume" });
     }
 
+    function reportTvSeek(pos) {
+        pausedAtPosition = pos;
+        var now = Date.now();
+        if (pendingServerSeek != null && now <= pendingServerSeekUntil) {
+            if (Math.abs(pos - pendingServerSeek) <= 2) {
+                clearPendingServerSeek();
+                return;
+            }
+        }
+        clearPendingServerSeek();
+        startPositionTimer(pos);
+        sendWsMessage({ type: "seek", position: pos });
+    }
+
+    function onMediaSeeked() {
+        if (!monitoredElement) return;
+        reportTvSeek(monitoredElement.currentTime);
+    }
+
     function attachMediaListeners(el) {
         if (monitoredElement === el) return;
         detachMediaListeners();
         monitoredElement = el;
         el.addEventListener("pause", onMediaPause);
         el.addEventListener("play", onMediaPlay);
+        el.addEventListener("seeked", onMediaSeeked);
     }
 
     function detachMediaListeners() {
         if (monitoredElement) {
             monitoredElement.removeEventListener("pause", onMediaPause);
             monitoredElement.removeEventListener("play", onMediaPlay);
+            monitoredElement.removeEventListener("seeked", onMediaSeeked);
             monitoredElement = null;
         }
     }
@@ -270,7 +313,12 @@
             mediaObserver = new MutationObserver(function() {
                 scanForMediaElements();
             });
-            mediaObserver.observe(document.body, { childList: true, subtree: true });
+            mediaObserver.observe(document.body, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ["src"]
+            });
         }
     }
 
@@ -459,6 +507,22 @@
                 });
             } else {
                 respond(null);
+            }
+        }
+    };
+
+    MAHandler.prototype.handleEvent = function(data) {
+        // Native MSX playback lives outside this plugin's DOM, so its media
+        // events arrive here rather than on a local audio/video element.
+        if (!data || typeof data.event !== "string") return;
+        if (data.event === "video:pause") {
+            onMediaPause();
+        } else if (data.event === "video:play") {
+            onMediaPlay();
+        } else if (data.event === "video:seek") {
+            var pos = data.position;
+            if (typeof pos === "number" && isFinite(pos) && pos >= 0) {
+                reportTvSeek(pos);
             }
         }
     };

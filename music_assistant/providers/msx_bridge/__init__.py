@@ -8,11 +8,12 @@ playback control, and audio streaming.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ProviderFeature
 
-from .constants import CONF_ENABLE_GROUPING, DEFAULT_ENABLE_GROUPING
+from .constants import LEGACY_CONF_ENABLE_GROUPING
 from .provider import MSXBridgeProvider
 
 if TYPE_CHECKING:
@@ -22,19 +23,24 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
+logger = logging.getLogger(__name__)
+CONFIG_MIGRATION_ERRORS = (KeyError, OSError, RuntimeError, TypeError, ValueError)
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    # read the stored value directly: the config's option entries are only resolved
-    # (and its values populated) once the instance exists, which is after this call
-    grouping_enabled = bool(
-        mass.config.get_raw_provider_config_value(
-            config.instance_id, CONF_ENABLE_GROUPING, DEFAULT_ENABLE_GROUPING
-        )
-    )
-    features: set[ProviderFeature] = {ProviderFeature.REMOVE_PLAYER}
-    if grouping_enabled:
-        features.add(ProviderFeature.SYNC_PLAYERS)
-    return MSXBridgeProvider(mass, manifest, config, features)
+    try:
+        if (
+            mass.config.get_raw_provider_config_value(
+                config.instance_id, LEGACY_CONF_ENABLE_GROUPING
+            )
+            is not None
+        ):
+            await mass.config.remove_provider_config_value(
+                config.instance_id, LEGACY_CONF_ENABLE_GROUPING
+            )
+    except CONFIG_MIGRATION_ERRORS:
+        logger.warning("Unable to remove legacy MSX grouping config", exc_info=True)
+    return MSXBridgeProvider(mass, manifest, config, {ProviderFeature.REMOVE_PLAYER})

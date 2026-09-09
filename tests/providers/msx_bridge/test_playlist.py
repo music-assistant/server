@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, Mock
+from unittest.mock import MagicMock
 
-from music_assistant.providers.msx_bridge.mappers import map_tracks_to_msx_playlist
+from music_assistant.providers.msx_bridge.mappers import PlaylistTrack, map_tracks_to_msx_playlist
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 
 
@@ -15,16 +15,15 @@ def _mock_provider() -> MSXBridgeProvider:
     return provider
 
 
-def _make_track(item_id: int, name: str, artist: str, duration: int) -> Mock:
-    """Create a mock Track object."""
-    track = Mock()
-    track.item_id = item_id
-    track.name = name
-    track.artist_str = artist
-    track.uri = f"library://track/{item_id}"
-    track.image = f"img{item_id}"
-    track.duration = duration
-    return track
+def _make_track(item_id: int, name: str, artist: str, duration: int) -> PlaylistTrack:
+    """Create playlist rendering metadata."""
+    return PlaylistTrack(
+        name=name,
+        uri=f"library://track/{item_id}",
+        duration=duration,
+        artist=artist,
+        image=None,
+    )
 
 
 def test_map_tracks_to_msx_playlist_basic() -> None:
@@ -57,6 +56,9 @@ def test_map_tracks_to_msx_playlist_basic() -> None:
     assert "library%3A%2F%2Ftrack%2F2" in item0.action
     assert "/msx/audio/msx_1?" in item0.action
     assert "&from_playlist=1" in item0.action
+    assert item0.properties is not None
+    assert item0.properties["button:next:action"] == "execute:http://localhost/api/next/msx_1"
+    assert item0.properties["trigger:complete"] == "execute:http://localhost/api/next/msx_1"
     assert item0.player_label == "Track 2"
     assert item0.duration == 200
     assert item0.label is not None
