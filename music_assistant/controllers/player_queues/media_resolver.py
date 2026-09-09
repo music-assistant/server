@@ -783,14 +783,21 @@ class MediaResolver:
             )
         if media_item.media_type == MediaType.FOLDER:
             media_item = cast("BrowseFolder", media_item)
-            return list(await self._get_folder_tracks(media_item))
+            return await self._get_folder_items(media_item, userid)
         # all other: single track or radio item
         return [cast("MediaItemType", media_item)]
 
-    async def _get_folder_tracks(self, folder: BrowseFolder) -> list[Track]:
-        """Fetch (playable) tracks for given browse folder."""
+    async def _get_folder_items(
+        self, folder: BrowseFolder, userid: str | None = None
+    ) -> list[MediaItemType]:
+        """
+        Fetch the playable items for the given browse folder.
+
+        :param folder: The browse folder to resolve.
+        :param userid: Optional user whose resume positions apply to episodes and books.
+        """
         self.logger.info(
-            "Fetching tracks to play for folder %s",
+            "Fetching items to play for folder %s",
             folder.name,
         )
         try:
@@ -798,20 +805,19 @@ class MediaResolver:
         except OSError as err:
             # e.g. the (top-level) folder URI points at a path that no longer exists
             raise MediaNotFoundError(f"Folder '{folder.path}' could not be found") from err
-        tracks: list[Track] = []
+        items: list[MediaItemType] = []
         for item in folder_items:
             if not item.is_playable:
                 continue
             try:
-                # recursively fetch tracks from all media types
-                resolved = await self._resolve_media_items(item)
+                # recursively resolve every child, so a folder of podcast episodes or
+                # radio stations plays just like a folder of tracks
+                items += await self._resolve_media_items(item, userid=userid)
             except MediaNotFoundError:
                 # best-effort: skip child items/subfolders that are empty or unreachable
                 # so a single bad entry does not abort playback of the whole folder
                 continue
-            tracks += [x for x in resolved if isinstance(x, Track)]
-
-        return tracks
+        return items
 
     def _mark_container_played(
         self,
