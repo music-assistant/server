@@ -155,3 +155,44 @@ def test_moving_a_track_to_play_next_dethrones_the_previously_next_track() -> No
 
     assert not ctrl.is_current_window_item("q1", stale_next)
     assert ctrl.is_current_window_item("q1", moved_up)
+
+
+def test_the_item_after_the_last_one_served_is_allowed() -> None:
+    """
+    A player asks for the track that follows the one it was last given.
+
+    A player reading ahead of our own playhead asks for the item after the one it
+    fetched. Refusing that strands it: a Sonos gives up on the queue after a few
+    refusals and falls silent.
+    """
+    ctrl = _controller(current_index=1)
+    ctrl._queue_data["q1"].last_served_item_id = _item_id_at(ctrl, 2)
+
+    assert ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3))
+    # and no further than the one after it
+    assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 4))
+
+
+def test_a_served_item_that_left_the_queue_falls_back_to_the_playhead() -> None:
+    """A clear or replace retires the served item without anyone having to clear it."""
+    ctrl = _controller(current_index=1)
+    ctrl._queue_data["q1"].last_served_item_id = "gone-from-the-queue"
+
+    assert ctrl.is_current_window_item("q1", _item_id_at(ctrl, 2))
+    assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3))
+
+
+def test_restarting_at_another_item_drops_the_previous_look_ahead() -> None:
+    """
+    A skip or restart must not let the old position vouch for its successor.
+
+    The player may still be asking for what followed the track it was last given; once
+    playback restarts somewhere else that item is exactly the stale one to refuse.
+    """
+    ctrl = _controller(current_index=1)
+    ctrl._queue_data["q1"].last_served_item_id = _item_id_at(ctrl, 2)
+    assert ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3))
+
+    ctrl._queue_data["q1"].last_served_item_id = None  # what play_index does on a new load
+
+    assert not ctrl.is_current_window_item("q1", _item_id_at(ctrl, 3))
