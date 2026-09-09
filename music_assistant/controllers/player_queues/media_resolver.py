@@ -794,14 +794,7 @@ class MediaResolver:
         queue_id: str | None = None,
         start_from_beginning: bool = False,
     ) -> list[MediaItemType]:
-        """
-        Fetch the playable items for the given browse folder.
-
-        :param folder: The browse folder to resolve.
-        :param userid: Optional user the playback is attributed to.
-        :param queue_id: Optional queue the playback is requested for.
-        :param start_from_beginning: Ignore any saved resume position for podcast episodes.
-        """
+        """Fetch the playable items for the given browse folder."""
         self.logger.info(
             "Fetching items to play for folder %s",
             folder.name,
