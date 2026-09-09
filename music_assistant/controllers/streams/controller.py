@@ -980,6 +980,8 @@ class StreamsController(CoreController):
                     pacing = "gapless_burst"
                 else:
                     pacing = "default"
+                # DIAGNOSTIC (support#6329, do not merge): re-add the 2.9.13 output limiter
+                filter_params = [*filter_params, "alimiter=limit=-2dB:level=false:asc=true"]
                 audio_bytes = get_ffmpeg_stream(
                     audio_input=audio_input,
                     input_format=pcm_format,
