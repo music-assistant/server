@@ -17,35 +17,37 @@ from music_assistant_models.media_items import (
 
 from music_assistant.mass import MusicAssistant
 
-_PROV = "test_folder_prov"
+PROVIDER = "test_folder_prov"
 
 
 def _provider_mapping() -> set[ProviderMapping]:
     """Create a single provider mapping with a unique item id."""
-    return {ProviderMapping(item_id=uuid4().hex, provider_domain=_PROV, provider_instance=_PROV)}
+    return {
+        ProviderMapping(item_id=uuid4().hex, provider_domain=PROVIDER, provider_instance=PROVIDER)
+    }
 
 
 async def test_folder_plays_every_playable_item(mass: MusicAssistant) -> None:
     """Episodes and radios in a folder are queued alongside tracks, with resume applied."""
     user = await mass.webserver.auth.create_user("folderplayback")
     podcast = Podcast(
-        item_id="show-1", provider=_PROV, name="Show", provider_mappings=_provider_mapping()
+        item_id="show-1", provider=PROVIDER, name="Show", provider_mappings=_provider_mapping()
     )
     episode = PodcastEpisode(
         item_id="ep-1",
-        provider=_PROV,
+        provider=PROVIDER,
         name="Episode 1",
         provider_mappings=_provider_mapping(),
         position=1,
         podcast=podcast,
     )
     radio = Radio(
-        item_id="radio-1", provider=_PROV, name="Radio", provider_mappings=_provider_mapping()
+        item_id="radio-1", provider=PROVIDER, name="Radio", provider_mappings=_provider_mapping()
     )
     track = Track(
-        item_id="track-1", provider=_PROV, name="Track", provider_mappings=_provider_mapping()
+        item_id="track-1", provider=PROVIDER, name="Track", provider_mappings=_provider_mapping()
     )
-    subfolder = BrowseFolder(item_id="sub", provider=_PROV, name="Sub")
+    subfolder = BrowseFolder(item_id="sub", provider=PROVIDER, name="Sub")
     await mass.music.mark_item_played(
         episode,
         fully_played=False,
@@ -53,7 +55,7 @@ async def test_folder_plays_every_playable_item(mass: MusicAssistant) -> None:
         user_initiated=True,
         userid=user.user_id,
     )
-    folder = BrowseFolder(item_id="up_next", provider=_PROV, name="Up Next")
+    folder = BrowseFolder(item_id="up_next", provider=PROVIDER, name="Up Next")
 
     with patch.object(
         mass.music, "browse", AsyncMock(return_value=[subfolder, episode, radio, track])

@@ -783,18 +783,24 @@ class MediaResolver:
             )
         if media_item.media_type == MediaType.FOLDER:
             media_item = cast("BrowseFolder", media_item)
-            return await self._get_folder_items(media_item, userid)
+            return await self._get_folder_items(media_item, userid, queue_id, start_from_beginning)
         # all other: single track or radio item
         return [cast("MediaItemType", media_item)]
 
     async def _get_folder_items(
-        self, folder: BrowseFolder, userid: str | None = None
+        self,
+        folder: BrowseFolder,
+        userid: str | None = None,
+        queue_id: str | None = None,
+        start_from_beginning: bool = False,
     ) -> list[MediaItemType]:
         """
         Fetch the playable items for the given browse folder.
 
         :param folder: The browse folder to resolve.
-        :param userid: Optional user whose resume positions apply to episodes and books.
+        :param userid: Optional user the playback is attributed to.
+        :param queue_id: Optional queue the playback is requested for.
+        :param start_from_beginning: Ignore any saved resume position for podcast episodes.
         """
         self.logger.info(
             "Fetching items to play for folder %s",
@@ -812,7 +818,12 @@ class MediaResolver:
             try:
                 # recursively resolve every child, so a folder of podcast episodes or
                 # radio stations plays just like a folder of tracks
-                items += await self._resolve_media_items(item, userid=userid)
+                items += await self._resolve_media_items(
+                    item,
+                    userid=userid,
+                    queue_id=queue_id,
+                    start_from_beginning=start_from_beginning,
+                )
             except MediaNotFoundError:
                 # best-effort: skip child items/subfolders that are empty or unreachable
                 # so a single bad entry does not abort playback of the whole folder
