@@ -71,3 +71,35 @@ async def test_folder_plays_every_playable_item(mass: MusicAssistant) -> None:
     ]
     assert isinstance(items[0], PodcastEpisode)
     assert items[0].resume_position_ms == 90_000
+
+
+async def test_folder_start_from_beginning_ignores_saved_progress(mass: MusicAssistant) -> None:
+    """Starting a folder from the beginning plays its episodes from position zero."""
+    user = await mass.webserver.auth.create_user("folderfromstart")
+    podcast = Podcast(
+        item_id="show-2", provider=PROVIDER, name="Show", provider_mappings=_provider_mapping()
+    )
+    episode = PodcastEpisode(
+        item_id="ep-2",
+        provider=PROVIDER,
+        name="Episode 2",
+        provider_mappings=_provider_mapping(),
+        position=1,
+        podcast=podcast,
+    )
+    await mass.music.mark_item_played(
+        episode,
+        fully_played=False,
+        seconds_played=90,
+        user_initiated=True,
+        userid=user.user_id,
+    )
+    folder = BrowseFolder(item_id="up_next", provider=PROVIDER, name="Up Next")
+
+    with patch.object(mass.music, "browse", AsyncMock(return_value=[episode])):
+        items = await mass.player_queues._media_resolver._resolve_media_items(
+            folder, userid=user.user_id, start_from_beginning=True
+        )
+
+    assert isinstance(items[0], PodcastEpisode)
+    assert items[0].resume_position_ms == 0
