@@ -211,19 +211,7 @@ class DeezerMediaManager:
             if edge.favorited_at:
                 item.date_added = parse_date(edge.favorited_at)
             yield item
-        # Also include albums from user-uploaded personal songs
-        personal_songs = await self._get_personal_songs()
-        personal_albums: dict[tuple[str, tuple[str, ...]], Album] = {}
-        for song in personal_songs:
-            track = parse_gw_track(self.provider, song)
-            if not isinstance(track.album, Album):
-                continue
-            album_key = (track.album.name, tuple(artist.name for artist in track.album.artists))
-            if album_key in personal_albums:
-                personal_albums[album_key].metadata.update(track.album.metadata)
-            else:
-                personal_albums[album_key] = track.album
-        for album in personal_albums.values():
+        for album in (await self._get_personal_albums()).values():
             yield album
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
@@ -427,6 +415,8 @@ class DeezerMediaManager:
             album = parse_gw_track(self.provider, song).album
             if not isinstance(album, Album):
                 raise MediaNotFoundError(f"Personal album {prov_album_id} not found")
+            album_key = (album.name, tuple(artist.name for artist in album.artists))
+            album.metadata = (await self._get_personal_albums())[album_key].metadata
             return album
         result = await self.provider.gql_client.get_album(album_id=prov_album_id)
         if result is None:
@@ -444,11 +434,7 @@ class DeezerMediaManager:
             raise MediaNotFoundError(f"Invalid Deezer track ID: {prov_track_id}") from err
         # Personal tracks (negative IDs) don't exist in the GQL API
         if track_id_int < 0:
-            personal_songs = await self._get_personal_songs()
-            for song in personal_songs:
-                if str(song["SNG_ID"]) == prov_track_id:
-                    return parse_gw_track(self.provider, song)
-            raise MediaNotFoundError(f"Personal track {prov_track_id} not found")
+            return parse_gw_track(self.provider, await self._get_personal_song(prov_track_id))
         result = await self.provider.gql_client.get_track(track_id=prov_track_id)
         if result is None:
             raise MediaNotFoundError(f"Track {prov_track_id} not found on Deezer")
@@ -786,3 +772,18 @@ class DeezerMediaManager:
             msg = f"Created playlist {result.playlist.id} not found on Deezer"
             raise MediaNotFoundError(msg)
         return parse_playlist(self.provider, playlist, is_editable=True)
+
+    async def _get_personal_albums(self) -> dict[tuple[str, tuple[str, ...]], Album]:
+        """Return uploaded albums with artwork collected from all their tracks."""
+        personal_songs = await self._get_personal_songs()
+        personal_albums: dict[tuple[str, tuple[str, ...]], Album] = {}
+        for song in personal_songs:
+            track = parse_gw_track(self.provider, song)
+            if not isinstance(track.album, Album):
+                continue
+            album_key = (track.album.name, tuple(artist.name for artist in track.album.artists))
+            if album_key in personal_albums:
+                personal_albums[album_key].metadata.update(track.album.metadata)
+            else:
+                personal_albums[album_key] = track.album
+        return personal_albums

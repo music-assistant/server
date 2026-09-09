@@ -10,9 +10,10 @@ these fields can legitimately come back empty.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
-from music_assistant_models.media_items import Album, Artist, ItemMapping
+from music_assistant_models.enums import ImageType
+from music_assistant_models.media_items import Album, Artist, ItemMapping, MediaItemImage
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.providers.deezer.media import DeezerMediaManager
@@ -61,6 +62,22 @@ def test_upload_without_embedded_artwork_has_no_cover() -> None:
     assert not track.album.metadata.images
 
 
+def test_track_images_are_independent_of_album_images() -> None:
+    """Adding a track image must not also change the album's image list."""
+    track = parse_gw_track(_provider(), _upload())
+    assert isinstance(track.album, Album)
+    extra_image = MediaItemImage(
+        type=ImageType.THUMB, path="https://example.com/track.jpg", provider="url"
+    )
+
+    track.metadata.add_image(extra_image)
+
+    assert track.metadata.images
+    assert extra_image in track.metadata.images
+    assert track.album.metadata.images
+    assert extra_image not in track.album.metadata.images
+
+
 def test_upload_without_artist_tag_still_has_an_artist() -> None:
     """Without an artist the library refuses the track, so fall back to a placeholder."""
     track = parse_gw_track(_provider(), _upload(ART_NAME=""))
@@ -103,12 +120,10 @@ def test_catalog_track_still_maps_artist_and_album_by_id() -> None:
 
 async def _personal_getter(manager_method: str, item_id: str, song: dict[str, Any]) -> Any:
     """Call one of the manager's personal-item getters with a single canned upload."""
-    manager = Mock(spec=DeezerMediaManager)
-    manager.provider = _provider()
-    manager.instance_id = "deezer--test"
-    manager._get_personal_song = AsyncMock(return_value=song)
+    manager = DeezerMediaManager(_provider())
     method = getattr(DeezerMediaManager, manager_method).__wrapped__
-    return await method(manager, item_id)
+    with patch.object(manager, "_get_personal_songs", AsyncMock(return_value=[song])):
+        return await method(manager, item_id)
 
 
 async def test_personal_artist_getter_matches_the_track_it_came_from() -> None:

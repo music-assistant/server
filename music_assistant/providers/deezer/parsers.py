@@ -824,7 +824,7 @@ def parse_gw_track(provider: DeezerProvider, song: dict[str, Any], position: int
                 favorite=True,
                 artists=artists,
                 provider_mappings={_provider_mapping(provider, personal_alb_id)},
-                metadata=MediaItemMetadata(images=images),
+                metadata=MediaItemMetadata(images=UniqueList(images)),
             )
         else:
             album = ItemMapping(
