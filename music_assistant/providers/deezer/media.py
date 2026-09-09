@@ -134,13 +134,6 @@ class DeezerMediaManager:
             start += page_size
         return all_songs
 
-    async def _get_personal_song(self, song_id: str) -> dict[str, Any]:
-        """Return the raw GW song dict for a single user upload."""
-        for song in await self._get_personal_songs():
-            if str(song["SNG_ID"]) == song_id:
-                return song
-        raise MediaNotFoundError(f"Personal song {song_id} not found")
-
     # -- Library retrieval --
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
@@ -772,6 +765,13 @@ class DeezerMediaManager:
             msg = f"Created playlist {result.playlist.id} not found on Deezer"
             raise MediaNotFoundError(msg)
         return parse_playlist(self.provider, playlist, is_editable=True)
+
+    async def _get_personal_song(self, song_id: str) -> dict[str, Any]:
+        """Return the raw GW song dict for a single user upload."""
+        for song in await self._get_personal_songs():
+            if str(song["SNG_ID"]) == song_id:
+                return song
+        raise MediaNotFoundError(f"Personal song {song_id} not found")
 
     async def _get_personal_albums(self) -> dict[tuple[str, tuple[str, ...]], Album]:
         """Return uploaded albums with artwork collected from all their tracks."""

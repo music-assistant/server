@@ -40,8 +40,6 @@ def _build_provider(mass: MusicAssistant, instance_id: str = "deezer--sync") -> 
         "log_level": "GLOBAL",
         CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.key: False,
     }.get(key, default)
-    if not mass.config.get(f"providers/{instance_id}"):
-        mass.config.set(f"providers/{instance_id}", {"domain": "deezer", "values": {}})
     provider = DeezerProvider(mass, manifest, config, SUPPORTED_FEATURES)
     provider.gql_client = Mock(
         get_favorite_artists=AsyncMock(return_value=None),
@@ -169,6 +167,8 @@ async def test_old_parsed_cache_is_invalidated(
     )
 
     item = await getattr(provider, getter)(old_item.item_id)
+    assert item.item_id == old_item.item_id
+    assert {mapping.item_id for mapping in item.provider_mappings} == {item.item_id}
     if isinstance(item, Artist):
         assert item.name == UNKNOWN_ARTIST
     else:
@@ -184,11 +184,16 @@ async def test_import_albums_with_the_same_title(
 ) -> None:
     """Group albums by artist and retain artwork supplied by any of their tracks."""
     provider = sync_provider
+    second_cover = "1234567890abcdef1234567890abcdef"
     songs = [
         _upload(ALB_PICTURE="" if second_artist == "MA Test Artist" else COVER_MD5),
-        _upload(SNG_ID=-2, SNG_TITLE="Second song", ART_NAME=second_artist),
+        _upload(
+            SNG_ID=-2, SNG_TITLE="Second song", ART_NAME=second_artist, ALB_PICTURE=second_cover
+        ),
     ]
     provider.gw_client = Mock(get_personal_songs=AsyncMock(return_value={"data": songs}))
+    albums = [album async for album in provider.get_library_albums()]
+    assert len(albums) == (1 if second_artist == "MA Test Artist" else 2)
     await provider.sync_library(MediaType.ALBUM)
     await provider.sync_library(MediaType.TRACK)
 
@@ -198,7 +203,8 @@ async def test_import_albums_with_the_same_title(
         )
         assert album
         assert album.image
-        assert COVER_MD5 in album.image.path
+        expected_cover = second_cover if second_artist == "MA Test Artist" else song["ALB_PICTURE"]
+        assert expected_cover in album.image.path
 
 
 @pytest.mark.parametrize("song_id", ["-1", "-2"])

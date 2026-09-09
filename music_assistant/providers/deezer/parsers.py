@@ -832,7 +832,6 @@ def parse_gw_track(provider: DeezerProvider, song: dict[str, Any], position: int
                 item_id=alb_id,
                 provider=provider.instance_id,
                 name=alb_title,
-                image=images[0] if images else None,
             )
 
     name, version = parse_title_and_version(song.get("SNG_TITLE", ""))

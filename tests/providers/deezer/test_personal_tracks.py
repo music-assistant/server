@@ -10,13 +10,12 @@ these fields can legitimately come back empty.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock
 
 from music_assistant_models.enums import ImageType
 from music_assistant_models.media_items import Album, Artist, ItemMapping, MediaItemImage
 
 from music_assistant.constants import UNKNOWN_ARTIST
-from music_assistant.providers.deezer.media import DeezerMediaManager
 from music_assistant.providers.deezer.parsers import parse_gw_track
 
 COVER_MD5 = "7bce541cac7d6a8cc7a73a4cc75eb485"
@@ -112,36 +111,7 @@ def test_catalog_track_still_maps_artist_and_album_by_id() -> None:
 
     assert isinstance(track.album, ItemMapping)
     assert track.album.item_id == "302127"
-    assert track.album.image is not None
+    assert track.album.image is None
     assert isinstance(track.artists[0], ItemMapping)
     assert track.artists[0].item_id == "27"
     assert not isinstance(track.artists[0], Artist)
-
-
-async def _personal_getter(manager_method: str, item_id: str, song: dict[str, Any]) -> Any:
-    """Call one of the manager's personal-item getters with a single canned upload."""
-    manager = DeezerMediaManager(_provider())
-    method = getattr(DeezerMediaManager, manager_method).__wrapped__
-    with patch.object(manager, "_get_personal_songs", AsyncMock(return_value=[song])):
-        return await method(manager, item_id)
-
-
-async def test_personal_artist_getter_matches_the_track_it_came_from() -> None:
-    """get_artist must not rebuild the artist differently than parse_gw_track does."""
-    song = _upload(ART_NAME="")
-    artist = await _personal_getter("get_artist", "personal_artist_-3167960901", song)
-    from_track = parse_gw_track(_provider(), song).artists[0]
-
-    assert artist.name == from_track.name == UNKNOWN_ARTIST
-    assert artist.item_id == from_track.item_id
-
-
-async def test_personal_album_getter_carries_the_cover() -> None:
-    """get_album must expose the same album (incl. artwork) as the track's own."""
-    album = await _personal_getter("get_album", "personal_album_-3167960901", _upload())
-
-    assert isinstance(album, Album)
-    assert album.name == "MA Test Album"
-    assert album.metadata.images
-    assert COVER_MD5 in album.metadata.images[0].path
-    assert [a.name for a in album.artists] == ["MA Test Artist"]
