@@ -49,7 +49,10 @@ async def test_malformed_preset_entry_is_reported(provider: TuneInProvider) -> N
     assert isinstance(args[2], InvalidDataError)
 
 
-@pytest.mark.parametrize("item", [{"type": "audio"}, {"type": "audio", "preset_id": ""}])
+@pytest.mark.parametrize(
+    "item",
+    [{"type": "audio"}, {"type": "audio", "preset_id": ""}, {"type": "audio", "preset_id": {}}],
+)
 async def test_audio_entry_without_preset_id_is_skipped(
     provider: TuneInProvider, item: dict[str, Any]
 ) -> None:

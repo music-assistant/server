@@ -323,7 +323,7 @@ class TuneInProvider(MusicProvider):
             if item_type == "audio":
                 preset_id = item.get("preset_id")
                 if not isinstance(preset_id, str) or not preset_id:
-                    # not a favourite (library ids are preset ids), so it can never match a
+                    # not a favourite (audio entries are keyed by preset id), so it can never match a
                     # library item; skip it like browse does instead of holding back deletions
                     self.logger.debug("Skipping TuneIn audio entry without preset id: %s", item)
                     continue
