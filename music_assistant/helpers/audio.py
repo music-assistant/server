@@ -780,7 +780,7 @@ def is_dsd_stream(streamdetails: StreamDetails) -> bool:
     if is_dsd_audio_format(streamdetails.audio_format):
         return True
     path = streamdetails.path
-    if not path:
+    if not path or not isinstance(path, (str, list)):
         return False
     paths = [path] if isinstance(path, str) else [part.path for part in path]
     for file_path in paths:
@@ -793,17 +793,15 @@ def is_dsd_stream(streamdetails: StreamDetails) -> bool:
 
 def decoded_pcm_format(streamdetails: StreamDetails) -> AudioFormat:
     """
-    Return the PCM format FFmpeg emits after decoding the arriving audio.
-
-    FFprobe describes DSD in units of one byte per decoded time step: DSD64 is
-    reported as 352.8 kHz / 8-bit even though FFmpeg's DSD decoder emits planar
-    float samples. Normalize that decoder contract here so buffer byte accounting
-    and downstream bit-depth selection describe the bytes FFmpeg actually writes.
+    Return the PCM output format to request from FFmpeg for the arriving audio.
 
     :param streamdetails: The stream whose decoded PCM format is required.
     """
     arriving = arriving_audio_format(streamdetails)
     if is_dsd_stream(streamdetails):
+        # DSF's probed 8-bit depth maps to S32 output but still sizes chunks as
+        # 8-bit PCM. Request F32 with matching accounting, also preserving the
+        # decoder's precision for DFF/DST sources whose probe depth defaults to 16.
         return AudioFormat(
             content_type=ContentType.PCM_F32LE,
             codec_type=ContentType.PCM_F32LE,

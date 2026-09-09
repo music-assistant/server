@@ -55,6 +55,14 @@ BUFFER_SIZE_MAP: Final[dict[str, int]] = {
     BufferSize.MAXIMUM: 1200,
 }
 
+# DSD retains high-rate F32 PCM. Bound each buffer's payload as well as its duration;
+# current and next-track buffers can coexist on the hosts eligible for each preset.
+DSD_BUFFER_MAX_BYTES: Final[dict[str, int]] = {
+    BufferSize.MINIMAL: 64 * 1024 * 1024,
+    BufferSize.BALANCED: 128 * 1024 * 1024,
+    BufferSize.MAXIMUM: 256 * 1024 * 1024,
+}
+
 # Buffer size for radio streams (short rolling buffer)
 RADIO_BUFFER_SIZE: Final[int] = 15
 

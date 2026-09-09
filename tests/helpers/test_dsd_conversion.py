@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import struct
@@ -14,7 +15,9 @@ from typing import cast
 import pytest
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.controllers.streams.audio_buffer import AudioBuffer, _buffer_pcm_format
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 
 
@@ -127,6 +130,44 @@ def test_ffmpeg_dff_probe_contract(tmp_path: Path) -> None:
     assert stream["sample_rate"] == "352800"
     assert stream["channels"] == 2
     assert stream["duration_ts"] == sample_count // 8
+
+
+async def test_dsf_buffer_duration_and_seek_match_decoded_frames(tmp_path: Path) -> None:
+    """DSF probe depth must not turn three seconds of S32/F32 output into twelve."""
+    source = tmp_path / "synthetic.dsf"
+    _write_dsf(source, block_size=4096 * 260)
+    source_format = AudioFormat(
+        content_type=ContentType.DSF,
+        codec_type=ContentType.DSD_LSBF_PLANAR,
+        sample_rate=352800,
+        bit_depth=8,
+        channels=2,
+    )
+    details = StreamDetails(
+        provider="test", item_id="dsf", audio_format=source_format, path=str(source)
+    )
+    pcm_format = _buffer_pcm_format(details)
+    buffer = AudioBuffer(pcm_format)
+    buffer.fill(
+        get_ffmpeg_stream(
+            audio_input=str(source),
+            input_format=source_format,
+            output_format=pcm_format,
+            chunk_size=pcm_format.pcm_sample_size,
+            extra_output_args=["-t", "3"],
+        )
+    )
+    try:
+        assert buffer._producer_task is not None
+        await asyncio.wait_for(buffer._producer_task, timeout=10)
+        decoded = b"".join([chunk async for chunk in buffer.get_raw_stream()])
+        sought = b"".join([chunk async for chunk in buffer.get_raw_stream(seek_position_ms=1500)])
+        assert len(decoded) == 352800 * 2 * 4 * 3
+        assert buffer.duration_available == 3
+        assert buffer.size_seconds == 3
+        assert sought == decoded[352800 * 2 * 4 * 3 // 2 :]
+    finally:
+        await buffer.clear()
 
 
 @pytest.mark.parametrize(

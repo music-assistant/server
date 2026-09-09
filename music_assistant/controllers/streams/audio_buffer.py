@@ -29,13 +29,14 @@ from music_assistant.controllers.streams.constants import (
     BUFFER_SIZE_MAP,
     CONF_BUFFER_SIZE,
     CONF_BUFFER_SIZE_DEFAULT,
+    DSD_BUFFER_MAX_BYTES,
     RADIO_BUFFER_SIZE,
     SEEK_WAIT_THRESHOLD,
     STREAM_SLOT_WAIT_TIMEOUT,
     BufferMode,
     BufferSize,
 )
-from music_assistant.helpers.audio import decoded_pcm_format
+from music_assistant.helpers.audio import decoded_pcm_format, is_dsd_stream
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.music_provider import MusicProvider
 
@@ -849,9 +850,16 @@ def _new_buffer(
     else:
         ready_threshold = 2
 
-    # cap threshold at buffer capacity to prevent deadlock
+    # Limit DSD retention without reducing decoded precision or sample rate.
     max_size = RADIO_BUFFER_SIZE if mode == BufferMode.ROLLING else BUFFER_SIZE_MAP[buffer_size]
+    if is_dsd_stream(streamdetails):
+        max_size = min(
+            max_size, max(1, DSD_BUFFER_MAX_BYTES[buffer_size] // pcm_format.pcm_sample_size)
+        )
+    # cap threshold at buffer capacity to prevent deadlock
     ready_threshold = min(ready_threshold, max_size)
+    if seek_seconds - buffer_seek_seconds + ready_threshold > max_size:
+        buffer_seek_seconds = seek_seconds
 
     LOGGER.debug(
         "%s: Creating new buffer for %s (mode: %s, size: %s, seek_ms: %s)",
@@ -868,6 +876,7 @@ def _new_buffer(
         ready_threshold=ready_threshold,
         is_realtime=streamdetails.is_realtime,
     )
+    audio_buffer.max_size_seconds = max_size
     # align chunk numbering with the actual stream start position so that
     # get_raw_stream(seek_position_ms) requests the correct chunk number
     audio_buffer._discarded_chunks = buffer_seek_seconds

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
+from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, VolumeNormalizationMode
@@ -250,6 +251,19 @@ def test_dff_detection_ignores_an_http_query_string() -> None:
     streamdetails.path = "https://example.com/track.dff?token=abc"
 
     assert is_dsd_stream(streamdetails)
+
+
+@pytest.mark.parametrize("path", [None, "", [], [MultiPartPath(path="")], MagicMock()])
+def test_dff_detection_requires_a_nonempty_supported_path(
+    path: str | list[MultiPartPath] | None,
+) -> None:
+    """An absent path or an unsupported empty iterable is not evidence of DSD."""
+    from music_assistant.helpers.audio import is_dsd_stream  # noqa: PLC0415
+
+    streamdetails = _streamdetails(AudioFormat(content_type=ContentType.FLAC), None)
+    streamdetails.path = path
+
+    assert not is_dsd_stream(streamdetails)
 
 
 def test_the_flow_depth_uses_ffmpegs_decoded_dsd_depth() -> None:
