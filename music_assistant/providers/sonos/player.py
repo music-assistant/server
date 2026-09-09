@@ -488,15 +488,7 @@ class SonosPlayer(Player):
         """
         if media.source_id:
             self.cloud_queue_id = media.source_id
-        # DIAGNOSTIC BUILD for support#6329 — hypothesis: the per-track queueVersion bump
-        # (new since 2.10.1) makes the speaker re-validate the window mid-track and breaks
-        # its gapless cutover. Emulate 2.9.13: nudge the speaker but keep the version stable.
-        self.logger.debug(
-            "DIAG#6329: enqueue_next_media for %s without bumping the queue version (%s)",
-            self.display_name,
-            self.cloud_queue_version,
-        )
-        await self.refresh_cloud_queue(bump_version=False)
+        await self.refresh_cloud_queue()
 
     def wire_item_id(self, queue_item_id: str | None, generation: int | None = None) -> str | None:
         """
@@ -534,14 +526,9 @@ class SonosPlayer(Player):
         """
         self.cloud_queue_version = time.time()
 
-    async def refresh_cloud_queue(self, bump_version: bool = True) -> None:
-        """
-        Signal the speaker that the queue it is playing changed.
-
-        :param bump_version: Advance the queueVersion first so the speaker re-reads its window.
-        """
-        if bump_version:
-            self.bump_cloud_queue_version()
+    async def refresh_cloud_queue(self) -> None:
+        """Signal the speaker that the queue it is playing changed."""
+        self.bump_cloud_queue_version()
         if not self.connected:
             self.logger.debug("Not refreshing the cloud queue: not connected to the speaker")
             return

@@ -329,6 +329,7 @@ class SonosPlayerProvider(PlayerProvider):
             # one - any other failure must not read to the speaker as "queue over".
             self.logger.debug("Cannot describe the queue for %s: %s", player.display_name, err)
             window = SonosQueueWindow(includes_beginning=True, includes_end=True)
+        items = [self._parse_sonos_queue_item(player, x, wire_generation) for x in window.items]
         result = {
             "includesBeginningOfQueue": window.includes_beginning,
             "includesEndOfQueue": window.includes_end,
@@ -337,9 +338,7 @@ class SonosPlayerProvider(PlayerProvider):
             # player's requested version, otherwise a changed queue keeps a stale version
             # label and Sonos never realises it changed.
             "queueVersion": str(queue_version),
-            "items": [
-                self._parse_sonos_queue_item(player, x, wire_generation) for x in window.items
-            ],
+            "items": items,
         }
         # DIAGNOSTIC BUILD for support#6329 — record what window the speaker asked for
         # and what it was told, so a stale/ghost item at an incident is visible.
@@ -349,7 +348,10 @@ class SonosPlayerProvider(PlayerProvider):
             player.display_name,
             request.query.get("itemId"),
             len(window.items),
-            [x.queue_item_id for x in window.items],
+            [
+                (x["id"], x["track"]["durationMillis"], x["track"]["mediaUrl"].rsplit("/", 2)[-2])
+                for x in items
+            ],
             queue_version,
             wire_generation,
             window.includes_beginning,

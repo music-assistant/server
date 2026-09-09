@@ -873,6 +873,13 @@ class StreamsController(CoreController):
 
             # return early if this is not a GET request
             if request.method != "GET":
+                # DIAGNOSTIC BUILD for support#6329 — what a probing player is told
+                self.logger.debug(
+                    "DIAG#6329: %s probe for %s answered with %s",
+                    request.method,
+                    queue_item.name,
+                    dict(resp.headers),
+                )
                 return resp
 
             self._update_audio_processing_context(
@@ -912,6 +919,19 @@ class StreamsController(CoreController):
                 # radio plays as a single long-lived stream (never in flow mode),
                 # so mix the audio overlay in here
                 audio_input = self.audio.get_overlay_mixed_stream(queue, audio_input, pcm_format)
+
+            # DIAGNOSTIC BUILD for support#6329 — count the PCM handed to the encoder so the
+            # served audio length can be compared with the duration we declare to the player.
+            pcm_bytes_fed = 0
+
+            async def _count_pcm(source: AsyncGenerator[bytes]) -> AsyncGenerator[bytes]:
+                nonlocal pcm_bytes_fed
+                async with aclosing(source):
+                    async for pcm_chunk in source:
+                        pcm_bytes_fed += len(pcm_chunk)
+                        yield pcm_chunk
+
+            audio_input = _count_pcm(audio_input)
             # stream the audio
             # this final ffmpeg process in the chain converts raw lossless PCM into
             # the desired output format for the player including any player specific
@@ -1064,14 +1084,18 @@ class StreamsController(CoreController):
             # DIAGNOSTIC BUILD for support#6329 — one summary line per served track so a
             # normal-looking incident window still tells us how each transfer ended.
             self.logger.debug(
-                "DIAG#6329: stream for %s to %s ended (%s): %.1f MB in %.1fs "
-                "(track duration %ss, max encoder gap %.2fs, max write block %.2fs)",
+                "DIAG#6329: stream for %s to %s ended (%s): %.1f MB in %.1fs, "
+                "pcm fed %.3fs (declared duration: item %ss, streamdetails %ss, "
+                "seek %ss), max encoder gap %.2fs, max write block %.2fs",
                 queue_item.name,
                 queue.display_name,
                 end_reason,
                 bytes_sent / 1e6,
                 loop.time() - serve_started,
+                pcm_bytes_fed / pcm_format.pcm_sample_size,
+                queue_item.duration,
                 queue_item.streamdetails.duration if queue_item.streamdetails else "?",
+                queue_item.streamdetails.seek_position if queue_item.streamdetails else "?",
                 max_chunk_gap,
                 max_write_block,
             )
