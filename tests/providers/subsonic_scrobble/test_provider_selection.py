@@ -52,6 +52,7 @@ def _episode() -> PodcastEpisode:
         item_id="7",
         provider="library",
         name="Episode",
+        position=1,
         podcast=podcast,
         provider_mappings={
             ProviderMapping(
