@@ -881,6 +881,15 @@ class StreamsController(CoreController):
                     dict(resp.headers),
                 )
                 return resp
+            # DIAGNOSTIC BUILD for support#6329 — the wire framing the player gets on GET
+            self.logger.debug(
+                "DIAG#6329: GET for %s from %s (%s) answered with %s, chunked=%s",
+                queue_item.name,
+                request.remote,
+                request.version,
+                dict(resp.headers),
+                resp.chunked,
+            )
 
             self._update_audio_processing_context(
                 queue=queue,
