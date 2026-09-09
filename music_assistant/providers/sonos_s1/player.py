@@ -114,6 +114,7 @@ class SonosPlayer(Player):
         self._subscriptions: list[SubscriptionBase] = []
         self._subscription_lock: asyncio.Lock = asyncio.Lock()
         self._avtransport_event_lock: asyncio.Lock = asyncio.Lock()
+        self._avtransport_tasks: set[asyncio.Task[None]] = set()
         self._last_activity: float = NEVER_TIME
         self._resub_cooldown_expires_at: float | None = None
         self._poll_task_id: str = f"sonos_poll_{self.player_id}"
@@ -159,6 +160,9 @@ class SonosPlayer(Player):
         # the poll runs as a task under the same id and cancel_task is what stops it
         self.mass.cancel_timer(self._poll_task_id)
         self.mass.cancel_task(self._poll_task_id)
+        # playback events still queued on the lock must not query the speaker any more
+        for task in self._avtransport_tasks:
+            task.cancel()
         # unsubscribe directly: offline() skips a speaker that is already marked
         # unavailable, which would leave its subscriptions behind. The lock keeps a
         # subscribe() that is still in flight from re-populating them afterwards.
@@ -718,7 +722,9 @@ class SonosPlayer(Player):
             self.update_player()
             return
         if service_type == "AVTransport":
-            self.mass.create_task(self._handle_avtransport_event(event))
+            task = self.mass.create_task(self._handle_avtransport_event(event))
+            self._avtransport_tasks.add(task)
+            task.add_done_callback(self._avtransport_tasks.discard)
             return
         if service_type == "RenderingControl":
             self._handle_rendering_control_event(event)
@@ -747,6 +753,8 @@ class SonosPlayer(Player):
 
         # the lock keeps a burst of events applied in the order they arrived
         async with self._avtransport_event_lock:
+            if self._unloaded:
+                return
             evars = event.variables
             new_status = _convert_state(evars["transport_state"])
             state_changed = new_status != self._attr_playback_state
