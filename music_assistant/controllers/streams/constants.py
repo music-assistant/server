@@ -71,7 +71,9 @@ RADIO_BUFFER_SIZE: Final[int] = 15
 # the burst hands over sits in the player's buffer as listening delay.
 PacingProfile = Literal["default", "gapless_burst", "low_latency"]
 _PACING: Final[dict[PacingProfile, tuple[str, str]]] = {
-    "default": ("1.02", "3"),
+    # DIAGNOSTIC (support#6329, do not merge): pacing tightened to exactly realtime with a
+    # half-second head start so a boundary failure triggers reliably; real value is 1.02 / 3
+    "default": ("1.0", "0.5"),
     "gapless_burst": ("1.2", "60"),
     "low_latency": ("1.02", "0.5"),
 }
