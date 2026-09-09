@@ -121,6 +121,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
         # handle replace: swap the queue's contents for the new items in one step
         if option == QueueOption.REPLACE:
+            # a prewarm still running for the old next track would otherwise resume after the
+            # swap and warm audio for an item that is no longer on the queue
+            self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
             # Release the audio the outgoing items hold while they are still on the queue: the
             # track being started needs their source slot, and once they are swapped out nothing
             # reaches them any more.
@@ -991,8 +994,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             # deliberately does). Zeroed before the truncation below so the pool is sized against
             # an empty queue and none of the discarded tracks are held back from it.
             insert_at = 0
-            # as on the linear path: release the outgoing audio while its items are still on the
-            # queue, and drop the stale position
+            # as on the linear path: end the prewarm of the old next track, release the outgoing
+            # audio while its items are still on the queue, and drop the stale position
+            self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
             await self._cleanup_queue_audio_data(queue_id)
             queue.index_in_buffer = None
             queue.ended = False

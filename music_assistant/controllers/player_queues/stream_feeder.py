@@ -71,6 +71,10 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     next_item.streamdetails = await self.mass.streams.audio.get_stream_details(
                         queue_item=next_item
                     )
+                    # the queue can be replaced while the details are fetched, and audio warmed
+                    # for an item that left it would sit on a buffer no cleanup reaches
+                    if self.get_item(queue_id, next_item.queue_item_id) is None:
+                        return
                 self.logger.debug(
                     "Preparing audio buffer for next track %s on queue %s",
                     next_item.name,

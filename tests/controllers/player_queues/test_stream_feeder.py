@@ -129,7 +129,9 @@ def _controller_with_next_item() -> tuple[PlayerQueuesController, SimpleNamespac
     )
     controller.get = MagicMock(return_value=queue)  # type: ignore[method-assign]
     controller._queue_data = {
-        "queue-1": cast("Any", SimpleNamespace(queue=queue, session_id="session-1"))
+        "queue-1": cast(
+            "Any", SimpleNamespace(queue=queue, items=[next_item], session_id="session-1")
+        )
     }
     mass = MagicMock()
     controller.mass = mass
@@ -222,3 +224,26 @@ async def test_prepare_next_gives_up_softly_on_a_capacity_failure() -> None:
     await mass.create_task.call_args.args[0]()
 
     assert next_item.available
+
+
+async def test_prepare_next_skips_an_item_that_left_the_queue_while_it_was_fetched() -> None:
+    """
+    A replace that lands while the stream details are still being fetched ends the prewarm.
+
+    The item the prewarm was scheduled for is no longer on the queue, so warming its audio
+    would decode a track nobody will play and pin a source slot on an orphaned buffer.
+    """
+    controller, next_item, mass = _controller_with_next_item()
+    next_item.streamdetails = None
+
+    async def _replace_queue_meanwhile(**_kwargs: object) -> SimpleNamespace:
+        controller._queue_data["queue-1"].items.clear()
+        return SimpleNamespace(buffer=None)
+
+    mass.streams.audio.get_stream_details = _replace_queue_meanwhile
+    mass.streams.audio.get_audio_buffer = AsyncMock()
+
+    controller.prepare_next_audio_buffer("queue-1")
+    await mass.create_task.call_args.args[0]()
+
+    mass.streams.audio.get_audio_buffer.assert_not_awaited()
