@@ -1795,6 +1795,9 @@ async def test_single_item_handler_condemns_an_item_only_on_a_playback_attempt(
     with pytest.raises(web.HTTPNotFound):
         await controller.serve_queue_item_stream(request)
 
+    # pins that both methods reach the fetch, so an earlier exit can never
+    # let the probe case pass for a reason other than the guard under test
+    controller.audio.get_stream_details.assert_awaited_once()
     assert queue_item.available is still_available
 
 
