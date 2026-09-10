@@ -204,7 +204,8 @@ class DeezerMediaManager:
             if edge.favorited_at:
                 item.date_added = parse_date(edge.favorited_at)
             yield item
-        for album in (await self._get_personal_albums()).values():
+        personal_songs = await self._get_personal_songs()
+        for album in self._get_personal_albums(personal_songs).values():
             yield album
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
@@ -386,7 +387,8 @@ class DeezerMediaManager:
         if prov_artist_id.startswith(PERSONAL_ARTIST_PREFIX):
             # Personal track artist — reconstruct from GW data
             song_id = prov_artist_id.removeprefix(PERSONAL_ARTIST_PREFIX)
-            song = await self._get_personal_song(song_id)
+            personal_songs = await self._get_personal_songs()
+            song = self._get_personal_song(song_id, personal_songs)
             artist = parse_gw_track(self.provider, song).artists[0]
             if not isinstance(artist, Artist):
                 raise MediaNotFoundError(f"Personal artist {prov_artist_id} not found")
@@ -404,12 +406,13 @@ class DeezerMediaManager:
         if prov_album_id.startswith(PERSONAL_ALBUM_PREFIX):
             # Personal track album — reconstruct from GW data
             song_id = prov_album_id.removeprefix(PERSONAL_ALBUM_PREFIX)
-            song = await self._get_personal_song(song_id)
+            personal_songs = await self._get_personal_songs()
+            song = self._get_personal_song(song_id, personal_songs)
             album = parse_gw_track(self.provider, song).album
             if not isinstance(album, Album):
                 raise MediaNotFoundError(f"Personal album {prov_album_id} not found")
             album_key = (album.name, tuple(artist.name for artist in album.artists))
-            album.metadata = (await self._get_personal_albums())[album_key].metadata
+            album.metadata = self._get_personal_albums(personal_songs)[album_key].metadata
             return album
         result = await self.provider.gql_client.get_album(album_id=prov_album_id)
         if result is None:
@@ -427,7 +430,9 @@ class DeezerMediaManager:
             raise MediaNotFoundError(f"Invalid Deezer track ID: {prov_track_id}") from err
         # Personal tracks (negative IDs) don't exist in the GQL API
         if track_id_int < 0:
-            return parse_gw_track(self.provider, await self._get_personal_song(prov_track_id))
+            personal_songs = await self._get_personal_songs()
+            song = self._get_personal_song(prov_track_id, personal_songs)
+            return parse_gw_track(self.provider, song)
         result = await self.provider.gql_client.get_track(track_id=prov_track_id)
         if result is None:
             raise MediaNotFoundError(f"Track {prov_track_id} not found on Deezer")
@@ -766,16 +771,18 @@ class DeezerMediaManager:
             raise MediaNotFoundError(msg)
         return parse_playlist(self.provider, playlist, is_editable=True)
 
-    async def _get_personal_song(self, song_id: str) -> dict[str, Any]:
-        """Return the raw GW song dict for a single user upload."""
-        for song in await self._get_personal_songs():
+    @staticmethod
+    def _get_personal_song(song_id: str, personal_songs: list[dict[str, Any]]) -> dict[str, Any]:
+        """Find a user upload in the supplied personal songs."""
+        for song in personal_songs:
             if str(song["SNG_ID"]) == song_id:
                 return song
         raise MediaNotFoundError(f"Personal song {song_id} not found")
 
-    async def _get_personal_albums(self) -> dict[tuple[str, tuple[str, ...]], Album]:
-        """Return uploaded albums with artwork collected from all their tracks."""
-        personal_songs = await self._get_personal_songs()
+    def _get_personal_albums(
+        self, personal_songs: list[dict[str, Any]]
+    ) -> dict[tuple[str, tuple[str, ...]], Album]:
+        """Group uploaded albums and collect their artwork from the supplied songs."""
         personal_albums: dict[tuple[str, tuple[str, ...]], Album] = {}
         for song in personal_songs:
             track = parse_gw_track(self.provider, song)
