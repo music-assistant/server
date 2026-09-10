@@ -40,6 +40,7 @@ from music_assistant_models.player import OutputProtocol
 from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, ENCRYPT_SUFFIX
+from music_assistant.controllers.config.flows import SetupFlowAccess
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.mass import MusicAssistant
@@ -919,7 +920,7 @@ async def test_aborted_flow_scope_still_resolvable(flow_mass: MusicAssistant) ->
     def on_event(event: MassEvent) -> None:
         if event.data.type == FlowStepType.ABORT and event.object_id:
             resolvable_at_publish.append(
-                flow_mass.config.get_setup_flow_required_scope(event.object_id) is not None
+                flow_mass.config.get_setup_flow_access(event.object_id) is not None
             )
 
     flow_mass.subscribe(on_event, EventType.SETUP_FLOW_UPDATED)
@@ -929,13 +930,13 @@ async def test_aborted_flow_scope_still_resolvable(flow_mass: MusicAssistant) ->
     # event delivery is async (call_soon); wait for the callback to run
     await _wait_for(lambda: resolvable_at_publish)
     assert resolvable_at_publish == [True]
-    assert (
-        flow_mass.config.get_setup_flow_required_scope(step.flow_id) == Scope.CONFIG_PROVIDERS_WRITE
+    assert flow_mass.config.get_setup_flow_access(step.flow_id) == SetupFlowAccess(
+        Scope.CONFIG_PROVIDERS_OWN
     )
 
 
-async def test_setup_flow_required_scope_accessor(flow_mass: MusicAssistant) -> None:
-    """The event filter's scope accessor reports the flow's scope while it runs."""
+async def test_setup_flow_access_accessor(flow_mass: MusicAssistant) -> None:
+    """The event filter's access accessor reports the flow's scope while it runs."""
 
     async def run_setup(session: SetupSession) -> None:
         await session.form([USERNAME_ENTRY])
@@ -943,11 +944,10 @@ async def test_setup_flow_required_scope_accessor(flow_mass: MusicAssistant) -> 
 
     with _use_flow(flow_mass, run_setup):
         step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
-        assert (
-            flow_mass.config.get_setup_flow_required_scope(step.flow_id)
-            == Scope.CONFIG_PROVIDERS_WRITE
+        assert flow_mass.config.get_setup_flow_access(step.flow_id) == SetupFlowAccess(
+            Scope.CONFIG_PROVIDERS_OWN
         )
-    assert flow_mass.config.get_setup_flow_required_scope("nonexistent") is None
+    assert flow_mass.config.get_setup_flow_access("nonexistent") is None
 
 
 async def test_one_flow_per_target_replaces(
