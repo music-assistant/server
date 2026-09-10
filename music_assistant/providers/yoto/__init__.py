@@ -659,4 +659,5 @@ class YotoProvider(MusicProvider):
 
     async def _refresh_hook(self, token: YotoToken) -> None:
         """Store updated refresh token."""
-        self._update_setup_data(CONF_REFRESH_TOKEN, token.refresh_token)
+        if token.refresh_token:
+            self._update_setup_data(CONF_REFRESH_TOKEN, token.refresh_token)
