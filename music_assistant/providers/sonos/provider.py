@@ -411,6 +411,9 @@ class SonosPlayerProvider(PlayerProvider):
         """
         json_body = await request.json()
         for item in json_body["items"]:
+            if error := item.get("error"):
+                self._log_reported_playback_error(player, item, error)
+                continue
             if item["type"] != "update":
                 continue
             if "positionMillis" not in item:
@@ -455,3 +458,39 @@ class SonosPlayerProvider(PlayerProvider):
                 else None,
             },
         }
+
+    def _log_reported_playback_error(
+        self, player: SonosPlayer, item: dict[str, Any], error: dict[str, Any]
+    ) -> None:
+        """
+        Log a playback failure the speaker reported for one of its queue items.
+
+        :param player: The speaker that sent the report.
+        :param item: The reported queue item the failure belongs to.
+        :param error: The error object the speaker attached to it.
+        """
+        report_id = item.get("reportId")
+        if report_id:
+            if report_id in player.reported_playback_errors:
+                return
+            player.reported_playback_errors.append(report_id)
+        wire_id = item.get("id", "")
+        title = (
+            player.current_media.title
+            if player.current_media
+            and wire_id
+            in (
+                player.current_media.queue_item_id,
+                player.wire_item_id(player.current_media.queue_item_id),
+            )
+            else wire_id
+        )
+        # nothing else tells us. Playback stops while Music Assistant still believes
+        # the track is playing
+        self.logger.warning(
+            "Speaker %s could not play %s and reported %s (%s)",
+            player.display_name,
+            title,
+            error.get("status", "an unknown error"),
+            error.get("type", "unknown"),
+        )
