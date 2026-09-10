@@ -174,9 +174,9 @@ async def test_reachable_via_excludes_item_for_provider_outside_user_access(
     """
     A provider outside the current user's access (per get_active_provider_instances) is ignored.
 
-    `get_active_provider_instances` already applies the current user's provider_filter, so a
-    requested instance that it omits (whether unloaded or simply not allowed for this
-    user) must not make the item reachable, even though a matching mapping exists.
+    `get_active_provider_instances` already applies the music sources the current user may
+    see, so a requested instance that it omits (whether unloaded or simply not allowed for
+    this user) must not make the item reachable, even though a matching mapping exists.
     """
     monkeypatch.setattr(mass.music, "get_active_provider_instances", lambda: ["local_1"])
     await _add_track(

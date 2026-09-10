@@ -2146,9 +2146,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """Ensure the provider filter respects the music sources the current user may see."""
         # Apply user provider filter if needed
         user = get_current_user()
-        user_provider_filter = visible_music_sources(self.mass, user) if user else None
+        visible_sources = visible_music_sources(self.mass, user) if user else None
         final_provider_filter: list[str] | None = None
-        if user_provider_filter is not None:
+        if visible_sources is not None:
             plugin_provider_instances = {
                 prov.instance_id for prov in self.mass.providers if prov.type == ProviderType.PLUGIN
             }
@@ -2160,7 +2160,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 final_provider_filter = [
                     p
                     for p in requested_providers
-                    if p in user_provider_filter or p in plugin_provider_instances
+                    if p in visible_sources or p in plugin_provider_instances
                 ]
                 if not final_provider_filter:
                     # No overlap - user requested providers they don't have access to
@@ -2170,7 +2170,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             else:
                 # No explicit filter - apply user music provider filter but keep plugin providers.
                 final_provider_filter = list(
-                    dict.fromkeys([*user_provider_filter, *plugin_provider_instances])
+                    dict.fromkeys([*visible_sources, *plugin_provider_instances])
                 )
         elif provider is not None:
             # No user filter - use the provided filter as is
@@ -2230,8 +2230,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             )
             raise MediaNotFoundError(msg)
         user = get_current_user()
-        user_provider_filter = visible_music_sources(self.mass, user) if user else None
-        if user_provider_filter is None:
+        visible_sources = visible_music_sources(self.mass, user) if user else None
+        if visible_sources is None:
             mapping = next(iter(library_item.provider_mappings))
             return (mapping.provider_instance, mapping.item_id)
 
@@ -2240,7 +2240,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         for mapping in library_item.provider_mappings:
             provider = self.mass.get_provider(mapping.provider_instance)
             if provider and provider.type == ProviderType.MUSIC:
-                if mapping.provider_instance in user_provider_filter:
+                if mapping.provider_instance in visible_sources:
                     return (mapping.provider_instance, mapping.item_id)
 
         # If no allowed music mapping exists, fall back to plugin mappings.
@@ -2251,7 +2251,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         # As a final fallback, preserve previous behavior.
         for mapping in library_item.provider_mappings:
-            if mapping.provider_instance in user_provider_filter:
+            if mapping.provider_instance in visible_sources:
                 return (mapping.provider_instance, mapping.item_id)
 
         # fallback to first mapping
