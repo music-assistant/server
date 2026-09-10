@@ -382,7 +382,8 @@ class ProviderConfigMixin:
         access = ProviderAccess(owner=owner, sharing=sharing, shared_users=shared)
         self.set(f"{CONF_PROVIDERS}/{instance_id}/access", access.to_dict())
         self.save(immediate=True)
-        if provider := self.mass.get_provider(instance_id, return_unavailable=True):
+        provider = self.mass.get_provider(instance_id, return_unavailable=True)
+        if provider and provider.instance_id == instance_id:
             # keep the loaded instance's config copy in sync with the stored record
             provider.config.access = access
         # the music sources of (other) users change with this, so let every client refresh
