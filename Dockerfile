@@ -49,7 +49,7 @@ COPY requirements_all.txt .
 #         rm -rf /var/lib/apt/lists/*; \
 #     fi
 
-# TODO: Remove git once aiolibdatachannel and yappi are installed from PyPI
+# TODO: Remove git and the compilers once aiolibdatachannel and yappi are installed from PyPI
 RUN apt-get update && \
     apt-get install -y --no-install-recommends git gcc g++ && \
     rm -rf /var/lib/apt/lists/*
