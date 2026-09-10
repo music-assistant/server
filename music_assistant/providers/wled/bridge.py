@@ -267,7 +267,7 @@ class WledBridge:
                 )
                 self._transport.sendto(packet)
             self._peak_pending = False
-        except Exception:
+        except (OSError, RuntimeError):
             # One bad tick must not kill the loop: log and reschedule below.
             self.logger.exception("WLED send tick failed for zone port %d", self.port)
         finally:
