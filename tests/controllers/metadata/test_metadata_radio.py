@@ -1,4 +1,4 @@
-"""Tests for the RadioArtworkMixin name-matching helpers on MetaDataController."""
+"""Tests for the RadioArtworkMixin helpers on MetaDataController."""
 
 from unittest.mock import MagicMock
 
