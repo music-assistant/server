@@ -786,8 +786,11 @@ class StreamsController(CoreController):
                     self.logger.error(
                         "Failed to get streamdetails for QueueItem %s: %s", queue_item_id, e
                     )
-                    # a source capacity miss is transient, the item itself is fine
-                    if not isinstance(e, ProviderStreamLimitError):
+                    # a source capacity miss is transient, the item itself is fine.
+                    # neither is a HEAD probe a playback attempt: renderers probe
+                    # speculatively (Sonos at every track boundary), so one transient
+                    # error there must not condemn an item the following GET can play
+                    if request.method == "GET" and not isinstance(e, ProviderStreamLimitError):
                         queue_item.available = False
                     raise web.HTTPNotFound(
                         reason=f"No streamdetails for Queue item: {queue_item_id}"
@@ -945,12 +948,11 @@ class StreamsController(CoreController):
             else:
                 pacing: PacingProfile
                 if queue_item.media_type == MediaType.AUDIO_SOURCE:
-                    pacing = "low_latency"
-                elif player.provider.domain == "musiccast":
-                    # the one known exception; more belong in a per-player table, not here
-                    pacing = "gapless_burst"
+                    pacing = PacingProfile.LOW_LATENCY
+                elif queue_item.streamdetails.is_realtime:
+                    pacing = PacingProfile.NEAR_REALTIME
                 else:
-                    pacing = "default"
+                    pacing = PacingProfile.DEFAULT
                 audio_bytes = get_ffmpeg_stream(
                     audio_input=audio_input,
                     input_format=pcm_format,
@@ -1323,7 +1325,8 @@ class StreamsController(CoreController):
             # restarting (or completely failing) the audio stream by keeping the buffer short.
             # this is reported to be an issue especially with Chromecast players.
             # see for example: https://github.com/music-assistant/support/issues/3717
-            extra_input_args=output_pacing_args(),
+            # one continuous stream, so the player gains nothing from running far ahead
+            extra_input_args=output_pacing_args(PacingProfile.NEAR_REALTIME),
             chunk_size=icy_meta_interval if enable_icy else calculate_content_length(output_format),
         )
         client_disconnected = False
@@ -1941,7 +1944,7 @@ class StreamsController(CoreController):
             filter_params=filter_params,
             # keep the encode stage from reading further ahead than it needs to: a live
             # source's latency is whatever is buffered between it and the player
-            extra_input_args=output_pacing_args("low_latency"),
+            extra_input_args=output_pacing_args(PacingProfile.LOW_LATENCY),
         )
 
     async def _get_audio_source_session_stream(

@@ -909,9 +909,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     if plays_next_track:
                         play_next_items += resolved_items
 
-            except MusicAssistantError as err:
-                # invalid MA uri or item not found error
-                self.logger.warning("Skipping %s: %s", item, str(err))
+            # a mapping stored with zero channels makes the quality sort divide by zero
+            except (MusicAssistantError, ZeroDivisionError) as err:
+                self.logger.warning("Skipping %s: %s", item, err)
 
         if not shuffle_settled and option is not None:
             # nothing resolved, so no media type ever decided - but the sources are replaced
