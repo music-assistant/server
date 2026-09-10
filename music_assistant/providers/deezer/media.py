@@ -10,9 +10,16 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Protocol
 
-from deezer_python_gql import GraphQLClientGraphQLMultiError
+from aiohttp import ClientError
+from deezer_python_gql import GraphQLClientError, GraphQLClientGraphQLMultiError
 from music_assistant_models.enums import ExternalID, MediaType
-from music_assistant_models.errors import MediaNotFoundError, UnsupportedFeaturedException
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    RetriesExhausted,
+    UnsupportedFeaturedException,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -110,15 +117,30 @@ class DeezerMediaManager:
         if external_id_type != ExternalID.ISRC or not is_valid_isrc(external_id):
             return None
         isrc = normalize_external_id(ExternalID.ISRC, external_id)
-        track_id = await self.provider.rest_client.get_item_id(isrc, ExternalID.ISRC)
-        if track_id is None:
-            return None
-        track = await self.get_track(track_id)
-        if track.item_id != track_id or not any(
-            kind == ExternalID.ISRC and normalize_external_id(kind, value) == isrc
+        try:
+            track_id = await self.provider.rest_client.get_item_id(isrc, ExternalID.ISRC)
+            if track_id is None:
+                return None
+            track = await self.get_track(track_id)
+        except (
+            ClientError,
+            GraphQLClientError,
+            InvalidDataError,
+            RetriesExhausted,
+            TimeoutError,
+        ) as err:
+            raise ProviderUnavailableError(f"Deezer track lookup failed: {err}") from err
+        track_isrcs = {
+            normalize_external_id(kind, value)
             for kind, value in track.external_ids
-        ):
+            if kind == ExternalID.ISRC
+        }
+        if track.item_id != track_id:
+            raise MediaNotFoundError(f"Deezer returned track {track.item_id} instead of {track_id}")
+        if any(value != isrc for value in track_isrcs):
             raise MediaNotFoundError(f"Deezer track {track_id} does not match ISRC {isrc}")
+        if not track_isrcs:
+            track.external_ids.add((ExternalID.ISRC, isrc))
         return track
 
     async def get_album_by_external_id(
@@ -128,12 +150,21 @@ class DeezerMediaManager:
         if external_id_type != ExternalID.BARCODE or not is_valid_barcode(external_id):
             return None
         upc = barcode_to_upc(external_id)
-        album_id = await self.provider.rest_client.get_item_id(upc, ExternalID.BARCODE)
-        if album_id is None:
-            return None
-        album = await self.get_album(album_id)
+        try:
+            album_id = await self.provider.rest_client.get_item_id(upc, ExternalID.BARCODE)
+            if album_id is None:
+                return None
+            album = await self.get_album(album_id)
+        except (
+            ClientError,
+            GraphQLClientError,
+            InvalidDataError,
+            RetriesExhausted,
+            TimeoutError,
+        ) as err:
+            raise ProviderUnavailableError(f"Deezer album lookup failed: {err}") from err
         if album.item_id != album_id:
-            raise MediaNotFoundError(f"Deezer album {album_id} does not match barcode {upc}")
+            raise MediaNotFoundError(f"Deezer returned album {album.item_id} instead of {album_id}")
         album.external_ids.add((ExternalID.BARCODE, normalize_external_id(ExternalID.BARCODE, upc)))
         return album
 

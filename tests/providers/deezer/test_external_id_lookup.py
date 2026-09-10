@@ -11,14 +11,17 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from aiohttp import ClientConnectionError, ClientSession, CookieJar, web
 from aiohttp.test_utils import TestServer
-from music_assistant_models.enums import ExternalID, ProviderFeature
+from deezer_python_gql import GraphQLClientError
+from music_assistant_models.enums import ExternalID, ProviderFeature, ProviderType
 from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
     ProviderUnavailableError,
     RetriesExhausted,
 )
+from music_assistant_models.media_items import Album, Track
 
+from music_assistant.controllers.music import MusicController
 from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.deezer import rest_client
 from music_assistant.providers.deezer.media import DeezerMediaManager
@@ -124,6 +127,17 @@ def gql_client() -> Mock:
     )
 
 
+@pytest.fixture
+async def music(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicController]:
+    """Use a real library database and provider fallback loop."""
+    controller = MusicController(mass_minimal)
+    mass_minimal.music = controller
+    await controller._setup_database()
+    yield controller
+    if controller._database:
+        await controller._database.close()
+
+
 async def test_track_lookup_normalizes_and_caches(
     gql_client: Mock, lookup_provider: DeezerProvider, requests: list[dict[str, Any]]
 ) -> None:
@@ -143,6 +157,104 @@ async def test_track_lookup_normalizes_and_caches(
     assert not any(requests[0]["cookies"].values())
     assert "Authorization" not in requests[0]["headers"]
     gql_client.get_track.assert_awaited_once_with(track_id=TRACK_ID)
+
+
+@pytest.mark.parametrize("gql_isrc", [None, "", "us-wb1-15-06516"])
+async def test_track_lookup_accepts_missing_or_formatted_isrc(
+    gql_client: Mock, lookup_provider: DeezerProvider, gql_isrc: str | None
+) -> None:
+    """Fill absent ISRC metadata from REST without changing the cached GraphQL item."""
+    gql_client.get_track.return_value.isrc = gql_isrc
+
+    track = await lookup_provider.get_track_by_external_id(ISRC, ExternalID.ISRC)
+
+    assert track is not None
+    assert track.item_id == TRACK_ID
+    assert not track.available
+    expected_isrc = gql_isrc or ISRC
+    assert (ExternalID.ISRC, expected_isrc) in track.external_ids
+    await _wait_for_cache(lookup_provider.mass)
+    cached_track = await lookup_provider.get_track(TRACK_ID)
+    assert cached_track.external_ids == ({(ExternalID.ISRC, gql_isrc)} if gql_isrc else set())
+    gql_client.get_track.assert_awaited_once_with(track_id=TRACK_ID)
+
+
+@pytest.mark.parametrize("external_id_type", [ExternalID.ISRC, ExternalID.BARCODE])
+@pytest.mark.parametrize(
+    "failure", ["rest_outage", "rest_invalid", "graphql", "connection", "timeout"]
+)
+async def test_lookup_failure_allows_provider_fallback(
+    lookup_provider: DeezerProvider,
+    gql_client: Mock,
+    responses: list[tuple[int, Any, dict[str, str]]],
+    music: MusicController,
+    caplog: pytest.LogCaptureFixture,
+    external_id_type: ExternalID,
+    failure: str,
+) -> None:
+    """Keep REST and GraphQL failures diagnostic while another provider answers the lookup."""
+    is_track = external_id_type == ExternalID.ISRC
+    external_id = ISRC if is_track else UPC
+    item_id = TRACK_ID if is_track else ALBUM_ID
+    field = "isrc" if is_track else "upc"
+    lookup = (
+        lookup_provider.get_track_by_external_id
+        if is_track
+        else lookup_provider.get_album_by_external_id
+    )
+    gql_get = gql_client.get_track if is_track else gql_client.get_album
+    responses[:] = [(200, {"id": item_id, field: external_id}, {})]
+    expected_error: type[Exception]
+    if failure == "rest_outage":
+        responses[:] = [(503, {}, {})]
+        expected_error = RetriesExhausted
+    elif failure == "rest_invalid":
+        responses[:] = [(200, {}, {})]
+        expected_error = InvalidDataError
+    else:
+        expected_error = {
+            "graphql": GraphQLClientError,
+            "connection": ClientConnectionError,
+            "timeout": TimeoutError,
+        }[failure]
+        gql_get.side_effect = expected_error("catalogue unavailable")
+
+    remote_item = (Track if is_track else Album)(
+        item_id="remote", provider="other--test", name="Remote match", provider_mappings=set()
+    )
+    remote = Mock(
+        type=ProviderType.MUSIC,
+        available=True,
+        domain="other",
+        instance_id="other--test",
+        supported_features={
+            ProviderFeature.TRACK_BY_EXTERNAL_ID,
+            ProviderFeature.ALBUM_BY_EXTERNAL_ID,
+        },
+        get_track_by_external_id=AsyncMock(return_value=remote_item),
+        get_album_by_external_id=AsyncMock(return_value=remote_item),
+    )
+    lookup_provider.available = True
+    lookup_provider.manifest.type = ProviderType.MUSIC
+    music.mass._providers = {
+        lookup_provider.instance_id: lookup_provider,
+        remote.instance_id: remote,
+    }
+    controller = music.tracks if is_track else music.albums
+
+    with patch("music_assistant.helpers.throttle_retry.asyncio.sleep", new_callable=AsyncMock):
+        with pytest.raises(ProviderUnavailableError) as exc:
+            await lookup(external_id, external_id_type)
+        assert isinstance(exc.value.__cause__, expected_error)
+
+        result = await controller.get_item_by_external_id(external_id, external_id_type)
+
+    assert result is remote_item
+    remote_get = remote.get_track_by_external_id if is_track else remote.get_album_by_external_id
+    remote_get.assert_awaited_once_with(external_id, external_id_type)
+    assert lookup_provider.instance_id in caplog.text
+    if failure.startswith("rest_"):
+        gql_get.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -304,16 +416,23 @@ async def test_permanent_failure(
     assert len(requests) == 1
 
 
-@pytest.mark.parametrize("changed", ["id", "isrc", "missing"])
+@pytest.mark.parametrize(
+    ("changed", "message"),
+    [
+        ("id", f"Deezer returned track different instead of {TRACK_ID}"),
+        ("isrc", f"Deezer track {TRACK_ID} does not match ISRC {ISRC}"),
+        ("missing", f"Track {TRACK_ID} not found on Deezer"),
+    ],
+)
 async def test_graphql_track_must_still_match(
-    gql_client: Mock, lookup_provider: DeezerProvider, changed: str
+    gql_client: Mock, lookup_provider: DeezerProvider, changed: str, message: str
 ) -> None:
     """Reject a GraphQL miss, relink or different recording after REST resolution."""
     if changed == "missing":
         gql_client.get_track.return_value = None
     else:
         setattr(gql_client.get_track.return_value, changed, "different")
-    with pytest.raises(MediaNotFoundError):
+    with pytest.raises(MediaNotFoundError, match=message):
         await lookup_provider.get_track_by_external_id(ISRC, ExternalID.ISRC)
 
 
@@ -325,7 +444,7 @@ async def test_graphql_album_must_still_match(
     """Do not assign the resolved UPC to a replacement album."""
     responses[:] = [(200, {"id": ALBUM_ID, "upc": UPC}, {})]
     gql_client.get_album.return_value.id = "different"
-    with pytest.raises(MediaNotFoundError):
+    with pytest.raises(MediaNotFoundError, match=f"returned album different instead of {ALBUM_ID}"):
         await lookup_provider.get_album_by_external_id(UPC, ExternalID.BARCODE)
 
 
@@ -348,8 +467,9 @@ async def test_rest_album_barcode_must_match(
 ) -> None:
     """Reject another release's barcode before retrieving or annotating a GraphQL album."""
     responses[:] = [(200, {"id": ALBUM_ID, "upc": "4006381333931"}, {})]
-    with pytest.raises(InvalidDataError):
+    with pytest.raises(ProviderUnavailableError) as exc:
         await lookup_provider.get_album_by_external_id(UPC, ExternalID.BARCODE)
+    assert isinstance(exc.value.__cause__, InvalidDataError)
     gql_client.get_album.assert_not_awaited()
 
 
