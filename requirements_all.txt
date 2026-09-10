@@ -108,7 +108,7 @@ xmltodict==1.0.4
 ya-dialogs-api==2.4.0
 ya-passport-auth[ma]==1.8.0
 yandex-music==3.0.0
-yappi==1.7.6
+yappi @ git+https://github.com/sumerc/yappi@d6593ea0bce0a13c65bd44511c3cee858b5985e8
 ytmusicapi==1.12.2
 zeroconf==0.149.16
 zvuk-music[async]==0.6.1
