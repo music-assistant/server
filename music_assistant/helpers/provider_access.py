@@ -128,7 +128,7 @@ def with_derived_provider_filter(mass: MusicAssistant, user: User) -> User:
     return replace(user, provider_filter=derived_provider_filter(mass, user))
 
 
-async def playback_user(mass: MusicAssistant, queue_id: str) -> User | None:
+async def resolve_playback_user(mass: MusicAssistant, queue_id: str) -> User | None:
     """
     Return the user the queue plays for, None for anonymous playback.
 
@@ -153,7 +153,7 @@ async def playback_sources(
     :param mass: The MusicAssistant instance.
     :param queue_id: The queue the playback belongs to.
     """
-    user = await playback_user(mass, queue_id)
+    user = await resolve_playback_user(mass, queue_id)
     return visible_playback_sources(mass, user), own_music_sources(mass, user)
 
 

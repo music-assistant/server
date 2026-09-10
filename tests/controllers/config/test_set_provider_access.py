@@ -327,6 +327,46 @@ async def test_a_member_may_not_read_the_config_of_a_hidden_source(
         ).instance_id == instance_id
 
 
+async def test_a_member_may_not_read_a_value_or_the_entries_of_a_hidden_source(
+    access_mass: MusicAssistant,
+) -> None:
+    """A single value and the options form of a hidden source are just as much off limits."""
+    owner = await _create_user(access_mass, "owner")
+    member = await _create_user(access_mass, "member")
+    set_music_source_access(
+        access_mass,
+        {MUSIC_INSTANCE: ProviderAccess(owner=owner.user_id, sharing=ProviderSharing.PRIVATE)},
+    )
+    access_mass.config.set(f"{CONF_PROVIDERS}/{MUSIC_INSTANCE}/values/username", "secret")
+    set_current_user(member)
+
+    with pytest.raises(InsufficientPermissions):
+        await access_mass.config.get_provider_config_value(MUSIC_INSTANCE, "username")
+    with pytest.raises(InsufficientPermissions):
+        await access_mass.config.get_provider_config_entries(MUSIC_INSTANCE)
+    # the household source next to it is served as usual
+    assert await access_mass.config.get_provider_config_entries(OTHER_INSTANCE)
+
+
+async def test_an_admin_reads_the_value_and_the_entries_of_every_source(
+    access_mass: MusicAssistant,
+) -> None:
+    """Managing the sources of the household means reading the config of all of them."""
+    admin = await _create_user(access_mass, "admin", UserRole.ADMIN)
+    owner = await _create_user(access_mass, "owner")
+    set_music_source_access(
+        access_mass,
+        {MUSIC_INSTANCE: ProviderAccess(owner=owner.user_id, sharing=ProviderSharing.PRIVATE)},
+    )
+    access_mass.config.set(f"{CONF_PROVIDERS}/{MUSIC_INSTANCE}/values/username", "secret")
+    set_current_user(admin)
+
+    assert (
+        await access_mass.config.get_provider_config_value(MUSIC_INSTANCE, "username") == "secret"
+    )
+    assert await access_mass.config.get_provider_config_entries(MUSIC_INSTANCE)
+
+
 async def test_a_loaded_source_follows_the_stored_record(access_mass: MusicAssistant) -> None:
     """The loaded instance must not keep serving the access it was loaded with."""
     admin = await _create_user(access_mass, "admin", UserRole.ADMIN)

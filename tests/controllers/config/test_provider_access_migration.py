@@ -140,6 +140,23 @@ async def test_source_of_two_restricted_users_has_no_owner(mass: MusicAssistant)
     )
 
 
+async def test_a_guest_does_not_become_the_owner_of_a_source(mass: MusicAssistant) -> None:
+    """A guest can not own a music source, so it is only shared with the one it was given."""
+    _prepare(mass, ["spotify--guest", "tidal--dave"])
+    system_user = await mass.webserver.auth.get_homeassistant_system_user()
+    guest = await _add_user(mass, "party_guest", ["spotify--guest"], role=UserRole.GUEST)
+    await _add_user(mass, "dave", ["tidal--dave"])
+
+    await migrate_provider_access(mass)
+
+    assert _access(mass, "spotify--guest") == ProviderAccess(
+        sharing=ProviderSharing.SELECTED,
+        shared_users=sorted([guest.user_id, system_user.user_id]),
+    )
+    # which is exactly what the guest could see before
+    assert _visible(mass, guest, ["spotify--guest", "tidal--dave"]) == ["spotify--guest"]
+
+
 async def test_filter_of_removed_sources_leaves_the_user_unrestricted(
     mass: MusicAssistant,
 ) -> None:

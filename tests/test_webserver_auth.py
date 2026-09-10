@@ -712,6 +712,7 @@ async def test_delete_user_releases_its_music_sources(auth_manager: Authenticati
         auth_manager.mass,
         {
             "spotify--owned": ProviderAccess(owner=leaver.user_id, sharing=ProviderSharing.MEMBERS),
+            "qobuz--private": ProviderAccess(owner=leaver.user_id, sharing=ProviderSharing.PRIVATE),
             "tidal--shared": ProviderAccess(
                 owner=admin.user_id,
                 sharing=ProviderSharing.SELECTED,
@@ -724,10 +725,16 @@ async def test_delete_user_releases_its_music_sources(auth_manager: Authenticati
     set_current_user(admin)
     await auth_manager.delete_user(leaver.user_id)
 
-    # the sources it owned become household sources, keeping their sharing
+    # the sources it owned keep their sharing but lose their owner
     assert auth_manager.mass.config.get(f"{CONF_PROVIDERS}/spotify--owned/access") == {
         "owner": None,
         "sharing": "members",
+        "shared_users": [],
+    }
+    # which leaves a private source visible to nobody until an admin sets its access
+    assert auth_manager.mass.config.get(f"{CONF_PROVIDERS}/qobuz--private/access") == {
+        "owner": None,
+        "sharing": "private",
         "shared_users": [],
     }
     assert auth_manager.mass.config.get(f"{CONF_PROVIDERS}/tidal--shared/access") == {

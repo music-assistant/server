@@ -145,8 +145,7 @@ class ProviderConfigMixin:
         :raises InsufficientPermissions: The caller may not use this music source.
         """
         if raw_conf := self.get(f"{CONF_PROVIDERS}/{instance_id}", {}):
-            if self._is_hidden_source(raw_conf, self._visible_sources_for_caller()):
-                raise InsufficientPermissions(f"{instance_id} is not a music source of this user")
+            self._ensure_source_visible(raw_conf)
             for prov in self.mass.get_provider_manifests():
                 if prov.domain == raw_conf["domain"]:
                     break
@@ -210,7 +209,9 @@ class ProviderConfigMixin:
             Note: This parameter is used purely for static type checking and does not
             perform runtime type validation. Callers are responsible for ensuring the
             specified type matches the actual config value type.
+        :raises InsufficientPermissions: The caller may not use this music source.
         """
+        self._ensure_source_visible(self.get(f"{CONF_PROVIDERS}/{instance_id}"))
         # prefer stored value so we don't have to retrieve all config entries every time
         if (raw_value := self.get_raw_provider_config_value(instance_id, key)) is not None:
             return raw_value
@@ -237,12 +238,14 @@ class ProviderConfigMixin:
         Reconfigure action for a failed provider instead of an editable options form.
 
         :param instance_id: The provider instance id.
+        :raises InsufficientPermissions: The caller may not use this music source.
         """
+        raw_conf = self.get(f"{CONF_PROVIDERS}/{instance_id}")
+        self._ensure_source_visible(raw_conf)
         if provider := self.mass.get_provider(instance_id, return_unavailable=True):
             return await self._resolve_provider_config_entries(provider)
         # not loaded: feature-derived and provider-specific entries can't be computed
         # without the instance, so only the server defaults are returned
-        raw_conf = self.get(f"{CONF_PROVIDERS}/{instance_id}")
         owner = f"provider.{raw_conf['domain']}" if raw_conf else "common"
         return _with_translation_owner(list(DEFAULT_PROVIDER_CONFIG_ENTRIES), owner)
 
@@ -378,6 +381,7 @@ class ProviderConfigMixin:
                 shared.append(user_id)
         access = ProviderAccess(owner=owner, sharing=sharing, shared_users=shared)
         self.set(f"{CONF_PROVIDERS}/{instance_id}/access", access.to_dict())
+        self.save(immediate=True)
         if provider := self.mass.get_provider(instance_id, return_unavailable=True):
             # keep the loaded instance's config copy in sync with the stored record
             provider.config.access = access
@@ -389,8 +393,9 @@ class ProviderConfigMixin:
         """
         Release the music sources of a user that no longer exists.
 
-        The sources it owned become household sources, keeping their sharing, and it is
-        dropped from the share list of every other source.
+        The sources it owned keep their sharing but lose their owner, so a private source
+        is visible to nobody until an admin sets its access. The user is dropped from the
+        share list of every other source.
 
         :param user_id: Id of the removed user.
         """
@@ -782,6 +787,12 @@ class ProviderConfigMixin:
             and raw_conf["type"] == ProviderType.MUSIC
             and raw_conf["instance_id"] not in visible_sources
         )
+
+    def _ensure_source_visible(self, raw_conf: dict[str, Any] | None) -> None:
+        """Raise when the given raw config is a music source the caller may not use."""
+        if raw_conf and self._is_hidden_source(raw_conf, self._visible_sources_for_caller()):
+            instance_id = raw_conf["instance_id"]
+            raise InsufficientPermissions(f"{instance_id} is not a music source of this user")
 
     def _access_for_new_instance(self, manifest: ProviderManifest) -> ProviderAccess | None:
         """Return the access record a newly created instance starts out with."""
