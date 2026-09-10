@@ -747,9 +747,7 @@ async def test_user_reads_report_the_derived_music_sources(
     :param auth_manager: AuthenticationManager instance.
     """
     owner = await auth_manager.create_user(username="owner", role=UserRole.USER)
-    member = await auth_manager.create_user(
-        username="member", role=UserRole.USER, provider_filter=["legacy--stored"]
-    )
+    member = await auth_manager.create_user(username="member", role=UserRole.USER)
     set_music_source_access(
         auth_manager.mass,
         {
@@ -769,10 +767,10 @@ async def test_user_reads_report_the_derived_music_sources(
     user_info = await auth_manager.get_user_info(member.user_id)
     assert user_info is not None
     assert user_info.provider_filter == ["spotify--household"]
-    # the internal lookup serves the stored row, it is not an api read path
+    # the internal lookup is not an api read path, so it stamps nothing
     internal_user = await auth_manager.get_user(member.user_id)
     assert internal_user is not None
-    assert internal_user.provider_filter == ["legacy--stored"]
+    assert internal_user.provider_filter == []
 
 
 async def test_prune_orphaned_user_rows(auth_manager: AuthenticationManager) -> None:
@@ -2932,49 +2930,19 @@ async def test_replace_player_in_user_filters_updates_live_sessions(
 
 async def test_prune_stale_user_filters(auth_manager: AuthenticationManager) -> None:
     """
-    Test that filter entries pointing at unknown providers/players are cleaned up on startup.
+    Test that filter entries pointing at unknown players are cleaned up on startup.
 
     :param auth_manager: AuthenticationManager instance.
     """
-    auth_manager.mass.config.set(
-        f"{CONF_PROVIDERS}/spotify--live", {"instance_id": "spotify--live"}
-    )
     auth_manager.mass.config.set(f"{CONF_PLAYERS}/player_live", {"player_id": "player_live"})
     user = await auth_manager.create_user(
         username="stale",
-        provider_filter=["spotify--old", "spotify--live"],
         player_filter=["player_gone", "player_live"],
     )
 
     await auth_manager._prune_stale_user_filters()
 
-    assert await _get_filters(auth_manager, user.user_id) == (
-        ["spotify--live"],
-        ["player_live"],
-    )
-
-
-async def test_prune_maps_collapsed_plugin_instances(auth_manager: AuthenticationManager) -> None:
-    """
-    Test that filters naming a collapsed connected-player plugin instance follow it.
-
-    The collapse migration re-keys spotify_connect/airplay_receiver instances to the
-    bare domain; pruning the old id instead of mapping it would leave a user whose
-    last filter entry it was unrestricted.
-
-    :param auth_manager: AuthenticationManager instance.
-    """
-    auth_manager.mass.config.set(
-        f"{CONF_PROVIDERS}/spotify_connect", {"instance_id": "spotify_connect"}
-    )
-    user = await auth_manager.create_user(
-        username="collapsed",
-        provider_filter=["spotify_connect--abcd1234"],
-    )
-
-    await auth_manager._prune_stale_user_filters()
-
-    assert await _get_filters(auth_manager, user.user_id) == (["spotify_connect"], [])
+    assert await _get_filters(auth_manager, user.user_id) == ([], ["player_live"])
 
 
 async def test_prune_stale_user_filters_ignores_empty_config(
@@ -2987,10 +2955,9 @@ async def test_prune_stale_user_filters_ignores_empty_config(
     """
     user = await auth_manager.create_user(
         username="noconfig",
-        provider_filter=["spotify--old"],
         player_filter=["player_gone"],
     )
 
     await auth_manager._prune_stale_user_filters()
 
-    assert await _get_filters(auth_manager, user.user_id) == (["spotify--old"], ["player_gone"])
+    assert await _get_filters(auth_manager, user.user_id) == ([], ["player_gone"])

@@ -29,7 +29,6 @@ from music_assistant_models.errors import (
 
 from music_assistant.constants import (
     CONF_PLAYERS,
-    CONF_PROVIDERS,
     DB_TABLE_PLAYLOG,
     HOMEASSISTANT_SYSTEM_USER,
     MASS_LOGGER_NAME,
@@ -324,7 +323,6 @@ class AuthenticationManager:
             avatar_url=user_row["avatar_url"],
             preferences=json_loads(user_row["preferences"]),
             player_filter=json_loads(user_row["player_filter"]),
-            provider_filter=json_loads(user_row["provider_filter"]),
         )
 
     async def get_user_by_username(self, username: str) -> User | None:
@@ -371,7 +369,6 @@ class AuthenticationManager:
         avatar_url: str | None = None,
         preferences: dict[str, Any] | None = None,
         player_filter: list[str] | None = None,
-        provider_filter: list[str] | None = None,
     ) -> User:
         """
         Create a new user.
@@ -382,7 +379,6 @@ class AuthenticationManager:
         :param avatar_url: Optional avatar URL.
         :param preferences: Optional user preferences dict.
         :param player_filter: Optional list of player IDs user has access to.
-        :param provider_filter: Optional list of provider instance IDs user has access to.
         """
         normalized_username = normalize_username(username)
 
@@ -395,8 +391,6 @@ class AuthenticationManager:
             preferences = {}
         if player_filter is None:
             player_filter = []
-        if provider_filter is None:
-            provider_filter = []
 
         user_data = {
             "user_id": user_id,
@@ -408,7 +402,7 @@ class AuthenticationManager:
             "avatar_url": avatar_url,
             "preferences": json_dumps(preferences),
             "player_filter": json_dumps(player_filter),
-            "provider_filter": json_dumps(provider_filter),
+            "provider_filter": "[]",
         }
 
         await self.database.insert("users", user_data)
@@ -423,7 +417,6 @@ class AuthenticationManager:
             avatar_url=avatar_url,
             preferences=preferences,
             player_filter=player_filter,
-            provider_filter=provider_filter,
         )
 
         # If this is the first non-system user, migrate playlog entries to them
@@ -1288,7 +1281,6 @@ class AuthenticationManager:
         :param player_ids: IDs of the removed players.
         """
         await self._rewrite_user_filters(
-            keep_provider=None,
             keep_player=(lambda x: x not in player_ids) if player_ids else None,
         )
 
@@ -1361,7 +1353,6 @@ class AuthenticationManager:
             normally includes the replaced player itself.
         """
         await self._rewrite_user_filters(
-            keep_provider=None,
             keep_player=(lambda x: x not in removed_player_ids) if removed_player_ids else None,
             map_player=lambda x: new_player_id if x == old_player_id else x,
         )
@@ -1785,6 +1776,7 @@ class AuthenticationManager:
                 avatar_url TEXT,
                 preferences json NOT NULL DEFAULT '{}',
                 player_filter json NOT NULL DEFAULT '[]',
+                -- no longer read, kept only to avoid a schema bump
                 provider_filter json NOT NULL DEFAULT '[]'
             )
             """
@@ -2043,55 +2035,33 @@ class AuthenticationManager:
             self.logger.warning("Failed to clean up rows of deleted users: %s", err)
 
     async def _prune_stale_user_filters(self) -> None:
-        """Drop user access filter entries for providers or players that no longer exist."""
-        known_providers = set(self.mass.config.get(CONF_PROVIDERS, {}))
+        """Drop user access filter entries for players that no longer exist."""
         known_players = set(self.mass.config.get(CONF_PLAYERS, {}))
-
-        # one-off: the connected-player plugins collapsed their instances into a single
-        # instance keyed by the bare domain; filter entries naming a collapsed instance
-        # follow it instead of being pruned (which would lift the user's restriction).
-        # TODO: remove after 2.12 release
-        def _map_collapsed_plugin(entry: str) -> str:
-            for domain in ("spotify_connect", "airplay_receiver"):
-                if entry.startswith(f"{domain}--") and domain in known_providers:
-                    return domain
-            return entry
-
         # an empty config section means nothing is configured yet, which must not be
         # mistaken for everything having been removed
         await self._rewrite_user_filters(
-            keep_provider=(lambda x: x in known_providers) if known_providers else None,
             keep_player=(lambda x: x in known_players) if known_players else None,
-            map_provider=_map_collapsed_plugin if known_providers else None,
         )
 
     async def _rewrite_user_filters(
         self,
-        keep_provider: Callable[[str], bool] | None,
         keep_player: Callable[[str], bool] | None,
         map_player: Callable[[str], str] | None = None,
-        map_provider: Callable[[str], str] | None = None,
     ) -> None:
         """
         Rewrite the access filters of all users.
 
-        :param keep_provider: Returns False for the provider entries that must be dropped.
         :param keep_player: Returns False for the player entries that must be dropped.
         :param map_player: Maps a player entry onto its replacement, applied before keep_player.
-        :param map_provider: Maps a provider entry onto its replacement, applied before
-            keep_provider.
         """
-        if keep_provider is None and keep_player is None and map_player is None:
+        if keep_player is None and map_player is None:
             return
         # removing a provider wipes the config of its players one by one, so without the lock
         # those rewrites would read the same filter and each undo the other's removal
         async with self._user_filter_lock:
             for row in await self.database.get_rows("users", limit=0):
                 changed: dict[str, list[str]] = {}
-                for column, keep_func, map_func in (
-                    ("provider_filter", keep_provider, map_provider),
-                    ("player_filter", keep_player, map_player),
-                ):
+                for column, keep_func, map_func in (("player_filter", keep_player, map_player),):
                     if keep_func is None and map_func is None:
                         continue
                     current: list[str] = json_loads(row[column])

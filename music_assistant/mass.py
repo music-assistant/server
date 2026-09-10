@@ -55,6 +55,9 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
+from music_assistant.controllers.config.provider_access_migration import (
+    migrate_provider_access,
+)
 from music_assistant.controllers.config.retired_local_audio import (
     cleanup_retired_local_audio,
 )
@@ -329,6 +332,12 @@ class MusicAssistant:
         # and must precede the provider load so its tombstone never flashes a banner.
         # TODO: remove after 2.11 release
         await cleanup_retired_local_audio(self)
+        # one-off: convert the music source restrictions that used to live on each user into
+        # the access records that now live on the sources. Needs the users from the auth
+        # database, so it cannot run with the settings migrations, and must precede the
+        # provider load so no provider is served a record that is still to be written.
+        # TODO: remove after 2.13 release
+        await migrate_provider_access(self)
         # repair sidebar shortcuts left pointing at a provider instance that no longer exists:
         # those never resolve, so the frontend cannot render them and the user cannot remove
         # them. Reads the provider config, so it must not wait for the providers to load.
