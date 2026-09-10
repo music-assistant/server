@@ -68,9 +68,10 @@ async def test_get_track_by_isrc_not_found() -> None:
 
     api_mock.get_data.return_value = {"data": []}
 
-    result = await manager.get_track_by_external_id("UNKNOWN123", ExternalID.ISRC)
+    result = await manager.get_track_by_external_id("USZZZ9999999", ExternalID.ISRC)
 
     assert result is None
+    api_mock.get_data.assert_called_once()
 
 
 @pytest.mark.asyncio
