@@ -70,7 +70,8 @@ test = [
   "syrupy==5.5.3",
   "tomli==2.4.1",
   "ruff==0.16.5",
-  "yappi==1.7.6",
+  # v1.7.7 fixes a coroutine reference leak while profiling; its PyPI upload failed upstream
+  "yappi @ git+https://github.com/sumerc/yappi@d6593ea0bce0a13c65bd44511c3cee858b5985e8",
 ]
 
 [project.scripts]
