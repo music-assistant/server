@@ -7,11 +7,11 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from music_assistant_models.enums import ExternalID, MediaType
+from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import Album, Artist, Playlist, Track
 
-from music_assistant.providers.tidal.provider import TidalProvider
+from music_assistant.providers.tidal.provider import SUPPORTED_FEATURES, TidalProvider
 from tests.common import use_real_create_task
 
 
@@ -227,6 +227,38 @@ async def test_get_track_delegates_to_media(provider: TidalProvider) -> None:
 
         mock_get.assert_called_with("123")
         assert result is not None
+
+
+async def test_get_track_by_external_id_delegates_to_media(provider: TidalProvider) -> None:
+    """Test get_track_by_external_id delegates to media manager."""
+    with patch.object(
+        provider.media, "get_track_by_external_id", new_callable=AsyncMock
+    ) as mock_get:
+        mock_get.return_value = Mock(spec=Track)
+
+        result = await provider.get_track_by_external_id("US1234567890", ExternalID.ISRC)
+
+        mock_get.assert_called_with("US1234567890", ExternalID.ISRC)
+        assert result is not None
+
+
+async def test_get_album_by_external_id_delegates_to_media(provider: TidalProvider) -> None:
+    """Test get_album_by_external_id delegates to media manager."""
+    with patch.object(
+        provider.media, "get_album_by_external_id", new_callable=AsyncMock
+    ) as mock_get:
+        mock_get.return_value = Mock(spec=Album)
+
+        result = await provider.get_album_by_external_id("00602547852748", ExternalID.BARCODE)
+
+        mock_get.assert_called_with("00602547852748", ExternalID.BARCODE)
+        assert result is not None
+
+
+def test_supported_features_include_external_id_lookups() -> None:
+    """Test the track/album external-id lookup features are advertised."""
+    assert ProviderFeature.TRACK_BY_EXTERNAL_ID in SUPPORTED_FEATURES
+    assert ProviderFeature.ALBUM_BY_EXTERNAL_ID in SUPPORTED_FEATURES
 
 
 async def test_get_playlist_delegates_to_media(provider: TidalProvider) -> None:
@@ -568,10 +600,10 @@ async def test_resolve_live_track_id_cache_hit_dead_reresolves(
             side_effect=MediaNotFoundError("gone"),
         ),
         patch.object(provider, "get_track", new_callable=AsyncMock) as mock_cached,
-        patch.object(provider.api, "get", new_callable=AsyncMock) as mock_get,
+        patch.object(provider.media, "get_track_id_by_isrc", new_callable=AsyncMock) as mock_get,
         patch.object(provider, "_heal_track_mapping", new_callable=AsyncMock),
     ):
-        mock_get.return_value = {"data": [{"id": "new_789"}]}
+        mock_get.return_value = "new_789"
 
         result = await provider.resolve_live_track_id("stale_123")
 
@@ -626,8 +658,8 @@ async def test_resolve_live_track_id_isrc_lookup_empty(
     lib_track.external_ids = [(ExternalID.ISRC, "US1234567890")]
     mass_mock.music.tracks.get_library_item_by_prov_id = AsyncMock(return_value=lib_track)
 
-    with patch.object(provider.api, "get", new_callable=AsyncMock) as mock_get:
-        mock_get.return_value = {"data": []}
+    with patch.object(provider.media, "get_track_id_by_isrc", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = None
 
         result = await provider.resolve_live_track_id("123")
 
@@ -641,8 +673,8 @@ async def test_resolve_live_track_id_not_stale(provider: TidalProvider, mass_moc
     lib_track.external_ids = [(ExternalID.ISRC, "US1234567890")]
     mass_mock.music.tracks.get_library_item_by_prov_id = AsyncMock(return_value=lib_track)
 
-    with patch.object(provider.api, "get", new_callable=AsyncMock) as mock_get:
-        mock_get.return_value = {"data": [{"id": "123"}]}
+    with patch.object(provider.media, "get_track_id_by_isrc", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = "123"
 
         result = await provider.resolve_live_track_id("123")
 
@@ -666,10 +698,10 @@ async def test_resolve_live_track_id_stale_caches_and_schedules_heal(
     mass_mock.create_task = Mock(side_effect=lambda coro, **_kw: coro.close())
 
     with (
-        patch.object(provider.api, "get", new_callable=AsyncMock) as mock_get,
+        patch.object(provider.media, "get_track_id_by_isrc", new_callable=AsyncMock) as mock_get,
         patch.object(provider, "_heal_track_mapping", new_callable=AsyncMock) as mock_heal,
     ):
-        mock_get.return_value = {"data": [{"id": "NEW"}]}
+        mock_get.return_value = "NEW"
 
         result = await provider.resolve_live_track_id("123")
 

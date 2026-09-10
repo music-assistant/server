@@ -121,6 +121,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
         # handle replace: swap the queue's contents for the new items in one step
         if option == QueueOption.REPLACE:
+            # a prewarm still running for the old next track would otherwise resume after the
+            # swap and warm audio for an item that is no longer on the queue
+            self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
             # Release the audio the outgoing items hold while they are still on the queue: the
             # track being started needs their source slot, and once they are swapped out nothing
             # reaches them any more.
@@ -571,6 +574,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if self._queue_data.get(queue_id) is not queue_data:
             # the queue was removed or re-registered while the user context was restored
             return
+        if not queue_data.queue.autoplay_enabled:
+            return
         if last_item.media_type in AUTOPLAY_SERIES_MEDIA_TYPES:
             await self._fill_autoplay_next_in_series(queue_id, last_item)
             return
@@ -615,6 +620,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             return
         if self._queue_data.get(queue_id) is not queue_data:
             # the queue was removed or re-registered while the successor was fetched
+            return
+        if not queue_data.queue.autoplay_enabled:
             return
         await self.load(
             queue_id,
@@ -678,6 +685,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             return
         if self._queue_data.get(queue_id) is not queue_data:
             # the queue was removed or re-registered while tracks were fetched
+            return
+        if not queue.autoplay_enabled:
             return
         await self.load(
             queue_id,
@@ -909,9 +918,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     if plays_next_track:
                         play_next_items += resolved_items
 
-            except MusicAssistantError as err:
-                # invalid MA uri or item not found error
-                self.logger.warning("Skipping %s: %s", item, str(err))
+            # a mapping stored with zero channels makes the quality sort divide by zero
+            except (MusicAssistantError, ZeroDivisionError) as err:
+                self.logger.warning("Skipping %s: %s", item, err)
 
         if not shuffle_settled and option is not None:
             # nothing resolved, so no media type ever decided - but the sources are replaced
@@ -991,8 +1000,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             # deliberately does). Zeroed before the truncation below so the pool is sized against
             # an empty queue and none of the discarded tracks are held back from it.
             insert_at = 0
-            # as on the linear path: release the outgoing audio while its items are still on the
-            # queue, and drop the stale position
+            # as on the linear path: end the prewarm of the old next track, release the outgoing
+            # audio while its items are still on the queue, and drop the stale position
+            self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
             await self._cleanup_queue_audio_data(queue_id)
             queue.index_in_buffer = None
             queue.ended = False
