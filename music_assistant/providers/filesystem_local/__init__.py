@@ -2087,7 +2087,7 @@ class LocalFileSystemProvider(MusicProvider):
             self._cancel_availability_probe()
         else:
             self._schedule_availability_probe()
-        self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
+        self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
 
     async def _is_reachable(self) -> bool:
         """Return whether the storage backing this provider can be read."""

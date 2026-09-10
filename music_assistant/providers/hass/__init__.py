@@ -1088,7 +1088,7 @@ class HomeAssistantProvider(PluginProvider):
         # the lists straight from their handler, so this has to stay below the assignments.
         # during startup the load itself signals once we are done.
         if changed and self._startup_complete:
-            self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
+            self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
 
     async def _subscribe_entity_registry(self) -> None:
         """Watch the Home Assistant entity registry to keep the engine lists up to date."""

@@ -492,7 +492,7 @@ async def test_find_candidates_handles_sqlite_row_without_get(
     fs_prov = MagicMock()
     fs_prov.domain = "filesystem_local"
     fs_prov.available = True
-    controller.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
+    controller.mass.providers = [fs_prov]  # type: ignore[misc]
 
     class _RowNoGet:
         """Mimics sqlite3.Row: __getitem__ only, no .get()."""
@@ -546,7 +546,7 @@ async def test_find_candidates_query_gates_on_current_version(
     fs_prov = MagicMock()
     fs_prov.domain = "filesystem_local"
     fs_prov.available = True
-    controller.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
+    controller.mass.providers = [fs_prov]  # type: ignore[misc]
 
     captured: dict[str, Any] = {}
 
@@ -1436,7 +1436,7 @@ async def test_coverage_stale_query_counts_null_analysis_version_as_stale() -> N
 async def test_count_candidates_missing_analysis_zero_without_filesystem() -> None:
     """No available filesystem music providers -> 0 pending (no DB query)."""
     c, _ = _stub_controller()
-    c.mass.get_providers = MagicMock(return_value=[])  # type: ignore[method-assign]
+    c.mass.providers = []  # type: ignore[misc]
 
     assert await c._count_candidates_missing_analysis("sonic_analysis", 1) == 0
 
@@ -1449,7 +1449,7 @@ async def test_count_candidates_missing_analysis_queries_with_available_filesyst
     fs_prov = MagicMock()
     fs_prov.domain = domain
     fs_prov.available = True
-    c.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
+    c.mass.providers = [fs_prov]  # type: ignore[misc]
 
     result = await c._count_candidates_missing_analysis("sonic_analysis", 2)
 

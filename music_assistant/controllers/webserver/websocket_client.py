@@ -34,6 +34,7 @@ from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
+from music_assistant.helpers.provider_access import with_derived_provider_filter
 
 from .helpers.auth_middleware import (
     has_scope,
@@ -474,7 +475,10 @@ class WebsocketClientHandler:
         await self._send_message(
             SuccessResultMessage(
                 msg.message_id,
-                {"authenticated": True, "user": user.to_dict()},
+                {
+                    "authenticated": True,
+                    "user": with_derived_provider_filter(self.mass, user).to_dict(),
+                },
             )
         )
 
@@ -617,6 +621,21 @@ class WebsocketClientHandler:
                         event=event.event,
                         object_id=event.object_id,
                         data=task_data,
+                    )
+                )
+                return
+
+            if event.event == EventType.PROVIDERS_UPDATED:
+                # the payload is signalled unfiltered, so narrow it down to the
+                # music sources this client's user may see
+                if self._authenticated_user is None:
+                    return
+                provider_data = self.mass.get_providers_for_user(self._authenticated_user)
+                self._send_message_sync(
+                    MassEvent(
+                        event=event.event,
+                        object_id=event.object_id,
+                        data=provider_data,
                     )
                 )
                 return

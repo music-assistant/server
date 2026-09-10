@@ -10,6 +10,9 @@ from unittest import mock
 
 import pytest
 import yappi
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import ProviderSharing
 from music_assistant_models.media_items import Artist, ProviderMapping
 
 from music_assistant.providers.profiler import provider as provider_module
@@ -23,6 +26,7 @@ from music_assistant.providers.profiler.provider import (
     CONF_TRACEMALLOC_ENABLED,
     ProfilerProvider,
 )
+from tests.common import set_music_source_access
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -38,7 +42,7 @@ async def profiler(mass: MusicAssistant) -> ProfilerProvider:
     return provider
 
 
-async def test_library_counts_ignore_requesting_user_provider_filter(
+async def test_library_counts_ignore_requesting_user_music_sources(
     profiler: ProfilerProvider,
     mass: MusicAssistant,
 ) -> None:
@@ -58,13 +62,22 @@ async def test_library_counts_ignore_requesting_user_provider_filter(
             },
         )
     )
+    # the seeded artist lives on another member's private source, which the requesting
+    # admin may not see; the admin's own source keeps its visible set non-empty
+    set_music_source_access(
+        mass,
+        {
+            "prov_a_inst": ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+            "prov_b_inst": ProviderAccess(owner="admin", sharing=ProviderSharing.PRIVATE),
+        },
+    )
     with mock.patch(
         "music_assistant.controllers.music.media.base.get_current_user",
-        return_value=mock.Mock(provider_filter=["no_such_provider"]),
+        return_value=User(user_id="admin", username="admin", role=UserRole.ADMIN),
     ):
         counts = await profiler._get_library_counts()
-    # the seeded artist has no mapping on the filtered provider, so a user-scoped count
-    # would report 0 for it
+        # a user-scoped count really does report 0 for the seeded artist
+        assert await mass.music.artists.library_count() == 0
     assert counts == {
         "artist": 1,
         "album": 0,

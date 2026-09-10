@@ -14,6 +14,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import ProviderSharing
 from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidDataError,
@@ -56,6 +58,7 @@ from music_assistant.controllers.webserver.websocket_client import WebsocketClie
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_loads
 from music_assistant.mass import MusicAssistant
+from tests.common import set_music_source_access
 
 
 @pytest.fixture
@@ -695,6 +698,86 @@ async def test_delete_user_removes_dependent_rows(auth_manager: AuthenticationMa
 
     for table in tables:
         assert await auth_manager.database.get_rows(table, {"user_id": user.user_id}) == []
+
+
+async def test_delete_user_releases_its_music_sources(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that the music sources of a deleted user outlive it.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    admin = await auth_manager.create_user(username="sourceadmin", role=UserRole.ADMIN)
+    leaver = await auth_manager.create_user(username="leaver", role=UserRole.USER)
+    set_music_source_access(
+        auth_manager.mass,
+        {
+            "spotify--owned": ProviderAccess(owner=leaver.user_id, sharing=ProviderSharing.MEMBERS),
+            "qobuz--private": ProviderAccess(owner=leaver.user_id, sharing=ProviderSharing.PRIVATE),
+            "tidal--shared": ProviderAccess(
+                owner=admin.user_id,
+                sharing=ProviderSharing.SELECTED,
+                shared_users=[leaver.user_id, admin.user_id],
+            ),
+            "jellyfin--household": None,
+        },
+    )
+
+    set_current_user(admin)
+    await auth_manager.delete_user(leaver.user_id)
+
+    # the sources it owned keep their sharing but lose their owner
+    assert auth_manager.mass.config.get(f"{CONF_PROVIDERS}/spotify--owned/access") == {
+        "owner": None,
+        "sharing": "members",
+        "shared_users": [],
+    }
+    # which leaves a private source visible to nobody until an admin sets its access
+    assert auth_manager.mass.config.get(f"{CONF_PROVIDERS}/qobuz--private/access") == {
+        "owner": None,
+        "sharing": "private",
+        "shared_users": [],
+    }
+    assert auth_manager.mass.config.get(f"{CONF_PROVIDERS}/tidal--shared/access") == {
+        "owner": admin.user_id,
+        "sharing": "selected",
+        "shared_users": [admin.user_id],
+    }
+    assert auth_manager.mass.config.get(f"{CONF_PROVIDERS}/jellyfin--household/access") is None
+
+
+async def test_user_reads_report_the_derived_music_sources(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that the provider filter an API client reads holds the user's music sources.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    owner = await auth_manager.create_user(username="owner", role=UserRole.USER)
+    member = await auth_manager.create_user(username="member", role=UserRole.USER)
+    set_music_source_access(
+        auth_manager.mass,
+        {
+            "spotify--household": None,
+            "tidal--private": ProviderAccess(owner=owner.user_id, sharing=ProviderSharing.PRIVATE),
+        },
+    )
+
+    set_current_user(member)
+    assert (await auth_manager.get_current_user_info()).provider_filter == ["spotify--household"]
+    # a user that may see every source is reported as unrestricted
+    set_current_user(owner)
+    assert (await auth_manager.get_current_user_info()).provider_filter == []
+
+    listed = {user.username: user.provider_filter for user in await auth_manager.list_users()}
+    assert listed == {"owner": [], "member": ["spotify--household"]}
+    user_info = await auth_manager.get_user_info(member.user_id)
+    assert user_info is not None
+    assert user_info.provider_filter == ["spotify--household"]
+    # the internal lookup is not an api read path, so it stamps nothing
+    internal_user = await auth_manager.get_user(member.user_id)
+    assert internal_user is not None
+    assert internal_user.provider_filter == []
 
 
 async def test_prune_orphaned_user_rows(auth_manager: AuthenticationManager) -> None:
@@ -2638,7 +2721,7 @@ async def test_homeassistant_system_user_may_read_users(
     system_user = await auth_manager.get_homeassistant_system_user()
     standard_user = await auth_manager.create_user(username="user_a", role=UserRole.USER)
     guest_user = await auth_manager.create_user(username="guest_a", role=UserRole.GUEST)
-    for command in (AuthenticationManager.list_users, AuthenticationManager.get_user):
+    for command in (AuthenticationManager.list_users, AuthenticationManager.get_user_info):
         assert getattr(command, "api_required_scope", None) is Scope.USERS_READ
     assert has_scope(system_user, Scope.USERS_READ)
     # reading user accounts remains off limits for regular users and guests
@@ -2690,23 +2773,19 @@ async def _create_ws_client(mass: MusicAssistant, user_id: str) -> WebsocketClie
 
 async def test_remove_from_user_filters(auth_manager: AuthenticationManager) -> None:
     """
-    Test that a removed provider/player is stripped from the access filters of all users.
+    Test that a removed player is stripped from the access filters of all users.
 
     :param auth_manager: AuthenticationManager instance.
     """
     user = await auth_manager.create_user(
         username="restricted",
-        provider_filter=["spotify--old", "jellyfin--live"],
         player_filter=["player_gone", "player_live"],
     )
     unrestricted = await auth_manager.create_user(username="unrestricted")
 
-    await auth_manager.remove_from_user_filters(
-        provider_instance_ids=["spotify--old"], player_ids=["player_gone"]
-    )
+    await auth_manager.remove_from_user_filters(player_ids=["player_gone"])
 
-    provider_filter, player_filter = await _get_filters(auth_manager, user.user_id)
-    assert provider_filter == ["jellyfin--live"]
+    _, player_filter = await _get_filters(auth_manager, user.user_id)
     assert player_filter == ["player_live"]
     # a user without restrictions must stay unrestricted
     assert await _get_filters(auth_manager, unrestricted.user_id) == ([], [])
@@ -2721,13 +2800,13 @@ async def test_remove_from_user_filters_lifts_restriction(
     :param auth_manager: AuthenticationManager instance.
     :param caplog: Pytest log capture fixture.
     """
-    user = await auth_manager.create_user(username="onlyspotify", provider_filter=["spotify--old"])
+    user = await auth_manager.create_user(username="onlykitchen", player_filter=["player_gone"])
 
     with caplog.at_level(logging.WARNING):
-        await auth_manager.remove_from_user_filters(provider_instance_ids=["spotify--old"])
+        await auth_manager.remove_from_user_filters(player_ids=["player_gone"])
 
-    provider_filter, _ = await _get_filters(auth_manager, user.user_id)
-    assert provider_filter == []
+    _, player_filter = await _get_filters(auth_manager, user.user_id)
+    assert player_filter == []
     assert "no longer restricted" in caplog.text
 
 
@@ -2762,12 +2841,10 @@ async def test_update_user_filters_updates_live_sessions(
     user = await auth_manager.create_user(username="unrestricted")
     session = await _create_ws_client(mass_minimal, user.user_id)
 
-    await auth_manager.update_user_filters(user, ["kitchen"], None)
+    await auth_manager.update_user_filters(user, ["kitchen"])
 
     assert session.authenticated_user is not None
     assert session.authenticated_user.player_filter == ["kitchen"]
-    # a filter that was not part of the update must be left alone
-    assert session.authenticated_user.provider_filter == []
 
 
 async def test_replace_player_in_user_filters(auth_manager: AuthenticationManager) -> None:
@@ -2823,19 +2900,15 @@ async def test_user_filter_removal_updates_live_sessions(
     """
     user = await auth_manager.create_user(
         username="restricted",
-        provider_filter=["spotify--old", "jellyfin--live"],
         player_filter=["player_gone", "player_live"],
     )
     bystander = await auth_manager.create_user(username="bystander", player_filter=["player_other"])
     session = await _create_ws_client(mass_minimal, user.user_id)
     bystander_session = await _create_ws_client(mass_minimal, bystander.user_id)
 
-    await auth_manager.remove_from_user_filters(
-        provider_instance_ids=["spotify--old"], player_ids=["player_gone"]
-    )
+    await auth_manager.remove_from_user_filters(player_ids=["player_gone"])
 
     assert session.authenticated_user is not None
-    assert session.authenticated_user.provider_filter == ["jellyfin--live"]
     assert session.authenticated_user.player_filter == ["player_live"]
     # a session of another user must keep its own filters
     assert bystander_session.authenticated_user is not None
@@ -2864,49 +2937,19 @@ async def test_replace_player_in_user_filters_updates_live_sessions(
 
 async def test_prune_stale_user_filters(auth_manager: AuthenticationManager) -> None:
     """
-    Test that filter entries pointing at unknown providers/players are cleaned up on startup.
+    Test that filter entries pointing at unknown players are cleaned up on startup.
 
     :param auth_manager: AuthenticationManager instance.
     """
-    auth_manager.mass.config.set(
-        f"{CONF_PROVIDERS}/spotify--live", {"instance_id": "spotify--live"}
-    )
     auth_manager.mass.config.set(f"{CONF_PLAYERS}/player_live", {"player_id": "player_live"})
     user = await auth_manager.create_user(
         username="stale",
-        provider_filter=["spotify--old", "spotify--live"],
         player_filter=["player_gone", "player_live"],
     )
 
     await auth_manager._prune_stale_user_filters()
 
-    assert await _get_filters(auth_manager, user.user_id) == (
-        ["spotify--live"],
-        ["player_live"],
-    )
-
-
-async def test_prune_maps_collapsed_plugin_instances(auth_manager: AuthenticationManager) -> None:
-    """
-    Test that filters naming a collapsed connected-player plugin instance follow it.
-
-    The collapse migration re-keys spotify_connect/airplay_receiver instances to the
-    bare domain; pruning the old id instead of mapping it would leave a user whose
-    last filter entry it was unrestricted.
-
-    :param auth_manager: AuthenticationManager instance.
-    """
-    auth_manager.mass.config.set(
-        f"{CONF_PROVIDERS}/spotify_connect", {"instance_id": "spotify_connect"}
-    )
-    user = await auth_manager.create_user(
-        username="collapsed",
-        provider_filter=["spotify_connect--abcd1234"],
-    )
-
-    await auth_manager._prune_stale_user_filters()
-
-    assert await _get_filters(auth_manager, user.user_id) == (["spotify_connect"], [])
+    assert await _get_filters(auth_manager, user.user_id) == ([], ["player_live"])
 
 
 async def test_prune_stale_user_filters_ignores_empty_config(
@@ -2919,10 +2962,9 @@ async def test_prune_stale_user_filters_ignores_empty_config(
     """
     user = await auth_manager.create_user(
         username="noconfig",
-        provider_filter=["spotify--old"],
         player_filter=["player_gone"],
     )
 
     await auth_manager._prune_stale_user_filters()
 
-    assert await _get_filters(auth_manager, user.user_id) == (["spotify--old"], ["player_gone"])
+    assert await _get_filters(auth_manager, user.user_id) == ([], ["player_gone"])

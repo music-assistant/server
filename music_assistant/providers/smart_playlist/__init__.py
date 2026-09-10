@@ -54,6 +54,7 @@ from music_assistant.helpers.plugin_engines import (
     create_ai_engine_config_entries,
     select_ai_engine,
 )
+from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.track_filter import filter_tracks
 from music_assistant.helpers.uri import parse_uri
@@ -364,10 +365,9 @@ class SmartPlaylistProvider(PluginProvider):
         if not rules.is_dynamic:
             return await self._evaluate_rules(rules)
         user = get_current_user()
+        visible = visible_music_sources(self.mass, user) if user else None
         # Tuple ensures a stable cache key and carries the filter into background SWR refreshes.
-        user_provider_filter = (
-            tuple(sorted(user.provider_filter)) if user and user.provider_filter else ()
-        )
+        user_provider_filter = tuple(sorted(visible)) if visible is not None else ()
         # Filter the cached sample at the boundary (not inside the cached evaluation) so a
         # recency-filtered batch from a queue refill never gets cached and served to browse.
         sample = await self._cached_dynamic_sample(resolved_id, user_provider_filter)

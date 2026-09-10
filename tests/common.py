@@ -5,20 +5,29 @@ import contextlib
 import inspect
 import logging
 import pathlib
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Iterator, Mapping
 from types import MethodType
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiofiles.os
-from music_assistant_models.enums import EventType, IdentifierType, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    EventType,
+    IdentifierType,
+    PlayerFeature,
+    PlayerType,
+    ProviderType,
+)
 from music_assistant_models.player import DeviceInfo
 
+from music_assistant.constants import CONF_PROVIDERS
+from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.tasks.constants import TASK_LIFECYCLE_UPDATE_DEBOUNCE
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ProviderAccess
     from music_assistant_models.event import MassEvent
 
 
@@ -213,6 +222,43 @@ def use_real_create_task(mass: MagicMock | MusicAssistant) -> None:
 
     # kept a mock so tests can still assert on the calls it received
     mass.create_task = MagicMock(side_effect=_create_task)  # type: ignore[method-assign]
+
+
+def set_music_source_access(
+    mass: MusicAssistant | MagicMock,
+    access_by_instance: Mapping[str, ProviderAccess | None],
+) -> None:
+    """
+    Give the server the given music sources, each carrying the given access record.
+
+    A user's set of music sources is derived from the access records on the raw provider
+    configs, so this is all a test needs to make a source visible to (or hidden from) a
+    user. Works both on a real server and on a mocked one.
+
+    :param mass: The (real or mocked) MusicAssistant instance.
+    :param access_by_instance: Access record per music source instance id; None means a
+        household source, visible to everyone.
+    """
+    raw_configs = {
+        instance_id: {
+            "type": ProviderType.MUSIC.value,
+            "domain": instance_id.split("--")[0],
+            "instance_id": instance_id,
+            "access": access.to_dict() if access else None,
+        }
+        for instance_id, access in access_by_instance.items()
+    }
+    if isinstance(mass.config, ConfigController):
+        for instance_id, raw_config in raw_configs.items():
+            mass.config.set(f"{CONF_PROVIDERS}/{instance_id}", raw_config)
+        return
+    mass.config.get = MagicMock(
+        side_effect=lambda key, default=None: (
+            raw_configs
+            if key == CONF_PROVIDERS
+            else raw_configs.get(key.removeprefix(f"{CONF_PROVIDERS}/"), default)
+        )
+    )
 
 
 def create_mock_config(name: str) -> MagicMock:

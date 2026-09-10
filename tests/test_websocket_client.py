@@ -10,6 +10,7 @@ from music_assistant_models.api import CommandMessage, ErrorResultMessage
 from music_assistant_models.auth import Scope, User, UserRole
 from music_assistant_models.errors import InsufficientPermissions
 
+from music_assistant.controllers.config.providers import ProviderConfigMixin
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_client_id,
     get_current_token,
@@ -97,6 +98,20 @@ async def test_user_scoped_command_allows_user_and_admin(role: UserRole) -> None
 async def test_admin_scoped_command_rejects_non_admin(role: UserRole) -> None:
     """Only admins hold admin-only scopes such as USERS_MANAGE."""
     client = _create_client(role, _command_handler(required_scope=Scope.USERS_MANAGE))
+
+    await client._handle_command(CommandMessage(message_id="1", command="test/protected"))
+
+    assert _sent_error_code(client) == PERMISSION_DENIED
+    client.mass.create_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", [UserRole.USER, UserRole.GUEST])
+async def test_set_provider_access_rejects_a_member(role: UserRole) -> None:
+    """Sharing a music source needs a scope no member holds yet, so only an admin may."""
+    scope = getattr(ProviderConfigMixin.set_provider_access, "api_required_scope", None)
+    assert scope is Scope.CONFIG_PROVIDERS_OWN
+    client = _create_client(role, _command_handler(required_scope=scope))
 
     await client._handle_command(CommandMessage(message_id="1", command="test/protected"))
 

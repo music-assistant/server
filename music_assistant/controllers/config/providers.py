@@ -8,11 +8,12 @@ import logging
 from typing import TYPE_CHECKING, Any, cast, overload
 
 import shortuuid
-from music_assistant_models.auth import Scope
+from music_assistant_models.auth import Scope, UserRole
 from music_assistant_models.config_entries import (
     ConfigActionResult,
     ConfigEntry,
     ConfigValueType,
+    ProviderAccess,
     ProviderConfig,
     ProviderError,
 )
@@ -20,9 +21,14 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
     ProviderFeature,
+    ProviderSharing,
     ProviderType,
 )
-from music_assistant_models.errors import ActionUnavailable
+from music_assistant_models.errors import (
+    ActionUnavailable,
+    InsufficientPermissions,
+    InvalidDataError,
+)
 
 from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS,
@@ -39,6 +45,7 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_PROVIDERS,
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
+    HOMEASSISTANT_SYSTEM_USER,
 )
 from music_assistant.controllers.config.constants import BASE_KEYS, _ConfigValueT
 from music_assistant.controllers.config.helpers import (
@@ -46,9 +53,13 @@ from music_assistant.controllers.config.helpers import (
     _with_translation_owner,
 )
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.provider_access import source_owner, visible_music_sources
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.auth import User
+    from music_assistant_models.provider import ProviderManifest
+
     from music_assistant import MusicAssistant
     from music_assistant.models.provider import Provider
 
@@ -70,6 +81,8 @@ class ProviderConfigMixin:
 
         def set(self, key: str, value: Any, immediate: bool = False) -> None: ...  # noqa: D102
 
+        def save(self, immediate: bool = False) -> None: ...  # noqa: D102
+
         def set_default(self, key: str, default_value: Any) -> None: ...  # noqa: D102
 
         def remove(self, key: str) -> None: ...  # noqa: D102
@@ -87,9 +100,19 @@ class ProviderConfigMixin:
         provider_domain: str | None = None,
         include_values: bool = False,
     ) -> list[ProviderConfig]:
-        """Return all known provider configurations, optionally filtered by ProviderType."""
+        """
+        Return all known provider configurations, optionally filtered by ProviderType.
+
+        A caller that does not manage every music source is served only the music sources
+        it may use.
+
+        :param provider_type: Optionally only return providers of this type.
+        :param provider_domain: Optionally only return providers of this domain.
+        :param include_values: Include the resolved config entries of each provider.
+        """
         raw_values = self.get(CONF_PROVIDERS, {})
         prov_entries = {x.domain for x in self.mass.get_provider_manifests()}
+        visible_sources = self._visible_sources_for_caller()
         configs: list[ProviderConfig] = []
         for prov_conf in raw_values.values():
             if provider_type is not None and prov_conf["type"] != provider_type:
@@ -98,6 +121,8 @@ class ProviderConfigMixin:
                 continue
             # guard for deleted providers
             if prov_conf["domain"] not in prov_entries:
+                continue
+            if self._is_hidden_source(prov_conf, visible_sources):
                 continue
             if include_values:
                 # get_provider_config already stamps the derived status
@@ -113,8 +138,14 @@ class ProviderConfigMixin:
 
     @api_command("config/providers/get", required_scope=Scope.CONFIG_PROVIDERS_READ)
     async def get_provider_config(self, instance_id: str) -> ProviderConfig:
-        """Return configuration for a single provider."""
+        """
+        Return configuration for a single provider.
+
+        :param instance_id: The provider instance id.
+        :raises InsufficientPermissions: The caller may not use this music source.
+        """
         if raw_conf := self.get(f"{CONF_PROVIDERS}/{instance_id}", {}):
+            self._ensure_source_visible(raw_conf)
             for prov in self.mass.get_provider_manifests():
                 if prov.domain == raw_conf["domain"]:
                     break
@@ -178,7 +209,9 @@ class ProviderConfigMixin:
             Note: This parameter is used purely for static type checking and does not
             perform runtime type validation. Callers are responsible for ensuring the
             specified type matches the actual config value type.
+        :raises InsufficientPermissions: The caller may not use this music source.
         """
+        self._ensure_source_visible(self.get(f"{CONF_PROVIDERS}/{instance_id}"))
         # prefer stored value so we don't have to retrieve all config entries every time
         if (raw_value := self.get_raw_provider_config_value(instance_id, key)) is not None:
             return raw_value
@@ -205,12 +238,15 @@ class ProviderConfigMixin:
         Reconfigure action for a failed provider instead of an editable options form.
 
         :param instance_id: The provider instance id.
+        :raises InsufficientPermissions: The caller may not use this music source.
         """
-        if provider := self.mass.get_provider(instance_id, return_unavailable=True):
+        raw_conf = self.get(f"{CONF_PROVIDERS}/{instance_id}")
+        self._ensure_source_visible(raw_conf)
+        provider = self.mass.get_provider(instance_id, return_unavailable=True)
+        if provider and provider.instance_id == instance_id:
             return await self._resolve_provider_config_entries(provider)
         # not loaded: feature-derived and provider-specific entries can't be computed
         # without the instance, so only the server defaults are returned
-        raw_conf = self.get(f"{CONF_PROVIDERS}/{instance_id}")
         owner = f"provider.{raw_conf['domain']}" if raw_conf else "common"
         return _with_translation_owner(list(DEFAULT_PROVIDER_CONFIG_ENTRIES), owner)
 
@@ -300,6 +336,93 @@ class ProviderConfigMixin:
         # return full config, just in case
         return await self.get_provider_config(config.instance_id)
 
+    @api_command("config/providers/set_access", required_scope=Scope.CONFIG_PROVIDERS_OWN)
+    async def set_provider_access(
+        self,
+        instance_id: str,
+        sharing: ProviderSharing,
+        owner: str | None = None,
+        shared_users: list[str] | None = None,
+    ) -> ProviderConfig:
+        """
+        Set who owns a music source and who else may use it.
+
+        An admin may set this for any music source; any other caller may only change the
+        sharing of a source it owns.
+
+        :param instance_id: The music source (provider instance) to set the access of.
+        :param sharing: Who, besides its owner, may use the source.
+        :param owner: User id of the member owning the source, None for a household source.
+        :param shared_users: The user ids the source is shared with, SELECTED sharing only.
+        """
+        raw_conf = self.get(f"{CONF_PROVIDERS}/{instance_id}")
+        if not raw_conf:
+            msg = f"No config found for provider id {instance_id}"
+            raise KeyError(msg)
+        manifest = self.mass.get_provider_manifest(raw_conf["domain"])
+        if manifest.type != ProviderType.MUSIC or manifest.builtin:
+            raise InvalidDataError(f"{manifest.name} is always available to the entire household")
+        user, manages_all_sources = self._access_caller()
+        if user is not None and not manages_all_sources:
+            if source_owner(self.mass, instance_id) != user.user_id:
+                raise InsufficientPermissions("Only the owner of a music source may share it")
+            if owner != user.user_id:
+                raise InsufficientPermissions(
+                    f"The {Scope.CONFIG_PROVIDERS_WRITE.value} scope is required to change "
+                    "the owner of a music source"
+                )
+        if owner is not None:
+            await self._validate_source_owner(owner)
+        shared: list[str] = []
+        if sharing == ProviderSharing.SELECTED:
+            for user_id in dict.fromkeys(shared_users or []):
+                if user_id == owner:
+                    continue
+                await self._validate_access_user(user_id)
+                shared.append(user_id)
+        access = ProviderAccess(owner=owner, sharing=sharing, shared_users=shared)
+        self.set(f"{CONF_PROVIDERS}/{instance_id}/access", access.to_dict())
+        self.save(immediate=True)
+        provider = self.mass.get_provider(instance_id, return_unavailable=True)
+        if provider and provider.instance_id == instance_id:
+            # keep the loaded instance's config copy in sync with the stored record
+            provider.config.access = access
+        # the music sources of (other) users change with this, so let every client refresh
+        self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
+        return await self.get_provider_config(instance_id)
+
+    def release_user_sources(self, user_id: str) -> None:
+        """
+        Release the music sources of a user that no longer exists.
+
+        The sources it owned keep their sharing but lose their owner, so a private source
+        is visible to nobody until an admin sets its access. The user is dropped from the
+        share list of every other source.
+
+        :param user_id: Id of the removed user.
+        """
+        released = False
+        for instance_id, raw_conf in self.get(CONF_PROVIDERS, {}).items():
+            if (raw_access := raw_conf.get("access")) is None:
+                continue
+            try:
+                access = ProviderAccess.from_dict(raw_access)
+            except ValueError, TypeError:
+                # a record that can not be read is left for the admin to repair
+                LOGGER.warning("Skipping the unreadable access record of %s", instance_id)
+                continue
+            if access.owner != user_id and user_id not in access.shared_users:
+                continue
+            if access.owner == user_id:
+                access.owner = None
+            access.shared_users = [x for x in access.shared_users if x != user_id]
+            self.set(f"{CONF_PROVIDERS}/{instance_id}/access", access.to_dict())
+            released = True
+        if not released:
+            return
+        self.save(immediate=True)
+        self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
+
     @api_command("config/providers/remove", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
     async def remove_provider_config(self, instance_id: str) -> None:
         """Remove ProviderConfig."""
@@ -314,9 +437,6 @@ class ProviderConfigMixin:
             raise RuntimeError(msg)
         self.remove(conf_key)
         await self.mass.unload_provider(instance_id, True)
-        # a user access filter is an allow-list of provider instance ids, so it must not be
-        # left pointing at a provider that no longer exists
-        await self.mass.webserver.auth.remove_from_user_filters(provider_instance_ids=[instance_id])
         if existing["type"] == "music":
             # rewrite shortcuts before cleanup removes the items they point at
             await self.mass.music.cleanup_provider_shortcuts(instance_id)
@@ -537,7 +657,7 @@ class ProviderConfigMixin:
                 )
             if "name" in changed_keys:
                 # signal providers updated so frontends refresh the provider name
-                self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
+                self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
         elif config.enabled:
             # provider is enabled but not available, try to load it
             await self.mass.load_provider_config(config)
@@ -597,6 +717,7 @@ class ProviderConfigMixin:
         # __init__; the passed values are persisted raw and full validation is deferred to
         # load time (see _load_provider -> rehydrate_provider_config). Setup flows collect
         # their input into setup_data.
+        access = self._access_for_new_instance(manifest)
         config = cast(
             "ProviderConfig",
             ProviderConfig.parse(
@@ -608,6 +729,7 @@ class ProviderConfigMixin:
                     "default_name": manifest.name,
                     "values": values,
                     "setup_data": setup_data or {},
+                    "access": access.to_dict() if access else None,
                 },
             ),
         )
@@ -638,6 +760,66 @@ class ProviderConfigMixin:
             # correct any multi-instance provider mappings
             self.mass.music.queue_provider_mapping_correction_task()
         return config
+
+    def _access_caller(self) -> tuple[User | None, bool]:
+        """Return the calling user (None when internal) and whether it manages all sources."""
+        # imported here: the webserver helpers pull in the full auth stack,
+        # which must not be imported with the config controller at startup
+        from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
+            get_current_user,
+            has_scope,
+        )
+
+        user = get_current_user()
+        # no user context means an internal (server-side) caller, which is trusted
+        return user, user is None or has_scope(user, Scope.CONFIG_PROVIDERS_WRITE)
+
+    def _visible_sources_for_caller(self) -> list[str] | None:
+        """Return the music sources the calling user may see, None for no restriction."""
+        user, manages_all_sources = self._access_caller()
+        if user is None or manages_all_sources:
+            return None
+        return visible_music_sources(self.mass, user)
+
+    @staticmethod
+    def _is_hidden_source(raw_conf: dict[str, Any], visible_sources: list[str] | None) -> bool:
+        """Return whether the raw config is a music source outside the given visible set."""
+        return (
+            visible_sources is not None
+            and raw_conf["type"] == ProviderType.MUSIC
+            and raw_conf["instance_id"] not in visible_sources
+        )
+
+    def _ensure_source_visible(self, raw_conf: dict[str, Any] | None) -> None:
+        """Raise when the given raw config is a music source the caller may not use."""
+        if raw_conf and self._is_hidden_source(raw_conf, self._visible_sources_for_caller()):
+            instance_id = raw_conf["instance_id"]
+            raise InsufficientPermissions(f"{instance_id} is not a music source of this user")
+
+    def _access_for_new_instance(self, manifest: ProviderManifest) -> ProviderAccess | None:
+        """Return the access record a newly created instance starts out with."""
+        if manifest.type != ProviderType.MUSIC or manifest.builtin:
+            return None
+        user, manages_all_sources = self._access_caller()
+        if user is None or manages_all_sources:
+            # an admin (or the server itself) sets up a source for the entire household
+            return None
+        return ProviderAccess(owner=user.user_id, sharing=ProviderSharing.PRIVATE)
+
+    async def _validate_access_user(self, user_id: str) -> User:
+        """Return the user a music source may be shared with, or raise if it may not."""
+        user = await self.mass.webserver.auth.get_user(user_id)
+        if user is None:
+            raise InvalidDataError(f"Unknown or disabled user: {user_id}")
+        return user
+
+    async def _validate_source_owner(self, user_id: str) -> None:
+        """Raise when the given user can not own a music source."""
+        user = await self._validate_access_user(user_id)
+        if user.role == UserRole.GUEST:
+            raise InvalidDataError("A guest can not own a music source")
+        if user.username == HOMEASSISTANT_SYSTEM_USER:
+            raise InvalidDataError("The Home Assistant system user can not own a music source")
 
     async def _resolve_provider_config_entries(self, provider: Provider) -> list[ConfigEntry]:
         """Return the full config-entry set for a (loaded) provider instance."""
