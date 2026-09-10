@@ -199,6 +199,33 @@ async def test_a_blocked_item_does_not_take_the_batch_down(mock_get_user: Mock) 
 
 
 @patch(GET_CURRENT_USER)
+async def test_a_fully_refused_request_leaves_the_queue_with_its_user(
+    mock_get_user: Mock,
+) -> None:
+    """A queue keeps playing for its listener until another member's request survives."""
+    housemate = User(user_id=OTHER_USER_ID, username=OTHER_USER_ID, role=UserRole.USER)
+    mock_get_user.return_value = User(user_id=USER_ID, username=USER_ID, role=UserRole.USER)
+    ctrl = _controller()
+    _set_sources(ctrl)
+    await ctrl.play_media("q1", _track("t1", OWN_INSTANCE, OWN_INSTANCE), QueueOption.REPLACE)
+    assert cast("PlayerQueueData", ctrl._queue_data["q1"]).userid == USER_ID
+
+    # the housemate asks for the listener's own source, which they may not use
+    mock_get_user.return_value = housemate
+    with pytest.raises(MediaNotFoundError):
+        await ctrl.play_media("q1", _track("t2", OWN_INSTANCE, OWN_INSTANCE), QueueOption.REPLACE)
+
+    assert cast("PlayerQueueData", ctrl._queue_data["q1"]).userid == USER_ID
+
+    # BLOCKED_INSTANCE is the housemate's own source, so this request does play
+    await ctrl.play_media(
+        "q1", _track("t3", BLOCKED_INSTANCE, BLOCKED_INSTANCE), QueueOption.REPLACE
+    )
+
+    assert cast("PlayerQueueData", ctrl._queue_data["q1"]).userid == OTHER_USER_ID
+
+
+@patch(GET_CURRENT_USER)
 async def test_anonymous_playback_reaches_the_household_sources_only(mock_get_user: Mock) -> None:
     """A queue without a user plays what is shared with everyone, and nothing private."""
     mock_get_user.return_value = None

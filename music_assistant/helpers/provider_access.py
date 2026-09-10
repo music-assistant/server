@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from music_assistant_models.auth import User
 
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models import ProviderInstanceType
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.provider_access")
 
@@ -103,6 +104,22 @@ def source_owner(mass: MusicAssistant, instance_id: str) -> str | None:
     raw_conf = mass.config.get(f"{CONF_PROVIDERS}/{instance_id}", {})
     access = _parse_access(instance_id, raw_conf)
     return access.owner if access else None
+
+
+def exact_provider(mass: MusicAssistant, instance_id: str) -> ProviderInstanceType | None:
+    """
+    Return the loaded and available provider with exactly this instance id, if there is one.
+
+    Where `mass.get_provider` widens to another instance of the same domain, this never does,
+    so a mapping that passed an access check is not served by an account the user may not use.
+
+    :param mass: The MusicAssistant instance.
+    :param instance_id: The provider instance id to look up.
+    """
+    provider = mass.get_provider(instance_id, return_unavailable=True)
+    if provider is None or not provider.available or provider.instance_id != instance_id:
+        return None
+    return provider
 
 
 def derived_provider_filter(mass: MusicAssistant, user: User) -> list[str]:

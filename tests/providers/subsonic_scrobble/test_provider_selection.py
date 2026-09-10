@@ -12,6 +12,7 @@ from music_assistant_models.enums import MediaType, ProviderSharing
 from music_assistant_models.media_items import Podcast, PodcastEpisode, ProviderMapping, Track
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
+from music_assistant.mass import MusicAssistant
 from music_assistant.providers.opensubsonic.parsers import EP_CHAN_SEP
 from music_assistant.providers.opensubsonic.sonic_provider import OpenSonicProvider
 from music_assistant.providers.subsonic_scrobble import SubsonicScrobbleEventHandler
@@ -82,9 +83,13 @@ def _shared(owner: str) -> ProviderAccess:
 
 @pytest.fixture
 def providers() -> dict[str, Mock]:
-    """One mocked OpenSonicProvider per instance."""
+    """One mocked OpenSonicProvider per instance, both loaded and available."""
     provs = {INSTANCE_A: Mock(spec=OpenSonicProvider), INSTANCE_B: Mock(spec=OpenSonicProvider)}
-    for prov in provs.values():
+    for instance_id, prov in provs.items():
+        prov.instance_id = instance_id
+        prov.domain = "opensubsonic"
+        prov.available = True
+        prov.is_streaming_provider = True
         prov.conn = Mock()
         prov.conn.scrobble = AsyncMock()
     return provs
@@ -95,7 +100,7 @@ def mass(providers: dict[str, Mock]) -> Mock:
     """Mock the server: library lookup, provider registry and user lookup."""
     mass = Mock()
     mass.music.get_library_item_by_prov_id = AsyncMock(return_value=_track())
-    mass.get_provider.side_effect = lambda instance_id: providers.get(instance_id)
+    mass.get_provider.side_effect = lambda instance_id, **_kwargs: providers.get(instance_id)
     mass.webserver.auth.get_user = AsyncMock(return_value=None)
     # both instances are household sources unless a test says otherwise
     set_music_source_access(mass, {INSTANCE_A: None, INSTANCE_B: None})
@@ -182,9 +187,34 @@ async def test_unavailable_own_instance_scrobbles_nowhere(
         mass, {INSTANCE_A: _private(OTHER_USER_ID), INSTANCE_B: _private(USER_ID)}
     )
     mass.webserver.auth.get_user.return_value = _user()
-    mass.get_provider.side_effect = lambda instance_id: (
+    mass.get_provider.side_effect = lambda instance_id, **_kwargs: (
         None if instance_id == INSTANCE_B else providers.get(instance_id)
     )
+
+    prov, item_id = await handler._get_subsonic_provider_and_item_id(
+        MediaType.TRACK, "library", "1", USER_ID
+    )
+
+    assert prov is None
+    assert item_id == "1"
+
+
+async def test_never_reports_through_another_account_of_the_same_server(
+    handler: SubsonicScrobbleEventHandler, mass: Mock, providers: dict[str, Mock]
+) -> None:
+    """
+    The user's own instance being unavailable does not hand the play to the other account.
+
+    `get_provider` stands in another instance of the same server for an unavailable one,
+    which here would submit the play to a Subsonic account the user may not use.
+    """
+    set_music_source_access(
+        mass, {INSTANCE_A: _private(OTHER_USER_ID), INSTANCE_B: _private(USER_ID)}
+    )
+    mass.webserver.auth.get_user.return_value = _user()
+    providers[INSTANCE_B].available = False
+    mass._providers = providers
+    mass.get_provider = MusicAssistant.get_provider.__get__(mass)
 
     prov, item_id = await handler._get_subsonic_provider_and_item_id(
         MediaType.TRACK, "library", "1", USER_ID

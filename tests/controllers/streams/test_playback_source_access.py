@@ -80,6 +80,19 @@ def _queue_item(*mappings: ProviderMapping) -> QueueItem:
     )
 
 
+def _cached_details(instance: str) -> StreamDetails:
+    """Build the stream details an earlier resolution left on a queue item."""
+    return StreamDetails(
+        provider=instance,
+        item_id=ITEM_ID,
+        audio_format=AudioFormat(content_type=ContentType.MP3),
+        media_type=MediaType.TRACK,
+        stream_type=StreamType.HTTP,
+        path="http://test.invalid/cached.mp3",
+        duration=180,
+    )
+
+
 def _provider(instance: str) -> MagicMock:
     """Build a loaded streaming music provider that resolves its own stream details."""
     provider = MagicMock(spec=MusicProvider)
@@ -241,6 +254,45 @@ async def test_a_plugin_mapping_stays_a_candidate_for_a_restricted_user() -> Non
     )
 
     assert streamdetails.provider == PLUGIN_INSTANCE
+
+
+async def test_cached_details_of_a_source_no_longer_allowed_are_dropped() -> None:
+    """Details resolved while a source was still the listener's are not replayed once it is not."""
+    own = _provider(OWN_TIDAL)
+    theirs = _provider(OTHER_SPOTIFY)
+    audio = _audio(
+        {OWN_TIDAL: own, OTHER_SPOTIFY: theirs},
+        {OWN_TIDAL: _private(USER_ID), OTHER_SPOTIFY: _private(OTHER_USER_ID)},
+        _user(),
+    )
+    queue_item = _queue_item(_mapping(OWN_TIDAL))
+    queue_item.streamdetails = _cached_details(OTHER_SPOTIFY)
+
+    streamdetails = await audio.get_stream_details(queue_item=queue_item)
+
+    assert streamdetails.provider == OWN_TIDAL
+    theirs.get_stream_details.assert_not_awaited()
+
+
+async def test_cached_details_of_a_plugin_instance_are_reused() -> None:
+    """A plugin is no music source, so its cached details keep serving a restricted user."""
+    plugin = _provider(PLUGIN_INSTANCE)
+    plugin.type = ProviderType.PLUGIN
+    plugin.is_streaming_provider = False
+    audio = _audio(
+        {PLUGIN_INSTANCE: plugin},
+        # the plugin is absent from the configured music sources on purpose
+        {OWN_TIDAL: _private(USER_ID), OTHER_SPOTIFY: _private(OTHER_USER_ID)},
+        _user(),
+    )
+    queue_item = _queue_item(_mapping(PLUGIN_INSTANCE))
+    cached = _cached_details(PLUGIN_INSTANCE)
+    queue_item.streamdetails = cached
+
+    streamdetails = await audio.get_stream_details(queue_item=queue_item)
+
+    assert streamdetails is cached
+    plugin.get_stream_details.assert_not_awaited()
 
 
 async def test_a_track_only_on_a_blocked_source_reports_it_as_unavailable() -> None:

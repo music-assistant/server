@@ -621,10 +621,16 @@ class StreamsAudio:
                 f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
             )
 
+        # the playback user's own music sources are steered to first, the ones they
+        # may not use at all are dropped
+        allowed, preferred_providers = await playback_sources(mass, queue_item.queue_id)
+
         if (
             queue_item.streamdetails
             # cached details of an excluded instance are exactly what we select away from
             and queue_item.streamdetails.provider not in excluded_provider_instances
+            # nor of a source that is no longer one of the playback user's
+            and self._may_serve_playback(queue_item.streamdetails.provider, allowed)
             and (
                 # reuse if the buffer can serve this seek position (fast seek path)
                 (
@@ -643,9 +649,6 @@ class StreamsAudio:
 
             media_item = queue_item.media_item
             assert media_item is not None  # for type checking
-            # the playback user's own music sources are steered to first, the ones they
-            # may not use at all are dropped
-            allowed, preferred_providers = await playback_sources(mass, queue_item.queue_id)
             candidates = self._get_streamdetail_candidates(
                 media_item.provider_mappings,
                 preferred_providers,
@@ -3587,6 +3590,22 @@ class StreamsAudio:
                 else:
                     fallback_candidates.append(candidate)
         return [*preferred_candidates, *fallback_candidates]
+
+    def _may_serve_playback(self, instance_id: str, allowed: list[str] | None) -> bool:
+        """
+        Return whether the given provider instance may serve this playback.
+
+        :param instance_id: The provider instance to check.
+        :param allowed: Music sources the playback user may use, or None for all of them.
+        """
+        if allowed is None:
+            return True
+        # a plugin provider (ai_radio, smart_playlist) carries no access record of its
+        # own, so only music sources are narrowed down to what this user may use
+        provider = self.mass.get_provider(instance_id, return_unavailable=True)
+        return provider is not None and (
+            provider.type != ProviderType.MUSIC or instance_id in allowed
+        )
 
     def _get_mapping_providers(
         self, mapping: ProviderMapping, allowed: list[str] | None

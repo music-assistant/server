@@ -16,7 +16,7 @@ from music_assistant_models.enums import (
     ProviderSharing,
     ProviderType,
 )
-from music_assistant_models.errors import InsufficientPermissions
+from music_assistant_models.errors import InsufficientPermissions, MediaNotFoundError
 from music_assistant_models.media_items import Album, AudioFormat, ProviderMapping, UniqueList
 
 from music_assistant.constants import CONF_ENTRY_LIBRARY_SYNC_BACK
@@ -1119,6 +1119,76 @@ def test_select_provider_id_falls_back_to_plugin_when_no_allowed_music() -> None
 
     assert provider_instance == "smart_playlist_1"
     assert provider_item == "plugin_item"
+
+
+def test_select_provider_id_refuses_an_item_only_on_hidden_sources() -> None:
+    """A user with no mapping of their own can not reach the item at all."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    ctrl.mass.get_provider = Mock(
+        side_effect=lambda instance: {"qobuz_1": Mock(type=ProviderType.MUSIC)}.get(instance)
+    )
+    _restrict_to_spotify(ctrl.mass)
+    ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
+
+    item = create_mock_album(
+        provider_mappings=[
+            create_provider_mapping(
+                provider_instance="qobuz_1",
+                provider_domain="qobuz",
+                item_id="music_item",
+            )
+        ]
+    )
+
+    with (
+        patch(
+            "music_assistant.controllers.music.media.base.get_current_user",
+            return_value=SPOTIFY_USER,
+        ),
+        pytest.raises(MediaNotFoundError) as err,
+    ):
+        ctrl._select_provider_id(item)
+
+    assert err.value.translation_key == "media_not_available_for_user"
+
+
+def test_select_provider_id_keeps_an_allowed_mapping_next_to_a_hidden_one() -> None:
+    """A restricted user still gets the mapping on their own music source."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    ctrl.mass.get_provider = Mock(
+        side_effect=lambda instance: {
+            "qobuz_1": Mock(type=ProviderType.MUSIC),
+            "spotify_1": Mock(type=ProviderType.MUSIC),
+        }.get(instance)
+    )
+    _restrict_to_spotify(ctrl.mass)
+    ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
+
+    item = create_mock_album(
+        provider_mappings=[
+            create_provider_mapping(
+                provider_instance="qobuz_1",
+                provider_domain="qobuz",
+                item_id="hidden_item",
+            ),
+            create_provider_mapping(
+                provider_instance="spotify_1",
+                provider_domain="spotify",
+                item_id="music_item",
+            ),
+        ]
+    )
+
+    with patch(
+        "music_assistant.controllers.music.media.base.get_current_user",
+        return_value=SPOTIFY_USER,
+    ):
+        provider_instance, provider_item = ctrl._select_provider_id(item)
+
+    assert provider_instance == "spotify_1"
+    assert provider_item == "music_item"
 
 
 async def test_get_library_item_does_not_filter_in_library() -> None:

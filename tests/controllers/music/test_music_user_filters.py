@@ -312,6 +312,50 @@ def test_check_item_playable_for_anonymous_playback() -> None:
         controller.check_item_playable_for_user(_library_track(PROV_B), None)
 
 
+def _streaming_prov(instance_id: str, available: bool) -> Mock:
+    """Create a loaded instance of one and the same streaming music provider."""
+    prov = _make_prov(instance_id, ProviderType.MUSIC)
+    prov.domain = "tidal"
+    prov.available = available
+    prov.is_streaming_provider = True
+    return prov
+
+
+async def test_a_play_report_never_reaches_another_members_account() -> None:
+    """
+    A play on a source that is not loaded is not reported through another account of it.
+
+    `get_provider` stands in another instance of the same streaming provider for one that
+    is unavailable, which for a play report would credit a housemate's account.
+    """
+    own_instance = "tidal--mine"
+    other_instance = "tidal--theirs"
+    own = _streaming_prov(own_instance, available=False)
+    housemate = _streaming_prov(other_instance, available=True)
+    controller = _controller_with_sources(
+        {own_instance: _private(USER_A), other_instance: _private(USER_B)},
+        providers=[own, housemate],
+    )
+    mass: Any = controller.mass
+    # the real lookup, so the test runs against the fallback it has to keep out
+    mass._providers = {own_instance: own, other_instance: housemate}
+    mass.get_provider = MusicAssistant.get_provider.__get__(mass)
+    mass.webserver.auth.get_user = AsyncMock(return_value=_user(USER_A))
+    track = Track(
+        item_id="1",
+        provider="library",
+        name="Track",
+        provider_mappings={
+            ProviderMapping(item_id="t1", provider_domain="tidal", provider_instance=own_instance)
+        },
+    )
+    controller._resolve_playlog_item = AsyncMock(return_value=track)  # type: ignore[method-assign]
+
+    await controller.mark_item_played(track, is_playing=True, userid=USER_A)
+
+    mass.create_task.assert_not_called()
+
+
 def _mapping(provider_instance: str) -> ProviderMapping:
     """Create an in-library provider mapping with a unique provider item id."""
     return ProviderMapping(

@@ -12,7 +12,11 @@ from music_assistant_models.enums import EventType, MediaType
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.media_items import Audiobook, PodcastEpisode, Track
 
-from music_assistant.helpers.provider_access import own_music_sources, visible_playback_sources
+from music_assistant.helpers.provider_access import (
+    exact_provider,
+    own_music_sources,
+    visible_playback_sources,
+)
 from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.mass import MusicAssistant
@@ -145,7 +149,7 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
             # and nothing is reported when none is left.
             sonic_mappings = await self._preferred_mappings(sonic_mappings, user_id)
             for mapping in sonic_mappings:
-                prov = self.mass.get_provider(mapping.provider_instance)
+                prov = exact_provider(self.mass, mapping.provider_instance)
                 if not isinstance(prov, OpenSonicProvider):
                     continue
                 # Because there is no way to retrieve a single podcast episode in vanilla

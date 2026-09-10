@@ -133,6 +133,7 @@ from music_assistant.helpers.datetime import (
 )
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.provider_access import (
+    exact_provider,
     source_owner,
     visible_music_sources,
     visible_playback_sources,
@@ -1692,7 +1693,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         for prov_mapping in media_item.provider_mappings:
             if allowed is not None and prov_mapping.provider_instance not in allowed:
                 continue
-            if music_prov := self.mass.get_provider(prov_mapping.provider_instance):
+            if music_prov := exact_provider(self.mass, prov_mapping.provider_instance):
                 if music_prov.type != ProviderType.MUSIC:
                     continue
                 music_prov = cast("MusicProvider", music_prov)
@@ -1805,7 +1806,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         for prov_mapping in media_item.provider_mappings:
             if allowed is not None and prov_mapping.provider_instance not in allowed:
                 continue
-            if music_prov := self.mass.get_provider(prov_mapping.provider_instance):
+            if music_prov := exact_provider(self.mass, prov_mapping.provider_instance):
                 if music_prov.type != ProviderType.MUSIC:
                     continue
                 music_prov = cast("MusicProvider", music_prov)
@@ -1953,11 +1954,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         # Try to get position from providers
         for prov_mapping in preferred_providers:
-            if not (
-                provider := self.mass.get_provider(
-                    prov_mapping.provider_instance, provider_type=MusicProvider
-                )
-            ):
+            provider = exact_provider(self.mass, prov_mapping.provider_instance)
+            if not isinstance(provider, MusicProvider):
                 continue
             with suppress(NotImplementedError):
                 (
