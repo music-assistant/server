@@ -6,16 +6,18 @@ import asyncio
 import inspect
 import time
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_PLAYERS, PROTOCOL_PRIORITY
+from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.models.player import LinkedOutputProtocol
 from music_assistant.providers.sync_group.player import SyncGroupPlayer
+from tests.common import MockPlayer, MockProvider
 
 
 def _player_lookup(players: dict[str, MagicMock]) -> MagicMock:
@@ -141,6 +143,8 @@ def _make_mock_player(
 
     player.state = MagicMock()
     player.state.available = available
+    player.state.enabled = True
+    player.state.active_group = None
     player.state.playback_state = playback_state
     player.state.can_group_with = set()
     player.state.group_members = []
@@ -178,6 +182,48 @@ def _make_sync_group(mass: MagicMock, player_id: str = "syncgroup_test") -> Sync
     sgp = SyncGroupPlayer(provider, player_id)
     sgp._cache.clear()
     return sgp
+
+
+@pytest.fixture
+def static_reconnect_setup() -> Any:
+    """Build the common static-group reconnect test harness."""
+
+    def _setup() -> tuple[MagicMock, SyncGroupPlayer, MagicMock, MagicMock]:
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        sgp.config.get_value = MagicMock(  # type: ignore[method-assign]
+            side_effect=lambda key, default=None: False if key == "dynamic_members" else default
+        )
+        leader = _make_mock_player("leader", provider_domain="sendspin")
+        display = _make_mock_player("display", provider_domain="sendspin")
+        leader.state.group_members = ["leader"]
+        leader.state.can_group_with = {"display"}
+        sgp._attr_static_group_members = ["leader", "display"]
+        sgp._attr_group_members = ["leader", "display"]
+        sgp.sync_leader = leader
+        mass.players.get_player = _player_lookup({"leader": leader, "display": display})
+        mass.create_task = MagicMock(side_effect=asyncio.create_task)
+        return mass, sgp, leader, display
+
+    return _setup
+
+
+@pytest.fixture
+def static_reconnect_three_member_setup(static_reconnect_setup: Any) -> Any:
+    """Build the static reconnect harness with one additional member."""
+
+    def _setup() -> tuple[MagicMock, SyncGroupPlayer, MagicMock, MagicMock, MagicMock]:
+        mass, sgp, leader, display = static_reconnect_setup()
+        lamp = _make_mock_player("lamp", provider_domain="sendspin")
+        leader.state.can_group_with = {"display", "lamp"}
+        sgp._attr_static_group_members = ["leader", "display", "lamp"]
+        sgp._attr_group_members = ["leader", "display", "lamp"]
+        mass.players.get_player = _player_lookup(
+            {"leader": leader, "display": display, "lamp": lamp}
+        )
+        return mass, sgp, leader, display, lamp
+
+    return _setup
 
 
 class TestProtocolAwareLeaderSelection:
@@ -1455,6 +1501,36 @@ class TestPresetMembersInDynamicGroup:
 
         assert "preset_b" not in sgp._attr_group_members
 
+    @pytest.mark.asyncio
+    async def test_dynamic_group_does_not_reconnect_configured_preset(self) -> None:
+        """Configured presets of dynamic groups remain user-controlled mid-session."""
+        mass = _make_mock_mass()
+        sgp = self._make_dynamic_group_with_preset(mass, ["leader", "display"])
+        await sgp.on_config_updated()
+        leader = _make_mock_player("leader", provider_domain="sendspin")
+        display = _make_mock_player("display", provider_domain="sendspin")
+        leader.state.group_members = ["leader"]
+        mass.players.get_player = _player_lookup({"leader": leader, "display": display})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader"]
+
+        sgp.on_group_member_updated(display, {"available": (False, True)})
+
+        assert sgp._reconnect_task is None
+        mass.players._handle_set_members.assert_not_awaited()
+
+    def test_active_group_members_fallback_keeps_leader_only(self) -> None:
+        """An active group with no live children must not expose dormant config as live."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="sendspin")
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp._attr_group_members = ["leader", "display"]
+        sgp.sync_leader = leader
+        leader.state.group_members = []
+
+        assert sgp.group_members == ["leader"]
+
     def test_preset_member_bypasses_allow_list_filter(self) -> None:
         """
         A preset member that was unjoined must still pass the allow-list filter.
@@ -1535,6 +1611,365 @@ class TestPresetMembersInDynamicGroup:
 
         assert {"online_member", "friend"} <= result
         mass.players.iter_players.assert_not_called()
+
+
+class TestStaticMemberReconnect:
+    """Test reconnecting static members into an active sync group."""
+
+    @pytest.mark.asyncio
+    async def test_static_reconnect_refreshes_real_protocol_compatibility(self) -> None:
+        """Reconnect refreshes stale protocol state before real compatibility translation."""
+        mass = _make_mock_mass()
+        mass.config.get_raw_core_config_value.return_value = "INFO"
+        controller = PlayerController(mass)
+        mass.players = controller
+        wiim_provider = MockProvider("wiim", instance_id="wiim", mass=mass)
+        sendspin_provider = MockProvider("sendspin", instance_id="sendspin", mass=mass)
+        leader = MockPlayer(wiim_provider, "leader", "Leader")
+        bridge = MockPlayer(sendspin_provider, "spb_leader", "Bridge", PlayerType.PROTOCOL)
+        display = MockPlayer(wiim_provider, "display", "Display")
+        display_bridge = MockPlayer(
+            sendspin_provider, "spb_display", "Display bridge", PlayerType.PROTOCOL
+        )
+        leader._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        bridge._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        bridge._attr_can_group_with = set()
+        display_bridge._attr_can_group_with = set()
+        leader.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="spb_leader", protocol_domain="sendspin")]
+        )
+        display.set_linked_output_protocols(
+            [LinkedOutputProtocol(output_protocol_id="spb_display", protocol_domain="sendspin")]
+        )
+        bridge.set_protocol_parent_id("leader")
+        display_bridge.set_protocol_parent_id("display")
+        bridge.set_members = AsyncMock()  # type: ignore[method-assign]
+        players = (leader, bridge, display, display_bridge)
+        controller._players = {player.player_id: player for player in players}
+        for player in players:
+            player.set_initialized()
+            player.update_state(signal_event=False)
+        leader.set_active_output_protocol("spb_leader")
+        leader.update_state(signal_event=False)
+        assert "display" not in leader.state.can_group_with
+        bridge._attr_can_group_with = {"spb_display"}
+        display_bridge._attr_can_group_with = {"spb_leader"}
+        sgp = _make_sync_group(mass)
+        sgp._attr_static_group_members = ["leader", "display"]
+        sgp._attr_group_members = ["leader", "display"]
+        sgp.sync_leader = leader
+        mass.create_task = MagicMock(side_effect=asyncio.create_task)
+        mass.players.iter_players = MagicMock(return_value=iter([sgp, *players]))
+
+        with patch.object(type(sgp), "is_dynamic", new_callable=PropertyMock, return_value=False):
+            sgp.on_group_member_updated(display, {"available": (False, True)})
+            task = sgp._reconnect_task
+            assert task is not None
+            await task
+
+        bridge.set_members.assert_awaited_once_with(
+            player_ids_to_add=["spb_display"], player_ids_to_remove=None
+        )
+
+    @pytest.mark.parametrize(
+        "mutation",
+        [
+            "leader_unavailable",
+            "leader_disabled",
+            "member_unavailable",
+            "member_disabled",
+            "already_joined",
+            "native_group",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_reconnect_rechecks_all_state_after_leader_lock(
+        self, mutation: str, static_reconnect_setup: Any
+    ) -> None:
+        """A state change while waiting for the leader lock must block reconnect."""
+        mass, sgp, leader, display = static_reconnect_setup()
+        mass.players._handle_set_members = AsyncMock()
+        dissolved = AsyncMock()
+        sgp._dissolve_syncgroup = dissolved
+        lock_count = 0
+
+        class _MutationLock:
+            async def __aenter__(self) -> None:
+                nonlocal lock_count
+                lock_count += 1
+                if lock_count == 2:
+                    if mutation == "leader_unavailable":
+                        leader.state.available = False
+                    elif mutation == "leader_disabled":
+                        leader.state.enabled = False
+                    elif mutation == "member_unavailable":
+                        display.state.available = False
+                    elif mutation == "member_disabled":
+                        display.state.enabled = False
+                    elif mutation == "already_joined":
+                        leader.state.group_members = ["leader", "display"]
+                    elif mutation == "native_group":
+                        display.native_grouping_requires_own_stream = True
+                        display.state.group_members = ["display", "child"]
+
+            async def __aexit__(self, *_args: object) -> bool:
+                return False
+
+        mass.players.get_player_lock = MagicMock(side_effect=lambda *_args: _MutationLock())
+        with patch("music_assistant.providers.sync_group.player.RECONNECT_RETRY_DELAY", 0):
+            sgp.on_group_member_updated(display, {"available": (False, True)})
+            task = sgp._reconnect_task
+            assert task is not None
+            await task
+
+        mass.players._handle_set_members.assert_not_awaited()
+        dissolved.assert_not_awaited()
+        assert not sgp._reconnect_pending_ids
+
+    @pytest.mark.asyncio
+    async def test_static_member_reconnect_stops_after_retry_exhaustion(
+        self, static_reconnect_setup: Any
+    ) -> None:
+        """Repeated add failures exhaust the reconnect budget without a hot loop."""
+        mass, sgp, _leader, display = static_reconnect_setup()
+        mass.players._handle_set_members = AsyncMock(side_effect=RuntimeError("permanent failure"))
+        with patch("music_assistant.providers.sync_group.player.RECONNECT_RETRY_DELAY", 0):
+            sgp.on_group_member_updated(display, {"available": (False, True)})
+            task = sgp._reconnect_task
+            assert task is not None
+            await task
+
+        assert mass.players._handle_set_members.await_count == 3
+        assert not sgp._reconnect_pending_ids
+
+    @pytest.mark.asyncio
+    async def test_static_member_reconnect_cancellation_propagates(
+        self, static_reconnect_setup: Any
+    ) -> None:
+        """Cancelling a reconnect while adding a member does not retry it."""
+        mass, sgp, leader, display = static_reconnect_setup()
+        leader.state.can_group_with = {"display"}
+        add_started = asyncio.Event()
+
+        async def _hold_add(*_args: Any, **_kwargs: Any) -> None:
+            add_started.set()
+            await asyncio.Event().wait()
+
+        mass.players._handle_set_members = AsyncMock(side_effect=_hold_add)
+        sgp.on_group_member_updated(display, {"available": (False, True)})
+        task = sgp._reconnect_task
+        assert task is not None
+        await add_started.wait()
+        sgp._cancel_reconnect_task()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        mass.players._handle_set_members.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_static_member_reconnect_retries_transient_add_failure(
+        self, static_reconnect_setup: Any
+    ) -> None:
+        """A transient add failure keeps the member pending for a bounded retry."""
+        mass, sgp, _leader, display = static_reconnect_setup()
+        calls = 0
+
+        async def _add(_leader: Any, **_kwargs: Any) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("temporary provider failure")
+
+        mass.players._handle_set_members = AsyncMock(side_effect=_add)
+        with patch("music_assistant.providers.sync_group.player.RECONNECT_RETRY_DELAY", 0):
+            sgp.on_group_member_updated(display, {"available": (False, True)})
+            task = sgp._reconnect_task
+            assert task is not None
+            await task
+
+        assert calls == 2
+        assert not sgp._reconnect_pending_ids
+
+    @pytest.mark.asyncio
+    async def test_static_member_reconnect_retries_when_compatibility_arrives(
+        self, static_reconnect_setup: Any
+    ) -> None:
+        """A reconnect waits for delayed protocol compatibility, then joins once available."""
+        mass, sgp, leader, display = static_reconnect_setup()
+        leader.state.can_group_with = set()
+        leader.is_native_group_compatible = MagicMock(return_value=False)
+        calls = 0
+
+        def refresh_state(*, signal_event: bool = True) -> None:
+            del signal_event
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                leader.state.can_group_with = {"display"}
+
+        leader.refresh_state = refresh_state
+        mass.players._handle_set_members = AsyncMock()
+        with patch("music_assistant.providers.sync_group.player.RECONNECT_RETRY_DELAY", 0):
+            sgp.on_group_member_updated(display, {"available": (False, True)})
+            task = sgp._reconnect_task
+            assert task is not None
+            await task
+
+        mass.players._handle_set_members.assert_awaited_once_with(
+            leader, player_ids_to_add=["display"]
+        )
+        assert not sgp._reconnect_pending_ids
+
+    @pytest.mark.asyncio
+    async def test_static_reconnect_retries_when_leader_returns(
+        self, static_reconnect_setup: Any
+    ) -> None:
+        """A pending member is retried when its unavailable leader returns."""
+        mass, sgp, leader, display = static_reconnect_setup()
+        leader.available = False
+        leader.state.available = False
+        leader.state.can_group_with = {"display"}
+        mass.players._handle_set_members = AsyncMock()
+        sgp.on_group_member_updated(display, {"available": (False, True)})
+        leader.state.available = True
+        leader.available = True
+        sgp.on_group_member_updated(leader, {"available": (False, True)})
+        task = sgp._reconnect_task
+        assert task is not None
+        with patch("music_assistant.providers.sync_group.player.RECONNECT_RETRY_DELAY", 0):
+            await task
+
+        mass.players._handle_set_members.assert_awaited_once_with(
+            leader, player_ids_to_add=["display"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_static_reconnect_skips_member_leading_native_group(
+        self, static_reconnect_setup: Any
+    ) -> None:
+        """Reconnect must not dissolve a returning member's own native group."""
+        mass, sgp, _leader, display = static_reconnect_setup()
+        display.provider.domain = "sonos"
+        display.native_grouping_requires_own_stream = True
+        display.state.group_members = ["display", "child"]
+        sgp.on_group_member_updated(display, {"available": (False, True)})
+        task = sgp._reconnect_task
+        assert task is not None
+        await task
+
+        mass.players._handle_set_members.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_static_member_reconnects_without_resuming_playback(
+        self, static_reconnect_setup: Any
+    ) -> None:
+        """A reconnected static member is added to the live leader only."""
+        mass, sgp, leader, display = static_reconnect_setup()
+        leader.state.playback_state = PlaybackState.PLAYING
+        leader.playback_state = PlaybackState.PLAYING
+        leader.state.can_group_with = {"display"}
+        sgp._attr_playback_state = PlaybackState.PLAYING
+
+        sgp.on_group_member_updated(
+            display,
+            {"available": (False, True)},
+        )
+        task = sgp._reconnect_task
+        assert task is not None
+        await task
+
+        mass.players._handle_set_members.assert_awaited_once_with(
+            leader, player_ids_to_add=["display"]
+        )
+        mass.players._handle_cmd_resume.assert_not_awaited()
+        mass.players._handle_play_media.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_static_member_reconnects_coalesce_while_add_is_pending(
+        self, static_reconnect_three_member_setup: Any
+    ) -> None:
+        """Two reconnects arriving during an add are both drained by one runner."""
+        mass, sgp, _leader, display, lamp = static_reconnect_three_member_setup()
+        add_started = asyncio.Event()
+        release_add = asyncio.Event()
+
+        async def _hold_first_add(_leader: Any, player_ids_to_add: list[str]) -> None:
+            if player_ids_to_add == ["display"]:
+                add_started.set()
+                await release_add.wait()
+
+        mass.players._handle_set_members = AsyncMock(side_effect=_hold_first_add)
+        sgp.on_group_member_updated(display, {"enabled": (False, True)})
+        first_task = sgp._reconnect_task
+        assert first_task is not None
+        await add_started.wait()
+        sgp.on_group_member_updated(lamp, {"available": (False, True)})
+        assert sgp._reconnect_pending_ids == {"lamp"}
+        release_add.set()
+        await first_task
+
+        assert {
+            tuple(call.kwargs["player_ids_to_add"])
+            for call in mass.players._handle_set_members.await_args_list
+        } == {("display",), ("lamp",)}
+
+    @pytest.mark.asyncio
+    async def test_static_member_reconnects_coalesce_while_lock_is_pending(
+        self, static_reconnect_three_member_setup: Any
+    ) -> None:
+        """Two reconnects arriving while the group lock is pending are both retained."""
+        mass, sgp, _leader, display, lamp = static_reconnect_three_member_setup()
+        lock_entered = asyncio.Event()
+        release_lock = asyncio.Event()
+
+        class _PendingLock:
+            async def __aenter__(self) -> None:
+                lock_entered.set()
+                await release_lock.wait()
+
+            async def __aexit__(self, *_args: object) -> bool | None:
+                return False
+
+        mass.create_task = MagicMock(side_effect=asyncio.create_task)
+        mass.players.get_player_lock = MagicMock(return_value=_PendingLock())
+        sgp.on_group_member_updated(display, {"enabled": (False, True)})
+        first_task = sgp._reconnect_task
+        assert first_task is not None
+        await lock_entered.wait()
+        sgp.on_group_member_updated(lamp, {"available": (False, True)})
+        release_lock.set()
+        await first_task
+
+        assert {
+            tuple(call.kwargs["player_ids_to_add"])
+            for call in mass.players._handle_set_members.await_args_list
+        } == {("display",), ("lamp",)}
+
+    @pytest.mark.asyncio
+    async def test_reconnect_does_not_steal_member_from_another_owner(
+        self, static_reconnect_setup: Any
+    ) -> None:
+        """A reconnect must not auto-ungroup a member owned by another group."""
+        mass, sgp, leader, display = static_reconnect_setup()
+        other_group = _make_mock_player("other_group", player_type=PlayerType.GROUP)
+        other_group.state.group_members = ["other_group", "display"]
+        other_group.is_active_session = True
+        display.state.active_group = "other_group"
+        mass.players.get_player = _player_lookup(
+            {"leader": leader, "display": display, "other_group": other_group}
+        )
+        mass.players.iter_players = MagicMock(
+            return_value=iter([sgp, leader, display, other_group])
+        )
+
+        with patch.object(
+            type(sgp), "is_active_session", new_callable=PropertyMock, return_value=True
+        ):
+            sgp.on_group_member_updated(display, {"available": (False, True)})
+        task = sgp._reconnect_task
+        assert task is not None
+        await task
+
+        mass.players._handle_set_members.assert_not_awaited()
 
 
 class TestGetConfigEntriesMemberPicker:

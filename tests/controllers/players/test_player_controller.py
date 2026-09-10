@@ -563,6 +563,36 @@ class TestStateForwarding:
         )
         on_sync_parent_updated.assert_not_called()
 
+    def test_active_static_group_is_notified_for_dropped_configured_member(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """An active static group still receives reconnect events for dropped members."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        group_player = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
+        member = MockPlayer(provider, "member", "Member")
+        controller._players = {"group": group_player, "member": member}
+        mock_mass.players = controller
+        group_player._attr_group_members = ["leader"]
+        group_player._attr_static_group_members = ["member"]
+        for player in (group_player, member):
+            player.initialized.set()
+            player.update_state(signal_event=False)
+
+        with (
+            patch.object(
+                type(group_player),
+                "is_active_session",
+                new_callable=PropertyMock,
+                return_value=True,
+            ),
+            patch.object(group_player, "on_group_member_updated") as callback,
+        ):
+            changed_values = {"available": (False, True)}
+            controller._forward_state_update(member, changed_values)
+
+        callback.assert_called_once_with(member, changed_values)
+
     def test_sync_leader_updates_also_reach_its_group_player(self, mock_mass: MagicMock) -> None:
         """A sync leader must notify its group player as well as its own sync children."""
         controller = PlayerController(mock_mass)
@@ -961,6 +991,48 @@ class TestRegisterUnregisterRace:
         config_hook.assert_not_called()
         mock_mass.player_queues.on_player_register.assert_not_called()
         assert not self._player_added_signalled(mock_mass)
+
+    async def test_fresh_registration_notifies_active_static_group(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A new member registration reaches the active static group's callback path."""
+        controller = PlayerController(mock_mass)
+        self._stub_register_calls(mock_mass)
+        mock_mass.config.get_player_config.return_value.enabled = True
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        group = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
+        group._config.enabled = True
+        group._attr_group_members = ["leader"]
+        group._attr_static_group_members = ["member"]
+        group.initialized.set()
+        group.update_state(signal_event=False)
+        controller._players = {"group": group}
+        mock_mass.players = controller
+        member = MockPlayer(provider, "member", "Member")
+        member._config.enabled = True
+        member._attr_enabled_by_default = True
+        member._cache.clear()
+        callback = MagicMock()
+
+        with (
+            patch.object(
+                type(group), "is_active_session", new_callable=PropertyMock, return_value=True
+            ),
+            patch.object(group, "on_group_member_updated", callback),
+            patch(
+                "music_assistant.controllers.players.controller.enrich_device_mac_address",
+                AsyncMock(),
+            ),
+        ):
+            await controller.register(member)
+
+        callback.assert_called_once_with(
+            member,
+            {
+                "available": (False, True),
+                "enabled": (False, True),
+            },
+        )
 
     async def test_register_aborts_when_unregistered_during_config_hook(
         self, mock_mass: MagicMock
