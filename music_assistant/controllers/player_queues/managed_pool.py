@@ -29,10 +29,10 @@ from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.errors import MusicAssistantError
-from music_assistant_models.media_items import Playlist, Track
+from music_assistant_models.media_items import Track
 
 from music_assistant.controllers.music.recency import song_keys
 from music_assistant.controllers.player_queues.constants import (
@@ -42,13 +42,14 @@ from music_assistant.controllers.player_queues.constants import (
 from music_assistant.controllers.player_queues.helpers import (
     interleave_groups,
     is_dynamic_source,
+    is_radio_playlist_source,
     space_by_artist,
 )
 from music_assistant.controllers.player_queues.smart_fade_ordering import order_tracks
 from music_assistant.helpers.track_filter import track_filter
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import MediaItemType
+    from music_assistant_models.media_items import MediaItemType, Playlist
     from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant.controllers.music.recency import RecencySnapshot, RecencyWindows
@@ -119,6 +120,9 @@ class ManagedPool:
         self.logger = queues.logger.getChild("managed_pool")
         # finite-source materialized state, keyed by queue id then source uri; see _MaterializedSource
         self._materialized: dict[str, dict[str, _MaterializedSource]] = {}
+        # radio_playlist source uris (per queue id) that already delivered a first batch; the first
+        # batch keeps the seed's own tracks, later ones re-seed from play history (see _fetch_dynamic)
+        self._seeded: dict[str, set[str]] = {}
 
     async def fill(self, queue_id: str, *, is_initial: bool) -> list[Track]:
         """
@@ -187,25 +191,30 @@ class ManagedPool:
         return chosen
 
     def forget(self, queue_id: str) -> None:
-        """Drop all materialized finite-source state for a queue (it was cleared or removed)."""
+        """Drop all materialized finite-source and seeded-source state for a queue."""
         self._materialized.pop(queue_id, None)
+        self._seeded.pop(queue_id, None)
 
     def retain(self, queue_id: str, uris: set[str]) -> None:
         """
-        Prune materialized finite-source state down to the queue's current source uris.
+        Prune materialized and seeded-source state down to the queue's current source uris.
 
         Called whenever the queue's sources change so an exhausted/removed source releases its
-        materialized tracks instead of lingering until the queue is torn down.
+        materialized tracks (and, if it was a radio_playlist source, its seeded status) instead of
+        lingering until the queue is torn down.
 
         :param queue_id: The queue whose sources changed.
         :param uris: The uris of the sources the queue still has.
         """
-        if not (materialized := self._materialized.get(queue_id)):
-            return
-        for uri in [uri for uri in materialized if uri not in uris]:
-            del materialized[uri]
-        if not materialized:
-            self._materialized.pop(queue_id, None)
+        if materialized := self._materialized.get(queue_id):
+            for uri in [uri for uri in materialized if uri not in uris]:
+                del materialized[uri]
+            if not materialized:
+                self._materialized.pop(queue_id, None)
+        if seeded := self._seeded.get(queue_id):
+            seeded.intersection_update(uris)
+            if not seeded:
+                self._seeded.pop(queue_id, None)
 
     async def _collect_sources(
         self, queue_id: str, *, include_dynamic: bool
@@ -261,19 +270,33 @@ class ManagedPool:
 
     async def _fetch_dynamic(self, queue_id: str, media_item: MediaItemType) -> list[Track]:
         """Fetch the next self-managed batch from a dynamic playlist or radio station."""
-        with suppress(MusicAssistantError):
-            if (
-                isinstance(media_item, Playlist)
-                and (prov := self.mass.get_provider(media_item.provider)) is not None
-                and prov.domain == "radio_playlist"
-            ):
-                # an endless-mix refill must re-seed from the queue's play history: a deterministic
-                # similar-track provider would otherwise regenerate the same batch every refill
-                tracks = await self.queues.get_dynamic_radio_refill_tracks(queue_id, media_item)
+        seeded = (
+            self._seeded.setdefault(queue_id, set())
+            if is_radio_playlist_source(self.mass, media_item)
+            else None
+        )
+        uri = _uri(media_item)
+        already_seeded = seeded is not None and uri in seeded
+        try:
+            if already_seeded:
+                # this source already delivered its first batch: re-seed from the queue's play
+                # history so a deterministic similar-track provider keeps varying instead of
+                # regenerating the same batch every refill
+                tracks = await self.queues.get_dynamic_radio_refill_tracks(
+                    queue_id, cast("Playlist", media_item)
+                )
             else:
+                # the first batch of an endless mix must carry the seed's own tracks too
                 tracks = await self.queues.get_dynamic_source_tracks(media_item)
-            return [track for track in tracks if track.available]
-        return []
+            available = [track for track in tracks if track.available]
+        except MusicAssistantError as err:
+            self.logger.warning(
+                "Failed to fetch tracks for dynamic source %s: %s", media_item.name, err
+            )
+            return []
+        if seeded is not None and not already_seeded and uri and available:
+            seeded.add(uri)
+        return available
 
     async def _fetch_tracks(self, media_item: MediaItemType) -> list[Track]:
         """Fetch a TRACKS source's own (playable) tracks, honoring the user's selection prefs."""

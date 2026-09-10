@@ -1674,13 +1674,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param queue_id: The queue the refill is for.
         :param playlist: The endless-mix radio playlist to refill.
         """
-        if self.queue_data_or_none(queue_id) is None:
-            # the queue was removed while this background refill was starting up
-            return []
         radio_prov = self.mass.get_provider("radio_playlist")
         if radio_prov is None:
             return []
         seed = await cast("RadioPlaylistProvider", radio_prov).resolve_seed(playlist.item_id)
+        if self.queue_data_or_none(queue_id) is None:
+            # the queue may have been removed while the seed above was being resolved
+            return []
         return await self._get_similar_tracks(queue_id, seed_items=[seed])
 
     def recency_windows(self) -> RecencyWindows:

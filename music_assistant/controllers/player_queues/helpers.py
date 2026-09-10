@@ -118,6 +118,15 @@ def is_dynamic_source(item: MediaItemType | BrowseFolder) -> TypeGuard[Playlist 
     return isinstance(item, Playlist | Radio) and item.is_dynamic
 
 
+def is_radio_playlist_source(mass: MusicAssistant, media_item: MediaItemType) -> bool:
+    """Return True if the item is a Playlist served by the radio_playlist (endless mix) provider."""
+    return (
+        isinstance(media_item, Playlist)
+        and (prov := mass.get_provider(media_item.provider)) is not None
+        and prov.domain == "radio_playlist"
+    )
+
+
 def find_dynamic_source(queue_data: PlayerQueueData) -> MediaItemType | None:
     """
     Return the queue's most recently added dynamic source, if it has one.
