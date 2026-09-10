@@ -49,7 +49,7 @@ async def test_shutdown_does_not_rewrite_unchanged_settings(
 ) -> None:
     """A stop without config changes must leave the settings file alone."""
     mass_minimal.config.set("test/change", "value")
-    await mass_minimal.config._async_save()
+    await mass_minimal.config.async_save()
     written_at = Path(mass_minimal.config.filename).stat().st_mtime_ns
 
     await mass_minimal.stop()

@@ -3477,13 +3477,22 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return False
 
         # fast return for a provider uri which is not part of a user with a provider filter
+        # MediaType.UNKNOWN is a plain url or local file resolved by the builtin provider,
+        # not catalog content of a music service, so it must bypass the filter entirely
         if (
             provider_instance_id_or_domain != "library"
+            and media_type != MediaType.UNKNOWN
             and user
             and user.provider_filter
-            and provider_instance_id_or_domain not in user.provider_filter
         ):
-            return False
+            allowed_instance = self._resolve_allowed_provider_instance(
+                provider_instance_id_or_domain, user
+            )
+            if allowed_instance is None:
+                return False
+            # bind the lookup to the allowed instance, so a same-domain instance outside
+            # the filter never serves the verification
+            provider_instance_id_or_domain = allowed_instance
 
         # verify that item itself exists
         try:
@@ -3512,3 +3521,20 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 return True
 
         return False
+
+    def _resolve_allowed_provider_instance(
+        self, provider_instance_id_or_domain: str, user: User
+    ) -> str | None:
+        """Resolve a uri's provider instance id or domain against the user's provider filter."""
+        if provider_instance_id_or_domain in user.provider_filter:
+            return provider_instance_id_or_domain
+        allowed_instances = [
+            prov
+            for prov in self.mass.providers
+            if prov.domain == provider_instance_id_or_domain
+            and prov.instance_id in user.provider_filter
+        ]
+        for prov in allowed_instances:
+            if prov.available:
+                return prov.instance_id
+        return allowed_instances[0].instance_id if allowed_instances else None

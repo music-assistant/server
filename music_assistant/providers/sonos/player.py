@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
@@ -79,6 +80,11 @@ class SonosQueueWindow:
     includes_end: bool = False
 
 
+# Failures remembered per speaker. One report can carry several, and the speaker resends
+# the whole batch until it gives up on the item.
+REPORTED_ERROR_HISTORY = 16
+
+
 class SonosPlayer(Player):
     """Holds the details of the (discovered) Sonosplayer."""
 
@@ -108,6 +114,8 @@ class SonosPlayer(Player):
         # Clock-seeded (nanoseconds), so a recreated player never reuses a
         # generation the speaker may still hold items under
         self.cloud_queue_item_generation = time.time_ns()
+        # failures already logged, so the speaker's resends are not logged again
+        self.reported_playback_errors: deque[str] = deque(maxlen=REPORTED_ERROR_HISTORY)
         self._announcement_media: PlayerMedia | None = None
 
     @property
