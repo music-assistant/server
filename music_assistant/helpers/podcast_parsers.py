@@ -603,7 +603,7 @@ def _select_transcript_url(transcripts: list[dict[str, Any]] | None) -> str | No
     """Return the url of the most useful transcript, preferring the formats with timings."""
 
     def preference(transcript: dict[str, Any]) -> int:
-        media_type = str(transcript.get("type") or "").lower()
+        media_type = str(transcript.get("type") or "").lower().split(";", 1)[0].strip()
         if media_type in _TIMED_TRANSCRIPT_TYPES:
             return _TIMED_TRANSCRIPT_TYPES.index(media_type)
         return len(_TIMED_TRANSCRIPT_TYPES)
