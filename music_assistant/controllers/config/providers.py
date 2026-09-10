@@ -242,7 +242,8 @@ class ProviderConfigMixin:
         """
         raw_conf = self.get(f"{CONF_PROVIDERS}/{instance_id}")
         self._ensure_source_visible(raw_conf)
-        if provider := self.mass.get_provider(instance_id, return_unavailable=True):
+        provider = self.mass.get_provider(instance_id, return_unavailable=True)
+        if provider and provider.instance_id == instance_id:
             return await self._resolve_provider_config_entries(provider)
         # not loaded: feature-derived and provider-specific entries can't be computed
         # without the instance, so only the server defaults are returned
