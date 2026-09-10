@@ -262,7 +262,12 @@ def _loader(*items: Any, seeds: list[Any] | None = None) -> Any:
         return_value=SimpleNamespace(queue_id="q1", display_name="Queue", autoplay_enabled=True)
     )
     loader._queue_data = {
-        "q1": SimpleNamespace(items=list(items), enqueued_media_items=seeds or [], userid=None)
+        "q1": SimpleNamespace(
+            queue=loader.get.return_value,
+            items=list(items),
+            enqueued_media_items=seeds or [],
+            userid=None,
+        )
     }
     loader._fill_autoplay_music_tracks = AsyncMock()
     loader._fill_autoplay_next_in_series = AsyncMock()

@@ -571,6 +571,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if self._queue_data.get(queue_id) is not queue_data:
             # the queue was removed or re-registered while the user context was restored
             return
+        if not queue_data.queue.autoplay_enabled:
+            return
         if last_item.media_type in AUTOPLAY_SERIES_MEDIA_TYPES:
             await self._fill_autoplay_next_in_series(queue_id, last_item)
             return
@@ -615,6 +617,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             return
         if self._queue_data.get(queue_id) is not queue_data:
             # the queue was removed or re-registered while the successor was fetched
+            return
+        if not queue_data.queue.autoplay_enabled:
             return
         await self.load(
             queue_id,
@@ -678,6 +682,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             return
         if self._queue_data.get(queue_id) is not queue_data:
             # the queue was removed or re-registered while tracks were fetched
+            return
+        if not queue.autoplay_enabled:
             return
         await self.load(
             queue_id,
