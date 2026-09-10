@@ -3,11 +3,11 @@
 import json
 import pathlib
 from typing import Any, cast
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from aiohttp.client_exceptions import ClientError
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
@@ -191,6 +191,145 @@ async def test_get_track_tolerates_lyrics_failure(
 
     assert result.item_id == "1"
     mock_parse_track.assert_called_once_with(provider_mock, doc, doc.data)
+
+
+async def test_get_track_id_by_isrc(media_manager: TidalMediaManager, provider_mock: Mock) -> None:
+    """Test get_track_id_by_isrc returns the first match's id."""
+    provider_mock.api.get_jsonapi.return_value = JsonApiDocument(
+        {
+            "data": [
+                {"id": "310381552", "type": "tracks"},
+                {"id": "361832522", "type": "tracks"},
+            ]
+        }
+    )
+
+    track_id = await media_manager.get_track_id_by_isrc("USWB11506516")
+
+    assert track_id == "310381552"
+    provider_mock.api.get_jsonapi.assert_called_once_with(
+        "tracks", params={"filter[isrc]": "USWB11506516"}
+    )
+
+
+async def test_get_track_id_by_isrc_not_found(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test get_track_id_by_isrc returns None when there is no match."""
+    provider_mock.api.get_jsonapi.return_value = JsonApiDocument({"data": []})
+
+    assert await media_manager.get_track_id_by_isrc("USWB11506516") is None
+
+
+async def test_get_track_by_external_id(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test get_track_by_external_id normalizes a dashed ISRC and resolves via the first match."""
+    provider_mock.api.get_jsonapi.return_value = JsonApiDocument(
+        {
+            "data": [
+                {"id": "310381552", "type": "tracks"},
+                {"id": "361832522", "type": "tracks"},
+            ]
+        }
+    )
+
+    result = await media_manager.get_track_by_external_id("US-WB1-15-06516", ExternalID.ISRC)
+
+    assert result is provider_mock.get_track.return_value
+    provider_mock.api.get_jsonapi.assert_called_once_with(
+        "tracks", params={"filter[isrc]": "USWB11506516"}
+    )
+    provider_mock.get_track.assert_awaited_once_with("310381552")
+
+
+async def test_get_track_by_external_id_not_found(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test get_track_by_external_id returns None when there is no ISRC match."""
+    provider_mock.api.get_jsonapi.return_value = JsonApiDocument({"data": []})
+
+    result = await media_manager.get_track_by_external_id("US-WB1-15-06516", ExternalID.ISRC)
+
+    assert result is None
+    provider_mock.get_track.assert_not_awaited()
+
+
+async def test_get_track_by_external_id_wrong_type(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test get_track_by_external_id returns None for a non-ISRC external id type."""
+    result = await media_manager.get_track_by_external_id("123456789012", ExternalID.BARCODE)
+
+    assert result is None
+    provider_mock.api.get_jsonapi.assert_not_called()
+
+
+async def test_get_track_by_external_id_invalid_isrc(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test get_track_by_external_id returns None for a structurally invalid ISRC."""
+    result = await media_manager.get_track_by_external_id("invalid-isrc", ExternalID.ISRC)
+
+    assert result is None
+    provider_mock.api.get_jsonapi.assert_not_called()
+
+
+async def test_get_album_by_external_id(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test get_album_by_external_id resolves a barcode to the first match's album."""
+    provider_mock.get_album = AsyncMock()
+    provider_mock.api.get_jsonapi.return_value = JsonApiDocument(
+        {"data": [{"id": "58756127", "type": "albums"}]}
+    )
+
+    result = await media_manager.get_album_by_external_id("00602547852748", ExternalID.BARCODE)
+
+    assert result is provider_mock.get_album.return_value
+    provider_mock.api.get_jsonapi.assert_called_once_with(
+        "albums", params={"filter[barcodeId]": "602547852748"}
+    )
+    provider_mock.get_album.assert_awaited_once_with("58756127")
+
+
+async def test_get_album_by_external_id_not_found(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test get_album_by_external_id returns None when there is no barcode match."""
+    provider_mock.get_album = AsyncMock()
+    provider_mock.api.get_jsonapi.return_value = JsonApiDocument({"data": []})
+
+    result = await media_manager.get_album_by_external_id("00602547852748", ExternalID.BARCODE)
+
+    assert result is None
+    provider_mock.get_album.assert_not_awaited()
+
+
+async def test_get_album_by_external_id_wrong_type(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test get_album_by_external_id returns None for a non-barcode external id type."""
+    provider_mock.get_album = AsyncMock()
+
+    result = await media_manager.get_album_by_external_id("US-WB1-15-06516", ExternalID.ISRC)
+
+    assert result is None
+    provider_mock.api.get_jsonapi.assert_not_called()
+    provider_mock.get_album.assert_not_awaited()
+
+
+async def test_get_album_by_external_id_invalid_barcode(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test get_album_by_external_id returns None for a structurally invalid barcode."""
+    provider_mock.get_album = AsyncMock()
+
+    result = await media_manager.get_album_by_external_id("invalid-barcode", ExternalID.BARCODE)
+
+    assert result is None
+    provider_mock.api.get_jsonapi.assert_not_called()
+    provider_mock.get_album.assert_not_awaited()
 
 
 async def test_get_album_tracks(media_manager: TidalMediaManager, provider_mock: Mock) -> None:
