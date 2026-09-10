@@ -163,9 +163,11 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
             # mappings exist, but none of the allowed instances is loaded: nothing to report to
             return None, item_id
         if provider_instance_id_or_domain.startswith("opensubsonic"):
-            # found a subsonic mapping, proceed...
-            prov = self.mass.get_provider(provider_instance_id_or_domain)
-            assert isinstance(prov, OpenSonicProvider)
+            # the item was played from this exact account, so only that one may be reported
+            # to; an unavailable account is never stood in for by another member's
+            prov = exact_provider(self.mass, provider_instance_id_or_domain)
+            if not isinstance(prov, OpenSonicProvider):
+                return None, item_id
             if media_type == MediaType.PODCAST_EPISODE and EP_CHAN_SEP in item_id:
                 _, ret_id = item_id.split(EP_CHAN_SEP)
                 return prov, ret_id
