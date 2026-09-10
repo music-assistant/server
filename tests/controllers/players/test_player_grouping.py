@@ -236,6 +236,43 @@ class TestSyncLeaderBehavior:
         # Leader should NOT appear in other's can_group_with (has group members)
         assert "leader" not in other.state.can_group_with
 
+    def test_solo_raw_group_members_does_not_exclude_a_playing_candidate(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test that a playing player whose raw group_members is only itself can still be grouped."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+        # A detached client (e.g. a Sendspin client in a solo group) reports itself
+        # as its only raw group member - that must not make it a group leader
+        solo_candidate = MockPlayer(provider, "solo", "Solo")
+        solo_candidate._attr_group_members = ["solo"]
+        solo_candidate._attr_playback_state = PlaybackState.PLAYING
+
+        real_leader = MockPlayer(provider, "leader", "Leader")
+        real_leader._attr_group_members = ["leader", "member"]
+        real_leader._attr_playback_state = PlaybackState.PLAYING
+        member = MockPlayer(provider, "member", "Member")
+
+        other = MockPlayer(provider, "other", "Other")
+        other._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        other._attr_can_group_with = {"solo", "leader"}
+
+        controller._players = {
+            "solo": solo_candidate,
+            "leader": real_leader,
+            "member": member,
+            "other": other,
+        }
+        mock_mass.players = controller
+
+        for player in (solo_candidate, real_leader, member, other):
+            player.update_state(signal_event=False)
+
+        # Solo player is still offered, a real (multi-member) leader stays excluded
+        assert "solo" in other.state.can_group_with
+        assert "leader" not in other.state.can_group_with
+
 
 class TestCircularDependency:
     """Test that circular dependencies are avoided."""

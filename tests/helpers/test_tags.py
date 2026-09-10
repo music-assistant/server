@@ -3,12 +3,14 @@
 import pathlib
 import shutil
 import subprocess
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import mutagen
 import pytest
 from music_assistant_models.errors import InvalidDataError
-from mutagen.id3 import ID3, UFID
+from mutagen.id3 import ID3, TDOR, TDRC, UFID
+from mutagen.mp4 import MP4, MP4FreeForm
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers import tags
@@ -66,13 +68,24 @@ def test_parse_tags_reports_actionable_ffprobe_error(
     assert args[args.index("-loglevel") + 1] == "error"
 
 
+def test_parse_rejects_file_without_audio_channels() -> None:
+    """A file for which ffprobe reports zero channels is corrupt and must be skipped."""
+    raw = {
+        "format": {"filename": "corrupt.mp3", "format_name": "mp3", "duration": "0"},
+        "streams": [{"codec_type": "audio", "channels": 0, "sample_rate": "44100"}],
+    }
+    with pytest.raises(InvalidDataError, match="No audio channels found"):
+        tags.AudioTags.parse(raw)
+
+
 async def test_parse_metadata_from_id3tags() -> None:
     """Test parsing of parsing metadata from ID3 tags."""
     filename = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.mp3"))
     _tags = await tags.async_parse_tags(filename)
     assert _tags.album == "MyAlbum"
     assert _tags.title == "MyTitle"
-    assert _tags.duration == 1.032
+    # FFmpeg versions differ on whether MP3 encoder delay/padding counts toward duration.
+    assert _tags.duration in (1.0, 1.032)
     assert _tags.album_artists == ("MyArtist",)
     assert _tags.artists == ("MyArtist", "MyArtist2")
     assert _tags.genres == ("Genre1", "Genre2")
@@ -223,7 +236,7 @@ async def test_parse_metadata_from_filename() -> None:
     _tags = await tags.async_parse_tags(filename)
     assert _tags.album is None
     assert _tags.title == "MyTitle without Tags"
-    assert _tags.duration == 1.032
+    assert _tags.duration in (1.0, 1.032)
     assert _tags.album_artists == ()
     assert _tags.artists == ("MyArtist",)
     assert _tags.genres == ()
@@ -239,7 +252,7 @@ async def test_parse_metadata_from_invalid_filename() -> None:
     _tags = await tags.async_parse_tags(filename)
     assert _tags.album is None
     assert _tags.title == "test"
-    assert _tags.duration == 1.032
+    assert _tags.duration in (1.0, 1.032)
     assert _tags.album_artists == ()
     assert _tags.artists == (UNKNOWN_ARTIST,)
     assert _tags.genres == ()
@@ -918,3 +931,109 @@ async def test_parse_ufid_frame_with_dirty_payload(tmp_path: pathlib.Path) -> No
 
     _tags = await tags.async_parse_tags(str(dest))
     assert clean_mbid(_tags.musicbrainz_recordingid) == VALID_MBID
+
+
+def _tags_with(raw_tags: dict[str, str]) -> tags.AudioTags:
+    """Build an AudioTags instance carrying the given raw tags."""
+    return tags.AudioTags(
+        raw={},
+        sample_rate=44100,
+        channels=2,
+        bits_per_sample=16,
+        format="flac",
+        bit_rate=None,
+        duration=180.0,
+        tags=raw_tags,
+        has_cover_image=False,
+        filename="track.flac",
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw_tags", "expected"),
+    [
+        # Vorbis comments and iTunes atoms, as used by FLAC, Ogg, Opus, WavPack and M4A
+        ({"originaldate": "1978-06-01", "date": "2015-03-07"}, "1978-06-01"),
+        ({"originalyear": "1978", "date": "2015-03-07"}, "1978-01-01"),
+        # ffmpeg hands ID3 frames over under their raw frame name
+        ({"tdor": "1978-06-01", "date": "2015-03-07"}, "1978-06-01"),
+        ({"tory": "1978", "date": "2015-03-07"}, "1978-01-01"),
+        # a full date beats a bare year, whichever tags they arrive in
+        ({"originaldate": "1978-06-01", "originalyear": "1977"}, "1978-06-01"),
+        ({"tdor": "1978-06-01", "tory": "1977"}, "1978-06-01"),
+        ({"originaldate": "1978-06-01", "tory": "1977"}, "1978-06-01"),
+        # a date tagged to the month keeps the month
+        ({"originaldate": "1978-06"}, "1978-06-01"),
+        # without an original date the release's own date is used
+        ({"date": "2015-03-07"}, "2015-03-07"),
+        ({"date": "2015"}, "2015-01-01"),
+        # an unusable original date falls through instead of blocking
+        ({"originaldate": "0000", "originalyear": "1978"}, "1978-01-01"),
+        # nothing usable
+        ({}, None),
+        ({"date": "not a date"}, None),
+    ],
+)
+def test_release_date(raw_tags: dict[str, str], expected: str | None) -> None:
+    """The original release date wins over the date of the release the file came from."""
+    release_date = _tags_with(raw_tags).release_date
+    assert release_date == (
+        datetime.fromisoformat(expected).replace(tzinfo=UTC) if expected else None
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw_tags", "expected"),
+    [
+        # the release's own date wins, whichever tag format it arrives in
+        ({"date": "2015-03-07", "originaldate": "1978-06-01"}, 2015),
+        ({"date": "2015-03-07", "tdor": "1978-06-01"}, 2015),
+        ({"date": "2015-03-07", "originalyear": "1978"}, 2015),
+        # without it, the original release is the best the file offers
+        ({"originaldate": "1978-06-01"}, 1978),
+        ({"tory": "1978"}, 1978),
+        ({"originaldate": "1978-06-01", "originalyear": "1977"}, 1978),
+        ({}, None),
+    ],
+)
+def test_album_year(raw_tags: dict[str, str], expected: int | None) -> None:
+    """The album year is the date of the release itself, not of the original."""
+    assert _tags_with(raw_tags).year == expected
+
+
+def test_a_compilation_dates_the_album_and_its_tracks_apart() -> None:
+    """A track keeps its original release date while the album keeps the compilation's."""
+    audio_tags = _tags_with({"date": "2015-03-07", "originaldate": "1978-06-01"})
+
+    assert audio_tags.release_date == datetime(1978, 6, 1, tzinfo=UTC)
+    assert audio_tags.year == 2015
+
+
+async def test_original_release_date_is_read_from_an_id3_file(tmp_path: pathlib.Path) -> None:
+    """The ID3 frame holding the original release date is the one ffmpeg does not map."""
+    dest = tmp_path / "original_date.mp3"
+    shutil.copy(FILE_MP3, dest)
+    id3 = ID3(str(dest))  # type: ignore[no-untyped-call]
+    id3.setall("TDRC", [TDRC(encoding=3, text=["2015-03-07"])])  # type: ignore[no-untyped-call]
+    id3.setall("TDOR", [TDOR(encoding=3, text=["1978-06-01"])])  # type: ignore[no-untyped-call]
+    id3.save(v2_version=4)
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert _tags.release_date == datetime(1978, 6, 1, tzinfo=UTC)
+    assert _tags.year == 2015
+
+
+async def test_original_release_date_is_read_from_an_m4a_file(tmp_path: pathlib.Path) -> None:
+    """The original date sits in an iTunes freeform atom, which ffprobe drops."""
+    dest = tmp_path / "original_date.m4a"
+    shutil.copy(FILE_M4A, dest)
+    mp4 = MP4(str(dest))  # type: ignore[no-untyped-call]
+    mp4["\xa9day"] = ["2015-03-07"]
+    mp4["----:com.apple.iTunes:originaldate"] = [MP4FreeForm(b"1978-06-01")]  # type: ignore[no-untyped-call]
+    mp4.save()  # type: ignore[no-untyped-call]
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert _tags.release_date == datetime(1978, 6, 1, tzinfo=UTC)
+    assert _tags.year == 2015
