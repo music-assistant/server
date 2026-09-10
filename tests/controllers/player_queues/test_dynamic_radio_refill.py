@@ -295,3 +295,54 @@ async def test_idle_recovery_routes_radio_playlist_refill_through_pool_path() ->
 
     ctrl.get_dynamic_radio_refill_tracks.assert_awaited_once_with(QUEUE_ID, playlist)
     ctrl._media_resolver.get_dynamic_source_tracks.assert_not_awaited()
+
+
+async def test_reset_seeded_makes_a_replayed_source_reseed() -> None:
+    """reset_seeded lets a re-picked radio_playlist source deliver its seed-inclusive batch again."""
+    queues = MagicMock()
+    pool = ManagedPool(queues)
+    playlist = _playlist("seed-uri", "radio_playlist")
+    queues.mass.get_provider.return_value = MagicMock(domain="radio_playlist")
+    queues.get_dynamic_source_tracks = AsyncMock(return_value=[_track("a")])
+    queues.get_dynamic_radio_refill_tracks = AsyncMock(return_value=[_track("b")])
+
+    await pool._fetch_dynamic(QUEUE_ID, playlist)  # first fetch marks the source seeded
+    pool.reset_seeded(QUEUE_ID, [playlist])
+    result = await pool._fetch_dynamic(QUEUE_ID, playlist)
+
+    assert queues.get_dynamic_source_tracks.await_count == 2
+    queues.get_dynamic_radio_refill_tracks.assert_not_called()
+    assert [t.item_id for t in result] == ["a"]
+
+
+def test_retain_prunes_seeded_uris_no_longer_a_source() -> None:
+    """retain() drops seeded state for sources the queue no longer has."""
+    pool = ManagedPool(MagicMock())
+    pool._seeded[QUEUE_ID] = {"kept-uri", "dropped-uri"}
+
+    pool.retain(QUEUE_ID, {"kept-uri"})
+
+    assert pool._seeded[QUEUE_ID] == {"kept-uri"}
+
+
+def test_retain_drops_queue_entry_once_seeded_set_is_empty() -> None:
+    """retain() removes the queue's seeded entry once pruning (or a pre-existing empty set) empties it."""
+    pool = ManagedPool(MagicMock())
+    pool._seeded[QUEUE_ID] = {"dropped-uri"}
+    pool._seeded["other-queue"] = set()  # a pre-existing empty set, e.g. left by _fetch_dynamic
+
+    pool.retain(QUEUE_ID, set())
+    pool.retain("other-queue", {"some-uri"})
+
+    assert QUEUE_ID not in pool._seeded
+    assert "other-queue" not in pool._seeded
+
+
+def test_forget_clears_seeded_state() -> None:
+    """forget() drops all seeded state for the queue."""
+    pool = ManagedPool(MagicMock())
+    pool._seeded[QUEUE_ID] = {"some-uri"}
+
+    pool.forget(QUEUE_ID)
+
+    assert QUEUE_ID not in pool._seeded

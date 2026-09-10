@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import (
     EventType,
@@ -53,7 +53,6 @@ from music_assistant.helpers.util import get_changed_keys, percentage
 from music_assistant.models.player import Player
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import Playlist
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
@@ -485,12 +484,12 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                         else None
                     )
                     set_current_user(playback_user)
-                    if is_radio_playlist_source(self.mass, dynamic_source):
+                    if is_radio_playlist_source(dynamic_source, self.mass):
                         # by idle-recovery time the source has already delivered its batches, so
                         # this is always a refill: re-seed from play history like the managed
                         # pool's refills do, instead of regenerating the same fixed-seed batch
                         dynamic_tracks = await self.get_dynamic_radio_refill_tracks(
-                            queue.queue_id, cast("Playlist", dynamic_source)
+                            queue.queue_id, dynamic_source
                         )
                     else:
                         dynamic_tracks = await self._media_resolver.get_dynamic_source_tracks(

@@ -213,7 +213,8 @@ Two distinct refill paths share the same "running low" trigger:
   sources by weight, recency-gates every candidate, prefers the least-recently-played and nudges
   recently-heard artists back, then best-effort spaces the assembled batch so adjacent tracks avoid
   sharing an artist (seam-aware against the current tail). A "radio" is just a dynamic playlist from
-  the `radio_playlist` provider.
+  the `radio_playlist` provider. An endless-mix (`radio_playlist`) source delivers its seed-inclusive
+  first batch once, then history-rotated refills.
 - **Autoplay** is the single "keep going" switch; what it appends is dispatched on the media type of
   the queue's last item, since that is the item the appended ones follow. Music continues with the
   per-queue configured mode, owned by `autoplay.py`: similar tracks (seeded from the enqueued items),

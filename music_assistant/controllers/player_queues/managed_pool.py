@@ -5,7 +5,8 @@ A queue with one or more *dynamic sources* (its ``sources``) is kept as a small 
 that is topped up as it plays down. Each source has a *fill mode*:
 
 - ``DYNAMIC`` — a dynamic playlist's own self-managing batch (a radio playlist, a station): a fresh
-  batch is pulled every refill, so it never runs dry;
+  batch is pulled every refill, so it never runs dry. An endless-mix (radio_playlist) source is the
+  exception: it delivers its seed-inclusive first batch once, then history-rotated refills;
 - ``TRACKS`` — a finite source (a playlist/album/artist mixed into the pool): its tracks are
   materialized once into a per-source deque and dequeued progressively, so the source plays through
   once and then drops out rather than recycling the same tracks as they age out of the recency
@@ -26,10 +27,11 @@ directly-adjacent tracks from sharing an artist, including the currently-queued 
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import Track
@@ -211,10 +213,27 @@ class ManagedPool:
                 del materialized[uri]
             if not materialized:
                 self._materialized.pop(queue_id, None)
-        if seeded := self._seeded.get(queue_id):
+        if (seeded := self._seeded.get(queue_id)) is not None:
             seeded.intersection_update(uris)
             if not seeded:
                 self._seeded.pop(queue_id, None)
+
+    def reset_seeded(self, queue_id: str, items: Iterable[MediaItemType]) -> None:
+        """
+        Clear the seeded status of the given dynamic sources.
+
+        Treat the given dynamic sources as fresh so their next fetch delivers a first batch
+        again, seed's own tracks included.
+
+        :param queue_id: The queue the sources belong to.
+        :param items: The dynamic sources to reset.
+        """
+        if (seeded := self._seeded.get(queue_id)) is None:
+            return
+        keys = {uri for item in items if (uri := _uri(item)) is not None}
+        seeded.difference_update(keys)
+        if not seeded:
+            self._seeded.pop(queue_id, None)
 
     async def _collect_sources(
         self, queue_id: str, *, include_dynamic: bool
@@ -270,31 +289,33 @@ class ManagedPool:
 
     async def _fetch_dynamic(self, queue_id: str, media_item: MediaItemType) -> list[Track]:
         """Fetch the next self-managed batch from a dynamic playlist or radio station."""
-        seeded = (
-            self._seeded.setdefault(queue_id, set())
-            if is_radio_playlist_source(self.mass, media_item)
-            else None
-        )
-        uri = _uri(media_item)
-        already_seeded = seeded is not None and uri in seeded
         try:
-            if already_seeded:
-                # this source already delivered its first batch: re-seed from the queue's play
-                # history so a deterministic similar-track provider keeps varying instead of
-                # regenerating the same batch every refill
-                tracks = await self.queues.get_dynamic_radio_refill_tracks(
-                    queue_id, cast("Playlist", media_item)
-                )
-            else:
-                # the first batch of an endless mix must carry the seed's own tracks too
-                tracks = await self.queues.get_dynamic_source_tracks(media_item)
-            available = [track for track in tracks if track.available]
+            if is_radio_playlist_source(media_item, self.mass):
+                return await self._fetch_radio_playlist(queue_id, media_item)
+            tracks = await self.queues.get_dynamic_source_tracks(media_item)
         except MusicAssistantError as err:
             self.logger.warning(
                 "Failed to fetch tracks for dynamic source %s: %s", media_item.name, err
             )
             return []
-        if seeded is not None and not already_seeded and uri and available:
+        return [track for track in tracks if track.available]
+
+    async def _fetch_radio_playlist(self, queue_id: str, playlist: Playlist) -> list[Track]:
+        """Fetch an endless-mix batch: the seed-inclusive first batch, history-rotated refills."""
+        seeded = self._seeded.setdefault(queue_id, set())
+        uri = _uri(playlist)
+        if uri in seeded:
+            # this source already delivered its first batch: re-seed from the queue's play
+            # history so a deterministic similar-track provider keeps varying instead of
+            # regenerating the same batch every refill
+            tracks = await self.queues.get_dynamic_radio_refill_tracks(queue_id, playlist)
+        else:
+            # the first batch of an endless mix must carry the seed's own tracks too
+            tracks = await self.queues.get_dynamic_source_tracks(playlist)
+        available = [track for track in tracks if track.available]
+        # only mark seeded once the first batch actually yields playable tracks: an
+        # all-unavailable/failed batch deliberately retries the seed-inclusive path next time
+        if uri and available:
             seeded.add(uri)
         return available
 

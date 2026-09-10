@@ -920,6 +920,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
         # captured before the reassignment below replaces the local with the stored list
         new_sources = bool(source_items)
+        added_dynamic_sources = [item for item in source_items if is_dynamic_source(item)]
         # overwrite or append the queue's source items
         replace_sources = option not in (QueueOption.ADD, QueueOption.NEXT)
         if replace_sources:
@@ -933,6 +934,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
         if queue.is_dynamic:
             if replace_sources or new_sources:
+                if added_dynamic_sources:
+                    # a (re-)picked dynamic source must deliver its first, seed-inclusive batch
+                    # again, even if it was already a source before this enqueue
+                    self._managed_pool.reset_seeded(queue_id, added_dynamic_sources)
                 # the queue has (or just gained) a dynamic source: (re)build the upcoming tail into
                 # a single bounded, recency-orchestrated mix over ALL sources — existing finite
                 # content as materialized TRACKS seed(s), dynamic playlists as DYNAMIC seed(s).

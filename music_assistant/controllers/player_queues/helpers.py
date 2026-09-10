@@ -118,7 +118,9 @@ def is_dynamic_source(item: MediaItemType | BrowseFolder) -> TypeGuard[Playlist 
     return isinstance(item, Playlist | Radio) and item.is_dynamic
 
 
-def is_radio_playlist_source(mass: MusicAssistant, media_item: MediaItemType) -> bool:
+def is_radio_playlist_source(
+    media_item: MediaItemType, mass: MusicAssistant
+) -> TypeGuard[Playlist]:
     """Return True if the item is a Playlist served by the radio_playlist (endless mix) provider."""
     return (
         isinstance(media_item, Playlist)
