@@ -207,6 +207,7 @@ async def test_add_album_imports_tracks_when_enabled() -> None:
 
     provider_mock = Mock(spec=MusicProvider)
     provider_mock.type = ProviderType.MUSIC
+    provider_mock.available = True
     provider_mock.supports_feature.return_value = False
     provider_mock.library_sync_album_tracks_enabled.return_value = True
     sentinel = object()
@@ -240,6 +241,7 @@ async def test_add_album_does_not_import_tracks_when_disabled() -> None:
 
     provider_mock = Mock(spec=MusicProvider)
     provider_mock.type = ProviderType.MUSIC
+    provider_mock.available = True
     provider_mock.supports_feature.return_value = False
     provider_mock.library_sync_album_tracks_enabled.return_value = False
     provider_mock.import_album_tracks = Mock()
@@ -287,6 +289,7 @@ async def test_add_album_only_imports_tracks_for_added_instance() -> None:
 
     provider_mock = Mock(spec=MusicProvider)
     provider_mock.type = ProviderType.MUSIC
+    provider_mock.available = True
     provider_mock.supports_feature.return_value = False
     provider_mock.library_sync_album_tracks_enabled.return_value = True
     sentinel = object()
