@@ -11,7 +11,7 @@ auth database, so it runs from `MusicAssistant.start()` once the webserver is se
 and before the providers load, so no provider is ever served an access record that is
 still to be written.
 
-TODO: remove after 2.13 release
+TODO: remove after 2.11 release
 """
 
 from __future__ import annotations

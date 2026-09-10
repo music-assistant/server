@@ -336,7 +336,7 @@ class MusicAssistant:
         # the access records that now live on the sources. Needs the users from the auth
         # database, so it cannot run with the settings migrations, and must precede the
         # provider load so no provider is served a record that is still to be written.
-        # TODO: remove after 2.13 release
+        # TODO: remove after 2.11 release
         await migrate_provider_access(self)
         # repair sidebar shortcuts left pointing at a provider instance that no longer exists:
         # those never resolve, so the frontend cannot render them and the user cannot remove
