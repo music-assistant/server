@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
-from music_assistant_models.enums import MediaType
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import MediaType, ProviderSharing
 
 from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.mass import MusicAssistant
+from tests.common import set_music_source_access
 
 if TYPE_CHECKING:
     import pytest
@@ -120,22 +123,33 @@ async def test_in_progress_items_explicit_empty_providers_returns_no_items(
     assert result == []
 
 
-async def test_in_progress_items_combines_explicit_and_user_provider_filter(
+async def test_in_progress_items_combines_explicit_and_user_music_sources(
     mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A user's provider_filter narrows an explicit filter that would otherwise pass."""
-    monkeypatch.setattr(mass.music, "get_active_provider_instances", lambda: ["local_1"])
+    """A user's music sources narrow an explicit filter that would otherwise pass."""
+    monkeypatch.setattr(
+        mass.music, "get_active_provider_instances", lambda: ["audible_1", "local_1"]
+    )
+    # audible_1 is another member's private source, so user-a may not use it
+    set_music_source_access(
+        mass,
+        {
+            "local_1": ProviderAccess(owner="user-a", sharing=ProviderSharing.PRIVATE),
+            "audible_1": ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+        },
+    )
+    user_a = User(user_id="user-a", username="user-a", role=UserRole.USER)
     await _add_provider_mapping(mass, item_id=1, provider_instance="audible_1")
     await _add_provider_mapping(mass, item_id=1, provider_instance="local_1")
     await _add_in_progress_row(mass, "1", provider="library")
 
-    with patch(GET_CURRENT_USER, return_value=Mock(user_id="user-a", provider_filter=["local_1"])):
+    with patch(GET_CURRENT_USER, return_value=user_a):
         result = await mass.music.in_progress_items(limit=10, providers=["local_1"])
     assert {item.item_id for item in result} == {"1"}
 
-    # requesting a provider the user isn't permitted to use must not leak the item back
-    # in, even though the item does have a (permission-restricted) mapping to it.
-    with patch(GET_CURRENT_USER, return_value=Mock(user_id="user-a", provider_filter=["local_1"])):
+    # requesting a music source the user may not use must not leak the item back
+    # in, even though the item does have a (restricted) mapping to it.
+    with patch(GET_CURRENT_USER, return_value=user_a):
         result = await mass.music.in_progress_items(limit=10, providers=["audible_1"])
     assert result == []
 
