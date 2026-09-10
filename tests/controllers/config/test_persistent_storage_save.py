@@ -16,7 +16,6 @@ These tests pin down the safe behavior:
 from __future__ import annotations
 
 import json
-import os
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -44,7 +43,7 @@ async def test_save_rotates_previous_file_to_backup(tmp_path: Path) -> None:
 
     assert json.loads(Path(controller.filename).read_text()) == {"generation": 2}
     assert json.loads(Path(f"{controller.filename}.backup").read_text()) == {"generation": 1}
-    assert not os.path.isfile(f"{controller.filename}.tmp")
+    assert not Path(f"{controller.filename}.tmp").is_file()
 
 
 async def test_failed_save_leaves_existing_files_untouched(tmp_path: Path) -> None:

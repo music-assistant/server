@@ -29,6 +29,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SIMILAR_TRACKS,
     ProviderFeature.PLAYLIST_TRACKS_EDIT,
     ProviderFeature.PLAYLIST_CREATE,
+    ProviderFeature.LIBRARY_RADIOS,
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.LIBRARY_PODCASTS_EDIT,
     ProviderFeature.FAVORITE_ALBUMS_EDIT,

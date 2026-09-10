@@ -1,10 +1,10 @@
 """
-Yandex Session — HTTP client with cookie/CSRF management.
+Yandex Session — HTTP client with cookie management.
 
 Adapted from AlexxIT/YandexStation (MIT license).
 Authentication flows delegate to ``ya-passport-auth`` via an injected
 ``PassportClient``; this module handles HTTP requests with automatic
-cookie refresh and CSRF token management.
+cookie refresh.
 """
 
 from __future__ import annotations
@@ -28,12 +28,11 @@ _LOGGER = logging.getLogger(__name__)
 
 class YandexSession:
     """
-    Yandex HTTP client with cookie/CSRF management.
+    Yandex HTTP client with cookie management.
 
-    Manages x_token (long-lived ~1 year), music_token (for Glagol API),
-    cookies, and CSRF tokens for Quasar API.  Auth operations delegate to
-    the injected ``PassportClient`` which shares the same aiohttp session
-    and cookie jar.
+    Manages x_token (long-lived ~1 year), music_token (for Glagol API)
+    and cookies.  Auth operations delegate to the injected
+    ``PassportClient`` which shares the same aiohttp session and cookie jar.
     """
 
     def __init__(
@@ -50,7 +49,6 @@ class YandexSession:
         self.x_token = x_token
         self.music_token = music_token
         self.refresh_token = refresh_token
-        self.csrf_token: str | None = None
         self.last_ts: float = 0
 
     # ── Token management ─────────────────────────────────────────
@@ -107,42 +105,20 @@ class YandexSession:
         """GET request with automatic auth for Glagol/Music API."""
         if url.startswith(("https://quasar.yandex.net/glagol/", "https://api.music.yandex.net/")):
             return await self._request_glagol(url, **kwargs)
-        return await self._request("get", url, **kwargs)
-
-    async def post(self, url: str, **kwargs: Any) -> ClientResponse:
-        """POST request with CSRF token management."""
-        return await self._request("post", url, **kwargs)
-
-    async def put(self, url: str, **kwargs: Any) -> ClientResponse:
-        """PUT request with CSRF token management."""
-        return await self._request("put", url, **kwargs)
+        return await self._request(url, **kwargs)
 
     async def ws_connect(self, url: str, **kwargs: Any) -> Any:
         """Create a WebSocket connection."""
         return await self._session.ws_connect(url, **kwargs)
 
-    async def _request(
-        self, method: str, url: str, retry: int = 2, **kwargs: Any
-    ) -> ClientResponse:
-        """Request with CSRF token and retry logic."""
+    async def _request(self, url: str, retry: int = 2, **kwargs: Any) -> ClientResponse:
+        """GET request with throttling and retry logic."""
         # DDoS protection
         while (delay := self.last_ts + API_REQUEST_INTERVAL - time.time()) > 0:
             await asyncio.sleep(delay)
         self.last_ts = time.time()
 
-        # Non-GET requests need CSRF token for Quasar API
-        if method != "get" and not url.startswith("https://rpc.alice.yandex.ru"):
-            if self.csrf_token is None:
-                _LOGGER.debug("Refreshing CSRF token")
-                try:
-                    csrf_secret = await self._client.get_quasar_csrf_token()
-                    self.csrf_token = csrf_secret.get_secret()
-                except YaPassportError as err:
-                    msg = "Failed to obtain CSRF token"
-                    raise RuntimeError(msg) from err
-            kwargs.setdefault("headers", {})["x-csrf-token"] = self.csrf_token
-
-        r: ClientResponse = await getattr(self._session, method)(url, **kwargs)
+        r: ClientResponse = await self._session.get(url, **kwargs)
         if r.status == 200:
             return r
 
@@ -156,12 +132,10 @@ class YandexSession:
             retry = 0
         elif r.status == 401:
             await self.refresh_cookies()
-        elif r.status == 403:
-            self.csrf_token = None
 
         if retry:
-            _LOGGER.debug("Retry %s %s", method, url)
-            return await self._request(method, url, retry - 1, **kwargs)
+            _LOGGER.debug("Retry %s", url)
+            return await self._request(url, retry - 1, **kwargs)
 
         msg = f"{url} returned {r.status}"
         raise RuntimeError(msg)

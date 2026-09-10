@@ -5,9 +5,9 @@ from __future__ import annotations
 import functools
 import random
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeGuard, TypeVar
 
-from music_assistant_models.media_items import MediaItemMetadata, Playlist, Track
+from music_assistant_models.media_items import MediaItemMetadata, Playlist, Radio, Track
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS, PlaylistPlayableItem
@@ -15,7 +15,11 @@ from music_assistant.controllers.players.constants import PlayerLockPurpose
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import ContentType, PlaybackState
-    from music_assistant_models.media_items import MediaItemType, PlayableMediaItemType
+    from music_assistant_models.media_items import (
+        BrowseFolder,
+        MediaItemType,
+        PlayableMediaItemType,
+    )
     from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant import MusicAssistant
@@ -109,9 +113,29 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
     return wrapper
 
 
+def is_dynamic_source(item: MediaItemType | BrowseFolder) -> TypeGuard[Playlist | Radio]:
+    """Return True if the item supplies its own on-demand track feed."""
+    return isinstance(item, Playlist | Radio) and item.is_dynamic
+
+
+def find_dynamic_source(queue_data: PlayerQueueData) -> MediaItemType | None:
+    """
+    Return the queue's most recently added dynamic source, if it has one.
+
+    Prefers the queue's sources and falls back to what was enqueued on it.
+
+    :param queue_data: The queue to inspect.
+    """
+    for items in (queue_data.source_items, queue_data.enqueued_media_items):
+        for item in reversed(items):
+            if is_dynamic_source(item):
+                return item
+    return None
+
+
 def has_dynamic_source(source_items: list[MediaItemType]) -> bool:
-    """Return True if any source is a dynamic playlist (the queue is in dynamic mode)."""
-    return any(isinstance(item, Playlist) and item.is_dynamic for item in source_items)
+    """Return True if any source supplies its own on-demand track feed (the queue is dynamic)."""
+    return any(is_dynamic_source(item) for item in source_items)
 
 
 def build_queue_item(queue_id: str, media_item: PlayableMediaItemType) -> QueueItem:
@@ -176,6 +200,24 @@ def get_current_playback_speed(queue: PlayerQueue) -> float:
     if queue.current_item is None:
         return 1.0
     return float(queue.current_item.extra_attributes.get("playback_speed") or 1.0)
+
+
+def committed_index(queue: PlayerQueue) -> int | None:
+    """
+    Return the highest queue index the player owns, or None if it owns none.
+
+    It holds both the playing track and the one handed to it for the transition. Nothing at or
+    below this index can be reordered: the player keeps playing what it was given whatever the
+    queue says, and the buffered position does not follow items that move around it.
+
+    :param queue: The queue to resolve the index for.
+    """
+    if queue.current_index is None:
+        return queue.index_in_buffer
+    if queue.index_in_buffer is None:
+        return queue.current_index
+    # repeat wraps the buffered index back to the front while the last track plays
+    return max(queue.current_index, queue.index_in_buffer)
 
 
 def interleave_groups[ItemT](groups: list[list[ItemT]]) -> list[ItemT]:

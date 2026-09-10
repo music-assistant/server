@@ -9,6 +9,10 @@ from music_assistant.models.player import PlayerSource
 IDLE_POLL_INTERVAL = 30
 PLAYBACK_POLL_INTERVAL = 10
 
+# how many polls a playing player may report 'connecting' before it counts as stopped.
+# spans the grace period the streams controller gives a player to empty its buffer.
+MAX_CONNECTING_POLLS = 2
+
 PLAYER_FEATURES_BASE = {
     PlayerFeature.PLAY_MEDIA,
     PlayerFeature.SET_MEMBERS,
@@ -26,14 +30,6 @@ PLAYBACK_STATE_MAP = {
     "stop": PlaybackState.IDLE,
     "pause": PlaybackState.PAUSED,
     "connecting": PlaybackState.IDLE,
-}
-
-PLAYBACK_STATE_POLL_MAP = {
-    "play": PlaybackState.PLAYING,
-    "stream": PlaybackState.PLAYING,
-    "stop": PlaybackState.IDLE,
-    "pause": PlaybackState.PAUSED,
-    "connecting": "CONNECTING",
 }
 
 SOURCE_TIDAL = "Tidal"

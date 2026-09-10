@@ -20,6 +20,10 @@ if TYPE_CHECKING:
 
 DEFAULT_JOIN_CODE_EXPIRY_HOURS = 8
 
+# Owner id prefixes, naming the kind of authorization a credential is bound to
+GUEST_OWNER_PREFIX = "guest-"
+USER_OWNER_PREFIX = "user-"
+
 
 async def get_or_create_guest_user(mass: MusicAssistant, username: str, display_name: str) -> User:
     """
@@ -91,6 +95,49 @@ def build_join_url(mass: MusicAssistant, code: str) -> str:
     base_url = mass.webserver.base_url
     assert base_url  # for type-checker only
     return f"{base_url}/?join={code}"
+
+
+def credential_owner(user: User) -> str:
+    """
+    Return the owner id that credentials minted by this user are bound to.
+
+    The prefix encodes the credential's lifetime: a guest's credentials end with
+    their session or access, a full user's with their account.
+
+    :param user: The authenticated user minting the credential.
+    """
+    guest_owner, user_owner = credential_owners_for_user_id(user.user_id)
+    return guest_owner if user.role == UserRole.GUEST else user_owner
+
+
+def credential_owners_for_user_id(user_id: str) -> tuple[str, str]:
+    """
+    Return every owner id credentials of the given user account may be bound to.
+
+    :param user_id: The user id whose credentials are looked up.
+    """
+    return (f"{GUEST_OWNER_PREFIX}{user_id}", f"{USER_OWNER_PREFIX}{user_id}")
+
+
+def credential_owner_user_id(owner: str) -> str | None:
+    """
+    Return the user account an owner id is bound to, or ``None`` for another owner kind.
+
+    :param owner: An owner id produced by credential_owner.
+    """
+    for prefix in (GUEST_OWNER_PREFIX, USER_OWNER_PREFIX):
+        if owner.startswith(prefix):
+            return owner.removeprefix(prefix)
+    return None
+
+
+def is_session_scoped_owner(owner: str) -> bool:
+    """
+    Return whether credentials bound to this owner end with the owner's session.
+
+    :param owner: An owner id produced by credential_owner.
+    """
+    return owner.startswith(GUEST_OWNER_PREFIX)
 
 
 async def revoke_guest_access(mass: MusicAssistant, username: str) -> tuple[int, int]:

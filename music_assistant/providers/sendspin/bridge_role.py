@@ -69,6 +69,7 @@ class BridgePlayerRole(Role):
         self._on_mute_change_cb: Callable[[bool], None] | None = None
         self._on_stream_start_cb: Callable[[], None] | None = None
         self._on_stream_end_cb: Callable[[], None] | None = None
+        self._on_explicit_stop_cb: Callable[[], None] | None = None
         self._audio_requirements: AudioRequirements | None = None
         self._volume: int = 100
         self._muted: bool = False
@@ -85,7 +86,9 @@ class BridgePlayerRole(Role):
         on_mute_change: Callable[[bool], None],
         on_stream_start: Callable[[], None],
         on_stream_end: Callable[[], None],
+        on_explicit_stop: Callable[[], None] | None = None,
         initial_volume: int = 100,
+        initial_muted: bool = False,
     ) -> None:
         """
         Wire up bridge callbacks after role creation.
@@ -95,17 +98,19 @@ class BridgePlayerRole(Role):
         :param on_mute_change: Callback when mute state changes.
         :param on_stream_start: Callback when the stream starts.
         :param on_stream_end: Callback when the stream ends.
+        :param on_explicit_stop: Callback when playback was ended by an explicit
+            user command (stop, or removal from the group), so the bridge can
+            silence its player at once instead of keeping its transport warm.
         :param initial_volume: Initial volume level (0-100).
+        :param initial_muted: Initial mute state.
         """
         self._on_audio_chunk_cb = on_audio_chunk
         self._on_volume_change_cb = on_volume_change
         self._on_mute_change_cb = on_mute_change
         self._on_stream_start_cb = on_stream_start
         self._on_stream_end_cb = on_stream_end
-        volume_changed = self._volume != initial_volume
-        self._volume = initial_volume
-        if volume_changed:
-            self._emit_volume_changed()
+        self._on_explicit_stop_cb = on_explicit_stop
+        self.update_player_state(volume=initial_volume, muted=initial_muted)
 
     @property
     def role_id(self) -> str:
@@ -176,7 +181,12 @@ class BridgePlayerRole(Role):
         return self._muted
 
     def set_player_volume(self, volume: int) -> None:
-        """Set volume and notify bridge."""
+        """
+        Set volume and notify bridge.
+
+        The level is on the scale the role reports, and is stored, announced to
+        the client and handed to the bridge unchanged.
+        """
         self._volume = volume
         self._emit_volume_changed()
         if self._on_volume_change_cb:
@@ -188,6 +198,28 @@ class BridgePlayerRole(Role):
         self._emit_volume_changed()
         if self._on_mute_change_cb:
             self._on_mute_change_cb(muted)
+
+    def update_player_state(self, *, volume: int | None = None, muted: bool | None = None) -> None:
+        """
+        Adopt volume/mute state the bridged player is already in.
+
+        Use this instead of set_player_volume/set_player_mute for state that came
+        from the player's own side (device feedback, a mute applied elsewhere): the
+        bridge callbacks are not invoked, so the value is not pushed back at the
+        player it was just read from.
+
+        :param volume: Volume level (0-100) the player is at, or None to leave it.
+        :param muted: Mute state the player is in, or None to leave it.
+        """
+        changed = False
+        if volume is not None and volume != self._volume:
+            self._volume = volume
+            changed = True
+        if muted is not None and muted != self._muted:
+            self._muted = muted
+            changed = True
+        if changed:
+            self._emit_volume_changed()
 
     def on_audio_chunk(self, chunk: AudioChunk) -> None:
         """Receive audio chunk from PushStream and forward to callback."""
@@ -221,6 +253,18 @@ class BridgePlayerRole(Role):
         LOGGER.debug("BridgePlayerRole stream ended for client %s", self._client.client_id)
         if self._on_stream_end_cb:
             self._on_stream_end_cb()
+
+    def notify_explicit_stop(self) -> None:
+        """
+        Notify the bridge that playback ended on an explicit user command.
+
+        Call this after the stop (or group removal) has ended the stream, so
+        the bridge can tear its downstream transport down at once instead of
+        keeping it warm for a next track that will not come.
+        """
+        LOGGER.debug("BridgePlayerRole explicit stop for client %s", self._client.client_id)
+        if self._on_explicit_stop_cb:
+            self._on_explicit_stop_cb()
 
     def _emit_volume_changed(self) -> None:
         """Emit VolumeChangedEvent so the SendspinPlayer stays in sync."""

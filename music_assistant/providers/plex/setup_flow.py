@@ -302,9 +302,9 @@ def _default_library_selection(
         default_library = prefilled_library
     else:
         # non-tracking libraries first (music), then alphabetically
-        default_library = sorted(available, key=lambda s: (s.is_tracking_progress, s.display_name))[
-            0
-        ].display_name
+        default_library = min(
+            available, key=lambda s: (s.is_tracking_progress, s.display_name)
+        ).display_name
     selected = next((s for s in sections if s.display_name == default_library), None)
     if selected and selected.is_tracking_progress:
         default_type = LIBRARY_TYPE_PODCASTS if has_audiobook_provider else LIBRARY_TYPE_AUDIOBOOKS

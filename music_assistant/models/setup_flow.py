@@ -43,6 +43,9 @@ _T = TypeVar("_T")
 FlowKind = Literal["setup", "reconfigure"]
 FlowReason = Literal["user", "auth", "error"]
 
+# FINISH step id the frontend closes on immediately, without showing a success screen
+FINISH_STEP_SILENT = "finish_silent"
+
 CALLBACK_RESPONSE_HTML = """
 <html>
 <body onload="window.close();">
@@ -148,6 +151,9 @@ class SetupSession:
         self.current_step: SetupFlowStep | None = None
         self.finished = False
         self.last_activity = time.monotonic()
+        # i18n slug of the terminal FINISH step; the engine swaps in a variant when the
+        # target warrants extra closing copy (e.g. a music provider's initial library import)
+        self.finish_step_id = "finish"
         self._finish_handler = finish_handler
         self._translation_owner = f"provider.{context.domain}"
         self._callback_path = f"/setup_flow/callback/{flow_id}"
@@ -239,6 +245,7 @@ class SetupSession:
         url: str,
         step_id: str = "auth",
         expires_in: float | None = None,
+        translation_params: list[str] | None = None,
     ) -> _T:
         """
         Show an external "Open URL" step that completes when ``awaitable`` resolves.
@@ -253,8 +260,16 @@ class SetupSession:
         :param step_id: Stable slug identifying this step (also the i18n key segment).
         :param expires_in: Optional deadline in seconds; when it passes,
             StepExpiredError is raised here (and the client countdown runs out).
+        :param translation_params: Optional values for placeholders in the step
+            translations, e.g. a device code the user has to read off the screen.
         """
-        step = self._build_step(FlowStepType.EXTERNAL, step_id, url=url, expires_in=expires_in)
+        step = self._build_step(
+            FlowStepType.EXTERNAL,
+            step_id,
+            url=url,
+            expires_in=expires_in,
+            translation_params=translation_params,
+        )
         self._publish_step(step)
         return await self._await_with_deadline(awaitable, expires_in)
 
@@ -293,7 +308,7 @@ class SetupSession:
         step's countdown and the engine deadline cannot drift. On the deadline
         StepExpiredError is raised here and the awaitable is cancelled - this also
         cancels a pre-existing Task (cancellation propagates through the await);
-        wrap work in ``asyncio.shield`` if it must survive the deadline.
+        pass ``join_task(task)`` (helpers.util) if a task must survive the deadline.
 
         :param awaitable: The work/wait to perform while the progress step shows.
         :param step_id: Stable slug identifying this step (also the i18n key segment).
@@ -323,7 +338,7 @@ class SetupSession:
             raise RuntimeError(msg)
         result = await self._finish_handler(self, values)
         self.finished = True
-        step = self._build_step(FlowStepType.FINISH, "finish", result=result)
+        step = self._build_step(FlowStepType.FINISH, self.finish_step_id, result=result)
         self._publish_step(step)
         return result
 
@@ -385,6 +400,11 @@ class SetupSession:
         self.last_activity = time.monotonic()
         errors: dict[str, str] = {}
         parsed: dict[str, ConfigValueType] = {}
+        # gates resolve against the submitted values, so flipping one takes effect on the
+        # same submit regardless of where it sits on the form
+        submitted_entries = [
+            replace(entry, value=values.get(entry.key, entry.value)) for entry in step.entries
+        ]
         for entry in step.entries:
             if entry.type in UI_ONLY:
                 continue
@@ -392,7 +412,11 @@ class SetupSession:
             try:
                 # parse_value also runs the entry's optional validate callback and
                 # stores the parsed value on the entry (echoed on a re-render)
-                parsed[entry.key] = entry.parse_value(raw_value, allow_none=False)
+                # an entry behind an unmet dependency renders disabled, so demanding a
+                # value the user has no way to supply would wedge the flow
+                parsed[entry.key] = entry.parse_value(
+                    raw_value, allow_none=not entry.dependency_met(submitted_entries)
+                )
             except TypeError, ValueError:
                 errors[entry.key] = "required" if raw_value in (None, "") else "invalid_value"
                 if not isinstance(raw_value, list):

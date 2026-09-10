@@ -27,12 +27,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from .index_io import save_index
 from .similarity import ScoredCandidate
 
 if TYPE_CHECKING:
@@ -79,7 +81,10 @@ class ClapIndex:
         self._reverse: dict[int, tuple[str, str]] = {}
         self._dirty_adds: int = 0
         self._last_save: float = time.monotonic()
-        self._save_lock = asyncio.Lock()
+        # Serialises every worker-thread touch of _index/_reverse, teardown included.
+        # Deliberately a threading.Lock: an asyncio.Lock is released the moment the
+        # awaiting task is cancelled, which leaves the worker running unprotected.
+        self._lock = threading.Lock()
 
     async def load(self) -> None:
         """Create a fresh index or restore from disk."""
@@ -87,9 +92,7 @@ class ClapIndex:
 
     async def close(self) -> None:
         """Flush to disk and release the index."""
-        await self.save()
-        self._index = None
-        self._reverse.clear()
+        await asyncio.to_thread(self._close_sync)
 
     def contains(self, provider: str, item_id: str) -> bool:
         """Check if a track is present in the index (cheap, in-memory)."""
@@ -121,8 +124,8 @@ class ClapIndex:
             return
 
         vec = np.asarray(embedding, dtype=np.float32)
-        await asyncio.to_thread(self._add_sync, label, vec)
-        self._reverse[label] = (provider, item_id)
+        if not await asyncio.to_thread(self._add_sync, label, vec, provider, item_id):
+            return
         self._dirty_adds += 1
         await self._maybe_flush()
 
@@ -155,7 +158,9 @@ class ClapIndex:
         """
         if self._index is None:
             return None
-        for label, (prov, iid) in self._reverse.items():
+        # snapshot: a rebuild inserts into the map from its worker thread, which
+        # would otherwise break this scan mid-iteration
+        for label, (prov, iid) in list(self._reverse.items()):
             if iid != item_id:
                 continue
             arr = self._embedding_for_label(label)
@@ -169,7 +174,8 @@ class ClapIndex:
         :param embedding: 1024-dim query embedding (from CLAP text encoder).
         :param k: Max number of neighbors to return.
         """
-        if self._index is None or len(self._index) == 0:
+        # pinned in a local: teardown runs on a worker thread and can land between reads
+        if (index := self._index) is None or len(index) == 0:
             return []
         vec = np.asarray(embedding, dtype=np.float32).reshape(-1)
         matches = await asyncio.to_thread(self._search_sync, vec, k)
@@ -186,10 +192,9 @@ class ClapIndex:
 
     async def save(self) -> None:
         """Force an unconditional flush."""
-        async with self._save_lock:
-            await asyncio.to_thread(self._save_sync)
-            self._dirty_adds = 0
-            self._last_save = time.monotonic()
+        await asyncio.to_thread(self._save_sync)
+        self._dirty_adds = 0
+        self._last_save = time.monotonic()
 
     def __len__(self) -> int:
         """Return the number of tracks currently in the index."""
@@ -210,53 +215,62 @@ class ClapIndex:
             ScalarKind,
         )
 
-        self._index = Index(
-            ndim=CLAP_EMBEDDING_DIM,
-            metric=MetricKind.Cos,
-            dtype=ScalarKind.F16,
-        )
-        self._reverse = {}
+        with self._lock:
+            self._index = Index(
+                ndim=CLAP_EMBEDDING_DIM,
+                metric=MetricKind.Cos,
+                dtype=ScalarKind.F16,
+            )
+            self._reverse = {}
 
-        # Index + keys are paired: a populated reverse map without a backing
-        # index makes contains() lie and permanently blocks rebuilds from
-        # re-adding embeddings. Drop the keys file whenever the index is
-        # missing or unreadable so the next rebuild starts consistent.
-        index_loaded = False
-        if self._index_path.exists():
-            try:
-                self._index.load(str(self._index_path))
-                index_loaded = True
-                self._logger.debug(
-                    "Loaded CLAP index from %s (%d vectors)",
-                    self._index_path,
-                    len(self._index),
-                )
-            except Exception:
-                self._logger.exception("Failed to load CLAP index file, starting fresh")
-                self._index_path.unlink(missing_ok=True)
-                self._index = Index(
-                    ndim=CLAP_EMBEDDING_DIM,
-                    metric=MetricKind.Cos,
-                    dtype=ScalarKind.F16,
-                )
+            # Index + keys are paired: a populated reverse map without a backing
+            # index makes contains() lie and permanently blocks rebuilds from
+            # re-adding embeddings. Drop the keys file whenever the index is
+            # missing or unreadable so the next rebuild starts consistent.
+            index_loaded = False
+            if self._index_path.exists():
+                try:
+                    self._index.load(str(self._index_path))
+                    index_loaded = True
+                    self._logger.debug(
+                        "Loaded CLAP index from %s (%d vectors)",
+                        self._index_path,
+                        len(self._index),
+                    )
+                except Exception:
+                    self._logger.exception("Failed to load CLAP index file, starting fresh")
+                    self._index_path.unlink(missing_ok=True)
+                    self._index = Index(
+                        ndim=CLAP_EMBEDDING_DIM,
+                        metric=MetricKind.Cos,
+                        dtype=ScalarKind.F16,
+                    )
 
-        if not index_loaded:
-            self._keys_path.unlink(missing_ok=True)
-            return
-
-        if self._keys_path.exists():
-            try:
-                raw = json.loads(self._keys_path.read_text(encoding="utf-8"))
-                self._reverse = {int(k): (v[0], v[1]) for k, v in raw.items()}
-            except Exception:
-                self._logger.exception("Failed to load CLAP keys file, starting fresh")
-                self._reverse = {}
+            if not index_loaded:
                 self._keys_path.unlink(missing_ok=True)
+                return
 
-    def _add_sync(self, label: int, vec: np.ndarray) -> None:
-        if label in self._index:
-            self._index.remove(label)
-        self._index.add(label, vec)
+            if self._keys_path.exists():
+                try:
+                    raw = json.loads(self._keys_path.read_text(encoding="utf-8"))
+                    self._reverse = {int(k): (v[0], v[1]) for k, v in raw.items()}
+                except Exception:
+                    self._logger.exception("Failed to load CLAP keys file, starting fresh")
+                    self._reverse = {}
+                    self._keys_path.unlink(missing_ok=True)
+
+    def _add_sync(self, label: int, vec: np.ndarray, provider: str, item_id: str) -> bool:
+        """Insert the vector with its reverse entry, or return False if the index was released."""
+        # both halves under one lock: a reverse entry without its vector makes
+        # contains() lie and blocks a later rebuild from re-adding the embedding
+        with self._lock:
+            if self._index is None:
+                return False
+            if label in self._index:
+                self._index.remove(label)
+            self._index.add(label, vec)
+            self._reverse[label] = (provider, item_id)
+            return True
 
     def _embedding_for_label(self, label: int) -> np.ndarray | None:
         """Fetch and validate the stored 1024-dim vector for a label, or None."""
@@ -272,10 +286,28 @@ class ClapIndex:
         return arr
 
     def _search_sync(self, vec: np.ndarray, k: int) -> list[tuple[int, float]]:
-        res = self._index.search(vec, k)
-        return list(zip(res.keys, res.distances, strict=False))
+        with self._lock:
+            if self._index is None:
+                return []
+            res = self._index.search(vec, k)
+            return list(zip(res.keys, res.distances, strict=False))
 
     def _save_sync(self) -> None:
+        with self._lock:
+            self._save_locked()
+
+    def _close_sync(self) -> None:
+        # Releasing under the same lock keeps a still-running save (its awaiting
+        # task cancelled on shutdown) from writing out state torn down beneath it.
+        with self._lock:
+            self._save_locked()
+            self._index = None
+            # rebind rather than clear(): a reader iterating the map on the event
+            # loop keeps the old one alive instead of failing mid-iteration
+            self._reverse = {}
+
+    def _save_locked(self) -> None:
+        """Write index and keys to disk. Caller must hold self._lock."""
         if self._index is None:
             return
         # Keys first (atomic rename): a crash leaves phantom labels (silently
@@ -286,7 +318,7 @@ class ClapIndex:
             encoding="utf-8",
         )
         tmp_keys_path.replace(self._keys_path)
-        self._index.save(str(self._index_path))
+        save_index(self._index, self._index_path)
         self._logger.debug(
             "Saved CLAP index to %s (%d vectors)",
             self._index_path,

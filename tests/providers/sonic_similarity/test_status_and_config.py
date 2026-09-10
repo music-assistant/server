@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.enums import EventType
+from music_assistant_models.errors import ActionUnavailable, SetupFailedError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -120,14 +121,14 @@ class TestConfigEntriesActions:
     async def test_action_rebuild_18dim_dispatches_to_provider(
         self, mock_mass: MagicMock, make_plugin: Callable[..., Any]
     ) -> None:
-        """The 18-dim rebuild action fires create_task once and still returns entries."""
+        """The 18-dim rebuild action fires create_task once and returns None."""
         plugin = make_plugin(signatures={("spotify", "a"): [0.1] * 18})
         plugin._rebuild_search_index = AsyncMock()
 
-        entries = await plugin.handle_config_action(ACTION_REBUILD_18DIM)
+        result = await plugin.handle_config_action(ACTION_REBUILD_18DIM)
 
         assert mock_mass.create_task.call_count == 1
-        assert entries
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_action_rebuild_clap_dispatches_when_clap_enabled(
@@ -145,14 +146,17 @@ class TestConfigEntriesActions:
         assert mock_mass.create_task.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_action_rebuild_clap_noops_when_clap_disabled(
+    async def test_action_rebuild_clap_reports_failure_when_index_missing(
         self, mock_mass: MagicMock, make_plugin: Callable[..., Any]
     ) -> None:
-        """The CLAP rebuild action is a no-op when the index isn't built."""
+        """Without a CLAP index the rebuild action reports failure instead of silently passing."""
         plugin = make_plugin(signatures={("spotify", "a"): [0.1] * 18})
 
-        await plugin.handle_config_action(ACTION_REBUILD_CLAP)
+        with pytest.raises(ActionUnavailable) as exc_info:
+            await plugin.handle_config_action(ACTION_REBUILD_CLAP)
 
+        assert exc_info.value.translation_key == "clap_index_unavailable"
+        assert exc_info.value.translation_owner == "provider.sonic_similarity"
         assert mock_mass.create_task.call_count == 0
 
 
@@ -273,6 +277,34 @@ class TestSafeRebuild:
             "Traits": "existing 18-dim error",
             "Character": "clap broke",
         }
+
+    @pytest.mark.asyncio
+    async def test_success_signals_providers_updated(self, mock_mass: MagicMock) -> None:
+        """A finished rebuild signals PROVIDERS_UPDATED so the status labels re-render."""
+        plugin = _build_plugin_for_init(mock_mass)
+
+        async def _ok() -> None:
+            return None
+
+        await plugin._safe_rebuild("Traits", _ok)
+
+        mock_mass.signal_event.assert_called_once_with(
+            EventType.PROVIDERS_UPDATED, data=mock_mass.get_providers.return_value
+        )
+
+    @pytest.mark.asyncio
+    async def test_failure_signals_providers_updated(self, mock_mass: MagicMock) -> None:
+        """A failed rebuild still signals, so the recorded error reaches the status labels."""
+        plugin = _build_plugin_for_init(mock_mass)
+
+        async def _boom() -> None:
+            raise RuntimeError("disk full")
+
+        await plugin._safe_rebuild("Traits", _boom)
+
+        mock_mass.signal_event.assert_called_once_with(
+            EventType.PROVIDERS_UPDATED, data=mock_mass.get_providers.return_value
+        )
 
 
 class TestStatusTextRebuildErrors:

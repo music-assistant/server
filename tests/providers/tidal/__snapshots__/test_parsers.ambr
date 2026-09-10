@@ -22,6 +22,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://resources.tidal.com/images/1234/5678/90ab/cdef/750x750.jpg',
@@ -45,6 +46,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'Test Artist',
         'position': None,
@@ -96,6 +99,7 @@
       'explicit': False,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://resources.tidal.com/images/abcd/ef01/2345/6789/750x750.jpg',
@@ -119,6 +123,8 @@
       'release_date': '2023-01-01T00:00:00',
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'Test Album',
     'position': None,
@@ -170,6 +176,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://resources.tidal.com/images/1234/5678/90ab/cdef/750x750.jpg',
@@ -193,6 +200,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'Test Artist',
     'position': None,
@@ -244,6 +253,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'http://example.com/mix-medium.jpg',
@@ -267,6 +277,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'My Daily Discovery',
     'owner': 'Created by Tidal',
@@ -324,6 +336,7 @@
       'explicit': None,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://resources.tidal.com/images/playlist/square/image/id/750x750.jpg',
@@ -347,6 +360,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'Test Playlist',
     'owner': 'Tidal',
@@ -421,6 +436,7 @@
           'explicit': None,
           'genres': None,
           'grouping': None,
+          'has_transcript': None,
           'images': list([
             dict({
               'path': 'https://resources.tidal.com/images/1234/5678/90ab/cdef/750x750.jpg',
@@ -444,6 +460,8 @@
           'release_date': None,
           'review': None,
           'style': None,
+          'transcript': None,
+          'transcript_cues': None,
         }),
         'name': 'Test Artist',
         'position': None,
@@ -499,6 +517,7 @@
       'explicit': False,
       'genres': None,
       'grouping': None,
+      'has_transcript': None,
       'images': list([
         dict({
           'path': 'https://resources.tidal.com/images/abcd/ef01/2345/6789/750x750.jpg',
@@ -522,6 +541,8 @@
       'release_date': None,
       'review': None,
       'style': None,
+      'transcript': None,
+      'transcript_cues': None,
     }),
     'name': 'Test Track',
     'position': None,

@@ -6,7 +6,11 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from music_assistant_models.background_task import TaskSchedule
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.config_entries import (
+    ConfigActionResult,
+    ConfigEntry,
+    ConfigValueOption,
+)
 from music_assistant_models.enums import ConfigEntryType, ExternalID, ProviderFeature
 from music_assistant_models.errors import (
     AuthenticationFailed,
@@ -123,12 +127,14 @@ class LastFMRecommendationsProvider(MetadataProvider):
             ),
         )
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
-        """Handle a one-shot config action button press and re-render the entries."""
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
+        """Handle a one-shot config action button press."""
         if action == CONF_ACTION_CLEAR_CACHE:
             await self.recommendations_manager.clear_cache()
             self.mass.create_task(self._refresh_recommendations())
-            return await self.get_config_entries()
+            return None
         return await super().handle_config_action(action)
 
     async def handle_async_init(self) -> None:

@@ -14,6 +14,7 @@ from deezer_python_gql.generated.get_recently_played import (
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.providers.deezer.provider import DeezerProvider
+from tests.common import use_real_create_task
 
 ALL_ROW_IDS = [
     "made_for_you",
@@ -110,6 +111,7 @@ def _install_cache_mocks(provider: DeezerProvider) -> None:
         return_value=(None, False, False)
     )
     provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
+    use_real_create_task(provider.mass)
 
 
 class _FakeCache:

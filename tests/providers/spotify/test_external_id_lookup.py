@@ -1,8 +1,10 @@
 """Tests for Spotify external ID lookup."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.enums import ExternalID
 
 from music_assistant.providers.spotify.provider import SpotifyProvider
 
@@ -21,7 +23,7 @@ def spotify_provider() -> SpotifyProvider:
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
-    mass.create_task = MagicMock(side_effect=lambda coro, **_: coro.close())
+    mass.create_task = MagicMock(side_effect=lambda coro, **_: asyncio.create_task(coro))
     prov.mass = mass
 
     return prov
@@ -77,7 +79,7 @@ async def test_get_track_by_isrc(
     )
     monkeypatch.setattr(spotify_provider, "_get_data", get_data_mock)
 
-    track = await spotify_provider.get_track_by_external_id("USUM71703861", "isrc")
+    track = await spotify_provider.get_track_by_external_id("USUM71703861", ExternalID.ISRC)
 
     assert track is not None
     assert track.item_id == "track123"
@@ -93,15 +95,16 @@ async def test_get_track_by_isrc_not_found(
     get_data_mock = AsyncMock(return_value={"tracks": {"items": []}})
     monkeypatch.setattr(spotify_provider, "_get_data", get_data_mock)
 
-    track = await spotify_provider.get_track_by_external_id("INVALID_ISRC", "isrc")
+    track = await spotify_provider.get_track_by_external_id("USZZZ9999999", ExternalID.ISRC)
 
     assert track is None
+    get_data_mock.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_get_track_by_wrong_type(spotify_provider: SpotifyProvider) -> None:
     """Test track lookup with wrong external ID type."""
-    track = await spotify_provider.get_track_by_external_id("12345", "upc")
+    track = await spotify_provider.get_track_by_external_id("12345", ExternalID.BARCODE)
 
     assert track is None
 
@@ -140,12 +143,12 @@ async def test_get_album_by_upc(
     )
     monkeypatch.setattr(spotify_provider, "_get_data", get_data_mock)
 
-    album = await spotify_provider.get_album_by_external_id("00602547924766", "upc")
+    album = await spotify_provider.get_album_by_external_id("00602547924766", ExternalID.BARCODE)
 
     assert album is not None
     assert album.item_id == "album123"
     assert album.name == "Test Album"
-    get_data_mock.assert_called_once_with("search", q="upc:00602547924766", type="album", limit=1)
+    get_data_mock.assert_called_once_with("search", q="upc:602547924766", type="album", limit=1)
 
 
 @pytest.mark.asyncio
@@ -181,11 +184,11 @@ async def test_get_album_by_barcode(
     )
     monkeypatch.setattr(spotify_provider, "_get_data", get_data_mock)
 
-    album = await spotify_provider.get_album_by_external_id("00602547924766", "barcode")
+    album = await spotify_provider.get_album_by_external_id("00602547924766", ExternalID.BARCODE)
 
     assert album is not None
     assert album.item_id == "album123"
-    get_data_mock.assert_called_once_with("search", q="upc:00602547924766", type="album", limit=1)
+    get_data_mock.assert_called_once_with("search", q="upc:602547924766", type="album", limit=1)
 
 
 @pytest.mark.asyncio
@@ -196,62 +199,47 @@ async def test_get_album_by_upc_not_found(
     get_data_mock = AsyncMock(return_value={"albums": {"items": []}})
     monkeypatch.setattr(spotify_provider, "_get_data", get_data_mock)
 
-    album = await spotify_provider.get_album_by_external_id("INVALID_UPC", "upc")
+    album = await spotify_provider.get_album_by_external_id("INVALID_UPC", ExternalID.BARCODE)
 
     assert album is None
+    get_data_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_get_album_by_ean13_barcode_fallback(
+async def test_get_album_by_ean13_barcode_normalization(
     spotify_provider: SpotifyProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Test album lookup by EAN-13 BARCODE with fallback to UPC-12."""
-    # First call returns empty, second call (without leading 0) succeeds
+    """Test album lookup normalizes a GTIN barcode to UPC-12."""
     get_data_mock = AsyncMock(
-        side_effect=[
-            {"albums": {"items": []}},  # EAN-13 not found
-            {  # UPC-12 found
-                "albums": {
-                    "items": [
-                        {
-                            "id": "album123",
-                            "name": "Test Album",
-                            "album_type": "album",
-                            "artists": [
-                                {
-                                    "id": "artist123",
-                                    "name": "Test Artist",
-                                    "external_urls": {
-                                        "spotify": "https://open.spotify.com/artist/artist123"
-                                    },
-                                }
-                            ],
-                            "external_urls": {"spotify": "https://open.spotify.com/album/album123"},
-                            "images": [{"url": "https://example.com/image.jpg"}],
-                            "release_date": "2017-01-01",
-                            "total_tracks": 10,
-                        }
-                    ]
-                }
-            },
-        ]
+        return_value={
+            "albums": {
+                "items": [
+                    {
+                        "id": "album123",
+                        "name": "Test Album",
+                        "album_type": "album",
+                        "artists": [],
+                        "external_urls": {"spotify": "https://open.spotify.com/album/album123"},
+                        "images": [],
+                        "release_date": "2017-01-01",
+                        "total_tracks": 10,
+                    }
+                ]
+            }
+        }
     )
     monkeypatch.setattr(spotify_provider, "_get_data", get_data_mock)
 
-    album = await spotify_provider.get_album_by_external_id("0123456789012", "barcode")
+    album = await spotify_provider.get_album_by_external_id("00123456789012", ExternalID.BARCODE)
 
     assert album is not None
     assert album.item_id == "album123"
-    assert get_data_mock.call_count == 2
-    # First call with EAN-13
-    get_data_mock.assert_any_call("search", q="upc:0123456789012", type="album", limit=1)
-    # Second call with UPC-12 (without leading 0)
-    get_data_mock.assert_any_call("search", q="upc:123456789012", type="album", limit=1)
+    get_data_mock.assert_called_once_with("search", q="upc:123456789012", type="album", limit=1)
 
 
 @pytest.mark.asyncio
 async def test_get_album_by_wrong_type(spotify_provider: SpotifyProvider) -> None:
     """Test album lookup with wrong external ID type."""
-    album = await spotify_provider.get_album_by_external_id("USUM71703861", "isrc")
+    album = await spotify_provider.get_album_by_external_id("USUM71703861", ExternalID.ISRC)
 
     assert album is None

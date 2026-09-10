@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 class SqueezelitePlayerProvider(PlayerProvider):
     """Player provider for players using slimproto (like Squeezelite)."""
 
+    reload_on_streams_network_change = True
     slimproto: SlimServer | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:

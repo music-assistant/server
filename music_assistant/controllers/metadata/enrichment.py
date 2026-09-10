@@ -236,6 +236,8 @@ class MetadataEnrichmentMixin:
                     prov_mapping.item_id, prov_mapping.provider_instance
                 )
                 album.metadata.update(prov_item.metadata)
+                # backfill identifiers (e.g. barcode) missing on a sparse library add
+                album.external_ids.update(prov_item.external_ids)
                 if album.year is None and prov_item.year:
                     album.year = prov_item.year
                 if album.album_type == AlbumType.UNKNOWN:

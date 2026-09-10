@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest import mock
 
 from music_assistant.providers.yandex_music.constants import (
@@ -28,7 +28,7 @@ _PROVIDER_DIR = provider_dir()
 _DYNAMIC_LABEL_KEYS = {"label_text", "unofficial_provider_note"}
 
 
-def _load_strings() -> dict[str, dict[str, object]]:
+def _load_strings() -> dict[str, Any]:
     """Load the provider's strings.json authoring file."""
     data = json.loads((_PROVIDER_DIR / "strings.json").read_text(encoding="utf-8"))
     assert isinstance(data, dict)
@@ -60,6 +60,33 @@ async def test_strings_json_has_media_and_manifest_sections() -> None:
     assert "playlist" in strings["media"]
     assert "recommendations" in strings["media"]
     assert strings["manifest"]["description"]
+
+
+def test_strings_json_covers_manual_auth_controls() -> None:
+    """Manual setup and replacement controls have complete user-facing guidance."""
+    strings = _load_strings()
+    config_entries = strings["config_entries"]
+    method = config_entries["method"]
+
+    assert method["options"]["token"]
+    assert config_entries["token"]["label"]
+    assert "refresh" in str(config_entries["token"]["description"]).lower()
+    assert config_entries["manual_token"]["label"]
+    replacement_description = str(config_entries["manual_token"]["description"])
+    assert "empty" in replacement_description.lower()
+    assert "Reconfigure" in replacement_description
+
+
+def test_device_flow_copy_describes_browser_confirmation() -> None:
+    """Device Flow tells users to enter the code on the shown web page."""
+    device_login = _load_strings()["setup_flow"]["device_login"]
+    description = str(device_login["description"])
+    progress_text = str(device_login["progress_text"])
+
+    assert "address shown" in description.lower()
+    assert "enter the code" in progress_text.lower()
+    assert "verification page" in progress_text.lower()
+    assert "app" not in progress_text.lower()
 
 
 async def test_config_entries_have_no_hardcoded_labels() -> None:

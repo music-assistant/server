@@ -10,6 +10,12 @@ Sendspin enables:
 - **Real-time metadata** including artwork, track info, and playback state
 - **Bidirectional control** allowing clients to control playback
 
+## Source clients
+
+This provider owns Sendspin client connections and output players. The separate
+[Sendspin Source](../sendspin_source/README.md) plugin exposes audio captured by
+source-role clients through Music Assistant's AudioSource interface.
+
 ## Architecture
 
 ```

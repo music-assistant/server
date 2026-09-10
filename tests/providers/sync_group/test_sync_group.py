@@ -12,7 +12,9 @@ import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import OutputProtocol
 
-from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_PLAYERS
+from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_PLAYERS, PROTOCOL_PRIORITY
+from music_assistant.controllers.players.constants import PlayerLockPurpose
+from music_assistant.models.player import LinkedOutputProtocol
 from music_assistant.providers.sync_group.player import SyncGroupPlayer
 
 
@@ -59,10 +61,21 @@ def _make_mock_player(
     provider_domain: str = "sonos",
     available: bool = True,
     protocol_domains: list[str] | None = None,
+    offline_protocol_domains: list[str] | None = None,
     active_output_protocol: str | None = None,
     playback_state: PlaybackState = PlaybackState.IDLE,
+    player_type: PlayerType = PlayerType.PLAYER,
 ) -> MagicMock:
-    """Create a mock player with configurable protocol support."""
+    """
+    Create a mock player with configurable protocol support.
+
+    :param provider_domain: Domain of the provider owning the player.
+    :param protocol_domains: Domains of the linked output protocols to attach.
+    :param offline_protocol_domains: Domains from ``protocol_domains`` whose protocol
+        player is currently unreachable.
+    :param player_type: Use ``PlayerType.PROTOCOL`` for a protocol endpoint
+        without independent device control (e.g. a generic AirPlay speaker).
+    """
     player = MagicMock()
     player.player_id = player_id
     player.display_name = player_id
@@ -72,25 +85,66 @@ def _make_mock_player(
     player.protocol_parent_id = None
     player.provider = MagicMock()
     player.provider.domain = provider_domain
+    supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.SET_MEMBERS}
+    player.supported_features = supported_features
 
-    # Build linked_output_protocols
+    # mirrors Player.is_native_player: protocol endpoints and wrappers have no
+    # native playback of their own
+    is_native = (
+        player_type != PlayerType.PROTOCOL
+        and provider_domain != "universal_player"
+        and PlayerFeature.PLAY_MEDIA in supported_features
+    )
+    player.is_native_player = is_native
+
+    # Build linked_output_protocols: the links only record the topology, so they
+    # say nothing about whether the protocol player can be reached right now.
+    offline = set(offline_protocol_domains or [])
     protocols = []
     for domain in protocol_domains or []:
-        proto = MagicMock(spec=OutputProtocol)
+        proto = MagicMock(spec=LinkedOutputProtocol)
         proto.protocol_domain = domain
-        proto.available = True
         # default to a synthetic protocol id; tests that need a specific id can override
         proto.output_protocol_id = f"{player_id}_{domain}_proto"
         protocols.append(proto)
     player.linked_output_protocols = protocols
 
+    # mirrors Player.output_protocols: own output first (native playback, or the
+    # protocol this player is itself an endpoint of), then the linked protocols
+    # with their availability resolved from the live protocol player
+    outputs = []
+    if is_native or (
+        provider_domain in PROTOCOL_PRIORITY and PlayerFeature.SET_MEMBERS in supported_features
+    ):
+        own = MagicMock(spec=OutputProtocol)
+        own.protocol_domain = provider_domain
+        own.available = available
+        own.output_protocol_id = "native" if is_native else player_id
+        outputs.append(own)
+    for proto in protocols:
+        live = MagicMock(spec=OutputProtocol)
+        live.protocol_domain = proto.protocol_domain
+        live.available = proto.protocol_domain not in offline
+        live.output_protocol_id = proto.output_protocol_id
+        outputs.append(live)
+    player.output_protocols = outputs
+
+    # mirrors Player.playback_domains: derived from the live view, never the
+    # stale link-time flags
+    player.playback_domains = {output.protocol_domain for output in outputs if output.available}
+
     # State mock
+    # real lists, so a test that needs members has to say so instead of silently
+    # getting an empty auto-attribute
+    player.group_members = []
+    player.live_session_members = []
+
     player.state = MagicMock()
     player.state.available = available
     player.state.playback_state = playback_state
     player.state.can_group_with = set()
     player.state.group_members = []
-    player.state.supported_features = {PlayerFeature.SET_MEMBERS}
+    player.state.supported_features = supported_features
     # default to "not synced" so the syncgroup form path doesn't enter the
     # stale-state wait loop. Tests that want to assert on the stale-state
     # behavior can override this explicitly.
@@ -161,6 +215,27 @@ class TestProtocolAwareLeaderSelection:
         leader = sgp._select_sync_leader(preferred_protocol_domain="airplay")
         assert leader == player_a
 
+    def test_select_leader_prefers_live_session_member(self) -> None:
+        """A member the live session already feeds outranks a plain protocol match."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        # both speak AirPlay, but only player_b takes part in the live session
+        player_a = _make_mock_player(
+            "player_a", provider_domain="sonos", protocol_domains=["airplay"]
+        )
+        player_b = _make_mock_player(
+            "player_b", provider_domain="sonos", protocol_domains=["airplay"]
+        )
+        mass.players.get_player = _player_lookup({"player_a": player_a, "player_b": player_b})
+
+        sgp._attr_group_members = ["player_a", "player_b"]
+
+        leader = sgp._select_sync_leader(
+            preferred_protocol_domain="airplay", preferred_member_ids=["player_b"]
+        )
+        assert leader == player_b
+
     def test_select_leader_no_protocol_uses_first_available(self) -> None:
         """When no preferred protocol, pick first available."""
         mass = _make_mock_mass()
@@ -194,6 +269,24 @@ class TestMemberSupportsProtocol:
 
         player = _make_mock_player("p1", provider_domain="sonos", protocol_domains=["airplay"])
         assert sgp._member_supports_protocol_domain(player, "airplay") is True
+
+    def test_protocol_endpoint_matches_own_domain(self) -> None:
+        """A protocol endpoint without device control still plays on its own domain."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        player = _make_mock_player("p1", provider_domain="airplay", player_type=PlayerType.PROTOCOL)
+        assert sgp._member_supports_protocol_domain(player, "airplay") is True
+
+    def test_wrapper_domain_is_not_a_protocol(self) -> None:
+        """A wrapper player never offers its own domain as a playback path."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        player = _make_mock_player(
+            "p1", provider_domain="universal_player", protocol_domains=["airplay"]
+        )
+        assert sgp._member_supports_protocol_domain(player, "universal_player") is False
 
     def test_no_match(self) -> None:
         """Player doesn't support the requested protocol."""
@@ -236,7 +329,6 @@ class TestActiveProtocolDomain:
         ap_only = _make_mock_player(
             "ap_only", provider_domain="universal_player", protocol_domains=["airplay"]
         )
-        ap_only.is_native_player = False
         mass.players.get_player = _player_lookup(
             {"leader": leader, "ap_leader": ap_protocol, "ap_only": ap_only}
         )
@@ -256,6 +348,116 @@ class TestActiveProtocolDomain:
         sgp.sync_leader = leader
         # Only a native-capable Sonos leader remains; no one requires airplay
         sgp._attr_group_members = ["leader"]
+        assert sgp.active_protocol_domain == "sonos"
+
+    def test_bridged_airplay_member_keeps_the_protocol(self) -> None:
+        """An AirPlay device holds the group on AirPlay despite its Sendspin bridge."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player(
+            "leader", provider_domain="sonos", active_output_protocol="ap_leader"
+        )
+        ap_protocol = _make_mock_player("ap_leader", provider_domain="airplay")
+        # an Apple TV plays AirPlay natively and carries a Sendspin bridge on top,
+        # so its playback paths are airplay + sendspin - neither reaches sonos
+        apple_tv = _make_mock_player(
+            "apple_tv", provider_domain="airplay", protocol_domains=["sendspin"]
+        )
+        mass.players.get_player = _player_lookup(
+            {"leader": leader, "ap_leader": ap_protocol, "apple_tv": apple_tv}
+        )
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "apple_tv"]
+        assert sgp.active_protocol_domain == "airplay"
+
+    def test_offline_protocol_does_not_count_as_a_playback_path(self) -> None:
+        """A member's unreachable protocol no longer offers the group a way to it."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        # an Apple TV leads natively on airplay, with the session on its Sendspin bridge
+        leader = _make_mock_player(
+            "leader",
+            provider_domain="airplay",
+            protocol_domains=["sendspin"],
+            active_output_protocol="sp_leader",
+        )
+        sp_protocol = _make_mock_player("sp_leader", provider_domain="sendspin")
+        # the speaker still answers over its Sendspin bridge, but its AirPlay endpoint
+        # dropped off - so airplay is no longer a way to reach it and the group has to
+        # stay on sendspin rather than downshift to the leader's native airplay
+        member = _make_mock_player(
+            "member",
+            provider_domain="universal_player",
+            protocol_domains=["airplay", "sendspin"],
+            offline_protocol_domains=["airplay"],
+        )
+        mass.players.get_player = _player_lookup(
+            {"leader": leader, "sp_leader": sp_protocol, "member": member}
+        )
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "member"]
+        assert sgp.active_protocol_domain == "sendspin"
+
+    def test_member_from_another_provider_keeps_the_protocol(self) -> None:
+        """A member of a different provider keeps the shared protocol active."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player(
+            "leader",
+            provider_domain="sonos",
+            protocol_domains=["sendspin"],
+            active_output_protocol="sp_leader",
+        )
+        sp_protocol = _make_mock_player("sp_leader", provider_domain="sendspin")
+        # a Chromecast can only meet the Sonos leader on the shared sendspin bridge
+        chromecast = _make_mock_player(
+            "chromecast", provider_domain="chromecast", protocol_domains=["sendspin"]
+        )
+        mass.players.get_player = _player_lookup(
+            {"leader": leader, "sp_leader": sp_protocol, "chromecast": chromecast}
+        )
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "chromecast"]
+        assert sgp.active_protocol_domain == "sendspin"
+
+    def test_universal_leader_never_downshifts_to_its_wrapper_domain(self) -> None:
+        """A wrapped leader has no native path, so the live protocol stays active."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        # universal players play exclusively through their linked protocols
+        leader = _make_mock_player(
+            "leader",
+            provider_domain="universal_player",
+            protocol_domains=["airplay", "sendspin"],
+            active_output_protocol="ap_leader",
+        )
+        ap_protocol = _make_mock_player("ap_leader", provider_domain="airplay")
+        mass.players.get_player = _player_lookup({"leader": leader, "ap_leader": ap_protocol})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader"]
+        assert sgp.active_protocol_domain == "airplay"
+
+    def test_unreachable_members_do_not_block_the_downshift(self) -> None:
+        """Members that are offline or have no playback path are ignored."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player(
+            "leader", provider_domain="sonos", active_output_protocol="ap_leader"
+        )
+        ap_protocol = _make_mock_player("ap_leader", provider_domain="airplay")
+        offline = _make_mock_player("offline", provider_domain="airplay", available=False)
+        # a wrapper that lost every linked protocol has nothing left to play on
+        no_paths = _make_mock_player("no_paths", provider_domain="universal_player")
+        mass.players.get_player = _player_lookup(
+            {
+                "leader": leader,
+                "ap_leader": ap_protocol,
+                "offline": offline,
+                "no_paths": no_paths,
+            }
+        )
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "offline", "no_paths", "gone"]
         assert sgp.active_protocol_domain == "sonos"
 
     def test_dissolve_clears_sync_leader(self) -> None:
@@ -293,6 +495,84 @@ class TestActiveProtocolDomain:
         assert getattr(sgp, "sync_leader") is None  # noqa: B009
         mass.players.schedule_active_output_protocol_clear.assert_called_once_with(leader)
 
+    @pytest.mark.asyncio
+    async def test_dissolve_ungroups_from_the_member_holding_the_group(self) -> None:
+        """
+        Dissolve must ungroup from the member that actually holds the group members.
+
+        A provider can promote a different member to protocol leader than the one we
+        track; ungrouping from our leader would then be a no-op and leave the members
+        grouped and streaming with no way back.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        # our tracked leader no longer holds any members
+        living_room = _make_mock_player("living_room", provider_domain="sendspin")
+        bathroom = _make_mock_player("bathroom", provider_domain="sendspin")
+        kitchen = _make_mock_player("kitchen", provider_domain="sendspin")
+        bathroom.state.group_members = ["bathroom", "living_room", "kitchen"]
+
+        mass.players.get_player = _player_lookup(
+            {"living_room": living_room, "bathroom": bathroom, "kitchen": kitchen}
+        )
+
+        sgp.sync_leader = living_room
+        sgp._attr_group_members = ["living_room", "bathroom", "kitchen"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dissolve_syncgroup()
+
+        mass.players._handle_set_members.assert_awaited_once_with(
+            bathroom, player_ids_to_remove=["living_room", "kitchen"]
+        )
+        # the promoted owner must be stopped too, our callers only stop the tracked leader
+        mass.players._handle_cmd_stop.assert_awaited_once_with("bathroom")
+        assert getattr(sgp, "sync_leader") is None  # noqa: B009
+
+    @pytest.mark.asyncio
+    async def test_dissolve_keeps_using_the_sync_leader_when_it_holds_the_group(self) -> None:
+        """A leader that still holds its members must stay the dissolve target."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        leader = _make_mock_player("leader", provider_domain="sendspin")
+        member = _make_mock_player("member", provider_domain="sendspin")
+        leader.state.group_members = ["leader", "member"]
+
+        mass.players.get_player = _player_lookup({"leader": leader, "member": member})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "member"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dissolve_syncgroup()
+
+        mass.players._handle_set_members.assert_awaited_once_with(
+            leader, player_ids_to_remove=["member"]
+        )
+        mass.players._handle_cmd_stop.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_dissolve_ignores_a_member_leading_an_unrelated_group(self) -> None:
+        """A member grouped outside of MA must never be adopted as the dissolve target."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        living_room = _make_mock_player("living_room", provider_domain="sendspin")
+        member = _make_mock_player("member", provider_domain="sendspin")
+        # member leads a group that shares no player with us
+        member.state.group_members = ["member", "outsider"]
+
+        mass.players.get_player = _player_lookup({"living_room": living_room, "member": member})
+        sgp.sync_leader = living_room
+        sgp._attr_group_members = ["living_room", "member"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dissolve_syncgroup()
+
+        mass.players._handle_set_members.assert_not_awaited()
+        mass.players._handle_cmd_stop.assert_not_awaited()
+
 
 class TestControllerLockCategory:
     """Test that the controller's lock categories serialize correctly."""
@@ -320,7 +600,6 @@ class TestDynamicLeaderSwitch:
         ap_only = _make_mock_player(
             "ap_only", provider_domain="universal_player", protocol_domains=["airplay"]
         )
-        ap_only.is_native_player = False
 
         # new_leader's AirPlay protocol player (must be in the session for handoff)
         ap_new = _make_mock_player("ap_new", provider_domain="airplay")
@@ -343,13 +622,13 @@ class TestDynamicLeaderSwitch:
         ap_only.linked_output_protocols[0].output_protocol_id = "ap_only_proto"
         # ap_only's airplay protocol player needs to exist for the protocol-id resolution
         ap_only_proto = _make_mock_player("ap_only_proto", provider_domain="airplay")
+        ap_new.protocol_parent_id = "new_leader"
+        ap_only_proto.protocol_parent_id = "ap_only"
 
         ap_protocol = _make_mock_player("ap_old", provider_domain="airplay")
-        # Set up the live session with new_leader's protocol player in sync_clients
-        mock_session = MagicMock()
-        mock_session.sync_clients = [ap_protocol, ap_new, ap_only]
-        ap_protocol.stream = MagicMock()
-        ap_protocol.stream.session = mock_session
+        # the live session holds new_leader's protocol player, so it can take over
+        ap_protocol.group_members = ["ap_old", "ap_new", "ap_only_proto"]
+        ap_protocol.live_session_members = ["ap_old", "ap_new", "ap_only_proto"]
 
         mass.players.get_player = _player_lookup(
             {
@@ -404,12 +683,8 @@ class TestDynamicLeaderSwitch:
         fresh_player = _make_mock_player(
             "fresh_player", provider_domain="sonos", protocol_domains=["airplay"]
         )
+        # the old leader was streaming on its own, so its session holds nobody else
         ap_protocol = _make_mock_player("ap_old", provider_domain="airplay")
-        # Session does NOT contain fresh_player's protocol player
-        mock_session = MagicMock()
-        mock_session.sync_clients = [ap_protocol]
-        ap_protocol.stream = MagicMock()
-        ap_protocol.stream.session = mock_session
 
         mass.players.get_player = _player_lookup(
             {
@@ -431,6 +706,360 @@ class TestDynamicLeaderSwitch:
         ap_protocol.set_members.assert_not_awaited()
         mass.players.wait_for_player_update.assert_called()
         assert "old_leader" not in sgp._attr_group_members
+
+    @pytest.mark.asyncio
+    async def test_dynamic_leader_switch_follows_live_session_order(self) -> None:
+        """
+        The new leader must be the member that inherits the live session.
+
+        Providers promote their own first remaining member, so a leader picked from a
+        drifted member order would leave the group tracking a different player than the
+        one actually holding the session.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        old_leader = _make_mock_player("old_leader", provider_domain="sendspin")
+        living_room = _make_mock_player("living_room", provider_domain="sendspin")
+        bathroom = _make_mock_player("bathroom", provider_domain="sendspin")
+        # the live session hands over to bathroom, our own order says living_room.
+        # state.group_members is deliberately left unordered: only the raw attribute
+        # carries the provider's member order.
+        old_leader.group_members = ["old_leader", "bathroom", "living_room"]
+        old_leader.live_session_members = ["old_leader", "bathroom", "living_room"]
+        old_leader.state.group_members = ["old_leader", "living_room", "bathroom"]
+
+        mass.players.get_player = _player_lookup(
+            {
+                "old_leader": old_leader,
+                "living_room": living_room,
+                "bathroom": bathroom,
+            }
+        )
+
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["old_leader", "living_room", "bathroom"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("old_leader")
+
+        assert sgp.sync_leader == bathroom
+        assert sgp._attr_group_members == ["bathroom", "living_room"]
+        old_leader.set_members.assert_any_await(player_ids_to_remove=["old_leader"])
+        bathroom.set_members.assert_any_await(player_ids_to_add=["living_room"])
+
+    @pytest.mark.asyncio
+    async def test_handoff_stays_on_live_protocol_after_downshift(self) -> None:
+        """
+        A pending downshift must not redirect the handoff to the native players.
+
+        Once no member requires the non-native protocol anymore,
+        active_protocol_domain reports the native domain while the stream is
+        still carried by the protocol players, so the handoff has to keep
+        addressing the latter.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        old_leader = _make_mock_player(
+            "old_leader",
+            provider_domain="sonos",
+            protocol_domains=["airplay"],
+            active_output_protocol="ap_old",
+        )
+        kitchen = _make_mock_player(
+            "kitchen",
+            provider_domain="sonos",
+            protocol_domains=["airplay"],
+            active_output_protocol="ap_kitchen",
+        )
+        kitchen.linked_output_protocols[0].output_protocol_id = "ap_kitchen"
+        bathroom = _make_mock_player(
+            "bathroom",
+            provider_domain="sonos",
+            protocol_domains=["airplay"],
+            active_output_protocol="ap_bathroom",
+        )
+        bathroom.linked_output_protocols[0].output_protocol_id = "ap_bathroom"
+
+        ap_old = _make_mock_player("ap_old", provider_domain="airplay")
+        ap_kitchen = _make_mock_player("ap_kitchen", provider_domain="airplay")
+        ap_bathroom = _make_mock_player("ap_bathroom", provider_domain="airplay")
+        ap_kitchen.protocol_parent_id = "kitchen"
+        ap_bathroom.protocol_parent_id = "bathroom"
+        ap_old.group_members = ["ap_old", "ap_kitchen", "ap_bathroom"]
+        ap_old.live_session_members = ["ap_old", "ap_kitchen", "ap_bathroom"]
+
+        mass.players.get_player = _player_lookup(
+            {
+                "old_leader": old_leader,
+                "kitchen": kitchen,
+                "bathroom": bathroom,
+                "ap_old": ap_old,
+                "ap_kitchen": ap_kitchen,
+                "ap_bathroom": ap_bathroom,
+            }
+        )
+
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["old_leader", "kitchen", "bathroom"]
+        # all remaining members can play natively, so the group is due to downshift
+        assert sgp.active_protocol_domain == "sonos"
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("old_leader")
+
+        assert sgp.sync_leader == kitchen
+        ap_old.set_members.assert_any_await(player_ids_to_remove=["ap_old"])
+        ap_kitchen.set_members.assert_any_await(player_ids_to_add=["ap_bathroom"])
+        # a native grouping command would regroup speakers that stream over AirPlay
+        kitchen.set_members.assert_not_awaited()
+        bathroom.set_members.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_leader_selection_prefers_the_live_protocol_after_downshift(self) -> None:
+        """The new leader comes from the live session, not from the downshifted domain."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        old_leader = _make_mock_player(
+            "old_leader",
+            provider_domain="sonos",
+            protocol_domains=["airplay"],
+            active_output_protocol="ap_old",
+        )
+        # streams over AirPlay but can also play natively, so it does not hold
+        # the group on AirPlay and the group is due to downshift
+        kitchen = _make_mock_player(
+            "kitchen",
+            provider_domain="sonos",
+            protocol_domains=["airplay"],
+            active_output_protocol="ap_kitchen",
+        )
+        kitchen.linked_output_protocols[0].output_protocol_id = "ap_kitchen"
+        # native-only member that never joined the live session
+        spare = _make_mock_player("spare", provider_domain="sonos")
+
+        ap_old = _make_mock_player("ap_old", provider_domain="airplay")
+        ap_kitchen = _make_mock_player("ap_kitchen", provider_domain="airplay")
+        ap_kitchen.protocol_parent_id = "kitchen"
+        # the session reports who takes part but no order, so our tracked order stands
+        ap_old.group_members = []
+        ap_old.live_session_members = ["ap_old", "ap_kitchen"]
+
+        mass.players.get_player = _player_lookup(
+            {
+                "old_leader": old_leader,
+                "kitchen": kitchen,
+                "spare": spare,
+                "ap_old": ap_old,
+                "ap_kitchen": ap_kitchen,
+            }
+        )
+
+        sgp.sync_leader = old_leader
+        # spare comes first, so selecting on the downshifted domain would pick it
+        sgp._attr_group_members = ["old_leader", "spare", "kitchen"]
+        assert sgp.active_protocol_domain == "sonos"
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("old_leader")
+
+        # picking the native-only spare would have cost a dissolve + reform
+        assert sgp.sync_leader == kitchen
+        ap_old.set_members.assert_any_await(player_ids_to_remove=["ap_old"])
+
+    @pytest.mark.asyncio
+    async def test_reform_hint_keeps_the_protocol_a_member_depends_on(self) -> None:
+        """The re-form hint names a protocol the remaining member can actually play on."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        old_leader = _make_mock_player(
+            "old_leader",
+            provider_domain="sonos",
+            protocol_domains=["airplay"],
+            active_output_protocol="ap_old",
+        )
+        # reachable over AirPlay and its Sendspin bridge, but never over sonos
+        apple_tv = _make_mock_player(
+            "apple_tv", provider_domain="airplay", protocol_domains=["sendspin"]
+        )
+        ap_old = _make_mock_player("ap_old", provider_domain="airplay")
+        ap_old.group_members = []
+        # the remaining member never joined the session, so no seamless handoff
+        ap_old.live_session_members = ["ap_old"]
+
+        mass.players.get_player = _player_lookup(
+            {"old_leader": old_leader, "apple_tv": apple_tv, "ap_old": ap_old}
+        )
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["old_leader", "apple_tv"]
+
+        with patch.object(sgp, "_dissolve_and_reform", new=AsyncMock()) as reform:
+            await sgp._dynamic_leader_switch("old_leader")
+
+        reform.assert_awaited_once()
+        assert reform.await_args is not None
+        assert reform.await_args.kwargs.get("preferred_protocol_domain") == "airplay"
+
+    @pytest.mark.asyncio
+    async def test_leader_selection_skips_a_member_the_session_dropped(self) -> None:
+        """
+        A member the session dropped must not cost the group its seamless handoff.
+
+        AirPlay drops a member from its session on a write timeout without pruning it
+        from the group, so it stays an available candidate while no longer having a
+        stream to inherit.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        old_leader = _make_mock_player("ap_old", provider_domain="airplay")
+        dropped = _make_mock_player("ap_dropped", provider_domain="airplay")
+        still_playing = _make_mock_player("ap_live", provider_domain="airplay")
+        # the session dropped ap_dropped, but the group bookkeeping still lists it
+        # (and lists it first, so it would be picked on member order alone)
+        old_leader.group_members = ["ap_old", "ap_dropped", "ap_live"]
+        old_leader.live_session_members = ["ap_old", "ap_live"]
+
+        mass.players.get_player = _player_lookup(
+            {"ap_old": old_leader, "ap_dropped": dropped, "ap_live": still_playing}
+        )
+
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["ap_old", "ap_dropped", "ap_live"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("ap_old")
+
+        assert sgp.sync_leader == still_playing
+        # handed off at the protocol level, so playback was never stopped;
+        # the dropped member rejoins as a member of the new leader
+        old_leader.set_members.assert_any_await(player_ids_to_remove=["ap_old"])
+        still_playing.set_members.assert_any_await(player_ids_to_add=["ap_dropped"])
+        mass.players._handle_cmd_stop.assert_not_awaited()
+        assert sgp._reform_task is None
+
+    @pytest.mark.asyncio
+    async def test_dissolves_when_no_remaining_member_is_in_the_session(self) -> None:
+        """With every remaining member dropped from the session, the group must re-form."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        old_leader = _make_mock_player("ap_old", provider_domain="airplay")
+        dropped_a = _make_mock_player("ap_a", provider_domain="airplay")
+        dropped_b = _make_mock_player("ap_b", provider_domain="airplay")
+        old_leader.group_members = ["ap_old", "ap_a", "ap_b"]
+        old_leader.live_session_members = ["ap_old"]
+
+        mass.players.get_player = _player_lookup(
+            {"ap_old": old_leader, "ap_a": dropped_a, "ap_b": dropped_b}
+        )
+
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["ap_old", "ap_a", "ap_b"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("ap_old")
+
+        # no member has a stream to inherit: stop and re-form with the remaining two
+        old_leader.set_members.assert_not_awaited()
+        mass.players._handle_cmd_stop.assert_awaited_with("ap_old")
+        assert sgp._attr_group_members == ["ap_a", "ap_b"]
+        assert sgp._reform_task is not None
+        assert sgp.sync_leader is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("provider_domain", "live_members"),
+        [
+            # a solo Sendspin leader still lists itself as its group's only client
+            ("sendspin", ["old_leader"]),
+            # Snapcast reports no members at all while it leads nobody
+            ("snapcast", []),
+        ],
+    )
+    async def test_dynamic_leader_switch_dissolves_when_member_never_joined_session(
+        self, provider_domain: str, live_members: list[str]
+    ) -> None:
+        """A member that never joined the live session cannot inherit it, whatever the provider."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        old_leader = _make_mock_player("old_leader", provider_domain=provider_domain)
+        old_leader.group_members = live_members
+        old_leader.live_session_members = live_members
+        # added to the group in the same call that removed the leader, so it was
+        # never synced at the protocol level
+        fresh_player = _make_mock_player("fresh_player", provider_domain=provider_domain)
+
+        mass.players.get_player = _player_lookup(
+            {"old_leader": old_leader, "fresh_player": fresh_player}
+        )
+
+        sgp.sync_leader = old_leader
+        sgp._attr_group_members = ["old_leader", "fresh_player"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._dynamic_leader_switch("old_leader")
+
+        # no protocol-level handoff was attempted; the group stopped and dissolved
+        # with a re-form scheduled so playback resumes on the new member
+        old_leader.set_members.assert_not_awaited()
+        mass.players._handle_cmd_stop.assert_awaited_with("old_leader")
+        assert sgp._attr_group_members == ["fresh_player"]
+        assert sgp._reform_task is not None
+        assert sgp.sync_leader is None
+
+    def test_align_members_translates_protocol_ids_and_keeps_outsiders_last(self) -> None:
+        """A protocol session player's order maps onto the parent members that we track."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        living_room = _make_mock_player("living_room")
+        bathroom = _make_mock_player("bathroom")
+        # tracked but not part of the live session
+        offline = _make_mock_player("offline")
+        ap_living_room = _make_mock_player("ap_living_room", provider_domain="airplay")
+        ap_bathroom = _make_mock_player("ap_bathroom", provider_domain="airplay")
+        ap_living_room.protocol_parent_id = "living_room"
+        ap_bathroom.protocol_parent_id = "bathroom"
+
+        session_player = _make_mock_player("ap_old", provider_domain="airplay")
+        session_player.group_members = ["ap_old", "ap_bathroom", "ap_living_room"]
+
+        mass.players.get_player = _player_lookup(
+            {
+                "living_room": living_room,
+                "bathroom": bathroom,
+                "offline": offline,
+                "ap_living_room": ap_living_room,
+                "ap_bathroom": ap_bathroom,
+                "ap_old": session_player,
+            }
+        )
+        sgp._attr_group_members = ["living_room", "bathroom", "offline"]
+
+        sgp._align_members_with_session(session_player)
+
+        assert sgp._attr_group_members == ["bathroom", "living_room", "offline"]
+
+    def test_align_members_leaves_order_untouched_without_a_live_session(self) -> None:
+        """Without a session (or with one holding none of our members) the order stands."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        stranger = _make_mock_player("stranger", provider_domain="airplay")
+        stranger.group_members = ["stranger"]
+        mass.players.get_player = _player_lookup({"stranger": stranger})
+        sgp._attr_group_members = ["living_room", "bathroom"]
+
+        sgp._align_members_with_session(None)
+        assert sgp._attr_group_members == ["living_room", "bathroom"]
+
+        sgp._align_members_with_session(stranger)
+        assert sgp._attr_group_members == ["living_room", "bathroom"]
 
 
 class TestPowerLifecycle:
@@ -884,7 +1513,7 @@ class TestPresetMembersInDynamicGroup:
         mass.players.get_player = _player_lookup(
             {"offline_member": offline_member, "candidate": candidate}
         )
-        mass.players.all_players = MagicMock(return_value=[candidate])
+        mass.players.iter_players = MagicMock(return_value=[candidate])
 
         assert "candidate" in sgp.can_group_with
 
@@ -905,7 +1534,7 @@ class TestPresetMembersInDynamicGroup:
         result = sgp.can_group_with
 
         assert {"online_member", "friend"} <= result
-        mass.players.all_players.assert_not_called()
+        mass.players.iter_players.assert_not_called()
 
 
 class TestGetConfigEntriesMemberPicker:
@@ -1202,6 +1831,79 @@ class TestIdleGraceTimer:
         assert sgp._idle_grace_task is None
 
 
+class TestIdleGraceOnFailedStart:
+    """A group formed for a start that never materializes must arm the grace dissolve."""
+
+    @pytest.mark.asyncio
+    async def test_grace_scheduled_when_leader_never_starts_playing(self) -> None:
+        """play_media where the leader stays IDLE (e.g. 404 media) arms the grace timer."""
+        mass = _make_mock_mass()
+        sentinel = MagicMock()
+        mass.create_task = MagicMock(return_value=sentinel)
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp._attr_group_members = ["leader"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp.play_media(MagicMock(source_id="src", uri="x"))
+
+        # the leader stayed IDLE, so the failed start must leave a pending dissolve
+        assert sgp._idle_grace_task is sentinel
+
+    @pytest.mark.asyncio
+    async def test_no_grace_when_leader_confirms_playback(self) -> None:
+        """play_media where the leader reports PLAYING must not arm the grace timer."""
+        mass = _make_mock_mass()
+        mass.create_task = MagicMock()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player(
+            "leader", provider_domain="sonos", playback_state=PlaybackState.PLAYING
+        )
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp._attr_group_members = ["leader"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp.play_media(MagicMock(source_id="src", uri="x"))
+
+        assert sgp._idle_grace_task is None
+        mass.create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_grace_on_failed_start_when_pinned(self) -> None:
+        """No grace timer on a failed start when the user pinned the group with Fake power."""
+        mass = _make_mock_mass()
+        mass.create_task = MagicMock()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp._attr_group_members = ["leader"]
+        sgp._attr_powered = True  # explicit pin via Fake power control
+
+        with patch.object(sgp, "update_state"):
+            await sgp.play_media(MagicMock(source_id="src", uri="x"))
+
+        assert sgp._idle_grace_task is None
+        mass.create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_grace_scheduled_when_play_command_raises(self) -> None:
+        """A play command that raises still arms the grace timer for the formed group."""
+        mass = _make_mock_mass()
+        sentinel = MagicMock()
+        mass.create_task = MagicMock(return_value=sentinel)
+        mass.players._handle_play_media = AsyncMock(side_effect=RuntimeError("boom"))
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp._attr_group_members = ["leader"]
+
+        with patch.object(sgp, "update_state"), pytest.raises(RuntimeError):
+            await sgp.play_media(MagicMock(source_id="src", uri="x"))
+
+        assert sgp._idle_grace_task is sentinel
+
+
 class TestFormWaitsForLeaderUnsynced:
     """The form path must wait for a stale leader to report synced_to=None."""
 
@@ -1466,6 +2168,7 @@ class TestLeaderPlaybackAwaited:
             "play_media",
             "await",
         ]
+        mass.players.get_player_lock.assert_any_call("leader", PlayerLockPurpose.PLAYBACK)
 
     @pytest.mark.asyncio
     async def test_no_wait_when_group_has_no_leader(self) -> None:

@@ -10,6 +10,7 @@ from music_assistant_models.media_items import Album, BrowseFolder, Playlist
 
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.spotify.provider import SpotifyProvider
+from tests.common import use_real_create_task
 
 
 def _make_album_obj(album_id: str, name: str) -> dict[str, Any]:
@@ -63,11 +64,11 @@ def provider(get_data: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> SpotifyPro
 
     mass = MagicMock()
     mass.metadata.locale = "de_DE"
-    # bypass the use_cache decorator: always miss, swallow the background store task
+    # bypass the use_cache decorator: always miss
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
-    mass.create_task = MagicMock(side_effect=lambda coro, **_: coro.close())
+    use_real_create_task(mass)
     prov.mass = mass
 
     monkeypatch.setattr(prov, "_get_data", get_data)

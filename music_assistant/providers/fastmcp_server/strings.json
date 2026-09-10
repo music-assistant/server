@@ -159,9 +159,6 @@
     "config_write_secret": {
       "label": "Config: allow writing secret values",
       "description": "Required IN ADDITION to a category write flag before any SECURE_STRING (password/token) value can be written. With this off, secret writes are rejected while non-secret edits still work. Keep off unless deliberately rotating credentials."
-    },
-    "connect_wizard_url": {
-      "label": "Connect Wizard"
     }
   },
   "config_categories": {
@@ -180,5 +177,8 @@
   },
   "manifest": {
     "description": "Exposes Music Assistant as a Model Context Protocol (MCP) server for Claude, Codex, and other MCP-aware LLM clients."
+  },
+  "errors": {
+    "connect_wizard_unavailable": "The Connect Wizard could not be opened; check the provider logs."
   }
 }

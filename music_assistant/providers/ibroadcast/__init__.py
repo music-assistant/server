@@ -36,7 +36,10 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import (
+    DEFAULT_MAX_CONCURRENT_STREAMS,
+    MusicProvider,
+)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -71,6 +74,16 @@ class IBroadcastProvider(MusicProvider):
     _user_id: str
     _client: IBroadcastClient
 
+    @property
+    def is_streaming_provider(self) -> bool:
+        """Return False: the catalog is the account's own uploaded collection."""
+        return False
+
+    @property
+    def max_concurrent_streams(self) -> int:
+        """Keep the conservative streaming default, as this is a hosted service."""
+        return DEFAULT_MAX_CONCURRENT_STREAMS
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
         return ()
@@ -95,7 +108,7 @@ class IBroadcastProvider(MusicProvider):
             try:
                 yield await self._parse_album(album)
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-                self.logger.debug("Parse album failed: %s", album, exc_info=error)
+                self._report_skipped_item(MediaType.ALBUM, album, "album_id", error)
                 continue
 
     @use_cache(3600 * 24 * 7)  # Cache for 7 days
@@ -110,7 +123,7 @@ class IBroadcastProvider(MusicProvider):
             try:
                 yield await self._parse_artist(artist)
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-                self.logger.debug("Parse artist failed: %s", artist, exc_info=error)
+                self._report_skipped_item(MediaType.ARTIST, artist, "artist_id", error)
                 continue
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
@@ -153,10 +166,11 @@ class IBroadcastProvider(MusicProvider):
         for track in (await self._client.get_tracks()).values():
             try:
                 yield await self._parse_track(track)
-            except IndexError:
+            except IndexError as error:
+                self._report_skipped_item(MediaType.TRACK, track, "track_id", error)
                 continue
             except (KeyError, TypeError, InvalidDataError) as error:
-                self.logger.debug("Parse track failed: %s", track, exc_info=error)
+                self._report_skipped_item(MediaType.TRACK, track, "track_id", error)
                 continue
 
     def _get_artist_item_mapping(self, artist_id: str, artist_obj: dict[str, Any]) -> ItemMapping:
@@ -437,3 +451,20 @@ class IBroadcastProvider(MusicProvider):
         if "description" in playlist_obj:
             playlist.metadata.description = playlist_obj["description"]
         return playlist
+
+    def _report_skipped_item(
+        self, media_type: MediaType, item_obj: dict[str, Any], id_key: str, err: Exception
+    ) -> None:
+        """
+        Report a library item that was dropped while listing the library.
+
+        :param media_type: Media type of the skipped item.
+        :param item_obj: Raw api object of the skipped item.
+        :param id_key: Key under which the raw object holds the item id, which iBroadcast
+            returns as a number while the library stores it as text.
+        :param err: The error that made the item unusable.
+        """
+        item_id = item_obj.get(id_key)
+        self.report_skipped_sync_item(
+            media_type, str(item_id) if item_id is not None else None, err
+        )

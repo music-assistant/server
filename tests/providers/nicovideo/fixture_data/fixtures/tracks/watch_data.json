@@ -576,7 +576,7 @@
     "allowSensitiveContents": true,
     "existence": {
       "age": 30,
-      "prefecture": "北海道",
+      "prefecture": null,
       "sex": "unanswered"
     }
   },

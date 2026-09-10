@@ -1,0 +1,12 @@
+{
+  "type": "plugin",
+  "domain": "openai_compatible",
+  "stage": "beta",
+  "name": "OpenAI Compatible",
+  "description": "Use any service that speaks the OpenAI API for Music Assistant's AI features, including OpenAI, Groq, OpenRouter, Together and local servers such as Ollama or LM Studio.",
+  "codeowners": ["@music-assistant"],
+  "documentation": "https://music-assistant.io/plugins/openai_compatible/",
+  "multi_instance": true,
+  "builtin": false,
+  "requirements": []
+}

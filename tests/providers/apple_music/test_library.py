@@ -1,20 +1,24 @@
 """Unit tests for Apple Music library track streaming and windowed enrichment."""
 
+from datetime import UTC, datetime
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import (
     Album,
     Artist,
     ItemMapping,
+    Playlist,
     ProviderMapping,
     Track,
     UniqueList,
 )
 
 from music_assistant.providers.apple_music.library import (
+    _DETAIL_BATCH_SIZE,
     _MAX_SEARCH_FALLBACK_PER_WINDOW,
     _TRACK_SYNC_WINDOW,
     AppleMusicLibraryManager,
@@ -498,3 +502,345 @@ async def test_search_replacement_skips_item_mappings() -> None:
 
     # Should return None since ItemMapping should be skipped
     assert result is None
+
+
+def _make_library_only_manager(
+    items: list[dict[str, Any]],
+) -> tuple[AppleMusicLibraryManager, MagicMock, list[tuple[str, dict[str, Any]]]]:
+    """Build a manager streaming library-only songs, recording every api call it makes."""
+    provider = MagicMock()
+    provider.domain = "apple_music"
+    provider.instance_id = "apple_music--test"
+    provider._storefront = "us"
+    api = provider.api_client
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _iter(*_args: Any, **_kwargs: Any) -> Any:
+        for item in items:
+            yield item
+
+    async def _get_data(endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((endpoint, kwargs))
+        requested = kwargs.get("ids", "").split(",") if kwargs.get("ids") else []
+        return {
+            "data": [
+                _library_song_with_metadata(
+                    int(item_id.split(".")[1]), catalog_id=None, album_name=f"Album {item_id}"
+                )
+                for item_id in requested
+            ]
+        }
+
+    api.iter_all_items = _iter
+    api.get_data = AsyncMock(side_effect=_get_data)
+    api.get_ratings = AsyncMock(return_value={})
+    return AppleMusicLibraryManager(provider), provider, calls
+
+
+@pytest.mark.asyncio
+async def test_library_only_detail_fetches_are_batched() -> None:
+    """Weak-mapped library-only tracks are enriched in batches, not one request per track."""
+    count = 250
+    items = [_library_song(idx, catalog_id=None) for idx in range(count)]
+    manager, _provider, calls = _make_library_only_manager(items)
+
+    tracks = [track async for track in manager.get_library_tracks()]
+
+    assert len(tracks) == count
+    # two windows (150 + 100), each batching its weak-mapped tracks at _DETAIL_BATCH_SIZE
+    assert len(calls) == 3
+    assert all(len(kwargs["ids"].split(",")) <= _DETAIL_BATCH_SIZE for _endpoint, kwargs in calls)
+    # the batched detail response still resolves the album that the listing lacked
+    assert all(track.album is not None for track in tracks)
+
+
+@pytest.mark.asyncio
+async def test_library_only_detail_batch_failure_reports_how_many_lost_detail() -> None:
+    """A failed detail batch keeps the listing tracks and warns with the number affected."""
+    count = 20
+    items = [_library_song(idx, catalog_id=None) for idx in range(count)]
+    manager, provider, _calls = _make_library_only_manager(items)
+    provider.api_client.get_data = AsyncMock(side_effect=MusicAssistantError("boom"))
+
+    tracks = [track async for track in manager.get_library_tracks()]
+
+    assert len(tracks) == count
+    assert all(track.album is None for track in tracks)
+    provider.logger.warning.assert_called_once()
+    assert count in provider.logger.warning.call_args.args
+
+
+def _library_album(idx: int, *, date_added: str | None = None) -> dict[str, Any]:
+    """Build a minimal me/library/albums listing item, optionally carrying a dateAdded."""
+    attributes: dict[str, Any] = {"name": f"Album {idx}"}
+    if date_added is not None:
+        attributes["dateAdded"] = date_added
+    return {"id": f"l.album{idx}", "type": "library-albums", "attributes": attributes}
+
+
+def _library_playlist(
+    idx: int, *, has_catalog: bool, date_added: str | None = None
+) -> dict[str, Any]:
+    """Build a minimal me/library/playlists listing item, optionally carrying a dateAdded."""
+    attributes: dict[str, Any] = {"name": f"Playlist {idx}", "hasCatalog": has_catalog}
+    if has_catalog:
+        attributes["playParams"] = {"globalId": f"pl.{idx}"}
+    if date_added is not None:
+        attributes["dateAdded"] = date_added
+    return {"id": f"p.{idx}", "type": "library-playlists", "attributes": attributes}
+
+
+def _make_albums_manager(
+    items: list[dict[str, Any]],
+) -> tuple[AppleMusicLibraryManager, MagicMock]:
+    """Build a manager whose api.get_all_items returns ``items`` for the albums listing."""
+    provider = MagicMock()
+    provider.domain = "apple_music"
+    provider.instance_id = "apple_music--test"
+    api = provider.api_client
+    api.get_all_items = AsyncMock(return_value=items)
+    api.get_ratings = AsyncMock(return_value={})
+    return AppleMusicLibraryManager(provider), api
+
+
+def _make_playlists_manager(
+    items: list[dict[str, Any]], *, catalog_playlist: Playlist | None = None
+) -> tuple[AppleMusicLibraryManager, MagicMock]:
+    """
+    Build a manager whose api.get_all_items returns ``items`` for the playlists listing.
+
+    ``catalog_playlist``, if given, is what ``media_manager.get_playlist`` resolves to for
+    a ``hasCatalog`` row (mirroring how Apple's catalog fetch replaces the listing row).
+    """
+    provider = MagicMock()
+    provider.domain = "apple_music"
+    provider.instance_id = "apple_music--test"
+    api = provider.api_client
+    api.get_all_items = AsyncMock(return_value=items)
+    api.get_ratings = AsyncMock(return_value={})
+    if catalog_playlist is not None:
+        provider.media_manager.get_playlist = AsyncMock(return_value=catalog_playlist)
+    return AppleMusicLibraryManager(provider), api
+
+
+@pytest.mark.asyncio
+async def test_get_library_albums_sets_date_added_from_listing() -> None:
+    """A library album listing row's dateAdded ends up on the yielded Album."""
+    item = _library_album(1, date_added="2024-02-25T15:01:08Z")
+    manager, api = _make_albums_manager([item])
+
+    albums = [album async for album in manager.get_library_albums()]
+
+    assert len(albums) == 1
+    assert albums[0].date_added == datetime(2024, 2, 25, 15, 1, 8, tzinfo=UTC)
+    assert "dateAdded" in api.get_all_items.call_args.kwargs["extend"].split(",")
+
+
+@pytest.mark.asyncio
+async def test_get_library_albums_without_date_added_stays_none() -> None:
+    """Albums added before Apple started returning dateAdded keep date_added=None."""
+    item = _library_album(2)
+    manager, _api = _make_albums_manager([item])
+
+    albums = [album async for album in manager.get_library_albums()]
+
+    assert len(albums) == 1
+    assert albums[0].date_added is None
+
+
+@pytest.mark.asyncio
+async def test_get_library_playlists_sets_date_added_without_catalog() -> None:
+    """A non-catalog library playlist row's dateAdded ends up on the yielded Playlist."""
+    item = _library_playlist(1, has_catalog=False, date_added="2024-02-25T15:01:08Z")
+    manager, api = _make_playlists_manager([item])
+
+    playlists = [playlist async for playlist in manager.get_library_playlists()]
+
+    assert len(playlists) == 1
+    assert playlists[0].date_added == datetime(2024, 2, 25, 15, 1, 8, tzinfo=UTC)
+    assert "dateAdded" in api.get_all_items.call_args.kwargs["extend"].split(",")
+
+
+@pytest.mark.asyncio
+async def test_get_library_playlists_carries_date_added_across_catalog_fetch() -> None:
+    """The listing row's dateAdded survives the catalog refetch a hasCatalog playlist does."""
+    item = _library_playlist(2, has_catalog=True, date_added="2016-01-02T03:04:05Z")
+    catalog_playlist = Playlist(
+        item_id="pl.2",
+        provider="apple_music",
+        name="Catalog Playlist",
+        owner="me",
+        provider_mappings={
+            ProviderMapping(
+                item_id="pl.2",
+                provider_domain="apple_music",
+                provider_instance="apple_music--test",
+            )
+        },
+    )
+    manager, _api = _make_playlists_manager([item], catalog_playlist=catalog_playlist)
+
+    playlists = [playlist async for playlist in manager.get_library_playlists()]
+
+    assert len(playlists) == 1
+    assert playlists[0].date_added == datetime(2016, 1, 2, 3, 4, 5, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_get_library_playlists_without_date_added_stays_none() -> None:
+    """Playlists added before Apple started returning dateAdded keep date_added=None."""
+    item = _library_playlist(3, has_catalog=False)
+    manager, _api = _make_playlists_manager([item])
+
+    playlists = [playlist async for playlist in manager.get_library_playlists()]
+
+    assert len(playlists) == 1
+    assert playlists[0].date_added is None
+
+
+def _library_artist(idx: int, *, date_added: str | None = None) -> dict[str, Any]:
+    """Build a minimal me/library/artists listing item, optionally carrying a dateAdded."""
+    attributes: dict[str, Any] = {"name": f"Artist {idx}"}
+    if date_added is not None:
+        attributes["dateAdded"] = date_added
+    return {"id": f"l.artist{idx}", "type": "library-artists", "attributes": attributes}
+
+
+def _make_artists_manager(
+    items: list[dict[str, Any]],
+) -> tuple[AppleMusicLibraryManager, MagicMock]:
+    """Build a manager whose api.get_all_items returns ``items`` for the artists listing."""
+    provider = MagicMock()
+    provider.domain = "apple_music"
+    provider.instance_id = "apple_music--test"
+    api = provider.api_client
+    api.get_all_items = AsyncMock(return_value=items)
+    return AppleMusicLibraryManager(provider), api
+
+
+@pytest.mark.asyncio
+async def test_get_library_artists_sets_date_added_from_listing() -> None:
+    """A library artist listing row's dateAdded ends up on the yielded Artist."""
+    item = _library_artist(1, date_added="2024-02-25T15:01:08Z")
+    manager, api = _make_artists_manager([item])
+
+    artists = [artist async for artist in manager.get_library_artists()]
+
+    assert len(artists) == 1
+    assert artists[0].date_added == datetime(2024, 2, 25, 15, 1, 8, tzinfo=UTC)
+    assert "dateAdded" in api.get_all_items.call_args.kwargs["extend"].split(",")
+
+
+@pytest.mark.asyncio
+async def test_get_library_artists_without_date_added_stays_none() -> None:
+    """Artists added before Apple started returning dateAdded keep date_added=None."""
+    item = _library_artist(2)
+    manager, _api = _make_artists_manager([item])
+
+    artists = [artist async for artist in manager.get_library_artists()]
+
+    assert len(artists) == 1
+    assert artists[0].date_added is None
+
+
+@pytest.mark.asyncio
+async def test_catalog_enriched_track_inherits_date_added_from_library_row() -> None:
+    """A catalog-enriched track carries over dateAdded from its library row."""
+    item = _library_song(1, catalog_id="c1")
+    item["attributes"]["dateAdded"] = "2024-02-25T15:01:08Z"
+    manager, _api, _state = _make_manager([item])
+
+    tracks = [track async for track in manager.get_library_tracks()]
+
+    assert len(tracks) == 1
+    assert tracks[0].date_added == datetime(2024, 2, 25, 15, 1, 8, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_library_only_track_sets_date_added_from_own_row() -> None:
+    """A library-only track (no catalog id) gets dateAdded from its own listing row."""
+    item = _library_song(1, catalog_id=None)
+    item["attributes"]["dateAdded"] = "2024-02-25T15:01:08Z"
+    manager, _provider, _calls = _make_library_only_manager([item])
+
+    tracks = [track async for track in manager.get_library_tracks()]
+
+    assert len(tracks) == 1
+    assert tracks[0].date_added == datetime(2024, 2, 25, 15, 1, 8, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_track_without_date_added_stays_none() -> None:
+    """A track whose listing row has no dateAdded keeps date_added=None."""
+    item = _library_song(1, catalog_id=None)
+    manager, _provider, _calls = _make_library_only_manager([item])
+
+    tracks = [track async for track in manager.get_library_tracks()]
+
+    assert len(tracks) == 1
+    assert tracks[0].date_added is None
+
+
+@pytest.mark.asyncio
+async def test_search_replacement_track_inherits_date_added_from_library_row() -> None:
+    """A deprecated-catalog-id search replacement still inherits the library row's dateAdded."""
+    provider = MagicMock()
+    provider.domain = "apple_music"
+    provider.instance_id = "apple_music--test"
+    provider._storefront = "us"
+    api = provider.api_client
+
+    item = {
+        "id": "i.1",
+        "type": "library-songs",
+        "attributes": {
+            "name": "Test Track",
+            "artistName": "Test Artist",
+            "albumName": "Test Album",
+            "playParams": {"id": "i.1", "catalogId": "c1"},
+            "dateAdded": "2024-02-25T15:01:08Z",
+        },
+    }
+
+    async def _iter(*_args: Any, **_kwargs: Any) -> Any:
+        yield item
+
+    api.iter_all_items = _iter
+    # The catalog batch returns nothing for "c1": it is a deprecated catalog id.
+    api.get_data = AsyncMock(return_value={"data": []})
+    api.get_ratings = AsyncMock(return_value={})
+
+    mock_track = _make_test_track(
+        track_id="999",
+        track_name="Test Track",
+        artist_id="456",
+        artist_name="Test Artist",
+        album_id="789",
+        album_name="Test Album",
+    )
+    search_results = MagicMock()
+    search_results.tracks = [mock_track]
+    provider.media_manager.search = AsyncMock(return_value=search_results)
+
+    manager = AppleMusicLibraryManager(provider)
+    tracks = [track async for track in manager.get_library_tracks()]
+
+    assert len(tracks) == 1
+    # the replacement, not the library-only fallback, which would also carry a date
+    assert tracks[0].item_id == "999"
+    assert tracks[0].date_added == datetime(2024, 2, 25, 15, 1, 8, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_library_only_track_keeps_date_added_after_detail_album_swap() -> None:
+    """A weak-mapped library-only track's date_added survives even without dateAdded on detail."""
+    item = _library_song(1, catalog_id=None)
+    item["attributes"]["dateAdded"] = "2024-02-25T15:01:08Z"
+    manager, _provider, _calls = _make_library_only_manager([item])
+
+    tracks = [track async for track in manager.get_library_tracks()]
+
+    assert len(tracks) == 1
+    assert tracks[0].album is not None
+    assert tracks[0].album.name == "Album i.1"
+    assert tracks[0].date_added == datetime(2024, 2, 25, 15, 1, 8, tzinfo=UTC)

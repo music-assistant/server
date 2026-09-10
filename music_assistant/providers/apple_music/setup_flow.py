@@ -49,7 +49,8 @@ async def run_setup(session: SetupSession) -> None:
     # prefer the bundled developer token; only prompt for (and store) a manual one when
     # the bundle ships an empty/expired token, e.g. on development builds
     app_token = MUSIC_APP_TOKEN
-    if not await _app_token_valid(mass, app_token):
+    # a throttled /v1/test says nothing about validity, so only an explicit rejection counts
+    if await _app_token_accepted(mass, app_token) is False:
         app_token_errors: dict[str, str] | None = None
         while True:
             values = await session.form(
@@ -64,7 +65,8 @@ async def run_setup(session: SetupSession) -> None:
                 errors=app_token_errors,
             )
             app_token = str(values.get(CONF_MUSIC_APP_TOKEN) or "")
-            if await _app_token_valid(mass, app_token):
+            # a typed token must be positively accepted, not merely un-rejected
+            if await _app_token_accepted(mass, app_token):
                 break
             app_token_errors = {CONF_MUSIC_APP_TOKEN: "invalid_value"}
         collected[CONF_MUSIC_APP_TOKEN] = app_token
@@ -110,9 +112,11 @@ async def run_setup(session: SetupSession) -> None:
             errors = {"base": err.translation_key or str(err)}
 
 
-async def _app_token_valid(mass: MusicAssistant, app_token: str) -> bool:
+async def _app_token_accepted(mass: MusicAssistant, app_token: str) -> bool | None:
     """
-    Return whether the given Apple Music developer (app) token is accepted by the API.
+    Return whether the API accepted the given Apple Music developer (app) token.
+
+    True when accepted, False when rejected, None when inconclusive (throttled/unreachable).
 
     :param mass: The MusicAssistant instance.
     :param app_token: The developer (app) token to validate.
@@ -126,11 +130,11 @@ async def _app_token_valid(mass: MusicAssistant, app_token: str) -> bool:
             ssl=True,
             timeout=ClientTimeout(total=10),
         ) as response:
-            return response.status == 200
+            if response.status == 200:
+                return True
+            return False if response.status in (401, 403) else None
     except ClientError, TimeoutError:
-        # a transient network error must not abort the flow; treat the token as
-        # invalid so the user lands on the manual app-token form and can retry
-        return False
+        return None
 
 
 def _validate_user_token(token: ConfigValueType) -> bool:

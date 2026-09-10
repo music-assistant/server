@@ -8,7 +8,7 @@ from music_assistant.helpers.tags import clean_mbid, split_items
 from music_assistant.helpers.util import parse_title_and_version
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import Album
+    from music_assistant_models.media_items import Album, Artist
 
 
 def parse_album_nfo(album: Album, nfo_album: dict[Any, Any], source: str | None = None) -> None:
@@ -36,3 +36,40 @@ def parse_album_nfo(album: Album, nfo_album: dict[Any, Any], source: str | None 
         album.year = int(year)
     if genre := nfo_album.get("genre"):
         album.metadata.genres = set(split_items(genre))
+
+
+def nfo_album_artist(nfo_album: dict[Any, Any]) -> str | None:
+    """
+    Return the single album artist named in an album NFO, or None when absent or ambiguous.
+
+    :param nfo_album: The parsed 'album' element from the NFO file.
+    """
+    value = nfo_album.get("albumartist")
+    if not isinstance(value, str) and not (
+        isinstance(value, list) and all(isinstance(item, str) for item in value)
+    ):
+        return None
+    # repeated elements (how Jellyfin writes compilations) and semicolon separated values
+    # both name more than one artist, so neither is trusted as the album artist
+    names = split_items(value)
+    return names[0] if len(names) == 1 else None
+
+
+def parse_artist_nfo(artist: Artist, nfo_artist: dict[Any, Any], source: str | None = None) -> None:
+    """
+    Enrich artist metadata from NFO file.
+
+    :param artist: The artist to enrich.
+    :param nfo_artist: The parsed 'artist' element from the NFO file.
+    :param source: Origin of the NFO data (e.g. file path), included in log messages.
+    """
+    if title := nfo_artist.get("title") or nfo_artist.get("name"):
+        artist.name = title
+    if sort_name := nfo_artist.get("sortname"):
+        artist.sort_name = sort_name
+    if mbid := clean_mbid(nfo_artist.get("musicbrainzartistid"), source):
+        artist.mbid = mbid
+    if description := nfo_artist.get("biography"):
+        artist.metadata.description = description
+    if genre := nfo_artist.get("genre"):
+        artist.metadata.genres = set(split_items(genre))

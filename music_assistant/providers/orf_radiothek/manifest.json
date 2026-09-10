@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "stage": "stable",
   "description": "Stream live radio and on-demand content from ORF Radiothek (Austrian public service broadcaster). Supports live streams from Ö1, Ö3, FM4, and regional stations, plus on-demand broadcasts and podcasts.",
-  "documentation": "https://music-assistant.io/music-providers/radiothek",
+  "documentation": "https://music-assistant.io/music-providers/orf-radiothek",
   "requirements": [],
   "icon": "mdi:radio",
   "type": "music",

@@ -46,6 +46,26 @@ def test_sorted_scandir_natural_order(tmp_path: Path) -> None:
     ]
 
 
+def test_sorted_scandir_handles_non_decimal_digits(tmp_path: Path) -> None:
+    """Names with digit-like characters that int() rejects still sort without raising."""
+    names = (
+        "Cherry Moon - The Compilation 2002\u00b3",
+        "Cherry Moon - The Compilation 2001",
+        "\u2160\u2161 Roman",
+        "\u0663 Arabic-Indic",
+    )
+    for name in names:
+        (tmp_path / name).mkdir()
+
+    result = sorted_scandir(str(tmp_path), str(tmp_path), sort=True)
+
+    assert sorted(item.filename for item in result) == sorted(names)
+    # the decimal run still sorts numerically while the superscript compares as text
+    assert result.index(next(i for i in result if i.filename.endswith("2001"))) < result.index(
+        next(i for i in result if i.filename.endswith("2002\u00b3"))
+    )
+
+
 def test_sorted_scandir_unsorted_by_default(tmp_path: Path) -> None:
     """Without the sort flag, entries are returned in raw scandir order."""
     for name in ("b.flac", "a.flac"):

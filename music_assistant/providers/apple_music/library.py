@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import MediaType
@@ -18,8 +20,11 @@ if TYPE_CHECKING:
 
     from .provider import AppleMusicProvider
 
-# Tracks carry heavy includes, so they page smaller than the library default.
-_TRACK_PAGE_SIZE = 30
+# 100 is the maximum Apple accepts; the heavy includes only cost ~20% latency per page.
+_TRACK_PAGE_SIZE = 100
+
+# Detail lookups for weak-mapped library tracks go out in batches of this many ids.
+_DETAIL_BATCH_SIZE = 100
 
 # Catalog enrichment batch size: 300 (the documented max) returns a 504, so cap at 150. This also
 # bounds the in-flight window, keeping a ~100k library from being materialized at once.
@@ -42,16 +47,18 @@ class AppleMusicLibraryManager:
         """Retrieve library artists from the provider."""
         endpoint = "me/library/artists"
         for item in await self.api.get_all_items(
-            endpoint, include="catalog", extend="editorialNotes"
+            endpoint, include="catalog", extend="editorialNotes,dateAdded"
         ):
             if item and item["id"]:
-                yield cast("Artist", parse_artist(self.provider, item))
+                artist = cast("Artist", parse_artist(self.provider, item))
+                _set_date_added(artist, item)
+                yield artist
 
     async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from the provider."""
         endpoint = "me/library/albums"
         album_items = await self.api.get_all_items(
-            endpoint, include="catalog,artists", extend="editorialNotes"
+            endpoint, include="catalog,artists", extend="editorialNotes,dateAdded"
         )
         album_catalog_item_ids = [
             item["id"]
@@ -74,9 +81,10 @@ class AppleMusicLibraryManager:
                     if not is_library_id(item["id"])
                     else rating_library_response.get(item["id"])
                 )
-                album = parse_album(self.provider, item, is_favourite)
-                if album:
-                    yield cast("Album", album)
+                if parsed_album := parse_album(self.provider, item, is_favourite):
+                    album = cast("Album", parsed_album)
+                    _set_date_added(album, item)
+                    yield album
 
     async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from the provider."""
@@ -84,7 +92,10 @@ class AppleMusicLibraryManager:
         catalog_items: dict[str, dict[str, Any]] = {}
         library_only_items: list[dict[str, Any]] = []
         async for item in self.api.iter_all_items(
-            "me/library/songs", include="catalog,albums,artists", page_size=_TRACK_PAGE_SIZE
+            "me/library/songs",
+            include="catalog,albums,artists",
+            extend="dateAdded",
+            page_size=_TRACK_PAGE_SIZE,
         ):
             catalog_id = item.get("attributes", {}).get("playParams", {}).get("catalogId")
             if not catalog_id:
@@ -115,24 +126,15 @@ class AppleMusicLibraryManager:
             and not is_catalog_id(album_item_id)
         )
 
-    async def _parse_library_track_with_detail_fallback(
-        self, item: dict[str, Any], is_favourite: bool | None
+    def _apply_album_detail(
+        self,
+        item: dict[str, Any],
+        parsed_track: Track,
+        detail: dict[str, Any],
+        is_favourite: bool | None,
     ) -> Track:
-        """Parse library track and fetch detail when album mapping is weak."""
-        parsed_track = parse_track(self.provider, item, is_favourite)
-        initial_is_weak = self._track_has_weak_album_mapping(parsed_track)
-        if not initial_is_weak:
-            return parsed_track
-        try:
-            detail_response = await self.api.get_data(
-                f"me/library/songs/{item['id']}", include="catalog,albums,artists"
-            )
-        except MusicAssistantError as err:
-            self.logger.debug("Unable to fetch library song details for %s: %s", item["id"], err)
-            return parsed_track
-        if not detail_response.get("data"):
-            return parsed_track
-        detailed_track = parse_track(self.provider, detail_response["data"][0], is_favourite)
+        """Return the detail-based track when it resolves the album the listing lacked."""
+        detailed_track = parse_track(self.provider, detail, is_favourite)
         if self._track_has_weak_album_mapping(detailed_track):
             # Keep detail album fallback if list had no album.
             if not parsed_track.album and detailed_track.album:
@@ -147,7 +149,7 @@ class AppleMusicLibraryManager:
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve playlists from the provider."""
         endpoint = "me/library/playlists"
-        playlist_items = await self.api.get_all_items(endpoint)
+        playlist_items = await self.api.get_all_items(endpoint, extend="dateAdded")
         playlist_library_item_ids = [
             item["id"]
             for item in playlist_items
@@ -160,14 +162,19 @@ class AppleMusicLibraryManager:
             is_favourite = rating_library_response.get(item["id"], False)
             # Fetch catalog metadata, but keep library ID for write operations.
             if item["attributes"]["hasCatalog"]:
-                yield await self.provider.media_manager.get_playlist(
+                playlist = await self.provider.media_manager.get_playlist(
                     item["attributes"]["playParams"]["globalId"],
                     is_favourite,
                     can_edit_hint=item["attributes"].get("canEdit"),
                     library_id_override=item["id"] if is_library_id(item["id"]) else None,
                 )
+                # The catalog resource has no dateAdded, so carry it over from the listing row.
+                _set_date_added(playlist, item)
+                yield playlist
             elif item and item["id"]:
-                yield parse_playlist(self.provider, item, is_favourite)
+                playlist = parse_playlist(self.provider, item, is_favourite)
+                _set_date_added(playlist, item)
+                yield playlist
 
     async def library_add(self, item: MediaItemType) -> None:
         """Add item to library."""
@@ -186,7 +193,7 @@ class AppleMusicLibraryManager:
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> None:
         """Remove item from library."""
-        self.logger.warning(
+        self.logger.debug(
             "Deleting items from your library is not yet supported by the Apple Music API. "
             f"Skipping deletion of {media_type} - {prov_item_id}."
         )
@@ -245,14 +252,15 @@ class AppleMusicLibraryManager:
             returned_catalog_ids.add(item["id"])
             is_favourite = rating_response.get(item["id"])
             parsed_track = parse_track(self.provider, item, is_favourite)
-            if self._track_has_weak_album_mapping(parsed_track) and (
-                library_item := library_items_by_catalog_id.get(item["id"])
-            ):
-                parsed_library_track = parse_track(self.provider, library_item, is_favourite)
-                if parsed_library_track.album and not self._track_has_weak_album_mapping(
-                    parsed_library_track
-                ):
-                    parsed_track.album = parsed_library_track.album
+            if library_item := library_items_by_catalog_id.get(item["id"]):
+                # the catalog resource has no dateAdded, so carry it over from the library row
+                _set_date_added(parsed_track, library_item)
+                if self._track_has_weak_album_mapping(parsed_track):
+                    parsed_library_track = parse_track(self.provider, library_item, is_favourite)
+                    if parsed_library_track.album and not self._track_has_weak_album_mapping(
+                        parsed_library_track
+                    ):
+                        parsed_track.album = parsed_library_track.album
             yield parsed_track
         # Handle deprecated catalog IDs: search replacement with per-window limit
         search_attempts = 0
@@ -284,6 +292,8 @@ class AppleMusicLibraryManager:
                 )
 
                 if replacement_track:
+                    # the search result is a fresh catalog track with no dateAdded of its own
+                    _set_date_added(replacement_track, library_item)
                     yield replacement_track
                 else:
                     # No replacement found - yield library-only track but mark unavailable
@@ -378,6 +388,56 @@ class AppleMusicLibraryManager:
             return
         library_ids = [item["id"] for item in library_only_items if item and item["id"]]
         rating_response = await self.api.get_ratings(library_ids, MediaType.TRACK)
-        for item in library_only_items:
-            is_favourite = rating_response.get(item["id"])
-            yield await self._parse_library_track_with_detail_fallback(item, is_favourite)
+        parsed_tracks = [
+            (item, parse_track(self.provider, item, rating_response.get(item["id"])))
+            for item in library_only_items
+        ]
+        details = await self._fetch_library_song_details(
+            [
+                item["id"]
+                for item, track in parsed_tracks
+                if self._track_has_weak_album_mapping(track)
+            ]
+        )
+        for item, parsed_track in parsed_tracks:
+            if (detail := details.get(item["id"])) is None:
+                yield parsed_track
+                continue
+            track = self._apply_album_detail(
+                item, parsed_track, detail, rating_response.get(item["id"])
+            )
+            # the detail fetch replaces the track wholesale, so re-apply dateAdded from the
+            # listing row, which is the object that actually owns it
+            _set_date_added(track, item)
+            yield track
+
+    async def _fetch_library_song_details(
+        self, library_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Return the detailed library-song items for the given ids, keyed by id."""
+        details: dict[str, dict[str, Any]] = {}
+        for offset in range(0, len(library_ids), _DETAIL_BATCH_SIZE):
+            batch = library_ids[offset : offset + _DETAIL_BATCH_SIZE]
+            try:
+                response = await self.api.get_data(
+                    "me/library/songs", ids=",".join(batch), include="catalog,albums,artists"
+                )
+            except MusicAssistantError as err:
+                # the listing parse stays usable, so a failed batch only costs album detail
+                self.logger.warning(
+                    "Unable to fetch library song details for %s tracks: %s", len(batch), err
+                )
+                continue
+            details.update(
+                {item["id"]: item for item in response.get("data", []) if item.get("id")}
+            )
+        return details
+
+
+def _set_date_added(media_item: MediaItemType, item: dict[str, Any]) -> None:
+    """Set date_added from a library listing row's dateAdded attribute, if Apple included it."""
+    with suppress(AttributeError, TypeError, ValueError):
+        if added := (item.get("attributes") or {}).get("dateAdded"):
+            # the DB only persists whole-second precision, so truncate here to avoid
+            # every sync seeing a (sub-second) mismatch and flagging the item as changed
+            media_item.date_added = datetime.fromisoformat(added).replace(microsecond=0)

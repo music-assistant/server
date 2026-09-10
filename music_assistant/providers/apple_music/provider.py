@@ -68,6 +68,11 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         self.recommendation_manager = AppleMusicRecommendationManager(self)
         self.streaming_manager = AppleMusicStreamingManager(self)
 
+    @property
+    def max_concurrent_streams(self) -> int:
+        """Apple Music accounts allow a single active playback session."""
+        return 1
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
         Return Config entries to configure this provider.

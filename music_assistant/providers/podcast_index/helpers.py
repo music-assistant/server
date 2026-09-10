@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -27,7 +28,12 @@ from music_assistant_models.media_items import (
 
 from music_assistant.helpers.podcast_parsers import parse_podcast_persons
 
-from .constants import API_BASE_URL
+from .constants import (
+    API_BASE_URL,
+    HTTP_STATUS_ERROR,
+    HTTP_STATUS_UNAUTHORIZED,
+    MAX_ERROR_DETAIL_LENGTH,
+)
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -39,14 +45,21 @@ async def make_api_request(
     api_secret: str,
     endpoint: str,
     params: dict[str, Any] | None = None,
+    logger: logging.Logger | None = None,
 ) -> dict[str, Any]:
     """
-    Make authenticated request to Podcast Index API.
+    Make an authenticated request to the Podcast Index API and return its payload.
 
-    Handles authentication using SHA1 hash of API key, secret, and timestamp.
-    Maps HTTP errors appropriately: 401 -> LoginFailed, others -> ProviderUnavailableError.
+    :param mass: The Music Assistant instance whose http session is used.
+    :param api_key: The API key issued by Podcast Index.
+    :param api_secret: The API secret issued by Podcast Index.
+    :param endpoint: The API endpoint to call, without a leading slash.
+    :param params: Optional query parameters for the endpoint.
+    :param logger: Optional logger, used to record the outcome of the call.
+    :raises LoginFailed: The credentials were rejected.
+    :raises ProviderUnavailableError: The API could not be reached or refused the call.
+    :raises InvalidDataError: The API answered with something unusable.
     """
-    # Prepare authentication headers
     auth_date = str(int(time.time()))
     auth_string = api_key + api_secret + auth_date
     auth_hash = hashlib.sha1(auth_string.encode()).hexdigest()
@@ -61,7 +74,16 @@ async def make_api_request(
 
     try:
         async with mass.http_session.get(url, headers=headers, params=params or {}) as response:
-            response.raise_for_status()
+            if response.status >= HTTP_STATUS_ERROR:
+                # the body says why a key was refused, which the bare status never does
+                detail = _response_detail(await response.text(), api_key, api_secret)
+                if logger:
+                    logger.debug("%s failed with HTTP %s%s", endpoint, response.status, detail)
+                if response.status == HTTP_STATUS_UNAUTHORIZED:
+                    raise LoginFailed(f"Authentication failed (HTTP {response.status}){detail}")
+                raise ProviderUnavailableError(
+                    f"API request failed (HTTP {response.status}){detail}"
+                )
 
             try:
                 data: dict[str, Any] = await response.json()
@@ -69,18 +91,23 @@ async def make_api_request(
                 raise InvalidDataError("Invalid JSON response from API") from err
 
             if str(data.get("status")).lower() != "true":
-                raise InvalidDataError(data.get("description") or "API error")
+                description = data.get("description") or "API error"
+                if logger:
+                    logger.debug("%s was refused by the API: %s", endpoint, description)
+                raise InvalidDataError(description)
 
+            if logger:
+                # the single item endpoints report no count, so do not invent one for them
+                if (count := data.get("count")) is None:
+                    logger.debug("%s succeeded", endpoint)
+                else:
+                    logger.debug("%s returned %s items", endpoint, count)
             return data
 
     except aiohttp.ClientConnectorError as err:
         raise ProviderUnavailableError(f"Failed to connect to Podcast Index API: {err}") from err
     except aiohttp.ServerTimeoutError as err:
         raise ProviderUnavailableError(f"Podcast Index API timeout: {err}") from err
-    except aiohttp.ClientResponseError as err:
-        if err.status == 401:
-            raise LoginFailed(f"Authentication failed: {err.status}") from err
-        raise ProviderUnavailableError(f"API request failed: {err.status}") from err
 
 
 def parse_podcast_from_feed(
@@ -145,21 +172,21 @@ def parse_podcast_from_feed(
 def parse_episode_from_data(
     episode_data: dict[str, Any],
     podcast_id: str,
-    episode_idx: int,
     instance_id: str,
     domain: str,
     podcast_name: str | None = None,
+    position: int = 0,
 ) -> PodcastEpisode | None:
-    """Parse episode from API episode data."""
+    """
+    Parse episode from API episode data.
+
+    :param position: The episode's listing position. Defaults to 0 (unknown).
+    """
     episode_api_id = episode_data.get("id")
     if not episode_api_id:
         return None
 
     episode_id = f"{podcast_id}|{episode_api_id}"
-
-    position = episode_data.get("episode")
-    if position is None:
-        position = episode_idx + 1
 
     if podcast_name is None:
         podcast_name = episode_data.get("feedTitle") or "Unknown Podcast"
@@ -226,3 +253,21 @@ def parse_episode_from_data(
         )
 
     return episode
+
+
+def _response_detail(body: str, *secrets: str) -> str:
+    """
+    Return an error body condensed into a readable suffix, empty when it says nothing.
+
+    :param body: The raw response body.
+    :param secrets: Values to mask, as the body is quoted back to the user.
+    """
+    detail = " ".join(body.split())
+    if not detail:
+        return ""
+    for secret in secrets:
+        if secret:
+            detail = detail.replace(secret, "***")
+    if len(detail) > MAX_ERROR_DETAIL_LENGTH:
+        detail = f"{detail[:MAX_ERROR_DETAIL_LENGTH]}..."
+    return f": {detail}"

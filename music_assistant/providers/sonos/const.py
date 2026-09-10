@@ -80,4 +80,12 @@ NON_HIRES_MODELS = (
     "Play:3",
     "Connect",
     "Connect:Amp",
+    "Table lamp",
 )
+
+# How much of the queue one itemWindow response describes. A speaker plays out of the window
+# it cached, so a deep one can carry it several tracks past an edit; current+next means it can
+# never be more than one track behind. The previous item keeps skip-back working on the
+# speaker. The sizes a speaker asks for are maxima, so serving fewer is within the contract.
+PREVIOUS_ITEMS = 1
+UPCOMING_ITEMS = 1

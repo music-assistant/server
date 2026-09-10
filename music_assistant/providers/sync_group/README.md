@@ -76,9 +76,10 @@ The sync group doesn't directly play audio. Instead, it delegates to a **sync le
 The sync leader is selected when the group is powered on (which forms the group). Selection is also re-evaluated when the current leader is removed from the group or becomes unavailable.
 
 1. **Keep current leader**: If a leader exists and is still available, keep it
-2. **Prefer protocol continuity**: When re-selecting after a leader change while playing, prefer a member that supports the currently active output protocol so the live session can continue without a teardown
-3. **Prioritize static members**: For static groups, prefer members from the configured list
-4. **First available**: Otherwise pick the first available member as leader
+2. **Prefer session continuity**: When re-selecting after a leader change while playing, prefer a member that the live session already feeds, since only such a member can inherit the session without a teardown
+3. **Prefer protocol continuity**: Otherwise prefer a member that supports the currently active output protocol, so the group at least stays on that protocol
+4. **Prioritize static members**: For static groups, prefer members from the configured list
+5. **First available**: Otherwise pick the first available member as leader
 
 ### Leader Responsibilities
 
@@ -261,7 +262,7 @@ When `SET_MEMBERS` is called on a dynamic group:
 1. Remove from the internal member list (static members cannot be removed)
 2. If removing the **sync leader** while playing:
    - If the active protocol supports dynamic leader switching (provider domain is in `PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH` — currently AirPlay, Snapcast, Sendspin), perform a **seamless handoff** at the protocol level: pick a new leader from the live session, then call `set_members(player_ids_to_remove=[old_leader_protocol])` on the old session player and `set_members(player_ids_to_add=[remaining_protocol_ids])` on the new leader's protocol player. Remaining members keep playing.
-   - If the chosen new leader is not part of the live session (e.g. a freshly-added player), or the protocol doesn't support handoff: fall back to **dissolve + re-form** (brief audio gap)
+   - If no remaining member is part of the live session (e.g. only freshly-added players are left), or the protocol doesn't support handoff: fall back to **dissolve + re-form** (brief audio gap)
 3. If removing a non-leader member: forward to `cmd_set_members` on the leader
 
 ### Removing Last Member

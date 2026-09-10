@@ -10,6 +10,7 @@ from music_assistant.providers.coverartarchive import (
     SUPPORTED_FEATURES,
     CoverArtArchiveMetadataProvider,
 )
+from tests.common import use_real_create_task
 
 
 @pytest.fixture
@@ -17,9 +18,9 @@ def provider() -> CoverArtArchiveMetadataProvider:
     """Return a provider with mocked dependencies and a cold cache."""
     mass = AsyncMock()
     mass.http_session = MagicMock()
-    # force a cache miss so the wrapped fetch always runs, and swallow the store task
+    # force a cache miss so the wrapped fetch always runs
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
-    mass.create_task = MagicMock(side_effect=lambda coro, **_: coro.close())
+    use_real_create_task(mass)
     manifest = MagicMock()
     manifest.domain = "coverartarchive"
     config = MagicMock()

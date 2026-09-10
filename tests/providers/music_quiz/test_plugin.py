@@ -312,6 +312,7 @@ def _create_plugin(
     plugin._warm_next_track_task = None
     plugin._reveal_playback_task = None
     plugin._unregister_handles = []
+    plugin._join_url = None
     plugin.mass.cache.get = AsyncMock(return_value=None)
     plugin.mass.cache.set = AsyncMock()
     sendspin_provider = MagicMock()
@@ -3716,6 +3717,7 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
         "include_similar_music",
         "auto_start_at",
         "preparing",
+        "join_url",
         "players",
         "current_round",
     }
@@ -3947,6 +3949,37 @@ async def test_public_state_exposes_full_state_for_non_participant() -> None:
     # a participant's personal state is this same public state plus their own "you" view
     personal_state = await plugin.get_player_state(player_ids["Alice"])
     assert set(personal_state) == {*state, "you"}
+
+
+@pytest.mark.asyncio
+async def test_public_state_exposes_join_url_for_the_dashboard() -> None:
+    """A cast dashboard renders its lobby join QR from the guest-safe state."""
+    plugin = _create_plugin()
+    await _create_started_game(plugin)
+
+    state = await plugin.get_public_state()
+
+    assert state is not None
+    assert state["join_url"] == "http://ma/join"
+    # the broadcast payload a dashboard follows carries the same value
+    broadcast = cast("MagicMock", plugin.signal_provider_event).call_args.args[0]["state"]
+    assert broadcast["join_url"] == "http://ma/join"
+    host_state = await plugin.get_game()
+    assert host_state is not None
+    assert host_state["join_url"] == state["join_url"]
+
+
+@pytest.mark.asyncio
+async def test_public_state_omits_join_url_when_unresolved() -> None:
+    """Without a resolved join URL the key is absent, so a client hides its QR."""
+    plugin = _create_plugin()
+    await _create_started_game(plugin)
+    plugin._join_url = None
+
+    state = await plugin.get_public_state()
+
+    assert state is not None
+    assert "join_url" not in state
 
 
 @pytest.mark.asyncio
@@ -4978,6 +5011,19 @@ async def test_create_game_rejected_while_game_active() -> None:
 
     with pytest.raises(MusicQuizGameActiveError):
         await plugin.create_game(source_uris=["library://playlist/2"])
+
+
+@pytest.mark.asyncio
+async def test_create_game_rejected_while_active_does_not_resolve_join_url() -> None:
+    """A rejected create_game call must not rotate the join code of the running game."""
+    plugin = _create_plugin()
+    await _create_started_game(plugin)
+    cast("AsyncMock", plugin._get_join_url).reset_mock()
+
+    with pytest.raises(MusicQuizGameActiveError):
+        await plugin.create_game(source_uris=["library://playlist/2"])
+
+    cast("AsyncMock", plugin._get_join_url).assert_not_called()
 
 
 @pytest.mark.asyncio

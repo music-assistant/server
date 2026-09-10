@@ -13,14 +13,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, PlayerFeature, PlayerType, ProviderType
-from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import (
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_PROTOCOL_KEY_SPLITTER,
 )
 from music_assistant.mass import MusicAssistant
-from music_assistant.models.player import DeviceInfo, Player
+from music_assistant.models.player import DeviceInfo, LinkedOutputProtocol, Player
 
 PARENT_ID = "soundtouch_123"
 CHILD_ID = "dlna_AABBCCDDEEFF"
@@ -128,9 +127,8 @@ async def _setup_control_only_player(mass: MusicAssistant) -> _ControlOnlyPlayer
 
     parent.set_linked_output_protocols(
         [
-            OutputProtocol(
+            LinkedOutputProtocol(
                 output_protocol_id=CHILD_ID,
-                name="DLNA",
                 protocol_domain="dlna",
                 priority=50,
             )

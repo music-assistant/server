@@ -1,12 +1,16 @@
 {
   "config_entries": {
+    "api_key": {
+      "label": "API Key",
+      "description": "API key for authentication. If provided, username and password are not required."
+    },
     "username": {
       "label": "[%key:common::config_entries::username::label%]",
-      "description": "Your username for this Open Subsonic server"
+      "description": "Your username for this Open Subsonic server. Not required when using an API key."
     },
     "password": {
       "label": "[%key:common::config_entries::password::label%]",
-      "description": "The password associated with the username"
+      "description": "The password associated with the username. Not required when using an API key."
     },
     "baseURL": {
       "label": "Base URL",
@@ -23,6 +27,10 @@
     "enable_podcasts": {
       "label": "Enable Podcasts",
       "description": "Should the provider query for podcasts as well as music?"
+    },
+    "enable_radio_stations": {
+      "label": "Enable Radio Stations",
+      "description": "Should the provider query for radio stations?"
     },
     "enable_legacy_auth": {
       "label": "Enable Legacy Auth",

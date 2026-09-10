@@ -15,23 +15,30 @@ the now-default value), so the old value kept reappearing.
 """
 
 import logging
-from typing import Any
+from copy import deepcopy
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from music_assistant_models.enums import PlayerFeature, PlayerType, ProviderType
-from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import (
+    CONF_ENABLED,
     CONF_FLOW_MODE_SAMPLE_RATE,
+    CONF_PLAYERS,
+    CONF_PREFER_WAV_FOR_LIVE_SOURCES,
     CONF_PROTOCOL_KEY_SPLITTER,
+    CONF_UNDERLYING_PLAYER_ID,
     FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
     FLOW_MODE_SAMPLE_RATE_SMART,
 )
 from music_assistant.mass import MusicAssistant
-from music_assistant.models.player import DeviceInfo, Player
+from music_assistant.models.player import DeviceInfo, LinkedOutputProtocol, Player
 
 PARENT_ID = "sonos_123"
 CHILD_ID = "dlna_AABBCCDDEEFF"
+AIRPLAY_ID = "ap_AABBCCDDEEFF"
+SENDSPIN_ID = "spb_AABBCCDDEEFF"
 PREFIXED_KEY = f"{CHILD_ID}{CONF_PROTOCOL_KEY_SPLITTER}{CONF_FLOW_MODE_SAMPLE_RATE}"
 
 
@@ -105,9 +112,8 @@ async def _setup_parent_with_protocol_child(mass: MusicAssistant) -> _TestPlayer
     # link the DLNA protocol output to the parent so the virtual prefixed entry is emitted
     parent.set_linked_output_protocols(
         [
-            OutputProtocol(
+            LinkedOutputProtocol(
                 output_protocol_id=CHILD_ID,
-                name="DLNA",
                 protocol_domain="dlna",
                 priority=50,
             )
@@ -127,6 +133,103 @@ def _parent_stored_values(mass: MusicAssistant) -> dict[str, Any]:
     raw = mass.config.get(f"players/{PARENT_ID}") or {}
     values: dict[str, Any] = raw.get("values", {})
     return values
+
+
+async def _setup_derived_protocol_players(
+    mass: MusicAssistant,
+    *,
+    airplay_enabled: bool = True,
+    airplay_provider_loaded: bool = True,
+) -> _TestPlayer:
+    """Register an AirPlay base player and a Sendspin derived player."""
+    parent = await _setup_parent_with_protocol_child(mass)
+    airplay_provider = _TestProvider(mass, "airplay")
+    sendspin_provider = _TestProvider(mass, "sendspin")
+    if airplay_provider_loaded:
+        mass._providers[airplay_provider.instance_id] = cast("Any", airplay_provider)
+    mass._providers[sendspin_provider.instance_id] = cast("Any", sendspin_provider)
+    mass._provider_manifests[airplay_provider.domain] = airplay_provider.manifest
+    mass._provider_manifests[sendspin_provider.domain] = sendspin_provider.manifest
+
+    airplay = _TestPlayer(airplay_provider, AIRPLAY_ID, "Living Room AirPlay", PlayerType.PROTOCOL)
+    sendspin = _TestPlayer(
+        sendspin_provider, SENDSPIN_ID, "Living Room Sendspin", PlayerType.PROTOCOL
+    )
+    mass.players._players[AIRPLAY_ID] = airplay
+    mass.players._players[SENDSPIN_ID] = sendspin
+    parent.set_linked_output_protocols(
+        [
+            LinkedOutputProtocol(
+                output_protocol_id=AIRPLAY_ID,
+                protocol_domain="airplay",
+                priority=10,
+            ),
+            LinkedOutputProtocol(
+                output_protocol_id=SENDSPIN_ID,
+                protocol_domain="sendspin",
+                priority=40,
+            ),
+        ]
+    )
+    parent._cache.clear()
+    mass.config.set(f"{CONF_PLAYERS}/{AIRPLAY_ID}/{CONF_ENABLED}", airplay_enabled)
+    mass.config.set(f"{CONF_PLAYERS}/{SENDSPIN_ID}/{CONF_ENABLED}", False)
+    mass.config.set(f"{CONF_PLAYERS}/{SENDSPIN_ID}/values/{CONF_UNDERLYING_PLAYER_ID}", AIRPLAY_ID)
+    return parent
+
+
+async def test_enabling_derived_protocol_rejects_disabled_underlying_player(
+    mass: MusicAssistant,
+) -> None:
+    """Enabling a derived output rejects a disabled underlying player without writing."""
+    parent = await _setup_derived_protocol_players(mass, airplay_enabled=False)
+    before = deepcopy(mass.config.get(CONF_PLAYERS))
+
+    with pytest.raises(RuntimeError, match=r"underlying player .* is disabled"):
+        await mass.config.save_player_config(
+            parent.player_id,
+            {f"{SENDSPIN_ID}{CONF_PROTOCOL_KEY_SPLITTER}{CONF_ENABLED}": True},
+        )
+
+    assert mass.config.get(CONF_PLAYERS) == before
+    cast("AsyncMock", mass.players.on_player_config_change).assert_not_awaited()
+
+
+async def test_enabling_derived_protocol_rejects_unloaded_underlying_provider(
+    mass: MusicAssistant,
+) -> None:
+    """Enabling a derived output rejects an unavailable underlying provider without writing."""
+    parent = await _setup_derived_protocol_players(mass, airplay_provider_loaded=False)
+    before = deepcopy(mass.config.get(CONF_PLAYERS))
+
+    with pytest.raises(RuntimeError, match=r"underlying player provider .* is disabled"):
+        await mass.config.save_player_config(
+            parent.player_id,
+            {f"{SENDSPIN_ID}{CONF_PROTOCOL_KEY_SPLITTER}{CONF_ENABLED}": True},
+        )
+
+    assert mass.config.get(CONF_PLAYERS) == before
+    cast("AsyncMock", mass.players.on_player_config_change).assert_not_awaited()
+
+
+async def test_enabling_derived_protocol_rejects_conflicting_same_request_values(
+    mass: MusicAssistant,
+) -> None:
+    """A derived enable and underlying disable in one request are rejected atomically."""
+    parent = await _setup_derived_protocol_players(mass)
+    before = deepcopy(mass.config.get(CONF_PLAYERS))
+
+    with pytest.raises(RuntimeError, match=r"underlying player .* is disabled"):
+        await mass.config.save_player_config(
+            parent.player_id,
+            {
+                f"{SENDSPIN_ID}{CONF_PROTOCOL_KEY_SPLITTER}{CONF_ENABLED}": True,
+                f"{AIRPLAY_ID}{CONF_PROTOCOL_KEY_SPLITTER}{CONF_ENABLED}": False,
+            },
+        )
+
+    assert mass.config.get(CONF_PLAYERS) == before
+    cast("AsyncMock", mass.players.on_player_config_change).assert_not_awaited()
 
 
 async def test_protocol_prefixed_reset_to_default_sticks(mass: MusicAssistant) -> None:
@@ -217,3 +320,38 @@ async def test_injected_protocol_entry_resolves_under_origin_provider(
     proto_entry = next(entry for entry in entries if entry.key == PREFIXED_KEY)
     assert proto_entry.translation_owner == "provider.dlna"
     assert proto_entry.translation_key == CONF_FLOW_MODE_SAMPLE_RATE
+
+
+async def test_player_entries_resolve_under_their_own_provider(mass: MusicAssistant) -> None:
+    """A player's own entries carry its provider's namespace, so its strings.json is consulted."""
+    await _setup_parent_with_protocol_child(mass)
+
+    entries = await mass.config.get_player_config_entries(PARENT_ID)
+    own_entries = [entry for entry in entries if CONF_PROTOCOL_KEY_SPLITTER not in entry.key]
+
+    assert own_entries
+    assert {entry.translation_owner for entry in own_entries} == {"provider.sonos"}
+
+
+async def test_live_source_wav_preference_is_only_exposed_for_http_players(
+    mass: MusicAssistant,
+) -> None:
+    """Only HTTP player protocols expose the live source WAV preference."""
+    await _setup_parent_with_protocol_child(mass)
+    parent_entries = await mass.config.get_player_config_entries(PARENT_ID)
+    dlna_key = f"{CHILD_ID}{CONF_PROTOCOL_KEY_SPLITTER}{CONF_PREFER_WAV_FOR_LIVE_SOURCES}"
+    assert next(entry for entry in parent_entries if entry.key == dlna_key).default_value is False
+
+    sendspin_provider = _TestProvider(mass, "sendspin")
+    mass._providers[sendspin_provider.instance_id] = sendspin_provider  # type: ignore[assignment]
+    mass._provider_manifests[sendspin_provider.domain] = sendspin_provider.manifest
+    sendspin_player = _TestPlayer(
+        sendspin_provider,
+        "sendspin_1",
+        "Sendspin Player",
+        PlayerType.PROTOCOL,
+    )
+
+    entries = await mass.config._get_player_config_entries(sendspin_player)
+
+    assert CONF_PREFER_WAV_FOR_LIVE_SOURCES not in {entry.key for entry in entries}

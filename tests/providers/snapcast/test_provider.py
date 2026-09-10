@@ -52,3 +52,35 @@ async def test_log_level_config_update_realigns_snapcast_logger() -> None:
 
     update_config.assert_awaited_once_with(config, changed_keys)
     set_log_level.assert_called_once_with()
+
+
+async def test_unload_unregisters_mdns_services() -> None:
+    """Unloading the provider unregisters the mdns records of the built-in Snapserver."""
+    provider = _provider_with_log_level(logging.INFO)
+    provider.mass = MagicMock()
+    unregister = AsyncMock()
+    provider.mass.discovery.aiozc.async_unregister_service = unregister
+    provider._snapserver = MagicMock(clients=[])
+    provider._snapcast_ma_streams = {}
+    provider._snapserver_runner = None
+    infos = {"-http": MagicMock(), "": MagicMock()}
+    provider._zc_services = dict(infos)
+
+    await provider.unload()
+
+    assert [call.args[0] for call in unregister.await_args_list] == list(infos.values())
+    assert provider._zc_services == {}
+
+
+def test_lost_connection_arms_the_reload_under_the_load_task_id() -> None:
+    """A lost SnapServer connection arms the reload so a (re)load starting first cancels it."""
+    provider = _provider_with_log_level(logging.INFO)
+    provider.config = MagicMock(instance_id="snapcast--test")
+    provider.mass = MagicMock(closing=False)
+    provider._stop_called = False
+
+    provider._handle_disconnect(ConnectionError("connection lost"))
+
+    retry = provider.mass.call_later.call_args
+    assert retry.args == (5, provider.mass.load_provider, "snapcast--test")
+    assert retry.kwargs == {"allow_retry": True, "task_id": "load_provider_snapcast--test"}

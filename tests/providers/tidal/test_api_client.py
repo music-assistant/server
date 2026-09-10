@@ -1,6 +1,5 @@
 """Test Tidal API Client."""
 
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
@@ -8,26 +7,12 @@ from aiohttp import ClientResponse
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
+    ResourceTemporarilyUnavailable,
     RetriesExhausted,
 )
 
-from music_assistant.providers.tidal.api_client import TidalAPIClient
-
-
-@pytest.fixture
-def provider_mock() -> Mock:
-    """Return a mock provider."""
-    provider = Mock()
-    provider.auth = AsyncMock()
-    provider.auth.ensure_valid_token.return_value = True
-    provider.auth.access_token = "token"
-    provider.auth.session_id = "session"
-    provider.auth.country_code = "US"
-    provider.mass = Mock()
-    provider.mass.http_session = AsyncMock()
-    provider.mass.metadata.locale = "en_US"
-    provider.logger = Mock()
-    return provider
+from music_assistant.providers.tidal.api_client import MAX_PAGINATION_PAGES, TidalAPIClient
+from music_assistant.providers.tidal.constants import OPEN_API_URL
 
 
 @pytest.fixture
@@ -54,6 +39,79 @@ async def test_get_success(api_client: TidalAPIClient, provider_mock: Mock) -> N
     assert result == {"data": "test"}
 
 
+async def test_get_jsonapi_raises_on_missing_data(
+    api_client: TidalAPIClient, provider_mock: Mock
+) -> None:
+    """
+    Test get_jsonapi raises when the response is not a valid JSON:API document.
+
+    An empty body is surfaced by the response handler as {"success": True}; such a
+    response (or any error body) has no top-level "data" and must raise rather than
+    become a silently empty result.
+    """
+    response = AsyncMock(spec=ClientResponse)
+    response.status = 200
+    response.content_length = 0
+    response.json.return_value = {}
+    ctx = AsyncMock()
+    ctx.__aenter__.return_value = response
+    provider_mock.mass.http_session.request = MagicMock(return_value=ctx)
+
+    with pytest.raises(ResourceTemporarilyUnavailable):
+        await api_client.get_jsonapi("searchResults/foo")
+
+
+async def test_get_jsonapi_returns_document_on_valid_response(
+    api_client: TidalAPIClient, provider_mock: Mock
+) -> None:
+    """Test get_jsonapi returns a document when the response carries a data member."""
+    response = AsyncMock(spec=ClientResponse)
+    response.status = 200
+    response.json.return_value = {"data": {"id": "1", "type": "tracks"}}
+    ctx = AsyncMock()
+    ctx.__aenter__.return_value = response
+    provider_mock.mass.http_session.request = MagicMock(return_value=ctx)
+
+    doc = await api_client.get_jsonapi("tracks/1")
+    assert doc.data == {"id": "1", "type": "tracks"}
+
+
+async def test_get_jsonapi_sends_replace_media(
+    api_client: TidalAPIClient, provider_mock: Mock
+) -> None:
+    """Test replace_media reaches Tidal as the replaceMedia query parameter."""
+    response = AsyncMock(spec=ClientResponse)
+    response.status = 200
+    response.json.return_value = {"data": []}
+    ctx = AsyncMock()
+    ctx.__aenter__.return_value = response
+    provider_mock.mass.http_session.request = MagicMock(return_value=ctx)
+
+    await api_client.get_jsonapi("albums/1/relationships/items", replace_media="items")
+
+    params = provider_mock.mass.http_session.request.call_args[1]["params"]
+    assert params["replaceMedia"] == "items"
+
+
+async def test_session_id_scoped_to_unofficial_api(
+    api_client: TidalAPIClient, provider_mock: Mock
+) -> None:
+    """Test sessionId is sent to the unofficial API but not the official one."""
+    response = AsyncMock(spec=ClientResponse)
+    response.status = 200
+    response.json.return_value = {}
+    ctx = AsyncMock()
+    ctx.__aenter__.return_value = response
+    provider_mock.mass.http_session.request = MagicMock(return_value=ctx)
+
+    await api_client.get("test/endpoint")
+    assert "sessionId" in provider_mock.mass.http_session.request.call_args[1]["params"]
+
+    await api_client.get("tracks", base_url=OPEN_API_URL)
+    assert "sessionId" not in provider_mock.mass.http_session.request.call_args[1]["params"]
+    assert "countryCode" in provider_mock.mass.http_session.request.call_args[1]["params"]
+
+
 async def test_get_401_error(api_client: TidalAPIClient, provider_mock: Mock) -> None:
     """Test GET request with 401 error and a failing token refresh."""
     response = AsyncMock(spec=ClientResponse)
@@ -68,6 +126,42 @@ async def test_get_401_error(api_client: TidalAPIClient, provider_mock: Mock) ->
         await api_client.get("test/endpoint")
 
     provider_mock.auth.refresh_token.assert_called_once()
+
+
+async def test_get_with_etag_returns_header(
+    api_client: TidalAPIClient, provider_mock: Mock
+) -> None:
+    """Test get_with_etag returns the body together with the response ETag header."""
+    response = AsyncMock(spec=ClientResponse)
+    response.status = 200
+    response.json.return_value = {"numberOfTracks": 3}
+    response.headers = {"ETag": "etag-abc"}
+    ctx = AsyncMock()
+    ctx.__aenter__.return_value = response
+    provider_mock.mass.http_session.request = MagicMock(return_value=ctx)
+
+    data, etag = await api_client.get_with_etag("playlists/1")
+
+    assert data == {"numberOfTracks": 3}
+    assert etag == "etag-abc"
+
+
+async def test_get_401_after_refresh_still_401(
+    api_client: TidalAPIClient, provider_mock: Mock
+) -> None:
+    """Test a 401 on the post-refresh retry raises LoginFailed."""
+    response_401 = AsyncMock(spec=ClientResponse)
+    response_401.status = 401
+    ctx = AsyncMock()
+    ctx.__aenter__.return_value = response_401
+    provider_mock.mass.http_session.request = MagicMock(return_value=ctx)
+    provider_mock.auth.refresh_token.return_value = True
+
+    with pytest.raises(LoginFailed):
+        await api_client.get("test/endpoint")
+
+    provider_mock.auth.refresh_token.assert_called_once()
+    assert provider_mock.mass.http_session.request.call_count == 2
 
 
 async def test_get_401_refreshes_token_and_retries(
@@ -123,149 +217,105 @@ async def test_get_429_error(api_client: TidalAPIClient, provider_mock: Mock) ->
         await api_client.get("test/endpoint")
 
 
-async def test_post_success(api_client: TidalAPIClient, provider_mock: Mock) -> None:
-    """Test successful POST request."""
+async def test_write_jsonapi(api_client: TidalAPIClient, provider_mock: Mock) -> None:
+    """Test write_jsonapi sends the JSON:API content type and serialized body."""
     response = AsyncMock(spec=ClientResponse)
-    response.status = 200
-    response.json.return_value = {"success": True}
+    response.status = 204
+    ctx = AsyncMock()
+    ctx.__aenter__.return_value = response
+    provider_mock.mass.http_session.request = MagicMock(return_value=ctx)
 
-    request_ctx = AsyncMock()
-    request_ctx.__aenter__.return_value = response
-    provider_mock.mass.http_session.request = MagicMock(return_value=request_ctx)
+    await api_client.write_jsonapi(
+        "POST",
+        "userCollectionTracks/me/relationships/items",
+        {"data": [{"type": "tracks", "id": "1"}]},
+    )
 
-    result = await api_client.post("test/endpoint", data={"key": "value"})
-    assert result == {"success": True}
-
-
-async def test_paginate(api_client: TidalAPIClient, provider_mock: Mock) -> None:
-    """Test pagination."""
-    # Mock first page response
-    response1 = AsyncMock(spec=ClientResponse)
-    response1.status = 200
-    response1.json.return_value = {"items": [{"id": 1}, {"id": 2}], "totalNumberOfItems": 4}
-
-    # Mock second page response
-    response2 = AsyncMock(spec=ClientResponse)
-    response2.status = 200
-    response2.json.return_value = {"items": [{"id": 3}, {"id": 4}], "totalNumberOfItems": 4}
-
-    # Mock empty response to stop iteration
-    response3 = AsyncMock(spec=ClientResponse)
-    response3.status = 200
-    response3.json.return_value = {"items": []}
-
-    ctx1 = AsyncMock()
-    ctx1.__aenter__.return_value = response1
-
-    ctx2 = AsyncMock()
-    ctx2.__aenter__.return_value = response2
-
-    ctx3 = AsyncMock()
-    ctx3.__aenter__.return_value = response3
-
-    provider_mock.mass.http_session.request = MagicMock(side_effect=[ctx1, ctx2, ctx3])
-
-    items: list[dict[str, Any]] = []
-    async for item in api_client.paginate("test/endpoint", limit=2):
-        items.append(item)
-
-    assert len(items) == 4
-    assert items[0]["id"] == 1
-    assert items[3]["id"] == 4
+    call = provider_mock.mass.http_session.request.call_args
+    assert call[0][0] == "POST"
+    assert call[1]["headers"]["Content-Type"] == "application/vnd.api+json"
+    # the body is sent as a serialized JSON string, not aiohttp's json= kwarg
+    assert '"type": "tracks"' in call[1]["data"]
+    # a per-request Idempotency-Key is sent so a throttler-driven retry dedups server-side
+    assert call[1]["headers"].get("Idempotency-Key")
 
 
-async def test_paginate_preserves_params_across_pages(
+async def test_paginate_jsonapi_follows_cursor(
     api_client: TidalAPIClient, provider_mock: Mock
 ) -> None:
-    """Test that caller-supplied params are sent on every page, not just the first."""
-    response1 = AsyncMock(spec=ClientResponse)
-    response1.status = 200
-    response1.json.return_value = {"items": [{"id": 1}, {"id": 2}]}
-
-    response2 = AsyncMock(spec=ClientResponse)
-    response2.status = 200
-    response2.json.return_value = {"items": []}
+    """Test paginate_jsonapi follows links.next and stops when the cursor runs out."""
+    page1 = AsyncMock(spec=ClientResponse)
+    page1.status = 200
+    page1.json.return_value = {
+        "data": [{"type": "tracks", "id": "1"}],
+        "links": {"next": "/x?countryCode=AT&page[cursor]=NEXT%3D123&other=1"},
+    }
+    page2 = AsyncMock(spec=ClientResponse)
+    page2.status = 200
+    page2.json.return_value = {"data": [{"type": "tracks", "id": "2"}]}
 
     ctx1 = AsyncMock()
-    ctx1.__aenter__.return_value = response1
+    ctx1.__aenter__.return_value = page1
     ctx2 = AsyncMock()
-    ctx2.__aenter__.return_value = response2
+    ctx2.__aenter__.return_value = page2
     provider_mock.mass.http_session.request = MagicMock(side_effect=[ctx1, ctx2])
 
-    items: list[dict[str, Any]] = []
-    async for item in api_client.paginate("test/endpoint", limit=2, params={"order": "DATE"}):
-        items.append(item)
+    docs = [doc async for doc in api_client.paginate_jsonapi("tracks")]
 
-    assert len(items) == 2
-    for call in provider_mock.mass.http_session.request.call_args_list:
-        assert call[1]["params"]["order"] == "DATE"
-
-
-async def test_delete_success(api_client: TidalAPIClient, provider_mock: Mock) -> None:
-    """Test successful DELETE request."""
-    response = AsyncMock(spec=ClientResponse)
-    response.status = 204
-
-    request_ctx = AsyncMock()
-    request_ctx.__aenter__.return_value = response
-    provider_mock.mass.http_session.request = MagicMock(return_value=request_ctx)
-
-    await api_client.delete("test/endpoint/123")
-
-    # Verify DELETE was called
-    provider_mock.mass.http_session.request.assert_called_once()
-    call_args = provider_mock.mass.http_session.request.call_args
-    assert call_args[0][0] == "DELETE"
+    assert len(docs) == 2
+    assert [d.data_list[0]["id"] for d in docs] == ["1", "2"]
+    assert provider_mock.mass.http_session.request.call_count == 2
+    # the second request carried the (url-decoded) cursor from page 1's next link
+    second_params = provider_mock.mass.http_session.request.call_args_list[1][1]["params"]
+    assert second_params["page[cursor]"] == "NEXT=123"
 
 
-async def test_delete_with_headers(api_client: TidalAPIClient, provider_mock: Mock) -> None:
-    """Test DELETE request with custom headers."""
-    response = AsyncMock(spec=ClientResponse)
-    response.status = 204
+async def test_paginate_jsonapi_caps_pages(api_client: TidalAPIClient, provider_mock: Mock) -> None:
+    """Test paginate_jsonapi stops at max_pages and warns when more pages remain."""
+    # every page advertises a fresh next cursor, so the cap is what stops iteration
+    pages = iter(f"C{n}" for n in range(10))
 
-    request_ctx = AsyncMock()
-    request_ctx.__aenter__.return_value = response
-    provider_mock.mass.http_session.request = MagicMock(return_value=request_ctx)
+    def _next_ctx(*_a: object, **_k: object) -> AsyncMock:
+        response = AsyncMock(spec=ClientResponse)
+        response.status = 200
+        response.json.return_value = {
+            "data": [],
+            "links": {"next": f"/x?page[cursor]={next(pages)}"},
+        }
+        ctx = AsyncMock()
+        ctx.__aenter__.return_value = response
+        return ctx
 
-    await api_client.delete("test/endpoint/123", headers={"If-Match": "etag123"})
+    provider_mock.mass.http_session.request = MagicMock(side_effect=_next_ctx)
 
-    # Verify headers were passed
-    call_args = provider_mock.mass.http_session.request.call_args
-    assert "If-Match" in call_args[1]["headers"]
-    assert call_args[1]["headers"]["If-Match"] == "etag123"
+    docs = [doc async for doc in api_client.paginate_jsonapi("x", max_pages=2)]
+
+    assert len(docs) == 2
+    provider_mock.logger.warning.assert_called_once()
 
 
-async def test_put_success(api_client: TidalAPIClient, provider_mock: Mock) -> None:
-    """Test successful PUT request."""
+async def test_paginate_jsonapi_stops_on_repeated_cursor(
+    api_client: TidalAPIClient, provider_mock: Mock
+) -> None:
+    """Test a server re-serving the same next cursor stops the walk instead of spinning."""
     response = AsyncMock(spec=ClientResponse)
     response.status = 200
-    response.json.return_value = {"updated": True}
+    # every page advertises the SAME next cursor
+    response.json.return_value = {"data": [], "links": {"next": "/x?page[cursor]=LOOP"}}
+    ctx = AsyncMock()
+    ctx.__aenter__.return_value = response
+    provider_mock.mass.http_session.request = MagicMock(return_value=ctx)
 
-    request_ctx = AsyncMock()
-    request_ctx.__aenter__.return_value = response
-    provider_mock.mass.http_session.request = MagicMock(return_value=request_ctx)
+    docs = [doc async for doc in api_client.paginate_jsonapi("x")]
 
-    result = await api_client.put("test/endpoint", data={"key": "value"})
-    assert result == {"updated": True}
-
-    # Verify PUT was called
-    call_args = provider_mock.mass.http_session.request.call_args
-    assert call_args[0][0] == "PUT"
+    # page 1 yields the cursor, page 2 repeats it: two pages, then a warning, no spin
+    assert len(docs) == 2
+    assert provider_mock.mass.http_session.request.call_count == 2
+    provider_mock.logger.warning.assert_called_once()
 
 
-async def test_put_with_form_data(api_client: TidalAPIClient, provider_mock: Mock) -> None:
-    """Test PUT request with form data."""
-    response = AsyncMock(spec=ClientResponse)
-    response.status = 200
-    response.json.return_value = {"success": True}
-
-    request_ctx = AsyncMock()
-    request_ctx.__aenter__.return_value = response
-    provider_mock.mass.http_session.request = MagicMock(return_value=request_ctx)
-
-    result = await api_client.put("test/endpoint", data={"key": "value"}, as_form=True)
-    assert result == {"success": True}
-
-    # Verify form data was used
-    call_args = provider_mock.mass.http_session.request.call_args
-    assert "data" in call_args[1]
+def test_pagination_ceiling_covers_large_libraries() -> None:
+    """Test the default page cap is high enough to walk a full library without truncating."""
+    # The endpoints expose no page-size control, so this cap is the only guard
+    # against truncating real collections; it must stay generous.
+    assert MAX_PAGINATION_PAGES >= 1000

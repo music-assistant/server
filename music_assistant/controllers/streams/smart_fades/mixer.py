@@ -17,6 +17,7 @@ from music_assistant.controllers.streams.smart_fades.fades import (
 )
 from music_assistant.controllers.streams.smart_fades.helpers import detect_effective_audio_end
 from music_assistant.controllers.streams.smart_fades.vocal import (
+    PROTECTIVE_VOCAL_CONFIG,
     VocalMask,
     build_vocal_windows,
     parse_vocal_probabilities,
@@ -143,6 +144,16 @@ class SmartFadesMixer:
             trailing_silence_bytes=trailing_silence_bytes,
         )
         smart_fade.build(len(fade_out_data) - trailing_silence_bytes, fade_in_bytes_len, pcm_format)
+        self.logger.debug(
+            "Built standard fade: tail=%.2fs silence=%.2fs usable=%.2fs fade_in=%.2fs "
+            "requested=%.2fs applied=%.2fs",
+            len(fade_out_data) / pcm_format.pcm_sample_size,
+            trailing_silence_bytes / pcm_format.pcm_sample_size,
+            (len(fade_out_data) - trailing_silence_bytes) / pcm_format.pcm_sample_size,
+            fade_in_bytes_len / pcm_format.pcm_sample_size,
+            float(standard_crossfade_duration),
+            smart_fade.timing_info.crossfade_duration,
+        )
         return smart_fade
 
     async def _build_smart_crossfade(
@@ -169,6 +180,16 @@ class SmartFadesMixer:
             and fade_out_analysis.beats is not None
             and fade_in_analysis.beats is not None
         ):
+            self.logger.debug(
+                "Smart fade lacks analysis: out_row=%s out_bpm=%s out_beats=%s | "
+                "in_row=%s in_bpm=%s in_beats=%s",
+                fade_out_analysis is not None,
+                fade_out_analysis.bpm if fade_out_analysis else None,
+                fade_out_analysis.beats is not None if fade_out_analysis else None,
+                fade_in_analysis is not None,
+                fade_in_analysis.bpm if fade_in_analysis else None,
+                fade_in_analysis.beats is not None if fade_in_analysis else None,
+            )
             return None, fade_out_analysis
         try:
             smart_fade = SmartCrossFade(
@@ -252,6 +273,7 @@ class SmartFadesMixer:
             buffer_offset,
             track_duration,
             beat_duration=60.0 / analysis.bpm if analysis.bpm and analysis.bpm > 0.0 else None,
+            config=PROTECTIVE_VOCAL_CONFIG,
         )
         if not vocal_mask.windows:
             return 0

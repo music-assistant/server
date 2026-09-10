@@ -5,9 +5,14 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
+from music_assistant_models.enums import ContentType
+from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.providers.msx_bridge.http_server import MSXHTTPServer
+from music_assistant.providers.msx_bridge.player import MSXPlayer
 from music_assistant.providers.msx_bridge.provider import SharedGroupStream
 
 if TYPE_CHECKING:
@@ -144,3 +149,34 @@ async def test_cancel_stops_subscription() -> None:
         stream.producer_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await stream.producer_task
+
+
+async def test_shared_stream_paces_output(provider: MSXBridgeProvider, mass_mock: Mock) -> None:
+    """The shared group encoder carries the same pacing ceiling as the per-player one."""
+    server = MSXHTTPServer(provider, 0)
+    player = MagicMock(spec=MSXPlayer)
+    player.player_id = "msx_leader"
+    media = Mock(source_id=None, queue_item_id=None)
+
+    mass_mock.streams = Mock()
+    mass_mock.streams.get_stream = Mock(return_value=_chunks(b"pcm"))
+    mass_mock.streams.audio.get_player_output_plan = Mock(return_value=Mock(filter_params=[]))
+    provider.get_or_create_shared_stream = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("stop here")
+    )
+
+    pcm = AudioFormat(content_type=ContentType.PCM_S16LE)
+    out = AudioFormat(content_type=ContentType.MP3)
+    with (
+        patch(
+            "music_assistant.providers.msx_bridge.http_server.get_ffmpeg_stream",
+            return_value=_chunks(b"encoded"),
+        ) as ffmpeg_mock,
+        pytest.raises(RuntimeError),
+    ):
+        # leader path: player_id == group_id
+        await server._serve_shared_stream(Mock(), player, media, "msx_leader", pcm, out, {})
+
+    extra_args = ffmpeg_mock.call_args.kwargs["extra_input_args"]
+    assert "-readrate" in extra_args
+    assert "-readrate_initial_burst" in extra_args
