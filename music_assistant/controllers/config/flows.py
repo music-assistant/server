@@ -149,6 +149,8 @@ class SetupFlowMixin:
             setup_data: dict[str, Any] | None = None,
         ) -> ProviderConfig: ...
 
+        def _access_caller(self) -> tuple[User | None, bool]: ...
+
         def _check_provider_setup_permission(self, manifest: ProviderManifest) -> None: ...
 
         def _check_provider_manage_permission(self, instance_id: str) -> None: ...
@@ -200,11 +202,17 @@ class SetupFlowMixin:
                 step_id=self._provider_finish_step_id(config.instance_id),
                 result={"instance_id": config.instance_id},
             )
+        target_key = f"provider_setup:{provider_domain}"
+        user, _ = self._access_caller()
+        if manifest.multi_instance and user is not None:
+            # users add their own account of a multi-account service side by side,
+            # so each user's add flow is its own target
+            target_key = f"{target_key}:{user.user_id}"
         context = SetupFlowContext(kind="setup", reason="user", domain=provider_domain)
         return await self._start_flow(
             flow_coro=flow_module.run_setup,
             context=context,
-            target_key=f"provider_setup:{provider_domain}",
+            target_key=target_key,
             required_scope=Scope.CONFIG_PROVIDERS_OWN,
             finish_handler=self._finish_provider_setup,
         )

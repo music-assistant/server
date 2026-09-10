@@ -1121,6 +1121,31 @@ async def test_the_provider_setup_flow_starts_for_a_permitted_caller(
     assert step.type == FlowStepType.FORM
 
 
+async def test_members_add_their_own_account_of_a_service_side_by_side(
+    flow_mass: MusicAssistant, self_service_role: str
+) -> None:
+    """
+    A member's add flow for a multi-account service leaves another member's flow running.
+
+    :param self_service_role: Role id granted the self-service scope.
+    """
+    member = User(user_id="member", username="member", role=self_service_role)
+    other = User(user_id="other", username="other", role=self_service_role)
+    _use_multi_account_manifest(flow_mass)
+
+    with _use_flow(flow_mass, _credentials_flow):
+        set_current_user(member)
+        member_step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        set_current_user(other)
+        other_step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        assert set(flow_mass.config._setup_flows) == {member_step.flow_id, other_step.flow_id}
+        # a member starting over replaces its own flow and nobody else's
+        set_current_user(member)
+        restarted_step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+
+    assert set(flow_mass.config._setup_flows) == {restarted_step.flow_id, other_step.flow_id}
+
+
 async def test_a_member_may_only_reconfigure_the_source_it_owns(
     flow_mass: MusicAssistant, self_service_role: str
 ) -> None:
@@ -1431,6 +1456,24 @@ async def test_player_setup_without_flow_aborts(flow_mass: MusicAssistant) -> No
         step = await flow_mass.config.setup_player("test_player_1")
     assert step.type == FlowStepType.ABORT
     assert step.reason == "nothing_to_configure"
+
+
+async def test_a_player_setup_flow_belongs_to_the_admin_who_started_it(
+    flow_mass: MusicAssistant,
+) -> None:
+    """A player's setup flow reaches the admin who started it and other admins, not a service account."""
+    admin = User(user_id="admin", username="admin", role=UserRole.ADMIN)
+    provider = MockProvider("test_players", instance_id="test_players--1")
+    player = _FlowPlayer(provider, "test_player_1", "Player One")
+    set_current_user(admin)
+
+    with patch.object(flow_mass.players, "get_player", return_value=player):
+        step = await flow_mass.config.setup_player("test_player_1")
+
+    access = flow_mass.config.get_setup_flow_access(step.flow_id)
+    assert access == SetupFlowAccess(Scope.CONFIG_PLAYERS_WRITE, admin.user_id)
+    assert access.allows(User(user_id="other_admin", username="other_admin", role=UserRole.ADMIN))
+    assert not access.allows(User(user_id="ha", username="ha", role=UserRole.SERVICE))
 
 
 async def test_player_setup_abort_mid_finish_restores_setup_data(
