@@ -247,3 +247,48 @@ async def test_prepare_next_skips_an_item_that_left_the_queue_while_it_was_fetch
     await mass.create_task.call_args.args[0]()
 
     mass.streams.audio.get_audio_buffer.assert_not_awaited()
+
+
+async def test_prepare_next_releases_a_buffer_whose_item_left_the_queue_mid_fill() -> None:
+    """
+    A removal that lands while the buffer fills still releases the warmed audio.
+
+    Replace-next and delete do not cancel the prewarm, so without the check after the fill
+    the finished buffer stays attached to an item no cleanup reaches any more, holding its
+    audio until the inactivity sweep.
+    """
+    controller, next_item, mass = _controller_with_next_item()
+    buffer = MagicMock()
+    buffer.clear = AsyncMock()
+
+    async def _remove_item_meanwhile(*_args: object, **_kwargs: object) -> MagicMock:
+        controller._queue_data["queue-1"].items.clear()
+        next_item.streamdetails.buffer = buffer
+        return buffer
+
+    mass.streams.audio.get_audio_buffer = _remove_item_meanwhile
+
+    controller.prepare_next_audio_buffer("queue-1")
+    await mass.create_task.call_args.args[0]()
+
+    buffer.clear.assert_awaited_once()
+    assert next_item.streamdetails.buffer is None
+
+
+async def test_prepare_next_leaves_the_buffer_of_an_item_still_on_the_queue() -> None:
+    """A fill that raced nothing keeps its buffer attached for the upcoming track."""
+    controller, next_item, mass = _controller_with_next_item()
+    buffer = MagicMock()
+    buffer.clear = AsyncMock()
+
+    async def _fill(*_args: object, **_kwargs: object) -> MagicMock:
+        next_item.streamdetails.buffer = buffer
+        return buffer
+
+    mass.streams.audio.get_audio_buffer = _fill
+
+    controller.prepare_next_audio_buffer("queue-1")
+    await mass.create_task.call_args.args[0]()
+
+    buffer.clear.assert_not_awaited()
+    assert next_item.streamdetails.buffer is buffer
