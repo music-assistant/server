@@ -32,7 +32,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from music_assistant_models.errors import MusicAssistantError
-from music_assistant_models.media_items import Track
+from music_assistant_models.media_items import Playlist, Track
 
 from music_assistant.controllers.music.recency import song_keys
 from music_assistant.controllers.player_queues.constants import (
@@ -237,7 +237,7 @@ class ManagedPool:
         for uri, media_item in items.items():
             if is_dynamic_source(media_item):
                 fill_mode = DynamicFillMode.DYNAMIC
-                candidates = await self._fetch_dynamic(media_item)
+                candidates = await self._fetch_dynamic(queue_id, media_item)
             else:
                 # a finite source is materialized once, then its deque feeds (and is advanced by)
                 # every refill so it plays through instead of recycling tracks that age out
@@ -259,10 +259,19 @@ class ManagedPool:
             )
         return sources
 
-    async def _fetch_dynamic(self, media_item: MediaItemType) -> list[Track]:
+    async def _fetch_dynamic(self, queue_id: str, media_item: MediaItemType) -> list[Track]:
         """Fetch the next self-managed batch from a dynamic playlist or radio station."""
         with suppress(MusicAssistantError):
-            tracks = await self.queues.get_dynamic_source_tracks(media_item)
+            if (
+                isinstance(media_item, Playlist)
+                and (prov := self.mass.get_provider(media_item.provider)) is not None
+                and prov.domain == "radio_playlist"
+            ):
+                # an endless-mix refill must re-seed from the queue's play history: a deterministic
+                # similar-track provider would otherwise regenerate the same batch every refill
+                tracks = await self.queues.get_dynamic_radio_refill_tracks(queue_id, media_item)
+            else:
+                tracks = await self.queues.get_dynamic_source_tracks(media_item)
             return [track for track in tracks if track.available]
         return []
 

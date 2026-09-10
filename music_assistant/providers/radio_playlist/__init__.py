@@ -77,7 +77,7 @@ class RadioPlaylistProvider(PluginProvider):
 
         :param prov_playlist_id: The seed item's URI (raw or url-encoded).
         """
-        seed = await self._resolve_seed(prov_playlist_id)
+        seed = await self.resolve_seed(prov_playlist_id)
         playlist = Playlist(
             item_id=prov_playlist_id,
             provider=self.instance_id,
@@ -105,7 +105,7 @@ class RadioPlaylistProvider(PluginProvider):
         """
         if page > 0:
             return []
-        seed = await self._resolve_seed(prov_playlist_id)
+        seed = await self.resolve_seed(prov_playlist_id)
         try:
             return await self.get_dynamic_tracks(
                 [seed], include_base_tracks=True, target_size=DYNAMIC_PLAYLIST_SAMPLE_SIZE
@@ -200,8 +200,12 @@ class RadioPlaylistProvider(PluginProvider):
             result += random.sample(remaining_dynamic, min(len(remaining_dynamic), target_size))
         return result
 
-    async def _resolve_seed(self, prov_playlist_id: str) -> MediaItemType:
-        """Resolve a radio-playlist item id (the seed's URI, raw or url-encoded) to the seed item."""
+    async def resolve_seed(self, prov_playlist_id: str) -> MediaItemType:
+        """
+        Resolve a radio-playlist item id to the seed media item it was generated from.
+
+        :param prov_playlist_id: The seed item's URI (raw or url-encoded).
+        """
         seed_uri = prov_playlist_id if "://" in prov_playlist_id else unquote(prov_playlist_id)
         try:
             seed = await self.mass.music.get_item_by_uri(seed_uri)

@@ -107,6 +107,7 @@ if TYPE_CHECKING:
     from music_assistant.controllers.music.recency import RecencyWindows
     from music_assistant.helpers.json import SerializableType
     from music_assistant.models.player import Player
+    from music_assistant.providers.radio_playlist import RadioPlaylistProvider
 
 
 # the container media types worth surfacing as a queue "source" for clients to display. Individual
@@ -1663,6 +1664,24 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param item: The dynamic playlist or radio station to fetch the next batch for.
         """
         return await self._media_resolver.get_dynamic_source_tracks(item)
+
+    async def get_dynamic_radio_refill_tracks(
+        self, queue_id: str, playlist: Playlist
+    ) -> list[Track]:
+        """
+        Return a fresh batch of tracks to refill an endless-mix (dynamic radio) source.
+
+        :param queue_id: The queue the refill is for.
+        :param playlist: The endless-mix radio playlist to refill.
+        """
+        if self.queue_data_or_none(queue_id) is None:
+            # the queue was removed while this background refill was starting up
+            return []
+        radio_prov = self.mass.get_provider("radio_playlist")
+        if radio_prov is None:
+            return []
+        seed = await cast("RadioPlaylistProvider", radio_prov).resolve_seed(playlist.item_id)
+        return await self._get_similar_tracks(queue_id, seed_items=[seed])
 
     def recency_windows(self) -> RecencyWindows:
         """Return the configured recency windows (a global setting; used for recency-aware gating)."""
