@@ -91,7 +91,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.streams.audio_analysis import (
-    LOUDNESS_ANALYSIS_DOMAIN,
+    LOUDNESS_PROVIDER_PRIORITY,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.audio_processing import (
@@ -1348,8 +1348,19 @@ class StreamsAudio:
         content_sample_rate: int,
         content_bit_depth: int,
         media_type: MediaType = MediaType.UNKNOWN,
+        source_bit_depth: int = 16,
     ) -> AudioFormat:
-        """Parse (player specific) output format details for given format string."""
+        """
+        Parse (player specific) output format details for given format string.
+
+        :param output_format_str: The codec the player asked for.
+        :param player: The player the audio is encoded for.
+        :param content_sample_rate: Sample rate of the internal PCM being encoded.
+        :param content_bit_depth: Bit depth of the internal PCM being encoded.
+        :param media_type: Media type being streamed.
+        :param source_bit_depth: Bit depth the source itself declares, which is not the
+            same as ``content_bit_depth`` once the internal PCM is widened for processing.
+        """
         content_type: ContentType = ContentType.try_parse(output_format_str)
         player_supported_rates = player.get_supported_sample_rates()
         supported_sample_rates = [sr for sr, _ in player_supported_rates]
@@ -1368,8 +1379,14 @@ class StreamsAudio:
             output_bit_depth = 16
             output_sample_rate = min(48000, output_sample_rate)
         if media_type not in (MediaType.TRACK, MediaType.AUDIO_SOURCE, MediaType.FLOW_STREAM):
-            # no point in having a higher bit depth for non-track media types (e.g. TTS, radio)
-            output_bit_depth = min(output_bit_depth, 16)
+            # content_bit_depth is the internal PCM depth (32 bit float once normalization
+            # or DSP runs), so cap on the source instead: a lossy station or TTS stays
+            # 16 bit while a hi-res radio stream keeps its own depth. Round up to a
+            # container width, which is what the encoders and content length headers assume.
+            source_container_bit_depth = (
+                16 if source_bit_depth <= 16 else 24 if source_bit_depth <= 24 else 32
+            )
+            output_bit_depth = min(output_bit_depth, source_container_bit_depth)
         if output_format_str == "pcm":
             content_type = ContentType.from_bit_depth(output_bit_depth)
 
@@ -1660,8 +1677,8 @@ class StreamsAudio:
                     streamdetails.item_id,
                     streamdetails.provider,
                     media_type=streamdetails.media_type,
-                    # use the authoritative EBU R128 value, not another provider's loudness proxy
-                    priority=(LOUDNESS_ANALYSIS_DOMAIN,),
+                    # provider loudness wins; the builtin measurement is the per-field fallback
+                    priority=LOUDNESS_PROVIDER_PRIORITY,
                 ):
                     if analysis.loudness_integrated is not None:
                         streamdetails.loudness = round(analysis.loudness_integrated, 2)

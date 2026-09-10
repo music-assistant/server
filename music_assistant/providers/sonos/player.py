@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
@@ -79,10 +80,19 @@ class SonosQueueWindow:
     includes_end: bool = False
 
 
+# Failures remembered per speaker. One report can carry several, and the speaker resends
+# the whole batch until it gives up on the item.
+REPORTED_ERROR_HISTORY = 16
+
+
 class SonosPlayer(Player):
     """Holds the details of the (discovered) Sonosplayer."""
 
     _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
+    # the speaker plays out of a cached copy of our cloud queue that it refreshes on its
+    # own schedule; when it fetches a track the queue has since moved away from the
+    # playhead, the server must refuse it so the speaker re-reads the queue
+    _attr_strict_queue_item_requests = True
 
     def __init__(
         self,
@@ -104,6 +114,8 @@ class SonosPlayer(Player):
         # Clock-seeded (nanoseconds), so a recreated player never reuses a
         # generation the speaker may still hold items under
         self.cloud_queue_item_generation = time.time_ns()
+        # failures already logged, so the speaker's resends are not logged again
+        self.reported_playback_errors: deque[str] = deque(maxlen=REPORTED_ERROR_HISTORY)
         self._announcement_media: PlayerMedia | None = None
 
     @property
@@ -526,9 +538,14 @@ class SonosPlayer(Player):
         """Signal the speaker that the queue it is playing changed."""
         self.bump_cloud_queue_version()
         if not self.connected:
+            self.logger.debug("Not refreshing the cloud queue: not connected to the speaker")
             return
         group = self.client.player.group
         if group is None or not group.active_session_id:
+            # the session id lives in aiosonos and does not survive a reconnect or regroup,
+            # while the speaker's session (and its cached queue window) plays on - from here
+            # the stream request gate is what keeps a stale cached track off the speaker
+            self.logger.debug("Not refreshing the cloud queue: no active playback session known")
             return
         try:
             await self.client.api.playback_session.refresh_cloud_queue(group.active_session_id)
@@ -536,6 +553,8 @@ class SonosPlayer(Player):
             # an app outside MA can take the session over, leaving us with a session id the
             # speaker no longer knows. Only a nudge is lost: it reads a live window regardless.
             self.logger.debug("Could not refresh the cloud queue: %s", err)
+        else:
+            self.logger.debug("Refreshed the cloud queue for session %s", group.active_session_id)
 
     async def build_cloud_queue_window(
         self,

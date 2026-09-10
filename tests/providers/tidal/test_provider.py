@@ -262,6 +262,17 @@ async def test_get_artist_albums_delegates_to_media(provider: TidalProvider) -> 
         assert result == []
 
 
+async def test_get_artist_tracks_delegates_to_media(provider: TidalProvider) -> None:
+    """Test get_artist_tracks delegates to media manager."""
+    with patch.object(provider.media, "get_artist_tracks", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = []
+
+        result = await provider.get_artist_tracks("123")
+
+        mock_get.assert_called_with("123")
+        assert result == []
+
+
 async def test_get_artist_toptracks_delegates_to_media(provider: TidalProvider) -> None:
     """Test get_artist_toptracks delegates to media manager."""
     with patch.object(provider.media, "get_artist_toptracks", new_callable=AsyncMock) as mock_get:

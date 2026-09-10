@@ -114,6 +114,12 @@ SUPPRESS_MEDIA_ITEM_UPDATES: ContextVar[bool] = ContextVar(
     "SUPPRESS_MEDIA_ITEM_UPDATES", default=False
 )
 
+PROVIDER_FEATURE_BY_MEDIA_TYPE = {
+    MediaType.TRACK: ProviderFeature.TRACK_BY_EXTERNAL_ID,
+    MediaType.ALBUM: ProviderFeature.ALBUM_BY_EXTERNAL_ID,
+    MediaType.ARTIST: ProviderFeature.ARTIST_BY_EXTERNAL_ID,
+}
+
 SORT_KEYS = {
     # sqlite has no builtin support for natural sorting
     # so we have use an additional column for this
@@ -206,7 +212,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         self.mass.register_api_command(
             f"music/{api_base}/get_by_external_id",
-            self.get_library_item_by_external_id,
+            self.get_item_by_external_id,
             required_scope=Scope.LIBRARY_READ,
         )
         self.mass.register_api_command(
@@ -895,6 +901,67 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         return items[0] if items else None
 
     @final
+    async def get_item_by_external_id(
+        self,
+        external_id: str,
+        external_id_type: ExternalID | None = None,
+    ) -> ItemCls | None:
+        """Get item by external ID, querying library then active providers."""
+        if library_item := await self.get_library_item_by_external_id(
+            external_id, external_id_type
+        ):
+            return library_item
+
+        if external_id_type is None:
+            return None
+
+        if (feature := PROVIDER_FEATURE_BY_MEDIA_TYPE.get(self.media_type)) is None:
+            return None
+
+        for prov in self.mass.music.providers:
+            if feature not in prov.supported_features:
+                continue
+
+            try:
+                result: ItemCls | None = None
+                match self.media_type:
+                    case MediaType.TRACK:
+                        result = cast(
+                            "ItemCls | None",
+                            await prov.get_track_by_external_id(external_id, external_id_type),
+                        )
+                    case MediaType.ALBUM:
+                        result = cast(
+                            "ItemCls | None",
+                            await prov.get_album_by_external_id(external_id, external_id_type),
+                        )
+                    case MediaType.ARTIST:
+                        result = cast(
+                            "ItemCls | None",
+                            await prov.get_artist_by_external_id(external_id, external_id_type),
+                        )
+
+                if result:
+                    if result.provider == "library":
+                        return result
+                    return (
+                        await self.get_library_item_by_prov_id(result.item_id, result.provider)
+                        or result
+                    )
+            except NotImplementedError, MediaNotFoundError:
+                continue
+            except ProviderUnavailableError as err:
+                self.logger.debug(
+                    "Provider %s (%s) unavailable for external ID lookup: %s",
+                    prov.instance_id,
+                    prov.domain,
+                    err,
+                )
+                continue
+
+        return None
+
+    @final
     async def get_library_items_by_prov_id(
         self,
         provider_domain: str | None = None,
@@ -993,32 +1060,55 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider_instance_id_or_domain: str,
         force_refresh: bool = False,
         fallback: ItemMapping | ItemCls | None = None,
+        allow_fallback: bool = True,
+        strict_provider_instance: bool = False,
     ) -> ItemCls:
-        """Return item details for the given provider item id."""
+        """
+        Return item details for the given provider item ID.
+
+        :param item_id: Provider item ID.
+        :param provider_instance_id_or_domain: Provider instance ID or domain.
+        :param force_refresh: Force a fresh provider lookup.
+        :param fallback: Details to return if the provider no longer resolves the ID.
+        :param allow_fallback: Allow fallback details after a provider miss.
+        :param strict_provider_instance: Require this exact provider instance.
+        """
         if provider_instance_id_or_domain == "library":
             return await self.get_library_item(item_id)
-        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
+        provider = self.mass.get_provider(
+            provider_instance_id_or_domain,
+            return_unavailable=strict_provider_instance,
+        )
+        if provider is None or (
+            strict_provider_instance
+            and (provider.instance_id != provider_instance_id_or_domain or not provider.available)
+        ):
             raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
-        if provider := self.mass.get_provider(provider_instance_id_or_domain):
-            provider = cast("MusicProvider | PluginProvider", provider)
-            with suppress(MediaNotFoundError):
-                async with self.mass.cache.handle_refresh(force_refresh):
-                    if self.media_type == MediaType.PLAYLIST:
-                        return cast("ItemCls", await provider.get_playlist(item_id))
-                    if self.media_type == MediaType.RADIO:
-                        return cast("ItemCls", await provider.get_radio(item_id))
-                    music_prov = cast("MusicProvider", provider)
-                    if self.media_type == MediaType.ARTIST:
-                        return cast("ItemCls", await music_prov.get_artist(item_id))
-                    if self.media_type == MediaType.ALBUM:
-                        return cast("ItemCls", await music_prov.get_album(item_id))
-                    if self.media_type == MediaType.TRACK:
-                        return cast("ItemCls", await music_prov.get_track(item_id))
-                    if self.media_type == MediaType.AUDIOBOOK:
-                        return cast("ItemCls", await music_prov.get_audiobook(item_id))
-                    if self.media_type == MediaType.PODCAST:
-                        return cast("ItemCls", await music_prov.get_podcast(item_id))
+        provider = cast("MusicProvider | PluginProvider", provider)
+        with suppress(MediaNotFoundError):
+            async with self.mass.cache.handle_refresh(force_refresh):
+                if self.media_type == MediaType.PLAYLIST:
+                    return cast("ItemCls", await provider.get_playlist(item_id))
+                if self.media_type == MediaType.RADIO:
+                    return cast("ItemCls", await provider.get_radio(item_id))
+                music_prov = cast("MusicProvider", provider)
+                if self.media_type == MediaType.ARTIST:
+                    return cast("ItemCls", await music_prov.get_artist(item_id))
+                if self.media_type == MediaType.ALBUM:
+                    return cast("ItemCls", await music_prov.get_album(item_id))
+                if self.media_type == MediaType.TRACK:
+                    return cast("ItemCls", await music_prov.get_track(item_id))
+                if self.media_type == MediaType.AUDIOBOOK:
+                    return cast("ItemCls", await music_prov.get_audiobook(item_id))
+                if self.media_type == MediaType.PODCAST:
+                    return cast("ItemCls", await music_prov.get_podcast(item_id))
         # if we reach this point all possibilities failed and the item could not be found.
+        if not allow_fallback:
+            msg = (
+                f"{self.media_type.value}://{item_id} not "
+                f"found on provider {provider_instance_id_or_domain}"
+            )
+            raise MediaNotFoundError(msg)
         # There is a possibility that the (streaming) provider changed the id of the item
         # so we return the previous details (if we have any) marked as unavailable, so
         # at least we have the possibility to sort out the new id through matching logic.

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import subprocess
 from array import array
 from collections.abc import AsyncGenerator, Sequence
 from math import sqrt
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from music_assistant_models.enums import ContentType
@@ -32,6 +34,7 @@ from music_assistant.helpers.ffmpeg import (
     parse_ffmpeg_duration,
     parse_ffmpeg_stream_info,
 )
+from music_assistant.models.music_provider import ProviderStreamLimitError
 
 
 def test_get_ffmpeg_args_does_not_mutate_filters() -> None:
@@ -185,6 +188,38 @@ def _output_args(args: list[str]) -> list[str]:
     return args[args.index("-i") + 2 :]
 
 
+def test_flac_keeps_its_block_size_at_a_high_sample_rate() -> None:
+    """The pin is on the sample count, so a 96kHz stream is not left on ffmpeg's 2304."""
+    args = _output_args(
+        get_ffmpeg_args(
+            input_format=AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=96000),
+            output_format=AudioFormat(content_type=ContentType.FLAC, sample_rate=96000),
+            filter_params=[],
+        )
+    )
+
+    assert args[args.index("-frame_size") + 1] == "4096"
+
+
+def test_flac_output_uses_the_block_size_real_files_carry() -> None:
+    """
+    FLAC output is pinned to a 4096 sample block, whatever the sample rate.
+
+    Compression level 0, which we use for encoding speed, otherwise sizes the block by
+    time: 1152 samples at 44.1kHz. That is three and a half times as many frame headers
+    and CRCs for the same audio, which costs on both the encode and the decode.
+    """
+    args = _output_args(
+        get_ffmpeg_args(
+            input_format=AudioFormat(content_type=ContentType.PCM_S16LE, sample_rate=44100),
+            output_format=AudioFormat(content_type=ContentType.FLAC, sample_rate=44100),
+            filter_params=[],
+        )
+    )
+
+    assert args[args.index("-frame_size") + 1] == "4096"
+
+
 @pytest.mark.parametrize(
     ("content_type", "encoder_args"),
     [
@@ -193,7 +228,18 @@ def _output_args(args: list[str]) -> list[str]:
         (ContentType.WAV, ["-ar", "44100", "-acodec", "pcm_s16le", "-f", "wav"]),
         (
             ContentType.FLAC,
-            ["-sample_fmt", "s16", "-ar", "44100", "-f", "flac", "-compression_level", "0"],
+            [
+                "-sample_fmt",
+                "s16",
+                "-ar",
+                "44100",
+                "-f",
+                "flac",
+                "-compression_level",
+                "0",
+                "-frame_size",
+                "4096",
+            ],
         ),
     ],
 )
@@ -594,6 +640,42 @@ async def test_ffmpeg_stream_surfaces_stdin_feeder_error(source_error: Exception
         )
 
     assert err.value.__cause__ is source_error
+
+
+async def test_ffmpeg_stream_logs_provider_stream_limit_at_debug(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A provider capacity error from the input generator is not logged as a warning."""
+    provider = Mock(max_concurrent_streams=1, instance_id="spotify--test")
+    provider.name = "Spotify"
+    limit_error = ProviderStreamLimitError(provider, 5.0)
+
+    async def busy_input() -> AsyncGenerator[bytes]:
+        yield b"\x00" * _BYTES_PER_SECOND
+        raise limit_error
+
+    caplog.set_level(logging.DEBUG)
+    with pytest.raises(AudioError) as err:
+        await _collect_chunks(
+            get_ffmpeg_stream(
+                audio_input=busy_input(),
+                input_format=AudioFormat(
+                    content_type=ContentType.PCM_S16LE,
+                    sample_rate=44100,
+                    bit_depth=16,
+                    channels=2,
+                ),
+                output_format=_PCM_FORMAT,
+            )
+        )
+
+    # the typed error still surfaces to the caller
+    assert err.value.__cause__ is limit_error
+    feeder_records = [
+        record for record in caplog.records if "stdin feeder task ended" in record.getMessage()
+    ]
+    assert feeder_records
+    assert all(record.levelno == logging.DEBUG for record in feeder_records)
 
 
 async def test_ffmpeg_stream_ignores_cancelled_stdin_feeder() -> None:

@@ -44,6 +44,9 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
             media_type_str = uri.split("/")[3]
             media_type = MediaType(media_type_str)
             item_id = uri.split("/")[4].split("?", maxsplit=1)[0]
+            if not item_id:
+                # truncated share URL with no id segment
+                raise KeyError
         elif uri.startswith("https://tidal.com/browse/"):
             # Tidal public share URL
             # https://tidal.com/browse/track/123456
@@ -51,6 +54,9 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
             media_type_str = uri.split("/")[4]
             media_type = MediaType(media_type_str)
             item_id = uri.split("/")[5].split("?", maxsplit=1)[0]
+            if not item_id:
+                # truncated share URL with no id segment
+                raise KeyError
         elif uri.startswith("https://music.apple.com/"):
             # Apple Music share URL
             # https://music.apple.com/{storefront}/{type}/{slug}/{id}
@@ -135,7 +141,8 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
             item_id = uri
         else:
             raise KeyError
-    except (TypeError, AttributeError, ValueError, KeyError) as err:
+    except (TypeError, AttributeError, ValueError, KeyError, IndexError) as err:
+        # IndexError covers truncated share URLs with no path segments.
         msg = f"Not a valid Music Assistant uri: {uri}"
         raise InvalidProviderURI(msg) from err
     if validate_id and not valid_id(provider_instance_id_or_domain, item_id):

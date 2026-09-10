@@ -970,6 +970,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 index = temp_index
             # At this point index is guaranteed to be int
             queue.index_in_buffer = index
+            # a new load owns nothing yet, so the old item must not vouch for its successor
+            queue_data.last_served_item_id = None
             queue_data.flow_mode_stream_log = []
             queue_data.flow_buffer_completed = None
             queue_data.flow_queue_exhausted = None
@@ -1077,7 +1079,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     self.logger.error(msg)
                     await self.stop(queue_id)
                     raise MediaNotFoundError(msg) from err
-                self.logger.warning("Skipping unplayable item %s", queue_item.name)
+                self.logger.warning(
+                    "Skipping unplayable item %s: %s",
+                    queue_item.name,
+                    err or "marked unavailable",
+                )
                 index = next_index
             if loaded_item is None:
                 await self.stop(queue_id)
@@ -1388,10 +1394,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             except ProviderStreamLimitError:
                 # transient source capacity, do not burn a playable item over it
                 raise
-            except MediaNotFoundError, AudioError:
+            except (MediaNotFoundError, AudioError) as err:
                 # No stream details found, skip this QueueItem
                 self.logger.warning(
-                    "Skipping unplayable item %s (%s)", queue_item.name, queue_item.uri
+                    "Skipping unplayable item %s (%s): %s", queue_item.name, queue_item.uri, err
                 )
                 queue_item.available = False
                 idx += 1
@@ -1424,6 +1430,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # which helps us a bit to determine how far the player has buffered ahead
         current_index = self.index_by_id(queue_id, item_id)
         queue.index_in_buffer = current_index
+        self._queue_data[queue_id].last_served_item_id = item_id
         self.logger.debug("PlayerQueue %s loaded item %s in buffer", queue.display_name, item_id)
         self.signal_update(queue_id)
         # preload next streamdetails
@@ -1739,6 +1746,43 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 continue
             return next_item
         return None
+
+    def is_current_window_item(self, queue_id: str, queue_item_id: str) -> bool:
+        """
+        Return whether the item sits at or right around the queue's playhead.
+
+        Players that play upcoming tracks from a cached copy of the queue use this to
+        verify a requested item is still the previous, current, buffered or expected
+        next track.
+
+        :param queue_id: The queue to check against.
+        :param queue_item_id: The queue item id the player asked for.
+        """
+        queue = self.get(queue_id)
+        if queue is None:
+            return False
+        item_index = self.index_by_id(queue_id, queue_item_id)
+        if item_index is None:
+            return False
+        for center in (queue.current_index, queue.index_in_buffer):
+            if center is None:
+                continue
+            if item_index in (center - 1, center):
+                return True
+        # get_next_item accounts for repeat mode and unavailable items. Measured from the
+        # item the player last fetched, since that is the one it asks to follow; a player
+        # reading ahead of our playhead is otherwise refused the track it needs next
+        served_item_id = self._queue_data[queue_id].last_served_item_id
+        from_item: int | str | None
+        if served_item_id is not None and self.index_by_id(queue_id, served_item_id) is not None:
+            from_item = served_item_id
+        else:
+            # never served, or the queue no longer holds it (a clear or a replace)
+            from_item = queue.current_index
+        if from_item is None:
+            return False
+        next_item = self.get_next_item(queue_id, from_item)
+        return next_item is not None and next_item.queue_item_id == queue_item_id
 
     def store_sources(self, queue: PlayerQueue, items: list[MediaItemType]) -> None:
         """

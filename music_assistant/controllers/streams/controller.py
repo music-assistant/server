@@ -670,6 +670,10 @@ class StreamsController(CoreController):
         queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
         if not queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {queue_item_id}")
+        # the player may be asking for a track out of a stale cached copy of the queue
+        # (its refresh signal can get lost): refusing it makes the player re-read the
+        # queue, where serving it would silently play a track the user moved away
+        self._raise_if_stale_item_request(player, queue_id, queue_item)
 
         is_audio_source = (
             queue_item.media_item is not None
@@ -782,8 +786,11 @@ class StreamsController(CoreController):
                     self.logger.error(
                         "Failed to get streamdetails for QueueItem %s: %s", queue_item_id, e
                     )
-                    # a source capacity miss is transient, the item itself is fine
-                    if not isinstance(e, ProviderStreamLimitError):
+                    # a source capacity miss is transient, the item itself is fine.
+                    # neither is a HEAD probe a playback attempt: renderers probe
+                    # speculatively (Sonos at every track boundary), so one transient
+                    # error there must not condemn an item the following GET can play
+                    if request.method == "GET" and not isinstance(e, ProviderStreamLimitError):
                         queue_item.available = False
                     raise web.HTTPNotFound(
                         reason=f"No streamdetails for Queue item: {queue_item_id}"
@@ -822,6 +829,7 @@ class StreamsController(CoreController):
                 content_sample_rate=pcm_format.sample_rate,
                 content_bit_depth=pcm_format.bit_depth,
                 media_type=queue_item.media_type,
+                source_bit_depth=queue_item.streamdetails.audio_format.bit_depth,
             )
 
             # prepare request, add some DLNA/UPNP compatible headers
@@ -859,6 +867,10 @@ class StreamsController(CoreController):
                 )
             elif http_profile == "chunked":
                 resp.enable_chunked_encoding()
+
+            # re-check right before audio is handed out: a queue edit landing during
+            # the awaited setup above must not hand the player a stale track after all
+            self._raise_if_stale_item_request(player, queue_id, queue_item)
 
             await resp.prepare(request)
 
@@ -936,12 +948,11 @@ class StreamsController(CoreController):
             else:
                 pacing: PacingProfile
                 if queue_item.media_type == MediaType.AUDIO_SOURCE:
-                    pacing = "low_latency"
-                elif player.provider.domain == "musiccast":
-                    # the one known exception; more belong in a per-player table, not here
-                    pacing = "gapless_burst"
+                    pacing = PacingProfile.LOW_LATENCY
+                elif queue_item.streamdetails.is_realtime:
+                    pacing = PacingProfile.NEAR_REALTIME
                 else:
-                    pacing = "default"
+                    pacing = PacingProfile.DEFAULT
                 audio_bytes = get_ffmpeg_stream(
                     audio_input=audio_input,
                     input_format=pcm_format,
@@ -951,6 +962,7 @@ class StreamsController(CoreController):
                 )
             first_chunk_received = False
             bytes_sent = 0
+            stream_failure: AudioError | None = None
             # Mark this player as actively streaming so audio analysis yields CPU to playback
             # for the duration of the transfer (see audio_analysis.playback_active).
             self._active_output_streams += 1
@@ -1008,15 +1020,28 @@ class StreamsController(CoreController):
                                     resp.content_length,
                                 )
                             break
+            except AudioError as err:
+                # the response is already being written: raising answers one that is
+                # long gone, which aiohttp logs as two unhandled tracebacks. Whose
+                # failure it is stays with the layer that knows, which has already
+                # flagged the item when the audio was this item's own.
+                stream_failure = err
             finally:
                 self._active_output_streams -= 1
-            if queue_item.streamdetails.stream_error:
+            if stream_failure is not None or queue_item.streamdetails.stream_error:
+                # every stage in between replaces the message with one of its own, so
+                # the reason worth reporting is the one at the bottom of the chain
                 self.logger.error(
-                    "Error streaming QueueItem %s (%s) to %s",
+                    "Error streaming QueueItem %s (%s) to %s: %s",
                     queue_item.name,
                     queue_item.uri,
                     queue.display_name,
+                    _root_cause(stream_failure) if stream_failure else "see the preceding log",
                 )
+                # the body stops short of an announced content length, and aiohttp
+                # relays the 'Connection: close' we advertise without applying it -
+                # so the player waits out a stream that already ended (as the flow route)
+                resp.force_close()
             elif (
                 bytes_sent > 0
                 and queue_item.streamdetails
@@ -1214,6 +1239,11 @@ class StreamsController(CoreController):
             content_sample_rate=flow_pcm_format.sample_rate,
             content_bit_depth=flow_pcm_format.bit_depth,
             media_type=start_queue_item.media_type,
+            source_bit_depth=(
+                start_queue_item.streamdetails.audio_format.bit_depth
+                if start_queue_item.streamdetails
+                else 16
+            ),
         )
         # work out ICY metadata support
         icy_preference = self.mass.config.get_raw_player_config_value(
@@ -1295,7 +1325,8 @@ class StreamsController(CoreController):
             # restarting (or completely failing) the audio stream by keeping the buffer short.
             # this is reported to be an issue especially with Chromecast players.
             # see for example: https://github.com/music-assistant/support/issues/3717
-            extra_input_args=output_pacing_args(),
+            # one continuous stream, so the player gains nothing from running far ahead
+            extra_input_args=output_pacing_args(PacingProfile.NEAR_REALTIME),
             chunk_size=icy_meta_interval if enable_icy else calculate_content_length(output_format),
         )
         client_disconnected = False
@@ -1913,7 +1944,7 @@ class StreamsController(CoreController):
             filter_params=filter_params,
             # keep the encode stage from reading further ahead than it needs to: a live
             # source's latency is whatever is buffered between it and the player
-            extra_input_args=output_pacing_args("low_latency"),
+            extra_input_args=output_pacing_args(PacingProfile.LOW_LATENCY),
         )
 
     async def _get_audio_source_session_stream(
@@ -2198,6 +2229,21 @@ class StreamsController(CoreController):
         # Without this the player is left waiting on a stream that already ended.
         resp.force_close()
 
+    def _raise_if_stale_item_request(
+        self, player: Player, queue_id: str, queue_item: QueueItem
+    ) -> None:
+        """Refuse (404) the request if the item fell out of the queue's playhead window."""
+        if not player.strict_queue_item_requests:
+            return
+        if self.mass.player_queues.is_current_window_item(queue_id, queue_item.queue_item_id):
+            return
+        self.logger.debug(
+            "Denying stream request from %s for %s: the queue has moved on",
+            player.display_name,
+            queue_item.name,
+        )
+        raise web.HTTPNotFound(reason=f"Queue item is not up next: {queue_item.queue_item_id}")
+
     def _log_request(self, request: web.Request) -> None:
         """Log request."""
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
@@ -2287,3 +2333,14 @@ class StreamsController(CoreController):
 def _same_ip_family(ip: str, other_ip: str) -> bool:
     """Return whether two addresses belong to the same IP family."""
     return (":" in ip) == (":" in other_ip)
+
+
+def _root_cause(err: BaseException) -> BaseException:
+    """Return the deepest error in a chain of re-raises that still says something."""
+    # a bare TimeoutError() ends plenty of chains: taking it would report nothing
+    deepest = err
+    while (cause := err.__cause__) is not None:
+        err = cause
+        if str(err):
+            deepest = err
+    return deepest

@@ -32,6 +32,7 @@ from music_assistant_models.errors import (
     InvalidProviderURI,
     MediaNotFoundError,
     MusicAssistantError,
+    ResourceTemporarilyUnavailable,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.helpers import get_global_cache_value
@@ -56,6 +57,7 @@ from music_assistant_models.playlog_update import PlaylogUpdate
 
 from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_BACK,
+    CONF_PROVIDERS,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_PLAYLOG,
@@ -646,6 +648,80 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if all_results_complete:
             await self._cache_search_results(
                 cache_key, result, SEARCH_CACHE_EXPIRATION_COMBINED, self.domain
+            )
+        return result
+
+    async def search_provider(
+        self,
+        search_query: str,
+        provider_instance_id_or_domain: str,
+        media_types: list[MediaType],
+        limit: int = 10,
+        allowed_provider_instances: set[str] | None = None,
+    ) -> SearchResults:
+        """
+        Search one provider within the allowed scope.
+
+        :param search_query: Search query.
+        :param provider_instance_id_or_domain: Provider instance ID or domain.
+        :param media_types: Media types to include.
+        :param limit: Maximum results per media type.
+        :param allowed_provider_instances: Provider instances allowed for this search.
+        """
+        domain_in_scope = False
+        if allowed_provider_instances is not None:
+            allowed_providers = [
+                provider
+                for provider_instance_id in sorted(allowed_provider_instances)
+                if isinstance(
+                    provider := self.mass.get_provider(
+                        provider_instance_id,
+                        return_unavailable=True,
+                    ),
+                    MusicProvider,
+                )
+                and provider.instance_id == provider_instance_id
+            ]
+            # Treat any allowed sibling of this domain as in scope, even if all are down.
+            domain_in_scope = any(
+                provider.domain == provider_instance_id_or_domain for provider in allowed_providers
+            )
+            available_providers = [provider for provider in allowed_providers if provider.available]
+        else:
+            available_providers = self.providers
+        provider = next(
+            (
+                item
+                for item in available_providers
+                if item.instance_id == provider_instance_id_or_domain
+            ),
+            None,
+        ) or next(
+            (
+                item
+                for item in available_providers
+                if item.domain == provider_instance_id_or_domain and item.available
+            ),
+            None,
+        )
+        if provider is None:
+            if allowed_provider_instances is not None and (
+                provider_instance_id_or_domain in allowed_provider_instances or domain_in_scope
+            ):
+                raise ResourceTemporarilyUnavailable(
+                    f"Provider {provider_instance_id_or_domain} is unavailable"
+                )
+            return SearchResults()
+        result = await self._search_provider(
+            search_query,
+            provider.instance_id,
+            media_types,
+            limit=limit,
+            strict_provider_instance=True,
+        )
+        if result is None:
+            raise ResourceTemporarilyUnavailable(
+                f"Search on provider {provider.name} failed or timed out"
             )
         return result
 
@@ -2147,6 +2223,81 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 "Provider %s was not not fully removed from library", provider_instance
             )
 
+    async def cleanup_provider_shortcuts(self, provider_instance: str) -> None:
+        """
+        Clean up sidebar shortcuts after a music provider is removed.
+
+        :param provider_instance: The instance ID of the removed provider.
+        """
+
+        async def _rewrite(uri: str) -> str | None:
+            try:
+                media_type, provider, item_id = await parse_uri(uri)
+            except InvalidProviderURI, InvalidProviderID, KeyError, ValueError:
+                return uri
+            if provider != provider_instance:
+                return uri
+            return await self._shortcut_library_uri(media_type, item_id, provider)
+
+        await self.mass.webserver.auth.cleanup_user_shortcuts(_rewrite)
+
+    async def cleanup_stale_provider_shortcuts(self) -> None:
+        """Repair sidebar shortcuts left pointing at a provider instance that no longer exists."""
+        provider_configs: dict[str, Any] = self.mass.config.get(CONF_PROVIDERS, {})
+        # an empty config section means nothing is configured yet, which must not be
+        # mistaken for every provider having been removed
+        if not provider_configs:
+            return
+        # a shortcut URI names either the instance id or the bare domain, and a single-instance
+        # provider is keyed on its domain, so both forms have to count as known
+        known_providers = set(provider_configs)
+        known_providers.update(
+            domain
+            for config in provider_configs.values()
+            if isinstance(config, dict) and (domain := config.get("domain"))
+        )
+
+        async def _rewrite(uri: str) -> str | None:
+            try:
+                media_type, provider, item_id = await parse_uri(uri)
+            except InvalidProviderURI, InvalidProviderID, KeyError, ValueError:
+                return uri
+            if provider == "library" or provider in known_providers:
+                return uri
+            return await self._shortcut_library_uri(media_type, item_id, provider)
+
+        try:
+            await self.mass.webserver.auth.cleanup_user_shortcuts(_rewrite)
+        except Exception as err:
+            # broad on purpose: this runs on the boot path, and nothing validates what is
+            # stored in a user's shortcuts, so an escape here would keep the server from
+            # starting at all. A skipped repair only costs the popup it was fixing.
+            self.logger.warning(
+                "Unable to repair sidebar shortcuts - %s: %s", type(err).__name__, err, exc_info=err
+            )
+
+    async def cleanup_library_shortcuts(self) -> None:
+        """Remove sidebar shortcuts whose library item no longer exists."""
+
+        async def _rewrite(uri: str) -> str | None:
+            try:
+                media_type, provider, item_id = await parse_uri(uri)
+            except InvalidProviderURI, InvalidProviderID, KeyError, ValueError:
+                return uri
+            if provider != "library":
+                return uri
+            try:
+                ctrl = self.get_controller(media_type)
+            except NotImplementedError:
+                return uri
+            try:
+                await ctrl.get_library_item(item_id)
+            except MediaNotFoundError, ValueError:
+                return None
+            return uri
+
+        await self.mass.webserver.auth.cleanup_user_shortcuts(_rewrite)
+
     async def schedule_provider_sync(self, provider_instance_id: str) -> None:
         """Schedule Library sync for given provider."""
         if not (
@@ -2506,6 +2657,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         media_types: list[MediaType],
         limit: int = 10,
         skip_item_ids: set[tuple[MediaType, str, str]] | None = None,
+        strict_provider_instance: bool = False,
     ) -> SearchResults | None:
         """
         Perform search on given provider, returns None if the search failed or timed out.
@@ -2517,10 +2669,18 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param limit: number of items to return in the search (per type).
         :param skip_item_ids: Optional set of (media_type, provider_domain, item_id)
                               tuples to filter out of the results.
+        :param strict_provider_instance: Do not fall back to another provider instance.
         """
-        prov = self.mass.get_provider(provider_instance_id_or_domain, provider_type=MusicProvider)
-        if not prov:
-            return SearchResults()
+        prov = self.mass.get_provider(
+            provider_instance_id_or_domain,
+            return_unavailable=strict_provider_instance,
+            provider_type=MusicProvider,
+        )
+        if not prov or (
+            strict_provider_instance
+            and (prov.instance_id != provider_instance_id_or_domain or not prov.available)
+        ):
+            return None if strict_provider_instance else SearchResults()
         if ProviderFeature.SEARCH not in prov.supported_features:
             return SearchResults()
 
@@ -2678,6 +2838,28 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 continue
             self.mass.create_task(provider.import_album_tracks(prov_mapping.item_id, album))
 
+    async def _shortcut_library_uri(
+        self, media_type: MediaType, item_id: str, provider_instance: str
+    ) -> str | None:
+        """
+        Return the library URI a provider shortcut should follow, or None to drop it.
+
+        :param media_type: Media type of the shortcut's item.
+        :param item_id: Provider item ID the shortcut points at.
+        :param provider_instance: Provider instance the shortcut points at.
+        """
+        # nothing validates a stored shortcut, and a URI such as "prov--x://track/" parses to an
+        # empty item id, which the library lookup asserts on
+        if not item_id:
+            return None
+        try:
+            ctrl = self.get_controller(media_type)
+        except NotImplementedError:
+            return None
+        if library_item := await ctrl.get_library_item_by_prov_id(item_id, provider_instance):
+            return f"library://{media_type.value}/{library_item.item_id}"
+        return None
+
     async def _get_provider_sound_effects(self, provider: MusicProvider) -> list[SoundEffect]:
         """Return all sound effect items from a single provider."""
         try:
@@ -2767,6 +2949,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # since rewinding right now would keep re-examining the same prefix forever
         self._set_track_reconciliation_state(self._track_reconciliation_cursor, True)
         self._queue_database_cleanup_task()
+        # prune sidebar shortcuts for library items that no longer exist
+        self.mass.create_task(self.cleanup_library_shortcuts())
 
     def _register_database_cleanup_task(self) -> BackgroundTask:
         """Register the recurring database cleanup background task."""
@@ -3293,13 +3477,22 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             return False
 
         # fast return for a provider uri which is not part of a user with a provider filter
+        # MediaType.UNKNOWN is a plain url or local file resolved by the builtin provider,
+        # not catalog content of a music service, so it must bypass the filter entirely
         if (
             provider_instance_id_or_domain != "library"
+            and media_type != MediaType.UNKNOWN
             and user
             and user.provider_filter
-            and provider_instance_id_or_domain not in user.provider_filter
         ):
-            return False
+            allowed_instance = self._resolve_allowed_provider_instance(
+                provider_instance_id_or_domain, user
+            )
+            if allowed_instance is None:
+                return False
+            # bind the lookup to the allowed instance, so a same-domain instance outside
+            # the filter never serves the verification
+            provider_instance_id_or_domain = allowed_instance
 
         # verify that item itself exists
         try:
@@ -3328,3 +3521,20 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 return True
 
         return False
+
+    def _resolve_allowed_provider_instance(
+        self, provider_instance_id_or_domain: str, user: User
+    ) -> str | None:
+        """Resolve a uri's provider instance id or domain against the user's provider filter."""
+        if provider_instance_id_or_domain in user.provider_filter:
+            return provider_instance_id_or_domain
+        allowed_instances = [
+            prov
+            for prov in self.mass.providers
+            if prov.domain == provider_instance_id_or_domain
+            and prov.instance_id in user.provider_filter
+        ]
+        for prov in allowed_instances:
+            if prov.available:
+                return prov.instance_id
+        return allowed_instances[0].instance_id if allowed_instances else None
