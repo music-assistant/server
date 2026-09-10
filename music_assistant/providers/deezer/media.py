@@ -11,7 +11,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Protocol
 
 from deezer_python_gql import GraphQLClientGraphQLMultiError
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.errors import MediaNotFoundError, UnsupportedFeaturedException
 from music_assistant_models.media_items import (
     Album,
@@ -30,6 +30,12 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.external_ids import (
+    barcode_to_upc,
+    is_valid_barcode,
+    is_valid_isrc,
+    normalize_external_id,
+)
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 
 from .constants import (
@@ -94,6 +100,42 @@ class DeezerMediaManager:
         self.domain = provider.domain
         self.logger = provider.logger
         self._audiobook_ids_in_favorites: set[str] | None = None
+
+    # -- External ID lookups --
+
+    async def get_track_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Track | None:
+        """Retrieve a track by ISRC."""
+        if external_id_type != ExternalID.ISRC or not is_valid_isrc(external_id):
+            return None
+        isrc = normalize_external_id(ExternalID.ISRC, external_id)
+        track_id = await self.provider.rest_client.get_item_id(isrc, ExternalID.ISRC)
+        if track_id is None:
+            return None
+        track = await self.get_track(track_id)
+        if track.item_id != track_id or not any(
+            kind == ExternalID.ISRC and normalize_external_id(kind, value) == isrc
+            for kind, value in track.external_ids
+        ):
+            raise MediaNotFoundError(f"Deezer track {track_id} does not match ISRC {isrc}")
+        return track
+
+    async def get_album_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Album | None:
+        """Retrieve an album by barcode (UPC/EAN)."""
+        if external_id_type != ExternalID.BARCODE or not is_valid_barcode(external_id):
+            return None
+        upc = barcode_to_upc(external_id)
+        album_id = await self.provider.rest_client.get_item_id(upc, ExternalID.BARCODE)
+        if album_id is None:
+            return None
+        album = await self.get_album(album_id)
+        if album.item_id != album_id:
+            raise MediaNotFoundError(f"Deezer album {album_id} does not match barcode {upc}")
+        album.external_ids.add((ExternalID.BARCODE, normalize_external_id(ExternalID.BARCODE, upc)))
+        return album
 
     # -- Pagination helper --
 
