@@ -179,7 +179,7 @@ def _music_source_access(mass: MusicAssistant) -> Iterator[tuple[str, ProviderAc
 
 def _parse_access(instance_id: str, raw_conf: dict[str, Any]) -> ProviderAccess | None:
     """Return the access record stored on a raw provider config, if it carries one."""
-    if not (raw_access := raw_conf.get("access")):
+    if (raw_access := raw_conf.get("access")) is None:
         return None
     try:
         return ProviderAccess.from_dict(raw_access)

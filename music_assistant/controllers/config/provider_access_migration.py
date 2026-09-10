@@ -55,14 +55,15 @@ async def migrate_provider_access(mass: MusicAssistant) -> None:
             try:
                 access = _access_for_source(mass, instance_id, raw_conf, filters_by_user)
             except Exception as err:
+                # fail closed: the source stays hidden until an admin sets its access
                 LOGGER.warning(
-                    "Unable to convert the access of music source %s, it stays available to "
-                    "the entire household - %s: %s",
+                    "Unable to convert the access of music source %s, it is hidden until an "
+                    "admin sets its access - %s: %s",
                     instance_id,
                     type(err).__name__,
                     err,
                 )
-                continue
+                access = ProviderAccess(sharing=ProviderSharing.PRIVATE)
             if access is None:
                 continue
             mass.config.set(f"{CONF_PROVIDERS}/{instance_id}/access", access.to_dict())
@@ -92,7 +93,7 @@ def _access_for_source(
     :param raw_conf: The raw (stored) provider config.
     :param filters_by_user: The music sources each user is restricted to.
     """
-    if raw_conf.get("type") != ProviderType.MUSIC or raw_conf.get("access"):
+    if raw_conf.get("type") != ProviderType.MUSIC or raw_conf.get("access") is not None:
         return None
     if mass.get_provider_manifest(raw_conf["domain"]).builtin:
         # the builtin provider serves the entire household and carries no access record

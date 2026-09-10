@@ -218,7 +218,7 @@ async def test_rerun_does_not_widen_the_records(mass: MusicAssistant) -> None:
 
 
 async def test_unreadable_sources_do_not_stop_the_conversion(mass: MusicAssistant) -> None:
-    """A source with a broken record or an unknown domain is skipped, the rest converts."""
+    """A source with a broken record or an unknown domain is hidden, the rest converts."""
     _prepare(mass, ["spotify--alice"])
     mass.config.set(
         f"{CONF_PROVIDERS}/gone--forever",
@@ -239,7 +239,7 @@ async def test_unreadable_sources_do_not_stop_the_conversion(mass: MusicAssistan
     await migrate_provider_access(mass)
 
     assert _access(mass, "spotify--alice") is not None
-    assert mass.config.get(f"{CONF_PROVIDERS}/gone--forever/access") is None
+    assert _access(mass, "gone--forever") == ProviderAccess(sharing=ProviderSharing.PRIVATE)
     assert mass.config.get(f"{CONF_PROVIDERS}/tidal--broken/access") == {"shared_users": 5}
     # a record nobody can read hides its source instead of exposing it
     assert _visible(mass, alice, ["tidal--broken"]) == []

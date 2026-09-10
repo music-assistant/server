@@ -396,7 +396,7 @@ class ProviderConfigMixin:
         """
         released = False
         for instance_id, raw_conf in self.get(CONF_PROVIDERS, {}).items():
-            if not (raw_access := raw_conf.get("access")):
+            if (raw_access := raw_conf.get("access")) is None:
                 continue
             try:
                 access = ProviderAccess.from_dict(raw_access)
