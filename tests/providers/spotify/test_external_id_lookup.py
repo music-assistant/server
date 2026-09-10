@@ -79,7 +79,7 @@ async def test_get_track_by_isrc(
     )
     monkeypatch.setattr(spotify_provider, "_get_data", get_data_mock)
 
-    track = await spotify_provider.get_track_by_external_id("USUM71703861", ExternalID.ISRC)
+    track = await spotify_provider.get_track_by_external_id("US-UM7-17-03861", ExternalID.ISRC)
 
     assert track is not None
     assert track.item_id == "track123"

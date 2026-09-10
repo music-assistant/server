@@ -1314,26 +1314,20 @@ class SpotifyProvider(MusicProvider):
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def _get_track_by_external_id(self, external_id: str) -> Track | None:
         """Retrieve a track by its normalized ISRC using the Spotify API."""
-        try:
-            result = await self._get_data("search", q=f"isrc:{external_id}", type="track", limit=1)
-            if not result.get("tracks", {}).get("items"):
-                return None
-            track_obj = result["tracks"]["items"][0]
-            return parse_track(track_obj, self)
-        except MediaNotFoundError:
+        result = await self._get_data("search", q=f"isrc:{external_id}", type="track", limit=1)
+        if not result.get("tracks", {}).get("items"):
             return None
+        track_obj = result["tracks"]["items"][0]
+        return parse_track(track_obj, self)
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def _get_album_by_external_id(self, external_id: str) -> Album | None:
         """Retrieve an album by its normalized UPC using the Spotify API."""
-        try:
-            result = await self._get_data("search", q=f"upc:{external_id}", type="album", limit=1)
-            if not result.get("albums", {}).get("items"):
-                return None
-            album_obj = result["albums"]["items"][0]
-            return parse_album(album_obj, self)
-        except MediaNotFoundError:
+        result = await self._get_data("search", q=f"upc:{external_id}", type="album", limit=1)
+        if not result.get("albums", {}).get("items"):
             return None
+        album_obj = result["albums"]["items"][0]
+        return parse_album(album_obj, self)
 
     async def _get_auth_info(self, use_global_session: bool = False) -> dict[str, Any]:
         """
