@@ -252,17 +252,15 @@ async def test_filters_are_cleared_and_the_marker_stops_a_second_run(
     assert _access(mass, "qobuz--new") is None
 
 
-async def test_system_user_counts_as_a_user(mass: MusicAssistant) -> None:
-    """The Home Assistant system user is unrestricted, so shared sources reach it too."""
+async def test_system_user_is_never_a_listed_user(mass: MusicAssistant) -> None:
+    """The Home Assistant system user is a member, so it never ends up in a share list."""
     _prepare(mass, ["spotify--alice", "tidal--dave"])
-    system_user = await mass.webserver.auth.get_homeassistant_system_user()
+    await mass.webserver.auth.get_homeassistant_system_user()
     await _add_user(mass, "alice", ["spotify--alice"])
     dave = await _add_user(mass, "dave", ["tidal--dave"])
 
     await migrate_provider_access(mass)
 
     assert _access(mass, "tidal--dave") == ProviderAccess(
-        owner=dave.user_id,
-        sharing=ProviderSharing.SELECTED,
-        shared_users=[system_user.user_id],
+        owner=dave.user_id, sharing=ProviderSharing.SELECTED, shared_users=[]
     )

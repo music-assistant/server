@@ -22,7 +22,11 @@ from typing import TYPE_CHECKING, Any
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import ProviderSharing, ProviderType
 
-from music_assistant.constants import CONF_PROVIDER_ACCESS_MIGRATED, CONF_PROVIDERS
+from music_assistant.constants import (
+    CONF_PROVIDER_ACCESS_MIGRATED,
+    CONF_PROVIDERS,
+    HOMEASSISTANT_SYSTEM_USER,
+)
 from music_assistant.helpers.json import json_loads
 
 if TYPE_CHECKING:
@@ -119,9 +123,14 @@ async def _stored_user_filters(mass: MusicAssistant) -> dict[str, set[str]]:
     :param mass: The MusicAssistant instance to read the users and provider configs of.
     """
     known_sources = set(mass.config.get(CONF_PROVIDERS, {}))
-    # the Home Assistant system user is hidden from list_users, but it is a user here
+    # the Home Assistant system user is left out: it is a member of the household, never a
+    # listed user, so it keeps the household and member-shared sources only
     rows = await mass.webserver.auth.database.get_rows("users", limit=0)
-    return {str(row["user_id"]): _normalized_filter(row, known_sources) for row in rows}
+    return {
+        str(row["user_id"]): _normalized_filter(row, known_sources)
+        for row in rows
+        if row["username"] != HOMEASSISTANT_SYSTEM_USER
+    }
 
 
 def _normalized_filter(row: Mapping[str, Any], known_sources: set[str]) -> set[str]:

@@ -2060,59 +2060,47 @@ class AuthenticationManager:
         # those rewrites would read the same filter and each undo the other's removal
         async with self._user_filter_lock:
             for row in await self.database.get_rows("users", limit=0):
-                changed: dict[str, list[str]] = {}
-                for column, keep_func, map_func in (("player_filter", keep_player, map_player),):
-                    if keep_func is None and map_func is None:
-                        continue
-                    current: list[str] = json_loads(row[column])
-                    remaining: list[str] = []
-                    dropped: list[str] = []
-                    for entry in current:
-                        mapped = map_func(entry) if map_func else entry
-                        if keep_func and not keep_func(mapped):
-                            dropped.append(entry)
-                        elif mapped not in remaining:
-                            remaining.append(mapped)
-                    if remaining == current:
-                        continue
-                    changed[column] = remaining
-                    if not dropped:
-                        self.logger.info(
-                            "Updated the %s of user '%s' to %s",
-                            column,
-                            row["username"],
-                            ", ".join(remaining),
-                        )
-                    elif remaining:
-                        self.logger.info(
-                            "Removed %s from the %s of user '%s'",
-                            ", ".join(dropped),
-                            column,
-                            row["username"],
-                        )
-                    else:
-                        # An empty filter means unrestricted. A user whose entries are all gone is
-                        # deliberately left unrestricted, the alternative being an account that
-                        # can see nothing at all.
-                        self.logger.warning(
-                            "Removed the last entries (%s) from the %s of user '%s'. This user is "
-                            "no longer restricted, adjust the access settings if needed.",
-                            ", ".join(dropped),
-                            column,
-                            row["username"],
-                        )
-                if changed:
-                    await self.database.update(
-                        "users",
-                        {"user_id": row["user_id"]},
-                        {column: json_dumps(value) for column, value in changed.items()},
+                current: list[str] = json_loads(row["player_filter"])
+                remaining: list[str] = []
+                dropped: list[str] = []
+                for entry in current:
+                    mapped = map_player(entry) if map_player else entry
+                    if keep_player and not keep_player(mapped):
+                        dropped.append(entry)
+                    elif mapped not in remaining:
+                        remaining.append(mapped)
+                if remaining == current:
+                    continue
+                if not dropped:
+                    self.logger.info(
+                        "Updated the player_filter of user '%s' to %s",
+                        row["username"],
+                        ", ".join(remaining),
                     )
-                    # a session holds its own copy of the User object, so the live ones have to
-                    # follow or they keep applying the filter that was just rewritten
-                    self.webserver.update_active_user_filters(
-                        row["user_id"],
-                        player_filter=changed.get("player_filter"),
+                elif remaining:
+                    self.logger.info(
+                        "Removed %s from the player_filter of user '%s'",
+                        ", ".join(dropped),
+                        row["username"],
                     )
+                else:
+                    # An empty filter means unrestricted. A user whose entries are all gone is
+                    # deliberately left unrestricted, the alternative being an account that
+                    # can see nothing at all.
+                    self.logger.warning(
+                        "Removed the last entries (%s) from the player_filter of user '%s'. "
+                        "This user is no longer restricted, adjust the access settings if needed.",
+                        ", ".join(dropped),
+                        row["username"],
+                    )
+                await self.database.update(
+                    "users",
+                    {"user_id": row["user_id"]},
+                    {"player_filter": json_dumps(remaining)},
+                )
+                # a session holds its own copy of the User object, so the live ones have to
+                # follow or they keep applying the filter that was just rewritten
+                self.webserver.update_active_user_filters(row["user_id"], player_filter=remaining)
 
     async def _migrate_playlog_to_first_user(self, user_id: str) -> None:
         """
