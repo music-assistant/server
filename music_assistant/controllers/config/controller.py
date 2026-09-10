@@ -225,6 +225,10 @@ class ConfigController(
 
     async def async_save(self) -> None:
         """Write the pending changes to disk, returning once they are stored."""
+        # this write covers whatever a scheduled save was still waiting to write
+        if self._timer_handle is not None:
+            self._timer_handle.cancel()
+            self._timer_handle = None
         async with self._save_lock:
             # remember which change we are about to write: anything requested after this
             # point is not part of it, and must leave the settings marked as unsaved
