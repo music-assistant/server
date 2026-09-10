@@ -36,6 +36,7 @@ OTHER_USER_ID = "housemate"
 
 OWN_INSTANCE = "tidal--mine"
 BLOCKED_INSTANCE = "spotify--theirs"
+EVERYONE_INSTANCE = "qobuz--house"
 PLUGIN_INSTANCE = "smart_playlist"
 
 
@@ -176,3 +177,47 @@ async def test_an_allowed_item_is_enqueued(mock_get_user: Mock) -> None:
 
     assert _queued_item_ids(ctrl) == ["t2"]
     assert cast("PlayerQueueData", ctrl._queue_data["q1"]).userid == USER_ID
+
+
+@patch(GET_CURRENT_USER)
+async def test_a_blocked_item_does_not_take_the_batch_down(mock_get_user: Mock) -> None:
+    """One refused track is skipped, the rest of the request still plays."""
+    mock_get_user.return_value = User(user_id=USER_ID, username=USER_ID, role=UserRole.USER)
+    ctrl = _controller()
+    _set_sources(ctrl)
+
+    await ctrl.play_media(
+        "q1",
+        [
+            _track("t1", BLOCKED_INSTANCE, BLOCKED_INSTANCE),
+            _track("t2", OWN_INSTANCE, OWN_INSTANCE),
+        ],
+        QueueOption.REPLACE,
+    )
+
+    assert _queued_item_ids(ctrl) == ["t2"]
+
+
+@patch(GET_CURRENT_USER)
+async def test_anonymous_playback_reaches_the_household_sources_only(mock_get_user: Mock) -> None:
+    """A queue without a user plays what is shared with everyone, and nothing private."""
+    mock_get_user.return_value = None
+    ctrl = _controller()
+    set_music_source_access(
+        ctrl.mass,
+        {
+            EVERYONE_INSTANCE: ProviderAccess(owner=USER_ID, sharing=ProviderSharing.EVERYONE),
+            BLOCKED_INSTANCE: ProviderAccess(owner=OTHER_USER_ID, sharing=ProviderSharing.PRIVATE),
+        },
+    )
+
+    await ctrl.play_media(
+        "q1", _track("t3", EVERYONE_INSTANCE, EVERYONE_INSTANCE), QueueOption.REPLACE
+    )
+    assert _queued_item_ids(ctrl) == ["t3"]
+    assert cast("PlayerQueueData", ctrl._queue_data["q1"]).userid is None
+
+    with pytest.raises(MediaNotFoundError):
+        await ctrl.play_media(
+            "q1", _track("t4", BLOCKED_INSTANCE, BLOCKED_INSTANCE), QueueOption.REPLACE
+        )

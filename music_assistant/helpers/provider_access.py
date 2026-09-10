@@ -114,7 +114,8 @@ def derived_provider_filter(mass: MusicAssistant, user: User) -> list[str]:
     :param mass: The MusicAssistant instance.
     :param user: The user to resolve the music sources for.
     """
-    return visible_music_sources(mass, user) or []
+    visible = visible_music_sources(mass, user)
+    return [] if visible is None else visible
 
 
 def with_derived_provider_filter(mass: MusicAssistant, user: User) -> User:
@@ -125,6 +126,18 @@ def with_derived_provider_filter(mass: MusicAssistant, user: User) -> User:
     :param user: The user to serve.
     """
     return replace(user, provider_filter=derived_provider_filter(mass, user))
+
+
+async def playback_user(mass: MusicAssistant, queue_id: str) -> User | None:
+    """
+    Return the user the queue plays for, None for anonymous playback.
+
+    :param mass: The MusicAssistant instance.
+    :param queue_id: The queue the playback belongs to.
+    """
+    if (pq_data := mass.player_queues.queue_data_or_none(queue_id)) and pq_data.userid:
+        return await mass.webserver.auth.get_user(pq_data.userid)
+    return None
 
 
 async def playback_sources(
@@ -140,9 +153,7 @@ async def playback_sources(
     :param mass: The MusicAssistant instance.
     :param queue_id: The queue the playback belongs to.
     """
-    user: User | None = None
-    if (pq_data := mass.player_queues.queue_data_or_none(queue_id)) and pq_data.userid:
-        user = await mass.webserver.auth.get_user(pq_data.userid)
+    user = await playback_user(mass, queue_id)
     return visible_playback_sources(mass, user), own_music_sources(mass, user)
 
 

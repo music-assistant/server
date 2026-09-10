@@ -1,4 +1,4 @@
-"""Tests for the command that sets who owns a music source and who else may use it."""
+"""Tests for the commands that set and serve who owns a music source and who may use it."""
 
 from __future__ import annotations
 
@@ -158,22 +158,58 @@ async def test_a_member_may_not_share_another_users_source(access_mass: MusicAss
         )
 
 
+async def test_a_member_may_not_claim_a_household_source(access_mass: MusicAssistant) -> None:
+    """A source of the household is an admin's to hand out, not a member's to take."""
+    member = await _create_user(access_mass, "member")
+    set_current_user(member)
+
+    with pytest.raises(InsufficientPermissions):
+        await access_mass.config.set_provider_access(
+            MUSIC_INSTANCE, sharing=ProviderSharing.PRIVATE, owner=member.user_id
+        )
+    assert _stored_access(access_mass, MUSIC_INSTANCE) is None
+
+
+async def test_sharing_must_be_given_explicitly(access_mass: MusicAssistant) -> None:
+    """An omitted sharing must never silently open up a source to the entire household."""
+    admin = await _create_user(access_mass, "admin", UserRole.ADMIN)
+    set_current_user(admin)
+
+    with pytest.raises(TypeError):
+        await access_mass.config.set_provider_access(MUSIC_INSTANCE, owner=admin.user_id)  # type: ignore[call-arg]
+
+
 async def test_the_system_user_can_not_own_a_source(access_mass: MusicAssistant) -> None:
-    """The Home Assistant system user is a service account, not a member."""
+    """The Home Assistant system user is a service account, so it owns nothing."""
     admin = await _create_user(access_mass, "admin", UserRole.ADMIN)
     system_user = await access_mass.webserver.auth.get_homeassistant_system_user()
     set_current_user(admin)
 
     with pytest.raises(InvalidDataError):
-        await access_mass.config.set_provider_access(MUSIC_INSTANCE, owner=system_user.user_id)
-    with pytest.raises(InvalidDataError):
         await access_mass.config.set_provider_access(
-            MUSIC_INSTANCE,
-            owner=admin.user_id,
-            sharing=ProviderSharing.SELECTED,
-            shared_users=[system_user.user_id],
+            MUSIC_INSTANCE, sharing=ProviderSharing.PRIVATE, owner=system_user.user_id
         )
     assert _stored_access(access_mass, MUSIC_INSTANCE) is None
+
+
+async def test_the_system_user_may_be_shared_with(access_mass: MusicAssistant) -> None:
+    """The Home Assistant system user plays for the household, so it can be given a source."""
+    admin = await _create_user(access_mass, "admin", UserRole.ADMIN)
+    system_user = await access_mass.webserver.auth.get_homeassistant_system_user()
+    set_current_user(admin)
+
+    config = await access_mass.config.set_provider_access(
+        MUSIC_INSTANCE,
+        sharing=ProviderSharing.SELECTED,
+        owner=admin.user_id,
+        shared_users=[system_user.user_id],
+    )
+
+    assert config.access == ProviderAccess(
+        owner=admin.user_id,
+        sharing=ProviderSharing.SELECTED,
+        shared_users=[system_user.user_id],
+    )
 
 
 async def test_a_guest_can_not_own_a_source(access_mass: MusicAssistant) -> None:
@@ -183,7 +219,9 @@ async def test_a_guest_can_not_own_a_source(access_mass: MusicAssistant) -> None
     set_current_user(admin)
 
     with pytest.raises(InvalidDataError):
-        await access_mass.config.set_provider_access(MUSIC_INSTANCE, owner=guest.user_id)
+        await access_mass.config.set_provider_access(
+            MUSIC_INSTANCE, sharing=ProviderSharing.PRIVATE, owner=guest.user_id
+        )
 
 
 async def test_an_unknown_user_is_refused(access_mass: MusicAssistant) -> None:
@@ -194,9 +232,13 @@ async def test_an_unknown_user_is_refused(access_mass: MusicAssistant) -> None:
     await access_mass.webserver.auth.disable_user(disabled.user_id)
 
     with pytest.raises(InvalidDataError):
-        await access_mass.config.set_provider_access(MUSIC_INSTANCE, owner="does-not-exist")
+        await access_mass.config.set_provider_access(
+            MUSIC_INSTANCE, sharing=ProviderSharing.PRIVATE, owner="does-not-exist"
+        )
     with pytest.raises(InvalidDataError):
-        await access_mass.config.set_provider_access(MUSIC_INSTANCE, owner=disabled.user_id)
+        await access_mass.config.set_provider_access(
+            MUSIC_INSTANCE, sharing=ProviderSharing.PRIVATE, owner=disabled.user_id
+        )
 
 
 @pytest.mark.parametrize("instance_id", [PLAYER_INSTANCE, BUILTIN_INSTANCE])
@@ -208,7 +250,9 @@ async def test_only_a_real_music_source_can_be_owned(
     set_current_user(admin)
 
     with pytest.raises(InvalidDataError):
-        await access_mass.config.set_provider_access(instance_id, owner=admin.user_id)
+        await access_mass.config.set_provider_access(
+            instance_id, sharing=ProviderSharing.PRIVATE, owner=admin.user_id
+        )
 
 
 async def test_shared_users_are_dropped_unless_the_source_is_shared_with_a_selection(
@@ -227,6 +271,60 @@ async def test_shared_users_are_dropped_unless_the_source_is_shared_with_a_selec
     )
 
     assert config.access == ProviderAccess(owner=admin.user_id, sharing=ProviderSharing.EVERYONE)
+
+
+async def test_a_member_is_served_only_the_sources_it_may_see(access_mass: MusicAssistant) -> None:
+    """The provider list of a member leaves out the private source of another member."""
+    owner = await _create_user(access_mass, "owner")
+    member = await _create_user(access_mass, "member")
+    set_music_source_access(
+        access_mass,
+        {MUSIC_INSTANCE: ProviderAccess(owner=owner.user_id, sharing=ProviderSharing.PRIVATE)},
+    )
+    set_current_user(member)
+
+    instance_ids = [conf.instance_id for conf in await access_mass.config.get_provider_configs()]
+
+    assert MUSIC_INSTANCE not in instance_ids
+    # the household sources and the providers that are no music source are untouched
+    assert OTHER_INSTANCE in instance_ids
+    assert PLAYER_INSTANCE in instance_ids
+    assert BUILTIN_INSTANCE in instance_ids
+
+
+async def test_an_admin_is_served_every_source(access_mass: MusicAssistant) -> None:
+    """Managing the sources of the household means seeing all of them."""
+    admin = await _create_user(access_mass, "admin", UserRole.ADMIN)
+    owner = await _create_user(access_mass, "owner")
+    set_music_source_access(
+        access_mass,
+        {MUSIC_INSTANCE: ProviderAccess(owner=owner.user_id, sharing=ProviderSharing.PRIVATE)},
+    )
+    set_current_user(admin)
+
+    instance_ids = [conf.instance_id for conf in await access_mass.config.get_provider_configs()]
+
+    assert MUSIC_INSTANCE in instance_ids
+
+
+async def test_a_member_may_not_read_the_config_of_a_hidden_source(
+    access_mass: MusicAssistant,
+) -> None:
+    """A source someone keeps to themselves never hands its (credential) config to others."""
+    owner = await _create_user(access_mass, "owner")
+    member = await _create_user(access_mass, "member")
+    set_music_source_access(
+        access_mass,
+        {MUSIC_INSTANCE: ProviderAccess(owner=owner.user_id, sharing=ProviderSharing.PRIVATE)},
+    )
+    set_current_user(member)
+
+    with pytest.raises(InsufficientPermissions):
+        await access_mass.config.get_provider_config(MUSIC_INSTANCE)
+    for instance_id in (OTHER_INSTANCE, PLAYER_INSTANCE):
+        assert (
+            await access_mass.config.get_provider_config(instance_id)
+        ).instance_id == instance_id
 
 
 async def test_a_loaded_source_follows_the_stored_record(access_mass: MusicAssistant) -> None:
@@ -265,7 +363,9 @@ async def test_changed_access_is_signalled(access_mass: MusicAssistant) -> None:
     access_mass.subscribe(events.append, EventType.PROVIDERS_UPDATED)
     set_current_user(admin)
 
-    await access_mass.config.set_provider_access(MUSIC_INSTANCE, owner=admin.user_id)
+    await access_mass.config.set_provider_access(
+        MUSIC_INSTANCE, sharing=ProviderSharing.EVERYONE, owner=admin.user_id
+    )
 
     # the event callbacks run on the next loop iteration
     await asyncio.sleep(0)

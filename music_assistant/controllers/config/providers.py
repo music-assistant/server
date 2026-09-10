@@ -53,7 +53,7 @@ from music_assistant.controllers.config.helpers import (
     _with_translation_owner,
 )
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.provider_access import source_owner
+from music_assistant.helpers.provider_access import source_owner, visible_music_sources
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -100,9 +100,19 @@ class ProviderConfigMixin:
         provider_domain: str | None = None,
         include_values: bool = False,
     ) -> list[ProviderConfig]:
-        """Return all known provider configurations, optionally filtered by ProviderType."""
+        """
+        Return all known provider configurations, optionally filtered by ProviderType.
+
+        A caller that does not manage every music source is served only the music sources
+        it may use.
+
+        :param provider_type: Optionally only return providers of this type.
+        :param provider_domain: Optionally only return providers of this domain.
+        :param include_values: Include the resolved config entries of each provider.
+        """
         raw_values = self.get(CONF_PROVIDERS, {})
         prov_entries = {x.domain for x in self.mass.get_provider_manifests()}
+        visible_sources = self._visible_sources_for_caller()
         configs: list[ProviderConfig] = []
         for prov_conf in raw_values.values():
             if provider_type is not None and prov_conf["type"] != provider_type:
@@ -111,6 +121,8 @@ class ProviderConfigMixin:
                 continue
             # guard for deleted providers
             if prov_conf["domain"] not in prov_entries:
+                continue
+            if self._is_hidden_source(prov_conf, visible_sources):
                 continue
             if include_values:
                 # get_provider_config already stamps the derived status
@@ -126,8 +138,15 @@ class ProviderConfigMixin:
 
     @api_command("config/providers/get", required_scope=Scope.CONFIG_PROVIDERS_READ)
     async def get_provider_config(self, instance_id: str) -> ProviderConfig:
-        """Return configuration for a single provider."""
+        """
+        Return configuration for a single provider.
+
+        :param instance_id: The provider instance id.
+        :raises InsufficientPermissions: The caller may not use this music source.
+        """
         if raw_conf := self.get(f"{CONF_PROVIDERS}/{instance_id}", {}):
+            if self._is_hidden_source(raw_conf, self._visible_sources_for_caller()):
+                raise InsufficientPermissions(f"{instance_id} is not a music source of this user")
             for prov in self.mass.get_provider_manifests():
                 if prov.domain == raw_conf["domain"]:
                     break
@@ -317,8 +336,8 @@ class ProviderConfigMixin:
     async def set_provider_access(
         self,
         instance_id: str,
+        sharing: ProviderSharing,
         owner: str | None = None,
-        sharing: ProviderSharing = ProviderSharing.EVERYONE,
         shared_users: list[str] | None = None,
     ) -> ProviderConfig:
         """
@@ -328,8 +347,8 @@ class ProviderConfigMixin:
         sharing of a source it owns.
 
         :param instance_id: The music source (provider instance) to set the access of.
-        :param owner: User id of the member owning the source, None for a household source.
         :param sharing: Who, besides its owner, may use the source.
+        :param owner: User id of the member owning the source, None for a household source.
         :param shared_users: The user ids the source is shared with, SELECTED sharing only.
         """
         raw_conf = self.get(f"{CONF_PROVIDERS}/{instance_id}")
@@ -349,9 +368,7 @@ class ProviderConfigMixin:
                     "the owner of a music source"
                 )
         if owner is not None:
-            owner_user = await self._validate_access_user(owner)
-            if owner_user.role == UserRole.GUEST:
-                raise InvalidDataError("A guest can not own a music source")
+            await self._validate_source_owner(owner)
         shared: list[str] = []
         if sharing == ProviderSharing.SELECTED:
             for user_id in dict.fromkeys(shared_users or []):
@@ -745,6 +762,22 @@ class ProviderConfigMixin:
         # no user context means an internal (server-side) caller, which is trusted
         return user, user is None or has_scope(user, Scope.CONFIG_PROVIDERS_WRITE)
 
+    def _visible_sources_for_caller(self) -> list[str] | None:
+        """Return the music sources the calling user may see, None for no restriction."""
+        user, manages_all_sources = self._access_caller()
+        if user is None or manages_all_sources:
+            return None
+        return visible_music_sources(self.mass, user)
+
+    @staticmethod
+    def _is_hidden_source(raw_conf: dict[str, Any], visible_sources: list[str] | None) -> bool:
+        """Return whether the raw config is a music source outside the given visible set."""
+        return (
+            visible_sources is not None
+            and raw_conf["type"] == ProviderType.MUSIC
+            and raw_conf["instance_id"] not in visible_sources
+        )
+
     def _access_for_new_instance(self, manifest: ProviderManifest) -> ProviderAccess | None:
         """Return the access record a newly created instance starts out with."""
         if manifest.type != ProviderType.MUSIC or manifest.builtin:
@@ -756,13 +789,19 @@ class ProviderConfigMixin:
         return ProviderAccess(owner=user.user_id, sharing=ProviderSharing.PRIVATE)
 
     async def _validate_access_user(self, user_id: str) -> User:
-        """Return the user a music source may be given to, or raise if it may not."""
+        """Return the user a music source may be shared with, or raise if it may not."""
         user = await self.mass.webserver.auth.get_user(user_id)
         if user is None:
             raise InvalidDataError(f"Unknown or disabled user: {user_id}")
-        if user.username == HOMEASSISTANT_SYSTEM_USER:
-            raise InvalidDataError("The Home Assistant system user can not be given a music source")
         return user
+
+    async def _validate_source_owner(self, user_id: str) -> None:
+        """Raise when the given user can not own a music source."""
+        user = await self._validate_access_user(user_id)
+        if user.role == UserRole.GUEST:
+            raise InvalidDataError("A guest can not own a music source")
+        if user.username == HOMEASSISTANT_SYSTEM_USER:
+            raise InvalidDataError("The Home Assistant system user can not own a music source")
 
     async def _resolve_provider_config_entries(self, provider: Provider) -> list[ConfigEntry]:
         """Return the full config-entry set for a (loaded) provider instance."""

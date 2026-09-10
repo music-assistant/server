@@ -43,6 +43,8 @@ OTHER_SPOTIFY = "spotify--theirs"
 # sources nobody owns: one open to everyone, one only to members (so not to a guest)
 EVERYONE_QOBUZ = "qobuz--everyone"
 MEMBERS_DEEZER = "deezer--members"
+# a plugin instance, which is no music source and carries no access record
+PLUGIN_INSTANCE = "smart_playlist"
 
 
 def _mapping(instance: str, content_type: ContentType = ContentType.MP3) -> ProviderMapping:
@@ -219,6 +221,26 @@ async def test_anonymous_playback_only_reaches_sources_shared_with_everyone() ->
 
     assert streamdetails.provider == EVERYONE_QOBUZ
     members.get_stream_details.assert_not_awaited()
+
+
+async def test_a_plugin_mapping_stays_a_candidate_for_a_restricted_user() -> None:
+    """A plugin is no music source, so its mapping plays for a user with restricted sources."""
+    own = _provider(OWN_TIDAL)
+    plugin = _provider(PLUGIN_INSTANCE)
+    plugin.type = ProviderType.PLUGIN
+    plugin.is_streaming_provider = False
+    audio = _audio(
+        {OWN_TIDAL: own, PLUGIN_INSTANCE: plugin},
+        # the plugin is absent from the configured music sources on purpose
+        {OWN_TIDAL: _private(USER_ID), OTHER_SPOTIFY: _private(OTHER_USER_ID)},
+        _user(),
+    )
+
+    streamdetails = await audio.get_stream_details(
+        queue_item=_queue_item(_mapping(PLUGIN_INSTANCE))
+    )
+
+    assert streamdetails.provider == PLUGIN_INSTANCE
 
 
 async def test_a_track_only_on_a_blocked_source_reports_it_as_unavailable() -> None:

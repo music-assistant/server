@@ -17,7 +17,7 @@ from music_assistant_models.enums import (
     ProviderSharing,
     ProviderType,
 )
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import InsufficientPermissions, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -135,6 +135,28 @@ async def test_browse_root_honors_admin_music_sources(mock_get_user: Mock) -> No
     result = await controller.browse(path=None)
 
     assert [folder.path for folder in result] == ["m_a://"]  # type: ignore[union-attr]
+
+
+@patch("music_assistant.controllers.music.controller.get_current_user")
+async def test_browse_refuses_a_source_the_user_may_not_see(mock_get_user: Mock) -> None:
+    """Browsing straight into another member's music source by path is refused."""
+    mock_get_user.return_value = _user(USER_A)
+    mass = Mock()
+    set_music_source_access(mass, {"m_a": None, "m_b": _private(USER_B)})
+    music_a = _make_prov("m_a", ProviderType.MUSIC, {ProviderFeature.BROWSE})
+    music_a.browse = AsyncMock(return_value=[])
+    music_b = _make_prov("m_b", ProviderType.MUSIC, {ProviderFeature.BROWSE})
+    music_b.name = "Music B"
+    mass.get_provider.side_effect = {"m_a": music_a, "m_b": music_b}.get
+
+    controller = MusicController.__new__(MusicController)
+    controller.mass = mass
+
+    with pytest.raises(InsufficientPermissions):
+        await controller.browse(path="m_b://")
+    # the source the user may see still browses
+    allowed = await controller.browse(path="m_a://")
+    assert [folder.path for folder in allowed] == ["root"]  # type: ignore[union-attr]
 
 
 @patch("music_assistant.controllers.music.controller.get_current_user")

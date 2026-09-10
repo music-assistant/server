@@ -27,6 +27,7 @@ from music_assistant_models.enums import (
     TaskStatus,
 )
 from music_assistant_models.errors import (
+    InsufficientPermissions,
     InvalidDataError,
     InvalidProviderID,
     InvalidProviderURI,
@@ -828,6 +829,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         prepend_items: list[BrowseFolder] = []
         provider_instance, sub_path = path.split("://", 1)
         browse_prov = self.mass.get_provider(provider_instance)
+        if browse_prov and not self._apply_user_provider_filter([browse_prov]):
+            raise InsufficientPermissions(f"{browse_prov.name} is not a music source of this user")
         # handle regular provider listing, always add back folder first
         if not browse_prov or not sub_path:
             prepend_items.append(
@@ -2557,6 +2560,17 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """
         return await self._handle_verify_item_uri(uri)
 
+    def is_item_playable_for_user(
+        self, item: MediaItemType | BrowseFolder, user: User | None
+    ) -> bool:
+        """
+        Return whether the item is reachable through a music source this user may use.
+
+        :param item: The already-resolved item to check.
+        :param user: The user the playback is for; None for anonymous playback.
+        """
+        return self._item_reachable_via(item, visible_playback_sources(self.mass, user))
+
     def check_item_playable_for_user(
         self, item: MediaItemType | BrowseFolder, user: User | None
     ) -> None:
@@ -2567,7 +2581,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param user: The user the playback is for; None for anonymous playback.
         :raises MediaNotFoundError: The item has no mapping on a source this user may use.
         """
-        if self._item_reachable_via(item, visible_playback_sources(self.mass, user)):
+        if self.is_item_playable_for_user(item, user):
             return
         msg = f"{item.name} is not available on any music source of this user"
         raise MediaNotFoundError(msg, translation_key="media_not_available_for_user")

@@ -367,7 +367,7 @@ class SmartPlaylistProvider(PluginProvider):
         user = get_current_user()
         visible = visible_music_sources(self.mass, user) if user else None
         # Tuple ensures a stable cache key and carries the filter into background SWR refreshes.
-        user_provider_filter = tuple(sorted(visible)) if visible else ()
+        user_provider_filter = tuple(sorted(visible)) if visible is not None else ()
         # Filter the cached sample at the boundary (not inside the cached evaluation) so a
         # recency-filtered batch from a queue refill never gets cached and served to browse.
         sample = await self._cached_dynamic_sample(resolved_id, user_provider_filter)

@@ -17,7 +17,10 @@ from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import ProviderSharing
 
 from music_assistant.constants import CONF_PROVIDER_ACCESS_MIGRATED, CONF_PROVIDERS
-from music_assistant.controllers.config.provider_access_migration import migrate_provider_access
+from music_assistant.controllers.config.provider_access_migration import (
+    _normalized_filter,
+    migrate_provider_access,
+)
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.provider_access import visible_music_sources
 from tests.common import set_music_source_access
@@ -223,15 +226,23 @@ async def test_unreadable_sources_do_not_stop_the_conversion(mass: MusicAssistan
     )
     mass.config.set(
         f"{CONF_PROVIDERS}/tidal--broken",
-        {"type": "music", "domain": "tidal", "instance_id": "tidal--broken", "access": {"who": 1}},
+        {
+            "type": "music",
+            "domain": "tidal",
+            "instance_id": "tidal--broken",
+            # a shared_users that is not a list makes the record unreadable
+            "access": {"shared_users": 5},
+        },
     )
-    await _add_user(mass, "alice", ["spotify--alice"])
+    alice = await _add_user(mass, "alice", ["spotify--alice"])
 
     await migrate_provider_access(mass)
 
     assert _access(mass, "spotify--alice") is not None
     assert mass.config.get(f"{CONF_PROVIDERS}/gone--forever/access") is None
-    assert mass.config.get(f"{CONF_PROVIDERS}/tidal--broken/access") == {"who": 1}
+    assert mass.config.get(f"{CONF_PROVIDERS}/tidal--broken/access") == {"shared_users": 5}
+    # a record nobody can read hides its source instead of exposing it
+    assert _visible(mass, alice, ["tidal--broken"]) == []
     assert mass.config.get(CONF_PROVIDER_ACCESS_MIGRATED) is True
 
 
@@ -252,15 +263,37 @@ async def test_filters_are_cleared_and_the_marker_stops_a_second_run(
     assert _access(mass, "qobuz--new") is None
 
 
-async def test_system_user_is_never_a_listed_user(mass: MusicAssistant) -> None:
-    """The Home Assistant system user is a member, so it never ends up in a share list."""
+async def test_system_user_is_a_shared_user_of_a_selected_source(mass: MusicAssistant) -> None:
+    """The Home Assistant system user is unrestricted, so it keeps every source it had."""
     _prepare(mass, ["spotify--alice", "tidal--dave"])
-    await mass.webserver.auth.get_homeassistant_system_user()
+    system_user = await mass.webserver.auth.get_homeassistant_system_user()
     await _add_user(mass, "alice", ["spotify--alice"])
     dave = await _add_user(mass, "dave", ["tidal--dave"])
 
     await migrate_provider_access(mass)
 
     assert _access(mass, "tidal--dave") == ProviderAccess(
-        owner=dave.user_id, sharing=ProviderSharing.SELECTED, shared_users=[]
+        owner=dave.user_id,
+        sharing=ProviderSharing.SELECTED,
+        shared_users=[system_user.user_id],
     )
+
+
+async def test_an_unreadable_filter_leaves_the_user_unrestricted(mass: MusicAssistant) -> None:
+    """A filter column that no longer holds a JSON list must not lock its user out."""
+    _prepare(mass, ["spotify--one"])
+    garbage = await _add_user(mass, "garbage")
+    await mass.webserver.auth.database.update(
+        "users", {"user_id": garbage.user_id}, {"provider_filter": "not json"}
+    )
+
+    await migrate_provider_access(mass)
+
+    assert _access(mass, "spotify--one") == ProviderAccess(sharing=ProviderSharing.EVERYONE)
+    assert visible_music_sources(mass, garbage) is None
+
+
+def test_only_a_stored_list_of_sources_restricts_a_user() -> None:
+    """Whatever else the filter column holds, including NULL, reads as unrestricted."""
+    for stored in (None, "", "not json", '"spotify--one"', "{}"):
+        assert _normalized_filter({"provider_filter": stored}, {"spotify--one"}) == set()

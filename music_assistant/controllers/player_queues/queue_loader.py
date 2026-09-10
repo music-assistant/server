@@ -66,7 +66,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.audio import get_probed_duration, store_probed_duration
 from music_assistant.helpers.compare import compare_item_ids
-from music_assistant.helpers.provider_access import playback_sources
+from music_assistant.helpers.provider_access import playback_sources, playback_user
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.models.music_provider import MusicProvider
 
@@ -1127,11 +1127,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if allowed is None:
             return tracks
         # steering is only a preference, so drop what the user has no music source for
-        return [
-            track
-            for track in tracks
-            if any(mapping.provider_instance in allowed for mapping in track.provider_mappings)
-        ]
+        user = await playback_user(self.mass, queue_id)
+        return [track for track in tracks if self.mass.music.is_item_playable_for_user(track, user)]
 
     async def _abort_superseded_source_buffers(self, queue_item: QueueItem) -> None:
         """
