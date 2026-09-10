@@ -158,31 +158,39 @@ class RadioPlaylistProvider(PluginProvider):
         active_filter = get_track_filter()
         if active_filter is not None:
             base_tracks = [t for t in base_tracks if active_filter.allows(t)] or base_tracks
-        dynamic_tracks: set[Track] = set()
-        for base_track in base_tracks:
-            for allow_lookup in (False, True):
-                try:
-                    similar = await self.mass.music.tracks.similar_tracks(
-                        base_track.item_id,
-                        base_track.provider,
-                        allow_lookup=allow_lookup,
-                        preferred_provider_instances=preferred_provider_instances,
-                    )
-                except MusicAssistantError:
-                    continue
-                eligible_tracks = {
-                    track
-                    for track in similar
-                    if track not in base_tracks
-                    and track not in dynamic_tracks
-                    and track.duration <= RADIO_TRACK_MAX_DURATION_SECS
-                    and (active_filter is None or active_filter.allows(track))
-                }
-                if eligible_tracks:
-                    dynamic_tracks.update(eligible_tracks)
+
+        if len(seeds) == 1 and seeds[0].media_type == MediaType.TRACK:
+            # a single track seed fetches one deterministic similar list, so every batch would be
+            # the same: random-walk the similarity graph from the seed instead
+            dynamic_tracks = await self._walk_similar_tracks(
+                base_tracks, preferred_provider_instances
+            )
+        else:
+            dynamic_tracks = set()
+            for base_track in base_tracks:
+                for allow_lookup in (False, True):
+                    try:
+                        similar = await self.mass.music.tracks.similar_tracks(
+                            base_track.item_id,
+                            base_track.provider,
+                            allow_lookup=allow_lookup,
+                            preferred_provider_instances=preferred_provider_instances,
+                        )
+                    except MusicAssistantError:
+                        continue
+                    eligible_tracks = {
+                        track
+                        for track in similar
+                        if track not in base_tracks
+                        and track not in dynamic_tracks
+                        and track.duration <= RADIO_TRACK_MAX_DURATION_SECS
+                        and (active_filter is None or active_filter.allows(track))
+                    }
+                    if eligible_tracks:
+                        dynamic_tracks.update(eligible_tracks)
+                        break
+                if len(dynamic_tracks) >= DYNAMIC_RADIO_DYNAMIC_TARGET:
                     break
-            if len(dynamic_tracks) >= DYNAMIC_RADIO_DYNAMIC_TARGET:
-                break
 
         result: list[Track] = []
         dynamic_tracks_list = list(dynamic_tracks)
@@ -199,6 +207,41 @@ class RadioPlaylistProvider(PluginProvider):
         if remaining_dynamic:
             result += random.sample(remaining_dynamic, min(len(remaining_dynamic), target_size))
         return result
+
+    async def _walk_similar_tracks(
+        self,
+        base_tracks: list[Track],
+        preferred_provider_instances: list[str] | None,
+    ) -> set[Track]:
+        """Collect eligible similar tracks along a short random walk from a single track seed."""
+        active_filter = get_track_filter()
+        dynamic_tracks: set[Track] = set()
+        walk_track = base_tracks[0]
+        for _ in range(DYNAMIC_RADIO_BASE_SAMPLE_SIZE):
+            try:
+                similar = await self.mass.music.tracks.similar_tracks(
+                    walk_track.item_id,
+                    walk_track.provider,
+                    allow_lookup=True,
+                    preferred_provider_instances=preferred_provider_instances,
+                )
+            except MusicAssistantError:
+                break
+            if not similar:
+                break
+            dynamic_tracks.update(
+                track
+                for track in similar
+                if track not in base_tracks
+                and track.duration <= RADIO_TRACK_MAX_DURATION_SECS
+                and (active_filter is None or active_filter.allows(track))
+            )
+            if len(dynamic_tracks) >= DYNAMIC_RADIO_DYNAMIC_TARGET:
+                break
+            # the walk deliberately ignores recency: a recently played track is still a valid
+            # stepping stone, and when the mix is exhausted every direct neighbor is recent
+            walk_track = random.choice(similar)
+        return dynamic_tracks
 
     async def _resolve_seed(self, prov_playlist_id: str) -> MediaItemType:
         """Resolve a radio-playlist item id (the seed's URI, raw or url-encoded) to the seed item."""

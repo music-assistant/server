@@ -339,6 +339,19 @@ async def test_an_unresolvable_first_item_leaves_the_decision_to_the_next_one() 
     assert _played_order(ctrl) == ALBUM_TRACKS
 
 
+async def test_an_item_that_fails_unexpectedly_is_skipped_as_well() -> None:
+    """Any error while resolving one item skips that item instead of failing the request."""
+    ctrl = _controller(shuffle_enabled=True)
+    ctrl.mass.music.get_item_by_uri = AsyncMock(
+        side_effect=[ZeroDivisionError("division by zero"), _album()]
+    )
+
+    await ctrl.play_media("q1", ["test://track/broken", "test://album/al1"], QueueOption.REPLACE)
+
+    assert _queue(ctrl).shuffle_enabled is False
+    assert _played_order(ctrl) == ALBUM_TRACKS
+
+
 @pytest.mark.parametrize("media_type", ORDERED_MEDIA_TYPES)
 async def test_explicit_shuffle_wins_over_the_medias_own_order(media_type: MediaType) -> None:
     """
