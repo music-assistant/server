@@ -328,18 +328,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Configure Autoplay setting on the queue."""
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
+        if autoplay_enabled and queue.repeat_mode in (RepeatMode.ONE, RepeatMode.ALL):
+            raise InvalidCommand("Cannot enable autoplay while repeat is on")
         queue_data.autoplay_override = autoplay_enabled
         self._resolve_default_toggles(queue_data)
-        # if we're already at/near the end of the queue, kick off a refill right away
-        # (an active dynamic source manages its own refills, so leave it be)
-        if (
-            queue.autoplay_enabled
-            and not queue.is_dynamic
-            and queue.current_index is not None
-            and (queue.items - queue.current_index) < 5
-        ):
-            task_id = f"fill_autoplay_tracks_{queue_id}"
-            self.mass.call_later(5, self._fill_autoplay_tracks, queue_id, task_id=task_id)
+        self._schedule_autoplay_fill(queue_id)
         self.signal_update(queue_id=queue_id)
 
     @api_command(
@@ -352,13 +345,20 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     @api_command("player_queues/repeat", required_scope=Scope.QUEUES_CONTROL)
     async def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
         """Configure repeat setting on the the queue."""
-        queue = self._queue_data[queue_id].queue
+        queue_data = self._queue_data[queue_id]
+        queue = queue_data.queue
         if queue.is_dynamic:
             # a dynamic queue is an always-on flowing mix of its sources; repeat has no meaning here
             raise InvalidCommand("Cannot change repeat while the queue is in dynamic mode")
         if queue.repeat_mode == repeat_mode:
             return  # no change
+        autoplay_was_enabled = queue.autoplay_enabled
         queue.repeat_mode = repeat_mode
+        self._resolve_default_toggles(queue_data)
+        if not queue.autoplay_enabled:
+            self.mass.cancel_timer(f"fill_autoplay_tracks_{queue_id}")
+        elif not autoplay_was_enabled:
+            self._schedule_autoplay_fill(queue_id)
         self.signal_update(queue_id)
         self.update_next_item_on_player(queue_id)
 
@@ -2029,15 +2029,34 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             shuffle=shuffle_enabled,
         )
 
+    def _schedule_autoplay_fill(self, queue_id: str) -> None:
+        """Schedule a near-end autoplay refill when the queue qualifies."""
+        queue = self._queue_data[queue_id].queue
+        # Dynamic queues manage their own refills, so this only schedules linear autoplay queues.
+        if (
+            queue.autoplay_enabled
+            and not queue.is_dynamic
+            and queue.current_index is not None
+            and (queue.items - queue.current_index) < 5
+        ):
+            task_id = f"fill_autoplay_tracks_{queue_id}"
+            self.mass.call_later(5, self._fill_autoplay_tracks, queue_id, task_id=task_id)
+
     def _resolve_default_toggles(self, queue_data: PlayerQueueData) -> None:
         """Set the queue's effective autoplay/crossfade from their override or the global default."""
         queue = queue_data.queue
-        queue.autoplay_enabled = (
+        resolved_autoplay_enabled = (
             queue_data.autoplay_override
             if queue_data.autoplay_override is not None
             else self.mass.config.get_raw_core_config_value(
                 self.domain, CONF_AUTOPLAY_ENABLED, DEFAULT_AUTOPLAY_ENABLED
             )
+        )
+        # Repeat ONE/ALL only masks the effective toggle; the saved preference stays intact.
+        queue.autoplay_enabled = (
+            resolved_autoplay_enabled
+            if queue.repeat_mode not in (RepeatMode.ONE, RepeatMode.ALL)
+            else False
         )
         queue.crossfade_enabled = (
             queue_data.crossfade_override

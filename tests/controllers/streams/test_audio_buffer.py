@@ -24,9 +24,11 @@ from music_assistant.controllers.streams.audio_buffer import (
     AudioBuffer,
     AudioBufferDiscarded,
     AudioBufferEOF,
+    _new_buffer,
 )
 from music_assistant.controllers.streams.constants import (
     BUFFER_SIZE_MAP,
+    DSD_BUFFER_MAX_BYTES,
     RADIO_BUFFER_SIZE,
     SEEK_WAIT_THRESHOLD,
     BufferMode,
@@ -122,6 +124,87 @@ def test_init_defaults() -> None:
     assert not buf.cancelled
     assert not buf.has_error
     assert not buf.ready.is_set()
+
+
+@pytest.mark.parametrize("sample_rate", [352800, 705600, 1411200, 2822400])
+@pytest.mark.parametrize("preset", list(BufferSize))
+@pytest.mark.parametrize("allow_seek", [True, False])
+async def test_dsd_buffer_retention_is_bounded_by_bytes(
+    sample_rate: int, preset: BufferSize, allow_seek: bool
+) -> None:
+    """High-rate DSD buffers respect both the preset duration and payload budget."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    mass.config.get_raw_core_config_value.return_value = preset
+    details = _make_stream_details(MediaType.TRACK, duration=600, allow_seek=allow_seek)
+    details.audio_format = AudioFormat(
+        content_type=ContentType.DSF, sample_rate=sample_rate, bit_depth=8, channels=2
+    )
+    buffer, _seek = _new_buffer(mass, details, 0, "test")
+    try:
+        retained_bytes = buffer.max_size_seconds * buffer.chunk_size_bytes
+        assert retained_bytes <= DSD_BUFFER_MAX_BYTES[preset]
+        assert buffer.max_size_seconds <= (
+            BUFFER_SIZE_MAP[preset] if allow_seek else RADIO_BUFFER_SIZE
+        )
+        assert buffer.pcm_format.sample_rate == sample_rate
+        assert buffer.pcm_format.content_type == ContentType.PCM_F32LE
+        assert buffer._ready_at_chunk <= buffer.max_size_seconds
+    finally:
+        await asyncio.gather(*scheduled_tasks)
+        await buffer.clear()
+
+
+@pytest.mark.parametrize("seek_position_ms", [0, 1500, 5000])
+async def test_dsd_byte_limit_allows_startup_seek_and_continued_playback(
+    seek_position_ms: int,
+) -> None:
+    """A seek beyond retention starts at the source and a full buffer keeps draining."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer(
+        queue=SimpleNamespace(crossfade_enabled=True)
+    )
+    details = _make_stream_details(
+        MediaType.TRACK, duration=600, allow_seek=True, queue_id="queue_a"
+    )
+    details.audio_format = AudioFormat(
+        content_type=ContentType.DSF, sample_rate=352800, bit_depth=8, channels=2
+    )
+    chunk_size = 352800 * 2 * 4
+    source_seeks: list[int] = []
+
+    async def source(
+        _details: StreamDetails, _pcm: AudioFormat, *, seek_position: int, **_kwargs: Any
+    ) -> AsyncGenerator[bytes]:
+        source_seeks.append(seek_position)
+        for index in range(seek_position, seek_position + 6):
+            yield bytes([index]) * chunk_size
+
+    mass.streams.audio.get_media_stream = source
+    with patch.dict(DSD_BUFFER_MAX_BYTES, {BufferSize.BALANCED: 3 * chunk_size}):
+        buffer = await asyncio.wait_for(
+            AudioBuffer.get_buffer(mass, details, seek_position_ms, wait_ready=True), timeout=2
+        )
+    try:
+        assert buffer.max_size_seconds == 3
+        assert buffer._ready_threshold == 3
+
+        async def consume() -> bytes:
+            chunks = []
+            async for chunk in buffer.get_raw_stream(seek_position_ms):
+                assert buffer.size_seconds <= 3
+                chunks.append(chunk)
+            return b"".join(chunks)
+
+        result = await asyncio.wait_for(consume(), timeout=2)
+        source_seek = seek_position_ms // 1000
+        expected = b"".join(
+            bytes([index]) * chunk_size for index in range(source_seek, source_seek + 6)
+        )
+        trim = (seek_position_ms % 1000) * 352800 // 1000 * 2 * 4
+        assert source_seeks == [source_seek]
+        assert result == expected[trim:]
+    finally:
+        await asyncio.gather(*scheduled_tasks)
+        await buffer.clear()
 
 
 @pytest.mark.asyncio
