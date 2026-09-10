@@ -3559,6 +3559,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # a plain url or local file resolved by the builtin provider, not catalog
             # content of a music service, so it bypasses the music source restriction
             return True
+        if item.provider == "library" and not item.provider_mappings:
+            # a genre has no source of its own: it expands to source-filtered tracks
+            return True
         # plugin providers (such as smart_playlist and radio_playlist) carry no access
         # record, so their items stay reachable for everyone
         plugin_instances = {

@@ -269,6 +269,14 @@ def test_check_item_playable_accepts_a_reachable_library_item() -> None:
     controller.check_item_playable_for_user(_library_track(PROV_A, PROV_B), _user(USER_A))
 
 
+def test_check_item_playable_accepts_a_genre() -> None:
+    """A genre carries no source mapping of its own, it expands to source-filtered tracks."""
+    controller = _controller_with_sources({PROV_A: _private(USER_A), PROV_B: _private(USER_B)})
+    genre = Genre(item_id="7", provider="library", name="Jazz", provider_mappings=set())
+
+    controller.check_item_playable_for_user(genre, _user(USER_A))
+
+
 def test_check_item_playable_rejects_a_library_item_without_a_reachable_mapping() -> None:
     """A library item that only maps to other members' sources is refused."""
     controller = _controller_with_sources({PROV_A: _private(USER_A), PROV_B: _private(USER_B)})
