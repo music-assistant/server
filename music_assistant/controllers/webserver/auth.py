@@ -56,6 +56,7 @@ from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.jwt_auth import JWTHelper
+from music_assistant.helpers.provider_access import with_derived_provider_filter
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
@@ -292,12 +293,22 @@ class AuthenticationManager:
         return str(token_row["token_id"])
 
     @api_command("auth/user", required_scope=Scope.USERS_READ)
-    async def get_user(self, user_id: str) -> User | None:
+    async def get_user_info(self, user_id: str) -> User | None:
         """
         Get user by ID (requires the users.read scope).
 
         :param user_id: The user ID.
         :return: User object or None if not found.
+        """
+        if user := await self.get_user(user_id):
+            return with_derived_provider_filter(self.mass, user)
+        return None
+
+    async def get_user(self, user_id: str) -> User | None:
+        """
+        Get user by ID, or None if it does not exist or is disabled.
+
+        :param user_id: The user ID.
         """
         user_row = await self.database.get_row("users", {"user_id": user_id})
         if not user_row or not user_row["enabled"]:
@@ -834,10 +845,9 @@ class AuthenticationManager:
                     avatar_url=row["avatar_url"],
                     preferences=json_loads(row["preferences"]),
                     player_filter=json_loads(row["player_filter"]),
-                    provider_filter=json_loads(row["provider_filter"]),
                 )
             )
-        return users
+        return [with_derived_provider_filter(self.mass, user) for user in users]
 
     async def update_user_role(self, user_id: str, new_role: UserRole, admin_user: User) -> bool:
         """
@@ -1133,7 +1143,6 @@ class AuthenticationManager:
         display_name: str | None = None,
         avatar_url: str | None = None,
         player_filter: list[str] | None = None,
-        provider_filter: list[str] | None = None,
     ) -> User:
         """
         Create a new user with built-in authentication (admin only).
@@ -1144,7 +1153,6 @@ class AuthenticationManager:
         :param display_name: Optional display name.
         :param avatar_url: Optional avatar URL.
         :param player_filter: Optional list of player IDs user has access to.
-        :param provider_filter: Optional list of provider instance IDs user has access to.
         :return: Created user object.
         """
         # Validation
@@ -1171,7 +1179,6 @@ class AuthenticationManager:
             password,
             role=user_role,
             player_filter=player_filter,
-            provider_filter=provider_filter,
         )
 
         # Update optional fields if provided
@@ -1212,6 +1219,9 @@ class AuthenticationManager:
         await self.database.delete("users", {"user_id": user_id})
         await self.database.commit()
 
+        # the music sources this user owned or was given access to outlive it
+        self.mass.config.release_user_sources(user_id)
+
         # Disconnect all WebSocket connections for this user
         self.webserver.disconnect_websockets_for_user(user_id)
 
@@ -1233,7 +1243,7 @@ class AuthenticationManager:
         current_user_obj = get_current_user()
         if not current_user_obj:
             raise AuthenticationRequired("Not authenticated")
-        return current_user_obj
+        return with_derived_provider_filter(self.mass, current_user_obj)
 
     @api_command("auth/scopes")
     async def get_role_scopes(self) -> dict[str, list[str]]:
@@ -1247,50 +1257,38 @@ class AuthenticationManager:
         self,
         target_user: User,
         player_filter: list[str] | None,
-        provider_filter: list[str] | None,
     ) -> User:
-        """Update user player and provider filters (helper method)."""
-        updates = {}
-        if player_filter is not None:
-            updates["player_filter"] = json_dumps(player_filter)
-        if provider_filter is not None:
-            updates["provider_filter"] = json_dumps(provider_filter)
+        """Update the player access filter of a user (helper method)."""
+        if player_filter is None:
+            return target_user
+        # the lock the automatic rewrites take as well, so a player that is being removed
+        # cannot overwrite the filter an admin just saved
+        async with self._user_filter_lock:
+            await self.database.update(
+                "users",
+                {"user_id": target_user.user_id},
+                {"player_filter": json_dumps(player_filter)},
+            )
+            self.webserver.update_active_user_filters(
+                target_user.user_id, player_filter=player_filter
+            )
+        # Refresh target user to get updated filters
+        refreshed_user = await self.get_user(target_user.user_id)
+        if not refreshed_user:
+            raise InvalidDataError("Failed to refresh user after filter update")
+        return refreshed_user
 
-        if updates:
-            # the lock the automatic rewrites take as well, so a player or provider that is
-            # being removed cannot overwrite the filters an admin just saved
-            async with self._user_filter_lock:
-                await self.database.update("users", {"user_id": target_user.user_id}, updates)
-                self.webserver.update_active_user_filters(
-                    target_user.user_id,
-                    player_filter=player_filter,
-                    provider_filter=provider_filter,
-                )
-            # Refresh target user to get updated filters
-            refreshed_user = await self.get_user(target_user.user_id)
-            if not refreshed_user:
-                raise InvalidDataError("Failed to refresh user after filter update")
-            return refreshed_user
-        return target_user
-
-    async def remove_from_user_filters(
-        self,
-        provider_instance_ids: Collection[str] = (),
-        player_ids: Collection[str] = (),
-    ) -> None:
+    async def remove_from_user_filters(self, player_ids: Collection[str] = ()) -> None:
         """
-        Remove the given providers and/or players from the access filters of all users.
+        Remove the given players from the access filters of all users.
 
-        Call this when a provider or player is permanently removed, so no user is left with
-        an access filter that points at something that no longer exists.
+        Call this when a player is permanently removed, so no user is left with an access
+        filter that points at something that no longer exists.
 
-        :param provider_instance_ids: Instance IDs of the removed providers.
         :param player_ids: IDs of the removed players.
         """
         await self._rewrite_user_filters(
-            keep_provider=(lambda x: x not in provider_instance_ids)
-            if provider_instance_ids
-            else None,
+            keep_provider=None,
             keep_player=(lambda x: x not in player_ids) if player_ids else None,
         )
 
@@ -1379,7 +1377,6 @@ class AuthenticationManager:
         role: str | None = None,
         preferences: dict[str, Any] | None = None,
         player_filter: list[str] | None = None,
-        provider_filter: list[str] | None = None,
     ) -> User:
         """
         Update user profile information.
@@ -1394,7 +1391,6 @@ class AuthenticationManager:
         :param role: New role - "admin" or "user" (optional, set by admin only).
         :param preferences: User preferences dict (completely replaces existing, optional).
         :param player_filter: List of player IDs user has access to (set by admin only, optional).
-        :param provider_filter: List of provider instance IDs user has access to (set by admin only, optional).
         :return: Updated user object.
         """
         current_user_obj = get_current_user()
@@ -1454,15 +1450,13 @@ class AuthenticationManager:
         if preferences is not None:
             target_user = await self.update_user_preferences(target_user, preferences)
 
-        # Update player_filter and provider_filter (requires the users.manage scope)
-        if player_filter is not None or provider_filter is not None:
+        # Update player_filter (requires the users.manage scope)
+        if player_filter is not None:
             if not may_manage_users:
                 raise InsufficientPermissions(
-                    "The users.manage scope is required to update player/provider filters"
+                    "The users.manage scope is required to update player filters"
                 )
-            target_user = await self.update_user_filters(
-                target_user, player_filter, provider_filter
-            )
+            target_user = await self.update_user_filters(target_user, player_filter)
 
         # Update password if provided
         if password:
@@ -1470,7 +1464,7 @@ class AuthenticationManager:
                 target_user, password, may_manage_users, current_user_obj
             )
 
-        return target_user
+        return with_derived_provider_filter(self.mass, target_user)
 
     @api_command("auth/logout")
     async def logout(self) -> None:
@@ -2148,7 +2142,6 @@ class AuthenticationManager:
                     self.webserver.update_active_user_filters(
                         row["user_id"],
                         player_filter=changed.get("player_filter"),
-                        provider_filter=changed.get("provider_filter"),
                     )
 
     async def _migrate_playlog_to_first_user(self, user_id: str) -> None:

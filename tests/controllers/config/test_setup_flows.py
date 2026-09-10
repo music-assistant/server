@@ -13,14 +13,20 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from aiohttp.test_utils import make_mocked_request
-from music_assistant_models.auth import Scope
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, PlayerConfig
+from music_assistant_models.auth import Scope, User, UserRole
+from music_assistant_models.config_entries import (
+    ConfigEntry,
+    ConfigValueType,
+    PlayerConfig,
+    ProviderAccess,
+)
 from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
     FlowStepType,
     PlayerType,
     ProviderFeature,
+    ProviderSharing,
     ProviderStage,
     ProviderType,
 )
@@ -35,6 +41,7 @@ from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, ENCRYPT_SUFFIX
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player import LinkedOutputProtocol, Player, _state_fingerprint
@@ -206,6 +213,30 @@ async def test_zero_input_provider_immediate_finish(flow_mass: MusicAssistant) -
     assert raw_conf["setup_data"] == {}
     # no flow session was registered for the synthesized step
     assert not flow_mass.config._setup_flows
+
+
+async def test_admin_creates_a_household_music_source(flow_mass: MusicAssistant) -> None:
+    """A music source an admin sets up carries no access record: it serves the household."""
+    set_current_user(User(user_id="admin", username="admin", role=UserRole.ADMIN))
+    with patch.object(flow_mass, "load_provider_config", AsyncMock()):
+        config = await flow_mass.config._create_provider_instance(FAKE_DOMAIN, {})
+
+    assert config.access is None
+    assert flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}/access") is None
+
+
+async def test_member_creates_a_music_source_of_its_own(flow_mass: MusicAssistant) -> None:
+    """A music source a member sets up starts out private and owned by that member."""
+    set_current_user(User(user_id="member", username="member", role=UserRole.USER))
+    with patch.object(flow_mass, "load_provider_config", AsyncMock()):
+        config = await flow_mass.config._create_provider_instance(FAKE_DOMAIN, {})
+
+    assert config.access == ProviderAccess(owner="member", sharing=ProviderSharing.PRIVATE)
+    assert flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}/access") == {
+        "owner": "member",
+        "sharing": "private",
+        "shared_users": [],
+    }
 
 
 class _FlowlessProvider(MusicProvider):

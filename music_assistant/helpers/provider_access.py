@@ -9,6 +9,7 @@ the raw provider configs, so disabled and unavailable instances count too.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.auth import UserRole
@@ -114,6 +115,16 @@ def derived_provider_filter(mass: MusicAssistant, user: User) -> list[str]:
     :param user: The user to resolve the music sources for.
     """
     return visible_music_sources(mass, user) or []
+
+
+def with_derived_provider_filter(mass: MusicAssistant, user: User) -> User:
+    """
+    Return the user as the API serves it, with its music sources as provider filter.
+
+    :param mass: The MusicAssistant instance.
+    :param user: The user to serve.
+    """
+    return replace(user, provider_filter=derived_provider_filter(mass, user))
 
 
 async def playback_sources(
