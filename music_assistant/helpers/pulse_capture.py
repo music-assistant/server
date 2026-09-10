@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import logging
-import os
 import shutil
 import threading
 import uuid
@@ -79,28 +78,6 @@ _CONTEXT_SUCCESS_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int, ctyp
 _CONTEXT_INDEX_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p)
 
 PA_INVALID_INDEX: Final = 0xFFFFFFFF
-
-
-def get_default_pulse_server() -> str:
-    """
-    Detect the system's default PulseAudio server address.
-
-    Checked fresh on each call — the socket may not exist at import time but
-    appear later once the audio host/addon has fully started.
-
-    :returns: Server address (env value or "unix:<socket path>"), or an empty
-        string when nothing was found (libpulse then uses its own defaults).
-    """
-    if server := os.environ.get("PULSE_SERVER"):
-        return server
-    for path in (
-        "/run/audio/pulse.sock",
-        "/run/pulse/native",
-        "/var/run/pulse/native",
-    ):
-        if Path(path).exists():
-            return f"unix:{path}"
-    return ""
 
 
 def get_pulse_capture_server(mass: MusicAssistant) -> PulseCaptureServer:
@@ -531,12 +508,11 @@ class PAVolumeController:
     invoked via run_in_executor/to_thread from async code.
     """
 
-    def __init__(self, server: str | None = None) -> None:
+    def __init__(self, server: str) -> None:
         """
         Connect to PulseAudio and start the threaded mainloop.
 
         :param server: PA server address to connect to (e.g. "unix:<socket>").
-            Uses env/default socket discovery when omitted.
         """
         self._lib = _get_full_lib()
         self._lock = threading.Lock()
@@ -564,10 +540,9 @@ class PAVolumeController:
         self._state_cb = _CONTEXT_NOTIFY_CB(_state_cb_impl)  # keep reference alive — GC
         self._lib.pa_context_set_state_callback(self._context, self._state_cb, None)
 
-        pulse_server = server or get_default_pulse_server()
         ret = self._lib.pa_context_connect(
             self._context,
-            pulse_server.encode() if pulse_server else None,
+            server.encode(),
             PA_CONTEXT_NOAUTOSPAWN,
             None,
         )
@@ -598,12 +573,11 @@ class PAVolumeController:
 
     def load_module(self, module_name: str, argument: str) -> int | None:
         """
-        Load a PulseAudio module (e.g. module-remap-sink) via libpulse.
+        Load a PulseAudio module via libpulse.
 
-        :param module_name: PA module name, e.g. "module-remap-sink".
+        :param module_name: PA module name, e.g. "module-pipe-sink".
         :param argument: Module argument string, e.g.
-            "sink_name=Foo master=bar channels=2 master_channel_map=...
-            channel_map=front-left,front-right remix=no".
+            "sink_name=foo file=/path/to/foo.pcm format=s32le rate=44100 channels=2".
 
         Blocks (up to ~2s) for PA's response.
         :returns: The loaded module's index, or None on failure/timeout.
