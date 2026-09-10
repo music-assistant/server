@@ -205,7 +205,11 @@ class AppleMusicMediaManager:
             return None
         normalized_isrc = normalize_external_id(ExternalID.ISRC, external_id)
         try:
-            response = await self.api.get_data(endpoint, **{"filter[isrc]": normalized_isrc})
+            response = await self.api.get_data(
+                endpoint,
+                include="artists,albums",
+                **{"filter[isrc]": normalized_isrc},
+            )
             if not response.get("data"):
                 return None
             track_data = response["data"][0]
@@ -228,7 +232,11 @@ class AppleMusicMediaManager:
             return None
         normalized_upc = barcode_to_upc(external_id)
         try:
-            response = await self.api.get_data(endpoint, **{"filter[upc]": normalized_upc})
+            response = await self.api.get_data(
+                endpoint,
+                include="artists",
+                **{"filter[upc]": normalized_upc},
+            )
             if not response.get("data"):
                 return None
             album_data = response["data"][0]

@@ -57,6 +57,7 @@ async def test_get_track_by_isrc() -> None:
     api_mock.get_data.assert_called_once()
     call_args = api_mock.get_data.call_args
     assert "catalog/us/songs" in call_args[0][0]
+    assert call_args[1]["include"] == "artists,albums"
     assert call_args[1]["filter[isrc]"] == "USABC1234567"
 
 
@@ -119,6 +120,7 @@ async def test_get_album_by_upc() -> None:
     api_mock.get_data.assert_called_once()
     call_args = api_mock.get_data.call_args
     assert "catalog/us/albums" in call_args[0][0]
+    assert call_args[1]["include"] == "artists"
     assert call_args[1]["filter[upc]"] == "123456789012"
 
 
