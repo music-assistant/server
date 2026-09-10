@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Final, cast
 
 from music_assistant_models.background_task import TaskSchedule
-from music_assistant_models.enums import ArtistType, MediaType, ProviderFeature
+from music_assistant_models.enums import ArtistType, ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import (
     AudioError,
     InvalidDataError,
@@ -672,6 +672,24 @@ class MusicProvider(Provider):
 
         Only called if provider supports ProviderFeature.SIMILAR_ARTISTS.
         """
+        raise NotImplementedError
+
+    async def get_track_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Track | None:
+        """Retrieve track by external ID (ISRC, MusicBrainz, etc.)."""
+        raise NotImplementedError
+
+    async def get_album_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Album | None:
+        """Retrieve album by external ID (MusicBrainz, Discogs, etc.)."""
+        raise NotImplementedError
+
+    async def get_artist_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Artist | None:
+        """Retrieve artist by external ID (MusicBrainz, etc.)."""
         raise NotImplementedError
 
     async def get_resume_position(

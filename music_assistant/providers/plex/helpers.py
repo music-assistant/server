@@ -320,12 +320,26 @@ def parse_plex_lyrics_payload(content: str) -> tuple[str, bool] | None:
     """
     if not content or not content.strip():
         return None
-    # Sniff the payload shape: structured JSON, then timestamped LRC, then plain text.
-    if (parsed := _lyrics_from_plex_json(content)) is not None:
-        return parsed
+    # A recognized Plex lyrics envelope is authoritative: an empty `Lyrics` list means
+    # the track has no lyrics, and the raw JSON must not be re-sniffed as plain text.
+    if _is_plex_lyrics_json(content):
+        return _lyrics_from_plex_json(content)
     if _LRC_TIMESTAMP_RE.search(content):
         return content.strip(), True
     return content.strip(), False
+
+
+def _is_plex_lyrics_json(content: str) -> bool:
+    """
+    Check whether content is a Plex ``MediaContainer`` lyrics envelope.
+
+    :param content: The raw lyric stream body to sniff.
+    """
+    try:
+        data = json.loads(content)
+    except ValueError, TypeError:
+        return False
+    return isinstance(data, dict) and isinstance(data.get("MediaContainer"), dict)
 
 
 def _lyrics_from_plex_json(content: str) -> tuple[str, bool] | None:

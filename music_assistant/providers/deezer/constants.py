@@ -43,3 +43,11 @@ BROWSE_TOP_ALBUMS = "Top Albums"
 BROWSE_TOP_ARTISTS = "Top Artists"
 BROWSE_TOP_PLAYLISTS = "Top Playlists"
 BROWSE_ALL_FLOWS = "All Flows"
+
+# -- Track decryption --
+
+DECRYPT_KEY_LENGTH = 16
+DECRYPT_KEY_ERROR = (
+    "The Deezer decryption key is missing or invalid. "
+    "Use an official Music Assistant build to play encrypted audio."
+)

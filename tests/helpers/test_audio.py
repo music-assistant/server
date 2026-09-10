@@ -11,9 +11,11 @@ import pytest
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.helpers import audio as audio_helper
 from music_assistant.helpers.audio import (
     build_concat_filelist,
     calculate_content_length,
+    get_output_format_key,
     parse_loudnorm,
     realtime_pcm_pacer,
     resolve_output_player_ids,
@@ -149,3 +151,19 @@ async def test_realtime_pcm_pacer_grants_bounded_initial_burst() -> None:
     # than realtime (burst granted) but still paced (not instant). Bounds are
     # deliberately wide to stay robust on loaded CI runners.
     assert 0.3 < elapsed < 0.9
+
+
+def test_the_content_length_key_moves_with_the_encoder_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A measured content length must not outlive the encoder settings it was measured under.
+
+    The cached value is a byte count announced to the player as Content-Length, so an
+    entry from an older encoder leaves it waiting out a body that already ended.
+    """
+    fmt = AudioFormat(content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16, channels=2)
+    before = get_output_format_key(fmt)
+    monkeypatch.setattr(audio_helper, "OUTPUT_ENCODING_REVISION", 99)
+
+    assert get_output_format_key(fmt) != before
