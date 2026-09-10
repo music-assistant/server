@@ -233,6 +233,11 @@ class ConfigController(
             # remember which change we are about to write: anything requested after this
             # point is not part of it, and must leave the settings marked as unsaved
             requested = self._save_requested
+            if requested and self._save_written == requested:
+                # a save that ran while this one waited for the lock already wrote
+                # this generation; data assigned directly (load, migrate) has no
+                # generation and is always written
+                return
             json_data = await async_json_dumps(self._data, indent=True)
             await asyncio.to_thread(self._save_to_disk, json_data)
             self._save_written = requested

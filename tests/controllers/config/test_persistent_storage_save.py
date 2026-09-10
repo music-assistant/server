@@ -46,6 +46,18 @@ async def test_save_rotates_previous_file_to_backup(tmp_path: Path) -> None:
     assert not Path(f"{controller.filename}.tmp").is_file()
 
 
+async def test_a_save_of_an_already_written_generation_is_skipped(tmp_path: Path) -> None:
+    """A queued or timer-started save does not rewrite what is already on disk."""
+    controller = _make_controller(tmp_path)
+    controller._data = {"generation": 1}
+    controller._save_requested = 1
+    await controller.async_save()
+    await controller.async_save()
+
+    assert json.loads(Path(controller.filename).read_text()) == {"generation": 1}
+    assert not Path(f"{controller.filename}.backup").is_file()
+
+
 async def test_failed_save_leaves_existing_files_untouched(tmp_path: Path) -> None:
     """A save that fails mid-write may not corrupt the files already on disk."""
     controller = _make_controller(tmp_path)
