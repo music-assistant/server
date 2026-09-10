@@ -137,7 +137,7 @@ class DeezerMediaManager:
         }
         if track.item_id != track_id:
             raise MediaNotFoundError(f"Deezer returned track {track.item_id} instead of {track_id}")
-        if any(value != isrc for value in track_isrcs):
+        if track_isrcs and isrc not in track_isrcs:
             raise MediaNotFoundError(f"Deezer track {track_id} does not match ISRC {isrc}")
         if not track_isrcs:
             track.external_ids.add((ExternalID.ISRC, isrc))
