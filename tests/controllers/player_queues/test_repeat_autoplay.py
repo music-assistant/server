@@ -214,10 +214,14 @@ async def test_repeat_release_uses_updated_global_default_when_preference_follow
     config = cast("Any", SimpleNamespace(values={}))
     await PlayerQueuesController.update_config(queues, config, {"values/autoplay_enabled"})
 
-    assert queue_data.queue.autoplay_enabled is False
+    # widened locals so mypy does not carry the pre-release narrowing into the post-release assert
+    masked_autoplay: bool = queue_data.queue.autoplay_enabled
+    assert masked_autoplay is False
 
     await PlayerQueuesController.set_repeat(queues, "q1", RepeatMode.OFF)
 
+    restored_autoplay: bool = queue_data.queue.autoplay_enabled
+    assert restored_autoplay is True
     queues.mass.cancel_timer.assert_called_once_with("fill_autoplay_tracks_q1")
     queues.mass.call_later.assert_not_called()
 
