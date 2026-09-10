@@ -630,9 +630,9 @@ class PAVolumeController:
 
     def set_sink_volume(self, sink_name: str, volume_pct: int, channels: int = 2) -> bool:
         """
-        Set hardware volume on a named PA sink.
+        Set volume on a named PA sink.
 
-        :param sink_name: PA sink name as returned by ``enumerate_pa_sinks()``.
+        :param sink_name: PA sink name.
         :param volume_pct: Volume level 0-100, mapped through an exponential
             audio taper curve before being sent to PA.
         :param channels: Channel count for the PA volume structure. Should
