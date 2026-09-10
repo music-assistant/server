@@ -398,7 +398,12 @@ class ProviderConfigMixin:
         for instance_id, raw_conf in self.get(CONF_PROVIDERS, {}).items():
             if not (raw_access := raw_conf.get("access")):
                 continue
-            access = ProviderAccess.from_dict(raw_access)
+            try:
+                access = ProviderAccess.from_dict(raw_access)
+            except ValueError, TypeError:
+                # a record that can not be read is left for the admin to repair
+                LOGGER.warning("Skipping the unreadable access record of %s", instance_id)
+                continue
             if access.owner != user_id and user_id not in access.shared_users:
                 continue
             if access.owner == user_id:

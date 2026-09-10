@@ -370,3 +370,13 @@ async def test_changed_access_is_signalled(access_mass: MusicAssistant) -> None:
     # the event callbacks run on the next loop iteration
     await asyncio.sleep(0)
     assert [event.event for event in events] == [EventType.PROVIDERS_UPDATED]
+
+
+async def test_release_user_sources_skips_an_unreadable_record(mass: MusicAssistant) -> None:
+    """Deleting a user never fails on a stored access record that can not be read."""
+    set_music_source_access(mass, {"spotify--alice": None})
+    mass.config.set("providers/spotify--alice/access", {"shared_users": 5})
+
+    mass.config.release_user_sources("alice")
+
+    assert mass.config.get("providers/spotify--alice/access") == {"shared_users": 5}
