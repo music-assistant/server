@@ -1637,7 +1637,7 @@ class YandexYnisonProvider(PluginProvider):
         so that audio and credentials come from the same account. In own mode,
         accept any yandex_music music-provider (prior behavior).
         """
-        for provider in self.mass.get_providers():
+        for provider in self.mass.providers:
             if provider.domain != "yandex_music" or provider.type != ProviderType.MUSIC:
                 continue
             if self._ym_instance_id is not None and provider.instance_id != self._ym_instance_id:

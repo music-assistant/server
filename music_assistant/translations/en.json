@@ -295,6 +295,7 @@
   "common.errors.invalid_provider_uri": "The provider URI is invalid.",
   "common.errors.invalid_token": "The access token is invalid or has expired.",
   "common.errors.login_failed": "Login failed. Please check your credentials and try again.",
+  "common.errors.media_not_available_for_user": "This is not available on any of your music sources.",
   "common.errors.media_not_found": "The requested media item could not be found.",
   "common.errors.mount_failed": "Unable to connect to the remote location: {0}",
   "common.errors.no_playable_items": "There is nothing to play here.",

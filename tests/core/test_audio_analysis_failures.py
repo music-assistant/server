@@ -69,7 +69,7 @@ def _make_controller(real_db: DatabaseConnection, music_prov: MagicMock) -> Audi
     streams.mass = mass
     mass.music.database = real_db
     mass.get_provider = MagicMock(return_value=music_prov)
-    mass.get_providers = MagicMock(return_value=[music_prov])
+    mass.providers = [music_prov]
     return AudioAnalysisController(streams)
 
 

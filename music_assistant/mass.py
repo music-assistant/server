@@ -69,14 +69,12 @@ from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.tasks import TasksController
 from music_assistant.controllers.translations import TranslationController
 from music_assistant.controllers.webserver import WebserverController
-from music_assistant.controllers.webserver.helpers.auth_middleware import (
-    get_current_user,
-    has_scope,
-)
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.api import APICommandHandler, api_command
 from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
 from music_assistant.helpers.images import detect_provider_icons
+from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.helpers.util import (
     TaskManager,
     get_package_version,
@@ -94,6 +92,7 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from aiohttp import ClientSession
+    from music_assistant_models.auth import User
     from music_assistant_models.config_entries import ProviderConfig
 
     from music_assistant.models.core_controller import CoreController
@@ -523,22 +522,25 @@ class MusicAssistant:
         Return all loaded/running Providers (instances).
 
         Optionally filtered by ProviderType.
-        Note that this applies user filters for music providers (for non admin users).
+        Note that this only returns the music sources the current user may see.
         """
-        user = get_current_user()
-        user_provider_filter = (
-            user.provider_filter if user and not has_scope(user, Scope.ALL) else None
-        )
+        return self.get_providers_for_user(get_current_user(), provider_type)
+
+    def get_providers_for_user(
+        self, user: User | None, provider_type: ProviderType | None = None
+    ) -> list[ProviderInstanceType]:
+        """
+        Return all loaded/running Providers (instances) the given user may see.
+
+        :param user: The user to resolve the music sources for; None applies no filtering.
+        :param provider_type: Optionally filter by ProviderType.
+        """
+        allowed = visible_music_sources(self, user) if user else None
         return [
             x
             for x in list(self._providers.values())
             if (provider_type is None or provider_type == x.type)
-            # apply user provider filter
-            and (
-                not user_provider_filter
-                or x.instance_id in user_provider_filter
-                or x.type != ProviderType.MUSIC
-            )
+            and (allowed is None or x.type != ProviderType.MUSIC or x.instance_id in allowed)
         ]
 
     @api_command("logging/get", required_scope=Scope.SYSTEM_MANAGE)
@@ -553,7 +555,8 @@ class MusicAssistant:
         """
         Return all loaded/running Providers (instances).
 
-        Note that this skips user filters so may only be called from internal code.
+        Note that this includes every music source, regardless of who may see it,
+        so it may only be called from internal code.
         """
         return list(self._providers.values())
 
@@ -642,14 +645,15 @@ class MusicAssistant:
 
         Results are grouped by provider type in the order given by ``priority``,
         and sorted within each tier by the provider's ``priority`` attribute
-        (lower value = higher priority).
+        (lower value = higher priority). This includes every music source, regardless
+        of who may see it, so user facing callers must narrow the result themselves.
 
         :param feature: The ProviderFeature to query for.
         :param priority: Ordered tuple of ProviderType values indicating tier order.
             Types omitted from this tuple are excluded from the results.
         """
         by_tier: dict[ProviderType, list[ProviderInstanceType]] = {ptype: [] for ptype in priority}
-        for prov in self.get_providers():
+        for prov in self.providers:
             if not prov.available:
                 continue
             if prov.type not in by_tier:
@@ -1121,7 +1125,7 @@ class MusicAssistant:
                 self._providers.pop(instance_id, None)
                 self.discovery.on_provider_unload(instance_id)
                 await self._update_available_providers_cache()
-                self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
+                self.signal_event(EventType.PROVIDERS_UPDATED, data=self.providers)
 
     async def unload_provider_with_error(self, instance_id: str, error: str | Exception) -> None:
         """
@@ -1470,7 +1474,7 @@ class MusicAssistant:
 
         # clear any previous error in config and signal update
         self.config.set(f"{CONF_PROVIDERS}/{conf.instance_id}/last_error", None)
-        self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
+        self.signal_event(EventType.PROVIDERS_UPDATED, data=self.providers)
 
     async def __load_provider_manifests(self) -> None:
         """Preload all available provider manifest files."""

@@ -537,7 +537,7 @@ class ProviderConfigMixin:
                 )
             if "name" in changed_keys:
                 # signal providers updated so frontends refresh the provider name
-                self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
+                self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
         elif config.enabled:
             # provider is enabled but not available, try to load it
             await self.mass.load_provider_config(config)

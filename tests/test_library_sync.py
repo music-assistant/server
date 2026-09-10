@@ -8,7 +8,14 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import pytest
-from music_assistant_models.enums import EventType, MediaType, ProviderType
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import (
+    EventType,
+    MediaType,
+    ProviderSharing,
+    ProviderType,
+)
 from music_assistant_models.errors import InsufficientPermissions
 from music_assistant_models.media_items import Album, AudioFormat, ProviderMapping, UniqueList
 
@@ -22,6 +29,7 @@ from music_assistant.models.music_provider import (
     CACHE_CATEGORY_PREV_LIBRARY_IDS,
     MusicProvider,
 )
+from tests.common import set_music_source_access
 
 # --- Helpers ---
 
@@ -934,6 +942,22 @@ async def test_library_items_defaults_to_summary() -> None:
     assert call_kwargs["summary"] is True
 
 
+SPOTIFY_USER = User(user_id="user-a", username="user-a", role=UserRole.USER)
+
+
+def _restrict_to_spotify(mass: Mock) -> None:
+    """Give the mocked server two private music sources, only one owned by SPOTIFY_USER."""
+    set_music_source_access(
+        mass,
+        {
+            "spotify_1": ProviderAccess(
+                owner=SPOTIFY_USER.user_id, sharing=ProviderSharing.PRIVATE
+            ),
+            "qobuz_1": ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+        },
+    )
+
+
 def test_ensure_provider_filter_keeps_plugin_provider_mappings() -> None:
     """Test that plugin providers are kept when a user music-provider filter is active."""
     ctrl = Mock(spec=MediaControllerBase)
@@ -942,11 +966,12 @@ def test_ensure_provider_filter_keeps_plugin_provider_mappings() -> None:
         Mock(instance_id="spotify_1", type=ProviderType.MUSIC),
         Mock(instance_id="smart_playlist_1", type=ProviderType.PLUGIN),
     ]
+    _restrict_to_spotify(ctrl.mass)
     ctrl._ensure_provider_filter = MediaControllerBase._ensure_provider_filter.__get__(ctrl)
 
     with patch(
         "music_assistant.controllers.music.media.base.get_current_user",
-        return_value=Mock(provider_filter=["spotify_1"]),
+        return_value=SPOTIFY_USER,
     ):
         result = ctrl._ensure_provider_filter(None)
 
@@ -963,12 +988,13 @@ def test_ensure_provider_filter_rejects_unallowed_music_provider() -> None:
         Mock(instance_id="spotify_1", type=ProviderType.MUSIC),
         Mock(instance_id="smart_playlist_1", type=ProviderType.PLUGIN),
     ]
+    _restrict_to_spotify(ctrl.mass)
     ctrl._ensure_provider_filter = MediaControllerBase._ensure_provider_filter.__get__(ctrl)
 
     with (
         patch(
             "music_assistant.controllers.music.media.base.get_current_user",
-            return_value=Mock(provider_filter=["spotify_1"]),
+            return_value=SPOTIFY_USER,
         ),
         pytest.raises(InsufficientPermissions),
     ):
@@ -983,11 +1009,12 @@ def test_ensure_provider_filter_allows_explicit_non_music_provider() -> None:
         Mock(instance_id="spotify_1", type=ProviderType.MUSIC),
         Mock(instance_id="smart_playlist_1", type=ProviderType.PLUGIN),
     ]
+    _restrict_to_spotify(ctrl.mass)
     ctrl._ensure_provider_filter = MediaControllerBase._ensure_provider_filter.__get__(ctrl)
 
     with patch(
         "music_assistant.controllers.music.media.base.get_current_user",
-        return_value=Mock(provider_filter=["spotify_1"]),
+        return_value=SPOTIFY_USER,
     ):
         result = ctrl._ensure_provider_filter("smart_playlist_1")
 
@@ -1003,11 +1030,12 @@ def test_ensure_provider_filter_does_not_auto_allow_other_non_music_providers() 
         Mock(instance_id="smart_playlist_1", type=ProviderType.PLUGIN),
         Mock(instance_id="meta_1", type=ProviderType.METADATA),
     ]
+    _restrict_to_spotify(ctrl.mass)
     ctrl._ensure_provider_filter = MediaControllerBase._ensure_provider_filter.__get__(ctrl)
 
     with patch(
         "music_assistant.controllers.music.media.base.get_current_user",
-        return_value=Mock(provider_filter=["spotify_1"]),
+        return_value=SPOTIFY_USER,
     ):
         result = ctrl._ensure_provider_filter(None)
 
@@ -1027,6 +1055,7 @@ def test_select_provider_id_prefers_allowed_music_over_plugin() -> None:
             "spotify_1": Mock(type=ProviderType.MUSIC),
         }.get(instance)
     )
+    _restrict_to_spotify(ctrl.mass)
     ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
 
     item = create_mock_album(
@@ -1046,7 +1075,7 @@ def test_select_provider_id_prefers_allowed_music_over_plugin() -> None:
 
     with patch(
         "music_assistant.controllers.music.media.base.get_current_user",
-        return_value=Mock(provider_filter=["spotify_1"]),
+        return_value=SPOTIFY_USER,
     ):
         provider_instance, provider_item = ctrl._select_provider_id(item)
 
@@ -1064,6 +1093,7 @@ def test_select_provider_id_falls_back_to_plugin_when_no_allowed_music() -> None
             "qobuz_1": Mock(type=ProviderType.MUSIC),
         }.get(instance)
     )
+    _restrict_to_spotify(ctrl.mass)
     ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
 
     item = create_mock_album(
@@ -1083,7 +1113,7 @@ def test_select_provider_id_falls_back_to_plugin_when_no_allowed_music() -> None
 
     with patch(
         "music_assistant.controllers.music.media.base.get_current_user",
-        return_value=Mock(provider_filter=["spotify_1"]),
+        return_value=SPOTIFY_USER,
     ):
         provider_instance, provider_item = ctrl._select_provider_id(item)
 
