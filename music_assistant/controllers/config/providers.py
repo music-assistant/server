@@ -357,8 +357,8 @@ class ProviderConfigMixin:
         Set who owns a music source and who else may use it.
 
         An admin may set this for any music source; any other caller may only change the
-        sharing of a source it owns. A user on the share list keeps its place there while
-        its account is disabled.
+        sharing of a source it owns. The owner and the users on the share list keep their
+        place while their account is disabled.
 
         :param instance_id: The music source (provider instance) to set the access of.
         :param sharing: Who, besides its owner, may use the source.
@@ -373,21 +373,22 @@ class ProviderConfigMixin:
         if manifest.type != ProviderType.MUSIC or manifest.builtin:
             raise InvalidDataError(f"{manifest.name} is always available to the entire household")
         user, manages_all_sources = self._access_caller()
+        current = source_access(self.mass, instance_id)
+        current_owner = current.owner if current else None
         if user is not None and not manages_all_sources:
-            if source_owner(self.mass, instance_id) != user.user_id:
+            if current_owner != user.user_id:
                 raise InsufficientPermissions("Only the owner of a music source may share it")
             if owner != user.user_id:
                 raise InsufficientPermissions(
                     f"The {Scope.CONFIG_PROVIDERS_WRITE.value} scope is required to change "
                     "the owner of a music source"
                 )
-        if owner is not None:
+        # a user already on the record keeps its place while its account is disabled, so
+        # enabling the account again restores its access to the source
+        if owner is not None and owner != current_owner:
             await self._validate_source_owner(owner)
         shared: list[str] = []
         if sharing == ProviderSharing.SELECTED:
-            # a user already on the share list keeps its place while its account is disabled,
-            # so enabling the account again restores its access to the source
-            current = source_access(self.mass, instance_id)
             kept = set(current.shared_users) if current else set()
             for user_id in dict.fromkeys(shared_users or []):
                 if user_id == owner:

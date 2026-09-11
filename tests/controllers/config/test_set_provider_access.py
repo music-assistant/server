@@ -242,6 +242,24 @@ async def test_an_unknown_user_is_refused(access_mass: MusicAssistant) -> None:
         )
 
 
+async def test_a_disabled_owner_keeps_its_source(access_mass: MusicAssistant) -> None:
+    """The sharing of a source stays editable while the account owning it is disabled."""
+    admin = await _create_user(access_mass, "admin", UserRole.ADMIN)
+    owner = await _create_user(access_mass, "owner")
+    set_music_source_access(
+        access_mass,
+        {MUSIC_INSTANCE: ProviderAccess(owner=owner.user_id, sharing=ProviderSharing.PRIVATE)},
+    )
+    set_current_user(admin)
+    await access_mass.webserver.auth.disable_user(owner.user_id)
+
+    config = await access_mass.config.set_provider_access(
+        MUSIC_INSTANCE, owner=owner.user_id, sharing=ProviderSharing.MEMBERS
+    )
+
+    assert config.access == ProviderAccess(owner=owner.user_id, sharing=ProviderSharing.MEMBERS)
+
+
 async def test_a_disabled_member_keeps_its_place_on_the_share_list(
     access_mass: MusicAssistant,
 ) -> None:
