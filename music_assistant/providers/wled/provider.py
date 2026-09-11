@@ -187,6 +187,10 @@ class WledProvider(PluginProvider):
         # provider may not be loaded (yet), in which case start() logs and
         # returns without creating a bridge, and this instance has no virtual
         # player or UDP transport to be "available" for.
+        # Clear it up front: mass marks a provider available *before* running this
+        # post-load hook and only logs an exception raised here, so a bridge that
+        # fails to start would otherwise leave the instance reported as healthy.
+        self.available = False
         self.available = await self._bridge_manager.start(
             port, gain_db=gain_db, scaling_mode=scaling_mode, latency_ms=latency_ms
         )

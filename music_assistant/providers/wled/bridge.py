@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 from aiosendspin.models.core import ClientHelloPayload
@@ -339,7 +340,7 @@ class WledBridgeManager:
         if server is None:
             self.logger.warning("Sendspin provider not available, WLED sync inactive")
             return False
-        self._bridge = WledBridge(
+        bridge = WledBridge(
             self.provider,
             port,
             server,
@@ -347,20 +348,34 @@ class WledBridgeManager:
             scaling_mode=scaling_mode,
             latency_ms=latency_ms,
         )
-        await self._bridge.start()
+        try:
+            await bridge.start()
+        except Exception:
+            # start() registers the Sendspin client before it opens the UDP transport, so
+            # a failure in between (e.g. the port is already bound) leaves a virtual player
+            # registered with nothing driving it. Nothing unloads us for that: loaded_in_mass
+            # runs as a post-load task whose exceptions mass only logs. Cleaning up is
+            # best-effort -- the startup error is the one worth propagating.
+            with suppress(Exception):
+                await bridge.stop()
+            raise
+        # only adopt a bridge that fully came up, so the manager never holds a half-started one
+        self._bridge = bridge
         return True
 
     async def stop(self) -> None:
         """Stop the bridge."""
-        if self._bridge is not None:
-            try:
-                await self._bridge.stop()
-            except Exception:
-                # Teardown must not block provider unload, but a failure here is
-                # still worth surfacing rather than hiding silently.
-                self.logger.exception("Error stopping WLED bridge on port %d", self._bridge.port)
-            finally:
-                self._bridge = None
+        if self._bridge is None:
+            return
+        # drop the reference up front: WledBridge.stop() releases the transport in its own
+        # finally, so the bridge is spent either way, including when it raises below
+        bridge, self._bridge = self._bridge, None
+        try:
+            await bridge.stop()
+        except OSError, RuntimeError:
+            # An already-closing transport or an unregistered client must not block
+            # provider unload; anything else is a bug worth surfacing to the caller.
+            self.logger.exception("Error stopping WLED bridge on port %d", bridge.port)
 
     def update_settings(
         self,

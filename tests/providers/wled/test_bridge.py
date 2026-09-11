@@ -11,7 +11,8 @@ import numpy as np
 import pytest
 from aiosendspin.server.roles.visualizer.features import ExtractedFrame
 
-from music_assistant.providers.wled.bridge import WledBridge
+import music_assistant.providers.wled.bridge as bridge_module
+from music_assistant.providers.wled.bridge import WledBridge, WledBridgeManager
 from music_assistant.providers.wled.constants import SPECTRUM_BINS
 
 
@@ -31,6 +32,9 @@ class _FakeSendspinServer:
     def __init__(self) -> None:
         self.clock = _FakeClock()
         self.remove_client = AsyncMock()
+        client = Mock(client_id="wled-zone-11988")
+        client.roles_by_family = Mock(return_value=[])
+        self.register_external_player = Mock(return_value=client)
 
 
 @dataclass
@@ -45,7 +49,10 @@ class _BridgeFixture:
 def _make_bridge(**kwargs: Any) -> _BridgeFixture:
     """Build a WledBridge with fake provider/mass/sendspin_server, bypassing start()."""
     call_later = Mock(return_value=Mock())
-    mass = SimpleNamespace(loop=SimpleNamespace(call_later=call_later))
+    mass = SimpleNamespace(
+        loop=SimpleNamespace(call_later=call_later, create_datagram_endpoint=AsyncMock()),
+        get_provider=Mock(return_value=None),
+    )
     provider: Any = SimpleNamespace(mass=mass)
     sendspin_server = _FakeSendspinServer()
     bridge = WledBridge(
@@ -210,3 +217,134 @@ class TestStop:
         fixture.sendspin_server.remove_client.assert_awaited_once_with("wled-zone-11988")
         transport.close.assert_called_once()
         assert fixture.bridge._transport is None
+
+
+class TestBridgeStart:
+    """Registration and transport setup, and what a failure between them leaves behind."""
+
+    async def test_registers_a_client_and_opens_the_transport(self) -> None:
+        """The happy path registers with Sendspin and opens the multicast transport."""
+        fixture = _make_bridge()
+        transport = Mock()
+        fixture.bridge.mass.loop.create_datagram_endpoint = AsyncMock(  # type: ignore[method-assign]
+            return_value=(transport, Mock())
+        )
+
+        await fixture.bridge.start()
+
+        fixture.sendspin_server.register_external_player.assert_called_once()
+        assert fixture.bridge._transport is transport
+
+    async def test_a_failed_transport_leaves_no_registered_client_behind(self) -> None:
+        """
+        A bind failure after registration must be recoverable by stopping the bridge.
+
+        start() registers the Sendspin client before it opens the UDP transport, so the
+        client outlives a failure in between -- WledBridgeManager.start() stops the
+        bridge for exactly this reason, and that teardown has to actually unregister it.
+        """
+        fixture = _make_bridge()
+        fixture.bridge.mass.loop.create_datagram_endpoint = AsyncMock(  # type: ignore[method-assign]
+            side_effect=OSError("address already in use")
+        )
+
+        with pytest.raises(OSError, match="address already in use"):
+            await fixture.bridge.start()
+
+        # the client is registered but the transport never opened: exactly the state the
+        # manager's cleanup has to unwind
+        assert fixture.bridge._sendspin_client is not None
+        assert fixture.bridge._transport is None
+
+        await fixture.bridge.stop()
+
+        fixture.sendspin_server.remove_client.assert_awaited_once_with("wled-zone-11988")
+        assert fixture.bridge._sendspin_client is None
+
+
+def _make_manager(monkeypatch: pytest.MonkeyPatch, bridge: Mock) -> WledBridgeManager:
+    """Return a manager whose start() builds the given (mock) bridge on a fake server."""
+    provider: Any = SimpleNamespace(mass=Mock())
+    manager = WledBridgeManager(provider)
+    monkeypatch.setattr(bridge_module, "WledBridge", Mock(return_value=bridge))
+    return manager
+
+
+class TestBridgeManagerStart:
+    """A half-started bridge must never be left registered or adopted by the manager."""
+
+    async def test_failed_start_tears_the_bridge_down_and_reraises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """
+        A failure partway through start() must not leak the Sendspin registration.
+
+        start() registers the client before opening the UDP transport, so a bind
+        failure in between would otherwise leave a virtual player with nothing driving
+        it -- and mass only logs an exception raised from this post-load hook, so no
+        unload comes to clean it up.
+        """
+        bridge = Mock()
+        bridge.start = AsyncMock(side_effect=OSError("address already in use"))
+        bridge.stop = AsyncMock()
+        manager = _make_manager(monkeypatch, bridge)
+
+        with pytest.raises(OSError, match="address already in use"):
+            await manager.start(11988)
+
+        bridge.stop.assert_awaited_once()
+        assert manager._bridge is None
+
+    async def test_cleanup_failure_does_not_mask_the_startup_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The startup error is the actionable one, so a failed cleanup must not replace it."""
+        bridge = Mock()
+        bridge.start = AsyncMock(side_effect=OSError("address already in use"))
+        bridge.stop = AsyncMock(side_effect=RuntimeError("teardown also broke"))
+        manager = _make_manager(monkeypatch, bridge)
+
+        with pytest.raises(OSError, match="address already in use"):
+            await manager.start(11988)
+
+        assert manager._bridge is None
+
+    async def test_successful_start_adopts_the_bridge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bridge that came up fully is kept, and start() reports success."""
+        bridge = Mock()
+        bridge.start = AsyncMock()
+        manager = _make_manager(monkeypatch, bridge)
+
+        assert await manager.start(11988) is True
+        assert manager._bridge is bridge
+
+
+class TestBridgeManagerStop:
+    """Teardown must not block provider unload, but must not hide real bugs either."""
+
+    async def test_expected_teardown_error_is_logged_not_raised(self) -> None:
+        """A closing transport or an already-gone client must not break unload."""
+        provider: Any = SimpleNamespace(mass=Mock())
+        manager = WledBridgeManager(provider)
+        bridge = Mock(port=11988)
+        bridge.stop = AsyncMock(side_effect=OSError("transport already closed"))
+        manager._bridge = bridge
+
+        await manager.stop()  # must not raise
+
+        assert manager._bridge is None
+
+    async def test_unexpected_error_propagates_but_still_clears_the_bridge(self) -> None:
+        """Anything outside the expected teardown errors is a bug worth surfacing."""
+        provider: Any = SimpleNamespace(mass=Mock())
+        manager = WledBridgeManager(provider)
+        bridge = Mock(port=11988)
+        bridge.stop = AsyncMock(side_effect=ValueError("programming error"))
+        manager._bridge = bridge
+
+        with pytest.raises(ValueError, match="programming error"):
+            await manager.stop()
+
+        assert manager._bridge is None
