@@ -10,9 +10,16 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Protocol
 
-from deezer_python_gql import GraphQLClientGraphQLMultiError
-from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MediaNotFoundError, UnsupportedFeaturedException
+from aiohttp import ClientError
+from deezer_python_gql import GraphQLClientError, GraphQLClientGraphQLMultiError
+from music_assistant_models.enums import ExternalID, MediaType
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    RetriesExhausted,
+    UnsupportedFeaturedException,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -22,14 +29,18 @@ from music_assistant_models.media_items import (
     Playlist,
     Podcast,
     PodcastEpisode,
-    ProviderMapping,
     Radio,
     SearchResults,
     Track,
-    UniqueList,
 )
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.external_ids import (
+    barcode_to_upc,
+    is_valid_barcode,
+    is_valid_isrc,
+    normalize_external_id,
+)
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 
 from .constants import (
@@ -37,6 +48,7 @@ from .constants import (
     FAVORITES_PAGE_SIZE,
     PERSONAL_ALBUM_PREFIX,
     PERSONAL_ARTIST_PREFIX,
+    PERSONAL_METADATA_VERSION,
 )
 from .helpers import fetch_all_audiobook_chapter_edges, fetch_all_bookmarks
 from .parsers import (
@@ -94,6 +106,66 @@ class DeezerMediaManager:
         self.domain = provider.domain
         self.logger = provider.logger
         self._audiobook_ids_in_favorites: set[str] | None = None
+
+    # -- External ID lookups --
+
+    async def get_track_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Track | None:
+        """Retrieve a track by ISRC."""
+        if external_id_type != ExternalID.ISRC or not is_valid_isrc(external_id):
+            return None
+        isrc = normalize_external_id(ExternalID.ISRC, external_id)
+        try:
+            track_id = await self.provider.rest_client.get_item_id(isrc, ExternalID.ISRC)
+            if track_id is None:
+                return None
+            track = await self.get_track(track_id)
+        except (
+            ClientError,
+            GraphQLClientError,
+            InvalidDataError,
+            RetriesExhausted,
+            TimeoutError,
+        ) as err:
+            raise ProviderUnavailableError(f"Deezer track lookup failed: {err}") from err
+        track_isrcs = {
+            normalize_external_id(kind, value)
+            for kind, value in track.external_ids
+            if kind == ExternalID.ISRC
+        }
+        if track.item_id != track_id:
+            raise MediaNotFoundError(f"Deezer returned track {track.item_id} instead of {track_id}")
+        if track_isrcs and isrc not in track_isrcs:
+            raise MediaNotFoundError(f"Deezer track {track_id} does not match ISRC {isrc}")
+        if not track_isrcs:
+            track.external_ids.add((ExternalID.ISRC, isrc))
+        return track
+
+    async def get_album_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Album | None:
+        """Retrieve an album by barcode (UPC/EAN)."""
+        if external_id_type != ExternalID.BARCODE or not is_valid_barcode(external_id):
+            return None
+        upc = barcode_to_upc(external_id)
+        try:
+            album_id = await self.provider.rest_client.get_item_id(upc, ExternalID.BARCODE)
+            if album_id is None:
+                return None
+            album = await self.get_album(album_id)
+        except (
+            ClientError,
+            GraphQLClientError,
+            InvalidDataError,
+            RetriesExhausted,
+            TimeoutError,
+        ) as err:
+            raise ProviderUnavailableError(f"Deezer album lookup failed: {err}") from err
+        if album.item_id != album_id:
+            raise MediaNotFoundError(f"Deezer returned album {album.item_id} instead of {album_id}")
+        album.external_ids.add((ExternalID.BARCODE, normalize_external_id(ExternalID.BARCODE, upc)))
+        return album
 
     # -- Pagination helper --
 
@@ -205,14 +277,9 @@ class DeezerMediaManager:
             if edge.favorited_at:
                 item.date_added = parse_date(edge.favorited_at)
             yield item
-        # Also include albums from user-uploaded personal songs
         personal_songs = await self._get_personal_songs()
-        seen_album_names: set[str] = set()
-        for song in personal_songs:
-            track = parse_gw_track(self.provider, song)
-            if isinstance(track.album, Album) and track.album.name not in seen_album_names:
-                seen_album_names.add(track.album.name)
-                yield track.album
+        for album in self._get_personal_albums(personal_songs).values():
+            yield album
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from Deezer."""
@@ -387,28 +454,18 @@ class DeezerMediaManager:
 
     # -- Item getters --
 
-    @use_cache(3600 * 24 * 30, allow_expired_cache=True)
+    @use_cache(3600 * 24 * 30, allow_expired_cache=True, cache_checksum=PERSONAL_METADATA_VERSION)
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         if prov_artist_id.startswith(PERSONAL_ARTIST_PREFIX):
             # Personal track artist — reconstruct from GW data
             song_id = prov_artist_id.removeprefix(PERSONAL_ARTIST_PREFIX)
             personal_songs = await self._get_personal_songs()
-            for song in personal_songs:
-                if str(song["SNG_ID"]) == song_id:
-                    return Artist(
-                        item_id=prov_artist_id,
-                        provider=self.instance_id,
-                        name=song.get("ART_NAME", ""),
-                        provider_mappings={
-                            ProviderMapping(
-                                item_id=prov_artist_id,
-                                provider_domain=self.domain,
-                                provider_instance=self.instance_id,
-                            )
-                        },
-                    )
-            raise MediaNotFoundError(f"Personal artist {prov_artist_id} not found")
+            song = self._get_personal_song(song_id, personal_songs)
+            artist = parse_gw_track(self.provider, song).artists[0]
+            if not isinstance(artist, Artist):
+                raise MediaNotFoundError(f"Personal artist {prov_artist_id} not found")
+            return artist
         result = await self.provider.gql_client.get_artist(artist_id=prov_artist_id)
         if result is None:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found on Deezer")
@@ -416,41 +473,20 @@ class DeezerMediaManager:
         apply_web_url(item, result)
         return item
 
-    @use_cache(3600 * 24 * 30, allow_expired_cache=True)
+    @use_cache(3600 * 24 * 30, allow_expired_cache=True, cache_checksum=PERSONAL_METADATA_VERSION)
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         if prov_album_id.startswith(PERSONAL_ALBUM_PREFIX):
             # Personal track album — reconstruct from GW data
             song_id = prov_album_id.removeprefix(PERSONAL_ALBUM_PREFIX)
             personal_songs = await self._get_personal_songs()
-            for song in personal_songs:
-                if str(song["SNG_ID"]) == song_id:
-                    art_name = song.get("ART_NAME", "")
-                    personal_art_id = f"{PERSONAL_ARTIST_PREFIX}{song_id}"
-                    artists: UniqueList[Artist | ItemMapping] = UniqueList()
-                    if art_name:
-                        artists.append(
-                            ItemMapping(
-                                media_type=MediaType.ARTIST,
-                                item_id=personal_art_id,
-                                provider=self.instance_id,
-                                name=art_name,
-                            )
-                        )
-                    return Album(
-                        item_id=prov_album_id,
-                        provider=self.instance_id,
-                        name=song.get("ALB_TITLE", ""),
-                        artists=artists,
-                        provider_mappings={
-                            ProviderMapping(
-                                item_id=prov_album_id,
-                                provider_domain=self.domain,
-                                provider_instance=self.instance_id,
-                            )
-                        },
-                    )
-            raise MediaNotFoundError(f"Personal album {prov_album_id} not found")
+            song = self._get_personal_song(song_id, personal_songs)
+            album = parse_gw_track(self.provider, song).album
+            if not isinstance(album, Album):
+                raise MediaNotFoundError(f"Personal album {prov_album_id} not found")
+            album_key = (album.name, tuple(artist.name for artist in album.artists))
+            album.metadata = self._get_personal_albums(personal_songs)[album_key].metadata
+            return album
         result = await self.provider.gql_client.get_album(album_id=prov_album_id)
         if result is None:
             raise MediaNotFoundError(f"Album {prov_album_id} not found on Deezer")
@@ -458,7 +494,7 @@ class DeezerMediaManager:
         apply_web_url(item, result)
         return item
 
-    @use_cache(3600 * 24 * 30, allow_expired_cache=True)
+    @use_cache(3600 * 24 * 30, allow_expired_cache=True, cache_checksum=PERSONAL_METADATA_VERSION)
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         try:
@@ -468,10 +504,8 @@ class DeezerMediaManager:
         # Personal tracks (negative IDs) don't exist in the GQL API
         if track_id_int < 0:
             personal_songs = await self._get_personal_songs()
-            for song in personal_songs:
-                if str(song["SNG_ID"]) == prov_track_id:
-                    return parse_gw_track(self.provider, song)
-            raise MediaNotFoundError(f"Personal track {prov_track_id} not found")
+            song = self._get_personal_song(prov_track_id, personal_songs)
+            return parse_gw_track(self.provider, song)
         result = await self.provider.gql_client.get_track(track_id=prov_track_id)
         if result is None:
             raise MediaNotFoundError(f"Track {prov_track_id} not found on Deezer")
@@ -809,3 +843,27 @@ class DeezerMediaManager:
             msg = f"Created playlist {result.playlist.id} not found on Deezer"
             raise MediaNotFoundError(msg)
         return parse_playlist(self.provider, playlist, is_editable=True)
+
+    @staticmethod
+    def _get_personal_song(song_id: str, personal_songs: list[dict[str, Any]]) -> dict[str, Any]:
+        """Find a user upload in the supplied personal songs."""
+        for song in personal_songs:
+            if str(song["SNG_ID"]) == song_id:
+                return song
+        raise MediaNotFoundError(f"Personal song {song_id} not found")
+
+    def _get_personal_albums(
+        self, personal_songs: list[dict[str, Any]]
+    ) -> dict[tuple[str, tuple[str, ...]], Album]:
+        """Group uploaded albums and collect their artwork from the supplied songs."""
+        personal_albums: dict[tuple[str, tuple[str, ...]], Album] = {}
+        for song in personal_songs:
+            track = parse_gw_track(self.provider, song)
+            if not isinstance(track.album, Album):
+                continue
+            album_key = (track.album.name, tuple(artist.name for artist in track.album.artists))
+            if album_key in personal_albums:
+                personal_albums[album_key].metadata.update(track.album.metadata)
+            else:
+                personal_albums[album_key] = track.album
+        return personal_albums

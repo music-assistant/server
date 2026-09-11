@@ -409,7 +409,9 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 
 - **Role-based access**: Admin vs User roles
 - **Command-level enforcement**: API commands can require specific roles
-- **Player/Provider filtering**: Users can be restricted to specific players/providers
+- **Player filtering**: Users can be restricted to specific players. Which music sources a
+  user may see is not set on the user: it follows from the owner and sharing on each source
+  (`config/providers/set_access`)
 - **Token revocation**: Immediate WebSocket disconnect on token revocation
 
 ### Network Security

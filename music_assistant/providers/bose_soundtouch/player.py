@@ -52,6 +52,7 @@ from .const import (
     RECONNECT_DELAY,
     SOURCE_INVALID,
     SOURCE_STANDBY,
+    STRING_ENCODING,
     WS_HEARTBEAT,
     WS_SUBPROTOCOLS,
     PlayerOptionKeys,
@@ -381,9 +382,10 @@ class BoseSoundTouchPlayer(Player):
         }
         if action in mapping_preset_int:
             preset_id = mapping_preset_int.get(action, 1)
+            self.logger.debug("Storing preset %s", preset_id)
             await self._client.store_preset(
                 preset_id,
-                f"{self.mass.webserver.base_url}/{self.provider.instance_id}",
+                f"{self.mass.webserver.base_url}/{self.provider.instance_id}/{preset_id}",
             )
             return await self.get_config_entries()
 
@@ -409,7 +411,7 @@ class BoseSoundTouchPlayer(Player):
                         if msg.type == aiohttp.WSMsgType.TEXT:
                             await self._handle_update_message(msg.data)
                         elif msg.type == aiohttp.WSMsgType.BINARY:
-                            await self._handle_update_message(msg.data.decode())
+                            await self._handle_update_message(msg.data.decode(STRING_ENCODING))
                         elif msg.type in (
                             aiohttp.WSMsgType.ERROR,
                             aiohttp.WSMsgType.CLOSE,
