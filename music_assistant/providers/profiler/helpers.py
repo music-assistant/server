@@ -195,10 +195,9 @@ def collect_resident_memory_split() -> dict[str, float | None]:
     and model weights, which the kernel can reclaim. Values are None where /proc is absent.
     """
     try:
-        text = Path("/proc/self/status").read_text(encoding="utf-8")
-    except OSError:
+        return parse_proc_status_rss(Path("/proc/self/status").read_text(encoding="utf-8"))
+    except OSError, ValueError, IndexError:
         return dict.fromkeys(_PROC_STATUS_RSS_KEYS.values())
-    return parse_proc_status_rss(text)
 
 
 def parse_proc_status_rss(text: str) -> dict[str, float | None]:
@@ -220,7 +219,8 @@ def collect_cgroup_memory() -> dict[str, float | None]:
     Return the memory accounting of the cgroup the process runs in, in MB.
 
     ``cgroup_reported_mb`` is usage minus inactive file cache, which is the figure the Home
-    Assistant Supervisor shows as add-on memory. Values are None outside a cgroup.
+    Assistant Supervisor shows as add-on memory. Values are None when no cgroup memory files
+    are visible to the process, for example outside a container.
     """
     try:
         if (_CGROUP_V2_DIR / "memory.current").is_file():
@@ -444,7 +444,13 @@ def _append_csv_row(csv_path: str, entry: dict[str, Any]) -> None:
     with path.open("a", encoding="utf-8") as _file:
         if write_header:
             _file.write(header + "\n")
-        _file.write(",".join(str(entry.get(field, "")) for field in RECORDER_FIELDS) + "\n")
+        _file.write(
+            ",".join(
+                "" if (value := entry.get(field)) is None else str(value)
+                for field in RECORDER_FIELDS
+            )
+            + "\n"
+        )
 
 
 def _process_name(proc: psutil.Process) -> str:
