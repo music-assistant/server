@@ -43,9 +43,24 @@ def _scaling_mode_from_config(config: ProviderConfig) -> ScalingMode:
     return DEFAULT_SCALING_MODE
 
 
-def _port_from_config(config: ProviderConfig) -> int:
-    """Resolve the configured zone port."""
-    return int(float(str(config.get_value(CONF_PORT) or DEFAULT_PORT)))
+def _port_from_config(mass: MusicAssistant, config: ProviderConfig) -> int:
+    """
+    Resolve the configured zone port straight from storage.
+
+    Reading through config.get_value() breaks for an unloaded/failed sibling:
+    get_provider_config_entries() only returns the server-injected default
+    entries there (no CONF_PORT entry to resolve), so it always reads back as
+    DEFAULT_PORT even when a real port was set. Reading the raw stored values
+    and setup_data instead works regardless of load state -- a port entry
+    only ever ends up in one of the two: unchanged since setup, it's still in
+    setup_data; changed via the options UI, save_provider_config persists the
+    override to values without touching setup_data.
+    """
+    instance_id = config.instance_id
+    value = mass.config.get_raw_provider_config_value(instance_id, CONF_PORT)
+    if value is None:
+        value = mass.config.get_provider_setup_value(instance_id, CONF_PORT)
+    return int(float(str(value or DEFAULT_PORT)))
 
 
 class WledProvider(PluginProvider):
@@ -124,14 +139,14 @@ class WledProvider(PluginProvider):
         client_id (derived from the port) instead of failing loudly -- the
         second instance's registration kicks the first one's connection.
         """
-        port = _port_from_config(self.config)
+        port = _port_from_config(self.mass, self.config)
         siblings = await self.mass.config.get_provider_configs(
             provider_domain=self.domain, include_values=True
         )
         for sibling in siblings:
             if sibling.instance_id == self.instance_id:
                 continue
-            if _port_from_config(sibling) == port:
+            if _port_from_config(self.mass, sibling) == port:
                 sibling_name = sibling.name or sibling.default_name
                 raise SetupFailedError(
                     f"Zone port {port} is already used by WLED instance '{sibling_name}'. "
@@ -142,12 +157,18 @@ class WledProvider(PluginProvider):
 
     async def loaded_in_mass(self) -> None:
         """Start the sync-zone bridge for this instance's configured port."""
-        port = _port_from_config(self.config)
+        port = _port_from_config(self.mass, self.config)
+        latency_ms = int(float(str(self.config.get_value(CONF_LATENCY_MS) or DEFAULT_LATENCY_MS)))
         gain_db = float(str(self.config.get_value(CONF_GAIN_DB) or DEFAULT_GAIN_DB))
         scaling_mode = _scaling_mode_from_config(self.config)
         self._bridge_manager = WledBridgeManager(self)
-        await self._bridge_manager.start(port, gain_db=gain_db, scaling_mode=scaling_mode)
-        self.available = True
+        # available reflects whether the bridge actually came up -- the Sendspin
+        # provider may not be loaded (yet), in which case start() logs and
+        # returns without creating a bridge, and this instance has no virtual
+        # player or UDP transport to be "available" for.
+        self.available = await self._bridge_manager.start(
+            port, gain_db=gain_db, scaling_mode=scaling_mode, latency_ms=latency_ms
+        )
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""

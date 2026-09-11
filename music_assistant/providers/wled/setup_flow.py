@@ -31,7 +31,7 @@ async def _next_free_port(session: SetupSession) -> int:
     siblings = await session.mass.config.get_provider_configs(
         provider_domain="wled", include_values=True
     )
-    used_ports = {_port_from_config(sibling) for sibling in siblings}
+    used_ports = {_port_from_config(session.mass, sibling) for sibling in siblings}
     port = DEFAULT_PORT
     while port in used_ports:
         port += 1

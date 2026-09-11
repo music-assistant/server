@@ -77,6 +77,7 @@ class WledBridge:
         sendspin_server: SendspinServer,
         gain_db: float = DEFAULT_GAIN_DB,
         scaling_mode: ScalingMode = DEFAULT_SCALING_MODE,
+        latency_ms: int = DEFAULT_LATENCY_MS,
     ) -> None:
         """
         Initialize the bridge.
@@ -88,6 +89,8 @@ class WledBridge:
         :param gain_db: Gain boost applied to loudness/spectrum/peak values
             before converting to WLED's scale (see packet._amplitude_from_dbu16).
         :param scaling_mode: Perceptual curve to apply (see packet.ScalingMode).
+        :param latency_ms: Send-ahead offset compensating for the grouped
+            speaker's own output latency.
         """
         self.provider = provider
         self.mass = provider.mass
@@ -99,7 +102,7 @@ class WledBridge:
         self._transport: asyncio.DatagramTransport | None = None
         self._is_streaming = False
         self._render_handle: asyncio.TimerHandle | None = None
-        self._latency_us: int = DEFAULT_LATENCY_MS * 1000
+        self._latency_us: int = latency_ms * 1000
         self._gain_db: float = gain_db
         self._scaling_mode: ScalingMode = scaling_mode
 
@@ -267,7 +270,7 @@ class WledBridge:
                 )
                 self._transport.sendto(packet)
             self._peak_pending = False
-        except (OSError, RuntimeError):
+        except OSError, RuntimeError:
             # One bad tick must not kill the loop: log and reschedule below.
             self.logger.exception("WLED send tick failed for zone port %d", self.port)
         finally:
@@ -310,16 +313,29 @@ class WledBridgeManager:
         port: int,
         gain_db: float = DEFAULT_GAIN_DB,
         scaling_mode: ScalingMode = DEFAULT_SCALING_MODE,
-    ) -> None:
-        """Start the bridge for this instance's configured port."""
+        latency_ms: int = DEFAULT_LATENCY_MS,
+    ) -> bool:
+        """
+        Start the bridge for this instance's configured port.
+
+        :return: Whether the bridge actually came up. False (with nothing
+            started) when the Sendspin provider isn't available yet -- the
+            caller should not report itself available in that case.
+        """
         server = self.sendspin_server
         if server is None:
             self.logger.warning("Sendspin provider not available, WLED sync inactive")
-            return
+            return False
         self._bridge = WledBridge(
-            self.provider, port, server, gain_db=gain_db, scaling_mode=scaling_mode
+            self.provider,
+            port,
+            server,
+            gain_db=gain_db,
+            scaling_mode=scaling_mode,
+            latency_ms=latency_ms,
         )
         await self._bridge.start()
+        return True
 
     async def stop(self) -> None:
         """Stop the bridge."""
