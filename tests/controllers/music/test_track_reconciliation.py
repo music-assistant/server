@@ -435,7 +435,7 @@ async def test_ignores_tracks_from_the_same_provider(mass: MusicAssistant) -> No
 
 
 async def test_ignores_titles_that_normalize_to_nothing(mass: MusicAssistant) -> None:
-    """Titles outside the Latin alphabet all normalize to nothing, which pairs none of them."""
+    """Tracks with an empty stored normalized title are excluded from candidate pairing."""
     track_1, track_2 = await _build_duplicate_pair(mass)
     for track in (track_1, track_2):
         await mass.music.database.update(
