@@ -8,7 +8,7 @@
     },
     "cpu_profile_enabled": {
       "label": "Periodic CPU profiling",
-      "description": "Automatically capture a CPU profile window at a regular interval. The server runs slightly slower while a window is being captured."
+      "description": "Automatically capture a CPU profile window at a regular interval. Python code runs several times slower while a window is being captured, which can disturb playback on a busy server - prefer the on-demand button unless you are hunting a CPU problem."
     },
     "cpu_profile_duration": {
       "label": "CPU profile window duration (seconds)",

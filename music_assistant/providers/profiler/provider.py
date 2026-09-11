@@ -54,6 +54,10 @@ CPU_PROFILE_MIN_DURATION = 10
 CPU_PROFILE_MAX_DURATION = 300
 CPU_PROFILE_MIN_INTERVAL = 5  # minutes
 CPU_PROFILE_MAX_INTERVAL = 1440  # minutes
+# the diagnostics dump carries the whole report: give the census and tracemalloc snapshot room
+DIAGNOSTICS_SECTION_TIMEOUT = 120
+# one recorder sample per five minutes keeps a full day in the dump at a sane size
+DIAGNOSTICS_RECORDER_STEP = 30
 
 
 class ProfilerProvider(PluginProvider):
@@ -77,7 +81,7 @@ class ProfilerProvider(PluginProvider):
             ConfigEntry(
                 key=CONF_CPU_PROFILE_ENABLED,
                 type=ConfigEntryType.BOOLEAN,
-                default_value=True,
+                default_value=False,
                 required=False,
             ),
             ConfigEntry(
@@ -143,6 +147,7 @@ class ProfilerProvider(PluginProvider):
         self._started_tracemalloc = False
         self._unsubscribe_events: Callable[[], None] | None = None
         self._unregister_api: Callable[[], None] | None = None
+        self._unregister_diagnostics: Callable[[], None] | None = None
 
     async def loaded_in_mass(self) -> None:
         """Start all measurements once the provider is fully loaded."""
@@ -151,6 +156,11 @@ class ProfilerProvider(PluginProvider):
         self._unsubscribe_events = self.mass.subscribe(self._on_mass_event)
         self._unregister_api = self.mass.register_api_command(
             "profiler/report", self.get_report, required_scope=Scope.SYSTEM_MANAGE
+        )
+        self._unregister_diagnostics = self.mass.diagnostics.register_section(
+            f"provider.{self.instance_id}",
+            self._get_diagnostics_section,
+            timeout=DIAGNOSTICS_SECTION_TIMEOUT,
         )
         if (
             self.get_config_value(CONF_TRACEMALLOC_ENABLED, False, return_type=bool)
@@ -162,7 +172,7 @@ class ProfilerProvider(PluginProvider):
             self._started_tracemalloc = True
         self.mass.create_task(self._loop_lag_monitor(), task_id="profiler_lag_monitor")
         self.mass.create_task(self._flight_recorder(), task_id="profiler_flight_recorder")
-        if self.get_config_value(CONF_CPU_PROFILE_ENABLED, True, return_type=bool):
+        if self.get_config_value(CONF_CPU_PROFILE_ENABLED, False, return_type=bool):
             self.mass.create_task(self._cpu_profile_scheduler(), task_id="profiler_cpu_scheduler")
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -177,6 +187,9 @@ class ProfilerProvider(PluginProvider):
         if self._unregister_api is not None:
             self._unregister_api()
             self._unregister_api = None
+        if self._unregister_diagnostics is not None:
+            self._unregister_diagnostics()
+            self._unregister_diagnostics = None
         if self._unsubscribe_events is not None:
             self._unsubscribe_events()
             self._unsubscribe_events = None
@@ -214,6 +227,15 @@ class ProfilerProvider(PluginProvider):
     def start_cpu_profile(self) -> None:
         """Start a single on-demand CPU profile window (ignored if one is already running)."""
         self.mass.create_task(self._run_cpu_profile_window(), task_id="profiler_cpu_window")
+
+    async def _get_diagnostics_section(self) -> dict[str, Any]:
+        """Return the full report for the diagnostics dump, a day of recorder history thinned."""
+        report = await self._build_report(include_object_census=True, recorder_minutes=1440)
+        recorder = report["flight_recorder"]
+        # keep the newest sample and every step-th one before it
+        recorder["entries"] = recorder["entries"][::-1][::DIAGNOSTICS_RECORDER_STEP][::-1]
+        recorder["sample_interval_s"] = RECORDER_INTERVAL * DIAGNOSTICS_RECORDER_STEP
+        return report
 
     async def _build_report(
         self, include_object_census: bool, recorder_minutes: int
