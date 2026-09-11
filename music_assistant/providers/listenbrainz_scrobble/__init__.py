@@ -7,14 +7,13 @@
 import asyncio
 import logging
 import time
-from collections.abc import Callable
 from typing import TYPE_CHECKING, ClassVar, Final
 
 import requests.exceptions
 from liblistenbrainz import Listen, ListenBrainz
 from liblistenbrainz.errors import ListenBrainzException
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
-from music_assistant_models.enums import EventType, MediaType, ProviderFeature
+from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import UNKNOWN_ARTIST
@@ -31,9 +30,7 @@ if TYPE_CHECKING:
 CONF_USER_TOKEN = "_user_token"
 CONF_API_BASE_URL = "api_base_url"
 LISTENBRAINZ_API_URL = "https://api.listenbrainz.org"
-SUPPORTED_FEATURES: set[ProviderFeature] = (
-    set()
-)  # we don't have any special supported features (yet)
+SUPPORTED_FEATURES: set[ProviderFeature] = {ProviderFeature.SCROBBLE}
 SUPPORTED_SCROBBLE_MEDIA_TYPES: Final[frozenset[MediaType]] = frozenset({MediaType.TRACK})
 
 
@@ -48,17 +45,7 @@ class ListenBrainzScrobbleProvider(PluginProvider):
     """Plugin provider to support scrobbling of tracks."""
 
     _client: ListenBrainz
-
-    def __init__(
-        self,
-        mass: MusicAssistant,
-        manifest: ProviderManifest,
-        config: ProviderConfig,
-        supported_features: set[ProviderFeature],
-    ) -> None:
-        """Initialize MusicProvider."""
-        super().__init__(mass, manifest, config, supported_features)
-        self._on_unload: list[Callable[[], None]] = []
+    _handler: ListenBrainzEventHandler | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -79,25 +66,16 @@ class ListenBrainzScrobbleProvider(PluginProvider):
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
 
-        handler = ListenBrainzEventHandler(self._client, self.logger, self.config)
+        self._handler = ListenBrainzEventHandler(self._client, self.logger, self.config)
 
-        # subscribe to media_item_played event
-        self._on_unload.append(
-            self.mass.subscribe(handler._on_mass_media_item_played, EventType.MEDIA_ITEM_PLAYED)
-        )
-
-    async def unload(self, is_removed: bool = False) -> None:
-        """
-        Handle unload/close of the provider.
-
-        Called when provider is deregistered (e.g. MA exiting or config reloading).
-        """
-        for unload_cb in self._on_unload:
-            unload_cb()
+    async def on_media_item_played(self, report: MediaItemPlaybackProgressReport) -> None:
+        """Forward a playback progress report to ListenBrainz."""
+        if self._handler is not None:
+            await self._handler.on_media_item_played(report)
 
 
 class ListenBrainzEventHandler(ScrobblerHelper):
-    """Handles the event handling."""
+    """Submit now-playing updates and listens to ListenBrainz."""
 
     # The client raises ListenBrainzException for API/payload errors and lets raw
     # requests network errors (RequestException) propagate.
