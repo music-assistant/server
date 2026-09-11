@@ -53,6 +53,7 @@ from music_assistant.helpers.compare import (
     compare_artist,
     compare_strings,
     compare_track,
+    compare_version,
 )
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
@@ -1144,12 +1145,15 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
 
     def _is_same_release(self, existing: Album, candidate: Album) -> bool:
-        """Whether two albums are one release, allowing a year of provider drift on a title match."""
+        """Whether two albums are one release, allowing a year of provider drift on an equal edition."""
         evidence = compare_album_evidence(existing, candidate)
         if evidence != AlbumMatchEvidence.INSUFFICIENT:
             return evidence == AlbumMatchEvidence.MATCH
-        # same title and artist but the years disagree: a re-release drifts by a year at most,
-        # further apart it is another album with the same name
+        # undecided on title and artist alone: a differently worded edition is another
+        # release, the same edition is one release when its year drifted by at most a year
+        # (or is unknown on one side)
+        if not compare_version(existing.version, candidate.version):
+            return False
         if existing.year is None or candidate.year is None:
             return True
         return abs(existing.year - candidate.year) <= 1

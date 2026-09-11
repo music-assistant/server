@@ -293,6 +293,28 @@ async def test_year_drift_does_not_duplicate_a_library_release(mass: MusicAssist
     ]
 
 
+async def test_differently_worded_edition_stays_a_separate_release(mass: MusicAssistant) -> None:
+    """A remaster of an owned album is listed as its own release, not folded into the original."""
+    artist = await _seed_library(mass)
+    original = _synced_album(PROV_A, "alpha_original", "Drifting Album", ARTIST_ID_A)
+    original.year = 2001
+    await mass.music.albums.add_item_to_library(original)
+    remaster = create_album(
+        PROV_B, "beta_remaster", name="Drifting Album", artist_item_id=ARTIST_ID_B
+    )
+    remaster.version = "Remaster"
+    remaster.year = 2001
+    _register_provider(mass, PROV_B, [remaster])
+
+    result = await mass.music.artists.discography(artist.item_id, "library")
+
+    assert [(album.name, album.provider) for album in result] == [
+        (LIBRARY_ALBUM, "library"),
+        ("Drifting Album", "library"),
+        ("Drifting Album", PROV_B),
+    ]
+
+
 async def test_same_title_years_apart_stays_a_separate_release(mass: MusicAssistant) -> None:
     """Two same-titled albums released years apart are both listed."""
     artist = await _seed_library(mass)
