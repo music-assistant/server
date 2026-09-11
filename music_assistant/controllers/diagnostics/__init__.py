@@ -377,17 +377,17 @@ def _get_memory_info() -> dict[str, Any]:
     elsewhere only the peak rss is available.
     """
     try:
-        with open("/proc/self/status", encoding="ascii") as status_file:
+        with open("/proc/self/status", encoding="utf-8") as status_file:
             status = status_file.read()
-    except OSError:
-        status = ""
-    for line in status.splitlines():
-        if line.startswith("VmRSS:"):
-            return {
-                "rss_mb": round(int(line.split()[1]) / 1024, 1),
-                **parse_proc_status_rss(status),
-                **collect_cgroup_memory(),
-            }
+        for line in status.splitlines():
+            if line.startswith("VmRSS:"):
+                return {
+                    "rss_mb": round(int(line.split()[1]) / 1024, 1),
+                    **parse_proc_status_rss(status),
+                    **collect_cgroup_memory(),
+                }
+    except OSError, ValueError, IndexError:
+        pass
     # ru_maxrss is in bytes on macOS, kilobytes on other platforms
     divisor = 1024 * 1024 if sys.platform == "darwin" else 1024
     return {"peak_rss_mb": round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / divisor, 1)}
