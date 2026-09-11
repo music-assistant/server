@@ -33,6 +33,7 @@ from music_assistant.helpers.diagnostics import (
     sanitize_text,
 )
 from music_assistant.helpers.json import json_dumps, json_loads
+from music_assistant.helpers.memory import collect_cgroup_memory, parse_proc_status_rss
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.provider import Provider
 
@@ -44,7 +45,7 @@ if TYPE_CHECKING:
     from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 # maximum time one section contributor may take before it is dropped from the report
 SECTION_TIMEOUT = 2.0
 
@@ -83,7 +84,7 @@ class DiagnosticsController(CoreController):
         # adopt the always-on capture handler (installed even earlier when booted
         # through __main__, otherwise installed right here)
         self._log_handler = install_diagnostics_log_handler()
-        self._sections: dict[str, DiagnosticsSectionCallback] = {}
+        self._sections: dict[str, tuple[DiagnosticsSectionCallback, float | None]] = {}
         self._started_at = time.monotonic()
 
     async def setup(self, config: CoreConfig) -> None:
@@ -94,7 +95,10 @@ class DiagnosticsController(CoreController):
         self._sections.clear()
 
     def register_section(
-        self, name: str, callback: DiagnosticsSectionCallback
+        self,
+        name: str,
+        callback: DiagnosticsSectionCallback,
+        timeout: float | None = None,
     ) -> Callable[[], None]:
         """
         Register a callback that contributes a named section to the diagnostics report.
@@ -106,14 +110,17 @@ class DiagnosticsController(CoreController):
 
         :param name: Unique name for the section within the report.
         :param callback: Callable returning the section data as a (JSON-safe) dict.
+        :param timeout: Seconds the callback may take before the section is dropped
+            (defaults to the regular section timeout).
         """
         if name in self._sections:
             raise ValueError(f"A diagnostics section named '{name}' is already registered")
-        self._sections[name] = callback
+        self._sections[name] = (callback, timeout)
 
         def unregister() -> None:
             # only remove if this exact registration still owns the name
-            if self._sections.get(name) is callback:
+            registered = self._sections.get(name)
+            if registered is not None and registered[0] is callback:
                 self._sections.pop(name)
 
         return unregister
@@ -284,7 +291,7 @@ class DiagnosticsController(CoreController):
 
     async def _collect_sections(self) -> dict[str, Any]:
         """Collect all pluggable sections (isolated, each bounded by a timeout)."""
-        producers: list[tuple[str, DiagnosticsSectionCallback]] = []
+        producers: list[tuple[str, DiagnosticsSectionCallback, float]] = []
         for attr_name in CORE_CONTROLLER_ATTRS:
             controller = getattr(self.mass, attr_name, None)
             if controller is None:
@@ -292,23 +299,31 @@ class DiagnosticsController(CoreController):
             # skip controllers that don't implement the optional hook
             if type(controller).get_diagnostics is CoreController.get_diagnostics:
                 continue
-            producers.append((f"core.{attr_name}", controller.get_diagnostics))
+            producers.append((f"core.{attr_name}", controller.get_diagnostics, SECTION_TIMEOUT))
         for provider in sorted(self.mass.providers, key=lambda prov: prov.instance_id):
             if type(provider).get_diagnostics is Provider.get_diagnostics:
                 continue
-            producers.append((f"provider.{provider.instance_id}", provider.get_diagnostics))
-        producers.extend(self._sections.items())
+            producers.append(
+                (f"provider.{provider.instance_id}", provider.get_diagnostics, SECTION_TIMEOUT)
+            )
+        producers.extend(
+            (name, callback, SECTION_TIMEOUT if timeout is None else timeout)
+            for name, (callback, timeout) in self._sections.items()
+        )
         results = await asyncio.gather(
-            *(self._collect_section(name, producer) for name, producer in producers)
+            *(
+                self._collect_section(name, producer, timeout)
+                for name, producer, timeout in producers
+            )
         )
         return {name: data for name, data in results if data is not None}
 
     async def _collect_section(
-        self, name: str, producer: DiagnosticsSectionCallback
+        self, name: str, producer: DiagnosticsSectionCallback, timeout: float
     ) -> tuple[str, Any]:
         """Run one section contributor with timeout/failure isolation and sanitize it."""
         try:
-            async with asyncio.timeout(SECTION_TIMEOUT):
+            async with asyncio.timeout(timeout):
                 raw_result = producer()
                 result = await raw_result if inspect.isawaitable(raw_result) else raw_result
             if result is None:
@@ -355,12 +370,22 @@ def _format_timestamp(timestamp: float) -> str:
 
 
 def _get_memory_info() -> dict[str, Any]:
-    """Return the process memory usage (rss on Linux, peak rss elsewhere)."""
+    """
+    Return the process memory usage.
+
+    On Linux this is rss with its anonymous/file/shared split plus the cgroup's accounting,
+    elsewhere only the peak rss is available.
+    """
     try:
-        with open("/proc/self/status", encoding="ascii") as status_file:
-            for line in status_file:
-                if line.startswith("VmRSS:"):
-                    return {"rss_mb": round(int(line.split()[1]) / 1024, 1)}
+        with open("/proc/self/status", encoding="utf-8") as status_file:
+            status = status_file.read()
+        for line in status.splitlines():
+            if line.startswith("VmRSS:"):
+                return {
+                    "rss_mb": round(int(line.split()[1]) / 1024, 1),
+                    **parse_proc_status_rss(status),
+                    **collect_cgroup_memory(),
+                }
     except OSError, ValueError, IndexError:
         pass
     # ru_maxrss is in bytes on macOS, kilobytes on other platforms

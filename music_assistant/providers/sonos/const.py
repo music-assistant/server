@@ -83,9 +83,10 @@ NON_HIRES_MODELS = (
     "Table lamp",
 )
 
-# How much of the queue one itemWindow response describes. A speaker plays out of the window
-# it cached, so a deep one can carry it several tracks past an edit; current+next means it can
-# never be more than one track behind. The previous item keeps skip-back working on the
-# speaker. The sizes a speaker asks for are maxima, so serving fewer is within the contract.
+# How much of the queue one itemWindow response describes. A speaker only asks for a new
+# window once it runs out, so a shallow one leaves it reloading at a track boundary, which
+# Sonos can fail. A track it cached before a queue edit is refused when it asks for it, so
+# it reads the queue again. The previous item keeps skip-back working. The speaker's own
+# sizes are never exceeded.
 PREVIOUS_ITEMS = 1
-UPCOMING_ITEMS = 1
+UPCOMING_ITEMS = 10

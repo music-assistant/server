@@ -146,7 +146,7 @@ from .helpers import (
     recursive_iter,
     sorted_scandir,
 )
-from .parsers import parse_album_nfo, parse_artist_nfo
+from .parsers import nfo_album_artist, parse_album_nfo, parse_artist_nfo
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
@@ -1806,6 +1806,44 @@ class LocalFileSystemProvider(MusicProvider):
                 rejected.add(folder)
         return None
 
+    async def _album_nfo_for(
+        self,
+        folder_path: str,
+        validated_item: FileSystemItem | None,
+        validated_root: dict[str, Any] | None,
+        rejected_folders: set[str],
+        loaded: dict[str, tuple[FileSystemItem, dict[str, Any]] | None],
+    ) -> tuple[FileSystemItem, dict[str, Any]] | None:
+        """
+        Return the album.nfo (file and parsed root) that may apply to the given folder, if any.
+
+        :param folder_path: The album or disc folder to look in.
+        :param validated_item: The NFO that resolved the album's identity, if any.
+        :param validated_root: The parsed root of that validated NFO.
+        :param rejected_folders: Folders whose own album.nfo was read and rejected as identity.
+        :param loaded: Per-album memo of NFOs already read, so a file is parsed only once.
+        """
+        if folder_path in loaded:
+            return loaded[folder_path]
+        result: tuple[FileSystemItem, dict[str, Any]] | None = None
+        if validated_item is not None and validated_root is not None:
+            # identity came from the validated NFO resolution, so only that winning NFO
+            # applies. An album.nfo the other candidate folder happens to hold was never
+            # validated against this track and must not overwrite the resolved album.
+            if folder_path == validated_item.relative_parent_path:
+                result = (validated_item, validated_root)
+        elif folder_path not in rejected_folders and (
+            nfo_item := await self._nfo_item_for(folder_path, "album.nfo")
+        ):
+            # a folder whose own album.nfo was read and rejected as identity is skipped, so
+            # a relaxed (fuzzy/layout/date-prefix) match landing here never trusts that file
+            if root := await self._load_nfo_root(nfo_item, "album"):
+                result = (nfo_item, root)
+            else:
+                self.logger.warning("Failed to parse album NFO file %s", nfo_item.relative_path)
+        loaded[folder_path] = result
+        return result
+
     @staticmethod
     def _album_nfo_matches(
         root: dict[str, Any],
@@ -2049,7 +2087,7 @@ class LocalFileSystemProvider(MusicProvider):
             self._cancel_availability_probe()
         else:
             self._schedule_availability_probe()
-        self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
+        self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
 
     async def _is_reachable(self) -> bool:
         """Return whether the storage backing this provider can be read."""
@@ -3141,6 +3179,9 @@ class LocalFileSystemProvider(MusicProvider):
         # tier below; a later relaxed/fuzzy match landing on one of these must not blindly
         # trust that same rejected file during enrichment further down
         rejected_nfo_folders: set[str] = set()
+        # album.nfo files already read, shared by the album artist fallback and the
+        # metadata enrichment so no file is parsed twice
+        loaded_album_nfos: dict[str, tuple[FileSystemItem, dict[str, Any]] | None] = {}
         if not album_dir:
             # exact matching found nothing: fall back to a bounded validated album.nfo
             # (the immediate parent, and the track directory itself unless it is a disc
@@ -3188,7 +3229,33 @@ class LocalFileSystemProvider(MusicProvider):
         else:
             # album artist tag is missing, determine fallback
             fallback_action = self.config.get_value(CONF_ENTRY_MISSING_ALBUM_ARTIST.key)
-            if fallback_action == "folder_name" and album_dir:
+            if (
+                album_dir
+                and (
+                    album_nfo := await self._album_nfo_for(
+                        album_dir, nfo_item, nfo_root, rejected_nfo_folders, loaded_album_nfos
+                    )
+                )
+                and (nfo_artist_name := nfo_album_artist(album_nfo[1]))
+            ):
+                # a single album artist named in the album folder's own album.nfo beats the
+                # configured fallback, a disc subfolder's album.nfo is never consulted here
+                self.logger.warning(
+                    "%s is missing ID3 tag [albumartist], using %s from %s as fallback",
+                    track_path,
+                    nfo_artist_name,
+                    album_nfo[0].relative_path,
+                )
+                album_artists = UniqueList(
+                    [
+                        await self._parse_artist(
+                            name=nfo_artist_name,
+                            album_dir=album_dir,
+                            representative_track=representative_track,
+                        )
+                    ]
+                )
+            elif fallback_action == "folder_name" and album_dir:
                 possible_artist_folder = os.path.dirname(album_dir)
                 self.logger.warning(
                     "%s is missing ID3 tag [albumartist], using foldername %s as fallback",
@@ -3286,33 +3353,15 @@ class LocalFileSystemProvider(MusicProvider):
         for folder_path in dict.fromkeys((track_dir, album_dir)):
             if not folder_path or not await self.exists(folder_path):
                 continue
-            if nfo_item is not None and nfo_root is not None:
-                # identity was established through the bounded, validated NFO resolution
-                # fallback above: only that one winning NFO ever applies. An unrelated
-                # album.nfo the other candidate folder (track_dir or album_dir) happens to
-                # also have was never validated against this track and must not silently
-                # overwrite the resolved album's metadata.
-                if folder_path == nfo_item.relative_parent_path:
-                    parse_album_nfo(album, nfo_root, nfo_item.relative_path)
-                    await self._register_metadata_file(nfo_item, representative_track)
-            elif folder_path not in rejected_nfo_folders and (
-                read_nfo_item := await self._nfo_item_for(folder_path, "album.nfo")
+            if album_nfo := await self._album_nfo_for(
+                folder_path, nfo_item, nfo_root, rejected_nfo_folders, loaded_album_nfos
             ):
-                # found NFO file with metadata; read and parse it. Skipped when this folder's
-                # own album.nfo was already read and rejected by the validated NFO tier above,
-                # so a relaxed (fuzzy/layout/date-prefix) match landing here can't silently
-                # trust that same rejected file
-                if read_root := await self._load_nfo_root(read_nfo_item, "album"):
-                    parse_album_nfo(album, read_root, read_nfo_item.relative_path)
-                    # only a successful parse counts as having read this NFO: registering on
-                    # a malformed file would advance its token and treat the bad edit as
-                    # handled, permanently masking it (until unrelated changes trigger a full
-                    # reparse)
-                    await self._register_metadata_file(read_nfo_item, representative_track)
-                else:
-                    self.logger.warning(
-                        "Failed to parse album NFO file %s", read_nfo_item.relative_path
-                    )
+                parse_album_nfo(album, album_nfo[1], album_nfo[0].relative_path)
+                # only a successful parse counts as having read this NFO: registering on
+                # a malformed file would advance its token and treat the bad edit as
+                # handled, permanently masking it (until unrelated changes trigger a full
+                # reparse)
+                await self._register_metadata_file(album_nfo[0], representative_track)
 
             # find local images
             if images := await self._get_local_images(

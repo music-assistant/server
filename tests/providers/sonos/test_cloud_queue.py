@@ -2,16 +2,20 @@
 
 import json
 import logging
+from collections import deque
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiosonos.exceptions import FailedCommand
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import MediaType, RepeatMode
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.player import PlayerMedia
+from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
+from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.providers.sonos.player import SonosPlayer, SonosQueueWindow
 from music_assistant.providers.sonos.provider import (
     SonosPlayerProvider,
@@ -96,16 +100,34 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     return player, queues
 
 
-async def test_window_is_the_requested_item_and_the_one_after_it() -> None:
-    """Test only the item asked about and its neighbours are served, however long the queue."""
-    items = [_make_queue_item(f"track{i}") for i in range(10)]
+def _make_player_on_real_queues(count: int, repeat_mode: RepeatMode) -> SonosPlayer:
+    """Create a SonosPlayer whose queue of `count` tracks is held by the real controller."""
+    queue = PlayerQueue(
+        queue_id=QUEUE_ID, active=True, display_name="Party", available=True, items=count
+    )
+    queue.repeat_mode = repeat_mode
+    queue.current_index = 0
+    queue.index_in_buffer = 0
+    data = PlayerQueueData(queue=queue)
+    data.session_id = "session"
+    data.items = [_make_queue_item(f"track{i}") for i in range(count)]
+    queues = PlayerQueuesController.__new__(PlayerQueuesController)
+    queues.logger = logging.getLogger("test.sonos.player_queues")
+    queues._queue_data = {QUEUE_ID: data}
+    player, _ = _make_player([])
+    player.mass.player_queues = queues
+    return player
+
+
+async def test_window_is_the_requested_item_and_the_tracks_after_it() -> None:
+    """Test the window starts one before the item asked about and runs ahead from there."""
+    items = [_make_queue_item(f"track{i}") for i in range(20)]
     player, _ = _make_player(items)
 
     window = await player.build_cloud_queue_window("track5")
 
-    # a deeper window would let the speaker play several tracks out of a cache we cannot
-    # update; this way it has to ask again for every one
-    assert [x.queue_item_id for x in window.items] == ["track4", "track5", "track6"]
+    # the speaker only asks for a new window once it runs out, so it is handed a deep one
+    assert [x.queue_item_id for x in window.items] == [f"track{i}" for i in range(4, 16)]
     assert window.includes_beginning is False
     assert window.includes_end is False
 
@@ -118,7 +140,7 @@ async def test_window_without_an_item_id_starts_at_the_queue_head(item_id: str |
 
     window = await player.build_cloud_queue_window(item_id)
 
-    assert [x.queue_item_id for x in window.items] == ["track0", "track1"]
+    assert [x.queue_item_id for x in window.items] == [f"track{i}" for i in range(5)]
     assert window.includes_beginning is True
 
 
@@ -131,7 +153,8 @@ async def test_window_for_an_unknown_item_falls_back_to_the_playing_one() -> Non
 
     window = await player.build_cloud_queue_window("gone")
 
-    assert [x.queue_item_id for x in window.items] == ["track0", "track1", "track2"]
+    # centred on the playing track1 rather than the buffered track2, so it opens on track0
+    assert [x.queue_item_id for x in window.items] == [f"track{i}" for i in range(5)]
 
 
 async def test_window_flags_the_end_of_the_queue() -> None:
@@ -157,15 +180,24 @@ async def test_window_serves_an_item_added_after_the_last_enqueue() -> None:
     assert [x.queue_item_id for x in (await player.build_cloud_queue_window("track0")).items] == [
         "track0",
         "track1",
+        "track2",
+        "track3",
     ]
 
     # a party guest adds a track behind the one the speaker already buffered
     queues.items.insert(2, _make_queue_item("guest"))
 
-    # the speaker comes back when that buffered track starts, and is handed the new one
+    # the window is built from the live queue, so the next time the speaker asks it is
+    # handed the guest right after the buffered track
     window = await player.build_cloud_queue_window("track1")
 
-    assert [x.queue_item_id for x in window.items] == ["track0", "track1", "guest"]
+    assert [x.queue_item_id for x in window.items] == [
+        "track0",
+        "track1",
+        "guest",
+        "track2",
+        "track3",
+    ]
 
 
 async def test_unavailable_items_are_left_out() -> None:
@@ -328,19 +360,87 @@ async def test_itemwindow_reports_end_of_queue_when_it_cannot_be_described() -> 
 
 @pytest.mark.parametrize(
     ("requested", "expected_upcoming"),
-    [("10", ["track1"]), ("1", ["track1"]), ("0", []), ("", ["track1"]), (None, ["track1"])],
+    [
+        ("10", ["track1", "track2", "track3"]),
+        ("1", ["track1"]),
+        ("0", []),
+        ("", ["track1", "track2", "track3"]),
+        (None, ["track1", "track2", "track3"]),
+    ],
     ids=["ten", "one", "zero", "unreadable", "absent"],
 )
 async def test_upcoming_is_capped_by_what_the_speaker_allows(
     requested: str | None, expected_upcoming: list[str]
 ) -> None:
-    """Test we never serve more than the speaker's maximum, though we usually serve fewer."""
+    """Test we never serve more than the speaker's maximum."""
     items = [_make_queue_item(f"track{i}") for i in range(4)]
     player, _ = _make_player(items)
 
     window = await player.build_cloud_queue_window("track0", max_upcoming=_requested_max(requested))
 
     assert [x.queue_item_id for x in window.items] == ["track0", *expected_upcoming]
+
+
+async def test_a_speaker_gets_as_far_ahead_as_it_asks() -> None:
+    """
+    A speaker is handed as many upcoming tracks as it asks for, up to our ceiling.
+
+    It only asks for a new window once it runs out, so a window that stops one track
+    ahead leaves it reloading at the next boundary.
+    """
+    items = [_make_queue_item(f"track{i}") for i in range(15)]
+    player, _ = _make_player(items)
+
+    asked_for_ten = await player.build_cloud_queue_window("track0", max_upcoming=10)
+    asked_for_more = await player.build_cloud_queue_window("track0", max_upcoming=50)
+
+    assert len(asked_for_ten.items) == 11
+    assert len(asked_for_more.items) == 11
+
+
+@pytest.mark.parametrize(
+    ("repeat_mode", "count"),
+    [(RepeatMode.ONE, 3), (RepeatMode.ALL, 1)],
+    ids=["repeat_one", "single_track_on_repeat_all"],
+)
+async def test_a_track_repeating_itself_is_listed_once_more(
+    repeat_mode: RepeatMode, count: int
+) -> None:
+    """
+    A track that repeats itself is listed once more, not for a whole window.
+
+    The speaker is never refused a copy of the track it plays, so a window full of them
+    would keep it repeating long after repeat was switched off.
+    """
+    player = _make_player_on_real_queues(count, repeat_mode)
+
+    window = await player.build_cloud_queue_window("track0")
+
+    assert [x.queue_item_id for x in window.items] == ["track0", "track0"]
+    assert window.includes_end is False
+
+
+async def test_a_pair_repeating_itself_is_listed_once_round() -> None:
+    """
+    Test two tracks on repeat all go round once, not for a whole window.
+
+    The wrapped track is also the one before the playing track, which the stale-request
+    check lets through for skip-back, so it could not refuse the rest of such a window.
+    """
+    player = _make_player_on_real_queues(2, RepeatMode.ALL)
+
+    window = await player.build_cloud_queue_window("track0")
+
+    assert [x.queue_item_id for x in window.items] == ["track0", "track1", "track0"]
+
+
+async def test_a_short_queue_on_repeat_all_still_fills_the_window() -> None:
+    """Test repeat all wraps round a short queue, so the speaker does not run dry early."""
+    player = _make_player_on_real_queues(3, RepeatMode.ALL)
+
+    window = await player.build_cloud_queue_window("track0")
+
+    assert [x.queue_item_id for x in window.items] == [f"track{i % 3}" for i in range(11)]
 
 
 async def test_a_successful_load_releases_the_replaced_sessions_streams() -> None:
@@ -623,3 +723,155 @@ def test_queue_change_only_reaches_the_speakers_playing_it() -> None:
     # the id must be per speaker, or one speaker's refresh cancels another's
     assert provider.mass.call_later.call_args.kwargs["task_id"] == _refresh_task_id("playing")
     assert provider._pending_refresh_tasks == {_refresh_task_id("playing")}
+
+
+def _error_report(report_type: str = "update", report_id: str = "report-1") -> dict[str, object]:
+    """
+    Build the report a speaker sends when it gives up on an item.
+
+    Shaped after a real one from support#6329: it carries no positionMillis, which
+    every healthy report has.
+    """
+    return {
+        "reportId": report_id,
+        "error": {"type": "playback", "status": "ERROR_LSE"},
+        "contextVersion": "1",
+        "id": "track0@3",
+        "type": report_type,
+        "positionMillisAtSegmentStart": 0,
+        "durationPlayedMillis": 4848,
+        "timeSincePlaybackMillis": 215,
+    }
+
+
+def _player_for_error_reports() -> MagicMock:
+    """Create a speaker whose current item is the one the reports name."""
+    player = MagicMock(spec=SonosPlayer)
+    player.cloud_queue_item_generation = 3
+    player.wire_item_id = lambda item_id, generation=None: SonosPlayer.wire_item_id(
+        player, item_id, generation
+    )
+    player.current_media = MagicMock()
+    player.current_media.queue_item_id = "track0"
+    player.current_media.title = "A Strange Happening"
+    player.display_name = "Huiskamer"
+    player.reported_playback_errors = deque(maxlen=16)
+    return player
+
+
+@pytest.mark.parametrize("report_type", ["update", "final"], ids=["update", "final"])
+async def test_a_speaker_giving_up_on_an_item_is_reported(
+    caplog: pytest.LogCaptureFixture, report_type: str
+) -> None:
+    """
+    A speaker that cannot play an item says so only here, so it must not pass silently.
+
+    Playback stops while Music Assistant still believes the track is playing, and the
+    speaker sends the failure as both an update and a final report.
+    """
+    player = _player_for_error_reports()
+    provider = _make_provider()
+    request = MagicMock()
+    request.json = AsyncMock(return_value={"items": [_error_report(report_type)]})
+
+    with caplog.at_level(logging.WARNING, logger="test.sonos.cloud_queue"):
+        await provider._handle_sonos_queue_time_played(player, request)
+
+    assert "ERROR_LSE" in caplog.text
+    assert "A Strange Happening" in caplog.text
+    player.update_elapsed_time.assert_not_called()
+
+
+async def test_the_speakers_retry_of_a_failure_is_not_reported_again(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The speaker re-sends the same report until it gives up, which is one failure."""
+    player = _player_for_error_reports()
+    provider = _make_provider()
+    request = MagicMock()
+    request.json = AsyncMock(return_value={"items": [_error_report()]})
+
+    with caplog.at_level(logging.WARNING, logger="test.sonos.cloud_queue"):
+        await provider._handle_sonos_queue_time_played(player, request)
+        request.json = AsyncMock(return_value={"items": [_error_report("final")]})
+        await provider._handle_sonos_queue_time_played(player, request)
+
+    assert caplog.text.count("ERROR_LSE") == 1
+
+
+async def test_a_batch_of_failures_resent_together_is_not_reported_again(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One report can carry several failures, and the speaker resends the whole batch."""
+    player = _player_for_error_reports()
+    provider = _make_provider()
+    batch = {"items": [_error_report(report_id="report-a"), _error_report(report_id="report-b")]}
+    request = MagicMock()
+    request.json = AsyncMock(return_value=batch)
+
+    with caplog.at_level(logging.WARNING, logger="test.sonos.cloud_queue"):
+        await provider._handle_sonos_queue_time_played(player, request)
+        request.json = AsyncMock(return_value=batch)
+        await provider._handle_sonos_queue_time_played(player, request)
+
+    assert caplog.text.count("ERROR_LSE") == 2
+
+
+async def test_a_later_failure_on_another_item_is_reported(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Only the repeat of one report is held back, never the next thing that fails."""
+    player = _player_for_error_reports()
+    provider = _make_provider()
+    request = MagicMock()
+
+    with caplog.at_level(logging.WARNING, logger="test.sonos.cloud_queue"):
+        request.json = AsyncMock(return_value={"items": [_error_report()]})
+        await provider._handle_sonos_queue_time_played(player, request)
+        request.json = AsyncMock(return_value={"items": [_error_report(report_id="report-2")]})
+        await provider._handle_sonos_queue_time_played(player, request)
+
+    assert caplog.text.count("ERROR_LSE") == 2
+
+
+@pytest.mark.parametrize("status", [404, "404"], ids=["int", "str"])
+async def test_a_track_our_stream_server_refused_is_not_reported_as_a_failure(
+    caplog: pytest.LogCaptureFixture, status: int | str
+) -> None:
+    """
+    A 404 is us refusing a track the queue moved past, not the speaker failing.
+
+    After a queue edit the speaker asks for every track it cached, and each refusal comes
+    back as a report. Those must not bury the failures this log is for.
+    """
+    player = _player_for_error_reports()
+    provider = _make_provider()
+    refused = {
+        **_error_report("final", report_id="refused-1"),
+        "error": {"type": "http", "status": status},
+        "id": "track1@3",
+    }
+    request = MagicMock()
+    request.json = AsyncMock(return_value={"items": [refused]})
+
+    with caplog.at_level(logging.DEBUG, logger="test.sonos.cloud_queue"):
+        await provider._handle_sonos_queue_time_played(player, request)
+
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+    assert "refused track1@3" in caplog.text
+    # nor may it take a place in the history that holds back repeats of real failures
+    assert not player.reported_playback_errors
+
+
+async def test_another_http_error_is_still_reported(caplog: pytest.LogCaptureFixture) -> None:
+    """Only a refusal is expected, any other http error the speaker hit is a real failure."""
+    player = _player_for_error_reports()
+    provider = _make_provider()
+    failed = {**_error_report(report_id="http-500"), "error": {"type": "http", "status": 500}}
+    request = MagicMock()
+    request.json = AsyncMock(return_value={"items": [failed]})
+
+    with caplog.at_level(logging.WARNING, logger="test.sonos.cloud_queue"):
+        await provider._handle_sonos_queue_time_played(player, request)
+
+    assert "reported 500 (http)" in caplog.text

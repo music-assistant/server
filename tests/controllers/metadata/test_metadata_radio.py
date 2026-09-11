@@ -1,13 +1,19 @@
-"""Tests for the RadioArtworkMixin name-matching helpers on MetaDataController."""
+"""Tests for the RadioArtworkMixin helpers on MetaDataController."""
+
+from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import ImageType
+from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
 from music_assistant_models.media_items import (
     Artist,
+    AudioFormat,
     ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
+    Radio,
 )
+from music_assistant_models.queue_item import QueueItem
+from music_assistant_models.streamdetails import StreamDetails
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.metadata import MetaDataController
@@ -27,6 +33,19 @@ def _release_group(title: str) -> MusicBrainzReleaseGroup:
 def _controller() -> MetaDataController:
     """Create a bare MetaDataController without running __init__."""
     return MetaDataController.__new__(MetaDataController)
+
+
+def _streamdetails() -> StreamDetails:
+    """Build minimal radio streamdetails bound to queue q1."""
+    return StreamDetails(
+        provider="radio_prov",
+        item_id="1",
+        audio_format=AudioFormat(content_type=ContentType.MP3),
+        media_type=MediaType.RADIO,
+        stream_type=StreamType.HTTP,
+        path="http://stream",
+        queue_id="q1",
+    )
 
 
 class TestNormalizeRadioArtistName:
@@ -140,3 +159,40 @@ class TestPrioritizeReleaseGroups:
         groups = [_release_group("First"), _release_group("Second")]
         result = MetaDataController._prioritize_release_groups(groups, "!!!")
         assert result is groups
+
+
+class TestGetRadioStreamStationImage:
+    """`get_radio_stream_station_image` only trusts the queue item that owns the stream."""
+
+    @staticmethod
+    def _setup(current_streamdetails: StreamDetails) -> MetaDataController:
+        """Build a controller whose queue is playing a radio item with a logo."""
+        radio = Radio(item_id="1", provider="library", name="Station", provider_mappings=set())
+        radio.metadata.images = UniqueList(
+            [MediaItemImage(type=ImageType.THUMB, path="logo.png", provider="library")]
+        )
+        current_item = QueueItem(
+            queue_id="q1",
+            queue_item_id="qi1",
+            name=radio.name,
+            duration=None,
+            streamdetails=current_streamdetails,
+            media_item=radio,
+        )
+        queue = MagicMock(current_item=current_item)
+        ctrl = _controller()
+        ctrl.mass = MagicMock()
+        ctrl.mass.player_queues.get.return_value = queue
+        ctrl.get_image_url = MagicMock(return_value="http://ma/logo.png")  # type: ignore[method-assign]
+        return ctrl
+
+    def test_image_of_owning_item(self) -> None:
+        """The station logo is returned when the current item holds these streamdetails."""
+        streamdetails = _streamdetails()
+        ctrl = self._setup(streamdetails)
+        assert ctrl.get_radio_stream_station_image(streamdetails) == "http://ma/logo.png"
+
+    def test_no_image_from_previous_item(self) -> None:
+        """No image is returned while the queue still reports another item as current."""
+        ctrl = self._setup(_streamdetails())
+        assert ctrl.get_radio_stream_station_image(_streamdetails()) is None

@@ -123,6 +123,7 @@ from music_assistant.helpers.audio import (
     audio_source_silence_keepalive,
     build_concat_filelist,
     calculate_content_length,
+    decoded_pcm_format,
     get_bit_rate,
     get_normalization_mode,
     get_parts_from_position,
@@ -151,6 +152,7 @@ from music_assistant.helpers.playlists import (
     parse_playlist_data,
     read_playlist_body,
 )
+from music_assistant.helpers.provider_access import playback_sources
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import (
     clean_stream_title,
@@ -619,10 +621,16 @@ class StreamsAudio:
                 f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
             )
 
+        # the playback user's own music sources are steered to first, the ones they
+        # may not use at all are dropped
+        allowed, preferred_providers = await playback_sources(mass, queue_item.queue_id)
+
         if (
             queue_item.streamdetails
             # cached details of an excluded instance are exactly what we select away from
             and queue_item.streamdetails.provider not in excluded_provider_instances
+            # nor of a source that is no longer one of the playback user's
+            and self._may_serve_playback(queue_item.streamdetails.provider, allowed)
             and (
                 # reuse if the buffer can serve this seek position (fast seek path)
                 (
@@ -641,20 +649,24 @@ class StreamsAudio:
 
             media_item = queue_item.media_item
             assert media_item is not None  # for type checking
-            preferred_providers: list[str] = []
-            if (
-                (pq_data := mass.player_queues.queue_data_or_none(queue_item.queue_id))
-                and pq_data.userid
-                and (playback_user := await mass.webserver.auth.get_user(pq_data.userid))
-                and playback_user.provider_filter
-            ):
-                # handle steering into user preferred providerinstance
-                preferred_providers = playback_user.provider_filter
             candidates = self._get_streamdetail_candidates(
                 media_item.provider_mappings,
                 preferred_providers,
                 excluded_provider_instances,
+                allowed,
             )
+            if not candidates and allowed is not None:
+                # tell an item blocked by the user's music sources apart from one whose
+                # sources are merely unreachable, by rebuilding without the restriction
+                blocked = self._get_streamdetail_candidates(
+                    media_item.provider_mappings,
+                    preferred_providers,
+                    excluded_provider_instances,
+                    None,
+                )
+                if blocked:
+                    msg = f"{queue_item.name} is not available on any music source of this user"
+                    raise MediaNotFoundError(msg, translation_key="media_not_available_for_user")
             streamdetails = await self._request_streamdetails(candidates, media_item.media_type)
 
             if not streamdetails:
@@ -3412,13 +3424,14 @@ class StreamsAudio:
         prefer_album_loudness = bool(
             initial_streamdetails and initial_streamdetails.prefer_album_loudness
         )
+        allowed, preferred = await playback_sources(self.mass, queue_item.queue_id)
         all_candidate_instances = {
             provider.instance_id
             for mapping in (
                 queue_item.media_item.provider_mappings if queue_item.media_item else ()
             )
             if mapping.available
-            for provider in self._get_mapping_providers(mapping)
+            for provider in self._get_mapping_providers(mapping, allowed)
         }
         if initial_streamdetails is not None:
             all_candidate_instances.add(initial_streamdetails.provider)
@@ -3427,7 +3440,7 @@ class StreamsAudio:
         match_pending = (
             allow_provider_match
             and isinstance(queue_item.media_item, Track)
-            and self._has_alternative_match_providers(queue_item.media_item)
+            and self._has_alternative_match_providers(queue_item.media_item, allowed)
         )
 
         deadline = loop.time() + capacity_wait_timeout
@@ -3508,7 +3521,11 @@ class StreamsAudio:
                         match_pending = False
                         try:
                             discovered = await self._discover_alternative_provider_mappings(
-                                queue_item, busy_instances, max(deadline - loop.time(), 0)
+                                queue_item,
+                                busy_instances,
+                                max(deadline - loop.time(), 0),
+                                allowed,
+                                preferred,
                             )
                         except Exception as err:
                             # discovery is best-effort: any failure falls back to the
@@ -3538,6 +3555,7 @@ class StreamsAudio:
         provider_mappings: Iterable[ProviderMapping],
         preferred_providers: list[str],
         excluded_provider_instances: set[str],
+        allowed: list[str] | None,
     ) -> list[tuple[ProviderMapping, Provider]]:
         """
         Return mapping candidates in steering, quality, and instance-fallback order.
@@ -3545,6 +3563,7 @@ class StreamsAudio:
         :param provider_mappings: Mappings attached to the media item.
         :param preferred_providers: Provider instances tried before widening to the rest.
         :param excluded_provider_instances: Provider instances unavailable to this attempt.
+        :param allowed: Music sources the playback user may use, or None for all of them.
         :return: Ordered provider mapping candidates.
         """
         ordered_mappings = sorted(
@@ -3557,7 +3576,7 @@ class StreamsAudio:
             if not mapping.available:
                 self.logger.debug("Skipping unavailable %s", mapping)
                 continue
-            for provider in self._get_mapping_providers(mapping):
+            for provider in self._get_mapping_providers(mapping, allowed):
                 candidate_id = (provider.instance_id, mapping.item_id)
                 if (
                     candidate_id in seen_candidates
@@ -3572,19 +3591,48 @@ class StreamsAudio:
                     fallback_candidates.append(candidate)
         return [*preferred_candidates, *fallback_candidates]
 
-    def _get_mapping_providers(self, mapping: ProviderMapping) -> list[Provider]:
+    def _may_serve_playback(self, instance_id: str, allowed: list[str] | None) -> bool:
+        """
+        Return whether the given provider instance may serve this playback.
+
+        :param instance_id: The provider instance to check.
+        :param allowed: Music sources the playback user may use, or None for all of them.
+        """
+        if allowed is None:
+            return True
+        # a plugin provider (ai_radio, smart_playlist) carries no access record of its
+        # own, so only music sources are narrowed down to what this user may use
+        provider = self.mass.get_provider(instance_id, return_unavailable=True)
+        return provider is not None and (
+            provider.type != ProviderType.MUSIC or instance_id in allowed
+        )
+
+    def _get_mapping_providers(
+        self, mapping: ProviderMapping, allowed: list[str] | None
+    ) -> list[Provider]:
         """
         Return the mapped provider followed by compatible instances of its streaming catalog.
 
         :param mapping: Provider mapping whose item ID will be requested.
+        :param allowed: Music sources the playback user may use, or None for all of them.
         :return: Loaded provider instances that can resolve the mapping.
         """
         providers: list[Provider] = []
         if (
-            primary_provider := self.mass.get_provider(
-                mapping.provider_instance, return_unavailable=True
+            (
+                primary_provider := self.mass.get_provider(
+                    mapping.provider_instance, return_unavailable=True
+                )
             )
-        ) and primary_provider.available:
+            and primary_provider.available
+            # a plugin provider (ai_radio, smart_playlist) carries no access record of its
+            # own, so only music sources are narrowed down to what this user may use
+            and (
+                allowed is None
+                or primary_provider.type != ProviderType.MUSIC
+                or primary_provider.instance_id in allowed
+            )
+        ):
             providers.append(primary_provider)
         # another account of the same streaming catalog serves the same item ID,
         # so it can stand in when the mapped instance can not
@@ -3595,6 +3643,7 @@ class StreamsAudio:
                 or not provider.is_streaming_provider
                 or provider.domain != mapping.provider_domain
                 or provider in providers
+                or (allowed is not None and provider.instance_id not in allowed)
             ):
                 continue
             providers.append(provider)
@@ -3603,13 +3652,14 @@ class StreamsAudio:
         return providers
 
     def _is_match_candidate_provider(
-        self, provider: MusicProvider, known_domains: set[str]
+        self, provider: MusicProvider, known_domains: set[str], allowed: list[str] | None
     ) -> bool:
         """
         Return whether a provider is eligible to search a track match on.
 
         :param provider: Music provider to check.
         :param known_domains: Provider domains the track already has mappings for.
+        :param allowed: Music sources the playback user may use, or None for all of them.
         """
         return (
             provider.available
@@ -3617,22 +3667,31 @@ class StreamsAudio:
             and ProviderFeature.SEARCH in provider.supported_features
             and provider.domain not in known_domains
             and MediaType.TRACK in provider.supported_media_types
+            and (allowed is None or provider.instance_id in allowed)
         )
 
-    def _has_alternative_match_providers(self, media_item: Track) -> bool:
+    def _has_alternative_match_providers(
+        self, media_item: Track, allowed: list[str] | None
+    ) -> bool:
         """
         Return whether any configured streaming provider could carry an unmapped match.
 
         :param media_item: Track whose existing mappings define the known provider domains.
+        :param allowed: Music sources the playback user may use, or None for all of them.
         """
         known_domains = {mapping.provider_domain for mapping in media_item.provider_mappings}
         return any(
-            self._is_match_candidate_provider(provider, known_domains)
+            self._is_match_candidate_provider(provider, known_domains, allowed)
             for provider in self.mass.music.providers
         )
 
     async def _discover_alternative_provider_mappings(
-        self, queue_item: QueueItem, busy_instances: set[str], remaining: float
+        self,
+        queue_item: QueueItem,
+        busy_instances: set[str],
+        remaining: float,
+        allowed: list[str] | None,
+        preferred: list[str],
     ) -> set[str]:
         """
         Search other streaming providers for the queue item's track and widen its mappings.
@@ -3643,6 +3702,8 @@ class StreamsAudio:
         :param queue_item: Queue item whose track should be matched on another provider.
         :param busy_instances: Provider instances already known to be saturated.
         :param remaining: Seconds left of the caller's capacity budget.
+        :param allowed: Music sources the playback user may use, or None for all of them.
+        :param preferred: Music sources the playback user owns, searched ahead of the rest.
         :return: Provider instances able to serve the discovered mappings.
         """
         media_item = queue_item.media_item
@@ -3652,21 +3713,15 @@ class StreamsAudio:
         eligible = [
             provider
             for provider in self.mass.music.providers
-            if self._is_match_candidate_provider(provider, known_domains)
+            if self._is_match_candidate_provider(provider, known_domains, allowed)
             and provider.instance_id not in busy_instances
             and provider.has_available_stream_slot
         ]
         if not eligible:
             return set()
         # mirror the playback user's provider steering for the search order
-        if (
-            (pq_data := self.mass.player_queues.queue_data_or_none(queue_item.queue_id))
-            and pq_data.userid
-            and (playback_user := await self.mass.webserver.auth.get_user(pq_data.userid))
-            and playback_user.provider_filter
-        ):
-            preferred = set(playback_user.provider_filter)
-            eligible.sort(key=lambda provider: provider.instance_id not in preferred)
+        preferred_instances = set(preferred)
+        eligible.sort(key=lambda provider: provider.instance_id not in preferred_instances)
         # one instance per domain: a found mapping widens to sibling instances anyway
         candidates: list[MusicProvider] = []
         for provider in eligible:
@@ -3711,7 +3766,7 @@ class StreamsAudio:
         return {
             provider.instance_id
             for mapping in matches
-            for provider in self._get_mapping_providers(mapping)
+            for provider in self._get_mapping_providers(mapping, allowed)
         }
 
     async def _request_streamdetails(
@@ -4520,8 +4575,8 @@ class StreamsAudio:
         # the depth the audio arrives in, not the one the source claims: a
         # provider that decoded on our behalf may advertise a narrower format
         # for display, and narrowing the stream to that would truncate it
-        bit_depth = arriving_audio_format(streamdetails).bit_depth
-        return ContentType.from_bit_depth(bit_depth), bit_depth
+        decoded_format = decoded_pcm_format(streamdetails)
+        return decoded_format.content_type, decoded_format.bit_depth
 
     def _select_audio_source_pcm_format(
         self,

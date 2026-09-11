@@ -60,6 +60,7 @@ from music_assistant.controllers.webserver.helpers.ssl import (
 )
 from music_assistant.helpers.api import parse_arguments
 from music_assistant.helpers.json import json_dumps, json_loads
+from music_assistant.helpers.provider_access import with_derived_provider_filter
 from music_assistant.helpers.redirect_validation import (
     build_code_redirect_url,
     is_allowed_redirect_url,
@@ -480,7 +481,6 @@ class WebserverController(CoreController):
         self,
         user_id: str,
         player_filter: list[str] | None = None,
-        provider_filter: list[str] | None = None,
     ) -> None:
         """
         Apply updated access filters to the live sessions of a user.
@@ -490,7 +490,6 @@ class WebserverController(CoreController):
 
         :param user_id: ID of the user whose sessions must be updated.
         :param player_filter: The new player filter, or None to leave it untouched.
-        :param provider_filter: The new provider filter, or None to leave it untouched.
         """
         for client in list(self.clients):
             user = client.authenticated_user
@@ -499,8 +498,6 @@ class WebserverController(CoreController):
             # updated in place: the connection's context holds this very object
             if player_filter is not None:
                 user.player_filter[:] = player_filter
-            if provider_filter is not None:
-                user.provider_filter[:] = provider_filter
             self.logger.debug("Updated the access filters of a live session of %s", user.username)
 
     def set_sendspin_player_for_token(self, token: str, player_id: str) -> None:
@@ -1034,7 +1031,7 @@ class WebserverController(CoreController):
             response_data = {
                 "success": True,
                 "token": token,
-                "user": auth_result.user.to_dict(),
+                "user": with_derived_provider_filter(self.mass, auth_result.user).to_dict(),
             }
 
             # If return_url provided, append code parameter and return as redirect_to
@@ -1101,7 +1098,7 @@ class WebserverController(CoreController):
         if not user:
             return web.Response(status=401, text="Not authenticated")
 
-        return web.json_response(user.to_dict())
+        return web.json_response(with_derived_provider_filter(self.mass, user).to_dict())
 
     async def _handle_auth_me_update(self, request: web.Request) -> web.Response:
         """Handle request to update current user's profile."""
@@ -1126,7 +1123,12 @@ class WebserverController(CoreController):
                 avatar_url=avatar_url,
             )
 
-            return web.json_response({"success": True, "user": updated_user.to_dict()})
+            return web.json_response(
+                {
+                    "success": True,
+                    "user": with_derived_provider_filter(self.mass, updated_user).to_dict(),
+                }
+            )
         except Exception:
             self.logger.exception("Error updating user profile")
             return web.json_response(
@@ -1324,7 +1326,7 @@ class WebserverController(CoreController):
             response_data: dict[str, Any] = {
                 "success": True,
                 "token": token,
-                "user": user.to_dict(),
+                "user": with_derived_provider_filter(self.mass, user).to_dict(),
             }
 
             # Only forward the token to a trusted destination (no consent step here).
