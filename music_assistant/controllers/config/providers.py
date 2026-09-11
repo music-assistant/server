@@ -250,7 +250,7 @@ class ProviderConfigMixin:
         owner = f"provider.{raw_conf['domain']}" if raw_conf else "common"
         return _with_translation_owner(list(DEFAULT_PROVIDER_CONFIG_ENTRIES), owner)
 
-    @api_command("config/providers/invoke_action", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
+    @api_command("config/providers/invoke_action", required_scope=Scope.CONFIG_PROVIDERS_OWN)
     async def invoke_provider_config_action(
         self, instance_id: str, action: str
     ) -> list[ConfigEntry] | ConfigActionResult:
@@ -259,11 +259,13 @@ class ProviderConfigMixin:
 
         A ``ConfigActionResult`` holds the outcome to report to the user; an empty list
         means the action ran with nothing to report; a non-empty list holds the entries
-        the options page should re-render with.
+        the options page should re-render with. A caller that does not manage every
+        music source may only do this on a music source it owns.
 
         :param instance_id: The provider instance id (must be loaded).
         :param action: The action id of the pressed button.
         """
+        self._check_provider_manage_permission(instance_id)
         provider = self.mass.get_provider(instance_id, return_unavailable=True)
         if provider is None:
             msg = f"Provider {instance_id} is not loaded"
@@ -312,7 +314,7 @@ class ProviderConfigMixin:
         entries = await self._resolve_provider_config_entries(provider)
         provider.config = cast("ProviderConfig", ProviderConfig.parse(entries, raw_conf))
 
-    @api_command("config/providers/save", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
+    @api_command("config/providers/save", required_scope=Scope.CONFIG_PROVIDERS_OWN)
     async def save_provider_config(
         self,
         provider_domain: str,
@@ -324,6 +326,8 @@ class ProviderConfigMixin:
 
         Adding a new instance goes exclusively through the setup flow
         (``config/providers/setup``); this endpoint only updates an existing instance.
+        A caller that does not manage every music source may only update a music
+        source it owns.
 
         :param provider_domain: Domain of the provider (retained for API compatibility).
         :param values: The raw values for config entries to store/update.
@@ -332,6 +336,7 @@ class ProviderConfigMixin:
         if instance_id is None:
             msg = "Adding a provider is only possible through the setup flow"
             raise ValueError(msg)
+        self._check_provider_manage_permission(instance_id)
         config = await self._update_provider_config(instance_id, values)
         # return full config, just in case
         return await self.get_provider_config(config.instance_id)
@@ -423,14 +428,22 @@ class ProviderConfigMixin:
         self.save(immediate=True)
         self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
 
-    @api_command("config/providers/remove", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
+    @api_command("config/providers/remove", required_scope=Scope.CONFIG_PROVIDERS_OWN)
     async def remove_provider_config(self, instance_id: str) -> None:
-        """Remove ProviderConfig."""
+        """
+        Remove a provider instance and its config.
+
+        A caller that does not manage every music source may only remove a music
+        source it owns.
+
+        :param instance_id: The provider instance to remove.
+        """
         conf_key = f"{CONF_PROVIDERS}/{instance_id}"
         existing = self.get(conf_key)
         if not existing:
             msg = f"Provider {instance_id} does not exist"
             raise KeyError(msg)
+        self._check_provider_manage_permission(instance_id)
         prov_manifest = self.mass.get_provider_manifest(existing["domain"])
         if prov_manifest.builtin:
             msg = f"Builtin provider {prov_manifest.name} can not be removed."
@@ -609,14 +622,22 @@ class ProviderConfigMixin:
         ):
             entry.value = value
 
-    @api_command("config/providers/reload", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
+    @api_command("config/providers/reload", required_scope=Scope.CONFIG_PROVIDERS_OWN)
     async def _reload_provider(self, instance_id: str) -> None:
-        """Reload provider."""
+        """
+        Reload a provider instance.
+
+        A caller that does not manage every music source may only reload a music
+        source it owns.
+
+        :param instance_id: The provider instance to reload.
+        """
         try:
             config = await self.get_provider_config(instance_id)
         except KeyError:
             # Edge case: Provider was removed before we could reload it
             return
+        self._check_provider_manage_permission(instance_id)
         await self.mass.load_provider_config(config)
 
     async def _update_provider_config(
@@ -805,6 +826,29 @@ class ProviderConfigMixin:
             # an admin (or the server itself) sets up a source for the entire household
             return None
         return ProviderAccess(owner=user.user_id, sharing=ProviderSharing.PRIVATE)
+
+    def _check_provider_setup_permission(self, manifest: ProviderManifest) -> None:
+        """Raise when the calling user may not add an instance of the given provider."""
+        user, manages_all_sources = self._access_caller()
+        if user is None or manages_all_sources:
+            return
+        # a member may only add what becomes a music source of its own: a music
+        # service that allows more than one account
+        if manifest.type != ProviderType.MUSIC or manifest.builtin or not manifest.multi_instance:
+            raise InsufficientPermissions(
+                f"The {Scope.CONFIG_PROVIDERS_WRITE.value} scope is required to add {manifest.name}"
+            )
+
+    def _check_provider_manage_permission(self, instance_id: str) -> None:
+        """Raise when the calling user may not manage the given provider instance."""
+        user, manages_all_sources = self._access_caller()
+        if user is None or manages_all_sources:
+            return
+        if source_owner(self.mass, instance_id) != user.user_id:
+            raise InsufficientPermissions(
+                f"The {Scope.CONFIG_PROVIDERS_WRITE.value} scope is required to manage "
+                "a provider you do not own"
+            )
 
     async def _validate_access_user(self, user_id: str) -> User:
         """Return the user a music source may be shared with, or raise if it may not."""

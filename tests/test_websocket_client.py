@@ -8,8 +8,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.api import CommandMessage, ErrorResultMessage
 from music_assistant_models.auth import Scope, User, UserRole
+from music_assistant_models.enums import EventType, FlowStepType
 from music_assistant_models.errors import InsufficientPermissions
+from music_assistant_models.event import MassEvent
+from music_assistant_models.setup_flow import SetupFlowStep
 
+from music_assistant.controllers.config.flows import SetupFlowAccess, SetupFlowMixin
 from music_assistant.controllers.config.providers import ProviderConfigMixin
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_client_id,
@@ -21,14 +25,23 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from music_assistant.helpers.api import APICommandHandler
+from tests.common import SELF_SERVICE_ROLE
 
 
 async def _noop_command() -> None:
     """Test command target."""
 
 
-def _create_client(user_role: UserRole | None, handler: APICommandHandler) -> Any:
-    """Create a minimally wired websocket client handler for dispatch tests."""
+def _create_client(
+    user_role: str | None, handler: APICommandHandler, user_id: str = "user_1"
+) -> Any:
+    """
+    Create a minimally wired websocket client handler for dispatch tests.
+
+    :param user_role: Role id of the connection's user, None for an unauthenticated socket.
+    :param handler: The single command handler the mocked server serves.
+    :param user_id: User id of the connection's user.
+    """
     client: Any = WebsocketClientHandler.__new__(WebsocketClientHandler)
     client._logger = MagicMock()
     client.mass = MagicMock()
@@ -36,7 +49,7 @@ def _create_client(user_role: UserRole | None, handler: APICommandHandler) -> An
     # close the coroutine passed to create_task to avoid "never awaited" warnings
     client.mass.create_task = MagicMock(side_effect=lambda coro, *_: coro.close())
     client._authenticated_user = (
-        User(user_id="user_1", username="tester", role=user_role) if user_role else None
+        User(user_id=user_id, username="tester", role=user_role) if user_role else None
     )
     client._current_token = "token" if user_role else None
     client._sendspin_player_id = None
@@ -67,7 +80,54 @@ def _sent_error_code(client: Any) -> str | None:
     return None
 
 
+def _subscribed_client(
+    user_role: str | None, user_id: str = "user_1", access: SetupFlowAccess | None = None
+) -> Any:
+    """
+    Create a client that ran the real event subscription, ready to be fed events.
+
+    :param user_role: Role id of the connection's user, None for an unauthenticated socket.
+    :param user_id: User id of the connection's user.
+    :param access: The access record the server resolves every setup flow to.
+    """
+    client = _create_client(user_role, _command_handler(), user_id=user_id)
+    client._events_unsub_callback = None
+    client._send_message_sync = MagicMock()
+    client.mass.config.get_setup_flow_access = MagicMock(return_value=access)
+    client._subscribe_to_events()
+    return client
+
+
+def _sent_events(client: Any, event: MassEvent) -> list[MassEvent]:
+    """Feed the event to the handler the client subscribed with, returning what it forwarded."""
+    client.mass.subscribe.call_args.args[0](event)
+    return [call.args[0] for call in client._send_message_sync.call_args_list]
+
+
+def _flow_event(flow_id: str = "flow1") -> MassEvent:
+    """Return a setup flow step event for the given flow."""
+    return MassEvent(
+        event=EventType.SETUP_FLOW_UPDATED,
+        object_id=flow_id,
+        data=SetupFlowStep(flow_id=flow_id, step_id="credentials", type=FlowStepType.FORM),
+    )
+
+
 PERMISSION_DENIED = str(InsufficientPermissions.error_code)
+
+# the commands a member may run on the music sources it owns
+SELF_SERVICE_COMMANDS = [
+    pytest.param(ProviderConfigMixin.invoke_provider_config_action, id="invoke_action"),
+    pytest.param(ProviderConfigMixin.save_provider_config, id="save"),
+    pytest.param(ProviderConfigMixin.set_provider_access, id="set_access"),
+    pytest.param(ProviderConfigMixin.remove_provider_config, id="remove"),
+    pytest.param(ProviderConfigMixin._reload_provider, id="reload"),
+    pytest.param(SetupFlowMixin.setup_provider, id="setup"),
+    pytest.param(SetupFlowMixin.reconfigure_provider, id="reconfigure"),
+]
+
+# the owner of the flow the member-owned setup flow tests resolve
+FLOW_OWNER = "user_1"
 
 
 @pytest.mark.asyncio
@@ -106,10 +166,16 @@ async def test_admin_scoped_command_rejects_non_admin(role: UserRole) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("command", SELF_SERVICE_COMMANDS)
 @pytest.mark.parametrize("role", [UserRole.USER, UserRole.GUEST])
-async def test_set_provider_access_rejects_a_member(role: UserRole) -> None:
-    """Sharing a music source needs a scope no member holds yet, so only an admin may."""
-    scope = getattr(ProviderConfigMixin.set_provider_access, "api_required_scope", None)
+async def test_self_service_command_rejects_a_member(role: UserRole, command: Any) -> None:
+    """
+    Adding and managing your own music sources needs a scope no builtin role holds yet.
+
+    :param role: The role of the calling user.
+    :param command: The command handler function to dispatch.
+    """
+    scope = getattr(command, "api_required_scope", None)
     assert scope is Scope.CONFIG_PROVIDERS_OWN
     client = _create_client(role, _command_handler(required_scope=scope))
 
@@ -117,6 +183,23 @@ async def test_set_provider_access_rejects_a_member(role: UserRole) -> None:
 
     assert _sent_error_code(client) == PERMISSION_DENIED
     client.mass.create_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("self_service_role")
+@pytest.mark.parametrize("role", [UserRole.ADMIN, SELF_SERVICE_ROLE], ids=["admin", "granted_role"])
+async def test_self_service_command_allows_admin_and_granted_role(role: str) -> None:
+    """
+    An admin and a role that was granted the self-service scope both reach the command.
+
+    :param role: Role id of the calling user.
+    """
+    client = _create_client(role, _command_handler(required_scope=Scope.CONFIG_PROVIDERS_OWN))
+
+    await client._handle_command(CommandMessage(message_id="1", command="test/protected"))
+
+    assert _sent_error_code(client) is None
+    client.mass.create_task.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -198,3 +281,78 @@ async def test_unauthenticated_command_does_not_inherit_a_user() -> None:
     assert _sent_error_code(client) is None
     assert get_current_user() is None
     assert get_current_token() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("self_service_role")
+@pytest.mark.parametrize(
+    ("user_id", "role", "delivered"),
+    [
+        (FLOW_OWNER, SELF_SERVICE_ROLE, True),
+        ("user_2", SELF_SERVICE_ROLE, False),
+        ("admin", UserRole.ADMIN, True),
+        ("user_2", UserRole.USER, False),
+        ("user_2", None, False),
+    ],
+    ids=["owner", "another_member", "admin", "member_without_the_scope", "unauthenticated"],
+)
+async def test_a_member_setup_flow_step_reaches_only_its_owner(
+    user_id: str, role: str | None, delivered: bool
+) -> None:
+    """
+    The steps of a member's setup flow go to that member and to an admin, to nobody else.
+
+    :param user_id: User id of the connection's user.
+    :param role: Role id of the connection's user, None for an unauthenticated socket.
+    :param delivered: Whether the step is expected to reach this client.
+    """
+    access = SetupFlowAccess(Scope.CONFIG_PROVIDERS_OWN, FLOW_OWNER)
+    client = _subscribed_client(role, user_id=user_id, access=access)
+    event = _flow_event()
+
+    assert _sent_events(client, event) == ([event] if delivered else [])
+
+
+@pytest.mark.asyncio
+async def test_a_server_started_setup_flow_step_reaches_every_member(
+    self_service_role: str,
+) -> None:
+    """
+    A setup flow without an owner is served to anyone holding the scope it started with.
+
+    :param self_service_role: Role id granted the self-service scope.
+    """
+    access = SetupFlowAccess(Scope.CONFIG_PROVIDERS_OWN)
+    client = _subscribed_client(self_service_role, user_id="user_2", access=access)
+    event = _flow_event()
+
+    assert _sent_events(client, event) == [event]
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("self_service_role")
+@pytest.mark.parametrize(
+    ("role", "delivered"),
+    [(UserRole.ADMIN, True), (SELF_SERVICE_ROLE, False)],
+    ids=["admin", "member"],
+)
+async def test_an_unknown_setup_flow_step_reaches_only_an_admin(role: str, delivered: bool) -> None:
+    """
+    A step of a flow that can no longer be resolved is held back from everyone but an admin.
+
+    :param role: Role id of the connection's user.
+    :param delivered: Whether the step is expected to reach this client.
+    """
+    client = _subscribed_client(role, access=None)
+    event = _flow_event()
+
+    assert _sent_events(client, event) == ([event] if delivered else [])
+
+
+@pytest.mark.asyncio
+async def test_other_events_are_forwarded_untouched() -> None:
+    """An event that is no setup flow step still reaches a member as it was signalled."""
+    client = _subscribed_client(UserRole.USER)
+    event = MassEvent(event=EventType.PLAYER_UPDATED, object_id="player_1", data=None)
+
+    assert _sent_events(client, event) == [event]

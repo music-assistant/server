@@ -597,19 +597,19 @@ class WebsocketClientHandler:
                 user = self._authenticated_user
                 if user is None:
                     return
-                required = (
-                    self.mass.config.get_setup_flow_required_scope(event.object_id)
+                access = (
+                    self.mass.config.get_setup_flow_access(event.object_id)
                     if event.object_id
                     else None
                 )
-                if required is None:
+                if access is None:
                     # flow already popped (terminal step race): the flow kind is no
                     # longer known, so require both config scopes to be safe
                     if not has_scope(user, Scope.CONFIG_PROVIDERS_WRITE) or not has_scope(
                         user, Scope.CONFIG_PLAYERS_WRITE
                     ):
                         return
-                elif not has_scope(user, required):
+                elif not access.allows(user):
                     return
 
             if event.event == EventType.TASKS_UPDATED:
