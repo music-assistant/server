@@ -659,7 +659,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
             return []  # guard against unsupported feature
         albums = await provider.get_artist_topalbums(item_id)
-        return await self._resolve_to_library_albums(albums, provider_instance_id_or_domain)
+        return await self._resolve_to_library_albums(albums)
 
     async def get_library_artist_topalbums(
         self,
@@ -800,7 +800,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> list[Album]:
         """Return an artist's albums on the given provider, resolved to library items where present."""
         albums = await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain)
-        return await self._resolve_to_library_albums(albums, provider_instance_id_or_domain)
+        return await self._resolve_to_library_albums(albums)
 
     async def get_library_artist_albums(
         self,
@@ -879,12 +879,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                     if album.item_id in library_item_ids:
                         continue
                     library_item_ids.add(album.item_id)
-                # an album the library does not know is matched on its metadata alone; a
-                # title and artist match with a differing year is a re-release, not a new one
-                elif any(
-                    compare_album_evidence(existing, album) != AlbumMatchEvidence.NO_MATCH
-                    for existing in result
-                ):
+                # an album the library does not know is matched on its metadata alone
+                elif any(self._is_same_release(existing, album) for existing in result):
                     continue
                 result.append(album)
         return result
@@ -1147,30 +1143,38 @@ class ArtistsController(MediaControllerBase[Artist]):
                 f"provider '{provider_instance_id_or_domain}'"
             )
 
-    async def _resolve_to_library_albums(
-        self, albums: list[Album], provider_instance_id_or_domain: str
-    ) -> list[Album]:
-        """Replace each of a provider's albums with its in-library equivalent, if any."""
-        if not albums:
-            return albums
-        library_albums = await self.mass.music.albums.get_library_items_by_prov_id(
-            provider_instance_id_or_domain=provider_instance_id_or_domain,
-            provider_item_ids=[album.item_id for album in albums],
-            limit=len(albums),
-        )
-        # the database also holds album rows that merely back a track: only an album with
-        # a mapping that is in the library counts as owned
-        by_provider_item_id: dict[str, Album] = {}
-        for library_album in library_albums:
-            if not any(mapping.in_library for mapping in library_album.provider_mappings):
-                continue
-            for mapping in library_album.provider_mappings:
-                if provider_instance_id_or_domain in (
-                    mapping.provider_instance,
-                    mapping.provider_domain,
-                ):
-                    by_provider_item_id[mapping.item_id] = library_album
-        return [by_provider_item_id.get(album.item_id, album) for album in albums]
+    def _is_same_release(self, existing: Album, candidate: Album) -> bool:
+        """Whether two albums are one release, allowing a year of provider drift on a title match."""
+        evidence = compare_album_evidence(existing, candidate)
+        if evidence != AlbumMatchEvidence.INSUFFICIENT:
+            return evidence == AlbumMatchEvidence.MATCH
+        # same title and artist but the years disagree: a re-release drifts by a year at most,
+        # further apart it is another album with the same name
+        if existing.year is None or candidate.year is None:
+            return True
+        return abs(existing.year - candidate.year) <= 1
+
+    async def _resolve_to_library_albums(self, albums: list[Album]) -> list[Album]:
+        """Replace each provider album with its in-library equivalent, if any."""
+        # one batched lookup per provider instance: item ids are only unique within one
+        by_provider_item_id: dict[tuple[str, str], Album] = {}
+        for provider_instance in sorted({album.provider for album in albums}):
+            library_albums = await self.mass.music.albums.get_library_items_by_prov_id(
+                provider_instance=provider_instance,
+                provider_item_ids=[
+                    album.item_id for album in albums if album.provider == provider_instance
+                ],
+                limit=len(albums),
+            )
+            for library_album in library_albums:
+                # the database also holds album rows that merely back a track: only an album
+                # with a mapping that is in the library counts as owned
+                if not any(mapping.in_library for mapping in library_album.provider_mappings):
+                    continue
+                for mapping in library_album.provider_mappings:
+                    if mapping.provider_instance == provider_instance:
+                        by_provider_item_id[(provider_instance, mapping.item_id)] = library_album
+        return [by_provider_item_id.get((album.provider, album.item_id), album) for album in albums]
 
     async def _confirm_artist_match(
         self, db_artist: Artist, candidate: Artist | ItemMapping, strict: bool

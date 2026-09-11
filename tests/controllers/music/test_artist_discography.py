@@ -293,6 +293,25 @@ async def test_year_drift_does_not_duplicate_a_library_release(mass: MusicAssist
     ]
 
 
+async def test_same_title_years_apart_stays_a_separate_release(mass: MusicAssistant) -> None:
+    """Two same-titled albums released years apart are both listed."""
+    artist = await _seed_library(mass)
+    first = _synced_album(PROV_A, "alpha_first", "Self Titled", ARTIST_ID_A)
+    first.year = 1994
+    await mass.music.albums.add_item_to_library(first)
+    later = create_album(PROV_B, "beta_later", name="Self Titled", artist_item_id=ARTIST_ID_B)
+    later.year = 2001
+    _register_provider(mass, PROV_B, [later])
+
+    result = await mass.music.artists.discography(artist.item_id, "library")
+
+    assert [(album.name, album.provider) for album in result] == [
+        (LIBRARY_ALBUM, "library"),
+        ("Self Titled", "library"),
+        ("Self Titled", PROV_B),
+    ]
+
+
 async def test_every_mapping_on_a_provider_is_queried(mass: MusicAssistant) -> None:
     """An artist merged from two ids on one provider gets the catalog of both."""
     artist = await _seed_library(mass)
