@@ -92,6 +92,9 @@ class ArtistsController(MediaControllerBase[Artist]):
             f"music/{api_base}/top_albums", self.top_albums, required_scope=Scope.LIBRARY_READ
         )
         self.mass.register_api_command(
+            f"music/{api_base}/discography", self.discography, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
             f"music/{api_base}/artist_audiobooks",
             self.audiobooks,
             required_scope=Scope.LIBRARY_READ,
@@ -304,6 +307,34 @@ class ArtistsController(MediaControllerBase[Artist]):
             return await self.get_library_artist_topalbums(item_id, provider_filter=provider_filter)
         self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
         return await self.get_provider_artist_topalbums(item_id, provider_instance_id_or_domain)
+
+    async def discography(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        provider_filter: str | None = None,
+    ) -> list[Album]:
+        """
+        Return all known releases for an artist, in and outside the library.
+
+        For a library item, the in-library albums are combined (and deduplicated) with the
+        album catalog of every provider the artist is attached to, optionally limited to a
+        single provider instance. For a provider item, that provider's albums listing is
+        returned (which may be empty if it is not supported). An album that is in the library
+        is returned as its library item, so its provider tells the two apart.
+
+        :param item_id: The item ID of the artist.
+        :param provider_instance_id_or_domain: The provider instance ID or domain of the artist.
+        :param provider_filter: Optional provider instance ID to limit the result to.
+        """
+        if provider_instance_id_or_domain == "library":
+            return await self._get_library_artist_discography(
+                item_id, provider_filter=provider_filter
+            )
+        self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
+        return await self._resolve_library_albums(
+            await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain)
+        )
 
     async def similar_artists(
         self,
@@ -627,16 +658,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
             return []  # guard against unsupported feature
         albums = await provider.get_artist_topalbums(item_id)
-        # resolve to in-library equivalents (in parallel) where available
-        resolved = await asyncio.gather(
-            *(
-                self.mass.music.albums.get_library_item_by_prov_id(album.item_id, album.provider)
-                for album in albums
-            )
-        )
-        return [
-            library_album or album for library_album, album in zip(resolved, albums, strict=True)
-        ]
+        return await self._resolve_library_albums(albums)
 
     async def get_library_artist_topalbums(
         self,
@@ -1047,6 +1069,74 @@ class ArtistsController(MediaControllerBase[Artist]):
                 f"provider_filter '{provider_filter}' does not match the requested "
                 f"provider '{provider_instance_id_or_domain}'"
             )
+
+    async def _get_library_artist_discography(
+        self,
+        item_id: str | int,
+        provider_filter: str | None = None,
+    ) -> list[Album]:
+        """Return the in-library albums of an artist, extended with its providers' catalogs."""
+        ref_item = await self.get_library_item(item_id)
+        result = await self.get_library_artist_albums(item_id, provider_filter=provider_filter)
+        allowed = self._ensure_provider_filter(provider_filter)
+        # fetch the album catalog of each provider the artist is attached to, in parallel;
+        # a fixed provider order keeps the result stable when several providers list a release
+        fetches = []
+        fetched_instances: set[str] = set()
+        for provider_mapping in sorted(
+            ref_item.provider_mappings, key=lambda mapping: mapping.provider_instance
+        ):
+            if allowed is not None and provider_mapping.provider_instance not in allowed:
+                continue
+            if provider_mapping.provider_instance in fetched_instances:
+                continue
+            music_prov = self.mass.get_provider(
+                provider_mapping.provider_instance, provider_type=MusicProvider
+            )
+            if (
+                music_prov is None
+                or ProviderFeature.ARTIST_ALBUMS not in music_prov.supported_features
+            ):
+                continue
+            fetched_instances.add(provider_mapping.provider_instance)
+            fetches.append(
+                self.get_provider_artist_albums(
+                    provider_mapping.item_id, provider_mapping.provider_instance
+                )
+            )
+        per_provider = await asyncio.gather(*fetches, return_exceptions=True)
+        library_item_ids = {album.item_id for album in result}
+        for listing in per_provider:
+            # drop (and log) any provider that failed so one bad provider can't sink the listing
+            if isinstance(listing, BaseException):
+                self.logger.warning(
+                    "Error fetching albums for artist %s from a provider",
+                    ref_item.name,
+                    exc_info=listing,
+                )
+                continue
+            for album in await self._resolve_library_albums(listing):
+                if album.provider == "library":
+                    if album.item_id in library_item_ids:
+                        continue
+                    library_item_ids.add(album.item_id)
+                elif any(compare_album(existing, album) for existing in result):
+                    # an album the library does not know can only be matched on its metadata
+                    continue
+                result.append(album)
+        return result
+
+    async def _resolve_library_albums(self, albums: list[Album]) -> list[Album]:
+        """Replace each album with its in-library equivalent (fetched in parallel), if any."""
+        resolved = await asyncio.gather(
+            *(
+                self.mass.music.albums.get_library_item_by_prov_id(album.item_id, album.provider)
+                for album in albums
+            )
+        )
+        return [
+            library_album or album for library_album, album in zip(resolved, albums, strict=True)
+        ]
 
     async def _confirm_artist_match(
         self, db_artist: Artist, candidate: Artist | ItemMapping, strict: bool
