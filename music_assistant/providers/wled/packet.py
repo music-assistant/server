@@ -137,9 +137,16 @@ def _amplitude_from_dbu16(value: int, gain_db: float) -> float:
     adding a flat offset to the dB-linear representation would lift even a
     silent (floor) value away from zero.
 
+    A raw value of exactly 0 is the extractor's floor (-60 dBFS), not a real
+    measurement, and is treated as exact silence regardless of gain: at
+    10**(-60/20) == 0.001, a gain of ~26dB or more (within the provider's
+    allowed range) would otherwise push it back past ``NOISE_GATE``.
+
     :param value: Loudness/spectrum-bin/f_peak_amp value in [0, 65535].
     :param gain_db: Gain to apply, in dB.
     """
+    if value <= 0:
+        return 0.0
     normalized_db = max(0.0, min(1.0, value / 65535.0))
     db = normalized_db * 60.0 - 60.0
     amplitude = float(10.0 ** (db / 20.0))

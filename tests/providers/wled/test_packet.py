@@ -166,6 +166,16 @@ class TestGain:
         """
         assert loudness_to_sample(0, DEFAULT_GAIN_DB) == 0.0
 
+    def test_high_gain_keeps_true_silence_at_zero(self) -> None:
+        """
+        The -60dBFS floor must stay zero even at high gain.
+
+        At ~26dB+ gain, its amplitude (0.001) would otherwise cross NOISE_GATE (0.02)
+        before the gate check runs, so the floor must be treated as exact silence
+        before gain is applied, not after.
+        """
+        assert loudness_to_sample(0, 40.0) == 0.0  # 40dB is the provider's max configured gain
+
     def test_noise_gate_zeroes_values_below_threshold(self) -> None:
         """A value whose amplitude sits just below NOISE_GATE must convert to exactly 0."""
         below_gate_loudness = _loudness_for_amplitude(NOISE_GATE / 2)
@@ -192,18 +202,18 @@ class TestSpectrumToFftResult:
         result = spectrum_to_fft_result(bins)
         assert result[9] == 0
 
-    def test_silent_band_zero_is_not_zero_after_heavy_compensation(self) -> None:
+    def test_silent_bin_is_zero_even_under_heavy_compensation(self) -> None:
         """
-        Band 0's silence-is-zero guarantee breaks down under its own large compensation.
+        A silent band 0 must stay zero despite its own heavy compensation.
 
-        Band 0 needs ~35dB of compensation (A-weighting + pink noise combined) to match
-        WLED's own raw-magnitude analysis, which is enough to lift even the -60dBFS floor
-        above the noise gate -- an inherent, expected trade-off of correctly restoring
-        genuine bass content, not a regression of the "silence is zero" fix.
+        Band 0 needs ~35dB of compensation (A-weighting + pink noise combined), which is
+        enough to lift a merely-quiet value above the noise gate, but the -60dBFS floor
+        (bin value 0) is treated as exact silence before any per-band gain is applied, so
+        it must stay 0 regardless of how much compensation that band carries.
         """
         bins = [0] * 16
         result = spectrum_to_fft_result(bins)
-        assert result[0] > 0
+        assert result[0] == 0
 
     def test_full_scale_bin_reaches_near_max(self) -> None:
         """
@@ -243,9 +253,6 @@ class TestSpectrumToFftResult:
         assert (
             result[0] == 217
         )  # band 0's multiplier is 0.85, see test_full_scale_bin_reaches_near_max
-        # band 0 also needs heavy compensation (see test_silent_band_zero_is_not_zero_after_heavy_compensation),
-        # so a padded-in 0 there isn't exactly 0 either.
-        assert result[0] > 0
         assert all(b == 0 for b in result[1:])
 
     def test_truncates_long_input(self) -> None:

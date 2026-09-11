@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 from aiosendspin.models.core import ClientHelloPayload
@@ -176,12 +175,17 @@ class WledBridge:
         """Stop the bridge."""
         self._cancel_render_loop()
         self._is_streaming = False
-        if self._sendspin_client:
-            await self.sendspin_server.remove_client(self._sendspin_client.client_id)
+        try:
+            if self._sendspin_client:
+                await self.sendspin_server.remove_client(self._sendspin_client.client_id)
+        finally:
+            # Always close the transport, even if removing the client raised --
+            # otherwise a failed removal leaks the UDP socket, since the manager
+            # drops its reference to this bridge regardless.
             self._sendspin_client = None
-        if self._transport:
-            self._transport.close()
-            self._transport = None
+            if self._transport:
+                self._transport.close()
+                self._transport = None
         self.logger.debug("WLED sync zone stopped on port %d", self.port)
 
     def update_settings(
@@ -205,13 +209,14 @@ class WledBridge:
     def _on_stream_start(self) -> None:
         """Handle stream start — reset state and begin the send loop."""
         self._pending_frames.clear()
-        self._peak_pending = False
+        self._reset_latest_features()
         self._is_streaming = True
         self._start_render_loop()
 
     def _on_stream_clear(self) -> None:
-        """Handle seek — queued features belong to pre-seek audio, drop them."""
+        """Handle seek — queued and already-promoted features belong to pre-seek audio."""
         self._pending_frames.clear()
+        self._reset_latest_features()
 
     def _on_stream_end(self) -> None:
         """Handle stream end — stop sending packets."""
@@ -277,6 +282,14 @@ class WledBridge:
             if self._is_streaming:
                 self._render_handle = self.mass.loop.call_later(_SEND_PERIOD_S, self._render_tick)
 
+    def _reset_latest_features(self) -> None:
+        """Clear cached feature state so stale pre-seek/pre-stream values aren't sent."""
+        self._latest_loudness = 0
+        self._latest_spectrum = [0] * SPECTRUM_BINS
+        self._latest_f_peak_freq = 0
+        self._latest_f_peak_amp = 0
+        self._peak_pending = False
+
     def _drain_pending(self, now_us: int) -> None:
         """Promote queued frames up to ``now_us`` into the latest sendable state."""
         while self._pending_frames and self._pending_frames[0].timestamp_us <= now_us:
@@ -340,9 +353,14 @@ class WledBridgeManager:
     async def stop(self) -> None:
         """Stop the bridge."""
         if self._bridge is not None:
-            with suppress(Exception):
+            try:
                 await self._bridge.stop()
-            self._bridge = None
+            except Exception:
+                # Teardown must not block provider unload, but a failure here is
+                # still worth surfacing rather than hiding silently.
+                self.logger.exception("Error stopping WLED bridge on port %d", self._bridge.port)
+            finally:
+                self._bridge = None
 
     def update_settings(
         self,

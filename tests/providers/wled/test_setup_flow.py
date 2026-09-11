@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+from music_assistant.models.setup_flow import SetupFlowContext
 from music_assistant.providers.wled.constants import CONF_PORT, DEFAULT_PORT
-from music_assistant.providers.wled.setup_flow import _next_free_port
+from music_assistant.providers.wled.setup_flow import _next_free_port, run_setup
 
 
 def _fake_sibling(instance_id: str) -> MagicMock:
@@ -119,3 +120,158 @@ class TestNextFreePort:
         )
         # DEFAULT_PORT itself is free -- only DEFAULT_PORT + 5 is actually taken.
         assert await _next_free_port(session) == DEFAULT_PORT
+
+
+def _fake_flow_session(
+    context: SetupFlowContext, siblings: list[MagicMock] | None = None
+) -> MagicMock:
+    """Build a minimal fake SetupSession for driving run_setup() end to end."""
+    session = MagicMock()
+    session.context = context
+    session.mass.config.get_provider_configs = AsyncMock(return_value=siblings or [])
+    session.mass.config.get_raw_provider_config_value = MagicMock(return_value=None)
+    session.mass.config.get_provider_setup_value = MagicMock(return_value=None)
+    session.form = AsyncMock(return_value={})
+    session.finish = AsyncMock(return_value={"instance_id": "wled_1"})
+    return session
+
+
+class TestRunSetupPortDefault:
+    """
+    Tests for which port run_setup suggests, for a fresh setup vs. a reconfigure.
+
+    Regression coverage: a reconfigure flow runs the same run_setup coroutine as a
+    fresh setup (see the config controller's provider_setup/provider_reconfigure
+    dispatch), so without branching on session.context.kind, reopening an existing
+    zone's settings would re-run the free-port scan -- which always finds a
+    *different* port than the instance's own (since the scan counts it as taken) --
+    and silently move the zone if the user just accepts the form.
+    """
+
+    async def test_reconfigure_defaults_to_the_instance_s_current_port(self) -> None:
+        """An explicit port override (from the options UI) must be kept as-is."""
+        context = SetupFlowContext(
+            kind="reconfigure",
+            reason="user",
+            domain="wled",
+            instance_id="wled_1",
+            setup_data={CONF_PORT: DEFAULT_PORT},
+            values={CONF_PORT: DEFAULT_PORT + 5},
+        )
+        session = _fake_flow_session(context)
+
+        await run_setup(session)
+
+        entries = session.form.call_args.args[0]
+        assert entries[0].default_value == DEFAULT_PORT + 5
+
+    async def test_reconfigure_falls_back_to_setup_data_port(self) -> None:
+        """With no options-UI override, the originally chosen setup_data port is kept."""
+        context = SetupFlowContext(
+            kind="reconfigure",
+            reason="user",
+            domain="wled",
+            instance_id="wled_1",
+            setup_data={CONF_PORT: DEFAULT_PORT + 2},
+            values={},
+        )
+        session = _fake_flow_session(context)
+
+        await run_setup(session)
+
+        entries = session.form.call_args.args[0]
+        assert entries[0].default_value == DEFAULT_PORT + 2
+
+    async def test_reconfigure_does_not_rescan_sibling_ports(self) -> None:
+        """
+        Reconfigure must not run the free-port scan at all.
+
+        The scan always finds a *different* port than the instance's own current one.
+        """
+        context = SetupFlowContext(
+            kind="reconfigure",
+            reason="user",
+            domain="wled",
+            instance_id="wled_1",
+            setup_data={CONF_PORT: DEFAULT_PORT},
+            values={},
+        )
+        session = _fake_flow_session(context)
+
+        await run_setup(session)
+
+        session.mass.config.get_provider_configs.assert_not_awaited()
+
+    async def test_fresh_setup_still_scans_for_a_free_port(self) -> None:
+        """A brand new instance (no instance_id yet) still gets the auto-suggested port."""
+        sibling = _fake_sibling("existing")
+        context = SetupFlowContext(kind="setup", reason="user", domain="wled")
+        session = _fake_flow_session(context, siblings=[sibling])
+        session.mass.config.get_provider_setup_value = MagicMock(
+            side_effect=lambda instance_id, key, default=None: (
+                DEFAULT_PORT if instance_id == "existing" and key == CONF_PORT else default
+            )
+        )
+
+        await run_setup(session)
+
+        entries = session.form.call_args.args[0]
+        assert entries[0].default_value == DEFAULT_PORT + 1
+
+
+class TestRunSetupSyncsValuesOverrideOnReconfigure:
+    """
+    A port change submitted through Reconfigure must actually take effect.
+
+    Regression coverage: session.finish() only ever persists the submitted port into
+    setup_data (see SetupSession.finish's docstring), but _port_from_config prefers a
+    "values" override -- written by the provider's normal settings page, see
+    ConfigController.set_raw_provider_config_value -- over setup_data. Without
+    explicitly syncing the two, a port change submitted through Reconfigure would be
+    silently shadowed forever by a pre-existing values entry.
+    """
+
+    async def test_new_port_is_synced_to_values_when_an_override_already_exists(self) -> None:
+        """An existing values override must be updated so the new port actually wins."""
+        context = SetupFlowContext(
+            kind="reconfigure",
+            reason="user",
+            domain="wled",
+            instance_id="wled_1",
+            setup_data={CONF_PORT: DEFAULT_PORT},
+            values={CONF_PORT: DEFAULT_PORT + 5},
+        )
+        session = _fake_flow_session(context)
+        session.form.return_value = {CONF_PORT: DEFAULT_PORT + 9}
+
+        await run_setup(session)
+
+        session.mass.config.set_raw_provider_config_value.assert_called_once_with(
+            "wled_1", CONF_PORT, DEFAULT_PORT + 9
+        )
+
+    async def test_no_values_write_when_no_override_previously_existed(self) -> None:
+        """Without a pre-existing values override, the setup_data write alone is enough."""
+        context = SetupFlowContext(
+            kind="reconfigure",
+            reason="user",
+            domain="wled",
+            instance_id="wled_1",
+            setup_data={CONF_PORT: DEFAULT_PORT},
+            values={},
+        )
+        session = _fake_flow_session(context)
+        session.form.return_value = {CONF_PORT: DEFAULT_PORT + 9}
+
+        await run_setup(session)
+
+        session.mass.config.set_raw_provider_config_value.assert_not_called()
+
+    async def test_fresh_setup_never_writes_to_values(self) -> None:
+        """A brand-new instance has nothing to sync -- setup_data is the only store yet."""
+        context = SetupFlowContext(kind="setup", reason="user", domain="wled")
+        session = _fake_flow_session(context)
+
+        await run_setup(session)
+
+        session.mass.config.set_raw_provider_config_value.assert_not_called()

@@ -15,8 +15,8 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
-from music_assistant_models.errors import SetupFailedError
 
+from music_assistant.helpers.util import try_parse_int
 from music_assistant.models.setup_flow import SetupFlowError
 
 from .constants import CONF_PORT, DEFAULT_PORT
@@ -40,7 +40,18 @@ async def _next_free_port(session: SetupSession) -> int:
 
 async def run_setup(session: SetupSession) -> None:
     """Run the setup flow: let the user confirm or change the auto-suggested zone port."""
-    suggested_port = await _next_free_port(session)
+    if session.context.kind == "reconfigure":
+        # Keep the zone's existing port by default -- scanning for a new free port
+        # here (as a fresh setup does) would preselect a different port than the one
+        # this instance already uses, since that scan counts the instance's own
+        # current port as "used". Mirrors _port_from_config's own precedence: an
+        # override in values wins over the port chosen at initial setup_data.
+        stored_port = session.context.values.get(CONF_PORT)
+        if stored_port is None:
+            stored_port = session.context.setup_data.get(CONF_PORT, DEFAULT_PORT)
+        suggested_port = try_parse_int(stored_port, DEFAULT_PORT) or DEFAULT_PORT
+    else:
+        suggested_port = await _next_free_port(session)
     entries = [
         ConfigEntry(
             key=CONF_PORT,
@@ -54,12 +65,27 @@ async def run_setup(session: SetupSession) -> None:
         submitted = await session.form(entries, step_id="user", errors=errors, last_step=True)
         try:
             await session.finish(submitted)
-            return
         except SetupFlowError as err:
+            # The engine wraps every finish-time failure (including
+            # handle_async_init's duplicate-port check -- reachable if another
+            # instance claims the suggested port between the scan above and
+            # this submit) in SetupFlowError before it reaches this coroutine.
             errors = {"base": err.translation_key or str(err)}
-        except SetupFailedError as err:
-            # Raised by handle_async_init's duplicate-port check -- reachable if
-            # another instance claims the suggested port between the scan above
-            # and this submit (race condition), not just the framework's own
-            # SetupFlowError family.
-            errors = {"base": str(err)}
+            continue
+        if (
+            session.context.kind == "reconfigure"
+            and session.context.values.get(CONF_PORT) is not None
+        ):
+            # session.finish() only ever persists into setup_data. _port_from_config
+            # prefers a "values" override over setup_data, so once the port has been
+            # edited even once through the provider's normal settings page (which
+            # writes to values, see ConfigController.set_raw_provider_config_value),
+            # a port change made *here* would otherwise be silently shadowed by that
+            # stale values entry forever after. Keep both in sync.
+            assert session.context.instance_id is not None  # always set for reconfigure
+            session.mass.config.set_raw_provider_config_value(
+                session.context.instance_id,
+                CONF_PORT,
+                submitted.get(CONF_PORT, suggested_port),
+            )
+        return

@@ -9,6 +9,7 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import SetupFailedError
 
+from music_assistant.helpers.util import try_parse_float, try_parse_int
 from music_assistant.models.plugin import PluginProvider
 
 from .bridge import WledBridgeManager
@@ -34,10 +35,15 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
+# changed_keys arrive namespaced as 'values/<key>' (see Config.get_changed_values).
+_IMMEDIATE_APPLY_KEYS = {
+    f"values/{key}" for key in (CONF_LATENCY_MS, CONF_GAIN_DB, CONF_SCALING_MODE)
+}
+
 
 def _scaling_mode_from_config(config: ProviderConfig) -> ScalingMode:
     """Resolve the configured scaling mode, falling back to the default if invalid/unset."""
-    value = str(config.get_value(CONF_SCALING_MODE) or DEFAULT_SCALING_MODE)
+    value = str(config.get_value(CONF_SCALING_MODE, DEFAULT_SCALING_MODE))
     if value in SCALING_MODES:
         return cast("ScalingMode", value)
     return DEFAULT_SCALING_MODE
@@ -60,7 +66,10 @@ def _port_from_config(mass: MusicAssistant, config: ProviderConfig) -> int:
     value = mass.config.get_raw_provider_config_value(instance_id, CONF_PORT)
     if value is None:
         value = mass.config.get_provider_setup_value(instance_id, CONF_PORT)
-    return int(float(str(value or DEFAULT_PORT)))
+    # A port is never legitimately 0 (range starts at 1024), so falling back to the
+    # default here can't clobber a real configured value the way it would for a
+    # latency/gain setting where 0 is meaningful.
+    return try_parse_int(value, DEFAULT_PORT) or DEFAULT_PORT
 
 
 class WledProvider(PluginProvider):
@@ -158,8 +167,20 @@ class WledProvider(PluginProvider):
     async def loaded_in_mass(self) -> None:
         """Start the sync-zone bridge for this instance's configured port."""
         port = _port_from_config(self.mass, self.config)
-        latency_ms = int(float(str(self.config.get_value(CONF_LATENCY_MS) or DEFAULT_LATENCY_MS)))
-        gain_db = float(str(self.config.get_value(CONF_GAIN_DB) or DEFAULT_GAIN_DB))
+        # 0 is a valid latency/gain setting, so unlike the port above, a parse failure
+        # (never expected for an already-validated config value) is the only case that
+        # should fall back to the default -- try_parse_int/float only does that on error,
+        # never on a falsy-but-valid value, which "or DEFAULT" would get wrong.
+        latency_ms = cast(
+            "int",
+            try_parse_int(
+                self.config.get_value(CONF_LATENCY_MS, DEFAULT_LATENCY_MS), DEFAULT_LATENCY_MS
+            ),
+        )
+        gain_db = cast(
+            "float",
+            try_parse_float(self.config.get_value(CONF_GAIN_DB, DEFAULT_GAIN_DB), DEFAULT_GAIN_DB),
+        )
         scaling_mode = _scaling_mode_from_config(self.config)
         self._bridge_manager = WledBridgeManager(self)
         # available reflects whether the bridge actually came up -- the Sendspin
@@ -178,11 +199,20 @@ class WledProvider(PluginProvider):
 
     async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
         """Handle config changes."""
-        immediate_keys = {CONF_LATENCY_MS, CONF_GAIN_DB, CONF_SCALING_MODE}
-        if changed_keys and changed_keys <= immediate_keys and self._bridge_manager:
+        if changed_keys and changed_keys <= _IMMEDIATE_APPLY_KEYS and self._bridge_manager:
             self._bridge_manager.update_settings(
-                latency_ms=int(float(str(config.get_value(CONF_LATENCY_MS) or DEFAULT_LATENCY_MS))),
-                gain_db=float(str(config.get_value(CONF_GAIN_DB) or DEFAULT_GAIN_DB)),
+                latency_ms=cast(
+                    "int",
+                    try_parse_int(
+                        config.get_value(CONF_LATENCY_MS, DEFAULT_LATENCY_MS), DEFAULT_LATENCY_MS
+                    ),
+                ),
+                gain_db=cast(
+                    "float",
+                    try_parse_float(
+                        config.get_value(CONF_GAIN_DB, DEFAULT_GAIN_DB), DEFAULT_GAIN_DB
+                    ),
+                ),
                 scaling_mode=_scaling_mode_from_config(config),
             )
             self.config = config
