@@ -48,6 +48,7 @@ from music_assistant.controllers.tasks.context import (
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_scope,
+    set_current_user,
 )
 from music_assistant.helpers.compare import TrackMatchConfidence, match_policy_minimum_confidence
 from music_assistant.helpers.database import UNSET
@@ -352,7 +353,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         user = get_current_user()
         return self.mass.tasks.run_background_task(
             name=f"Add items to playlist {playlist_name}",
-            handler=lambda: self._handle_add_playlist_tracks(db_playlist_id, uris),
+            handler=lambda: self._handle_add_playlist_tracks(db_playlist_id, uris, user),
             translation_key="add_playlist_tracks",
             translation_owner=self.translation_owner,
             translation_args=[playlist_name],
@@ -369,7 +370,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def add_playlist_track(self, db_playlist_id: str | int, track_uri: str) -> None:
         """Add (single) track to playlist."""
-        await self._handle_add_playlist_tracks(db_playlist_id, [track_uri])
+        await self._handle_add_playlist_tracks(db_playlist_id, [track_uri], get_current_user())
 
     async def remove_playlist_tracks(
         self, db_playlist_id: str | int, positions_to_remove: tuple[int, ...]
@@ -386,7 +387,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         return self.mass.tasks.run_background_task(
             name=f"Remove items from playlist {playlist_name}",
             handler=lambda: self._handle_remove_playlist_tracks(
-                db_playlist_id, positions_to_remove
+                db_playlist_id, positions_to_remove, user
             ),
             translation_key="remove_playlist_tracks",
             translation_owner=self.translation_owner,
@@ -707,6 +708,14 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 await self._store_access(db_row["item_id"], None)
                 continue
             access.shared_users = [x for x in access.shared_users if x != user_id]
+            if (
+                access.owner is None
+                and access.sharing == ProviderSharing.SELECTED
+                and not access.shared_users
+            ):
+                # nobody would be left who may see it
+                await self._store_access(db_row["item_id"], None)
+                continue
             await self._store_access(db_row["item_id"], access)
 
     def check_removal_allowed(self, item: Playlist) -> None:
@@ -1489,9 +1498,14 @@ class PlaylistController(MediaControllerBase[Playlist]):
         async with self.mass.cache.handle_refresh(force_refresh):
             return await provider.get_playlist_tracks(item_id, page=page)
 
-    async def _handle_add_playlist_tracks(self, db_playlist_id: str | int, uris: list[str]) -> None:
+    async def _handle_add_playlist_tracks(
+        self, db_playlist_id: str | int, uris: list[str], user: User | None
+    ) -> None:
         """Handle adding playlist items inside a managed task."""
         # ruff: noqa: PLR0915
+        # the items are resolved as the user that asked for them, so what that user may not
+        # see or play is not copied into the playlist through a task
+        set_current_user(user)
         total_requested = len(uris)
         update_current_task_progress(0, "Preparing playlist update")
         db_id = int(db_playlist_id)  # ensure integer
@@ -1735,9 +1749,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         update_current_task_progress(100, f"Added {len(ids_to_add)} item(s) to playlist")
 
     async def _handle_remove_playlist_tracks(
-        self, db_playlist_id: str | int, positions_to_remove: tuple[int, ...]
+        self, db_playlist_id: str | int, positions_to_remove: tuple[int, ...], user: User | None
     ) -> None:
         """Handle removing playlist items inside a managed task."""
+        set_current_user(user)
         db_id = int(db_playlist_id)  # ensure integer
         playlist = await self.get_library_item(db_id)
         if not playlist:

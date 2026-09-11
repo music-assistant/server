@@ -550,9 +550,38 @@ async def test_removal_needs_the_owner_even_when_collaborative(
         playlists.check_removal_allowed(added)
 
 
+async def test_adding_a_hidden_playlist_as_source_is_refused_inside_the_task(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """The items to add are resolved as the caller, so a hidden playlist can not be copied."""
+    hidden = await _add(playlists, _playlist("Hidden source", PlaylistAccess(owner=OWNER.user_id)))
+    target = await _add(playlists, _playlist("Target", PlaylistAccess(owner=MEMBER.user_id)))
+    provider = MagicMock()
+    provider.domain = provider.instance_id = "builtin"
+    provider.available = True
+    provider.supported_features = {ProviderFeature.PLAYLIST_TRACKS_EDIT}
+    provider.get_playlist_tracks = AsyncMock(return_value=[])
+
+    with (
+        patch.object(music_mass_module, "get_provider", return_value=provider),
+        patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
+        pytest.raises(MediaNotFoundError),
+    ):
+        await playlists._handle_add_playlist_tracks(
+            target.item_id, [f"library://playlist/{hidden.item_id}"], MEMBER
+        )
+
+
 async def test_release_user_playlists(playlists: PlaylistController) -> None:
     """A removed user's playlists become household playlists and it leaves every share list."""
     owned = await _add(playlists, _playlist("Owned", PlaylistAccess(owner=MEMBER.user_id)))
+    sole_recipient = await _add(
+        playlists,
+        _playlist(
+            "Sole recipient",
+            PlaylistAccess(sharing=ProviderSharing.SELECTED, shared_users=[MEMBER.user_id]),
+        ),
+    )
     shared_with = await _add(
         playlists,
         _playlist(
@@ -569,6 +598,8 @@ async def test_release_user_playlists(playlists: PlaylistController) -> None:
     await playlists.release_user_playlists(MEMBER.user_id)
 
     assert (await playlists.get_library_item(owned.item_id)).access is None
+    # nobody would be left who may see the ownerless playlist, so it becomes household
+    assert (await playlists.get_library_item(sole_recipient.item_id)).access is None
     assert (await playlists.get_library_item(shared_with.item_id)).access == PlaylistAccess(
         owner=OWNER.user_id, sharing=ProviderSharing.SELECTED, shared_users=[GUEST.user_id]
     )
