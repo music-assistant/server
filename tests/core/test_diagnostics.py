@@ -6,10 +6,12 @@ import asyncio
 import logging
 import sys
 from typing import TYPE_CHECKING, Any
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import pytest
-from music_assistant_models.auth import Scope
+from music_assistant_models.auth import Scope, User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import ProviderSharing
 from music_assistant_models.media_items import (
     Artist,
     ProviderMapping,
@@ -27,6 +29,7 @@ from music_assistant.helpers.diagnostics import (
     sanitize_text,
 )
 from music_assistant.helpers.json import json_dumps
+from tests.common import set_music_source_access
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -255,7 +258,7 @@ async def test_get_report(mass: MusicAssistant) -> None:
     except RuntimeError:
         logging.getLogger("music_assistant.test").exception("probe failed")
     report = await mass.diagnostics.get_report()
-    assert report["schema_version"] == 1
+    assert report["schema_version"] == 2
     assert "redaction_notice" in report
     assert report["system"]["python_version"]
     assert report["system"]["counts"]["threads"] > 0
@@ -318,7 +321,7 @@ async def _seed_library_track(mass: MusicAssistant) -> None:
     )
 
 
-async def test_library_census_ignores_requesting_user_provider_filter(
+async def test_library_census_ignores_requesting_user_music_sources(
     mass: MusicAssistant,
 ) -> None:
     """
@@ -331,13 +334,22 @@ async def test_library_census_ignores_requesting_user_provider_filter(
     """
     await _seed_library_track(mass)
     unfiltered_census = await mass.diagnostics._census_library()
+    # the seeded items live on another member's private source, which the requesting
+    # admin may not see; the admin's own source keeps its visible set non-empty
+    set_music_source_access(
+        mass,
+        {
+            "prov_a_inst": ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+            "prov_b_inst": ProviderAccess(owner="admin", sharing=ProviderSharing.PRIVATE),
+        },
+    )
     with patch(
         "music_assistant.controllers.music.media.base.get_current_user",
-        return_value=Mock(provider_filter=["no_such_provider"]),
+        return_value=User(user_id="admin", username="admin", role=UserRole.ADMIN),
     ):
         census = await mass.diagnostics._census_library()
-    # the seeded items have no mapping on the filtered provider, so a user-scoped count
-    # would report 0 for them
+        # a user-scoped count really does report 0 for the seeded items
+        assert await mass.music.artists.library_count() == 0
     assert census["artists"] == 1
     assert census["tracks"] == 1
     # nothing at all may shift when a filtered user is the one asking
@@ -410,6 +422,44 @@ async def test_section_failure_isolation(mass: MusicAssistant) -> None:
     finally:
         unregister_broken()
         unregister_slow()
+
+
+async def test_register_section_own_timeout(mass: MusicAssistant) -> None:
+    """
+    Test that a section registered with its own timeout is not bound by the default one.
+
+    :param mass: Full Music Assistant test instance.
+    """
+
+    async def slow_but_allowed() -> dict[str, Any]:
+        await asyncio.sleep(0.3)
+        return {"done": True}
+
+    unregister = mass.diagnostics.register_section("slow_allowed", slow_but_allowed, timeout=5)
+    try:
+        with patch("music_assistant.controllers.diagnostics.SECTION_TIMEOUT", 0.1):
+            report = await mass.diagnostics.get_report()
+        assert report["sections"]["slow_allowed"] == {"done": True}
+    finally:
+        unregister()
+
+
+async def test_memory_info_split(mass: MusicAssistant) -> None:
+    """
+    Test that the memory figures carry the resident split where the platform provides it.
+
+    :param mass: Full Music Assistant test instance.
+    """
+    report = await mass.diagnostics.get_report()
+    memory = report["system"]["memory"]
+    if "rss_mb" not in memory:
+        # no /proc on this platform, only the peak figure is available
+        assert memory["peak_rss_mb"] > 0
+        return
+    assert memory["rss_mb"] > 0
+    for key in ("rss_anon_mb", "rss_file_mb", "rss_shmem_mb", "cgroup_reported_mb"):
+        assert key in memory
+    assert memory["rss_anon_mb"] is None or memory["rss_anon_mb"] <= memory["rss_mb"]
 
 
 async def test_section_sanitization(mass: MusicAssistant) -> None:
