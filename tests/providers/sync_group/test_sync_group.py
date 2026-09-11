@@ -2060,6 +2060,36 @@ class TestWaitMemberUnsynced:
         mass.players._handle_set_members.assert_not_awaited()
 
 
+class TestSupportedFeaturesFromActiveMembers:
+    """Active groups inherit controls from all available current members."""
+
+    def test_volume_member_is_not_hidden_by_a_volume_less_sync_leader(self) -> None:
+        """A display-only sync leader must not hide a WiiM-like member's volume."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("display", provider_domain="sendspin")
+        member = _make_mock_player("speaker")
+        member_features = {
+            PlayerFeature.PLAY_MEDIA,
+            PlayerFeature.VOLUME_SET,
+            PlayerFeature.VOLUME_MUTE,
+        }
+        member.supported_features = member_features
+        member.state.supported_features = member_features
+        mass.players.get_player = _player_lookup({"display": leader, "speaker": member})
+
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["display", "speaker"]
+
+        assert PlayerFeature.VOLUME_SET in sgp.supported_features
+        assert PlayerFeature.VOLUME_MUTE in sgp.supported_features
+        # PlayerState uses the final feature set, which must preserve the
+        # member-derived controls even though the group has no native control.
+        sgp.update_state(signal_event=False)
+        assert PlayerFeature.VOLUME_SET in sgp.state.supported_features
+        assert PlayerFeature.VOLUME_MUTE in sgp.state.supported_features
+
+
 class TestSupportedFeaturesPower:
     """POWER feature is only advertised when the user opts in via Fake control."""
 
