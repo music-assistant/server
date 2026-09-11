@@ -26,6 +26,7 @@ from music_assistant.providers.profiler.helpers import (
     sanitize_code_path,
 )
 from music_assistant.providers.profiler.provider import (
+    CONF_CPU_PROFILE_ENABLED,
     CONF_TRACEMALLOC_ENABLED,
     ProfilerProvider,
 )
@@ -193,6 +194,17 @@ async def test_measurement_tasks_running(profiler: ProfilerProvider) -> None:
     # periodic CPU windows are opt-in
     assert "profiler_cpu_scheduler" not in mass._tracked_tasks
     assert "profiler/report" in mass.command_handlers
+
+
+async def test_periodic_cpu_profile_opt_in(mass: MusicAssistant) -> None:
+    """Test that the periodic CPU profile scheduler runs once the option is enabled."""
+    await mass.config._create_provider_instance("profiler", {CONF_CPU_PROFILE_ENABLED: True})
+    provider = mass.get_provider("profiler", provider_type=ProfilerProvider)
+    assert provider is not None
+    await provider.initialized.wait()
+    assert "profiler_cpu_scheduler" in mass._tracked_tasks
+    await mass.unload_provider(provider.instance_id)
+    assert "profiler_cpu_scheduler" not in mass._tracked_tasks
 
 
 async def test_unload_cleans_up(profiler: ProfilerProvider) -> None:
