@@ -653,7 +653,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 translation_key="playlist_follows_source",
             )
         current_owner = playlist.access.owner if playlist.access else None
-        if not manages_library:
+        if user is not None and not manages_library:
             if current_owner != user.user_id:
                 raise InsufficientPermissions(
                     "Only the owner of a playlist may share it",
