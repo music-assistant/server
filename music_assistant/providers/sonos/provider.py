@@ -47,8 +47,8 @@ def _requested_max(requested: str | None) -> int:
     """
     Return the ceiling a speaker put on one side of the window.
 
-    The sizes are maxima: we serve fewer by design, but never more. An absent or unreadable
-    size puts no ceiling on it.
+    The sizes are maxima: we may serve fewer, never more. An absent or unreadable size puts
+    no ceiling on it.
     """
     try:
         return max(0, int(requested)) if requested is not None else _NO_CEILING
@@ -469,6 +469,16 @@ class SonosPlayerProvider(PlayerProvider):
         :param item: The reported queue item the failure belongs to.
         :param error: The error object the speaker attached to it.
         """
+        if error.get("type") == "http" and str(error.get("status")) == "404":
+            # our own stream server refused the item: a track the queue moved past or no
+            # longer holds, or one it failed to stream and logged there. The speaker tries
+            # each track it cached before reading the queue again, so these come in bursts
+            self.logger.debug(
+                "Speaker %s was refused %s by the stream server",
+                player.display_name,
+                item.get("id"),
+            )
+            return
         report_id = item.get("reportId")
         if report_id:
             if report_id in player.reported_playback_errors:
