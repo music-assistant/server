@@ -47,8 +47,8 @@ def _requested_max(requested: str | None) -> int:
     """
     Return the ceiling a speaker put on one side of the window.
 
-    The sizes are maxima: we serve fewer by design, but never more. An absent or unreadable
-    size puts no ceiling on it.
+    The sizes are maxima: we may serve fewer, never more. An absent or unreadable size puts
+    no ceiling on it.
     """
     try:
         return max(0, int(requested)) if requested is not None else _NO_CEILING

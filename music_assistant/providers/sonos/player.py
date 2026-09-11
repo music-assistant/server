@@ -563,7 +563,7 @@ class SonosPlayer(Player):
         max_upcoming: int = UPCOMING_ITEMS,
     ) -> SonosQueueWindow:
         """
-        Return the item the speaker asked about and the items that follow it, as the queue is now.
+        Return the requested item, the one before it and the items after it, as the queue is now.
 
         :param item_id: queue_item_id the speaker asked about; an omitted or empty one asks
             for the start of the queue.
@@ -610,6 +610,11 @@ class SonosPlayer(Player):
             if next_item is None:
                 break
             items.append(await self._player_media_for_speaker(next_item))
+            if len(items) > 1 and items[-2].queue_item_id == next_item.queue_item_id:
+                # a track that repeats itself gets one more play, not a window full: the
+                # speaker is never refused a copy of what it plays, so it would keep
+                # repeating it after repeat was switched off
+                break
             last_index = next_item.queue_item_id
 
         window = SonosQueueWindow(

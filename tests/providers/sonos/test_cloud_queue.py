@@ -8,11 +8,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiosonos.exceptions import FailedCommand
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import MediaType, RepeatMode
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.player import PlayerMedia
+from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
+from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.providers.sonos.player import SonosPlayer, SonosQueueWindow
 from music_assistant.providers.sonos.provider import (
     SonosPlayerProvider,
@@ -95,6 +98,25 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     player.cloud_queue_item_generation = 0
     player._announcement_media = None
     return player, queues
+
+
+def _make_player_on_real_queues(count: int, repeat_mode: RepeatMode) -> SonosPlayer:
+    """Create a SonosPlayer whose queue of `count` tracks is held by the real controller."""
+    queue = PlayerQueue(
+        queue_id=QUEUE_ID, active=True, display_name="Party", available=True, items=count
+    )
+    queue.repeat_mode = repeat_mode
+    queue.current_index = 0
+    queue.index_in_buffer = 0
+    data = PlayerQueueData(queue=queue)
+    data.session_id = "session"
+    data.items = [_make_queue_item(f"track{i}") for i in range(count)]
+    queues = PlayerQueuesController.__new__(PlayerQueuesController)
+    queues.logger = logging.getLogger("test.sonos.player_queues")
+    queues._queue_data = {QUEUE_ID: data}
+    player, _ = _make_player([])
+    player.mass.player_queues = queues
+    return player
 
 
 async def test_window_is_the_requested_item_and_the_tracks_after_it() -> None:
@@ -374,6 +396,37 @@ async def test_a_speaker_gets_as_far_ahead_as_it_asks() -> None:
 
     assert len(asked_for_ten.items) == 11
     assert len(asked_for_more.items) == 11
+
+
+@pytest.mark.parametrize(
+    ("repeat_mode", "count"),
+    [(RepeatMode.ONE, 3), (RepeatMode.ALL, 1)],
+    ids=["repeat_one", "single_track_on_repeat_all"],
+)
+async def test_a_track_repeating_itself_is_listed_once_more(
+    repeat_mode: RepeatMode, count: int
+) -> None:
+    """
+    A track that repeats itself is listed once more, not for a whole window.
+
+    The speaker is never refused a copy of the track it plays, so a window full of them
+    would keep it repeating long after repeat was switched off.
+    """
+    player = _make_player_on_real_queues(count, repeat_mode)
+
+    window = await player.build_cloud_queue_window("track0")
+
+    assert [x.queue_item_id for x in window.items] == ["track0", "track0"]
+    assert window.includes_end is False
+
+
+async def test_a_short_queue_on_repeat_all_still_fills_the_window() -> None:
+    """Test repeat all wraps round a short queue, so the speaker does not run dry early."""
+    player = _make_player_on_real_queues(3, RepeatMode.ALL)
+
+    window = await player.build_cloud_queue_window("track0")
+
+    assert [x.queue_item_id for x in window.items] == [f"track{i % 3}" for i in range(11)]
 
 
 async def test_a_successful_load_releases_the_replaced_sessions_streams() -> None:
