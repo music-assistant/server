@@ -258,7 +258,7 @@ async def test_get_report(mass: MusicAssistant) -> None:
     except RuntimeError:
         logging.getLogger("music_assistant.test").exception("probe failed")
     report = await mass.diagnostics.get_report()
-    assert report["schema_version"] == 1
+    assert report["schema_version"] == 2
     assert "redaction_notice" in report
     assert report["system"]["python_version"]
     assert report["system"]["counts"]["threads"] > 0
@@ -422,6 +422,44 @@ async def test_section_failure_isolation(mass: MusicAssistant) -> None:
     finally:
         unregister_broken()
         unregister_slow()
+
+
+async def test_register_section_own_timeout(mass: MusicAssistant) -> None:
+    """
+    Test that a section registered with its own timeout is not bound by the default one.
+
+    :param mass: Full Music Assistant test instance.
+    """
+
+    async def slow_but_allowed() -> dict[str, Any]:
+        await asyncio.sleep(0.3)
+        return {"done": True}
+
+    unregister = mass.diagnostics.register_section("slow_allowed", slow_but_allowed, timeout=5)
+    try:
+        with patch("music_assistant.controllers.diagnostics.SECTION_TIMEOUT", 0.1):
+            report = await mass.diagnostics.get_report()
+        assert report["sections"]["slow_allowed"] == {"done": True}
+    finally:
+        unregister()
+
+
+async def test_memory_info_split(mass: MusicAssistant) -> None:
+    """
+    Test that the memory figures carry the resident split where the platform provides it.
+
+    :param mass: Full Music Assistant test instance.
+    """
+    report = await mass.diagnostics.get_report()
+    memory = report["system"]["memory"]
+    if "rss_mb" not in memory:
+        # no /proc on this platform, only the peak figure is available
+        assert memory["peak_rss_mb"] > 0
+        return
+    assert memory["rss_mb"] > 0
+    for key in ("rss_anon_mb", "rss_file_mb", "rss_shmem_mb", "cgroup_reported_mb"):
+        assert key in memory
+    assert memory["rss_anon_mb"] is None or memory["rss_anon_mb"] <= memory["rss_mb"]
 
 
 async def test_section_sanitization(mass: MusicAssistant) -> None:

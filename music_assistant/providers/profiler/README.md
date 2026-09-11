@@ -9,10 +9,14 @@ a support request) and uninstall it when done.
 
 1. Install the Profiler provider (Settings → Providers → Add provider → Profiler).
 2. Let it run while you reproduce the issue (measurements start immediately).
-3. Call the `profiler/report` API command (each generated report is also saved as
-   `report.json` / `report.md` in the `profiler` folder inside the server data
-   directory).
-4. Paste the report into a GitHub issue or the LLM of your choice for analysis.
+3. Download the diagnostics from Settings → Diagnostics: while the Profiler is installed the
+   dump carries its full report (with a day of recorder history at one sample per five
+   minutes) as `provider.profiler`. The `profiler/report` API command builds the same kind
+   of report at full recorder resolution, by default for the last 30 minutes and without
+   the object census (`recorder_minutes` and `include_object_census` widen it), and also
+   saves it as `report.json` / `report.md` in the `profiler` folder inside the server data
+   directory.
+4. Attach the file to a GitHub issue or hand it to the LLM of your choice for analysis.
 5. Uninstall the provider.
 
 The report contains only code identifiers (function names, file:line locations),
@@ -30,17 +34,18 @@ personal data — so it is safe to share publicly.
   sluggish UI).
 - **Event & error counters** — events on the MA event bus counted by type; WARNING+
   log records counted by source location/level/exception type (never message content).
-- **Periodic CPU profile windows** (default on: 60s window every 30 minutes, first one
-  ~1 minute after load) — yappi profile with CPU clock; top functions are included in
-  the report and the full `.pstats` files (last 10) are kept in the profiler storage
-  folder for offline analysis. Use the "Profile now" button in the provider settings to
-  capture a window on demand while reproducing an issue.
+- **CPU profile windows** (periodic capture default off, config option; 60s window every 30
+  minutes when enabled) — yappi profile with CPU clock; top functions are included in the
+  report and the full `.pstats` files (last 10) are kept in the profiler storage folder for
+  offline analysis. Python code runs several times slower while a window is captured, so
+  playback can stutter on a busy server; use the "Profile now" button in the provider
+  settings to capture a window on demand while reproducing an issue.
 - **Memory allocation tracking** (default off, config option) — tracemalloc-based top
   allocation sites plus growth between reports. Adds overhead to every allocation; only
   enable when hunting a memory leak.
 
 Idle overhead is negligible: apart from the 10s sampler, 0.5s lag probe and cheap
-counters, nothing runs unless a CPU profile window is active.
+counters, nothing runs unless a CPU profile window is active or allocation tracking is on.
 
 ## The report
 
