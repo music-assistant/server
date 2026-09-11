@@ -32,14 +32,20 @@ def _mapping(item_id: str) -> ProviderMapping:
 class TestProviderMappingMediaTypeScope:
     """A provider can expose an audiobook and an album from the same instance."""
 
-    async def test_lookup_ignores_other_media_types(self, mass: MusicAssistant) -> None:
-        """A mapping of another media type never resolves to the item sharing its library id."""
+    @pytest.mark.parametrize("provider_id", [PROVIDER, "deezer"])
+    @pytest.mark.parametrize("shared_provider_id", [False, True])
+    async def test_lookup_scopes_media_type(
+        self, mass: MusicAssistant, provider_id: str, shared_provider_id: bool
+    ) -> None:
+        """Lookups respect media types even when the provider reuses an item id."""
+        album_id = "shared-book" if shared_provider_id else ALBUM_ITEM_ID
+        audiobook_id = "shared-book" if shared_provider_id else AUDIOBOOK_ITEM_ID
         album = await mass.music.albums.add_item_to_library(
             Album(
-                item_id=ALBUM_ITEM_ID,
+                item_id=album_id,
                 provider=PROVIDER,
-                name="Endgame",
-                provider_mappings={_mapping(ALBUM_ITEM_ID)},
+                name="Shared audiobook" if shared_provider_id else "Endgame",
+                provider_mappings={_mapping(album_id)},
                 artists=UniqueList(
                     [
                         Artist(
@@ -54,34 +60,39 @@ class TestProviderMappingMediaTypeScope:
         )
         audiobook = await mass.music.audiobooks.add_item_to_library(
             Audiobook(
-                item_id=AUDIOBOOK_ITEM_ID,
+                item_id=audiobook_id,
                 provider=PROVIDER,
-                name="Folge 7: Tina in Gefahr",
-                provider_mappings={_mapping(AUDIOBOOK_ITEM_ID)},
+                name="Shared audiobook" if shared_provider_id else "Folge 7: Tina in Gefahr",
+                provider_mappings={_mapping(audiobook_id)},
             )
         )
         # item ids are allocated per media type, so the collision only exists while both match
         assert int(album.item_id) == int(audiobook.item_id)
 
-        assert (
-            await mass.music.albums.get_library_item_by_prov_id(AUDIOBOOK_ITEM_ID, PROVIDER) is None
+        album_match = await mass.music.albums.get_library_item_by_prov_id(audiobook_id, provider_id)
+        audiobook_match = await mass.music.audiobooks.get_library_item_by_prov_id(
+            album_id, provider_id
         )
-        assert (
-            await mass.music.audiobooks.get_library_item_by_prov_id(ALBUM_ITEM_ID, PROVIDER) is None
+        assert (album_match.item_id if album_match else None) == (
+            album.item_id if shared_provider_id else None
         )
-        # the batched variant resolves through the same subquery
-        assert (
-            await mass.music.albums.get_library_items_by_prov_id(
-                provider_instance=PROVIDER, provider_item_ids=[AUDIOBOOK_ITEM_ID]
-            )
-            == []
+        assert (audiobook_match.item_id if audiobook_match else None) == (
+            audiobook.item_id if shared_provider_id else None
         )
 
-        found_album = await mass.music.albums.get_library_item_by_prov_id(ALBUM_ITEM_ID, PROVIDER)
+        # The batched lookup also accepts explicit instance and domain selectors.
+        batch = await mass.music.albums.get_library_items_by_prov_id(
+            provider_instance=provider_id if provider_id == PROVIDER else None,
+            provider_domain=provider_id if provider_id != PROVIDER else None,
+            provider_item_ids=[audiobook_id],
+        )
+        assert [item.item_id for item in batch] == ([album.item_id] if shared_provider_id else [])
+
+        found_album = await mass.music.albums.get_library_item_by_prov_id(album_id, provider_id)
         found_audiobook = await mass.music.audiobooks.get_library_item_by_prov_id(
-            AUDIOBOOK_ITEM_ID, PROVIDER
+            audiobook_id, provider_id
         )
         assert found_album is not None
-        assert found_album.name == "Endgame"
+        assert found_album.item_id == album.item_id
         assert found_audiobook is not None
-        assert found_audiobook.name == "Folge 7: Tina in Gefahr"
+        assert found_audiobook.item_id == audiobook.item_id
