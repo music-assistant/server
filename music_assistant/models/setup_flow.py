@@ -275,6 +275,7 @@ class SetupSession:
         step_id: str = "auth",
         expires_in: float | None = None,
         translation_params: list[str] | None = None,
+        copy_text: str | None = None,
     ) -> _T:
         """
         Show an external "Open URL" step that completes when ``awaitable`` resolves.
