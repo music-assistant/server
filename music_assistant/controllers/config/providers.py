@@ -53,7 +53,11 @@ from music_assistant.controllers.config.helpers import (
     _with_translation_owner,
 )
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.provider_access import source_owner, visible_music_sources
+from music_assistant.helpers.provider_access import (
+    source_access,
+    source_owner,
+    visible_music_sources,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -353,7 +357,8 @@ class ProviderConfigMixin:
         Set who owns a music source and who else may use it.
 
         An admin may set this for any music source; any other caller may only change the
-        sharing of a source it owns.
+        sharing of a source it owns. A user on the share list keeps its place there while
+        its account is disabled.
 
         :param instance_id: The music source (provider instance) to set the access of.
         :param sharing: Who, besides its owner, may use the source.
@@ -380,10 +385,15 @@ class ProviderConfigMixin:
             await self._validate_source_owner(owner)
         shared: list[str] = []
         if sharing == ProviderSharing.SELECTED:
+            # a user already on the share list keeps its place while its account is disabled,
+            # so enabling the account again restores its access to the source
+            current = source_access(self.mass, instance_id)
+            kept = set(current.shared_users) if current else set()
             for user_id in dict.fromkeys(shared_users or []):
                 if user_id == owner:
                     continue
-                await self._validate_access_user(user_id)
+                if user_id not in kept:
+                    await self._validate_access_user(user_id)
                 shared.append(user_id)
         access = ProviderAccess(owner=owner, sharing=sharing, shared_users=shared)
         self.set(f"{CONF_PROVIDERS}/{instance_id}/access", access.to_dict())

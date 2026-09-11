@@ -15,6 +15,7 @@ from music_assistant.helpers.provider_access import (
     derived_provider_filter,
     own_music_sources,
     playback_sources,
+    source_access,
     source_owner,
     visible_music_sources,
     visible_playback_sources,
@@ -150,18 +151,15 @@ def test_visible_playback_sources_for_anonymous_playback() -> None:
 def test_own_music_sources_and_source_owner() -> None:
     """Ownership is read straight off the access record."""
     mass = _mass()
-    set_music_source_access(
-        mass,
-        {
-            "builtin": None,
-            "spotify--aaaa": ProviderAccess(owner=OWNER, sharing=ProviderSharing.MEMBERS),
-        },
-    )
+    access = ProviderAccess(owner=OWNER, sharing=ProviderSharing.MEMBERS)
+    set_music_source_access(mass, {"builtin": None, "spotify--aaaa": access})
     assert own_music_sources(mass, _user(OWNER)) == ["spotify--aaaa"]
     assert own_music_sources(mass, _user(MEMBER)) == []
     assert own_music_sources(mass, None) == []
     assert source_owner(mass, "spotify--aaaa") == OWNER
     assert source_owner(mass, "builtin") is None
+    assert source_access(mass, "spotify--aaaa") == access
+    assert source_access(mass, "builtin") is None
 
 
 def test_derived_provider_filter_is_empty_when_nothing_is_hidden() -> None:

@@ -241,6 +241,83 @@ async def test_an_unknown_user_is_refused(access_mass: MusicAssistant) -> None:
         )
 
 
+async def test_a_disabled_member_keeps_its_place_on_the_share_list(
+    access_mass: MusicAssistant,
+) -> None:
+    """A disabled account stays on the share list, so enabling it again restores its access."""
+    admin = await _create_user(access_mass, "admin", UserRole.ADMIN)
+    owner = await _create_user(access_mass, "owner")
+    member = await _create_user(access_mass, "member")
+    disabled = await _create_user(access_mass, "disabled")
+    set_music_source_access(
+        access_mass,
+        {
+            MUSIC_INSTANCE: ProviderAccess(
+                owner=owner.user_id,
+                sharing=ProviderSharing.SELECTED,
+                shared_users=[member.user_id, disabled.user_id],
+            )
+        },
+    )
+    set_current_user(admin)
+    await access_mass.webserver.auth.disable_user(disabled.user_id)
+    # the owner is not told who is disabled, so it sends the list back as it is
+    set_current_user(owner)
+
+    config = await access_mass.config.set_provider_access(
+        MUSIC_INSTANCE,
+        owner=owner.user_id,
+        sharing=ProviderSharing.SELECTED,
+        shared_users=[member.user_id, disabled.user_id],
+    )
+
+    assert config.access == ProviderAccess(
+        owner=owner.user_id,
+        sharing=ProviderSharing.SELECTED,
+        shared_users=[member.user_id, disabled.user_id],
+    )
+    assert _stored_access(access_mass, MUSIC_INSTANCE) == {
+        "owner": owner.user_id,
+        "sharing": "selected",
+        "shared_users": [member.user_id, disabled.user_id],
+    }
+
+
+async def test_a_disabled_or_unknown_user_is_not_added_to_the_share_list(
+    access_mass: MusicAssistant,
+) -> None:
+    """A source is only shared with an account that can use it."""
+    admin = await _create_user(access_mass, "admin", UserRole.ADMIN)
+    member = await _create_user(access_mass, "member")
+    disabled = await _create_user(access_mass, "disabled")
+    set_music_source_access(
+        access_mass,
+        {
+            MUSIC_INSTANCE: ProviderAccess(
+                owner=admin.user_id,
+                sharing=ProviderSharing.SELECTED,
+                shared_users=[member.user_id],
+            )
+        },
+    )
+    set_current_user(admin)
+    await access_mass.webserver.auth.disable_user(disabled.user_id)
+
+    for user_id in (disabled.user_id, "does-not-exist"):
+        with pytest.raises(InvalidDataError):
+            await access_mass.config.set_provider_access(
+                MUSIC_INSTANCE,
+                owner=admin.user_id,
+                sharing=ProviderSharing.SELECTED,
+                shared_users=[member.user_id, user_id],
+            )
+    assert _stored_access(access_mass, MUSIC_INSTANCE) == {
+        "owner": admin.user_id,
+        "sharing": "selected",
+        "shared_users": [member.user_id],
+    }
+
+
 @pytest.mark.parametrize("instance_id", [PLAYER_INSTANCE, BUILTIN_INSTANCE])
 async def test_only_a_real_music_source_can_be_owned(
     access_mass: MusicAssistant, instance_id: str
