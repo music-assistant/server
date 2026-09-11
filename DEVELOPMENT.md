@@ -32,8 +32,9 @@ With this repository cloned locally, execute the following commands in a termina
 
 * The setup script will create a separate virtual environment (if needed), install all the project/test dependencies and configure pre-commit for linting and testing.
 * Make sure, that the python interpreter in VS Code is set to the newly generated venv.
-* Debug: Hit (Fn +) F5 to start Music Assistant locally (VS Code), or run `python -m music_assistant --log-level debug` from the command line
-  * asyncio debug mode, with its slow-callback warnings and the scheduling stack in unhandled-error logs, comes from Python's development mode: run `python -X dev -m music_assistant --log-level debug` or set `PYTHONDEVMODE=1` (for VS Code: in the `env` of your launch configuration). The environment variable also turns on the slow-query warnings of the database helper. Dev mode records a stack trace for every scheduled callback and future, so expect a slower server while it is on.
+* Debug: Hit (Fn +) F5 to start Music Assistant locally (VS Code, using the launch configuration in `.vscode/launch.json`), or run `python -m music_assistant --log-level debug` from the command line
+  * asyncio debug mode, with its slow-callback warnings and the scheduling stack in unhandled-error logs, comes from Python's development mode: run `python -X dev -m music_assistant --log-level debug` or set `PYTHONDEVMODE=1`. The VS Code launch configuration already enables it. The environment variable also turns on the slow-query warnings of the database helper. Dev mode records a stack trace for every scheduled callback and future, so expect a slower server while it is on.
+  * Core maintainers: the launch configuration reads the bundled provider credentials (Spotify, Qobuz, ...) from a checkout of the private `appvars` repository next to this one (`../appvars/app_vars.json`). From the command line, point `MASS_APP_VARS_FILE` at that file. Without it the bundled credentials stay empty, see `music_assistant/helpers/app_vars.py`.
 * The pre-compiled UI of Music Assistant will be available at `localhost:8095` 🎉
 
 NOTE: Always re-run the setup script after you fetch the latest code because requirements could have changed.
