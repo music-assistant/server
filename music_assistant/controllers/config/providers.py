@@ -421,12 +421,11 @@ class ProviderConfigMixin:
     @api_command("config/providers/share_candidates", required_scope=Scope.CONFIG_PROVIDERS_OWN)
     async def get_share_candidates(self) -> list[ShareCandidate]:
         """
-        Return the household members the calling user may share a music source with.
+        Return the household members a music source can be shared with.
 
-        Every enabled member but the caller itself is listed, without its role or settings.
-        Guests and the Home Assistant system user are not members, so they are left out.
+        Every enabled member is listed, without its role or settings. Guests and the Home
+        Assistant system user are not members, so they are left out.
         """
-        caller, _ = self._access_caller()
         return [
             ShareCandidate(
                 user_id=user.user_id,
@@ -435,9 +434,7 @@ class ProviderConfigMixin:
                 avatar_url=user.avatar_url,
             )
             for user in await self.mass.webserver.auth.list_users()
-            if user.enabled
-            and self._is_member(user)
-            and (caller is None or user.user_id != caller.user_id)
+            if user.enabled and self._is_member(user)
         ]
 
     def release_user_sources(self, user_id: str) -> None:

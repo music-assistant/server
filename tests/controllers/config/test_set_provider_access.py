@@ -361,7 +361,7 @@ async def test_a_disabled_or_unknown_user_is_not_added_to_the_share_list(
 async def test_a_member_is_served_the_members_it_may_share_with(
     access_mass: MusicAssistant,
 ) -> None:
-    """The share list of a source is picked from every enabled member but the caller."""
+    """The share list of a source is picked from every enabled member."""
     admin = await _create_user(access_mass, "admin", UserRole.ADMIN)
     owner = await _create_user(access_mass, "owner")
     member = await access_mass.webserver.auth.create_user(
@@ -377,7 +377,7 @@ async def test_a_member_is_served_the_members_it_may_share_with(
     candidates = await access_mass.config.get_share_candidates()
 
     assert sorted(candidate.user_id for candidate in candidates) == sorted(
-        [admin.user_id, member.user_id]
+        [admin.user_id, member.user_id, owner.user_id]
     )
     # a member is not told anything about the accounts beyond what the picker shows
     served = next(candidate for candidate in candidates if candidate.user_id == member.user_id)
@@ -402,6 +402,7 @@ async def test_every_share_candidate_is_accepted_on_the_share_list(
     )
     set_current_user(owner)
     candidates = await access_mass.config.get_share_candidates()
+    assert len(candidates) == 3
 
     config = await access_mass.config.set_provider_access(
         MUSIC_INSTANCE,
@@ -410,10 +411,10 @@ async def test_every_share_candidate_is_accepted_on_the_share_list(
         shared_users=[candidate.user_id for candidate in candidates],
     )
 
-    assert len(candidates) == 2
+    # the owner is among the candidates and uses its source anyway
     assert config.access is not None
     assert sorted(config.access.shared_users) == sorted(
-        candidate.user_id for candidate in candidates
+        candidate.user_id for candidate in candidates if candidate.user_id != owner.user_id
     )
 
 
