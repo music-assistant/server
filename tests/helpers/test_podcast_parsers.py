@@ -12,6 +12,7 @@ from music_assistant.helpers.podcast_parsers import (
     find_episode_stream_url,
     get_cached_podcast,
     get_episode_positions,
+    get_episode_transcript,
     get_podcastparser_dict,
     get_stream_url_from_episode,
     parse_chapters_from_json,
@@ -721,3 +722,85 @@ def test_find_episode_stream_url_matches_empty_guid() -> None:
     assert find_episode_stream_url(parsed_feed=feed, guid_or_stream_url="") == (
         "https://example.com/ep1.mp3"
     )
+
+
+# --- transcript retrieval ----------------------------------------------------------------------
+
+TRANSCRIPT_URL = "https://example.com/ep1.vtt"
+TRANSCRIPT_VTT = b"""WEBVTT
+
+00:00.000 --> 00:02.000
+<v Jane Doe>Welcome to the show.
+"""
+
+
+async def test_transcript_is_fetched_and_parsed() -> None:
+    """A fetched WebVTT transcript yields readable text and timed cues."""
+    session = _FakeFeedSession(body=TRANSCRIPT_VTT)
+    text, cues = await get_episode_transcript(
+        mass=_fake_mass(session),
+        provider_instance_id="podcastfeed--test",
+        transcripts=[{"url": TRANSCRIPT_URL, "type": "text/vtt"}],
+    )
+    assert text == "Jane Doe: Welcome to the show."
+    assert cues is not None
+    assert cues[0].speaker == "Jane Doe"
+
+
+async def test_transcript_prefers_a_format_carrying_timings() -> None:
+    """The format with timings wins over one that would only yield plain text."""
+    session = _FakeFeedSession(body=TRANSCRIPT_VTT)
+    _, cues = await get_episode_transcript(
+        mass=_fake_mass(session),
+        provider_instance_id="podcastfeed--test",
+        transcripts=[
+            {"url": "https://example.com/ep1.txt", "type": "text/plain"},
+            {"url": TRANSCRIPT_URL, "type": "text/vtt"},
+        ],
+    )
+    assert cues is not None
+
+
+async def test_transcript_is_fetched_once_and_then_cached() -> None:
+    """A transcript is downloaded once and served from the cache afterwards."""
+    session = _FakeFeedSession(body=TRANSCRIPT_VTT)
+    mass = _fake_mass(session)
+    for _ in range(2):
+        text, _ = await get_episode_transcript(
+            mass=mass,
+            provider_instance_id="podcastfeed--test",
+            transcripts=[{"url": TRANSCRIPT_URL, "type": "text/vtt"}],
+        )
+        assert text is not None
+    assert session.calls == 1
+
+
+async def test_transcript_falls_back_to_untimed_text() -> None:
+    """A document without timings still yields readable text, but no cues."""
+    session = _FakeFeedSession(body=b"<p>Just some prose.</p>")
+    text, cues = await get_episode_transcript(
+        mass=_fake_mass(session),
+        provider_instance_id="podcastfeed--test",
+        transcripts=[{"url": "https://example.com/ep1.html", "type": "text/html"}],
+    )
+    assert text == "Just some prose."
+    assert cues is None
+
+
+async def test_no_transcripts_on_offer_does_not_fetch() -> None:
+    """An episode with no transcript on offer costs no request."""
+    session = _FakeFeedSession(body=TRANSCRIPT_VTT)
+    assert await get_episode_transcript(
+        mass=_fake_mass(session), provider_instance_id="podcastfeed--test", transcripts=None
+    ) == (None, None)
+    assert session.calls == 0
+
+
+async def test_transcript_fetch_error_is_swallowed() -> None:
+    """A failed transcript fetch yields nothing rather than raising."""
+    session = _FakeFeedSession(body=TRANSCRIPT_VTT, errors=[ClientError("boom")])
+    assert await get_episode_transcript(
+        mass=_fake_mass(session),
+        provider_instance_id="podcastfeed--test",
+        transcripts=[{"url": TRANSCRIPT_URL, "type": "text/vtt"}],
+    ) == (None, None)
