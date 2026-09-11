@@ -11,9 +11,11 @@ a support request) and uninstall it when done.
 2. Let it run while you reproduce the issue (measurements start immediately).
 3. Download the diagnostics from Settings → Diagnostics: while the Profiler is installed the
    dump carries its full report (with a day of recorder history at one sample per five
-   minutes) as `provider.profiler`. The `profiler/report` API command returns the same
-   report at full recorder resolution and also saves it as `report.json` / `report.md` in
-   the `profiler` folder inside the server data directory.
+   minutes) as `provider.profiler`. The `profiler/report` API command builds the same kind
+   of report at full recorder resolution, by default for the last 30 minutes and without
+   the object census (`recorder_minutes` and `include_object_census` widen it), and also
+   saves it as `report.json` / `report.md` in the `profiler` folder inside the server data
+   directory.
 4. Attach the file to a GitHub issue or hand it to the LLM of your choice for analysis.
 5. Uninstall the provider.
 
