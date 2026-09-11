@@ -198,7 +198,7 @@ def _album_title_match(base: str, other: str) -> str:
 # Pairing the rows of a title is quadratic in their count, and the query runs on the single
 # library connection, where anything slow holds up every other library query. The self-join
 # is therefore confined to titles held by more than one provider, shared by a bounded number
-# of rows and not normalized to nothing, which every non-Latin title is.
+# of rows, excluding titles whose normalized value is empty.
 _DUPLICATE_TRACK_CANDIDATES_QUERY = f"""
 WITH candidate_titles AS (
     SELECT t.search_name
