@@ -420,6 +420,20 @@ async def test_a_track_repeating_itself_is_listed_once_more(
     assert window.includes_end is False
 
 
+async def test_a_pair_repeating_itself_is_listed_once_round() -> None:
+    """
+    Test two tracks on repeat all go round once, not for a whole window.
+
+    The wrapped track is also the one before the playing track, which the stale-request
+    check lets through for skip-back, so it could not refuse the rest of such a window.
+    """
+    player = _make_player_on_real_queues(2, RepeatMode.ALL)
+
+    window = await player.build_cloud_queue_window("track0")
+
+    assert [x.queue_item_id for x in window.items] == ["track0", "track1", "track0"]
+
+
 async def test_a_short_queue_on_repeat_all_still_fills_the_window() -> None:
     """Test repeat all wraps round a short queue, so the speaker does not run dry early."""
     player = _make_player_on_real_queues(3, RepeatMode.ALL)
@@ -820,8 +834,9 @@ async def test_a_later_failure_on_another_item_is_reported(
     assert caplog.text.count("ERROR_LSE") == 2
 
 
+@pytest.mark.parametrize("status", [404, "404"], ids=["int", "str"])
 async def test_a_track_our_stream_server_refused_is_not_reported_as_a_failure(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, status: int | str
 ) -> None:
     """
     A 404 is us refusing a track the queue moved past, not the speaker failing.
@@ -833,7 +848,7 @@ async def test_a_track_our_stream_server_refused_is_not_reported_as_a_failure(
     provider = _make_provider()
     refused = {
         **_error_report("final", report_id="refused-1"),
-        "error": {"type": "http", "status": 404},
+        "error": {"type": "http", "status": status},
         "id": "track1@3",
     }
     request = MagicMock()
@@ -846,3 +861,17 @@ async def test_a_track_our_stream_server_refused_is_not_reported_as_a_failure(
     assert "refused track1@3" in caplog.text
     # nor may it take a place in the history that holds back repeats of real failures
     assert not player.reported_playback_errors
+
+
+async def test_another_http_error_is_still_reported(caplog: pytest.LogCaptureFixture) -> None:
+    """Only a refusal is expected, any other http error the speaker hit is a real failure."""
+    player = _player_for_error_reports()
+    provider = _make_provider()
+    failed = {**_error_report(report_id="http-500"), "error": {"type": "http", "status": 500}}
+    request = MagicMock()
+    request.json = AsyncMock(return_value={"items": [failed]})
+
+    with caplog.at_level(logging.WARNING, logger="test.sonos.cloud_queue"):
+        await provider._handle_sonos_queue_time_played(player, request)
+
+    assert "reported 500 (http)" in caplog.text

@@ -610,10 +610,10 @@ class SonosPlayer(Player):
             if next_item is None:
                 break
             items.append(await self._player_media_for_speaker(next_item))
-            if len(items) > 1 and items[-2].queue_item_id == next_item.queue_item_id:
-                # a track that repeats itself gets one more play, not a window full: the
-                # speaker is never refused a copy of what it plays, so it would keep
-                # repeating it after repeat was switched off
+            if next_item.queue_item_id in (x.queue_item_id for x in items[-3:-1]):
+                # a track or a pair that repeats itself gets one more round, not a window
+                # full: the speaker is never refused the track it plays or the one before
+                # it, so it would keep repeating them after repeat was switched off
                 break
             last_index = next_item.queue_item_id
 

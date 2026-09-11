@@ -470,9 +470,9 @@ class SonosPlayerProvider(PlayerProvider):
         :param error: The error object the speaker attached to it.
         """
         if error.get("type") == "http" and str(error.get("status")) == "404":
-            # our own stream server refused a track the queue moved past or no longer
-            # holds. The speaker tries each track it cached before reading the queue
-            # again, so these come in bursts and would bury the real failures
+            # our own stream server refused the item: a track the queue moved past or no
+            # longer holds, or one it failed to stream and logged there. The speaker tries
+            # each track it cached before reading the queue again, so these come in bursts
             self.logger.debug(
                 "Speaker %s was refused %s by the stream server",
                 player.display_name,
