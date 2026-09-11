@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, cast
 
 from aiohttp import ClientError
@@ -346,6 +346,31 @@ class SonosPlayer(Player):
         """
         # sonos expects milliseconds
         await self.group_controller.seek(position * 1000)
+
+    async def set_shuffle(self, shuffle_enabled: bool) -> None:
+        """
+        Handle SET SHUFFLE command on the player.
+
+        Will only be called if the player's currently active source declares
+        ``can_shuffle``.
+
+        :param shuffle_enabled: Whether the source should play its content shuffled.
+        """
+        await self.group_controller.set_play_modes(shuffle=shuffle_enabled)
+
+    async def set_repeat(self, repeat_mode: RepeatMode) -> None:
+        """
+        Handle SET REPEAT command on the player.
+
+        Will only be called if the player's currently active source declares
+        ``can_repeat``.
+
+        :param repeat_mode: The repeat mode the source should apply.
+        """
+        await self.group_controller.set_play_modes(
+            repeat=repeat_mode == RepeatMode.ALL,
+            repeat_one=repeat_mode == RepeatMode.ONE,
+        )
 
     async def play_media(
         self,
@@ -803,6 +828,8 @@ class SonosPlayer(Player):
             # the player has nothing loaded at all (empty queue and no service active)
             self._attr_active_source = None
 
+        self._reflect_source_play_modes(active_group)
+
         # special case: Sonos reports PAUSED state when MA stopped playback
         if (
             active_service == MusicService.MUSIC_ASSISTANT
@@ -925,30 +952,6 @@ class SonosPlayer(Player):
         task_id = f"sonos_reconnect_{self.player_id}"
         self.mass.call_later(delay, self._connect, delay, task_id=task_id)
 
-    async def sync_play_modes(self, queue_id: str) -> None:
-        """Sync the play modes between MA and Sonos."""
-        queue = self.mass.player_queues.get(queue_id)
-        if not queue or queue.state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
-            return
-        repeat_single_enabled = queue.repeat_mode == RepeatMode.ONE
-        repeat_all_enabled = queue.repeat_mode == RepeatMode.ALL
-        if not self.client.player.group:
-            return
-        play_modes = self.group_controller.play_modes
-        if (
-            play_modes.repeat != repeat_all_enabled
-            or play_modes.repeat_one != repeat_single_enabled
-        ):
-            try:
-                await self.group_controller.set_play_modes(
-                    repeat=repeat_all_enabled,
-                    repeat_one=repeat_single_enabled,
-                )
-            except FailedCommand as err:
-                if "groupCoordinatorChanged" not in str(err):
-                    # this may happen at race conditions
-                    raise
-
     async def _connect(self, retry_on_fail: int = 0) -> None:
         """Connect to the Sonos player."""
         if self.mass.closing:
@@ -998,6 +1001,43 @@ class SonosPlayer(Player):
         if self.client:
             await self.client.disconnect()
         self.logger.debug("Disconnected from player API")
+
+    def _reflect_source_play_modes(self, active_group: SonosGroup) -> None:
+        """Report the play modes of the source the speaker runs itself on its source list entry."""
+        # a source that stopped playing must lose its live state, so every entry starts from
+        # its template again; the templates are shared between players, so never mutated
+        self._attr_source_list = [PLAYER_SOURCE_MAP.get(x.id, x) for x in self._attr_source_list]
+        source_index = next(
+            (
+                index
+                for index, source in enumerate(self._attr_source_list)
+                if source.id == self._attr_active_source
+            ),
+            None,
+        )
+        if source_index is None:
+            # MA playback and the services we did not map have no entry here, and the
+            # MA queue carries its own play modes
+            return
+        actions = active_group.playback_actions.raw_data
+        modes = active_group.play_modes
+        repeat_mode: RepeatMode | None
+        if modes.repeat is None and modes.repeat_one is None:
+            # Sonos did not report a repeat mode for this source
+            repeat_mode = None
+        elif modes.repeat_one:
+            repeat_mode = RepeatMode.ONE
+        elif modes.repeat:
+            repeat_mode = RepeatMode.ALL
+        else:
+            repeat_mode = RepeatMode.OFF
+        self._attr_source_list[source_index] = replace(
+            self._attr_source_list[source_index],
+            can_shuffle=actions.get("canShuffle", False),
+            can_repeat=actions.get("canRepeat", False) or actions.get("canRepeatOne", False),
+            shuffle_enabled=modes.shuffle,
+            repeat_mode=repeat_mode,
+        )
 
     async def _player_media_for_speaker(self, queue_item: QueueItem) -> PlayerMedia:
         """Return the media for a queue item, with its stream URL resolved for this player."""

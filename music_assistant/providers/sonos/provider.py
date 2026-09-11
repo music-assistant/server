@@ -411,7 +411,7 @@ class SonosPlayerProvider(PlayerProvider):
                 # seek needs to be disabled because we dont properly support range requests
                 "canSeek": False,
                 "canRepeat": False,  # handled by MA queue controller
-                "canRepeatOne": False,  # synced from MA queue controller
+                "canRepeatOne": False,  # handled by MA queue controller
                 "canCrossfade": False,  # handled by MA queue controller
                 "canShuffle": False,  # handled by MA queue controller
             },
