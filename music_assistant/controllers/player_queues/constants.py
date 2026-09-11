@@ -50,7 +50,7 @@ CONF_CROSSFADE_LABEL = "crossfade_label"
 CONF_CROSSFADE_ENABLED = "crossfade_enabled"
 
 # global defaults the per-queue autoplay/crossfade toggles follow when not overridden
-DEFAULT_AUTOPLAY_ENABLED = True
+DEFAULT_AUTOPLAY_ENABLED = False
 DEFAULT_CROSSFADE_ENABLED = False
 
 CONF_SMART_SHUFFLE_LABEL = "smart_shuffle_label"
