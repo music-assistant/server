@@ -331,12 +331,14 @@ class PluginProvider(Provider):
         """
         Record a playback progress report of a media item.
 
-        Will only be called if ProviderFeature.SCROBBLE is declared. Fired for every queue
-        throughout the playback of an item and once more when it ends or is skipped;
-        ``report.is_playing`` and ``report.fully_played`` tell those apart. The report names
-        the playing user and player, so a plugin recording for some of them only filters on
-        those. ``ScrobblerHelper`` (helpers/scrobbler.py) builds the usual now-playing and
-        scrobble handling on top of this hook.
+        Will only be called if ProviderFeature.SCROBBLE is declared. Fired for every queue,
+        periodically while an item plays and whenever its playback state or the current
+        item changes, so also on pause, when it ends or when it is skipped;
+        ``report.is_playing`` and ``report.fully_played`` tell those apart. May fire before
+        ``loaded_in_mass`` ran, so ignore reports until everything the plugin needs is set
+        up. The report names the playing user and player, so a plugin recording for some of
+        them only filters on those. ``ScrobblerHelper`` (helpers/scrobbler.py) builds the
+        usual now-playing and scrobble handling on top of this hook.
 
         :param report: The playback progress report of the played item.
         """

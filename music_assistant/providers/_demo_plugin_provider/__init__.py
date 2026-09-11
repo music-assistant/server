@@ -84,7 +84,7 @@ SUPPORTED_FEATURES = {
     # this constant should contain a set of provider-level features
     # that your provider supports or an empty set if none.
     # see the ProviderFeature enum for all available features.
-    # this demo declares the two plugin-specific ones to demonstrate both concepts:
+    # this demo declares two of the plugin-specific features to demonstrate the concept:
     # 'AUDIO_SOURCE' means the provider exposes a (live) audio source to Music Assistant
     # and 'SCROBBLE' means it receives a report of every media item that is played.
     ProviderFeature.AUDIO_SOURCE,
@@ -311,9 +311,11 @@ class MyDemoPluginprovider(PluginProvider):
         """React to a playback progress report of a media item."""
         # OPTIONAL
         # Will only be called if ProviderFeature.SCROBBLE is declared.
-        # Fired throughout the playback of a media item and once more when it ends; the
-        # report says whether the item is still playing and whether it was played to
-        # completion, and names the playing user and player so you can filter on those.
+        # Fired throughout the playback of a media item and whenever its playback state
+        # changes (pause, end, skip); the report says whether the item is still playing and
+        # whether it was played to completion, and names the playing user and player so you
+        # can filter on those. It can fire before loaded_in_mass ran, so ignore reports
+        # until everything the plugin needs is set up.
         # Scrobblers typically forward the report to a ScrobblerHelper subclass
         # (music_assistant.helpers.scrobbler), which handles now-playing updates, duplicate
         # suppression and the shared user/player filter options.

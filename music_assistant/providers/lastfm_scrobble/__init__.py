@@ -114,6 +114,7 @@ class LastFMScrobbleProvider(PluginProvider):
     """Plugin provider to support scrobbling of tracks."""
 
     _network: pylast._Network | None
+    _handler: LastFMEventHandler | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -128,7 +129,6 @@ class LastFMScrobbleProvider(PluginProvider):
     async def handle_async_init(self) -> None:
         """Handle async setup."""
         self._network = None
-        self._handler: LastFMEventHandler | None = None
 
         if not self.get_setup_value(CONF_SESSION_KEY):
             self.logger.info("No session key available, don't forget to authenticate!")
@@ -169,7 +169,7 @@ class LastFMScrobbleProvider(PluginProvider):
 
 
 class LastFMEventHandler(ScrobblerHelper):
-    """Handle Last.fm event processing for scrobbling and now-playing updates."""
+    """Submit now-playing updates and scrobbles to Last.fm."""
 
     # pylast wraps every failure — including network errors — in PyLastError.
     scrobble_exceptions: ClassVar[tuple[type[Exception], ...]] = (pylast.PyLastError,)

@@ -73,7 +73,7 @@ class SubsonicScrobbleProvider(PluginProvider):
 
 
 class SubsonicScrobbleEventHandler(ScrobblerHelper):
-    """Handles the scrobbling event handling."""
+    """Submit now-playing updates and scrobbles to the Subsonic server of the playing user."""
 
     # SonicError covers Subsonic API failures; aiohttp.ClientError and TimeoutError
     # cover the underlying transport the libopensonic connection uses.

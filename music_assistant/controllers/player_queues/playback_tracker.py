@@ -748,10 +748,16 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
 
     def _report_to_scrobblers(self, report: MediaItemPlaybackProgressReport) -> None:
         """Hand a playback progress report to every loaded scrobbler plugin."""
+        if self.mass.closing:
+            return
         for scrobbler in self.mass.get_providers_supporting_feature(
             ProviderFeature.SCROBBLE, priority=(ProviderType.PLUGIN,)
         ):
             if not isinstance(scrobbler, PluginProvider):
+                # the lookup returns plugins only; this narrows the type for mypy
+                continue
+            if scrobbler.unloading:
+                # its clients may already be torn down
                 continue
             # one task per plugin, so a slow or failing scrobbler never holds up the others
             self.mass.create_task(scrobbler.on_media_item_played(report))

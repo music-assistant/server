@@ -75,7 +75,7 @@ class ListenBrainzScrobbleProvider(PluginProvider):
 
 
 class ListenBrainzEventHandler(ScrobblerHelper):
-    """Handles the event handling."""
+    """Submit now-playing updates and listens to ListenBrainz."""
 
     # The client raises ListenBrainzException for API/payload errors and lets raw
     # requests network errors (RequestException) propagate.

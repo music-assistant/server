@@ -8,9 +8,9 @@ clients consume.
 
 from __future__ import annotations
 
-from contextlib import suppress
+import asyncio
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 from unittest.mock import MagicMock, Mock
 
 from music_assistant_models.enums import (
@@ -27,19 +27,22 @@ from music_assistant.controllers.player_queues.helpers import CompareState
 from music_assistant.controllers.player_queues.playback_tracker import PlaybackTrackerMixin
 from music_assistant.models.plugin import PluginProvider
 
-if TYPE_CHECKING:
-    from collections.abc import Coroutine
-
 QUEUE_ID = "queue-1"
 
 
 class _RecordingScrobbler(PluginProvider):
     """Scrobbler plugin stand-in that records the reports handed to its hook."""
 
-    def __init__(self, fails: bool = False) -> None:
-        """Initialize, optionally raising from the hook to simulate a broken scrobbler."""
+    def __init__(self, fails: bool = False, unloading: bool = False) -> None:
+        """
+        Initialize the stand-in.
+
+        :param fails: Raise from the hook, like a scrobbler whose service is unreachable.
+        :param unloading: Present the plugin as being unloaded.
+        """
         self.reports: list[MediaItemPlaybackProgressReport] = []
         self.fails = fails
+        self.unloading = unloading
 
     async def on_media_item_played(self, report: MediaItemPlaybackProgressReport) -> None:
         """Record the report, or raise when this stand-in is set up to fail."""
@@ -63,32 +66,37 @@ def _report(uri: str = "library://track/1") -> MediaItemPlaybackProgressReport:
     )
 
 
-def _tracker(scrobblers: list[Any], tasks: list[Coroutine[Any, Any, None]]) -> SimpleNamespace:
-    """Build a tracker stand-in whose provider lookup returns the given scrobblers."""
+def _tracker(
+    scrobblers: list[Any], tasks: list[asyncio.Task[None]], closing: bool = False
+) -> SimpleNamespace:
+    """
+    Build a tracker stand-in whose provider lookup returns the given scrobblers.
+
+    The hook coroutines run as eagerly started tasks, as they do on the server, and are
+    collected in ``tasks``.
+    """
     return SimpleNamespace(
         mass=SimpleNamespace(
+            closing=closing,
             get_providers_supporting_feature=Mock(return_value=scrobblers),
-            create_task=Mock(side_effect=tasks.append),
+            create_task=Mock(
+                side_effect=lambda coro: tasks.append(
+                    asyncio.Task(coro, loop=asyncio.get_running_loop(), eager_start=True)
+                )
+            ),
         )
     )
-
-
-async def _drain(tasks: list[Coroutine[Any, Any, None]]) -> None:
-    """Run the captured coroutines the way a task per plugin would."""
-    for coro in tasks:
-        with suppress(Exception):
-            await coro
 
 
 async def test_every_scrobbler_gets_the_same_report() -> None:
     """Each scrobbler plugin is handed the report in its own task."""
     scrobblers = [_RecordingScrobbler(), _RecordingScrobbler()]
-    tasks: list[Coroutine[Any, Any, None]] = []
+    tasks: list[asyncio.Task[None]] = []
     tracker = _tracker(cast("list[Any]", scrobblers), tasks)
     report = _report()
 
     PlaybackTrackerMixin._report_to_scrobblers(cast("Any", tracker), report)
-    await _drain(tasks)
+    await asyncio.gather(*tasks)
 
     tracker.mass.get_providers_supporting_feature.assert_called_once_with(
         ProviderFeature.SCROBBLE, priority=(ProviderType.PLUGIN,)
@@ -99,30 +107,47 @@ async def test_every_scrobbler_gets_the_same_report() -> None:
         assert scrobbler.reports[0] is report
 
 
-async def test_a_non_plugin_provider_is_skipped() -> None:
-    """A provider that is not a plugin has no hook to call."""
-    tasks: list[Coroutine[Any, Any, None]] = []
-    tracker = _tracker([Mock()], tasks)
-
-    PlaybackTrackerMixin._report_to_scrobblers(cast("Any", tracker), _report())
-
-    assert tasks == []
-    tracker.mass.create_task.assert_not_called()
-
-
 async def test_a_failing_scrobbler_does_not_stop_the_others() -> None:
-    """A scrobbler raising from its hook leaves the other scrobblers reporting."""
+    """A scrobbler raising from its hook fails its own task and nothing else."""
     failing = _RecordingScrobbler(fails=True)
     working = _RecordingScrobbler()
-    tasks: list[Coroutine[Any, Any, None]] = []
+    tasks: list[asyncio.Task[None]] = []
     tracker = _tracker([failing, working], tasks)
     report = _report()
 
     PlaybackTrackerMixin._report_to_scrobblers(cast("Any", tracker), report)
-    await _drain(tasks)
+    await asyncio.gather(*tasks, return_exceptions=True)
 
+    assert isinstance(tasks[0].exception(), RuntimeError)
     assert failing.reports == []
     assert working.reports == [report]
+
+
+async def test_a_scrobbler_being_unloaded_is_skipped() -> None:
+    """A plugin on its way out is still registered, but gets no more reports."""
+    unloading = _RecordingScrobbler(unloading=True)
+    working = _RecordingScrobbler()
+    tasks: list[asyncio.Task[None]] = []
+    tracker = _tracker([unloading, working], tasks)
+    report = _report()
+
+    PlaybackTrackerMixin._report_to_scrobblers(cast("Any", tracker), report)
+    await asyncio.gather(*tasks)
+
+    assert unloading.reports == []
+    assert working.reports == [report]
+
+
+async def test_nothing_is_reported_while_the_server_is_closing() -> None:
+    """The reports a stopping player produces on shutdown do not reach the plugins."""
+    scrobbler = _RecordingScrobbler()
+    tasks: list[asyncio.Task[None]] = []
+    tracker = _tracker([scrobbler], tasks, closing=True)
+
+    PlaybackTrackerMixin._report_to_scrobblers(cast("Any", tracker), _report())
+
+    assert tasks == []
+    tracker.mass.get_providers_supporting_feature.assert_not_called()
 
 
 def test_the_event_and_the_hook_receive_the_same_report() -> None:
@@ -132,7 +157,11 @@ def test_the_event_and_the_hook_receive_the_same_report() -> None:
         provider="library",
         name="Track",
         provider_mappings={
-            ProviderMapping(item_id="1", provider_domain="library", provider_instance="library")
+            ProviderMapping(
+                item_id="1",
+                provider_domain="filesystem_local",
+                provider_instance="filesystem_local--abcd",
+            )
         },
     )
     item = SimpleNamespace(
