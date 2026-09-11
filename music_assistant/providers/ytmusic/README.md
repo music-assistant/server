@@ -58,9 +58,12 @@ sequenceDiagram
     else signed
         Flow->>H: verify_cookie(headers)
         H->>YTM: get_account_info()
-        alt signed-out page / other failure
+        alt signed-out page / 401 / unexpected payload
             YTM-->>H: error
             H-->>Flow: LoginFailed(cookie_expired | cookie_rejected)
+        else timeout / 429 / 5xx
+            YTM-->>H: error
+            H-->>Flow: SetupFailedError(youtube_unreachable)
         else ok
             YTM-->>H: account info
         end
@@ -68,8 +71,8 @@ sequenceDiagram
     Flow->>H: ping_po_token_server(url)
     H->>POT: GET /ping (10s timeout)
     POT-->>H: 200 / unreachable
-    alt any field error
-        Flow-->>User: form again, errors on the cookie / URL field
+    alt any error
+        Flow-->>User: form again, errors on the cookie / URL field (or under the form)
     else all good
         Flow->>Prov: session.finish(values), load provider
         alt provider load fails (no Premium, test stream failed, ...)
@@ -91,7 +94,8 @@ class-level `login_failed` key, which would otherwise replace the specific messa
 | `cookie_missing_sapisid` | `helpers.build_headers` | No `__Secure-3PAPISID` field: the cookie was copied from a request that was not signed in. |
 | `cookie_malformed` | `helpers.build_headers` | `SimpleCookie` could not parse it (a stray space inside a value is enough). |
 | `cookie_expired` | `helpers._raise_if_signed_out` | YouTube answered with its signed-out page: the session was rotated or logged out. |
-| `cookie_rejected` | `helpers.verify_cookie` | The verification request failed for another reason; the cause is in the log. |
+| `cookie_rejected` | `helpers.verify_cookie` | YouTube answered 401/403, or with something other than the account page (consent or sign-in interstitial); the cause is in the log. |
+| `youtube_unreachable` | `helpers.verify_cookie` | Timeout, connection failure, 429 or 5xx while verifying: shown under the form, not on the cookie field (raised as `SetupFailedError`). |
 | `po_token_server_unreachable` | flow / `handle_async_init` | `GET <url>/ping` did not answer 200. |
 | `no_premium` | `handle_async_init` | The test track did not offer the Premium-only HQ format. |
 | `stream_check_failed` | `_user_has_ytm_premium` | yt-dlp could not fetch the test track at all (raised as a retryable `SetupFailedError`). |
@@ -236,7 +240,8 @@ mixes.
 | *session is no longer valid* | Google rotated the session (normal tab kept open, logged out, incognito window closed). | Export a fresh cookie; the cookies.txt route from an incognito window lasts longest. |
 | *PO Token server is not reachable* | The *YT Music PO Token Generator* add-on is not installed/running, or the URL is wrong. | Install/start it; check the URL (default `http://127.0.0.1:4416`). |
 | *Premium was not detected* | The account has no active YouTube Music Premium, or the cookie belongs to a different account. | Check the subscription; sign in with the right account before copying. |
-| *could not fetch a test stream* | yt-dlp failed: PO Token server not minting yet, YouTube rate limiting, or a yt-dlp update needed. | The provider retries on its own; the yt-dlp error is in `musicassistant.log`. |
+| *could not fetch a test stream* | yt-dlp failed: PO Token server not minting yet, YouTube rate limiting, or a yt-dlp update needed. | During setup, submit the form again once the PO Token server is up; an already configured provider retries on its own at startup. The yt-dlp error is in `musicassistant.log`. |
+| *could not be reached to verify the cookie* | YouTube timed out, rate limited (429) or answered 5xx while the cookie was being checked. | Nothing is wrong with the form values; try again in a moment. |
 
 Setup failures are logged at WARNING even though the instance is rolled back; look for
 `Setup of ytmusic failed:` in `musicassistant.log`.

@@ -29,6 +29,7 @@
     "no_premium": "YouTube Music Premium was not detected on this account. Check that the cookie belongs to an account with an active YouTube Music Premium subscription and that the PO Token server is working.",
     "cookie_rejected": "YouTube Music did not accept this cookie. Make sure it is complete and was copied from a signed-in session; the Music Assistant log has the details.",
     "stream_check_failed": "Could not fetch a test stream from YouTube Music, so the subscription could not be verified. Check that the PO Token server is working and that the cookie is still valid; the Music Assistant log has the details.",
-    "cookie_malformed": "The cookie could not be parsed. Paste the complete Cookie header value exactly as copied from the browser, without editing it."
+    "cookie_malformed": "The cookie could not be parsed. Paste the complete Cookie header value exactly as copied from the browser, without editing it.",
+    "youtube_unreachable": "YouTube Music could not be reached to verify the cookie. Check the server's internet connection and try again in a moment; the Music Assistant log has the details."
   }
 }

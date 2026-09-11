@@ -5,7 +5,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import ytmusicapi
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, SetupFailedError
+from requests.exceptions import ConnectTimeout
+from ytmusicapi.exceptions import YTMusicServerError
 
 from music_assistant.providers.ytmusic import helpers
 
@@ -133,3 +135,35 @@ async def test_verify_cookie_other_failure_is_reported_as_rejected() -> None:
     assert exc_info.value.translation_key == "cookie_rejected"
     assert exc_info.value.translation_owner == "provider.ytmusic"
     assert isinstance(exc_info.value.__cause__, KeyError)
+
+
+async def test_verify_cookie_http_refusal_is_reported_as_rejected() -> None:
+    """A 401/403 from YouTube is about the cookie."""
+    error = YTMusicServerError("Server returned HTTP 401: Unauthorized.\nRequest is missing ...")
+    with _patch_get_account_info(error=error), pytest.raises(LoginFailed) as exc_info:
+        await helpers.verify_cookie(headers={"Cookie": "x"})
+    assert exc_info.value.translation_key == "cookie_rejected"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        YTMusicServerError("Server returned HTTP 429: Too Many Requests.\n"),
+        YTMusicServerError("Server returned HTTP 503: Service Unavailable.\n"),
+        ConnectTimeout("music.youtube.com"),
+    ],
+)
+async def test_verify_cookie_transport_failure_is_not_blamed_on_the_cookie(
+    error: Exception,
+) -> None:
+    """Rate limiting, server errors and network failures are reported as YouTube unreachable."""
+    with _patch_get_account_info(error=error), pytest.raises(SetupFailedError) as exc_info:
+        await helpers.verify_cookie(headers={"Cookie": "x"})
+    assert exc_info.value.translation_key == "youtube_unreachable"
+    assert exc_info.value.__cause__ is error
+
+
+async def test_verify_cookie_unexpected_error_keeps_its_traceback() -> None:
+    """A programming error is not disguised as a cookie problem."""
+    with _patch_get_account_info(error=TypeError("bug")), pytest.raises(TypeError):
+        await helpers.verify_cookie(headers={"Cookie": "x"})

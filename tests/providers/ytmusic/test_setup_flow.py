@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import FlowStepType
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, SetupFailedError
 
 from music_assistant.constants import CONF_USERNAME
 from music_assistant.models.setup_flow import SetupFlowContext, SetupFlowError, SetupSession
@@ -141,6 +141,24 @@ async def test_cookie_refused_by_youtube_is_reported_on_cookie_field() -> None:
         finally:
             task.cancel()
     assert retry.errors == {CONF_COOKIE: "cookie_expired"}
+    finish.assert_not_awaited()
+
+
+@pytest.mark.usefixtures("po_token_reachable")
+async def test_youtube_unreachable_is_reported_as_base_error() -> None:
+    """YouTube being unreachable during verification is not blamed on the cookie field."""
+    finish = AsyncMock()
+    session, _ = _make_session(finish)
+    unreachable = SetupFailedError("timeout", translation_key="youtube_unreachable")
+    with patch.object(ytm_flow, "verify_cookie", AsyncMock(side_effect=unreachable)):
+        task = asyncio.create_task(ytm_flow.run_setup(session))
+        try:
+            first = await _wait_for_form(session)
+            session.handle_submit(_submission(VALID_COOKIE))
+            retry = await _wait_for_form(session, after_step=first)
+        finally:
+            task.cancel()
+    assert retry.errors == {"base": "youtube_unreachable"}
     finish.assert_not_awaited()
 
 

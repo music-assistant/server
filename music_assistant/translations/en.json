@@ -2802,6 +2802,7 @@
   "provider.ytmusic.errors.no_premium": "YouTube Music Premium was not detected on this account. Check that the cookie belongs to an account with an active YouTube Music Premium subscription and that the PO Token server is working.",
   "provider.ytmusic.errors.po_token_server_unreachable": "The PO Token server is not reachable. Install the 'YT Music PO Token Generator' add-on, make sure it is running and check the PO Token Server URL.",
   "provider.ytmusic.errors.stream_check_failed": "Could not fetch a test stream from YouTube Music, so the subscription could not be verified. Check that the PO Token server is working and that the cookie is still valid; the Music Assistant log has the details.",
+  "provider.ytmusic.errors.youtube_unreachable": "YouTube Music could not be reached to verify the cookie. Check the server's internet connection and try again in a moment; the Music Assistant log has the details.",
   "provider.ytmusic.manifest.description": "Stream songs and podcasts from YouTube Music.",
   "provider.ytmusic.media.recommendations.mixed_for_you.name": "Mixed for you",
   "provider.zvuk_music.config_entries.quality.description": "Select preferred audio quality.",

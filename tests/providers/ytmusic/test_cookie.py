@@ -40,8 +40,16 @@ def test_wrapped_header_is_rejoined() -> None:
         'curl ^"https://music.youtube.com/youtubei/v1/browse^" ^\n'
         f'  -H ^"cookie: {RAW_COOKIE}^" ^\n'
         '  -H ^"accept: */*^"',
-        # the -b/--cookie option form
-        f"curl https://music.youtube.com/ -b '{RAW_COOKIE}' -H 'accept: */*'",
+        # current Chromium (bash): the cookie is a -b option, not a header
+        f"curl 'https://music.youtube.com/youtubei/v1/browse' \\\n"
+        f"  -b '{RAW_COOKIE}' \\\n"
+        "  -H 'accept: */*'",
+        # current Chromium (cmd): -b with caret-escaped quotes
+        'curl ^"https://music.youtube.com/youtubei/v1/browse^" ^\n'
+        f'  -b ^"{RAW_COOKIE}^" ^\n'
+        '  -H ^"accept: */*^"',
+        # the long option form
+        f"curl https://music.youtube.com/ --cookie '{RAW_COOKIE}' -H 'accept: */*'",
     ],
 )
 def test_copy_as_curl_command(command: str) -> None:
@@ -70,6 +78,8 @@ def test_netscape_export() -> None:
         ".youtube.com\tTRUE\t/\tTRUE\t1790000000\tVISITOR_INFO1_LIVE\tabc\n"
         "#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t1790000000\t__Secure-3PAPISID\tsecret/value\n"
         ".google.com\tTRUE\t/\tTRUE\t1790000000\tNID\tignored\n"
+        "notyoutube.com\tTRUE\t/\tTRUE\t1790000000\tSID\tstranger\n"
+        ".evil-youtube.com\tTRUE\t/\tTRUE\t1790000000\tSID\tstranger\n"
         "music.youtube.com\tTRUE\t/\tTRUE\t0\tSID\txyz\n"
     )
     assert normalize_cookie(cookies_txt) == RAW_COOKIE

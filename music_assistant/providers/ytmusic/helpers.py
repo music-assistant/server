@@ -16,9 +16,10 @@ from typing import Any, Literal
 
 import ytmusicapi
 from aiohttp import ClientError, ClientSession, ClientTimeout
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, SetupFailedError
+from requests.exceptions import RequestException
 from ytmusicapi import LikeStatus
-from ytmusicapi.exceptions import YTMusicError
+from ytmusicapi.exceptions import YTMusicError, YTMusicServerError
 from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
 
 from music_assistant.providers.ytmusic.constants import (
@@ -28,11 +29,11 @@ from music_assistant.providers.ytmusic.constants import (
     YTMRecommendationIcons,
 )
 
-# a browser's "Copy as cURL" command: the cookie sits in a -H 'Cookie: ...' header
-# (bash/PowerShell quoting) or a -H ^"Cookie: ...^" one (Windows cmd)
+# a browser's "Copy as cURL" command: the cookie sits in a -H 'Cookie: ...' header or,
+# in current Chromium, a -b '...' option; the Windows cmd variant quotes as ^"...^"
 _CURL_COMMAND = re.compile(r"^curl\s", re.IGNORECASE)
 _CURL_COOKIE_HEADER = re.compile(r"""(['"])cookie:\s*(.*?)\^?\1""", re.IGNORECASE | re.DOTALL)
-_CURL_COOKIE_OPTION = re.compile(r"""(?:-b|--cookie)\s+(['"])(.*?)\^?\1""", re.DOTALL)
+_CURL_COOKIE_OPTION = re.compile(r"""(?:-b|--cookie)\s+\^?(['"])(.*?)\^?\1""", re.DOTALL)
 _COOKIE_HEADER_NAME = re.compile(r"^cookie:\s*", re.IGNORECASE)
 _CMD_QUOTE = '^"'
 _CMD_ESCAPE = re.compile(r"\^(.)")
@@ -40,6 +41,9 @@ _CMD_ESCAPE = re.compile(r"\^(.)")
 _NETSCAPE_HTTPONLY_PREFIX = "#HttpOnly_"
 _NETSCAPE_FIELD_COUNT = 7
 _PO_TOKEN_PING_TIMEOUT = ClientTimeout(total=10)
+# ytmusicapi reports an HTTP error as "Server returned HTTP <status>: ..."
+_YTM_HTTP_STATUS = re.compile(r"Server returned HTTP (\d{3})")
+_YTM_REFUSED_STATUSES = frozenset({401, 403})
 
 # subset of ytmusicapi's accepted search filters that we use
 YTMSearchFilter = Literal["artists", "albums", "songs", "playlists", "podcasts"]
@@ -491,7 +495,29 @@ async def verify_cookie(headers: dict[str, str]) -> None:
         await _run_ytmusic(_get_account_info)
     except LoginFailed:
         raise
-    except Exception as err:
+    except YTMusicServerError as err:
+        # only an explicit refusal is about the cookie; a 429/5xx is YouTube having a moment
+        status = _YTM_HTTP_STATUS.search(str(err))
+        if status and int(status.group(1)) in _YTM_REFUSED_STATUSES:
+            raise LoginFailed(
+                f"YouTube Music did not accept the cookie: {err}",
+                translation_key="cookie_rejected",
+                translation_owner=TRANSLATION_OWNER,
+            ) from err
+        raise SetupFailedError(
+            f"YouTube Music could not be reached to verify the cookie: {err}",
+            translation_key="youtube_unreachable",
+            translation_owner=TRANSLATION_OWNER,
+        ) from err
+    except RequestException as err:
+        raise SetupFailedError(
+            f"YouTube Music could not be reached to verify the cookie: {err}",
+            translation_key="youtube_unreachable",
+            translation_owner=TRANSLATION_OWNER,
+        ) from err
+    except (KeyError, IndexError, ValueError, YTMusicError) as err:
+        # an answer that is not the account page (consent or sign-in interstitial, changed
+        # payload) - anything else is a bug and keeps its traceback
         raise LoginFailed(
             f"YouTube Music did not accept the cookie: {err}",
             translation_key="cookie_rejected",
@@ -602,7 +628,7 @@ def _cookie_from_netscape(text: str) -> str:
         if not (fields := _netscape_fields(line)):
             continue
         domain, _, _, _, _, name, value = fields
-        if not domain.lstrip(".").endswith("youtube.com"):
+        if not _is_youtube_host(domain):
             continue
         pairs.append(f"{name}={value}")
     return "; ".join(pairs)
@@ -617,3 +643,9 @@ def _netscape_fields(line: str) -> list[str] | None:
     if len(fields) != _NETSCAPE_FIELD_COUNT:
         return None
     return fields
+
+
+def _is_youtube_host(domain: str) -> bool:
+    """Check whether a cookies.txt domain is youtube.com or one of its subdomains."""
+    host = domain.lstrip(".").lower()
+    return host == "youtube.com" or host.endswith(".youtube.com")
