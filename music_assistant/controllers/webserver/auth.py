@@ -846,12 +846,11 @@ class AuthenticationManager:
         """
         Update a user's role (requires the users.manage scope).
 
-        A user that owns music sources can not be made a guest, as a guest can not own one.
-        Its sources have to be reassigned or removed first.
-
         :param user_id: The user ID to update.
         :param new_role: The new role to assign.
         :param admin_user: The user performing the action.
+        :raises InvalidDataError: If the user owns music sources and the new role is guest,
+            as a guest can not own a music source.
         """
         if not has_scope(admin_user, Scope.USERS_MANAGE):
             return False
@@ -865,8 +864,9 @@ class AuthenticationManager:
             self.mass, User(user_id=user_id, username=user_row["username"], role=old_role)
         ):
             raise InvalidDataError(
-                "A guest can not own a music source, "
-                "reassign or remove the music sources of this user first"
+                "A guest can not own a music source. "
+                "Reassign or remove the music sources of this user first.",
+                translation_key="guest_owns_music_sources",
             )
         await self.database.update(
             "users",

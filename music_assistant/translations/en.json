@@ -287,6 +287,7 @@
   "common.errors.authentication_required": "Authentication is required.",
   "common.errors.connect_failed": "Failed to connect to {0}.",
   "common.errors.connection_timeout": "Connection timed out: {0}.",
+  "common.errors.guest_owns_music_sources": "A guest can not own a music source. Reassign or remove the music sources of this user first.",
   "common.errors.host_unresolvable": "Unable to resolve {0}, make sure the address is resolvable.",
   "common.errors.insufficient_permissions": "You do not have permission to perform this action.",
   "common.errors.invalid_command": "Invalid or unsupported command.",

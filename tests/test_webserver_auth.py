@@ -660,7 +660,7 @@ async def test_update_user_role(auth_manager: AuthenticationManager) -> None:
 
 async def test_a_source_owner_can_not_be_made_a_guest(auth_manager: AuthenticationManager) -> None:
     """
-    Test that a user keeps its role while it owns music sources, which a guest can not.
+    Test that a user owning music sources can not be made a guest.
 
     :param auth_manager: AuthenticationManager instance.
     """
@@ -678,8 +678,9 @@ async def test_a_source_owner_can_not_be_made_a_guest(auth_manager: Authenticati
         },
     )
 
-    with pytest.raises(InvalidDataError, match="reassign or remove"):
+    with pytest.raises(InvalidDataError, match="Reassign or remove") as excinfo:
         await auth_manager.update_user_role(owner.user_id, UserRole.GUEST, admin)
+    assert excinfo.value.translation_key == "guest_owns_music_sources"
 
     # a place on a share list is no obstacle, a guest may be given one
     assert await auth_manager.update_user_role(member.user_id, UserRole.GUEST, admin) is True

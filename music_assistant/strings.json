@@ -1207,6 +1207,7 @@
     "media_not_available_for_user": "This is not available on any of your music sources.",
     "no_playable_items": "There is nothing to play here.",
     "invalid_data": "The data provided is invalid or could not be processed.",
+    "guest_owns_music_sources": "A guest can not own a music source. Reassign or remove the music sources of this user first.",
     "already_registered": "This item is already registered.",
     "setup_failed": "Setup failed. Please check the configuration and try again.",
     "login_failed": "Login failed. Please check your credentials and try again.",
