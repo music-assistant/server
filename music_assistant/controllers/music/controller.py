@@ -203,7 +203,7 @@ _DUPLICATE_TRACK_CANDIDATES_QUERY = f"""
 WITH candidate_titles AS (
     SELECT t.search_name
     FROM {DB_TABLE_TRACKS} t
-    JOIN {DB_TABLE_PROVIDER_MAPPINGS} pm
+    LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} pm
       ON pm.media_type = 'track' AND pm.item_id = t.item_id
     WHERE t.search_name != ''
     GROUP BY t.search_name
