@@ -8,8 +8,10 @@ from unittest.mock import AsyncMock, Mock
 import numpy as np
 from music_assistant_models.media_items import AudioFormat, MediaItemPalette
 
+from music_assistant.controllers.streams.audio_buffer import AudioBufferDiscarded, AudioBufferEOF
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.providers.milkdrop_visualizer.tap import (
+    PENDING_FRAMES,
     WAVE_SAMPLES,
     Tap,
     TapManager,
@@ -22,6 +24,11 @@ from music_assistant.providers.milkdrop_visualizer.tap import (
 )
 
 PCM_FORMAT = AudioFormat(sample_rate=44100, bit_depth=16, channels=2)
+
+
+def _pending_frames(tap: Tap) -> list[bytes]:
+    """Return the packed frames currently held in a tap's pending queue."""
+    return [frame for _, frame in tap.pending]
 
 
 def _stereo_pcm(mono_values: list[int], *, dangling_sample: bool = False) -> bytes:
@@ -86,7 +93,7 @@ def test_emits_one_frame_per_1024_samples() -> None:
     tap = Tap("player-1")
     cursor = _cursor()
     manager._emit_chunk(tap, cursor, _stereo_pcm([0] * 44100), PCM_FORMAT)
-    assert len(tap.ring) == 44100 // WAVE_SAMPLES
+    assert len(tap.pending) == 44100 // WAVE_SAMPLES
     assert cursor.carry.size == 44100 % WAVE_SAMPLES
     assert cursor.next_chunk == 1
 
@@ -97,9 +104,10 @@ def test_frame_is_stamped_at_the_end_of_its_window() -> None:
     tap = Tap("player-1")
     cursor = _cursor(next_chunk=10, anchor_us=1_000_000)
     manager._emit_chunk(tap, cursor, _stereo_pcm([0] * WAVE_SAMPLES), PCM_FORMAT)
-    tag, timestamp_us = struct.unpack(">Bq", tap.ring[0][:9])
+    frame = _pending_frames(tap)[0]
+    tag, timestamp_us = struct.unpack(">Bq", frame[:9])
     assert tag == 22
-    assert len(tap.ring[0]) == 9 + WAVE_SAMPLES
+    assert len(frame) == 9 + WAVE_SAMPLES
     # chunk 10 is media second 10, plus one 1024-sample window
     expected_media = 10 + WAVE_SAMPLES / 44100
     assert timestamp_us == 1_000_000 + int(expected_media * 1_000_000)
@@ -114,9 +122,10 @@ def test_carry_continues_into_the_next_chunk() -> None:
     manager._emit_chunk(tap, cursor, second, PCM_FORMAT)
     manager._emit_chunk(tap, cursor, second, PCM_FORMAT)
     # windows tile the two seconds end to end, rather than restarting per chunk
-    assert len(tap.ring) == (2 * 44100) // WAVE_SAMPLES
-    _, timestamp_us = struct.unpack(">Bq", tap.ring[-1][:9])
-    assert timestamp_us == int(len(tap.ring) * WAVE_SAMPLES / 44100 * 1_000_000)
+    frames = _pending_frames(tap)
+    assert len(frames) == (2 * 44100) // WAVE_SAMPLES
+    _, timestamp_us = struct.unpack(">Bq", frames[-1][:9])
+    assert timestamp_us == int(len(frames) * WAVE_SAMPLES / 44100 * 1_000_000)
 
 
 def test_carry_is_dropped_when_the_next_chunk_is_elsewhere() -> None:
@@ -137,7 +146,7 @@ def test_quantized_samples_are_offset_binary() -> None:
     manager = _manager()
     tap = Tap("player-1")
     manager._emit_chunk(tap, _cursor(), _stereo_pcm([0] * WAVE_SAMPLES), PCM_FORMAT)
-    assert set(tap.ring[0][9:]) == {0x80}
+    assert set(_pending_frames(tap)[0][9:]) == {0x80}
 
 
 def test_align_keeps_a_cursor_that_still_matches() -> None:
@@ -185,6 +194,22 @@ def test_align_starts_inside_the_retained_window() -> None:
     item = Mock(queue_item_id="item-1")
     cursor = manager._align(tap, None, item, 5.0, Mock(first_buffered_chunk=90))
     assert cursor.next_chunk == 90
+
+
+def test_align_catches_up_without_resetting_when_eviction_overtakes_the_cursor() -> None:
+    """A cursor still on the same timeline just catches up to eviction, no reset."""
+    manager = _manager()
+    tap = Tap("player-1")
+    item = Mock(queue_item_id="item-1")
+    cursor = manager._align(tap, None, item, 5.0, Mock(first_buffered_chunk=0))
+    tap.ring.append(b"kept")
+    queued = ViewerQueue()
+    tap.queues.add(queued)
+    caught_up = manager._align(tap, cursor, item, 5.0, Mock(first_buffered_chunk=50))
+    assert caught_up is cursor
+    assert caught_up.next_chunk == 50
+    assert b"kept" in tap.ring
+    assert not queued._items
 
 
 def test_playhead_tracks_playback_speed() -> None:
@@ -298,55 +323,118 @@ async def test_hydrate_beats_caches_the_fetched_analysis() -> None:
     assert len(tap.beats) == 1
 
 
-def test_ring_with_only_future_frames_is_reported_stale() -> None:
-    """A ring whose oldest frame is ahead of now has nothing a fresh viewer can draw."""
+def test_release_due_releases_only_frames_within_lead_of_now() -> None:
+    """Only a frame within LEAD_SECONDS of now moves to the ring; the rest stays pending."""
+    manager = _manager()
     tap = Tap("player-1")
-    assert not tap.has_only_future_frames()
-    tap.ring.append(pack_wave_frame(server_now_us() - 1_000_000, b"\x80" * WAVE_SAMPLES))
-    assert not tap.has_only_future_frames()
-    tap.ring.clear()
-    tap.ring.append(pack_wave_frame(server_now_us() + 60_000_000, b"\x80" * WAVE_SAMPLES))
-    assert tap.has_only_future_frames()
+    queued = ViewerQueue()
+    tap.queues.add(queued)
+    now_us = server_now_us()
+    near = pack_wave_frame(now_us + 1_000_000, b"\x80" * WAVE_SAMPLES)
+    far = pack_wave_frame(now_us + 60_000_000, b"\x80" * WAVE_SAMPLES)
+    tap.pending.append((now_us + 1_000_000, near))
+    tap.pending.append((now_us + 60_000_000, far))
+    manager._release_due(tap)
+    assert list(tap.ring) == [near]
+    assert _pending_frames(tap) == [far]
+    assert list(queued._items) == [near]
 
 
-async def test_read_once_realigns_when_requested() -> None:
-    """A requested realign drops a pinned-ahead cursor and restarts at the playhead."""
+def test_reset_clears_pending() -> None:
+    """A timeline reset also drops frames held back for later release."""
+    tap = Tap("player-1")
+    tap.pending.append((0, b"frame"))
+    tap.reset('{"type": "stream/end"}')
+    assert not tap.pending
+
+
+async def test_read_once_reads_whatever_is_buffered() -> None:
+    """A cursor far ahead of the playhead still reads as long as the buffer already has it."""
     manager = _manager()
     manager.provider.config.get_value.return_value = False  # type: ignore[attr-defined]
     tap = Tap("player-1")
     queue = Mock(corrected_elapsed_time=100.0, playback_speed=1.0)
     item = Mock(queue_item_id="item-1")
-    buffer = Mock(first_buffered_chunk=0, pcm_format=PCM_FORMAT)
+    buffer = Mock(first_buffered_chunk=100, seconds_available=60, pcm_format=PCM_FORMAT)
     buffer.read_chunk_for_analysis = AsyncMock(return_value=_stereo_pcm([0] * 44100))
     manager._playing_source = Mock(return_value=(queue, item, buffer))  # type: ignore[method-assign]
-    # a cursor pinned at the eviction edge but otherwise in sync with the queue
-    pinned = _cursor(next_chunk=200, anchor_us=server_now_us() - 100_000_000)
-    tap.realign_requested = True
-    cursor = await manager._read_once(tap, pinned)
-    assert cursor is not None
-    assert cursor is not pinned
-    assert cursor.next_chunk == 101
-    assert not tap.realign_requested
-
-
-async def test_read_once_ignores_realign_when_playhead_chunk_is_evicted() -> None:
-    """A realign past the eviction edge is dropped: healthy viewers keep their frames."""
-    manager = _manager()
-    manager.provider.config.get_value.return_value = False  # type: ignore[attr-defined]
-    tap = Tap("player-1")
-    tap.ring.append(b"frame")
-    queue = Mock(corrected_elapsed_time=100.0, playback_speed=1.0)
-    item = Mock(queue_item_id="item-1")
-    buffer = Mock(first_buffered_chunk=200, pcm_format=PCM_FORMAT)
-    buffer.read_chunk_for_analysis = AsyncMock(return_value=_stereo_pcm([0] * 44100))
-    manager._playing_source = Mock(return_value=(queue, item, buffer))  # type: ignore[method-assign]
-    # a cursor pinned at the eviction edge but otherwise in sync with the queue
-    pinned = _cursor(next_chunk=200, anchor_us=server_now_us() - 100_000_000)
-    tap.realign_requested = True
+    # far beyond the release lead, but still inside the retained window (100-160)
+    pinned = _cursor(next_chunk=150, anchor_us=server_now_us() - 100_000_000)
     cursor = await manager._read_once(tap, pinned)
     assert cursor is pinned
-    assert b"frame" in tap.ring
-    assert not tap.realign_requested
+    buffer.read_chunk_for_analysis.assert_awaited_once_with(150)
+    assert cursor.next_chunk == 151
+
+
+async def test_read_once_does_not_read_past_what_the_buffer_has_produced() -> None:
+    """A cursor caught up to the buffer's produced edge waits rather than reading nothing."""
+    manager = _manager()
+    manager.provider.config.get_value.return_value = False  # type: ignore[attr-defined]
+    tap = Tap("player-1")
+    queue = Mock(corrected_elapsed_time=100.0, playback_speed=1.0)
+    item = Mock(queue_item_id="item-1")
+    buffer = Mock(first_buffered_chunk=100, seconds_available=60, pcm_format=PCM_FORMAT)
+    buffer.read_chunk_for_analysis = AsyncMock(return_value=_stereo_pcm([0] * 44100))
+    manager._playing_source = Mock(return_value=(queue, item, buffer))  # type: ignore[method-assign]
+    # exactly at first_buffered_chunk + seconds_available: nothing more has been produced yet
+    pinned = _cursor(next_chunk=160, anchor_us=server_now_us() - 100_000_000)
+    cursor = await manager._read_once(tap, pinned)
+    assert cursor is pinned
+    buffer.read_chunk_for_analysis.assert_not_awaited()
+    assert cursor.next_chunk == 160
+
+
+async def test_read_once_does_not_read_when_pending_is_full() -> None:
+    """A tap already holding PENDING_FRAMES back stops reading instead of growing further."""
+    manager = _manager()
+    manager.provider.config.get_value.return_value = False  # type: ignore[attr-defined]
+    tap = Tap("player-1")
+    far_us = server_now_us() + 3600 * 1_000_000
+    tap.pending.extend((far_us, b"frame") for _ in range(PENDING_FRAMES))
+    queue = Mock(corrected_elapsed_time=5.0, playback_speed=1.0)
+    item = Mock(queue_item_id="item-1")
+    buffer = Mock(first_buffered_chunk=0, seconds_available=60, pcm_format=PCM_FORMAT)
+    buffer.read_chunk_for_analysis = AsyncMock(return_value=_stereo_pcm([0] * 44100))
+    manager._playing_source = Mock(return_value=(queue, item, buffer))  # type: ignore[method-assign]
+    # a matching cursor, so _align does not reset the tap (and its pending queue) under us
+    cursor_in = _cursor(next_chunk=5, anchor_us=server_now_us() - 5_000_000)
+    await manager._read_once(tap, cursor_in)
+    buffer.read_chunk_for_analysis.assert_not_awaited()
+
+
+async def test_read_once_keeps_the_cursor_on_discarded() -> None:
+    """A discarded read leaves the cursor in place for _align to catch up next pass."""
+    manager = _manager()
+    manager.provider.config.get_value.return_value = False  # type: ignore[attr-defined]
+    tap = Tap("player-1")
+    queue = Mock(corrected_elapsed_time=5.0, playback_speed=1.0)
+    item = Mock(queue_item_id="item-1")
+    buffer = Mock(first_buffered_chunk=0, seconds_available=60, pcm_format=PCM_FORMAT)
+    buffer.read_chunk_for_analysis = AsyncMock(side_effect=AudioBufferDiscarded)
+    manager._playing_source = Mock(return_value=(queue, item, buffer))  # type: ignore[method-assign]
+    cursor_in = _cursor(next_chunk=5, anchor_us=server_now_us() - 5_000_000)
+    cursor = await manager._read_once(tap, cursor_in)
+    assert cursor is cursor_in
+
+
+async def test_read_once_releases_due_frames_on_eof() -> None:
+    """A read that hits EOF still releases any pending frames that came due."""
+    manager = _manager()
+    manager.provider.config.get_value.return_value = False  # type: ignore[attr-defined]
+    tap = Tap("player-1")
+    now_us = server_now_us()
+    due = pack_wave_frame(now_us, b"\x80" * WAVE_SAMPLES)
+    tap.pending.append((now_us, due))
+    queue = Mock(corrected_elapsed_time=5.0, playback_speed=1.0)
+    item = Mock(queue_item_id="item-1")
+    buffer = Mock(first_buffered_chunk=0, seconds_available=60, pcm_format=PCM_FORMAT)
+    buffer.read_chunk_for_analysis = AsyncMock(side_effect=AudioBufferEOF)
+    manager._playing_source = Mock(return_value=(queue, item, buffer))  # type: ignore[method-assign]
+    cursor_in = _cursor(next_chunk=5, anchor_us=server_now_us() - 5_000_000)
+    cursor = await manager._read_once(tap, cursor_in)
+    assert cursor is cursor_in
+    assert due in tap.ring
+    assert not tap.pending
 
 
 def test_palette_payload_maps_every_field() -> None:
