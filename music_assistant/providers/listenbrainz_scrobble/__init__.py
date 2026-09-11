@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, ClassVar, Final
 
 import requests.exceptions
 from liblistenbrainz import Listen, ListenBrainz
-from liblistenbrainz.errors import ListenBrainzException
+from liblistenbrainz.errors import InvalidAuthTokenException, ListenBrainzException
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import SetupFailedError
@@ -59,7 +59,14 @@ class ListenBrainzScrobbleProvider(PluginProvider):
             raise SetupFailedError("User token needs to be set")
         assert token != SECURE_STRING_SUBSTITUTE
         client = ListenBrainz(api_base_url=str(api_base_url))
-        client.set_auth_token(str(token))
+        # set_auth_token validates the token with a blocking request, so run it off
+        # the event loop and surface any failure as a setup error.
+        try:
+            await asyncio.to_thread(client.set_auth_token, str(token))
+        except InvalidAuthTokenException as err:
+            raise SetupFailedError("Invalid ListenBrainz user token") from err
+        except (ListenBrainzException, requests.exceptions.RequestException) as err:
+            raise SetupFailedError(f"Unable to connect to ListenBrainz: {err}") from err
         self._client = client
 
     async def loaded_in_mass(self) -> None:

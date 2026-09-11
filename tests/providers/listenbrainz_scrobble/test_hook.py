@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
+import requests.exceptions
+from liblistenbrainz.errors import InvalidAuthTokenException
 from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
 from music_assistant.providers.listenbrainz_scrobble import (
@@ -82,3 +86,39 @@ async def test_the_hook_forwards_the_report_to_the_handler() -> None:
     await provider.on_media_item_played(report)
 
     provider._handler.on_media_item_played.assert_awaited_once_with(report)
+
+
+async def test_an_invalid_token_fails_setup() -> None:
+    """An invalid user token stops the provider loading with a clear setup error."""
+    provider = _provider({CONF_USER_TOKEN: "token"})
+
+    with patch("music_assistant.providers.listenbrainz_scrobble.ListenBrainz") as client_cls:
+        client_cls.return_value.set_auth_token.side_effect = InvalidAuthTokenException
+        with pytest.raises(SetupFailedError):
+            await provider.handle_async_init()
+
+
+async def test_an_unreachable_service_fails_setup() -> None:
+    """A ListenBrainz that cannot be reached surfaces as a setup error, not a raw one."""
+    provider = _provider({CONF_USER_TOKEN: "token"})
+
+    with patch("music_assistant.providers.listenbrainz_scrobble.ListenBrainz") as client_cls:
+        client_cls.return_value.set_auth_token.side_effect = requests.exceptions.ConnectionError
+        with pytest.raises(SetupFailedError):
+            await provider.handle_async_init()
+
+
+async def test_the_token_check_runs_off_the_event_loop() -> None:
+    """The blocking token validation is handed to a worker thread, not the event loop."""
+    provider = _provider({CONF_USER_TOKEN: "token"})
+
+    with (
+        patch("music_assistant.providers.listenbrainz_scrobble.ListenBrainz") as client_cls,
+        patch(
+            "music_assistant.providers.listenbrainz_scrobble.asyncio.to_thread",
+            new_callable=AsyncMock,
+        ) as to_thread,
+    ):
+        await provider.handle_async_init()
+
+    to_thread.assert_awaited_once_with(client_cls.return_value.set_auth_token, "token")
