@@ -1509,10 +1509,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         total_requested = len(uris)
         update_current_task_progress(0, "Preparing playlist update")
         db_id = int(db_playlist_id)  # ensure integer
-        playlist = await self.get_library_item(db_id)
-        if not playlist:
-            msg = f"Playlist with id {db_id} not found"
-            raise MediaNotFoundError(msg)
+        # the task may run well after it was queued, so the right to edit is checked again
+        playlist = await self._get_editable_library_item(db_id)
         if not playlist.is_editable:
             msg = f"Playlist {playlist.name} is not editable"
             raise InvalidDataError(msg)
@@ -1754,10 +1752,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """Handle removing playlist items inside a managed task."""
         set_current_user(user)
         db_id = int(db_playlist_id)  # ensure integer
-        playlist = await self.get_library_item(db_id)
-        if not playlist:
-            msg = f"Playlist with id {db_id} not found"
-            raise MediaNotFoundError(msg)
+        # the task may run well after it was queued, so the right to edit is checked again
+        playlist = await self._get_editable_library_item(db_id)
         if not playlist.is_editable:
             msg = f"Playlist {playlist.name} is not editable"
             raise InvalidDataError(msg)

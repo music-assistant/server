@@ -556,6 +556,12 @@ async def test_adding_a_hidden_playlist_as_source_is_refused_inside_the_task(
     """The items to add are resolved as the caller, so a hidden playlist can not be copied."""
     hidden = await _add(playlists, _playlist("Hidden source", PlaylistAccess(owner=OWNER.user_id)))
     target = await _add(playlists, _playlist("Target", PlaylistAccess(owner=MEMBER.user_id)))
+    read_only = await _add(
+        playlists,
+        _playlist(
+            "Read only", PlaylistAccess(owner=OWNER.user_id, sharing=ProviderSharing.MEMBERS)
+        ),
+    )
     provider = MagicMock()
     provider.domain = provider.instance_id = "builtin"
     provider.available = True
@@ -565,11 +571,14 @@ async def test_adding_a_hidden_playlist_as_source_is_refused_inside_the_task(
     with (
         patch.object(music_mass_module, "get_provider", return_value=provider),
         patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
-        pytest.raises(MediaNotFoundError),
     ):
-        await playlists._handle_add_playlist_tracks(
-            target.item_id, [f"library://playlist/{hidden.item_id}"], MEMBER
-        )
+        with pytest.raises(MediaNotFoundError):
+            await playlists._handle_add_playlist_tracks(
+                target.item_id, [f"library://playlist/{hidden.item_id}"], MEMBER
+            )
+        # the right to edit the target is checked again when the task runs
+        with pytest.raises(InsufficientPermissions):
+            await playlists._handle_add_playlist_tracks(read_only.item_id, [], MEMBER)
 
 
 async def test_release_user_playlists(playlists: PlaylistController) -> None:
