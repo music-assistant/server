@@ -5,12 +5,10 @@ from __future__ import annotations
 import asyncio
 import builtins
 import logging
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast, overload
 
 import shortuuid
-from mashumaro import DataClassDictMixin
-from music_assistant_models.auth import Scope, UserRole
+from music_assistant_models.auth import Scope, UserRole, UserSummary
 from music_assistant_models.config_entries import (
     ConfigActionResult,
     ConfigEntry,
@@ -71,16 +69,6 @@ if TYPE_CHECKING:
 
 
 LOGGER = logging.getLogger(__name__)
-
-
-@dataclass
-class ShareCandidate(DataClassDictMixin):
-    """A household member a music source can be shared with."""
-
-    user_id: str
-    username: str
-    display_name: str | None = None
-    avatar_url: str | None = None
 
 
 class ProviderConfigMixin:
@@ -419,7 +407,7 @@ class ProviderConfigMixin:
         return await self.get_provider_config(instance_id)
 
     @api_command("config/providers/share_candidates", required_scope=Scope.CONFIG_PROVIDERS_OWN)
-    async def get_share_candidates(self) -> list[ShareCandidate]:
+    async def get_share_candidates(self) -> list[UserSummary]:
         """
         Return the household members a music source can be shared with.
 
@@ -427,12 +415,7 @@ class ProviderConfigMixin:
         Assistant system user are not members, so they are left out.
         """
         return [
-            ShareCandidate(
-                user_id=user.user_id,
-                username=user.username,
-                display_name=user.display_name,
-                avatar_url=user.avatar_url,
-            )
+            UserSummary.from_user(user)
             for user in await self.mass.webserver.auth.list_users()
             if user.enabled and self._is_member(user)
         ]
