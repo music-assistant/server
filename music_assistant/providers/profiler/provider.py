@@ -156,7 +156,9 @@ class ProfilerProvider(PluginProvider):
             self.get_config_value(CONF_TRACEMALLOC_ENABLED, False, return_type=bool)
             and not tracemalloc.is_tracing()
         ):
-            tracemalloc.start(15)
+            # the report only reads the innermost frame of each allocation, so a deeper
+            # traceback would only add per-allocation overhead
+            tracemalloc.start()
             self._started_tracemalloc = True
         self.mass.create_task(self._loop_lag_monitor(), task_id="profiler_lag_monitor")
         self.mass.create_task(self._flight_recorder(), task_id="profiler_flight_recorder")

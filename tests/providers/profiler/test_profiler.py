@@ -19,6 +19,8 @@ from music_assistant.providers.profiler import provider as provider_module
 from music_assistant.providers.profiler.helpers import (
     LogErrorCounter,
     collect_object_census,
+    parse_cgroup_memory,
+    parse_proc_status_rss,
     render_markdown,
     sanitize_code_path,
 )
@@ -107,6 +109,9 @@ async def test_report_shape(profiler: ProfilerProvider) -> None:
     assert report["report_format_version"] == 1
     assert report["server"]["uptime_s"] >= 0
     assert report["memory"]["rss_mb"] > 0
+    # the split and cgroup figures are always present, None where the platform lacks them
+    for key in ("rss_anon_mb", "rss_file_mb", "rss_shmem_mb", "cgroup_reported_mb"):
+        assert key in report["memory"]
     assert report["memory"]["asyncio_tasks"] > 0
     assert "library_counts" in report["config_summary"]
     assert report["asyncio_tasks"]["total"] > 0
@@ -268,3 +273,43 @@ def test_object_census_bounds() -> None:
     census = collect_object_census(top_n=5)
     assert len(census) == 5
     assert all(entry["count"] > 0 for entry in census)
+
+
+def test_parse_proc_status_rss() -> None:
+    """Test that the resident memory split is read from /proc status text in MB."""
+    text = "Name:\tpython\nVmRSS:\t 1900544 kB\nRssAnon:\t 1228800 kB\nRssFile:\t  665600 kB\nRssShmem:\t    6144 kB\n"
+    assert parse_proc_status_rss(text) == {
+        "rss_anon_mb": 1200.0,
+        "rss_file_mb": 650.0,
+        "rss_shmem_mb": 6.0,
+    }
+    assert parse_proc_status_rss("Name:\tpython\n") == {
+        "rss_anon_mb": None,
+        "rss_file_mb": None,
+        "rss_shmem_mb": None,
+    }
+
+
+def test_parse_cgroup_memory() -> None:
+    """Test the cgroup memory view for both the v2 and the v1 stat file layout."""
+    mib = 1024**2
+    v2 = (
+        f"anon {1200 * mib}\nfile {900 * mib}\nfile_mapped {500 * mib}\ninactive_file {300 * mib}\n"
+    )
+    assert parse_cgroup_memory(v2, 2200 * mib) == {
+        "cgroup_usage_mb": 2200.0,
+        "cgroup_anon_mb": 1200.0,
+        "cgroup_file_mb": 900.0,
+        "cgroup_reported_mb": 1900.0,
+    }
+    v1 = (
+        f"cache {900 * mib}\nrss {1200 * mib}\ninactive_file {300 * mib}\n"
+        f"total_cache {950 * mib}\ntotal_rss {1250 * mib}\ntotal_inactive_file {320 * mib}\n"
+    )
+    assert parse_cgroup_memory(v1, 2300 * mib) == {
+        "cgroup_usage_mb": 2300.0,
+        "cgroup_anon_mb": 1250.0,
+        "cgroup_file_mb": 950.0,
+        "cgroup_reported_mb": 1980.0,
+    }
+    assert parse_cgroup_memory("", 10 * mib)["cgroup_reported_mb"] is None

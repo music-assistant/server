@@ -24,7 +24,7 @@
     },
     "tracemalloc_enabled": {
       "label": "Track memory allocations (tracemalloc)",
-      "description": "Trace Python memory allocations so the report can show the top allocation sites and their growth between reports. Warning: this roughly doubles memory-tracking overhead and slows the server down while enabled - only use it when hunting a memory leak."
+      "description": "Trace Python memory allocations so the report can show the top allocation sites and their growth between reports. Warning: this adds memory and CPU overhead to every allocation while enabled - only use it when hunting a memory leak."
     }
   }
 }
