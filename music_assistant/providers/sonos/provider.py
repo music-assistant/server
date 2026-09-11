@@ -469,6 +469,16 @@ class SonosPlayerProvider(PlayerProvider):
         :param item: The reported queue item the failure belongs to.
         :param error: The error object the speaker attached to it.
         """
+        if error.get("type") == "http" and str(error.get("status")) == "404":
+            # our own stream server refused a track the queue moved past or no longer
+            # holds. The speaker tries each track it cached before reading the queue
+            # again, so these come in bursts and would bury the real failures
+            self.logger.debug(
+                "Speaker %s was refused %s by the stream server",
+                player.display_name,
+                item.get("id"),
+            )
+            return
         report_id = item.get("reportId")
         if report_id:
             if report_id in player.reported_playback_errors:

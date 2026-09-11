@@ -818,3 +818,31 @@ async def test_a_later_failure_on_another_item_is_reported(
         await provider._handle_sonos_queue_time_played(player, request)
 
     assert caplog.text.count("ERROR_LSE") == 2
+
+
+async def test_a_track_our_stream_server_refused_is_not_reported_as_a_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    A 404 is us refusing a track the queue moved past, not the speaker failing.
+
+    After a queue edit the speaker asks for every track it cached, and each refusal comes
+    back as a report. Those must not bury the failures this log is for.
+    """
+    player = _player_for_error_reports()
+    provider = _make_provider()
+    refused = {
+        **_error_report("final", report_id="refused-1"),
+        "error": {"type": "http", "status": 404},
+        "id": "track1@3",
+    }
+    request = MagicMock()
+    request.json = AsyncMock(return_value={"items": [refused]})
+
+    with caplog.at_level(logging.DEBUG, logger="test.sonos.cloud_queue"):
+        await provider._handle_sonos_queue_time_played(player, request)
+
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+    assert "refused track1@3" in caplog.text
+    # nor may it take a place in the history that holds back repeats of real failures
+    assert not player.reported_playback_errors
