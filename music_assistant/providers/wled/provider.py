@@ -166,6 +166,16 @@ class WledProvider(PluginProvider):
 
     async def loaded_in_mass(self) -> None:
         """Start the sync-zone bridge for this instance's configured port."""
+        if self.unloading:
+            # This runs as a create_task() that mass's unload_provider() never awaits,
+            # so an unload can fully finish -- including seeing self._bridge_manager as
+            # still None and returning -- before this task gets scheduled at all. Bail
+            # out before creating one, or it would start a bridge for a provider that's
+            # already gone. Nothing to race against after this check: everything below
+            # is synchronous up to the manager's own await, which unload() now finds and
+            # tears down via WledBridgeManager's start/stop lock.
+            self.available = False
+            return
         port = _port_from_config(self.mass, self.config)
         # 0 is a valid latency/gain setting, so unlike the port above, a parse failure
         # (never expected for an already-validated config value) is the only case that

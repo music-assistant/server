@@ -132,6 +132,31 @@ class TestLoadedInMassAvailability:
 
         assert provider.available is False
 
+    async def test_unloading_before_this_task_ran_skips_starting_a_bridge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """
+        An unload that finished before this post-load task ran must not be undone.
+
+        loaded_in_mass runs as a create_task() that unload_provider() never awaits, so
+        unload can fully complete -- seeing self._bridge_manager as still None and
+        returning -- before this task is even scheduled. Without this guard, the task
+        would go on to create a manager and start a bridge for a provider that's
+        already been torn down.
+        """
+        provider, _ = _make_provider()
+        provider._bridge_manager = None  # the real state before loaded_in_mass ever runs
+        provider.available = True
+        provider.unloading = True  # as unload_provider leaves it before returning
+        manager_cls = MagicMock()
+        monkeypatch.setattr(provider_module, "WledBridgeManager", manager_cls)
+
+        await provider.loaded_in_mass()
+
+        manager_cls.assert_not_called()
+        assert provider._bridge_manager is None
+        assert provider.available is False
+
 
 class TestDuplicatePortGuard:
     """
