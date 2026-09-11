@@ -608,6 +608,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 match_policy,
                 tuple(sorted(allowed_provider_instances)),
                 destination_access,
+                user,
             ),
             user_id=user.user_id if user else None,
             metadata={
@@ -750,9 +751,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
         match_policy: PlaylistMatchPolicy,
         allowed_provider_instances: tuple[str, ...],
         destination_access: PlaylistAccess | None = None,
+        user: User | None = None,
     ) -> None:
         """Resolve and copy a playlist inside a managed task."""
-        source_playlist = await self.get_library_item(source_playlist_id)
+        # the source is read as the user that asked for the copy, which may have lost
+        # sight of it since the task was queued
+        set_current_user(user)
+        source_playlist = await self._get_visible_library_item(source_playlist_id)
         if source_playlist.is_dynamic:
             raise InvalidDataError("Dynamic playlists can not be migrated")
         provider = self.mass.get_provider(
