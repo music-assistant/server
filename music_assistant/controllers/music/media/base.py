@@ -432,8 +432,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             query_parts.append(
                 self._provider_filter_clause(query_params, provider_filter, in_library_only=True)
             )
-        if listing_clause := self._listing_filter_clause(query_params):
-            query_parts.append(listing_clause)
+        query_parts.extend(self.listing_filter(query_params))
         if not query_parts:
             return await self.mass.music.database.get_count(self.db_table)
         sql_query = f"SELECT item_id FROM {self.db_table} WHERE {' AND '.join(query_parts)}"
@@ -537,7 +536,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if reachable_via is not None and not reachable_via:
             return []
         listing_params: dict[str, Any] = {}
-        listing_clause = self._listing_filter_clause(listing_params)
         items = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -545,7 +543,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             offset=offset,
             order_by=order_by,
             provider_filter=self._provider_filter_considering_reachability(provider, reachable_via),
-            extra_query_parts=[listing_clause] if listing_clause else None,
+            extra_query_parts=self.listing_filter(listing_params) or None,
             extra_query_params=listing_params,
             genre_ids=genre,
             played_only=played_only,
@@ -572,6 +570,17 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 reachable_via=reachable_via,
             )
         return items
+
+    def listing_filter(self, query_params: dict[str, Any]) -> list[str]:
+        """
+        Return the SQL conditions that narrow listings of this type for the calling user.
+
+        For callers that build their own listing query with `get_library_items_by_query`.
+
+        :param query_params: Query params dict; the conditions' bound params are added to it.
+        """
+        clause = self._listing_filter_clause(query_params)
+        return [clause] if clause else []
 
     async def iter_library_items(
         self,

@@ -16,9 +16,13 @@ from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
 )
-from music_assistant_models.media_items import Playlist, ProviderMapping
+from music_assistant_models.media_items import Genre, Playlist, ProviderMapping
 
-from music_assistant.constants import DB_TABLE_PLAYLISTS, HOMEASSISTANT_SYSTEM_USER
+from music_assistant.constants import (
+    DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+    DB_TABLE_PLAYLISTS,
+    HOMEASSISTANT_SYSTEM_USER,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -239,6 +243,32 @@ async def test_get_library_item_command_hides_hidden_playlists(
         assert await lookup(MediaType.PLAYLIST, added.item_id, "library") is None
 
 
+async def test_genre_overview_hides_hidden_playlists(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """The playlists row of a genre overview only holds what the caller may see."""
+    added = await _add(playlists, _playlist("Genre bound", PlaylistAccess(owner=OWNER.user_id)))
+    genre = await music_mass_module.music.genres.add_item_to_library(
+        Genre(item_id="0", provider="library", name=f"Genre {uuid4().hex}", provider_mappings=set())
+    )
+    await music_mass_module.music.database.insert(
+        DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+        {
+            "genre_id": int(genre.item_id),
+            "media_id": int(added.item_id),
+            "media_type": MediaType.PLAYLIST.value,
+        },
+    )
+
+    with _as_user(OWNER):
+        owner_rows = await music_mass_module.music.genres.get_overview(genre.item_id)
+    with _as_user(MEMBER):
+        member_rows = await music_mass_module.music.genres.get_overview(genre.item_id)
+
+    assert [x.item_id for row in owner_rows for x in row.items] == [added.item_id]
+    assert member_rows == []
+
+
 async def test_search_results_are_cached_per_user(
     playlists: PlaylistController, music_mass_module: MusicAssistant
 ) -> None:
@@ -356,6 +386,12 @@ async def test_set_access_refuses_everyone_but_the_owner_or_an_admin(
             added.item_id, ProviderSharing.PRIVATE, owner=MEMBER.user_id
         )
     assert updated.access == PlaylistAccess(owner=MEMBER.user_id)
+    # a library manager repairs a private playlist it can not see itself
+    with _as_user(ADMIN):
+        repaired = await playlists.set_access(
+            added.item_id, ProviderSharing.MEMBERS, owner=OWNER.user_id
+        )
+    assert repaired.access == PlaylistAccess(owner=OWNER.user_id, sharing=ProviderSharing.MEMBERS)
 
 
 async def test_set_access_validates_the_users_on_the_record(

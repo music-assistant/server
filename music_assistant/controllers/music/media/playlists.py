@@ -641,15 +641,19 @@ class PlaylistController(MediaControllerBase[Playlist]):
         :param shared_users: The user ids the playlist is shared with, SELECTED sharing only.
         :param collaborative: Whether everyone the playlist is shared with may also edit it.
         """
-        playlist = await self._get_visible_library_item(item_id)
+        user = get_current_user()
+        manages_library = user is None or has_scope(user, Scope.LIBRARY_MANAGE)
+        # a library manager may also repair a playlist it can not see itself
+        playlist = await self.get_library_item(item_id)
+        if not manages_library:
+            self._check_visible(playlist)
         if not self._is_builtin_playlist(playlist):
             raise InvalidDataError(
                 f"{playlist.name} follows the sharing of its music source",
                 translation_key="playlist_follows_source",
             )
-        user = get_current_user()
         current_owner = playlist.access.owner if playlist.access else None
-        if user is not None and not has_scope(user, Scope.LIBRARY_MANAGE):
+        if not manages_library:
             if current_owner != user.user_id:
                 raise InsufficientPermissions(
                     "Only the owner of a playlist may share it",
