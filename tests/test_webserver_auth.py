@@ -658,6 +658,39 @@ async def test_update_user_role(auth_manager: AuthenticationManager) -> None:
     assert updated_user.role == UserRole.ADMIN
 
 
+async def test_a_source_owner_can_not_be_made_a_guest(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that a user keeps its role while it owns music sources, which a guest can not.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    admin = await auth_manager.create_user(username="guestadmin", role=UserRole.ADMIN)
+    owner = await auth_manager.create_user(username="sourceowner", role=UserRole.USER)
+    member = await auth_manager.create_user(username="sharedmember", role=UserRole.USER)
+    set_music_source_access(
+        auth_manager.mass,
+        {
+            "spotify--owned": ProviderAccess(
+                owner=owner.user_id,
+                sharing=ProviderSharing.SELECTED,
+                shared_users=[member.user_id],
+            ),
+        },
+    )
+
+    with pytest.raises(InvalidDataError, match="reassign or remove"):
+        await auth_manager.update_user_role(owner.user_id, UserRole.GUEST, admin)
+
+    # a place on a share list is no obstacle, a guest may be given one
+    assert await auth_manager.update_user_role(member.user_id, UserRole.GUEST, admin) is True
+
+    set_current_user(admin)
+    for user, role in ((owner, UserRole.USER), (member, UserRole.GUEST)):
+        updated_user = await auth_manager.get_user(user.user_id)
+        assert updated_user is not None
+        assert updated_user.role == role
+
+
 async def test_delete_user(auth_manager: AuthenticationManager) -> None:
     """
     Test deleting a user account.

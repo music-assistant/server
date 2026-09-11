@@ -55,7 +55,7 @@ from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.jwt_auth import JWTHelper
-from music_assistant.helpers.provider_access import with_derived_provider_filter
+from music_assistant.helpers.provider_access import own_music_sources, with_derived_provider_filter
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
@@ -846,6 +846,9 @@ class AuthenticationManager:
         """
         Update a user's role (requires the users.manage scope).
 
+        A user that owns music sources can not be made a guest, as a guest can not own one.
+        Its sources have to be reassigned or removed first.
+
         :param user_id: The user ID to update.
         :param new_role: The new role to assign.
         :param admin_user: The user performing the action.
@@ -858,6 +861,13 @@ class AuthenticationManager:
             return False
 
         old_role = user_row["role"]
+        if new_role == UserRole.GUEST and own_music_sources(
+            self.mass, User(user_id=user_id, username=user_row["username"], role=old_role)
+        ):
+            raise InvalidDataError(
+                "A guest can not own a music source, "
+                "reassign or remove the music sources of this user first"
+            )
         await self.database.update(
             "users",
             {"user_id": user_id},
