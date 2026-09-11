@@ -360,7 +360,7 @@ class WledBridgeManager:
             )
             try:
                 await bridge.start()
-            except Exception:
+except (Exception, asyncio.CancelledError):
                 # start() registers the Sendspin client before it opens the UDP transport,
                 # so a failure in between (e.g. the port is already bound) leaves a virtual
                 # player registered with nothing driving it. Nothing unloads us for that:
