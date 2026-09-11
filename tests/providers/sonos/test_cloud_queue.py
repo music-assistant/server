@@ -97,16 +97,15 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     return player, queues
 
 
-async def test_window_is_the_requested_item_and_the_one_after_it() -> None:
-    """Test only the item asked about and its neighbours are served, however long the queue."""
-    items = [_make_queue_item(f"track{i}") for i in range(10)]
+async def test_window_is_the_requested_item_and_the_tracks_after_it() -> None:
+    """Test the window starts one before the item asked about and runs ahead from there."""
+    items = [_make_queue_item(f"track{i}") for i in range(20)]
     player, _ = _make_player(items)
 
     window = await player.build_cloud_queue_window("track5")
 
-    # a deeper window would let the speaker play several tracks out of a cache we cannot
-    # update; this way it has to ask again for every one
-    assert [x.queue_item_id for x in window.items] == ["track4", "track5", "track6"]
+    # the speaker only asks for a new window once it runs out, so it is handed a deep one
+    assert [x.queue_item_id for x in window.items] == [f"track{i}" for i in range(4, 16)]
     assert window.includes_beginning is False
     assert window.includes_end is False
 
@@ -119,7 +118,7 @@ async def test_window_without_an_item_id_starts_at_the_queue_head(item_id: str |
 
     window = await player.build_cloud_queue_window(item_id)
 
-    assert [x.queue_item_id for x in window.items] == ["track0", "track1"]
+    assert [x.queue_item_id for x in window.items] == [f"track{i}" for i in range(5)]
     assert window.includes_beginning is True
 
 
@@ -132,7 +131,8 @@ async def test_window_for_an_unknown_item_falls_back_to_the_playing_one() -> Non
 
     window = await player.build_cloud_queue_window("gone")
 
-    assert [x.queue_item_id for x in window.items] == ["track0", "track1", "track2"]
+    # centred on the playing track1 rather than the buffered track2, so it opens on track0
+    assert [x.queue_item_id for x in window.items] == [f"track{i}" for i in range(5)]
 
 
 async def test_window_flags_the_end_of_the_queue() -> None:
@@ -158,15 +158,24 @@ async def test_window_serves_an_item_added_after_the_last_enqueue() -> None:
     assert [x.queue_item_id for x in (await player.build_cloud_queue_window("track0")).items] == [
         "track0",
         "track1",
+        "track2",
+        "track3",
     ]
 
     # a party guest adds a track behind the one the speaker already buffered
     queues.items.insert(2, _make_queue_item("guest"))
 
-    # the speaker comes back when that buffered track starts, and is handed the new one
+    # the window is built from the live queue, so the next time the speaker asks it is
+    # handed the guest right after the buffered track
     window = await player.build_cloud_queue_window("track1")
 
-    assert [x.queue_item_id for x in window.items] == ["track0", "track1", "guest"]
+    assert [x.queue_item_id for x in window.items] == [
+        "track0",
+        "track1",
+        "guest",
+        "track2",
+        "track3",
+    ]
 
 
 async def test_unavailable_items_are_left_out() -> None:
@@ -329,19 +338,42 @@ async def test_itemwindow_reports_end_of_queue_when_it_cannot_be_described() -> 
 
 @pytest.mark.parametrize(
     ("requested", "expected_upcoming"),
-    [("10", ["track1"]), ("1", ["track1"]), ("0", []), ("", ["track1"]), (None, ["track1"])],
+    [
+        ("10", ["track1", "track2", "track3"]),
+        ("1", ["track1"]),
+        ("0", []),
+        ("", ["track1", "track2", "track3"]),
+        (None, ["track1", "track2", "track3"]),
+    ],
     ids=["ten", "one", "zero", "unreadable", "absent"],
 )
 async def test_upcoming_is_capped_by_what_the_speaker_allows(
     requested: str | None, expected_upcoming: list[str]
 ) -> None:
-    """Test we never serve more than the speaker's maximum, though we usually serve fewer."""
+    """Test we never serve more than the speaker's maximum."""
     items = [_make_queue_item(f"track{i}") for i in range(4)]
     player, _ = _make_player(items)
 
     window = await player.build_cloud_queue_window("track0", max_upcoming=_requested_max(requested))
 
     assert [x.queue_item_id for x in window.items] == ["track0", *expected_upcoming]
+
+
+async def test_a_speaker_gets_as_far_ahead_as_it_asks() -> None:
+    """
+    A speaker is handed as many upcoming tracks as it asks for, up to our ceiling.
+
+    It only asks for a new window once it runs out, so a window that stops one track
+    ahead leaves it reloading at the next boundary.
+    """
+    items = [_make_queue_item(f"track{i}") for i in range(15)]
+    player, _ = _make_player(items)
+
+    asked_for_ten = await player.build_cloud_queue_window("track0", max_upcoming=10)
+    asked_for_more = await player.build_cloud_queue_window("track0", max_upcoming=50)
+
+    assert len(asked_for_ten.items) == 11
+    assert len(asked_for_more.items) == 11
 
 
 async def test_a_successful_load_releases_the_replaced_sessions_streams() -> None:

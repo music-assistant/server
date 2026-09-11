@@ -563,7 +563,7 @@ class SonosPlayer(Player):
         max_upcoming: int = UPCOMING_ITEMS,
     ) -> SonosQueueWindow:
         """
-        Return the item the speaker asked about and the one that follows it, as the queue is now.
+        Return the item the speaker asked about and the items that follow it, as the queue is now.
 
         :param item_id: queue_item_id the speaker asked about; an omitted or empty one asks
             for the start of the queue.
