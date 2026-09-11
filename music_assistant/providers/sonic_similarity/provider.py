@@ -696,7 +696,7 @@ class SonicSimilarityPlugin(PluginProvider):
             self._last_rebuild_error[label] = str(err)
         # the status label entries render counts and errors collected above, so nudge
         # listeners to re-fetch the config now that the (background) rebuild is done
-        self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
+        self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
 
     async def _count_analysis_rows(self) -> int:
         """Return the current count of sonic_analysis track rows in the database."""

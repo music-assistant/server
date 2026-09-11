@@ -46,6 +46,7 @@ from music_assistant.helpers.playlists import (
     generate_m3u,
     media_item_to_playlist_item,
 )
+from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.uri import create_uri, parse_uri
 from music_assistant.helpers.util import guard_single_request
@@ -423,15 +424,14 @@ class PlaylistController(MediaControllerBase[Playlist]):
             user = get_current_user()
             # Snapshot the user's enabled music providers for the deferred task,
             # including unavailable instances and each instance's domain.
-            user_provider_filter = user.provider_filter if user else None
+            visible = visible_music_sources(self.mass, user) if user else None
             configured_providers = await self.mass.config.get_provider_configs(
                 provider_type=ProviderType.MUSIC
             )
             allowed_provider_instances = {
                 conf.instance_id: conf.domain
                 for conf in configured_providers
-                if conf.enabled
-                and (not user_provider_filter or conf.instance_id in user_provider_filter)
+                if conf.enabled and (visible is None or conf.instance_id in visible)
             }
             # Include builtin so bare HTTP/file entries can still be validated.
             allowed_provider_instances[builtin_prov.instance_id] = builtin_prov.domain

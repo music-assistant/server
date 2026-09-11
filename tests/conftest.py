@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 
 import pytest
 from music_assistant_models import helpers as models_helpers
+from music_assistant_models.auth import Scope, UserRole
 from zeroconf.asyncio import AsyncZeroconf
 
 from music_assistant.controllers.cache import CacheController
@@ -19,8 +20,10 @@ from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.tasks import TasksController
+from music_assistant.controllers.webserver.helpers.auth_middleware import ROLE_SCOPES
 from music_assistant.mass import MusicAssistant
 from tests.common import (
+    SELF_SERVICE_ROLE,
     suppress_auto_loaded_providers,
     suppress_initial_library_sync,
     use_ephemeral_server_ports,
@@ -87,6 +90,14 @@ def caplog_fixture(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture
     """Set log level to debug for tests using the caplog fixture."""
     caplog.set_level(logging.DEBUG)
     return caplog
+
+
+@pytest.fixture
+def self_service_role() -> Generator[str]:
+    """Provide a role that may add and manage its own music sources; no builtin role holds it."""
+    scopes = ROLE_SCOPES[UserRole.USER] | {Scope.CONFIG_PROVIDERS_OWN}
+    with patch.dict(ROLE_SCOPES, {SELF_SERVICE_ROLE: scopes}):
+        yield SELF_SERVICE_ROLE
 
 
 def _create_mock_zeroconf() -> MagicMock:

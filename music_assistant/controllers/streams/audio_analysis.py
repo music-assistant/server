@@ -1182,10 +1182,7 @@ class AudioAnalysisController:
         return tuple(
             domain
             for domain in FILESYSTEM_PROVIDER_DOMAINS
-            if any(
-                p.domain == domain and p.available
-                for p in self.mass.get_providers(ProviderType.MUSIC)
-            )
+            if any(p.domain == domain and p.available for p in self.mass.providers)
         )
 
     async def _find_candidates_missing_analysis(

@@ -6,10 +6,12 @@ import asyncio
 import logging
 import sys
 from typing import TYPE_CHECKING, Any
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import pytest
-from music_assistant_models.auth import Scope
+from music_assistant_models.auth import Scope, User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import ProviderSharing
 from music_assistant_models.media_items import (
     Artist,
     ProviderMapping,
@@ -27,6 +29,7 @@ from music_assistant.helpers.diagnostics import (
     sanitize_text,
 )
 from music_assistant.helpers.json import json_dumps
+from tests.common import set_music_source_access
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -318,7 +321,7 @@ async def _seed_library_track(mass: MusicAssistant) -> None:
     )
 
 
-async def test_library_census_ignores_requesting_user_provider_filter(
+async def test_library_census_ignores_requesting_user_music_sources(
     mass: MusicAssistant,
 ) -> None:
     """
@@ -331,13 +334,22 @@ async def test_library_census_ignores_requesting_user_provider_filter(
     """
     await _seed_library_track(mass)
     unfiltered_census = await mass.diagnostics._census_library()
+    # the seeded items live on another member's private source, which the requesting
+    # admin may not see; the admin's own source keeps its visible set non-empty
+    set_music_source_access(
+        mass,
+        {
+            "prov_a_inst": ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+            "prov_b_inst": ProviderAccess(owner="admin", sharing=ProviderSharing.PRIVATE),
+        },
+    )
     with patch(
         "music_assistant.controllers.music.media.base.get_current_user",
-        return_value=Mock(provider_filter=["no_such_provider"]),
+        return_value=User(user_id="admin", username="admin", role=UserRole.ADMIN),
     ):
         census = await mass.diagnostics._census_library()
-    # the seeded items have no mapping on the filtered provider, so a user-scoped count
-    # would report 0 for them
+        # a user-scoped count really does report 0 for the seeded items
+        assert await mass.music.artists.library_count() == 0
     assert census["artists"] == 1
     assert census["tracks"] == 1
     # nothing at all may shift when a filtered user is the one asking

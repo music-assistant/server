@@ -44,7 +44,7 @@ CONF_CPU_PROFILE_INTERVAL = "cpu_profile_interval"
 CONF_TRACEMALLOC_ENABLED = "tracemalloc_enabled"
 CONF_ACTION_RUN_CPU_PROFILE = "action_run_cpu_profile"
 
-REPORT_FORMAT_VERSION = 1
+REPORT_FORMAT_VERSION = 2
 LAG_MONITOR_INTERVAL = 0.5
 RECORDER_INTERVAL = 10
 # 24 hours of history at the 10 second sample interval (roughly 1-2 MB of memory)
@@ -156,7 +156,9 @@ class ProfilerProvider(PluginProvider):
             self.get_config_value(CONF_TRACEMALLOC_ENABLED, False, return_type=bool)
             and not tracemalloc.is_tracing()
         ):
-            tracemalloc.start(15)
+            # the report only reads the innermost frame of each allocation, so a deeper
+            # traceback would only add per-allocation overhead
+            tracemalloc.start()
             self._started_tracemalloc = True
         self.mass.create_task(self._loop_lag_monitor(), task_id="profiler_lag_monitor")
         self.mass.create_task(self._flight_recorder(), task_id="profiler_flight_recorder")

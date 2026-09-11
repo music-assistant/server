@@ -7,7 +7,16 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import (
+    ContentType,
+    MediaType,
+    ProviderFeature,
+    ProviderSharing,
+    ProviderType,
+    StreamType,
+)
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat, ProviderMapping, Track
 from music_assistant_models.queue_item import QueueItem
@@ -16,12 +25,15 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
+from tests.common import set_music_source_access
 
 BUSY_INSTANCE = "spotify--busy"
 MATCH_INSTANCE = "tidal--match"
 FAILING_INSTANCE = "qobuz--failing"
 ITEM_ID = "item-1"
 MATCHED_ITEM_ID = "item-on-tidal"
+USER_ID = "listener"
+OTHER_USER_ID = "housemate"
 
 
 def _mapping(
@@ -82,6 +94,7 @@ def _music_provider(instance: str, has_slot: bool = True) -> MagicMock:
     provider = MagicMock(spec=MusicProvider)
     provider.instance_id = instance
     provider.domain = instance.split("--", maxsplit=1)[0]
+    provider.type = ProviderType.MUSIC
     provider.available = True
     provider.is_streaming_provider = True
     provider.has_available_stream_slot = has_slot
@@ -91,12 +104,27 @@ def _music_provider(instance: str, has_slot: bool = True) -> MagicMock:
     return provider
 
 
-def _mass(providers: dict[str, MagicMock]) -> MagicMock:
-    """Build a mass double that resolves the given provider instances."""
+def _mass(
+    providers: dict[str, MagicMock],
+    access: dict[str, ProviderAccess | None] | None = None,
+) -> MagicMock:
+    """
+    Build a mass double that resolves the given provider instances.
+
+    :param providers: The loaded provider instances, by instance id.
+    :param access: Access records to configure the music sources with, which also gives the
+        queue a playback user. Omit for a queue that has none.
+    """
     mass = MagicMock()
     mass.providers = list(providers.values())
     mass.get_provider.side_effect = lambda instance, **_kwargs: providers.get(instance)
     mass.player_queues.queue_data_or_none.return_value = None
+    if access is not None:
+        mass.player_queues.queue_data_or_none.return_value = MagicMock(userid=USER_ID)
+        mass.webserver.auth.get_user = AsyncMock(
+            return_value=User(user_id=USER_ID, username=USER_ID, role=UserRole.USER)
+        )
+        set_music_source_access(mass, access)
     mass.streams.get_config_value.return_value = -17
     mass.music.providers = list(providers.values())
     mass.music.tracks.match_provider = AsyncMock(return_value=[])
@@ -146,6 +174,38 @@ async def test_saturated_single_mapping_is_rescued_by_a_cross_provider_match(
     assert mass.music.tracks.match_provider.await_args.kwargs["strict"] is True
     # a non-library track keeps the mapping in memory only
     mass.music.tracks.add_provider_mappings.assert_not_awaited()
+
+
+async def test_a_match_on_a_blocked_source_is_never_searched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A track is never rescued onto a source the listener may not use."""
+    queue_item = _queue_item(_mapping(BUSY_INSTANCE, quality=ContentType.FLAC))
+    queue_item.streamdetails = _streamdetails(BUSY_INSTANCE)
+    providers = {
+        BUSY_INSTANCE: _music_provider(BUSY_INSTANCE, has_slot=False),
+        MATCH_INSTANCE: _music_provider(MATCH_INSTANCE),
+    }
+    mass = _mass(
+        providers,
+        access={
+            BUSY_INSTANCE: ProviderAccess(owner=USER_ID, sharing=ProviderSharing.PRIVATE),
+            MATCH_INSTANCE: ProviderAccess(owner=OTHER_USER_ID, sharing=ProviderSharing.PRIVATE),
+        },
+    )
+    mass.music.tracks.match_provider = AsyncMock(
+        return_value=[_mapping(MATCH_INSTANCE, item_id=MATCHED_ITEM_ID)]
+    )
+    audio = StreamsAudio(mass)
+    monkeypatch.setattr(
+        AudioBuffer, "get_buffer", AsyncMock(side_effect=_limit_error(BUSY_INSTANCE))
+    )
+
+    with pytest.raises(ProviderStreamLimitError):
+        await audio.get_audio_buffer(queue_item, reason="streaming", capacity_wait_timeout=0.2)
+
+    mass.music.tracks.match_provider.assert_not_awaited()
+    providers[MATCH_INSTANCE].get_stream_details.assert_not_awaited()
 
 
 async def test_a_provider_without_track_support_is_never_searched(
