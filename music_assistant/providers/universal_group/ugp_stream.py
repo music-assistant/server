@@ -112,8 +112,9 @@ class UGPStream:
                 audio_input=self.audio_source,
                 input_format=self.input_format,
                 output_format=self.base_pcm_format,
-                # one continuous stream fanned out to the members, paced like the flow
-                # route so none of them runs far ahead
+                # the flow source carries no pacing of its own, so this is the single point
+                # that keeps the members from running far ahead, at the flow route's pace.
+                # See the usage policy note in the streams constants.
                 extra_input_args=output_pacing_args(PacingProfile.NEAR_REALTIME),
             ):
                 await asyncio.gather(
