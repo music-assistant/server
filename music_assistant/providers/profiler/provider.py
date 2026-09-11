@@ -44,7 +44,7 @@ CONF_CPU_PROFILE_INTERVAL = "cpu_profile_interval"
 CONF_TRACEMALLOC_ENABLED = "tracemalloc_enabled"
 CONF_ACTION_RUN_CPU_PROFILE = "action_run_cpu_profile"
 
-REPORT_FORMAT_VERSION = 1
+REPORT_FORMAT_VERSION = 2
 LAG_MONITOR_INTERVAL = 0.5
 RECORDER_INTERVAL = 10
 # 24 hours of history at the 10 second sample interval (roughly 1-2 MB of memory)

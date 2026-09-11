@@ -72,8 +72,9 @@ directory as `report.json` and `report.md`.
   function itself) and `asyncio_tasks.top_by_location` for what was running.
 - **`rss_mb` climbing steadily in the flight recorder**: first check which half grows.
   `rss_file_mb` climbing while `rss_anon_mb` stays flat is file-backed memory (memory-mapped
-  database pages, model weights, cached files) that the kernel reclaims under pressure, not
-  a leak. `rss_anon_mb` climbing is heap growth — re-run with the tracemalloc option enabled
+  database pages, model weights, cached files): reclaimable by the kernel and no evidence of
+  heap growth, though mappings that are never released are still worth a look.
+  `rss_anon_mb` climbing is heap growth — re-run with the tracemalloc option enabled
   and compare `growth_since_previous_report` between two reports taken some time apart;
   `include_object_census=true` shows which object types accumulate. If neither grows but
   `cgroup_reported_mb` does, the growth is outside the main process (child processes,

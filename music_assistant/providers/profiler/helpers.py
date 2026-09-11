@@ -24,6 +24,7 @@ import psutil
 import yappi
 
 from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.util import get_self_cgroup_path
 
 if TYPE_CHECKING:
     import asyncio
@@ -57,8 +58,8 @@ _PROC_STATUS_RSS_KEYS = {
     "RssShmem": "rss_shmem_mb",
 }
 _CGROUP_KEYS = ("cgroup_usage_mb", "cgroup_anon_mb", "cgroup_file_mb", "cgroup_reported_mb")
-_CGROUP_V2_DIR = Path("/sys/fs/cgroup")
-_CGROUP_V1_DIR = Path("/sys/fs/cgroup/memory")
+_CGROUP_ROOT = Path("/sys/fs/cgroup")
+_PROC_SELF_CGROUP = "/proc/self/cgroup"
 
 
 class LogErrorCounter(logging.Handler):
@@ -191,8 +192,9 @@ def collect_resident_memory_split() -> dict[str, float | None]:
     """
     Return the process's resident memory split into anonymous, file-backed and shared MB.
 
-    Anonymous memory is the heap; file-backed memory is mapped files such as database pages
-    and model weights, which the kernel can reclaim. Values are None where /proc is absent.
+    Anonymous memory is heap, stacks and private mappings; file-backed memory is resident
+    pages of mapped files such as database pages and model weights, which the kernel can
+    reclaim. Values are None where /proc is absent.
     """
     try:
         return parse_proc_status_rss(Path("/proc/self/status").read_text(encoding="utf-8"))
@@ -214,23 +216,30 @@ def parse_proc_status_rss(text: str) -> dict[str, float | None]:
     return result
 
 
-def collect_cgroup_memory() -> dict[str, float | None]:
+def collect_cgroup_memory(
+    cgroup_root: Path = _CGROUP_ROOT, proc_cgroup: str = _PROC_SELF_CGROUP
+) -> dict[str, float | None]:
     """
     Return the memory accounting of the cgroup the process runs in, in MB.
 
     ``cgroup_reported_mb`` is usage minus inactive file cache, which is the figure the Home
     Assistant Supervisor shows as add-on memory. Values are None when no cgroup memory files
     are visible to the process, for example outside a container.
+
+    :param cgroup_root: Mount point of the cgroup filesystem (overridable for tests).
+    :param proc_cgroup: Path to the process cgroup file (overridable for tests).
     """
     try:
-        if (_CGROUP_V2_DIR / "memory.current").is_file():
-            stat_text = (_CGROUP_V2_DIR / "memory.stat").read_text(encoding="utf-8")
-            usage = int((_CGROUP_V2_DIR / "memory.current").read_text(encoding="utf-8"))
-            return parse_cgroup_memory(stat_text, usage)
-        if (_CGROUP_V1_DIR / "memory.usage_in_bytes").is_file():
-            stat_text = (_CGROUP_V1_DIR / "memory.stat").read_text(encoding="utf-8")
-            usage = int((_CGROUP_V1_DIR / "memory.usage_in_bytes").read_text(encoding="utf-8"))
-            return parse_cgroup_memory(stat_text, usage)
+        for base, controller, usage_file in (
+            (cgroup_root, None, "memory.current"),
+            (cgroup_root / "memory", "memory", "memory.usage_in_bytes"),
+        ):
+            rel = get_self_cgroup_path(proc_cgroup, controller=controller)
+            directory = _nearest_cgroup_dir(base, rel, usage_file)
+            if directory is not None:
+                stat_text = (directory / "memory.stat").read_text(encoding="utf-8")
+                usage = int((directory / usage_file).read_text(encoding="utf-8"))
+                return parse_cgroup_memory(stat_text, usage)
     except OSError, ValueError:
         pass
     return dict.fromkeys(_CGROUP_KEYS)
@@ -451,6 +460,23 @@ def _append_csv_row(csv_path: str, entry: dict[str, Any]) -> None:
             )
             + "\n"
         )
+
+
+def _nearest_cgroup_dir(base: Path, rel: str | None, usage_file: str) -> Path | None:
+    """
+    Return the deepest directory from the process's cgroup up to the mount root with memory files.
+
+    Inside a container the process's path from /proc/self/cgroup often does not exist under
+    the mount, because the container's cgroup is mounted at the root itself.
+    """
+    parts = [part for part in (rel or "").split("/") if part]
+    while True:
+        directory = base.joinpath(*parts)
+        if (directory / usage_file).is_file() and (directory / "memory.stat").is_file():
+            return directory
+        if not parts:
+            return None
+        parts.pop()
 
 
 def _process_name(proc: psutil.Process) -> str:

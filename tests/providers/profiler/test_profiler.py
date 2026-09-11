@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest import mock
 
+import psutil
 import pytest
 import yappi
 from music_assistant_models.auth import User, UserRole
@@ -17,8 +18,11 @@ from music_assistant_models.media_items import Artist, ProviderMapping
 
 from music_assistant.providers.profiler import provider as provider_module
 from music_assistant.providers.profiler.helpers import (
+    RECORDER_FIELDS,
     LogErrorCounter,
+    collect_cgroup_memory,
     collect_object_census,
+    finalize_recorder_entry,
     parse_cgroup_memory,
     parse_proc_status_rss,
     render_markdown,
@@ -106,7 +110,7 @@ async def test_report_shape(profiler: ProfilerProvider) -> None:
         "flight_recorder",
     ):
         assert section in report, f"missing section: {section}"
-    assert report["report_format_version"] == 1
+    assert report["report_format_version"] == 2
     assert report["server"]["uptime_s"] >= 0
     assert report["memory"]["rss_mb"] > 0
     # the split and cgroup figures are always present, None where the platform lacks them
@@ -258,7 +262,7 @@ def test_log_error_counter() -> None:
 def test_render_markdown() -> None:
     """Test the markdown renderer with nested sections and tables."""
     report = {
-        "report_format_version": 1,
+        "report_format_version": 2,
         "server": {"version": "x", "nested": {"a": 1}},
         "memory": {"rss_mb": 1.0, "sites": [{"location": "a.py:1", "size_kb": 2}]},
     }
@@ -313,3 +317,43 @@ def test_parse_cgroup_memory() -> None:
         "cgroup_reported_mb": 1980.0,
     }
     assert parse_cgroup_memory("", 10 * mib)["cgroup_reported_mb"] is None
+
+
+def test_collect_cgroup_memory_uses_own_cgroup(tmp_path: Path) -> None:
+    """Test that the process's own cgroup is read, falling back to the nearest parent."""
+    mib = 1024**2
+
+    def _write(directory: Path, anon: int, usage: int) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "memory.stat").write_text(f"anon {anon * mib}\nfile 0\ninactive_file 0\n")
+        (directory / "memory.current").write_text(str(usage * mib))
+
+    root = tmp_path / "cgroup"
+    _write(root, anon=9000, usage=9500)
+    _write(root / "docker" / "abc", anon=1200, usage=1300)
+    proc_cgroup = tmp_path / "proc_cgroup"
+
+    proc_cgroup.write_text("0::/docker/abc\n")
+    assert collect_cgroup_memory(root, str(proc_cgroup))["cgroup_anon_mb"] == 1200.0
+    # a path that is not mounted inside the container resolves to the nearest parent
+    proc_cgroup.write_text("0::/docker/missing\n")
+    assert collect_cgroup_memory(root, str(proc_cgroup))["cgroup_anon_mb"] == 9000.0
+    # no cgroup files at all
+    assert collect_cgroup_memory(tmp_path / "nowhere", str(proc_cgroup)) == {
+        "cgroup_usage_mb": None,
+        "cgroup_anon_mb": None,
+        "cgroup_file_mb": None,
+        "cgroup_reported_mb": None,
+    }
+
+
+def test_recorder_csv_restarts_on_column_change(tmp_path: Path) -> None:
+    """Test that a stats.csv written with older columns is replaced instead of appended to."""
+    csv_path = tmp_path / "stats.csv"
+    csv_path.write_text("ts_unix,rss_mb,cpu_pct\n1,100.0,1.0\n2,101.0,1.0\n")
+    finalize_recorder_entry(psutil.Process(), {"ts_unix": 3}, str(csv_path))
+    lines = csv_path.read_text().splitlines()
+    assert lines[0] == ",".join(RECORDER_FIELDS)
+    assert len(lines) == 2
+    assert len(lines[1].split(",")) == len(RECORDER_FIELDS)
+    assert lines[1].startswith("3,")
