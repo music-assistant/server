@@ -495,12 +495,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 and (prov.instance_id in requested_providers or prov.domain in requested_providers)
             ]
         # use cache to avoid repeated searches; the library results are narrowed to what
-        # the calling user may see, so the entry is kept per user
+        # the calling user may see, so the entry is kept per user (and role)
         user = get_current_user()
         cache_key = (
             f"{search_query}-{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}-"
             f"{int(include_library)}-{','.join(search_providers)}-"
-            f"{user.user_id if user else ''}"
+            f"{f'{user.user_id}:{user.role}' if user else ''}"
         )
         if cache := await self.mass.cache.get(
             key=cache_key,

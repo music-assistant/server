@@ -298,10 +298,13 @@ async def test_search_results_are_cached_per_user(
             member_results = await music_mass_module.music.search(
                 "Cachedsearch", providers=["library"]
             )
+        # the same member, demoted to guest, gets an entry of its own as well
+        with _as_user(User(user_id=MEMBER.user_id, username=MEMBER.username, role=UserRole.GUEST)):
+            await music_mass_module.music.search("Cachedsearch", providers=["library"])
 
     assert [x.item_id for x in owner_results.playlists] == [added.item_id]
     assert member_results.playlists == []
-    assert len(set(cache_keys)) == 2
+    assert len(set(cache_keys)) == 3
 
 
 async def test_sync_lookups_stay_unfiltered(playlists: PlaylistController) -> None:
@@ -406,11 +409,13 @@ async def test_set_access_refuses_everyone_but_the_owner_or_an_admin(
 async def test_set_access_validates_the_users_on_the_record(
     playlists: PlaylistController,
 ) -> None:
-    """Unknown users are refused, and the Home Assistant system user can not own a playlist."""
+    """Unknown users are refused; a guest and the Home Assistant system user can not own one."""
     added = await _add(playlists, _playlist("Validated"))
 
     with _as_user(ADMIN), pytest.raises(InvalidDataError):
         await playlists.set_access(added.item_id, ProviderSharing.PRIVATE, owner="nobody")
+    with _as_user(ADMIN), pytest.raises(InvalidDataError):
+        await playlists.set_access(added.item_id, ProviderSharing.PRIVATE, owner=GUEST.user_id)
     with _as_user(ADMIN), pytest.raises(InvalidDataError):
         await playlists.set_access(
             added.item_id, ProviderSharing.SELECTED, owner=OWNER.user_id, shared_users=["nobody"]

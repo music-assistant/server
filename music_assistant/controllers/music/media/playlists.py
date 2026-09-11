@@ -1884,7 +1884,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
         user = await self.mass.webserver.auth.get_user(user_id)
         if user is None and not on_record:
             raise InvalidDataError(f"Unknown or disabled user: {user_id}")
-        if owner and user is not None and user.username == HOMEASSISTANT_SYSTEM_USER:
+        if not owner or user is None:
+            return
+        if user.role == UserRole.GUEST:
+            raise InvalidDataError("A guest can not own a playlist")
+        if user.username == HOMEASSISTANT_SYSTEM_USER:
             raise InvalidDataError("The Home Assistant system user can not own a playlist")
 
     async def _store_access(self, item_id: str | int, access: PlaylistAccess | None) -> Playlist:
