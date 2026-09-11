@@ -18,6 +18,7 @@ from music_assistant_models.provider import ProviderManifest
 from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
+from music_assistant.helpers.provider_access import access_allows
 from music_assistant.mass import MusicAssistant
 from tests.common import set_music_source_access
 
@@ -281,6 +282,8 @@ async def test_a_disabled_member_keeps_its_place_on_the_share_list(
         "sharing": "selected",
         "shared_users": [member.user_id, disabled.user_id],
     }
+    # the kept place is what gives the account its access back once it is enabled
+    assert access_allows(config.access, disabled)
 
 
 async def test_a_disabled_or_unknown_user_is_not_added_to_the_share_list(
