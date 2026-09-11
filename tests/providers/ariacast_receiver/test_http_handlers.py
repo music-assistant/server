@@ -127,12 +127,7 @@ def _audio_receiver(*, is_playing: bool) -> SimpleNamespace:
 async def test_ws_audio_handler_releases_the_source_on_an_abrupt_disconnect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """
-    An abrupt sender disconnect tears the source down like a graceful stop would.
-
-    Without this, the source stays claimed by its owner and a later reconnect
-    never retriggers playback, leaving the player(s) stuck idle.
-    """
+    """An abrupt sender disconnect tears the source down like a graceful stop would."""
     receiver = _audio_receiver(is_playing=True)
     ws = MagicMock()
     ws.prepare = AsyncMock()

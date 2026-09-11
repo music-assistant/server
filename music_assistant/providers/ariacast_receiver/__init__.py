@@ -116,12 +116,7 @@ class AriaCastReceiver(PluginProvider):
 
         # MA stream-routing state
         self._active_player_id: str | None = None
-        # The protocol player actually consuming the current stream (e.g. the
-        # sync leader MA picked for a group), used to target cmd_stop for the
-        # live session only. Kept apart from _active_player_id — the play
-        # target used to (re)start the *next* session — so a leaf picked by
-        # grouping never becomes a future session's play target and leaves
-        # the rest of a sync group unplayed.
+        # The player actually consuming the current stream
         self._session_player_id: str | None = None
         self._in_use_by_player: str | None = None
         self._active_session_id: str | None = None
@@ -319,8 +314,6 @@ class AriaCastReceiver(PluginProvider):
             return
         self._in_use_by_player = owner_player_id
         self._active_session_id = stream_session_id
-        # player_id is the protocol player consuming the stream (e.g. a sync
-        # group's leader), not owner_player_id — see _session_player_id.
         self._session_player_id = player_id
 
     async def on_source_unselected(
@@ -420,9 +413,6 @@ class AriaCastReceiver(PluginProvider):
         self.logger.info("AriaCast sender disconnected from %s", request.remote)
         if self._is_playing:
             # The sender vanished without ever sending a graceful is_playing=false
-            # (app killed outright, network drop): release the source the same way
-            # a normal stop would, so the owning queue/group is torn down properly
-            # instead of being left to starve silently on a stalled audio stream.
             await self._handle_playback_state(False)
         return ws
 
@@ -772,10 +762,7 @@ class AriaCastReceiver(PluginProvider):
             target = self._active_player_id or self._get_target_player_id()
             if target:
                 # remember the resolved target so a later session reuses it
-                # without re-resolving _get_target_player_id(); the actual
-                # stream-consuming player is tracked separately in
-                # _session_player_id (see on_source_selected), so this stays
-                # the play target even when grouping picks a different leader
+                # without re-resolving _get_target_player_id()
                 if not self._active_player_id:
                     self._active_player_id = target
                 self._in_use_by_player = target  # optimistic guard vs duplicate events
@@ -870,8 +857,7 @@ class AriaCastReceiver(PluginProvider):
     async def _cmd_pause(self) -> None:
         self.logger.info("PAUSE")
         # Stop the protocol player actually holding the stream (e.g. a sync
-        # group's leader) so a paused group stays formed instead of dissolving;
-        # fall back to the play target if no session ever claimed the source.
+        # group's leader) so a paused group stays formed
         player_id = self._session_player_id or self._active_player_id
         # Clear queue guard before stop so a fast resume can re-trigger play_media
         self._in_use_by_player = None

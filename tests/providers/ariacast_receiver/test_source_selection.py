@@ -45,13 +45,7 @@ async def _unselect(receiver: SimpleNamespace, owner: str, session: str) -> None
 
 
 async def test_on_source_selected_tracks_the_stream_player_separately() -> None:
-    """
-    The consuming protocol player is recorded on its own field, not on _active_player_id.
-
-    _active_player_id is the play target for the *next* session; overwriting it with
-    a leaf player (e.g. a sync group's leader) would make every later session skip
-    the group and play on that leaf alone.
-    """
+    """The consuming protocol player is recorded on its own field."""
     receiver = _selection_receiver(active_player_id="group_1")
 
     await _select(receiver, "leaf_1", "group_1", "session-a")
@@ -130,12 +124,7 @@ async def _pause(receiver: SimpleNamespace) -> None:
 
 
 async def test_cmd_pause_stops_the_stream_player_not_the_play_target() -> None:
-    """
-    Pause stops the protocol player actually holding the stream.
-
-    Stopping the play target itself (e.g. a sync group) instead would dissolve the
-    group on every pause, forcing a full (slow) re-form on resume.
-    """
+    """Pause stops the protocol player actually holding the stream."""
     receiver = _pause_receiver(session_player_id="leaf_1", active_player_id="group_1")
 
     await _pause(receiver)
@@ -166,15 +155,7 @@ async def test_cmd_pause_does_not_stop_anything_without_a_known_player() -> None
 
 
 async def test_a_second_session_replays_on_the_original_target_not_the_previous_leaf() -> None:
-    """
-    Regression: a second AriaCast session must not stick to the previous leaf player.
-
-    Reproduces the real-world bug: a sync group ("group_1") forms for the first
-    AriaCast session, grouping picks "leaf_1" as its sync leader/stream consumer,
-    and on_source_selected reports that leaf back to the plugin. Once that session
-    ends and a second one starts, playback must still target "group_1" (so the
-    group re-forms with every member), not "leaf_1" alone.
-    """
+    """A second AriaCast session must not stick to the previous leaf player."""
     mass = MagicMock()
     receiver = SimpleNamespace(
         _is_playing=False,
@@ -209,5 +190,4 @@ async def test_a_second_session_replays_on_the_original_target_not_the_previous_
     receiver._safe_play_media.reset_mock()
     await _handle_playback_state(True)
 
-    # _safe_play_media runs via mass.create_task(...), so it's called, not awaited, here
     receiver._safe_play_media.assert_called_once_with("group_1")
