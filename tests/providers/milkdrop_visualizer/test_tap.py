@@ -417,6 +417,28 @@ async def test_read_once_keeps_the_cursor_on_discarded() -> None:
     assert cursor is cursor_in
 
 
+async def test_read_once_resumes_on_a_replacement_buffer_after_cancellation() -> None:
+    """A cancelled buffer keeps the cursor, and reading carries on once the item has a new one."""
+    manager = _manager()
+    manager.provider.config.get_value.return_value = False  # type: ignore[attr-defined]
+    tap = Tap("player-1")
+    queue = Mock(corrected_elapsed_time=5.0, playback_speed=1.0)
+    item = Mock(queue_item_id="item-1")
+    cancelled = Mock(first_buffered_chunk=0, seconds_available=60, pcm_format=PCM_FORMAT)
+    cancelled.read_chunk_for_analysis = AsyncMock(side_effect=AudioBufferDiscarded)
+    replacement = Mock(first_buffered_chunk=0, seconds_available=60, pcm_format=PCM_FORMAT)
+    replacement.read_chunk_for_analysis = AsyncMock(return_value=_stereo_pcm([0] * 44100))
+    manager._playing_source = Mock(  # type: ignore[method-assign]
+        side_effect=[(queue, item, cancelled), (queue, item, replacement)]
+    )
+    cursor_in = _cursor(next_chunk=5, anchor_us=server_now_us() - 5_000_000)
+    cursor = await manager._read_once(tap, cursor_in)
+    cursor = await manager._read_once(tap, cursor)
+    assert cursor is cursor_in
+    replacement.read_chunk_for_analysis.assert_awaited_once_with(5)
+    assert cursor.next_chunk == 6
+
+
 async def test_read_once_releases_due_frames_on_eof() -> None:
     """A read that hits EOF still releases any pending frames that came due."""
     manager = _manager()
