@@ -18,6 +18,8 @@ from music_assistant_models.enums import (
     PlayerFeature,
     PlayerType,
 )
+from music_assistant_models.media_items import AudioSource
+from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
@@ -3726,6 +3728,62 @@ class TestProtocolSwitchingDuringPlayback:
         else:
             controller.cmd_resume.assert_not_awaited()
         controller._handle_set_members.assert_not_awaited()
+
+    async def test_idle_native_members_migrate_without_stopping_the_parent(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        An idle parent hands its native members over too, with no session to stop.
+
+        A native group outlives the session it was formed for, so the members are still
+        attached to the parent when it switches protocol. Leaving them behind would keep
+        them listed as grouped while nothing feeds them on the next play.
+        """
+        controller, players = self._build_session_bound_group(mock_mass, PlaybackState.IDLE)
+        leader = players["speaker_leader"]
+        bridge_leader = players["bridge_leader"]
+
+        calls: list[tuple[str, Any]] = []
+        leader_set_members = leader.set_members
+        bridge_set_members = bridge_leader.set_members
+
+        async def record_leader_set_members(
+            player_ids_to_add: list[str] | None = None,
+            player_ids_to_remove: list[str] | None = None,
+        ) -> None:
+            calls.append(("leader_set_members", player_ids_to_remove))
+            await leader_set_members(player_ids_to_add, player_ids_to_remove)
+
+        async def record_bridge_set_members(
+            player_ids_to_add: list[str] | None = None,
+            player_ids_to_remove: list[str] | None = None,
+        ) -> None:
+            calls.append(("bridge_set_members", player_ids_to_add))
+            await bridge_set_members(player_ids_to_add, player_ids_to_remove)
+
+        async def record_leader_stop() -> None:
+            calls.append(("leader_stop", None))
+
+        leader.set_members = record_leader_set_members  # type: ignore[method-assign]
+        leader.stop = record_leader_stop  # type: ignore[method-assign]
+        bridge_leader.set_members = record_bridge_set_members  # type: ignore[method-assign]
+        controller.cmd_resume = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._forward_protocol_set_members(
+            parent_player=leader,
+            parent_protocol_player=bridge_leader,
+            protocol_members_to_add=["bridge_only"],
+            protocol_members_to_remove=[],
+        )
+
+        # the native member joins the protocol group and is released from the parent,
+        # but an idle parent has no session to stop and nothing to resume
+        assert calls == [
+            ("bridge_set_members", ["bridge_only", "bridge_member"]),
+            ("leader_set_members", ["speaker_member"]),
+        ]
+        assert leader.active_output_protocol == "bridge_leader"
+        controller.cmd_resume.assert_not_awaited()
 
     async def test_joining_member_protocol_is_active_before_its_stream_starts(
         self, mock_mass: MagicMock
@@ -12176,3 +12234,171 @@ class TestPreferNativeGrouping:
         # with no preferred/active/common protocol, the default player still reaches
         # native grouping via the normal priority (Priority 3), not the preferred seam
         assert native_members == ["plain_child"]
+
+
+def _live_source(item_id: str, provider: str = "spotify_connect") -> AudioSource:
+    """Build the AudioSource a live session publishes on a player."""
+    return AudioSource(
+        item_id=item_id,
+        provider=provider,
+        name=f"Live source ({item_id})",
+        provider_mappings={
+            ProviderMapping(item_id=item_id, provider_domain=provider, provider_instance=provider)
+        },
+    )
+
+
+class TestCanGroupWithExternalSource:
+    """Grouping candidates while something other than the player's queue is playing."""
+
+    @staticmethod
+    def _build_rig(mock_mass: MagicMock) -> tuple[PlayerController, MockPlayer]:
+        """
+        Wire a player with one native peer and one reachable only over AirPlay.
+
+        Returns the controller and the player whose grouping candidates are asserted on.
+        """
+        controller = PlayerController(mock_mass)
+        sonos_provider = MockProvider("sonos", instance_id="sonos_instance", mass=mock_mass)
+        airplay_provider = MockProvider("airplay", instance_id="airplay_instance", mass=mock_mass)
+
+        sonos_player = MockPlayer(
+            sonos_provider,
+            "sonos_123",
+            "Living Room",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        sonos_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        sonos_player._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_player._attr_can_group_with = {"sonos_456"}
+        sonos_player_b = MockPlayer(
+            sonos_provider,
+            "sonos_456",
+            "Kitchen",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:02"},
+        )
+        sonos_airplay = MockPlayer(
+            airplay_provider,
+            "airplay_sonos",
+            "Living Room (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        sonos_airplay._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_airplay._attr_can_group_with = {"airplay_other"}
+        sonos_airplay.set_protocol_parent_id("sonos_123")
+
+        wiim_player = MockPlayer(
+            sonos_provider,
+            "wiim_789",
+            "Bedroom",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:03"},
+        )
+        airplay_other = MockPlayer(
+            airplay_provider,
+            "airplay_other",
+            "Bedroom (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:03"},
+        )
+        airplay_other._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        airplay_other._attr_can_group_with = {"airplay_sonos"}
+        airplay_other.set_protocol_parent_id("wiim_789")
+
+        for player, protocol_id in (
+            (sonos_player, "airplay_sonos"),
+            (wiim_player, "airplay_other"),
+        ):
+            player.set_linked_output_protocols(
+                [
+                    LinkedOutputProtocol(
+                        output_protocol_id=protocol_id,
+                        protocol_domain="airplay",
+                        priority=10,
+                    )
+                ]
+            )
+
+        mock_mass.players = controller
+        # nothing here is a registered queue, so the external-source check is reachable
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        controller._players = {
+            "sonos_123": sonos_player,
+            "sonos_456": sonos_player_b,
+            "wiim_789": wiim_player,
+            "airplay_sonos": sonos_airplay,
+            "airplay_other": airplay_other,
+        }
+        for registered in controller._players.values():
+            registered._cache.clear()
+        sonos_airplay.refresh_state(signal_event=False)
+        airplay_other.refresh_state(signal_event=False)
+        sonos_player.refresh_state(signal_event=False)
+        sonos_player_b.refresh_state(signal_event=False)
+        wiim_player.refresh_state(signal_event=False)
+        return controller, sonos_player
+
+    def test_live_audio_source_keeps_protocol_candidates(self, mock_mass: MagicMock) -> None:
+        """A source MA streams itself (e.g. Spotify Connect) can still be grouped."""
+        controller, sonos_player = self._build_rig(mock_mass)
+        controller._start_audio_source_session(
+            "sonos_123", _live_source("sonos_123"), "spotify_connect"
+        )
+        sonos_player.refresh_state(signal_event=False)
+
+        assert sonos_player.state.active_source == "spotify_connect://audio_source/sonos_123"
+        # MA produces the audio, so both the native peer and the one reachable
+        # only over AirPlay can be added to it
+        assert sonos_player.state.can_group_with == {"sonos_456", "wiim_789"}
+
+    def test_device_own_external_source_hides_protocol_candidates(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The device can still group its own line-in natively, just not over a protocol."""
+        controller, sonos_player = self._build_rig(mock_mass)
+        # a live source elsewhere says nothing about what this player is playing
+        controller._start_audio_source_session("wiim_789", _live_source("wiim_789"), "vban")
+        sonos_player._attr_active_source = "tv"
+        sonos_player._attr_playback_state = PlaybackState.PLAYING
+        sonos_player.refresh_state(signal_event=False)
+
+        assert sonos_player.state.active_source == "tv"
+        # the device distributes its own input to its own kind, but MA cannot put
+        # audio it never receives onto an AirPlay/Sendspin protocol player
+        assert sonos_player.state.can_group_with == {"sonos_456"}
+
+
+class TestExternalSourceTakeover:
+    """Whether a source change while a protocol renders the audio counts as a takeover."""
+
+    @staticmethod
+    def _playing_over_airplay(
+        mock_mass: MagicMock,
+    ) -> tuple[PlayerController, MockPlayer]:
+        """Wire a player rendering through its AirPlay protocol player."""
+        controller, sonos_player = TestCanGroupWithExternalSource._build_rig(mock_mass)
+        sonos_player._attr_playback_state = PlaybackState.PLAYING
+        sonos_player.set_active_output_protocol("airplay_sonos")
+        sonos_player.refresh_state(signal_event=False)
+        return controller, sonos_player
+
+    def test_live_audio_source_is_not_a_takeover(self, mock_mass: MagicMock) -> None:
+        """MA putting a live source on the player must not tear down its protocol group."""
+        controller, sonos_player = self._playing_over_airplay(mock_mass)
+        controller._start_audio_source_session(
+            "sonos_123", _live_source("sonos_123"), "spotify_connect"
+        )
+        sonos_player.refresh_state(signal_event=False)
+
+        controller._check_external_source_takeover(sonos_player)
+
+        assert sonos_player.active_output_protocol == "airplay_sonos"
+
+    def test_device_own_external_source_stays_external(self, mock_mass: MagicMock) -> None:
+        """A source MA does not produce is still classified as external."""
+        # checked on the classifier directly: while an output protocol renders the audio,
+        # __final_active_source overrules what the device reports, so a device-local
+        # source cannot be driven through _check_external_source_takeover at all
+        controller, sonos_player = TestCanGroupWithExternalSource._build_rig(mock_mass)
+
+        assert not controller._is_ma_managed_source(sonos_player, "tv")

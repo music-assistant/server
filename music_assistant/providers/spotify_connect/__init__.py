@@ -1,12 +1,12 @@
 """
 Spotify Connect plugin for Music Assistant.
 
-We tie a single player to a single Spotify Connect daemon.
-The provider has multi instance support, so multiple players can be linked to
-multiple Spotify Connect daemons.
+The provider runs as a single instance that advertises one Spotify Connect
+device (one backend daemon and one AudioSource) per connected Music Assistant
+player.
 
 The MA-facing logic lives in ``provider.py``; everything specific to one
-Spotify Connect implementation (currently go-librespot) lives behind the
+Spotify Connect implementation (Spotify Soloist or go-librespot) lives behind the
 ``SpotifyConnectBackend`` contract in ``base.py`` (one implementation per subdirectory).
 """
 
@@ -19,12 +19,8 @@ from .provider import (
     BACKEND_SOLOIST,
     CONF_API_KEY,
     CONF_BACKEND,
-    CONF_MASS_PLAYER_ID,
-    CONF_PUBLISH_NAME,
     CONF_SOLOIST_CONSENT,
     CONF_VOLUME_MODE,
-    DEFAULT_PUBLISH_NAME,
-    PLAYER_ID_AUTO,
     SUPPORTED_FEATURES,
     VOLUME_MODE_OPTIONS,
     SpotifyConnectProvider,
@@ -42,12 +38,8 @@ __all__ = [
     "BACKEND_SOLOIST",
     "CONF_API_KEY",
     "CONF_BACKEND",
-    "CONF_MASS_PLAYER_ID",
-    "CONF_PUBLISH_NAME",
     "CONF_SOLOIST_CONSENT",
     "CONF_VOLUME_MODE",
-    "DEFAULT_PUBLISH_NAME",
-    "PLAYER_ID_AUTO",
     "SUPPORTED_FEATURES",
     "VOLUME_MODE_OPTIONS",
     "SpotifyConnectProvider",

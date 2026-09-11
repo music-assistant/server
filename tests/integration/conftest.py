@@ -98,9 +98,8 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
     Boot a hermetic MusicAssistant with only the fake `test` + demo player providers.
 
     No real network discovery happens: mDNS (zeroconf) and SSDP are mocked, the
-    default device providers (dlna/sonos/...) are suppressed and so is local_audio,
-    which would otherwise register the host's sound devices as players. The `test`
-    music provider and three grouped-capable demo players are configured and ready.
+    default device providers (dlna/sonos/...) are suppressed. The `test` music
+    provider and three grouped-capable demo players are configured and ready.
     """
     storage_path = tmp_path / "data"
     cache_path = tmp_path / "cache"

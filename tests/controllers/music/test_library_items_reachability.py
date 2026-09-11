@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import ProviderSharing
 from music_assistant_models.media_items import Artist, ProviderMapping, Track, UniqueList
 
 from music_assistant.mass import MusicAssistant
+from tests.common import set_music_source_access
 
 if TYPE_CHECKING:
     import pytest
@@ -119,21 +123,28 @@ async def test_reachable_via_excludes_item_with_unavailable_mapping(
     assert result == []
 
 
-async def test_reachable_via_includes_item_despite_restricted_user_provider_filter(
+async def test_reachable_via_includes_item_despite_restricted_user_music_sources(
     mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
     A restricted user can still reach an item through an allowed provider.
 
     The item's only in-library mapping is on Local, which isn't one of the user's
-    allowed providers; its Spotify mapping is available but not itself favorited on
-    Spotify. Since the user is allowed to use Spotify and the item is reachable
-    through it, the implicit user-provider-filter injection (which would otherwise
-    also require the in-library mapping itself to be on an allowed provider) must
-    not additionally exclude it.
+    music sources; its Spotify mapping is available but not itself favorited on
+    Spotify. Since the user may use Spotify and the item is reachable through it,
+    the implicit user-provider-filter injection (which would otherwise also require
+    the in-library mapping itself to be on an allowed provider) must not additionally
+    exclude it.
     """
     monkeypatch.setattr(
         mass.music, "get_active_provider_instances", lambda: ["local_1", "spotify_1"]
+    )
+    set_music_source_access(
+        mass,
+        {
+            "local_1": ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+            "spotify_1": ProviderAccess(owner="user-a", sharing=ProviderSharing.PRIVATE),
+        },
     )
     await _add_track(
         mass,
@@ -146,11 +157,15 @@ async def test_reachable_via_includes_item_despite_restricted_user_provider_filt
 
     with patch(
         "music_assistant.controllers.music.media.base.get_current_user",
-        return_value=Mock(provider_filter=["spotify_1"]),
+        return_value=User(user_id="user-a", username="user-a", role=UserRole.USER),
     ):
         result = await mass.music.tracks.library_items(reachable_via=["spotify_1"])
+        # the user's music sources do restrict the plain listing: the track's only
+        # in-library mapping is on a music source the user may not use
+        unreachable_result = await mass.music.tracks.library_items()
 
     assert {t.name for t in result} == {"Track I"}
+    assert unreachable_result == []
 
 
 async def test_reachable_via_excludes_item_for_provider_outside_user_access(
@@ -159,9 +174,9 @@ async def test_reachable_via_excludes_item_for_provider_outside_user_access(
     """
     A provider outside the current user's access (per get_active_provider_instances) is ignored.
 
-    `get_active_provider_instances` already applies the current user's provider_filter, so a
-    requested instance that it omits (whether unloaded or simply not allowed for this
-    user) must not make the item reachable, even though a matching mapping exists.
+    `get_active_provider_instances` already applies the music sources the current user may
+    see, so a requested instance that it omits (whether unloaded or simply not allowed for
+    this user) must not make the item reachable, even though a matching mapping exists.
     """
     monkeypatch.setattr(mass.music, "get_active_provider_instances", lambda: ["local_1"])
     await _add_track(

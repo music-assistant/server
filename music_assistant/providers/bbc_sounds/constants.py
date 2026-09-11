@@ -1,5 +1,6 @@
 """Constants for BBC Sounds provider."""
 
+from enum import StrEnum, auto
 from typing import Literal
 
 
@@ -18,4 +19,28 @@ class _Constants:
     CONF_STREAM_FORMAT_DASH: str = DASH
     DEFAULT_EXPIRATION = 60 * 60 * 24 * 30  # 30 days
     SHORT_EXPIRATION = 60 * 60 * 3  # 3 hours
+    DYNAMIC_EXPIRATION = 60  # 1 minute
     ARTWORK_TIMEOUT = 15
+
+    # The latest news playlist has a varying suffix on it
+    LATEST_NEWS_PLAYLIST_SUFFIX = "latest_playables_for_curation"
+
+
+class ValidMenuIDs(StrEnum):
+    """Expected main menu IDs from the API / library."""
+
+    LISTEN_LIVE = auto()
+    CONTINUE_LISTENING = auto()
+    EDITORIAL_COLLECTION = auto()
+    LOCAL_RAIL = auto()
+    SINGLE_ITEM_PROMO = auto()
+    COLLECTIONS = auto()
+    CATEGORIES = auto()
+    RECOMMENDATIONS = auto()
+    UNMISSABLE_SPEECH = auto()
+    PODCASTS = auto()
+    UNMISSABLE_MUSIC = auto()
+    MUSIC = auto()
+    EXPLORE = auto()
+    STATIONS = auto()
+    NEWS = auto()

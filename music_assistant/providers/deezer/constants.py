@@ -19,6 +19,9 @@ SHAKER_MIX_COVER = "https://cdn-assets.dzcdn.net/shaker/_next/static/media/group
 PERSONAL_ARTIST_PREFIX = "personal_artist_"
 PERSONAL_ALBUM_PREFIX = "personal_album_"
 
+# Bump when personal-item parsing changes to invalidate cached parsed items.
+PERSONAL_METADATA_VERSION = "2"
+
 # -- Pagination page sizes --
 
 FAVORITES_PAGE_SIZE = 50
@@ -43,3 +46,11 @@ BROWSE_TOP_ALBUMS = "Top Albums"
 BROWSE_TOP_ARTISTS = "Top Artists"
 BROWSE_TOP_PLAYLISTS = "Top Playlists"
 BROWSE_ALL_FLOWS = "All Flows"
+
+# -- Track decryption --
+
+DECRYPT_KEY_LENGTH = 16
+DECRYPT_KEY_ERROR = (
+    "The Deezer decryption key is missing or invalid. "
+    "Use an official Music Assistant build to play encrypted audio."
+)

@@ -7,7 +7,14 @@ import logging
 from copy import copy
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    MediaType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+)
 from music_assistant_models.errors import PlayerCommandFailed, SetupFailedError
 from music_assistant_models.player import DeviceInfo, PlayerSource
 from pyheos import Heos, HeosError, const
@@ -18,6 +25,8 @@ from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.providers.heos.helpers import media_uri_from_now_playing_media
 
 from .constants import (
+    CONF_PLAYBACK_TRANSITION_TIMEOUT,
+    DEFAULT_PLAYBACK_TRANSITION_TIMEOUT,
     HEOS_MEDIA_TYPE_TO_MEDIA_TYPE,
     HEOS_PLAY_STATE_TO_PLAYBACK_STATE,
     NON_HIRES_HEOS_MODELS,
@@ -95,6 +104,19 @@ class HeosPlayer(Player):
 
         await self.build_group_list()
         await self.build_source_list()
+
+    async def get_config_entries(self) -> list[ConfigEntry]:
+        """Return HEOS-specific player configuration entries."""
+        return [
+            ConfigEntry(
+                key=CONF_PLAYBACK_TRANSITION_TIMEOUT,
+                type=ConfigEntryType.INTEGER,
+                default_value=DEFAULT_PLAYBACK_TRANSITION_TIMEOUT,
+                range=(1, 30),
+                required=True,
+                advanced=True,
+            )
+        ]
 
     def set_device_info(self) -> None:
         """Set all device info attributes."""
@@ -361,7 +383,11 @@ class HeosPlayer(Player):
         self._queue_cleanup_pending = True
 
         self.mass.call_later(
-            5,
+            self.get_config_value(
+                CONF_PLAYBACK_TRANSITION_TIMEOUT,
+                DEFAULT_PLAYBACK_TRANSITION_TIMEOUT,
+                return_type=int,
+            ),
             self._finish_ma_playback_transition,
             task_id=self._ma_playback_transition_timer_id,
         )

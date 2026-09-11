@@ -13,6 +13,7 @@ import html
 import inspect
 import os
 import secrets
+import socket
 import time
 from collections.abc import Awaitable, Callable
 from concurrent import futures
@@ -31,7 +32,7 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
 )
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidDataError,
@@ -59,6 +60,7 @@ from music_assistant.controllers.webserver.helpers.ssl import (
 )
 from music_assistant.helpers.api import parse_arguments
 from music_assistant.helpers.json import json_dumps, json_loads
+from music_assistant.helpers.provider_access import with_derived_provider_filter
 from music_assistant.helpers.redirect_validation import (
     build_code_redirect_url,
     is_allowed_redirect_url,
@@ -96,6 +98,8 @@ if TYPE_CHECKING:
 
 DEFAULT_SERVER_PORT = 8095
 CONF_BASE_URL = "base_url"
+CONF_SERVER_NAME = "server_name"
+CONF_EXTERNAL_URL = "external_url"
 CONF_ENABLE_SSL = "enable_ssl"
 CONF_SSL_CERTIFICATE = "ssl_certificate"
 CONF_SSL_PRIVATE_KEY = "ssl_private_key"
@@ -146,6 +150,11 @@ def _get_internal_connect_ip(bind_ip: str | None, publish_ip: str) -> str:
         return bind_ip
     # Use IPv6 loopback if publish_ip is IPv6 (indicates IPv6-only host)
     return "::1" if ":" in publish_ip else "127.0.0.1"
+
+
+def _default_server_name() -> str:
+    """Return the default friendly name for this server, derived from the hostname."""
+    return f"Music Assistant ({socket.gethostname().split('.')[0]})"
 
 
 def _locale_from_request(request: web.Request) -> str | None:
@@ -208,6 +217,23 @@ class WebserverController(CoreController):
         return base_url.removesuffix("/")
 
     @property
+    def server_name(self) -> str:
+        """Return the friendly name of this server."""
+        config = getattr(self, "config", None)
+        if config is None:
+            return _default_server_name()
+        return str(config.get_value(CONF_SERVER_NAME) or "") or _default_server_name()
+
+    @property
+    def external_url(self) -> str | None:
+        """Return the external URL for the webserver (if configured)."""
+        config = getattr(self, "config", None)
+        if config is None:
+            return None
+        external_url = str(config.get_value(CONF_EXTERNAL_URL) or "")
+        return external_url.removesuffix("/") or None
+
+    @property
     def internal_base_url(self) -> str:
         """Return the URL to reach this webserver's own API from this host."""
         # the advertised address is not necessarily dialable here: a configured base URL
@@ -253,6 +279,17 @@ class WebserverController(CoreController):
                 )
             return ConfigActionResult(message=format_certificate_info(cert_info))
         return await super().handle_config_action(action)
+
+    async def update_config(self, config: CoreConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        await super().update_config(config, changed_keys)
+        # push fresh server info to connected clients when any advertised field changed
+        if changed_keys & {
+            f"values/{CONF_SERVER_NAME}",
+            f"values/{CONF_BASE_URL}",
+            f"values/{CONF_EXTERNAL_URL}",
+        }:
+            self.mass.signal_event(EventType.CORE_STATE_UPDATED, data=self.mass.get_server_info())
 
     async def setup(self, config: CoreConfig) -> None:  # noqa: PLR0915
         """Async initialize of module."""
@@ -398,6 +435,9 @@ class WebserverController(CoreController):
 
         # Setup remote access after webserver is running
         await self.remote_access.setup()
+        # signal fresh server info so a reload (e.g. changed bind/ssl config)
+        # also refreshes the advertised urls and the mdns record
+        self.mass.signal_event(EventType.CORE_STATE_UPDATED, data=self.mass.get_server_info())
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -416,37 +456,31 @@ class WebserverController(CoreController):
         self.clients.discard(client)
 
     def disconnect_websockets_for_token(self, token_id: str) -> None:
-        """Disconnect all WebSocket clients using a specific token."""
-        for client in list(self.clients):
-            if hasattr(client, "_token_id") and client._token_id == token_id:
-                username = (
-                    client._authenticated_user.username if client._authenticated_user else "unknown"
-                )
-                self.logger.warning(
-                    "Disconnecting WebSocket client due to token revocation: %s",
-                    username,
-                )
-                client._cancel()
+        """
+        Disconnect all WebSocket clients that authenticated with the given token.
+
+        :param token_id: Id of the token that is no longer valid.
+        """
+        self._disconnect_websockets(lambda client: client.token_id == token_id, "token revocation")
 
     def disconnect_websockets_for_user(self, user_id: str) -> None:
-        """Disconnect all WebSocket clients for a specific user."""
-        for client in list(self.clients):
-            if (
-                hasattr(client, "_authenticated_user")
-                and client._authenticated_user
-                and client._authenticated_user.user_id == user_id
-            ):
-                self.logger.warning(
-                    "Disconnecting WebSocket client due to user action: %s",
-                    client._authenticated_user.username,
-                )
-                client._cancel()
+        """
+        Disconnect all WebSocket clients of the given user.
+
+        :param user_id: Id of the user whose sessions must be closed.
+        """
+        self._disconnect_websockets(
+            lambda client: (
+                client.authenticated_user is not None
+                and client.authenticated_user.user_id == user_id
+            ),
+            "user action",
+        )
 
     def update_active_user_filters(
         self,
         user_id: str,
         player_filter: list[str] | None = None,
-        provider_filter: list[str] | None = None,
     ) -> None:
         """
         Apply updated access filters to the live sessions of a user.
@@ -456,17 +490,14 @@ class WebserverController(CoreController):
 
         :param user_id: ID of the user whose sessions must be updated.
         :param player_filter: The new player filter, or None to leave it untouched.
-        :param provider_filter: The new provider filter, or None to leave it untouched.
         """
         for client in list(self.clients):
-            user = client._authenticated_user
+            user = client.authenticated_user
             if user is None or user.user_id != user_id:
                 continue
             # updated in place: the connection's context holds this very object
             if player_filter is not None:
                 user.player_filter[:] = player_filter
-            if provider_filter is not None:
-                user.provider_filter[:] = provider_filter
             self.logger.debug("Updated the access filters of a live session of %s", user.username)
 
     def set_sendspin_player_for_token(self, token: str, player_id: str) -> None:
@@ -483,13 +514,14 @@ class WebserverController(CoreController):
         :param player_id: The sendspin player ID to set.
         """
         for client in list(self.clients):
-            if client._current_token != token:
+            if not client.matches_token(token):
                 continue
-            client._sendspin_player_id = player_id
+            client.bind_sendspin_player(player_id)
+            user = client.authenticated_user
             self.logger.debug(
                 "Set sendspin player %s for websocket client of user %s",
                 player_id,
-                client._authenticated_user.username if client._authenticated_user else "unknown",
+                user.username if user else "unknown",
             )
 
     def set_sendspin_player_for_webrtc_session(self, session_id: str, player_id: str) -> None:
@@ -503,13 +535,10 @@ class WebserverController(CoreController):
         :param player_id: The sendspin player ID to set.
         """
         for client in list(self.clients):
-            if client._webrtc_session_id == session_id:
-                client._sendspin_player_id = player_id
-                username = (
-                    client._authenticated_user.username
-                    if client._authenticated_user
-                    else "unauthenticated"
-                )
+            if client.webrtc_session_id == session_id:
+                client.bind_sendspin_player(player_id)
+                user = client.authenticated_user
+                username = user.username if user else "unauthenticated"
                 self.logger.debug(
                     "Set sendspin player %s for WebRTC session %s (user: %s)",
                     player_id,
@@ -595,27 +624,20 @@ class WebserverController(CoreController):
         ip_addresses = await get_ip_addresses(include_ipv6=True)
         return (
             ConfigEntry(
+                key=CONF_SERVER_NAME,
+                type=ConfigEntryType.STRING,
+                default_value=_default_server_name(),
+                # not required: clearing the value restores the default name
+                required=False,
+                requires_reload=False,
+            ),
+            ConfigEntry(
                 key=CONF_AUTH_ALLOW_SELF_REGISTRATION,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
                 hidden=not any(provider.domain == "hass" for provider in self.mass.providers),
                 requires_reload=False,
             ),
-            ConfigEntry(
-                key=CONF_BASE_URL,
-                type=ConfigEntryType.STRING,
-                default_value=CONF_VALUE_AUTO,
-                requires_reload=False,
-            ),
-            ConfigEntry(
-                key=CONF_BIND_PORT,
-                type=ConfigEntryType.INTEGER,
-                default_value=DEFAULT_SERVER_PORT,
-                requires_reload=True,
-            ),
-            # the two alerts are mutually exclusive: the generic one while SSL is switched off,
-            # and the SSL specific one when a certificate failed to load and left the webserver
-            # on plain HTTP
             ConfigEntry(
                 key="webserver_warn",
                 type=ConfigEntryType.ALERT,
@@ -625,22 +647,46 @@ class WebserverController(CoreController):
                 depends_on_value=False,
             ),
             ConfigEntry(
-                key="ssl_inactive_warn",
-                type=ConfigEntryType.ALERT,
+                key=CONF_BASE_URL,
+                type=ConfigEntryType.STRING,
+                default_value=CONF_VALUE_AUTO,
+                advanced=True,
+                requires_reload=False,
+            ),
+            ConfigEntry(
+                key=CONF_EXTERNAL_URL,
+                type=ConfigEntryType.STRING,
                 required=False,
-                hidden=not self._ssl_configured or self._ssl_active,
-                depends_on=CONF_ENABLE_SSL,
+                advanced=True,
+                requires_reload=False,
+            ),
+            ConfigEntry(
+                key=CONF_BIND_PORT,
+                type=ConfigEntryType.INTEGER,
+                default_value=DEFAULT_SERVER_PORT,
+                advanced=True,
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_ENABLE_SSL,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
+                advanced=True,
                 requires_reload=True,
+            ),
+            ConfigEntry(
+                key="ssl_inactive_warn",
+                type=ConfigEntryType.ALERT,
+                required=False,
+                hidden=not self._ssl_configured or self._ssl_active,
+                advanced=True,
+                depends_on=CONF_ENABLE_SSL,
             ),
             ConfigEntry(
                 key=CONF_SSL_CERTIFICATE,
                 type=ConfigEntryType.STRING,
                 required=False,
+                advanced=True,
                 depends_on=CONF_ENABLE_SSL,
                 requires_reload=True,
             ),
@@ -648,6 +694,7 @@ class WebserverController(CoreController):
                 key=CONF_SSL_PRIVATE_KEY,
                 type=ConfigEntryType.SECURE_STRING,
                 required=False,
+                advanced=True,
                 depends_on=CONF_ENABLE_SSL,
                 requires_reload=True,
             ),
@@ -655,6 +702,7 @@ class WebserverController(CoreController):
                 key=CONF_ACTION_VERIFY_SSL,
                 type=ConfigEntryType.ACTION,
                 action=CONF_ACTION_VERIFY_SSL,
+                advanced=True,
                 depends_on=CONF_ENABLE_SSL,
                 required=False,
             ),
@@ -983,7 +1031,7 @@ class WebserverController(CoreController):
             response_data = {
                 "success": True,
                 "token": token,
-                "user": auth_result.user.to_dict(),
+                "user": with_derived_provider_filter(self.mass, auth_result.user).to_dict(),
             }
 
             # If return_url provided, append code parameter and return as redirect_to
@@ -1050,7 +1098,7 @@ class WebserverController(CoreController):
         if not user:
             return web.Response(status=401, text="Not authenticated")
 
-        return web.json_response(user.to_dict())
+        return web.json_response(with_derived_provider_filter(self.mass, user).to_dict())
 
     async def _handle_auth_me_update(self, request: web.Request) -> web.Response:
         """Handle request to update current user's profile."""
@@ -1075,7 +1123,12 @@ class WebserverController(CoreController):
                 avatar_url=avatar_url,
             )
 
-            return web.json_response({"success": True, "user": updated_user.to_dict()})
+            return web.json_response(
+                {
+                    "success": True,
+                    "user": with_derived_provider_filter(self.mass, updated_user).to_dict(),
+                }
+            )
         except Exception:
             self.logger.exception("Error updating user profile")
             return web.json_response(
@@ -1273,7 +1326,7 @@ class WebserverController(CoreController):
             response_data: dict[str, Any] = {
                 "success": True,
                 "token": token,
-                "user": user.to_dict(),
+                "user": with_derived_provider_filter(self.mass, user).to_dict(),
             }
 
             # Only forward the token to a trusted destination (no consent step here).
@@ -1304,6 +1357,26 @@ class WebserverController(CoreController):
             del self._preview_tokens[token]
             return None
         return provider_instance_id_or_domain, item_id
+
+    def _disconnect_websockets(
+        self, predicate: Callable[[WebsocketClientHandler], bool], reason: str
+    ) -> None:
+        """
+        Disconnect every live WebSocket client the given predicate selects.
+
+        :param predicate: Returns True for each client that must be disconnected.
+        :param reason: What ended the sessions, included in the log message.
+        """
+        for client in list(self.clients):
+            if not predicate(client):
+                continue
+            user = client.authenticated_user
+            self.logger.warning(
+                "Disconnecting WebSocket client due to %s: %s",
+                reason,
+                user.username if user else "unknown",
+            )
+            client.cancel()
 
 
 def _serialize_script_value(value: str) -> str:

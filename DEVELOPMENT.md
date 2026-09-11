@@ -5,13 +5,13 @@ Developer docs
 * ffmpeg (minimum version 6.1, version 7 recommended), must be available in the path so install at OS level
 * Python 3.14 is minimal required (the exact pinned runtime lives in `.python-version` at the repo root — that file is the single source of truth for all tools)
 * [Python venv](https://docs.python.org/3/library/venv.html)
-* libchromaprint and PortAudio, also at OS level. Install both if you want to run the `acoustid_lookup` and `local_audio` providers: without libchromaprint AcoustID refuses to load, and without PortAudio local audio loads but finds no output devices. The test suite does not need either: the AcoustID tests drive a fake fingerprinter and the local audio tests that need PortAudio are skipped.
+* libchromaprint, also at OS level. Install it if you want to run the `acoustid_lookup` provider: without libchromaprint AcoustID refuses to load. The test suite does not need it: the AcoustID tests drive a fake fingerprinter.
 
       # macOS
-      brew install chromaprint portaudio
+      brew install chromaprint
 
       # Debian/Ubuntu
-      sudo apt-get install libchromaprint1 libportaudio2
+      sudo apt-get install libchromaprint1
 
     On Apple Silicon, Homebrew installs into `/opt/homebrew`, which is not on the dynamic loader's default search path. `pyacoustid` opens libchromaprint by bare filename, so installing the package is not enough — add this to your shell profile as well:
 
@@ -33,6 +33,7 @@ With this repository cloned locally, execute the following commands in a termina
 * The setup script will create a separate virtual environment (if needed), install all the project/test dependencies and configure pre-commit for linting and testing.
 * Make sure, that the python interpreter in VS Code is set to the newly generated venv.
 * Debug: Hit (Fn +) F5 to start Music Assistant locally (VS Code), or run `python -m music_assistant --log-level debug` from the command line
+  * asyncio debug mode, with its slow-callback warnings and the scheduling stack in unhandled-error logs, comes from Python's development mode: run `python -X dev -m music_assistant --log-level debug` or set `PYTHONDEVMODE=1` (for VS Code: in the `env` of your launch configuration). The environment variable also turns on the slow-query warnings of the database helper. Dev mode records a stack trace for every scheduled callback and future, so expect a slower server while it is on.
 * The pre-compiled UI of Music Assistant will be available at `localhost:8095` 🎉
 
 NOTE: Always re-run the setup script after you fetch the latest code because requirements could have changed.

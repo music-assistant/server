@@ -237,7 +237,6 @@ def main() -> None:
 
     # prefer value in hass_options
     log_level = hass_options.get("log_level", args.log_level).upper()
-    dev_mode = os.environ.get("PYTHONDEVMODE", "0") == "1"
     safe_mode = bool(
         args.safe_mode or hass_options.get("safe_mode") or os.environ.get("MASS_SAFE_MODE")
     )
@@ -269,9 +268,6 @@ def main() -> None:
         loop = asyncio.get_running_loop()
         loop.set_default_executor(ThreadPoolExecutor(max_workers=32))
         activate_log_queue_handler()
-        if dev_mode or log_level == "DEBUG":
-            loop.set_debug(True)
-            loop.slow_callback_duration = 0.2
         loop.set_exception_handler(_global_loop_exception_handler)
 
         stop_event = asyncio.Event()

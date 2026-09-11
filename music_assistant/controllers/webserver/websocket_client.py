@@ -34,6 +34,7 @@ from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
+from music_assistant.helpers.provider_access import with_derived_provider_filter
 
 from .helpers.auth_middleware import (
     has_scope,
@@ -86,11 +87,49 @@ class WebsocketClientHandler:
             forward_proto = request.headers.get("X-Forwarded-Proto", request.protocol)
             self.base_url = f"{forward_proto}://{forward_host}{ingress_path}"
 
+    @property
+    def token_id(self) -> str | None:
+        """Return the id of the auth token this client authenticated with, if any."""
+        return self._token_id
+
+    @property
+    def authenticated_user(self) -> User | None:
+        """Return the user this client authenticated as, if any."""
+        return self._authenticated_user
+
+    @property
+    def webrtc_session_id(self) -> str | None:
+        """Return the id of the WebRTC session this client connected through, if any."""
+        return self._webrtc_session_id
+
+    def matches_token(self, token: str) -> bool:
+        """
+        Return True if this client authenticated with the given access token.
+
+        :param token: The access token to compare against.
+        """
+        return self._current_token == token
+
+    def bind_sendspin_player(self, player_id: str) -> None:
+        """
+        Bind a sendspin web player to this connection.
+
+        :param player_id: Id of the sendspin player this connection owns.
+        """
+        self._sendspin_player_id = player_id
+
     async def disconnect(self) -> None:
-        """Disconnect client."""
-        self._cancel()
+        """Disconnect client and wait for its writer to finish."""
+        self.cancel()
         if self._writer_task is not None:
             await self._writer_task
+
+    def cancel(self) -> None:
+        """Cancel the connection, without waiting for its writer to finish."""
+        if self._handle_task is not None:
+            self._handle_task.cancel()
+        if self._writer_task is not None:
+            self._writer_task.cancel()
 
     async def handle_client(self) -> web.WebSocketResponse:
         """Handle a websocket response."""
@@ -349,7 +388,7 @@ class WebsocketClientHandler:
         except asyncio.QueueFull:
             self._logger.error("Client exceeded max pending messages: %s", MAX_PENDING_MSG)
 
-            self._cancel()
+            self.cancel()
 
     def _send_message_sync(self, message: MessageType) -> None:
         """
@@ -372,7 +411,7 @@ class WebsocketClientHandler:
         except asyncio.QueueFull:
             self._logger.error("Client exceeded max pending messages: %s", MAX_PENDING_MSG)
 
-            self._cancel()
+            self.cancel()
 
     async def _handle_auth_command(self, msg: CommandMessage) -> None:
         """
@@ -436,7 +475,10 @@ class WebsocketClientHandler:
         await self._send_message(
             SuccessResultMessage(
                 msg.message_id,
-                {"authenticated": True, "user": user.to_dict()},
+                {
+                    "authenticated": True,
+                    "user": with_derived_provider_filter(self.mass, user).to_dict(),
+                },
             )
         )
 
@@ -555,19 +597,19 @@ class WebsocketClientHandler:
                 user = self._authenticated_user
                 if user is None:
                     return
-                required = (
-                    self.mass.config.get_setup_flow_required_scope(event.object_id)
+                access = (
+                    self.mass.config.get_setup_flow_access(event.object_id)
                     if event.object_id
                     else None
                 )
-                if required is None:
+                if access is None:
                     # flow already popped (terminal step race): the flow kind is no
                     # longer known, so require both config scopes to be safe
                     if not has_scope(user, Scope.CONFIG_PROVIDERS_WRITE) or not has_scope(
                         user, Scope.CONFIG_PLAYERS_WRITE
                     ):
                         return
-                elif not has_scope(user, required):
+                elif not access.allows(user):
                     return
 
             if event.event == EventType.TASKS_UPDATED:
@@ -583,14 +625,22 @@ class WebsocketClientHandler:
                 )
                 return
 
+            if event.event == EventType.PROVIDERS_UPDATED:
+                # the payload is signalled unfiltered, so narrow it down to the
+                # music sources this client's user may see
+                if self._authenticated_user is None:
+                    return
+                provider_data = self.mass.get_providers_for_user(self._authenticated_user)
+                self._send_message_sync(
+                    MassEvent(
+                        event=event.event,
+                        object_id=event.object_id,
+                        data=provider_data,
+                    )
+                )
+                return
+
             self._send_message_sync(event)
 
         self._events_unsub_callback = self.mass.subscribe(handle_event)
         self._logger.debug("Subscribed to events")
-
-    def _cancel(self) -> None:
-        """Cancel the connection."""
-        if self._handle_task is not None:
-            self._handle_task.cancel()
-        if self._writer_task is not None:
-            self._writer_task.cancel()

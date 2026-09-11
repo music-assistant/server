@@ -8,20 +8,10 @@ from typing import TYPE_CHECKING, Any
 from unittest import mock
 
 import pytest
-from music_assistant_models.enums import FlowStepType
+from music_assistant_models.enums import FlowStepType, PlayerType
 
 from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT
-from music_assistant.models.setup_flow import SetupFlowContext, SetupSession
-from music_assistant.providers.airplay_receiver import (
-    CONF_AIRPLAY_NAME,
-)
-from music_assistant.providers.airplay_receiver import (
-    CONF_MASS_PLAYER_ID as AIRPLAY_PLAYER_ID,
-)
-from music_assistant.providers.airplay_receiver import setup_flow as airplay_flow
-from music_assistant.providers.ariacast_receiver import (
-    CONF_ARIACAST_NAME,
-)
+from music_assistant.models.setup_flow import AbortFlow, SetupFlowContext, SetupSession
 from music_assistant.providers.ariacast_receiver import (
     CONF_MASS_PLAYER_ID as ARIACAST_PLAYER_ID,
 )
@@ -39,11 +29,14 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType
 
 
-def _player(player_id: str, display_name: str) -> mock.Mock:
+def _player(
+    player_id: str, display_name: str, player_type: PlayerType = PlayerType.PLAYER
+) -> mock.Mock:
     """Return a minimal player for setup-flow option generation."""
     player = mock.Mock()
     player.player_id = player_id
     player.display_name = display_name
+    player.type = player_type
     return player
 
 
@@ -55,9 +48,12 @@ def _make_session(
 ) -> tuple[SetupSession, dict[str, Any]]:
     """Return a real setup session and the values collected by its finish handler."""
     mass = mock.Mock()
+    # The source player must never appear in the player selector: capture-only
+    # clients cannot be a playback target.
     mass.players.all_players.return_value = [
         _player("living-room", "Living Room"),
         _player("kitchen", "Kitchen"),
+        _player("turntable", "Turntable", PlayerType.SOURCE),
     ]
     collected: dict[str, Any] = {}
 
@@ -96,65 +92,57 @@ async def _wait_finished(session: SetupSession) -> None:
     raise AssertionError("setup flow did not finish")
 
 
-@pytest.mark.parametrize(
-    ("domain", "flow_module", "submitted"),
-    [
-        (
-            "airplay_receiver",
-            airplay_flow,
-            {
-                AIRPLAY_PLAYER_ID: "kitchen",
-                CONF_AIRPLAY_NAME: "Kitchen AirPlay",
-            },
-        ),
-        (
-            "ariacast_receiver",
-            ariacast_flow,
-            {
-                ARIACAST_PLAYER_ID: "kitchen",
-                CONF_ARIACAST_NAME: "Kitchen AriaCast",
-            },
-        ),
-    ],
-)
-async def test_player_receiver_flow_collects_instance_identity(
-    domain: str, flow_module: Any, submitted: dict[str, Any]
-) -> None:
-    """Player receiver flows persist their target player and advertised identity."""
-    session, collected = _make_session(domain)
-    task, step = await _start_form(session, flow_module)
-    player_entry = next(entry for entry in step.entries if entry.key.endswith("player_id"))
-    assert [option.value for option in player_entry.options] == [
-        "__auto__",
-        "kitchen",
-        "living-room",
-    ]
+async def test_ariacast_flow_collects_mandatory_player() -> None:
+    """The AriaCast flow persists the mandatory target player (no automatic option)."""
+    session, collected = _make_session("ariacast_receiver")
+    task, step = await _start_form(session, ariacast_flow)
+    player_entry = next(entry for entry in step.entries if entry.key == ARIACAST_PLAYER_ID)
+    assert [option.value for option in player_entry.options] == ["kitchen", "living-room"]
 
-    session.handle_submit(submitted)
+    session.handle_submit({ARIACAST_PLAYER_ID: "kitchen"})
     await _wait_finished(session)
     await task
 
-    assert collected == submitted
+    assert collected == {ARIACAST_PLAYER_ID: "kitchen"}
 
 
-async def test_player_receiver_flow_prefills_legacy_values() -> None:
-    """A pre-flow AirPlay instance keeps its stored player and receiver name."""
-    session, _collected = _make_session(
-        "airplay_receiver",
-        values={
-            AIRPLAY_PLAYER_ID: "living-room",
-            CONF_AIRPLAY_NAME: "Legacy Receiver",
-        },
-    )
-    task, step = await _start_form(session, airplay_flow)
-    entries = {entry.key: entry for entry in step.entries}
+async def test_ariacast_flow_requires_a_player_selection() -> None:
+    """Submitting without a selection re-renders the form with a required error."""
+    session, collected = _make_session("ariacast_receiver")
+    task, _step = await _start_form(session, ariacast_flow)
 
-    assert entries[AIRPLAY_PLAYER_ID].value == "living-room"
-    assert entries[CONF_AIRPLAY_NAME].value == "Legacy Receiver"
+    step = session.handle_submit({})
+    assert step is not None
+    assert step.errors == {ARIACAST_PLAYER_ID: "required"}
+    assert collected == {}
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+async def test_ariacast_flow_vanished_stored_player_renders_unselected() -> None:
+    """A stored player that no longer exists is not preselected (nor silently replaced)."""
+    session, _collected = _make_session(
+        "ariacast_receiver", setup_data={ARIACAST_PLAYER_ID: "gone-player"}
+    )
+    task, step = await _start_form(session, ariacast_flow)
+    player_entry = next(entry for entry in step.entries if entry.key == ARIACAST_PLAYER_ID)
+    assert player_entry.value is None
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_ariacast_flow_aborts_without_players() -> None:
+    """With no players registered the flow aborts with the no_players reason."""
+    session, _collected = _make_session("ariacast_receiver")
+    session.mass.players.all_players.return_value = []  # type: ignore[attr-defined]
+
+    with pytest.raises(AbortFlow) as excinfo:
+        await ariacast_flow.run_setup(session)
+    assert excinfo.value.reason == "no_players"
 
 
 async def test_vban_flow_collects_receiver_endpoint_and_stream_format() -> None:

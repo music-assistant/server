@@ -141,14 +141,12 @@ jobs:
           key: apt-ffmpeg-${{ runner.os }}-trixie
       # git must be present before checkout, or it degrades to a REST tarball download;
       # build-essential + libssl-dev are needed to build aiolibdatachannel from its git
-      # source; curl + gpg are needed by the codecov action; libportaudio2 is needed by
-      # the local audio tests on the sounddevice backend, which skip rather than fail
-      # without it
+      # source; curl + gpg are needed by the codecov action
       - name: Install ffmpeg and build tools
         run: |
           # Restore cached .deb files to apt cache (if any)
           cp ~/.cache/apt-packages/*.deb /var/cache/apt/archives/ 2>/dev/null || true
-          apt-get update && apt-get install -y ffmpeg libportaudio2 git build-essential libssl-dev curl gpg
+          apt-get update && apt-get install -y ffmpeg git build-essential libssl-dev curl gpg
           # Save .deb files for next run
           mkdir -p ~/.cache/apt-packages && cp /var/cache/apt/archives/*.deb ~/.cache/apt-packages/ 2>/dev/null || true
       - name: Check out code from GitHub

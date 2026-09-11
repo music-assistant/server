@@ -1,5 +1,7 @@
 """Test Tidal Streaming Manager."""
 
+import base64
+import json
 from collections.abc import Coroutine
 from sqlite3 import OperationalError
 from typing import Any
@@ -11,6 +13,11 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat, Track
 
 from music_assistant.providers.tidal.streaming import TidalStreamingManager
+
+
+def _bts_manifest(**fields: Any) -> str:
+    """Build a base64-encoded Tidal BTS manifest from the given fields."""
+    return base64.b64encode(json.dumps(fields).encode()).decode()
 
 
 @pytest.fixture
@@ -71,6 +78,7 @@ async def test_get_stream_details_lossless(
             "playbackmode": "STREAM",
             "assetpresentation": "FULL",
             "audioquality": "HIGH",
+            "immersiveaudio": "false",
         },
     )
 
@@ -92,6 +100,76 @@ async def test_get_stream_details_hires(
     assert stream_details.audio_format.content_type == ContentType.FLAC
     assert stream_details.audio_format.sample_rate == 96000
     assert stream_details.audio_format.bit_depth == 24
+
+
+async def test_get_stream_details_with_bts_manifest(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock, mock_track: Mock
+) -> None:
+    """Test get_stream_details with a BTS manifest carrying the stream URL."""
+    provider_mock.get_track.return_value = mock_track
+    provider_mock.api.get.return_value = {
+        "manifestMimeType": "application/vnd.tidal.bts",
+        "manifest": _bts_manifest(
+            mimeType="audio/flac",
+            codecs="flac",
+            encryptionType="NONE",
+            urls=["https://example.com/stream.flac"],
+        ),
+        "audioQuality": "LOSSLESS",
+        "sampleRate": 44100,
+        "bitDepth": 16,
+    }
+
+    stream_details = await streaming_manager.get_stream_details("123")
+
+    assert stream_details.path == "https://example.com/stream.flac"
+    assert stream_details.audio_format.content_type == ContentType.FLAC
+
+
+async def test_get_stream_details_with_bts_manifest_codec(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock, mock_track: Mock
+) -> None:
+    """Test get_stream_details picks the format from the BTS manifest's codecs."""
+    provider_mock.get_track.return_value = mock_track
+    provider_mock.api.get.return_value = {
+        "manifestMimeType": "application/vnd.tidal.bts",
+        "manifest": _bts_manifest(
+            mimeType="audio/mp4",
+            codecs="mp4a.40.2",
+            encryptionType="NONE",
+            urls=["https://example.com/stream.m4a"],
+        ),
+        "audioQuality": "HIGH",
+        "sampleRate": 44100,
+        "bitDepth": 16,
+    }
+
+    stream_details = await streaming_manager.get_stream_details("123")
+
+    assert stream_details.path == "https://example.com/stream.m4a"
+    assert stream_details.audio_format.content_type == ContentType.MP4A
+
+
+async def test_get_stream_details_with_bts_manifest_no_urls_raises_error(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock, mock_track: Mock
+) -> None:
+    """Test get_stream_details raises when the BTS manifest carries no URLs."""
+    provider_mock.get_track.return_value = mock_track
+    provider_mock.api.get.return_value = {
+        "manifestMimeType": "application/vnd.tidal.bts",
+        "manifest": _bts_manifest(
+            mimeType="audio/flac",
+            codecs="flac",
+            encryptionType="NONE",
+            urls=[],
+        ),
+        "audioQuality": "LOSSLESS",
+        "sampleRate": 44100,
+        "bitDepth": 16,
+    }
+
+    with pytest.raises(MediaNotFoundError, match="No stream URL found"):
+        await streaming_manager.get_stream_details("123")
 
 
 async def test_get_stream_details_with_dash_manifest(

@@ -43,6 +43,9 @@ _T = TypeVar("_T")
 FlowKind = Literal["setup", "reconfigure"]
 FlowReason = Literal["user", "auth", "error"]
 
+# FINISH step id the frontend closes on immediately, without showing a success screen
+FINISH_STEP_SILENT = "finish_silent"
+
 CALLBACK_RESPONSE_HTML = """
 <html>
 <body onload="window.close();">

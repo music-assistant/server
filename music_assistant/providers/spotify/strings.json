@@ -1,25 +1,7 @@
 {
   "config_entries": {
-    "auth": {
-      "label": "Authenticate with Spotify",
-      "description": "This button will redirect you to Spotify to authenticate."
-    },
-    "clear_auth": {
-      "label": "Clear authentication",
-      "description": "[%key:common::config_entries::clear_auth::description%]",
-      "action_label": "Clear authentication"
-    },
     "client_id": {
       "label": "Client ID (optional)"
-    },
-    "auth_dev": {
-      "label": "Authenticate Developer Session",
-      "description": "Authenticate with your custom Client ID."
-    },
-    "clear_auth_dev": {
-      "label": "Clear Developer Authentication",
-      "description": "Clear the developer session authentication and client ID.",
-      "action_label": "Clear developer authentication"
     },
     "sync_podcast_progress": {
       "label": "Sync Podcast Progress from Spotify",
@@ -123,7 +105,7 @@
     },
     "soloist_terms": {
       "title": "About Spotify Soloist",
-      "description": "Spotify Soloist is Spotify's official playback engine for devices without a screen. Music Assistant may not distribute it as part of its own installation — so if you continue, it is downloaded from Spotify's servers on your behalf and run for you.\n\nPlease read this before you continue:\n\n- You need a Spotify **Premium** account to create the required API key. This is a short manual step on the Spotify developer website, explained on the next screen.\n- Spotify's terms do not clearly allow using Soloist this way. Using it through Music Assistant may violate Spotify's Terms of Service and is entirely at your own risk.\n- Spotify delivers the audio at playback speed, so starting the first song of a queue and seeking take a few seconds. The songs after it follow on without a break, and if you have crossfade enabled for the player, Spotify's own crossfade is used.\n- While Spotify audio is playing, Music Assistant appears as a device in your Spotify app. Pausing or skipping there interferes with playback, so use Music Assistant's own controls.\n- Music Assistant will download the Soloist app from Spotify's servers, run it, keep it on disk, and automatically replace it whenever Spotify publishes an update.\n\nMore information: [Soloist documentation](https://developer.spotify.com/documentation/soloist) · [API key page](https://developer.spotify.com/dashboard/soloist) · [Spotify developer policy](https://developer.spotify.com/policy)"
+      "description": "Spotify Soloist is Spotify's official playback engine for devices without a screen. Music Assistant may not distribute it as part of its own installation — so if you continue, it is downloaded from Spotify's servers on your behalf and run for you.\n\nPlease read this before you continue:\n\n- You need a Spotify **Premium** account to create the required API key. This is a short manual step on the Spotify developer website, explained on the next screen.\n- Spotify's terms do not clearly allow using Soloist this way. Using it through Music Assistant may violate Spotify's Terms of Service and is entirely at your own risk.\n- Music Assistant will download the Soloist app from Spotify's servers, run it, keep it on disk, and automatically replace it whenever Spotify publishes an update.\n\nMore information: [Soloist documentation](https://developer.spotify.com/documentation/soloist) · [API key page](https://developer.spotify.com/dashboard/soloist) · [Spotify developer policy](https://developer.spotify.com/policy)"
     },
     "soloist_api_key": {
       "title": "Create your Soloist API key",
@@ -157,9 +139,6 @@
         "name": "Unknown Podcast"
       }
     }
-  },
-  "config_categories": {
-    "developer_token": "Developer Token"
   },
   "errors": {
     "refresh_token_invalid": "Your Spotify session has expired or been revoked. Please re-authenticate to continue using Spotify.",

@@ -33,6 +33,7 @@ from music_assistant.providers.spotify_connect.soloist.runtime import (
     SoloistPlaybackState,
     SoloistPositionSync,
     SoloistQueueChanged,
+    SoloistTrackChanged,
     SoloistVolumeChanged,
     UnsupportedPlatformError,
 )
@@ -321,19 +322,38 @@ async def test_redirect_within_allowlist_followed(tmp_path: Path) -> None:
     [
         {"../soloist": b"payload"},  # path traversal
         {"/soloist": b"payload"},  # absolute path
-        {"soloist": b"payload", "README": b"docs"},  # extra file
         {"README": b"docs"},  # no soloist binary at all
     ],
 )
 async def test_unsafe_or_unexpected_archive_rejected(
     tmp_path: Path, files: dict[str, bytes]
 ) -> None:
-    """Archives with traversal, absolute paths, extra or missing files are rejected."""
+    """Archives with traversal, absolute paths or no binary at all are rejected."""
     archive = _build_archive(tmp_path / "a.tar.gz", files)
     manager, _ = _make_manager(tmp_path, _serve_archive(archive))
 
     with pytest.raises(InvalidArchiveError):
         await manager.ensure_binary(consent=True)
+
+
+@pytest.mark.usefixtures("linux_platform", "fake_version_cmd")
+async def test_archive_siblings_are_ignored(tmp_path: Path) -> None:
+    """The release ships docs beside the binary: they are skipped, not rejected."""
+    archive = _build_archive(
+        tmp_path / "a.tar.gz",
+        {
+            "CHANGELOG.md": b"# changelog",
+            "THIRD_PARTY_LICENSES.txt": b"licenses",
+            "soloist": _elf_binary("x86_64"),
+        },
+    )
+    manager, _ = _make_manager(tmp_path, _serve_archive(archive))
+
+    path = await manager.ensure_binary(consent=True)
+
+    assert path.is_file()
+    assert path.read_bytes() == _elf_binary("x86_64")
+    assert not (path.parent / "CHANGELOG.md").exists()
 
 
 @pytest.mark.usefixtures("linux_platform", "fake_version_cmd")
@@ -722,6 +742,38 @@ async def test_event_dispatch_decodes_documented_payloads(tmp_path: Path) -> Non
     assert queue.upcoming[0].source == "queue"
     assert queue.upcoming[0].item is not None
     assert queue.upcoming[0].item.uri == "spotify:track:upcoming"
+
+
+async def test_the_item_boundary_events_decode_to_the_expected_payloads(tmp_path: Path) -> None:
+    """The events the playback backend cuts items on each decode to the payload it expects."""
+    _publish_endpoint(tmp_path)
+    ws = _FakeWebSocket()
+    client = _make_client(tmp_path, ws)
+    item = {"uri": "spotify:track:2JRo0gjbX4GrCqBYdRohoo", "entity_type": "track"}
+    for payload in (
+        {"type": "track_changed", "item": item},
+        {"type": "playback_state", "status": "playing", "item": item},
+        {"type": "playback_changed", "status": "playing", "item": item},
+    ):
+        ws.queue.put_nowait(_text_msg(payload))
+    ws.queue.put_nowait(None)
+    events: list[SoloistEvent] = []
+
+    async def on_event(event: SoloistEvent) -> None:
+        events.append(event)
+
+    await client.listen_events(on_event)
+
+    assert [event.type for event in events] == [
+        "track_changed",
+        "playback_state",
+        "playback_changed",
+    ]
+    assert isinstance(events[0].data, SoloistTrackChanged)
+    # the snapshot and the delta share one payload, so the event type is all a
+    # consumer has to tell a full state report from a partial one
+    assert isinstance(events[1].data, SoloistPlaybackState)
+    assert isinstance(events[2].data, SoloistPlaybackState)
 
 
 async def test_event_dispatch_tolerates_malformed_and_unknown(tmp_path: Path) -> None:

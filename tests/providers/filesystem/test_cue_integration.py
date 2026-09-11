@@ -98,6 +98,9 @@ def _make_provider(base_path: str = "/music") -> LocalFileSystemProvider:
     provider.mass.cache.set = AsyncMock(return_value=None)
     provider.cache = MagicMock()
     provider._sync_tracks = True
+    provider.sync_running = False
+    provider._sync_nfo_by_dir = {}
+    provider._sync_nfo_index_ready = False
     provider._cue = CueSheetHandler(provider)
     return provider
 

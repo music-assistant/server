@@ -7,6 +7,7 @@ import inspect
 import logging
 import os
 import pathlib
+import random
 import threading
 import time
 from base64 import b64encode
@@ -54,6 +55,12 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
+from music_assistant.controllers.config.provider_access_migration import (
+    migrate_provider_access,
+)
+from music_assistant.controllers.config.retired_local_audio import (
+    cleanup_retired_local_audio,
+)
 from music_assistant.controllers.dashboard import DashboardController
 from music_assistant.controllers.diagnostics import DiagnosticsController
 from music_assistant.controllers.discovery import DiscoveryController
@@ -65,14 +72,12 @@ from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.tasks import TasksController
 from music_assistant.controllers.translations import TranslationController
 from music_assistant.controllers.webserver import WebserverController
-from music_assistant.controllers.webserver.helpers.auth_middleware import (
-    get_current_user,
-    has_scope,
-)
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.api import APICommandHandler, api_command
 from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
 from music_assistant.helpers.images import detect_provider_icons
+from music_assistant.helpers.provider_access import visible_music_sources
 from music_assistant.helpers.util import (
     TaskManager,
     get_package_version,
@@ -90,6 +95,7 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from aiohttp import ClientSession
+    from music_assistant_models.auth import User
     from music_assistant_models.config_entries import ProviderConfig
 
     from music_assistant.models.core_controller import CoreController
@@ -118,6 +124,9 @@ PROVIDER_SETUP_TIMEOUT = 120
 # provider fails to load instead of holding up startup forever.
 PROVIDER_ASYNC_INIT_TIMEOUT = 300
 PROVIDER_LOAD_CONCURRENCY = 8
+# Seconds before each retry of a failed provider load; the last delay repeats.
+PROVIDER_RETRY_DELAYS = (10, 30, 60, 120)
+PROVIDER_RETRY_JITTER = 3
 
 _R = TypeVar("_R")
 _ProviderT = TypeVar("_ProviderT", bound=ProviderInstanceType)
@@ -318,6 +327,23 @@ class MusicAssistant:
         self.webserver.config = webserver_config
         await self.webserver.setup(webserver_config)
         await setup_controller(self.discovery)
+        # one-off: drop the retired local_audio provider on installs that never played
+        # through it. Needs the databases, so it cannot run with the settings migrations,
+        # and must precede the provider load so its tombstone never flashes a banner.
+        # TODO: remove after 2.11 release
+        await cleanup_retired_local_audio(self)
+        # one-off: convert the music source restrictions that used to live on each user into
+        # the access records that now live on the sources. Needs the users from the auth
+        # database, so it cannot run with the settings migrations, and must precede the
+        # provider load so no provider is served a record that is still to be written.
+        # TODO: remove after 2.11 release
+        await migrate_provider_access(self)
+        # repair sidebar shortcuts left pointing at a provider instance that no longer exists:
+        # those never resolve, so the frontend cannot render them and the user cannot remove
+        # them. Reads the provider config, so it must not wait for the providers to load.
+        # Only needed for installs broken before provider removal started cleaning up.
+        # TODO: remove after 2.11 release
+        await self.music.cleanup_stale_provider_shortcuts()
         # load builtin providers (always needed, also in safe mode)
         await self._load_builtin_providers()
         # load regular providers (skip when in safe mode)
@@ -421,7 +447,11 @@ class MusicAssistant:
             server_version=self.version,
             schema_version=API_SCHEMA_VERSION,
             min_supported_schema_version=MIN_SCHEMA_VERSION,
+            name=self.webserver.server_name,
             base_url=self.webserver.base_url,
+            internal_url=self.webserver.base_url,
+            external_url=self.webserver.external_url,
+            has_remote_access=self.webserver.remote_access.is_enabled,
             homeassistant_addon=self.running_as_hass_addon,
             onboard_done=self.config.onboard_done,
             status=self._state,
@@ -501,22 +531,25 @@ class MusicAssistant:
         Return all loaded/running Providers (instances).
 
         Optionally filtered by ProviderType.
-        Note that this applies user filters for music providers (for non admin users).
+        Note that this only returns the music sources the current user may see.
         """
-        user = get_current_user()
-        user_provider_filter = (
-            user.provider_filter if user and not has_scope(user, Scope.ALL) else None
-        )
+        return self.get_providers_for_user(get_current_user(), provider_type)
+
+    def get_providers_for_user(
+        self, user: User | None, provider_type: ProviderType | None = None
+    ) -> list[ProviderInstanceType]:
+        """
+        Return all loaded/running Providers (instances) the given user may see.
+
+        :param user: The user to resolve the music sources for; None applies no filtering.
+        :param provider_type: Optionally filter by ProviderType.
+        """
+        allowed = visible_music_sources(self, user) if user else None
         return [
             x
             for x in list(self._providers.values())
             if (provider_type is None or provider_type == x.type)
-            # apply user provider filter
-            and (
-                not user_provider_filter
-                or x.instance_id in user_provider_filter
-                or x.type != ProviderType.MUSIC
-            )
+            and (allowed is None or x.type != ProviderType.MUSIC or x.instance_id in allowed)
         ]
 
     @api_command("logging/get", required_scope=Scope.SYSTEM_MANAGE)
@@ -531,7 +564,8 @@ class MusicAssistant:
         """
         Return all loaded/running Providers (instances).
 
-        Note that this skips user filters so may only be called from internal code.
+        Note that this includes every music source, regardless of who may see it,
+        so it may only be called from internal code.
         """
         return list(self._providers.values())
 
@@ -620,14 +654,15 @@ class MusicAssistant:
 
         Results are grouped by provider type in the order given by ``priority``,
         and sorted within each tier by the provider's ``priority`` attribute
-        (lower value = higher priority).
+        (lower value = higher priority). This includes every music source, regardless
+        of who may see it, so user facing callers must narrow the result themselves.
 
         :param feature: The ProviderFeature to query for.
         :param priority: Ordered tuple of ProviderType values indicating tier order.
             Types omitted from this tuple are excluded from the results.
         """
         by_tier: dict[ProviderType, list[ProviderInstanceType]] = {ptype: [] for ptype in priority}
-        for prov in self.get_providers():
+        for prov in self.providers:
             if not prov.available:
                 continue
             if prov.type not in by_tier:
@@ -950,8 +985,17 @@ class MusicAssistant:
         instance_id: str,
         allow_retry: bool = False,
         remove_if_unsupported: bool = False,
+        retry_attempt: int = 0,
     ) -> None:
-        """Try to load a provider and catch errors."""
+        """
+        Try to load a provider and catch errors.
+
+        :param instance_id: Instance ID of the provider to load.
+        :param allow_retry: Schedule a delayed retry if the load fails with a handled error.
+        :param remove_if_unsupported: Drop the config if the host can not run this provider.
+        :param retry_attempt: How many retries of this load already failed, which decides
+            how long the next one waits.
+        """
         try:
             prov_conf = await self.config.get_provider_config(instance_id)
         except KeyError:
@@ -1009,19 +1053,33 @@ class MusicAssistant:
                     (AuthenticationRequired, AuthenticationFailed, LoginFailed, InvalidToken),
                 )
             )
-            if will_retry:
-                self.call_later(
-                    120,
-                    self.load_provider,
-                    instance_id,
-                    allow_retry,
-                    task_id=task_id,
+            error_msg = str(exc) or exc.__class__.__name__
+            prov_name = prov_conf.name or prov_conf.instance_id
+            if not will_retry:
+                LOGGER.warning(
+                    "Error loading provider(instance) %s: %s",
+                    prov_name,
+                    error_msg,
+                    exc_info=_provider_error_traceback(exc),
                 )
+                return
+            retry_delay = round(
+                PROVIDER_RETRY_DELAYS[min(retry_attempt, len(PROVIDER_RETRY_DELAYS) - 1)]
+                + random.uniform(-PROVIDER_RETRY_JITTER, PROVIDER_RETRY_JITTER)
+            )
+            self.call_later(
+                retry_delay,
+                self.load_provider,
+                instance_id,
+                allow_retry,
+                retry_attempt=retry_attempt + 1,
+                task_id=task_id,
+            )
             LOGGER.warning(
-                "Error loading provider(instance) %s: %s%s",
-                prov_conf.name or prov_conf.instance_id,
-                str(exc) or exc.__class__.__name__,
-                " (will be retried later)" if will_retry else "",
+                "Error loading provider(instance) %s: %s (will be retried in %s seconds)",
+                prov_name,
+                error_msg,
+                retry_delay,
                 exc_info=_provider_error_traceback(exc),
             )
             return
@@ -1076,7 +1134,7 @@ class MusicAssistant:
                 self._providers.pop(instance_id, None)
                 self.discovery.on_provider_unload(instance_id)
                 await self._update_available_providers_cache()
-                self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
+                self.signal_event(EventType.PROVIDERS_UPDATED, data=self.providers)
 
     async def unload_provider_with_error(self, instance_id: str, error: str | Exception) -> None:
         """
@@ -1425,7 +1483,7 @@ class MusicAssistant:
 
         # clear any previous error in config and signal update
         self.config.set(f"{CONF_PROVIDERS}/{conf.instance_id}/last_error", None)
-        self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
+        self.signal_event(EventType.PROVIDERS_UPDATED, data=self.providers)
 
     async def __load_provider_manifests(self) -> None:
         """Preload all available provider manifest files."""

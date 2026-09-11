@@ -308,12 +308,11 @@ def test_shared_output_destinations_are_registered_atomically() -> None:
 
 def test_live_source_context_publishes_input_and_source_processing() -> None:
     """A live source publishes its input and the processing it applies itself."""
-    manager, mass, source_session, _lossless_plan, pcm_format = _source_manager_context()
+    manager, mass, source_session, _lossless_plan = _source_manager_context()
 
     manager.update_source_context(
         "source-player",
         "source-session",
-        pcm_format=pcm_format,
         crossfade_enabled=True,
         volume_normalization_enabled=True,
     )
@@ -333,7 +332,7 @@ def test_live_source_context_publishes_input_and_source_processing() -> None:
 
 def test_live_source_output_registered_before_context_is_published() -> None:
     """An output prepared before source details arrive is retained and published."""
-    manager, _mass, source_session, lossless_plan, pcm_format = _source_manager_context()
+    manager, _mass, source_session, lossless_plan = _source_manager_context()
 
     assert manager.update_output(
         "player-1",
@@ -347,7 +346,6 @@ def test_live_source_output_registered_before_context_is_published() -> None:
     manager.update_source_context(
         "source-player",
         "source-session",
-        pcm_format=pcm_format,
         crossfade_enabled=False,
         volume_normalization_enabled=None,
     )
@@ -366,9 +364,69 @@ def test_live_source_output_registered_before_context_is_published() -> None:
     assert details.outputs[0].fidelity.bit_perfect is True
 
 
+def test_live_source_publishes_a_new_consumer_with_its_own_format() -> None:
+    """A consumer joining a live source is published with the format it receives."""
+    manager, mass, source_session, native_plan = _source_manager_context()
+    manager.update_output(
+        "player-1",
+        _source_consumer_plan(48000),
+        queue_id="source-player",
+        session_id="source-session",
+    )
+    manager.update_source_context(
+        "source-player",
+        "source-session",
+        crossfade_enabled=False,
+        volume_normalization_enabled=False,
+    )
+
+    # a second player takes the same source at its native rate
+    manager.update_output(
+        "player-2",
+        native_plan,
+        queue_id="source-player",
+        session_id="source-session",
+    )
+
+    assert _source_bit_perfect(source_session) == {"player-1": False, "player-2": True}
+    assert mass.players.trigger_player_update.call_count == 2
+
+
+def test_live_source_consumers_keep_their_own_bit_perfect_verdict() -> None:
+    """A consumer that resamples the source does not cost another one its badge."""
+    manager, _mass, source_session, native_plan = _source_manager_context()
+    manager.update_output(
+        "player-1",
+        native_plan,
+        queue_id="source-player",
+        session_id="source-session",
+    )
+    manager.update_source_context(
+        "source-player",
+        "source-session",
+        crossfade_enabled=False,
+        volume_normalization_enabled=False,
+    )
+
+    manager.update_output(
+        "player-2",
+        _source_consumer_plan(48000),
+        queue_id="source-player",
+        session_id="source-session",
+    )
+    manager.update_source_context(
+        "source-player",
+        "source-session",
+        crossfade_enabled=False,
+        volume_normalization_enabled=False,
+    )
+
+    assert _source_bit_perfect(source_session) == {"player-1": True, "player-2": False}
+
+
 def test_a_source_that_crossfades_itself_stays_bit_perfect() -> None:
     """A fade the source mixed itself reaches us already mixed, so nothing is lost."""
-    manager, _mass, source_session, lossless_plan, pcm_format = _source_manager_context()
+    manager, _mass, source_session, lossless_plan = _source_manager_context()
     manager.update_output(
         "player-1",
         lossless_plan,
@@ -379,7 +437,6 @@ def test_a_source_that_crossfades_itself_stays_bit_perfect() -> None:
     manager.update_source_context(
         "source-player",
         "source-session",
-        pcm_format=pcm_format,
         crossfade_enabled=True,
         volume_normalization_enabled=True,
     )
@@ -395,7 +452,7 @@ def test_a_source_that_crossfades_itself_stays_bit_perfect() -> None:
 
 def test_unreported_source_processing_does_not_cost_the_bit_perfect_badge() -> None:
     """A source that never says what it applies still hands us its samples untouched."""
-    manager, _mass, source_session, lossless_plan, pcm_format = _source_manager_context()
+    manager, _mass, source_session, lossless_plan = _source_manager_context()
     manager.update_output(
         "player-1",
         lossless_plan,
@@ -406,7 +463,6 @@ def test_unreported_source_processing_does_not_cost_the_bit_perfect_badge() -> N
     manager.update_source_context(
         "source-player",
         "source-session",
-        pcm_format=pcm_format,
         crossfade_enabled=None,
         volume_normalization_enabled=None,
     )
@@ -423,7 +479,7 @@ def test_unreported_source_processing_does_not_cost_the_bit_perfect_badge() -> N
 
 def test_a_player_that_cannot_take_the_source_rate_is_not_bit_perfect() -> None:
     """A source rate the player cannot take is snapped down, which loses samples."""
-    manager, _mass, source_session, lossless_plan, _pcm_format = _source_manager_context()
+    manager, _mass, source_session, lossless_plan = _source_manager_context()
     # the source arrives at 96 kHz but the player tops out at 48 kHz
     snapped = _format(ContentType.PCM_S24LE, 48000, 24)
     lossless_plan.input_format = snapped
@@ -438,7 +494,6 @@ def test_a_player_that_cannot_take_the_source_rate_is_not_bit_perfect() -> None:
     manager.update_source_context(
         "source-player",
         "source-session",
-        pcm_format=snapped,
         crossfade_enabled=False,
         volume_normalization_enabled=False,
     )
@@ -453,7 +508,7 @@ def test_a_player_that_cannot_take_the_source_rate_is_not_bit_perfect() -> None:
 
 def test_a_live_source_output_narrower_than_the_source_is_not_bit_perfect() -> None:
     """Dropping a 24-bit source to a 16-bit output loses bits for a live source too."""
-    manager, _mass, source_session, lossless_plan, pcm_format = _source_manager_context()
+    manager, _mass, source_session, lossless_plan = _source_manager_context()
     lossless_plan.output_details.output_format = _format(ContentType.FLAC, 96000, 16)
     manager.update_output(
         "player-1",
@@ -465,7 +520,6 @@ def test_a_live_source_output_narrower_than_the_source_is_not_bit_perfect() -> N
     manager.update_source_context(
         "source-player",
         "source-session",
-        pcm_format=pcm_format,
         crossfade_enabled=False,
         volume_normalization_enabled=False,
     )
@@ -480,12 +534,11 @@ def test_a_live_source_output_narrower_than_the_source_is_not_bit_perfect() -> N
 
 def test_stale_live_source_updates_are_rejected() -> None:
     """A superseded source session cannot publish context or outputs."""
-    manager, _mass, source_session, lossless_plan, pcm_format = _source_manager_context()
+    manager, _mass, source_session, lossless_plan = _source_manager_context()
 
     manager.update_source_context(
         "source-player",
         "stale-session",
-        pcm_format=pcm_format,
         crossfade_enabled=True,
         volume_normalization_enabled=True,
     )
@@ -501,11 +554,10 @@ def test_stale_live_source_updates_are_rejected() -> None:
 
 def test_clearing_live_source_processing_removes_the_snapshot() -> None:
     """Ending a source selection clears its published audio details."""
-    manager, mass, source_session, _lossless_plan, pcm_format = _source_manager_context()
+    manager, mass, source_session, _lossless_plan = _source_manager_context()
     manager.update_source_context(
         "source-player",
         "source-session",
-        pcm_format=pcm_format,
         crossfade_enabled=False,
         volume_normalization_enabled=False,
     )
@@ -519,7 +571,7 @@ def test_clearing_live_source_processing_removes_the_snapshot() -> None:
 
 def test_live_source_outputs_follow_current_group_members() -> None:
     """A departed group member is removed from the live source output snapshot."""
-    manager, mass, source_session, lossless_plan, pcm_format = _source_manager_context()
+    manager, mass, source_session, lossless_plan = _source_manager_context()
     manager.update_output(
         "player-1",
         lossless_plan,
@@ -530,7 +582,6 @@ def test_live_source_outputs_follow_current_group_members() -> None:
     manager.update_source_context(
         "source-player",
         "source-session",
-        pcm_format=pcm_format,
         crossfade_enabled=False,
         volume_normalization_enabled=False,
     )
@@ -1089,6 +1140,76 @@ async def test_output_format_prefers_rendering_player_channels() -> None:
     assert fmt.channels == 1
 
 
+def _hires_capable_audio() -> tuple[StreamsAudio, MagicMock]:
+    """Return a StreamsAudio and a player that can take 96 kHz / 24 bit."""
+    mass = MagicMock()
+    player = MagicMock(player_id="player-1", protocol_parent_id=None)
+    player.get_supported_sample_rates.return_value = [(96000, 24)]
+    mass.config.get_raw_player_config_value.side_effect = lambda _player_id, _key, default: default
+    return StreamsAudio(cast("Any", mass)), player
+
+
+@pytest.mark.parametrize(
+    ("source_bit_depth", "expected"), [(24, 24), (16, 16), (8, 16), (20, 24), (32, 24)]
+)
+@pytest.mark.asyncio
+async def test_output_format_caps_non_track_media_at_source_depth(
+    source_bit_depth: int, expected: int
+) -> None:
+    """Radio follows the source bit depth, rounded up to a container width."""
+    audio, player = _hires_capable_audio()
+
+    # 32 bit content depth: the internal PCM is float once normalization runs on radio
+    fmt = await audio.get_output_format(
+        "flac", player, 96000, 32, MediaType.RADIO, source_bit_depth=source_bit_depth
+    )
+
+    assert fmt.bit_depth == expected
+
+
+@pytest.mark.asyncio
+async def test_output_format_defaults_non_track_media_to_16_bit() -> None:
+    """A caller that cannot state the source depth still gets the 16 bit cap."""
+    audio, player = _hires_capable_audio()
+
+    fmt = await audio.get_output_format("flac", player, 96000, 32, MediaType.RADIO)
+
+    assert fmt.bit_depth == 16
+
+
+@pytest.mark.parametrize(
+    "media_type", [MediaType.TRACK, MediaType.AUDIO_SOURCE, MediaType.FLOW_STREAM]
+)
+@pytest.mark.asyncio
+async def test_output_format_ignores_source_depth_for_full_range_media(
+    media_type: MediaType,
+) -> None:
+    """Tracks and flow streams keep the full player depth whatever the source says."""
+    audio, player = _hires_capable_audio()
+
+    fmt = await audio.get_output_format("flac", player, 96000, 32, media_type, source_bit_depth=16)
+
+    assert fmt.bit_depth == 24
+
+
+@pytest.mark.asyncio
+async def test_single_stream_handler_uses_declared_source_bit_depth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The source depth comes from what the provider declares, not the PCM it hands over."""
+    controller, request, _ = _native_stream_handler_context(monkeypatch)
+    queue_item = controller.mass.player_queues.get_item.return_value
+    queue_item.media_type = MediaType.PODCAST_EPISODE
+    queue_item.streamdetails.media_type = MediaType.PODCAST_EPISODE
+    queue_item.streamdetails.audio_format = _format(ContentType.OGG, 44100, 16)
+    queue_item.streamdetails.decoded_audio_format = _format(ContentType.PCM_S32LE, 44100, 32)
+
+    with pytest.raises(_OutputPlanRequested):
+        await controller.serve_queue_item_stream(request)
+
+    assert controller.audio.get_output_format.call_args.kwargs["source_bit_depth"] == 16
+
+
 @pytest.mark.asyncio
 async def test_single_stream_handler_shares_native_group_members(
     monkeypatch: pytest.MonkeyPatch,
@@ -1479,9 +1600,10 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         **_kwargs: object,
     ) -> AsyncGenerator[bytes]:
         if queue_item is first_item:
-            # warmup worth of audio, then a full crossfade tail
-            yield bytes(pcm_format.pcm_sample_size * 8)
-            yield bytes(pcm_format.pcm_sample_size * 8)
+            # warmup worth of audio, then a full crossfade tail (audible PCM: the
+            # holdback reads zero-filled bytes as trailing silence)
+            yield b"\x10\x20" * (pcm_format.pcm_sample_size * 4)
+            yield b"\x10\x20" * (pcm_format.pcm_sample_size * 4)
         else:
             eager_seek_positions.append(queue_item.streamdetails.seek_position)
 
@@ -1642,9 +1764,8 @@ def _source_manager_context() -> tuple[
     MagicMock,
     Any,
     AudioOutputPlan,
-    AudioFormat,
 ]:
-    """Return one active live source, a lossless output plan and its PCM format."""
+    """Return one active live source and a lossless output plan for it."""
     mass = MagicMock()
     streamdetails = StreamDetails(
         provider="source-provider",
@@ -1661,16 +1782,30 @@ def _source_manager_context() -> tuple[
         source_session if player_id == "source-player" else None
     )
     manager = AudioProcessingManager(mass)
-    pcm_format = _format(ContentType.PCM_S24LE, 96000, 24)
-    output_plan = AudioOutputPlan(
+    return manager, mass, source_session, _source_consumer_plan(96000)
+
+
+def _source_consumer_plan(sample_rate: int) -> AudioOutputPlan:
+    """Return a lossless output plan for a live source consumer at one sample rate."""
+    return AudioOutputPlan(
         filter_params=[],
         output_details=AudioOutputDetails(
             dsp=AudioDSPDetails(state=DSPState.DISABLED),
-            output_format=_format(ContentType.FLAC, 96000, 24),
+            output_format=_format(ContentType.FLAC, sample_rate, 24),
         ),
-        input_format=pcm_format,
+        input_format=_format(ContentType.PCM_S24LE, sample_rate, 24),
     )
-    return manager, mass, source_session, output_plan, pcm_format
+
+
+def _source_bit_perfect(source_session: Any) -> dict[str, bool | None]:
+    """Return the published bit-perfect verdict of every live source consumer."""
+    details = cast("ActiveSourceAudioDetails | None", source_session.active_source_audio)
+    assert details is not None
+    return {
+        player_id: output.fidelity.bit_perfect
+        for output in details.outputs
+        for player_id in output.player_ids
+    }
 
 
 def _source_handled_soloist_item(
@@ -1771,6 +1906,7 @@ def _native_stream_handler_context(
     audio.get_player_output_plan.side_effect = _OutputPlanRequested
 
     controller = cast("Any", object.__new__(StreamsController))
+    controller._open_item_streams = {}
     controller.mass = mass
     controller.audio = audio
     controller.logger = MagicMock()

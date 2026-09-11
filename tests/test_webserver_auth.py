@@ -9,10 +9,13 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import ProviderSharing
 from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidDataError,
@@ -28,6 +31,7 @@ from music_assistant.controllers.webserver.auth import (
     TOKEN_ABSOLUTE_MAX_EXPIRATION,
     TOKEN_ACTIVITY_PERSIST_INTERVAL,
     TOKEN_GUEST_EXPIRATION,
+    TOKEN_LIST_LIMIT,
     TOKEN_LONG_LIVED_EXPIRATION,
     TOKEN_SHORT_LIVED_EXPIRATION,
     AuthenticationManager,
@@ -50,9 +54,11 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
     BuiltinLoginProvider,
     LoginRateLimiter,
 )
+from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_loads
 from music_assistant.mass import MusicAssistant
+from tests.common import set_music_source_access
 
 
 @pytest.fixture
@@ -652,6 +658,40 @@ async def test_update_user_role(auth_manager: AuthenticationManager) -> None:
     assert updated_user.role == UserRole.ADMIN
 
 
+async def test_a_source_owner_can_not_be_made_a_guest(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that a user owning music sources can not be made a guest.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    admin = await auth_manager.create_user(username="guestadmin", role=UserRole.ADMIN)
+    owner = await auth_manager.create_user(username="sourceowner", role=UserRole.USER)
+    member = await auth_manager.create_user(username="sharedmember", role=UserRole.USER)
+    set_music_source_access(
+        auth_manager.mass,
+        {
+            "spotify--owned": ProviderAccess(
+                owner=owner.user_id,
+                sharing=ProviderSharing.SELECTED,
+                shared_users=[member.user_id],
+            ),
+        },
+    )
+
+    with pytest.raises(InvalidDataError, match="Reassign or remove") as excinfo:
+        await auth_manager.update_user_role(owner.user_id, UserRole.GUEST, admin)
+    assert excinfo.value.translation_key == "guest_owns_music_sources"
+
+    # a place on a share list is no obstacle, a guest may be given one
+    assert await auth_manager.update_user_role(member.user_id, UserRole.GUEST, admin) is True
+
+    set_current_user(admin)
+    for user, role in ((owner, UserRole.USER), (member, UserRole.GUEST)):
+        updated_user = await auth_manager.get_user(user.user_id)
+        assert updated_user is not None
+        assert updated_user.role == role
+
+
 async def test_delete_user(auth_manager: AuthenticationManager) -> None:
     """
     Test deleting a user account.
@@ -670,6 +710,179 @@ async def test_delete_user(auth_manager: AuthenticationManager) -> None:
     # Verify user is deleted
     deleted_user = await auth_manager.get_user(user.user_id)
     assert deleted_user is None
+
+
+async def test_delete_user_removes_dependent_rows(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that deleting a user takes its tokens, join codes and provider links with it.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    admin = await auth_manager.create_user(username="cascadeadmin", role=UserRole.ADMIN)
+    user = await auth_manager.create_user(username="cascadeuser", role=UserRole.GUEST)
+    await auth_manager.create_token(user, "Device", is_long_lived=False)
+    await auth_manager.link_user_to_provider(user, AuthProviderType.BUILTIN, "provider-uid")
+    await auth_manager.generate_join_code(user)
+    tables = ("auth_tokens", "join_codes", "user_auth_providers")
+    for table in tables:
+        assert await auth_manager.database.get_rows(table, {"user_id": user.user_id}) != []
+
+    set_current_user(admin)
+    await auth_manager.delete_user(user.user_id)
+
+    for table in tables:
+        assert await auth_manager.database.get_rows(table, {"user_id": user.user_id}) == []
+
+
+async def test_delete_user_releases_its_music_sources(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that the music sources of a deleted user outlive it.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    admin = await auth_manager.create_user(username="sourceadmin", role=UserRole.ADMIN)
+    leaver = await auth_manager.create_user(username="leaver", role=UserRole.USER)
+    set_music_source_access(
+        auth_manager.mass,
+        {
+            "spotify--owned": ProviderAccess(owner=leaver.user_id, sharing=ProviderSharing.MEMBERS),
+            "qobuz--private": ProviderAccess(owner=leaver.user_id, sharing=ProviderSharing.PRIVATE),
+            "tidal--shared": ProviderAccess(
+                owner=admin.user_id,
+                sharing=ProviderSharing.SELECTED,
+                shared_users=[leaver.user_id, admin.user_id],
+            ),
+            "jellyfin--household": None,
+        },
+    )
+
+    set_current_user(admin)
+    await auth_manager.delete_user(leaver.user_id)
+
+    # the sources it owned keep their sharing but lose their owner
+    assert auth_manager.mass.config.get(f"{CONF_PROVIDERS}/spotify--owned/access") == {
+        "owner": None,
+        "sharing": "members",
+        "shared_users": [],
+    }
+    # which leaves a private source visible to nobody until an admin sets its access
+    assert auth_manager.mass.config.get(f"{CONF_PROVIDERS}/qobuz--private/access") == {
+        "owner": None,
+        "sharing": "private",
+        "shared_users": [],
+    }
+    assert auth_manager.mass.config.get(f"{CONF_PROVIDERS}/tidal--shared/access") == {
+        "owner": admin.user_id,
+        "sharing": "selected",
+        "shared_users": [admin.user_id],
+    }
+    assert auth_manager.mass.config.get(f"{CONF_PROVIDERS}/jellyfin--household/access") is None
+
+
+async def test_user_reads_report_the_derived_music_sources(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that the provider filter an API client reads holds the user's music sources.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    owner = await auth_manager.create_user(username="owner", role=UserRole.USER)
+    member = await auth_manager.create_user(username="member", role=UserRole.USER)
+    set_music_source_access(
+        auth_manager.mass,
+        {
+            "spotify--household": None,
+            "tidal--private": ProviderAccess(owner=owner.user_id, sharing=ProviderSharing.PRIVATE),
+        },
+    )
+
+    set_current_user(member)
+    assert (await auth_manager.get_current_user_info()).provider_filter == ["spotify--household"]
+    # a user that may see every source is reported as unrestricted
+    set_current_user(owner)
+    assert (await auth_manager.get_current_user_info()).provider_filter == []
+
+    listed = {user.username: user.provider_filter for user in await auth_manager.list_users()}
+    assert listed == {"owner": [], "member": ["spotify--household"]}
+    user_info = await auth_manager.get_user_info(member.user_id)
+    assert user_info is not None
+    assert user_info.provider_filter == ["spotify--household"]
+    # the internal lookup is not an api read path, so it stamps nothing
+    internal_user = await auth_manager.get_user(member.user_id)
+    assert internal_user is not None
+    assert internal_user.provider_filter == []
+
+
+async def test_prune_orphaned_user_rows(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that rows left behind by an earlier user deletion are cleaned up.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="survivinguser", role=UserRole.USER)
+    await auth_manager.create_token(user, "Keep Me", is_long_lived=False)
+    # a live row in every table, so a sweep that is too broad cannot go unnoticed
+    await auth_manager.database.insert(
+        "user_auth_providers",
+        {
+            "link_id": "live-link",
+            "user_id": user.user_id,
+            "provider_type": AuthProviderType.BUILTIN.value,
+            "provider_user_id": "live-provider-uid",
+            "created_at": utc().isoformat(),
+        },
+    )
+    await auth_manager.database.insert(
+        "join_codes",
+        {
+            "code_id": "live-code",
+            "code": "LIVECODE1234",
+            "user_id": user.user_id,
+            "created_at": utc().isoformat(),
+            "expires_at": (utc() + timedelta(hours=1)).isoformat(),
+        },
+    )
+    # rows a pre-fix delete_user would have left behind
+    await auth_manager.database.insert(
+        "auth_tokens",
+        {
+            "token_id": "orphan-token",
+            "user_id": "deleted-user-id",
+            "token_hash": "orphan-hash",
+            "name": "Orphan",
+            "created_at": utc().isoformat(),
+            "expires_at": (utc() + timedelta(days=1)).isoformat(),
+            "is_long_lived": 1,
+        },
+    )
+    await auth_manager.database.insert(
+        "user_auth_providers",
+        {
+            "link_id": "orphan-link",
+            "user_id": "deleted-user-id",
+            "provider_type": AuthProviderType.HOME_ASSISTANT.value,
+            "provider_user_id": "ha-user-id",
+            "created_at": utc().isoformat(),
+        },
+    )
+    await auth_manager.database.insert(
+        "join_codes",
+        {
+            "code_id": "orphan-code",
+            "code": "ORPHANCODE12",
+            "user_id": "deleted-user-id",
+            "created_at": utc().isoformat(),
+            "expires_at": (utc() + timedelta(hours=1)).isoformat(),
+        },
+    )
+
+    await auth_manager._prune_orphaned_user_rows()
+
+    for table in ("auth_tokens", "join_codes", "user_auth_providers"):
+        assert await auth_manager.database.get_rows(table, {"user_id": "deleted-user-id"}) == []
+        # the live user's rows are untouched
+        assert await auth_manager.database.get_rows(table, {"user_id": user.user_id}) != []
 
 
 async def test_cannot_delete_own_account(auth_manager: AuthenticationManager) -> None:
@@ -706,6 +919,114 @@ async def test_get_user_tokens(auth_manager: AuthenticationManager) -> None:
     token_names = [t.name for t in tokens]
     assert "Device 1" in token_names
     assert "Device 2" in token_names
+
+
+async def test_get_user_tokens_returns_newest_first(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that the token listing is capped to the newest tokens instead of the oldest.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="tokenorderuser", role=UserRole.USER)
+    set_current_user(user)
+
+    # fill the table past the listing cap, all older than the token created below
+    now = utc()
+    for index in range(TOKEN_LIST_LIMIT):
+        await auth_manager.database.insert(
+            "auth_tokens",
+            {
+                "token_id": f"old-token-{index}",
+                "user_id": user.user_id,
+                "token_hash": f"old-hash-{index}",
+                "name": f"Old Device {index}",
+                "created_at": (now - timedelta(hours=index + 1)).isoformat(),
+                "expires_at": (now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)).isoformat(),
+                "is_long_lived": 0,
+            },
+        )
+    await auth_manager.create_token(user, "Newest Device", is_long_lived=True)
+
+    tokens = await auth_manager.get_user_tokens(user.user_id)
+
+    assert len(tokens) == TOKEN_LIST_LIMIT
+    assert tokens[0].name == "Newest Device"
+    # the oldest row is the one that fell off the page, not the newest
+    assert f"Old Device {TOKEN_LIST_LIMIT - 1}" not in [token.name for token in tokens]
+
+
+async def test_cleanup_expired_tokens(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that the periodic cleanup removes only expired short-lived tokens.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="prunetokensuser", role=UserRole.USER)
+    await auth_manager.create_token(user, "Valid", is_long_lived=False)
+    long_lived_token = await auth_manager.create_token(user, "Long Lived", is_long_lived=True)
+    expired_token = await auth_manager.create_token(user, "Expired", is_long_lived=False)
+    capped_token = await auth_manager.create_token(user, "Past Cap", is_long_lived=False)
+
+    now = utc()
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": auth_manager.jwt_helper.get_token_id(expired_token)},
+        {"expires_at": (now - timedelta(days=1)).isoformat()},
+    )
+    # renewed late in its life, so its sliding expiry outlives the absolute lifetime cap
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": auth_manager.jwt_helper.get_token_id(capped_token)},
+        {
+            "created_at": (now - timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION + 1)).isoformat(),
+            "expires_at": (now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)).isoformat(),
+        },
+    )
+    # an expired long-lived token stays listed so the user can still see and revoke it
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": auth_manager.jwt_helper.get_token_id(long_lived_token)},
+        {"expires_at": (now - timedelta(days=1)).isoformat()},
+    )
+
+    await auth_manager._cleanup_expired_tokens()
+
+    remaining = await auth_manager.database.get_rows("auth_tokens", {"user_id": user.user_id})
+    assert {row["name"] for row in remaining} == {"Valid", "Long Lived"}
+
+
+async def test_periodic_cleanup_schedules_token_sweep(
+    auth_manager: AuthenticationManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Test that the periodic cleanup scheduler runs the token sweep, not just the join codes.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    user = await auth_manager.create_user(username="scheduledsweepuser", role=UserRole.USER)
+    expired_token = await auth_manager.create_token(user, "Expired", is_long_lived=False)
+    token_id = auth_manager.jwt_helper.get_token_id(expired_token)
+    await auth_manager.database.update(
+        "auth_tokens",
+        {"token_id": token_id},
+        {"expires_at": (utc() - timedelta(days=1)).isoformat()},
+    )
+
+    # capture what gets scheduled instead of racing the eagerly started tasks
+    scheduled: list[Any] = []
+
+    def _capture(target: Any, *_args: Any, **_kwargs: Any) -> None:
+        scheduled.append(target)
+
+    monkeypatch.setattr(auth_manager.mass, "create_task", _capture)
+    monkeypatch.setattr(auth_manager.mass, "call_later", lambda *_args, **_kwargs: None)
+
+    auth_manager._schedule_periodic_cleanup()
+    for coro in scheduled:
+        await coro
+
+    assert await auth_manager.database.get_row("auth_tokens", {"token_id": token_id}) is None
 
 
 async def test_get_login_providers(auth_manager: AuthenticationManager) -> None:
@@ -1150,6 +1471,42 @@ async def test_revoke_tokens_for_user_persists(auth_manager: AuthenticationManag
     assert await auth_manager.authenticate_with_token(token) is None
 
 
+async def test_revoke_tokens_for_user_covers_more_than_the_row_limit(
+    auth_manager: AuthenticationManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Test that revoking all tokens counts and clears them beyond the default row limit.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    user = await auth_manager.create_user(username="manytokens", role=UserRole.USER)
+    # deliberately above the default row limit of the database read helpers
+    token_count = 550
+    created_at = utc().isoformat()
+    async with auth_manager.database.deferred_commit():
+        for index in range(token_count):
+            await auth_manager.database.insert(
+                "auth_tokens",
+                {
+                    "token_id": f"token-{index}",
+                    "user_id": user.user_id,
+                    "token_hash": f"hash-{index}",
+                    "name": "Test Token",
+                    "created_at": created_at,
+                },
+            )
+
+    disconnected: list[str] = []
+    monkeypatch.setattr(
+        auth_manager.webserver, "disconnect_websockets_for_user", disconnected.append
+    )
+
+    assert await auth_manager.revoke_tokens_for_user(user) == token_count
+    assert disconnected == [user.user_id]
+    assert await auth_manager.database.get_rows("auth_tokens", {"user_id": user.user_id}) == []
+
+
 async def test_access_revoked_subscription_hears_a_tokenless_revocation(
     auth_manager: AuthenticationManager,
 ) -> None:
@@ -1181,8 +1538,8 @@ async def test_access_revoked_subscription_hears_a_user_deletion(
     """
     Test that deleting a user announces the access withdrawal to subscribers.
 
-    Deletion cascades the tokens away without revoke_tokens_for_user ever running,
-    so it is a separate access-ending path that must reach subscribers itself.
+    Deletion removes the tokens without revoke_tokens_for_user ever running, so it is
+    a separate access-ending path that must reach subscribers itself.
 
     :param auth_manager: AuthenticationManager instance.
     """
@@ -2398,7 +2755,7 @@ async def test_homeassistant_system_user_may_read_users(
     system_user = await auth_manager.get_homeassistant_system_user()
     standard_user = await auth_manager.create_user(username="user_a", role=UserRole.USER)
     guest_user = await auth_manager.create_user(username="guest_a", role=UserRole.GUEST)
-    for command in (AuthenticationManager.list_users, AuthenticationManager.get_user):
+    for command in (AuthenticationManager.list_users, AuthenticationManager.get_user_info):
         assert getattr(command, "api_required_scope", None) is Scope.USERS_READ
     assert has_scope(system_user, Scope.USERS_READ)
     # reading user accounts remains off limits for regular users and guests
@@ -2432,25 +2789,37 @@ async def _get_filters(
     return json_loads(row["provider_filter"]), json_loads(row["player_filter"])
 
 
+async def _create_ws_client(mass: MusicAssistant, user_id: str) -> WebsocketClientHandler:
+    """
+    Register a live websocket session authenticated as the given user.
+
+    :param mass: MusicAssistant instance whose webserver tracks the session.
+    :param user_id: Id of the user the session authenticated as.
+    """
+    user = await mass.webserver.auth.get_user(user_id)
+    assert user is not None
+    request = make_mocked_request("GET", "/ws", app=web.Application())
+    client = WebsocketClientHandler(mass.webserver, request)
+    client._authenticated_user = user
+    mass.webserver.register_websocket_client(client)
+    return client
+
+
 async def test_remove_from_user_filters(auth_manager: AuthenticationManager) -> None:
     """
-    Test that a removed provider/player is stripped from the access filters of all users.
+    Test that a removed player is stripped from the access filters of all users.
 
     :param auth_manager: AuthenticationManager instance.
     """
     user = await auth_manager.create_user(
         username="restricted",
-        provider_filter=["spotify--old", "jellyfin--live"],
         player_filter=["player_gone", "player_live"],
     )
     unrestricted = await auth_manager.create_user(username="unrestricted")
 
-    await auth_manager.remove_from_user_filters(
-        provider_instance_ids=["spotify--old"], player_ids=["player_gone"]
-    )
+    await auth_manager.remove_from_user_filters(player_ids=["player_gone"])
 
-    provider_filter, player_filter = await _get_filters(auth_manager, user.user_id)
-    assert provider_filter == ["jellyfin--live"]
+    _, player_filter = await _get_filters(auth_manager, user.user_id)
     assert player_filter == ["player_live"]
     # a user without restrictions must stay unrestricted
     assert await _get_filters(auth_manager, unrestricted.user_id) == ([], [])
@@ -2465,13 +2834,13 @@ async def test_remove_from_user_filters_lifts_restriction(
     :param auth_manager: AuthenticationManager instance.
     :param caplog: Pytest log capture fixture.
     """
-    user = await auth_manager.create_user(username="onlyspotify", provider_filter=["spotify--old"])
+    user = await auth_manager.create_user(username="onlykitchen", player_filter=["player_gone"])
 
     with caplog.at_level(logging.WARNING):
-        await auth_manager.remove_from_user_filters(provider_instance_ids=["spotify--old"])
+        await auth_manager.remove_from_user_filters(player_ids=["player_gone"])
 
-    provider_filter, _ = await _get_filters(auth_manager, user.user_id)
-    assert provider_filter == []
+    _, player_filter = await _get_filters(auth_manager, user.user_id)
+    assert player_filter == []
     assert "no longer restricted" in caplog.text
 
 
@@ -2504,14 +2873,12 @@ async def test_update_user_filters_updates_live_sessions(
     :param mass_minimal: Minimal MusicAssistant instance.
     """
     user = await auth_manager.create_user(username="unrestricted")
-    session = MagicMock(_authenticated_user=await auth_manager.get_user(user.user_id))
-    mass_minimal.webserver.clients.add(session)
+    session = await _create_ws_client(mass_minimal, user.user_id)
 
-    await auth_manager.update_user_filters(user, ["kitchen"], None)
+    await auth_manager.update_user_filters(user, ["kitchen"])
 
-    assert session._authenticated_user.player_filter == ["kitchen"]
-    # a filter that was not part of the update must be left alone
-    assert session._authenticated_user.provider_filter == []
+    assert session.authenticated_user is not None
+    assert session.authenticated_user.player_filter == ["kitchen"]
 
 
 async def test_replace_player_in_user_filters(auth_manager: AuthenticationManager) -> None:
@@ -2567,24 +2934,19 @@ async def test_user_filter_removal_updates_live_sessions(
     """
     user = await auth_manager.create_user(
         username="restricted",
-        provider_filter=["spotify--old", "jellyfin--live"],
         player_filter=["player_gone", "player_live"],
     )
     bystander = await auth_manager.create_user(username="bystander", player_filter=["player_other"])
-    session = MagicMock(_authenticated_user=await auth_manager.get_user(user.user_id))
-    bystander_session = MagicMock(
-        _authenticated_user=await auth_manager.get_user(bystander.user_id)
-    )
-    mass_minimal.webserver.clients.update({session, bystander_session})
+    session = await _create_ws_client(mass_minimal, user.user_id)
+    bystander_session = await _create_ws_client(mass_minimal, bystander.user_id)
 
-    await auth_manager.remove_from_user_filters(
-        provider_instance_ids=["spotify--old"], player_ids=["player_gone"]
-    )
+    await auth_manager.remove_from_user_filters(player_ids=["player_gone"])
 
-    assert session._authenticated_user.provider_filter == ["jellyfin--live"]
-    assert session._authenticated_user.player_filter == ["player_live"]
+    assert session.authenticated_user is not None
+    assert session.authenticated_user.player_filter == ["player_live"]
     # a session of another user must keep its own filters
-    assert bystander_session._authenticated_user.player_filter == ["player_other"]
+    assert bystander_session.authenticated_user is not None
+    assert bystander_session.authenticated_user.player_filter == ["player_other"]
 
 
 async def test_replace_player_in_user_filters_updates_live_sessions(
@@ -2597,38 +2959,31 @@ async def test_replace_player_in_user_filters_updates_live_sessions(
     :param mass_minimal: Minimal MusicAssistant instance.
     """
     user = await auth_manager.create_user(username="onlywrapper", player_filter=["up_old"])
-    session = MagicMock(_authenticated_user=await auth_manager.get_user(user.user_id))
-    mass_minimal.webserver.clients.add(session)
+    session = await _create_ws_client(mass_minimal, user.user_id)
 
     await auth_manager.replace_player_in_user_filters(
         "up_old", "sonos_1", removed_player_ids=["up_old"]
     )
 
-    assert session._authenticated_user.player_filter == ["sonos_1"]
+    assert session.authenticated_user is not None
+    assert session.authenticated_user.player_filter == ["sonos_1"]
 
 
 async def test_prune_stale_user_filters(auth_manager: AuthenticationManager) -> None:
     """
-    Test that filter entries pointing at unknown providers/players are cleaned up on startup.
+    Test that filter entries pointing at unknown players are cleaned up on startup.
 
     :param auth_manager: AuthenticationManager instance.
     """
-    auth_manager.mass.config.set(
-        f"{CONF_PROVIDERS}/spotify--live", {"instance_id": "spotify--live"}
-    )
     auth_manager.mass.config.set(f"{CONF_PLAYERS}/player_live", {"player_id": "player_live"})
     user = await auth_manager.create_user(
         username="stale",
-        provider_filter=["spotify--old", "spotify--live"],
         player_filter=["player_gone", "player_live"],
     )
 
     await auth_manager._prune_stale_user_filters()
 
-    assert await _get_filters(auth_manager, user.user_id) == (
-        ["spotify--live"],
-        ["player_live"],
-    )
+    assert await _get_filters(auth_manager, user.user_id) == ([], ["player_live"])
 
 
 async def test_prune_stale_user_filters_ignores_empty_config(
@@ -2641,10 +2996,9 @@ async def test_prune_stale_user_filters_ignores_empty_config(
     """
     user = await auth_manager.create_user(
         username="noconfig",
-        provider_filter=["spotify--old"],
         player_filter=["player_gone"],
     )
 
     await auth_manager._prune_stale_user_filters()
 
-    assert await _get_filters(auth_manager, user.user_id) == (["spotify--old"], ["player_gone"])
+    assert await _get_filters(auth_manager, user.user_id) == ([], ["player_gone"])

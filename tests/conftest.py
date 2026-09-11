@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 
 import pytest
 from music_assistant_models import helpers as models_helpers
+from music_assistant_models.auth import Scope, UserRole
 from zeroconf.asyncio import AsyncZeroconf
 
 from music_assistant.controllers.cache import CacheController
@@ -19,8 +20,10 @@ from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.tasks import TasksController
+from music_assistant.controllers.webserver.helpers.auth_middleware import ROLE_SCOPES
 from music_assistant.mass import MusicAssistant
 from tests.common import (
+    SELF_SERVICE_ROLE,
     suppress_auto_loaded_providers,
     suppress_initial_library_sync,
     use_ephemeral_server_ports,
@@ -89,6 +92,14 @@ def caplog_fixture(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture
     return caplog
 
 
+@pytest.fixture
+def self_service_role() -> Generator[str]:
+    """Provide a role that may add and manage its own music sources; no builtin role holds it."""
+    scopes = ROLE_SCOPES[UserRole.USER] | {Scope.CONFIG_PROVIDERS_OWN}
+    with patch.dict(ROLE_SCOPES, {SELF_SERVICE_ROLE: scopes}):
+        yield SELF_SERVICE_ROLE
+
+
 def _create_mock_zeroconf() -> MagicMock:
     """
     Create a mock AsyncZeroconf that prevents real network I/O.
@@ -117,10 +128,24 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
 
     :param tmp_path: Temporary directory for test data.
     """
+    async with full_mass_context(tmp_path) as mass_instance:
+        yield mass_instance
+
+
+@asynccontextmanager
+async def full_mass_context(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
+    """
+    Boot a full server on the given temporary directory.
+
+    Exposed next to the ``mass`` fixture so a test that needs to seed ``data/settings.json``
+    (or the cache) before the boot can prepare the directory itself and boot it here.
+
+    :param tmp_path: Temporary directory for test data.
+    """
     storage_path = tmp_path / "data"
     cache_path = tmp_path / "cache"
-    storage_path.mkdir(parents=True)
-    cache_path.mkdir(parents=True)
+    storage_path.mkdir(parents=True, exist_ok=True)
+    cache_path.mkdir(parents=True, exist_ok=True)
 
     logging.getLogger("aiosqlite").level = logging.INFO
 
@@ -146,8 +171,8 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
             "music_assistant.controllers.streams.controller.check_ffmpeg_version",
             new=AsyncMock(),
         ),
-        # keep the fixture isolated from the developer's machine: no auto-loaded device
-        # providers and no local_audio bridging the host's sound devices as players
+        # keep the fixture isolated from the developer's machine: no auto-loaded
+        # device providers
         suppress_auto_loaded_providers(),
         # keep the booted instance quiet: no library sync firing into a running test
         suppress_initial_library_sync(),

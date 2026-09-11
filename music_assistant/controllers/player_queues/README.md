@@ -17,6 +17,7 @@ docstrings.
 - [Player-to-Queue State Reconciliation](#player-to-queue-state-reconciliation)
 - [Look-Ahead and Buffering](#look-ahead-and-buffering)
 - [Radio and Dynamic Continuation](#radio-and-dynamic-continuation)
+- [Smart Shuffle and Smart Fades Ordering](#smart-shuffle-and-smart-fades-ordering)
 - [Track Resolution](#track-resolution)
 - [Play Counting and Resume](#play-counting-and-resume)
 - [Module Layout](#module-layout)
@@ -186,7 +187,12 @@ it computes the next index, pre-resolves that item's stream details via the Stre
 hands the next item to the player ahead of time. Warming the *next track's* audio buffer is not part
 of this enqueue path — it is triggered by the Streams Controller near the end of the current track,
 via a callback into the queue controller. Stale buffers and crossfade data are cleaned up when the
-queue stops, is cleared, or advances.
+queue stops, is cleared, or advances. Every buffer records the session that claimed it, and a stop
+leaves alone only what the session playing *now* claimed, so playback that restarted before the
+stop got that far keeps its audio. Everything else goes, including what sessions that ended
+earlier left behind: sessions rotate without a stop, so a claim that is no longer current marks
+audio nobody will come back for. A clear or a replace drops the items themselves, so all of their
+audio goes with them.
 
 Data flow: current index → next-item computation → stream-detail resolution → player enqueue-next.
 (Next-track audio-buffer warming is driven separately by the streams pipeline near track end.)
@@ -218,9 +224,34 @@ Two distinct refill paths share the same "running low" trigger:
   — resolved by `media_resolver.py`, and simply ends the queue when there is none. Live sources
   (radio, audio source) have no natural end, so Autoplay does not apply to them at all.
 
+Repeat ONE/ALL temporarily masks the effective autoplay flag off. The queue keeps its saved
+autoplay preference — either a pinned per-queue override or the current global default — so turning
+repeat back off restores that preference instead of changing it. Already-queued items stay in place;
+only future autoplay additions are blocked, and dynamic mode keeps its own refill behaviour.
+
 Data flow: dynamic `sources` → managed pool (per-source fetch + weighted, recency-gated allocation)
 → appended `QueueItem`s; autoplay flag → media-type dispatch → `Autoplay` (mode-based selection) or
 the next episode/book → appended `QueueItem`s.
+
+## Smart Shuffle and Smart Fades Ordering
+
+When the option is enabled and Smart crossfade is active, Smart Shuffle can use the analysis Smart
+Fades already has to improve the order of upcoming tracks. Recency stays in charge and no new tracks
+are selected.
+
+In Normal Mode, MA leaves the current/buffered part of the queue alone and reorders only the future
+part it already considers safe to move. Within each recency tier, the full movable population can
+be considered when choosing the next track. The last fixed track is used as the starting point.
+
+In Dynamic Mode, Managed Pool still picks the refill tracks. Smart Fades ordering then sorts that
+accepted batch from the existing queue tail. Both modes consider every remaining track in the run
+being ordered; Dynamic Mode simply orders one refill batch at a time.
+
+No analysis is started for this. Unknown data stays neutral. The score uses tempo, graded Camelot
+key affinity and end-to-start RMS energy. These are ranking signals, not filters. A silent outgoing
+tail is ignored for the energy part of the score.
+
+Close choices keep some randomness, and Smart Fades still decides the actual transition.
 
 ## Track Resolution
 
@@ -263,6 +294,7 @@ player_queues/
 ├── autoplay.py     # Autoplay + AutoplayMode: resolves the per-queue autoplay mode and
 │                   #   produces the next batch of tracks for the library-/playlist-based modes
 ├── smart_shuffle.py # SmartShuffle: recency-aware, well-spaced ordering of the upcoming items
+├── smart_fade_ordering.py # stored-analysis-only local transition ordering shared by queue modes
 ├── managed_pool.py # ManagedPool: bounded dynamic-source pool, topped up + recency-gated, with
 │                   #   finite sources materialized to play through once
 ├── media_resolver.py # MediaResolver: resolves source media items (artist/album/genre/playlist/

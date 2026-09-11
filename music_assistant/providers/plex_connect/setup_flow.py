@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ProviderType
 
+from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowError
 
 from . import CONF_MASS_PLAYER_ID, CONF_PLEX_PROVIDER_ID
@@ -86,6 +87,7 @@ def _player_options(mass: MusicAssistant) -> list[ConfigValueOption]:
             mass.players.all_players(False, False),
             key=lambda player: player.display_name.lower(),
         )
+        if player.type in PLAYBACK_TARGET_TYPES
     ]
 
 

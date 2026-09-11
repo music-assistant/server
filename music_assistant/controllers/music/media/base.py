@@ -70,6 +70,7 @@ from music_assistant.helpers.external_ids import (
     normalize_external_ids,
 )
 from music_assistant.helpers.json import json_loads, serialize_to_json
+from music_assistant.helpers.provider_access import exact_provider, visible_music_sources
 from music_assistant.helpers.util import guard_single_request, parse_optional_bool
 
 if TYPE_CHECKING:
@@ -113,6 +114,12 @@ RELATION_TABLE_COLUMNS = {
 SUPPRESS_MEDIA_ITEM_UPDATES: ContextVar[bool] = ContextVar(
     "SUPPRESS_MEDIA_ITEM_UPDATES", default=False
 )
+
+PROVIDER_FEATURE_BY_MEDIA_TYPE = {
+    MediaType.TRACK: ProviderFeature.TRACK_BY_EXTERNAL_ID,
+    MediaType.ALBUM: ProviderFeature.ALBUM_BY_EXTERNAL_ID,
+    MediaType.ARTIST: ProviderFeature.ARTIST_BY_EXTERNAL_ID,
+}
 
 SORT_KEYS = {
     # sqlite has no builtin support for natural sorting
@@ -206,7 +213,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         self.mass.register_api_command(
             f"music/{api_base}/get_by_external_id",
-            self.get_library_item_by_external_id,
+            self.get_item_by_external_id,
             required_scope=Scope.LIBRARY_READ,
         )
         self.mass.register_api_command(
@@ -895,6 +902,67 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         return items[0] if items else None
 
     @final
+    async def get_item_by_external_id(
+        self,
+        external_id: str,
+        external_id_type: ExternalID | None = None,
+    ) -> ItemCls | None:
+        """Get item by external ID, querying library then active providers."""
+        if library_item := await self.get_library_item_by_external_id(
+            external_id, external_id_type
+        ):
+            return library_item
+
+        if external_id_type is None:
+            return None
+
+        if (feature := PROVIDER_FEATURE_BY_MEDIA_TYPE.get(self.media_type)) is None:
+            return None
+
+        for prov in self.mass.music.providers:
+            if feature not in prov.supported_features:
+                continue
+
+            try:
+                result: ItemCls | None = None
+                match self.media_type:
+                    case MediaType.TRACK:
+                        result = cast(
+                            "ItemCls | None",
+                            await prov.get_track_by_external_id(external_id, external_id_type),
+                        )
+                    case MediaType.ALBUM:
+                        result = cast(
+                            "ItemCls | None",
+                            await prov.get_album_by_external_id(external_id, external_id_type),
+                        )
+                    case MediaType.ARTIST:
+                        result = cast(
+                            "ItemCls | None",
+                            await prov.get_artist_by_external_id(external_id, external_id_type),
+                        )
+
+                if result:
+                    if result.provider == "library":
+                        return result
+                    return (
+                        await self.get_library_item_by_prov_id(result.item_id, result.provider)
+                        or result
+                    )
+            except NotImplementedError, MediaNotFoundError:
+                continue
+            except ProviderUnavailableError as err:
+                self.logger.debug(
+                    "Provider %s (%s) unavailable for external ID lookup: %s",
+                    prov.instance_id,
+                    prov.domain,
+                    err,
+                )
+                continue
+
+        return None
+
+    @final
     async def get_library_items_by_prov_id(
         self,
         provider_domain: str | None = None,
@@ -993,32 +1061,55 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider_instance_id_or_domain: str,
         force_refresh: bool = False,
         fallback: ItemMapping | ItemCls | None = None,
+        allow_fallback: bool = True,
+        strict_provider_instance: bool = False,
     ) -> ItemCls:
-        """Return item details for the given provider item id."""
+        """
+        Return item details for the given provider item ID.
+
+        :param item_id: Provider item ID.
+        :param provider_instance_id_or_domain: Provider instance ID or domain.
+        :param force_refresh: Force a fresh provider lookup.
+        :param fallback: Details to return if the provider no longer resolves the ID.
+        :param allow_fallback: Allow fallback details after a provider miss.
+        :param strict_provider_instance: Require this exact provider instance.
+        """
         if provider_instance_id_or_domain == "library":
             return await self.get_library_item(item_id)
-        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
+        provider = self.mass.get_provider(
+            provider_instance_id_or_domain,
+            return_unavailable=strict_provider_instance,
+        )
+        if provider is None or (
+            strict_provider_instance
+            and (provider.instance_id != provider_instance_id_or_domain or not provider.available)
+        ):
             raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
-        if provider := self.mass.get_provider(provider_instance_id_or_domain):
-            provider = cast("MusicProvider | PluginProvider", provider)
-            with suppress(MediaNotFoundError):
-                async with self.mass.cache.handle_refresh(force_refresh):
-                    if self.media_type == MediaType.PLAYLIST:
-                        return cast("ItemCls", await provider.get_playlist(item_id))
-                    music_prov = cast("MusicProvider", provider)
-                    if self.media_type == MediaType.ARTIST:
-                        return cast("ItemCls", await music_prov.get_artist(item_id))
-                    if self.media_type == MediaType.ALBUM:
-                        return cast("ItemCls", await music_prov.get_album(item_id))
-                    if self.media_type == MediaType.TRACK:
-                        return cast("ItemCls", await music_prov.get_track(item_id))
-                    if self.media_type == MediaType.RADIO:
-                        return cast("ItemCls", await music_prov.get_radio(item_id))
-                    if self.media_type == MediaType.AUDIOBOOK:
-                        return cast("ItemCls", await music_prov.get_audiobook(item_id))
-                    if self.media_type == MediaType.PODCAST:
-                        return cast("ItemCls", await music_prov.get_podcast(item_id))
+        provider = cast("MusicProvider | PluginProvider", provider)
+        with suppress(MediaNotFoundError):
+            async with self.mass.cache.handle_refresh(force_refresh):
+                if self.media_type == MediaType.PLAYLIST:
+                    return cast("ItemCls", await provider.get_playlist(item_id))
+                if self.media_type == MediaType.RADIO:
+                    return cast("ItemCls", await provider.get_radio(item_id))
+                music_prov = cast("MusicProvider", provider)
+                if self.media_type == MediaType.ARTIST:
+                    return cast("ItemCls", await music_prov.get_artist(item_id))
+                if self.media_type == MediaType.ALBUM:
+                    return cast("ItemCls", await music_prov.get_album(item_id))
+                if self.media_type == MediaType.TRACK:
+                    return cast("ItemCls", await music_prov.get_track(item_id))
+                if self.media_type == MediaType.AUDIOBOOK:
+                    return cast("ItemCls", await music_prov.get_audiobook(item_id))
+                if self.media_type == MediaType.PODCAST:
+                    return cast("ItemCls", await music_prov.get_podcast(item_id))
         # if we reach this point all possibilities failed and the item could not be found.
+        if not allow_fallback:
+            msg = (
+                f"{self.media_type.value}://{item_id} not "
+                f"found on provider {provider_instance_id_or_domain}"
+            )
+            raise MediaNotFoundError(msg)
         # There is a possibility that the (streaming) provider changed the id of the item
         # so we return the previous details (if we have any) marked as unavailable, so
         # at least we have the possibility to sort out the new id through matching logic.
@@ -1141,9 +1232,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         *,
         available: bool | Any = UNSET,
         in_library: bool | Any = UNSET,
-        is_unique: bool | None | Any = UNSET,
-        url: str | None | Any = UNSET,
-        details: str | None | Any = UNSET,
+        is_unique: bool | Any | None = UNSET,
+        url: str | Any | None = UNSET,
+        details: str | Any | None = UNSET,
         audio_format: AudioFormat | Any = UNSET,
     ) -> None:
         """Update an existing provider mapping for a library item."""
@@ -2052,12 +2143,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self,
         provider: str | list[str] | None,
     ) -> list[str] | None:
-        """Ensure the provider filter respects the current user's provider filter."""
+        """Ensure the provider filter respects the music sources the current user may see."""
         # Apply user provider filter if needed
         user = get_current_user()
-        user_provider_filter = user.provider_filter if user and user.provider_filter else None
+        visible_sources = visible_music_sources(self.mass, user) if user else None
         final_provider_filter: list[str] | None = None
-        if user_provider_filter:
+        if visible_sources is not None:
             plugin_provider_instances = {
                 prov.instance_id for prov in self.mass.providers if prov.type == ProviderType.PLUGIN
             }
@@ -2069,7 +2160,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 final_provider_filter = [
                     p
                     for p in requested_providers
-                    if p in user_provider_filter or p in plugin_provider_instances
+                    if p in visible_sources or p in plugin_provider_instances
                 ]
                 if not final_provider_filter:
                     # No overlap - user requested providers they don't have access to
@@ -2079,7 +2170,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             else:
                 # No explicit filter - apply user music provider filter but keep plugin providers.
                 final_provider_filter = list(
-                    dict.fromkeys([*user_provider_filter, *plugin_provider_instances])
+                    dict.fromkeys([*visible_sources, *plugin_provider_instances])
                 )
         elif provider is not None:
             # No user filter - use the provided filter as is
@@ -2131,7 +2222,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
     @final
     def _select_provider_id(self, library_item: ItemCls) -> tuple[str, str]:
-        """Select the correct provider id to use for fetching the item."""
+        """
+        Select the correct provider id to use for fetching the item.
+
+        :raises MediaNotFoundError: The item has no mapping the current user may use.
+        """
         if not library_item.provider_mappings:
             msg = (
                 f"{self.media_type.value} {library_item.item_id} "
@@ -2139,33 +2234,36 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             )
             raise MediaNotFoundError(msg)
         user = get_current_user()
-        user_provider_filter = user.provider_filter if user and user.provider_filter else None
-        if not user_provider_filter:
+        visible_sources = visible_music_sources(self.mass, user) if user else None
+        if visible_sources is None:
             mapping = next(iter(library_item.provider_mappings))
             return (mapping.provider_instance, mapping.item_id)
 
         # First prefer music provider mappings that are explicitly allowed for this user.
-        # prefer user provider filter if available
-        for mapping in library_item.provider_mappings:
-            provider = self.mass.get_provider(mapping.provider_instance)
+        # Only the exact instance counts: the domain fallback of get_provider must not
+        # serve the item through an account this user may not use.
+        allowed_mappings = [
+            mapping
+            for mapping in library_item.provider_mappings
+            if mapping.provider_instance in visible_sources
+        ]
+        for mapping in allowed_mappings:
+            provider = exact_provider(self.mass, mapping.provider_instance)
             if provider and provider.type == ProviderType.MUSIC:
-                if mapping.provider_instance in user_provider_filter:
-                    return (mapping.provider_instance, mapping.item_id)
+                return (mapping.provider_instance, mapping.item_id)
 
         # If no allowed music mapping exists, fall back to plugin mappings.
         for mapping in library_item.provider_mappings:
-            provider = self.mass.get_provider(mapping.provider_instance)
+            provider = exact_provider(self.mass, mapping.provider_instance)
             if provider and provider.type == ProviderType.PLUGIN:
                 return (mapping.provider_instance, mapping.item_id)
 
-        # As a final fallback, preserve previous behavior.
-        for mapping in library_item.provider_mappings:
-            if mapping.provider_instance in user_provider_filter:
-                return (mapping.provider_instance, mapping.item_id)
-
-        # fallback to first mapping
-        mapping = next(iter(library_item.provider_mappings))
-        return (mapping.provider_instance, mapping.item_id)
+        if allowed_mappings:
+            msg = f"{library_item.name} is currently not available on the user's music sources"
+            raise MediaNotFoundError(msg)
+        # every mapping is on a music source this user may not use
+        msg = f"{library_item.name} is not available on any music source of this user"
+        raise MediaNotFoundError(msg, translation_key="media_not_available_for_user")
 
     async def _remove_provider_images(self, db_id: int, provider_instance_id: str) -> bool:
         """

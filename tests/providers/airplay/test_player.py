@@ -1,6 +1,7 @@
 """Unit tests for AirPlay player."""
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import Coroutine
@@ -25,6 +26,7 @@ from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_PCM_FORMAT,
     CONF_AIRPLAY_CREDENTIALS,
+    CONF_ENABLE_HIRES,
     CONF_ENCRYPTION,
     CONF_IGNORE_VOLUME,
     CONF_PASSWORD,
@@ -88,6 +90,66 @@ def airplay_player() -> AirPlayPlayer:
         raop_discovery_info=None,
         airplay_discovery_info=None,
     )
+
+
+async def test_cold_restart_keeps_a_stream_published_while_it_was_stopping(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A cold restart only drops the stream it stopped, not one published meanwhile.
+
+    Tearing a group session down awaits every member, which is long enough for a
+    Sendspin bridge to take the speaker and publish its own stream. Dropping that
+    reference would leave the start that follows with nothing to displace and a
+    live process still on the speaker.
+    """
+    old_session = MagicMock()
+    old_stream = MagicMock(running=True, superseded=False)
+    old_stream.session = old_session
+    old_session.can_replace = MagicMock(return_value=False)
+    bridge_stream = MagicMock(running=True, superseded=False, session=None)
+
+    async def _stop_session() -> None:
+        # the bridge takes the speaker while the group teardown is still running
+        airplay_player.stream = bridge_stream
+
+    old_session.stop = AsyncMock(side_effect=_stop_session)
+    airplay_player.stream = old_stream
+
+    with (
+        patch.object(airplay_player, "_get_sync_clients", return_value=[airplay_player]),
+        patch.object(airplay_player, "_get_session_pcm_format", new_callable=AsyncMock),
+        patch.object(airplay_player.mass.streams, "get_stream", MagicMock()),
+        patch(
+            "music_assistant.providers.airplay.player.AirPlayStreamSession",
+            return_value=MagicMock(start=AsyncMock()),
+        ),
+    ):
+        await airplay_player.play_media(MagicMock())
+
+    assert airplay_player.stream is bridge_stream
+
+
+def test_has_live_audio_ignores_a_stream_being_torn_down(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A clip cannot be mixed into a stream whose process is on its way out.
+
+    The stream stays published until its teardown has the process off the
+    receiver, so a clip armed against it would die with it instead of playing.
+    """
+    airplay_player._attr_playback_state = PlaybackState.PLAYING
+    stream = MagicMock()
+    stream.running = True
+    stream.connected = True
+    stream.superseded = False
+    airplay_player.stream = stream
+    assert airplay_player.has_live_audio is True
+
+    stream.superseded = True
+
+    assert airplay_player.has_live_audio is False
 
 
 @pytest.mark.parametrize(
@@ -612,6 +674,82 @@ def test_get_stream_pcm_format_default(airplay_player: AirPlayPlayer) -> None:
     assert airplay_player.get_stream_pcm_format(session_format) == AIRPLAY_PCM_FORMAT
 
 
+def _make_hires_player(
+    manufacturer: str, model: str, stored_toggle: bool | None = None
+) -> AirPlayPlayer:
+    """Create a 24-bit capable AirPlay 2 player with the given device identity."""
+    provider = MagicMock()
+    _stub_raw_config(provider)
+    player = AirPlayPlayer(
+        provider=provider,
+        player_id="test_player",
+        display_name="Test Player",
+        address="127.0.0.1",
+        manufacturer=manufacturer,
+        model=model,
+        raop_discovery_info=None,
+        airplay_discovery_info=None,
+    )
+    _set_discovery_info(player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
+    player.advertised_audio_formats = ALAC_44100_24
+    values: dict[str, object] = {CONF_STREAMING_MODE: STREAMING_MODE_AUTO}
+    if stored_toggle is not None:
+        values[CONF_ENABLE_HIRES] = stored_toggle
+    _configure_player(player, values)
+    return player
+
+
+@pytest.mark.parametrize(
+    ("manufacturer", "model", "expected"),
+    [
+        ("Apple", "HomePod 2", False),
+        ("Apple", "HomePod", False),
+        ("Apple", "Apple TV 4K Gen2", True),
+        ("Sonos", "Era 300", True),
+    ],
+)
+def test_hires_toggle_default_per_device(manufacturer: str, model: str, expected: bool) -> None:
+    """The 24-bit toggle defaults off for HomePods and on for everything else."""
+    player = _make_hires_player(manufacturer, model)
+    assert player.hires_playback_enabled is expected
+
+
+@pytest.mark.parametrize(
+    ("manufacturer", "model", "stored", "expected"),
+    [
+        ("Apple", "HomePod 2", True, True),
+        ("Apple", "Apple TV 4K Gen2", False, False),
+    ],
+)
+def test_hires_toggle_override(manufacturer: str, model: str, stored: bool, expected: bool) -> None:
+    """A user-set 24-bit toggle overrides the per-device default."""
+    player = _make_hires_player(manufacturer, model, stored_toggle=stored)
+    assert player.hires_playback_enabled is expected
+
+
+@pytest.mark.asyncio
+async def test_hires_toggle_config_entry_visibility(airplay_player: AirPlayPlayer) -> None:
+    """The 24-bit entry is only shown when the device advertises 24-bit support."""
+    _set_discovery_info(airplay_player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
+    _configure_player(airplay_player, {CONF_STREAMING_MODE: STREAMING_MODE_AUTO})
+
+    # always part of the entry list (so a stored value survives the config
+    # parse at registration, before the async formats probe has landed), but
+    # hidden until the device is known to support 24-bit
+    airplay_player.advertised_audio_formats = ALAC_44100_16
+    entries = await airplay_player.get_config_entries()
+    hires_entry = next(entry for entry in entries if entry.key == CONF_ENABLE_HIRES)
+    assert hires_entry.hidden is True
+
+    airplay_player.advertised_audio_formats = ALAC_44100_24
+    entries = await airplay_player.get_config_entries()
+    hires_entry = next(entry for entry in entries if entry.key == CONF_ENABLE_HIRES)
+    assert hires_entry.hidden is False
+    assert hires_entry.default_value is True
+    # flipping the toggle must restart an active stream to take effect
+    assert hires_entry.requires_reload is True
+
+
 @pytest.mark.asyncio
 async def test_session_pcm_format_selection(airplay_player: AirPlayPlayer) -> None:
     """AirPlay delegates the complete session format decision to the shared selector."""
@@ -972,9 +1110,11 @@ def test_announcements_are_advertised_only_with_live_audio(
     assert airplay_player.stream is None
     assert PlayerFeature.PLAY_ANNOUNCEMENT not in airplay_player.supported_features
     # a stream that is up but not yet connected renders nothing
-    airplay_player.stream = MagicMock(running=True, connected=False)
+    airplay_player.stream = MagicMock(running=True, connected=False, superseded=False)
     assert PlayerFeature.PLAY_ANNOUNCEMENT not in airplay_player.supported_features
-    airplay_player.stream = MagicMock(running=True, connected=True)
+    # A real bool for superseded: a bare MagicMock reads as a stream already handed
+    # to a teardown, which renders nothing either.
+    airplay_player.stream = MagicMock(running=True, connected=True, superseded=False)
     assert PlayerFeature.PLAY_ANNOUNCEMENT in airplay_player.supported_features
     # the bridge's own stream is a regular AirPlayStream the clip mixes into, so a
     # Sendspin-bridged player streaming through it keeps the feature
@@ -1269,19 +1409,20 @@ async def test_rejoin_succeeds_on_first_attempt() -> None:
     players_mock = _players_mock(player)
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
 
-    async def cmd_group(player_id: str, target_id: str) -> None:
-        assert player_id == player.player_id
-        assert target_id == leader.player_id
+    async def set_members(
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        assert player_ids_to_add == [player.player_id]
+        assert player_ids_to_remove is None
         _attach_running_session(player, [leader, player])
 
-    players_mock.cmd_group = AsyncMock(side_effect=cmd_group)
-    players_mock.cmd_ungroup = AsyncMock()
+    leader.set_members = AsyncMock(side_effect=set_members)  # type: ignore[method-assign]
 
     with patch(_NO_DELAYS, (0, 0, 0)):
         await player._group_rejoin_attempts(["leader"])
 
-    assert players_mock.cmd_group.await_count == 1
-    players_mock.cmd_ungroup.assert_not_awaited()
+    assert leader.set_members.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -1293,13 +1434,18 @@ async def test_rejoin_retries_after_failure_then_succeeds() -> None:
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
     attempts: list[int] = []
 
-    async def cmd_group(_player_id: str, _target_id: str) -> None:
+    async def set_members(
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        assert player_ids_to_add == [player.player_id]
+        assert player_ids_to_remove is None
         attempts.append(1)
         if len(attempts) == 1:
             raise PlayerCommandFailed("device unreachable")
         _attach_running_session(player, [leader, player])
 
-    players_mock.cmd_group = AsyncMock(side_effect=cmd_group)
+    leader.set_members = AsyncMock(side_effect=set_members)  # type: ignore[method-assign]
 
     with patch(_NO_DELAYS, (0, 0, 0)):
         await player._group_rejoin_attempts(["leader"])
@@ -1313,12 +1459,12 @@ async def test_rejoin_gives_up_after_all_attempts() -> None:
     player = _make_idle_player()
     players_mock = _players_mock(player)
     players_mock.get_player.return_value = None
-    players_mock.cmd_group = AsyncMock()
 
     with patch(_NO_DELAYS, (0, 0, 0)):
         await player._group_rejoin_attempts(["leader"])
 
-    players_mock.cmd_group.assert_not_awaited()
+    # every attempt tried (and failed) to resolve a re-join target
+    assert players_mock.get_player.call_count == 3
 
 
 @pytest.mark.asyncio
@@ -1328,7 +1474,7 @@ async def test_rejoin_aborts_when_player_used_meanwhile() -> None:
     leader = _make_playing_leader()
     players_mock = _players_mock(player)
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
-    players_mock.cmd_group = AsyncMock()
+    leader.set_members = AsyncMock()  # type: ignore[method-assign]
     # the user started something else on the player during the backoff
     stream = MagicMock()
     stream.running = True
@@ -1337,7 +1483,7 @@ async def test_rejoin_aborts_when_player_used_meanwhile() -> None:
     with patch(_NO_DELAYS, (0, 0, 0)):
         await player._group_rejoin_attempts(["leader"])
 
-    players_mock.cmd_group.assert_not_awaited()
+    leader.set_members.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1347,16 +1493,17 @@ async def test_rejoin_undoes_dangling_membership() -> None:
     leader = _make_playing_leader()
     players_mock = _players_mock(player)
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
-    # cmd_group "succeeds" but the late-join failed internally: no stream appears
-    players_mock.cmd_group = AsyncMock()
-    players_mock.cmd_ungroup = AsyncMock()
+    # the join "succeeds" but the late-join failed internally: no stream appears
+    leader.set_members = AsyncMock()  # type: ignore[method-assign]
 
     with patch(_NO_DELAYS, (0, 0, 0)):
         await player._group_rejoin_attempts(["leader"])
 
-    # every attempt rolled its dangling membership back
-    assert players_mock.cmd_group.await_count == 3
-    assert players_mock.cmd_ungroup.await_count == 3
+    # every attempt joined and rolled its dangling membership back
+    joins = [c for c in leader.set_members.await_args_list if c.kwargs.get("player_ids_to_add")]
+    undos = [c for c in leader.set_members.await_args_list if c.kwargs.get("player_ids_to_remove")]
+    assert len(joins) == 3
+    assert len(undos) == 3
 
 
 @pytest.mark.asyncio
@@ -1366,14 +1513,14 @@ async def test_rejoin_cancelled_when_player_unavailable() -> None:
     leader = _make_playing_leader()
     players_mock = _players_mock(player)
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
-    players_mock.cmd_group = AsyncMock()
+    leader.set_members = AsyncMock()  # type: ignore[method-assign]
     player._attr_available = False
 
     # the later long delays prove the loop returns on the first pass
     with patch(_NO_DELAYS, (0, 60, 60)):
         await asyncio.wait_for(player._group_rejoin_attempts(["leader"]), timeout=5)
 
-    players_mock.cmd_group.assert_not_awaited()
+    leader.set_members.assert_not_awaited()
     players_mock.get_player.assert_not_called()
 
 
@@ -1389,12 +1536,12 @@ async def test_rejoin_aborts_when_synced_into_foreign_group() -> None:
     _players_mock(player).iter_players.return_value = [foreign_leader]
     players_mock = _players_mock(player)
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
-    players_mock.cmd_group = AsyncMock()
+    leader.set_members = AsyncMock()  # type: ignore[method-assign]
 
     with patch(_NO_DELAYS, (0, 60, 60)):
         await asyncio.wait_for(player._group_rejoin_attempts(["leader"]), timeout=5)
 
-    players_mock.cmd_group.assert_not_awaited()
+    leader.set_members.assert_not_awaited()
 
 
 def test_resolve_rejoin_target_finds_promoted_sibling() -> None:
@@ -1464,8 +1611,7 @@ async def test_rejoin_heals_session_when_membership_survived() -> None:
     _players_mock(player).iter_players.return_value = [leader]
     players_mock = _players_mock(player)
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
-    players_mock.cmd_group = AsyncMock()
-    players_mock.cmd_ungroup = AsyncMock()
+    leader.set_members = AsyncMock()  # type: ignore[method-assign]
     session = cast("MagicMock", leader.stream).session
 
     async def add_client(joiner: AirPlayPlayer) -> None:
@@ -1478,8 +1624,7 @@ async def test_rejoin_heals_session_when_membership_survived() -> None:
         await player._group_rejoin_attempts(["leader"])
 
     session.add_client.assert_awaited_once()
-    players_mock.cmd_group.assert_not_awaited()
-    players_mock.cmd_ungroup.assert_not_awaited()
+    leader.set_members.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1491,8 +1636,7 @@ async def test_rejoin_session_heal_failure_keeps_membership() -> None:
     _players_mock(player).iter_players.return_value = [leader]
     players_mock = _players_mock(player)
     players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
-    players_mock.cmd_group = AsyncMock()
-    players_mock.cmd_ungroup = AsyncMock()
+    leader.set_members = AsyncMock()  # type: ignore[method-assign]
     session = cast("MagicMock", leader.stream).session
     # the late-join fails internally: no stream appears on the player
     session.add_client = AsyncMock()
@@ -1501,7 +1645,53 @@ async def test_rejoin_session_heal_failure_keeps_membership() -> None:
         await player._group_rejoin_attempts(["leader"])
 
     session.add_client.assert_awaited_once()
-    players_mock.cmd_ungroup.assert_not_awaited()
+    leader.set_members.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rejoin_stays_cancellable_after_failed_attempt() -> None:
+    """A user action still cancels the retry loop after a join cleared the schedule."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    joins: list[int] = []
+
+    async def set_members(
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        assert player_ids_to_add == [player.player_id]
+        assert player_ids_to_remove is None
+        joins.append(1)
+        # the join flows through the session start paths, which clear stale
+        # re-join schedules on the joining player
+        player.cancel_group_rejoin()
+        raise PlayerCommandFailed("device unreachable")
+
+    leader.set_members = AsyncMock(side_effect=set_members)  # type: ignore[method-assign]
+    cast("MagicMock", player.mass).create_task = lambda coro: (
+        asyncio.get_running_loop().create_task(coro)
+    )
+
+    with patch(_NO_DELAYS, (0, 60)):
+        player.schedule_group_rejoin(["leader"])
+        rejoin_task = player._rejoin_task
+        assert rejoin_task is not None
+        # let the first attempt run, fail and park in the next backoff
+        for _ in range(50):
+            if joins:
+                break
+            await asyncio.sleep(0)
+        assert joins == [1]
+        # the schedule survived its own join's cancel call
+        assert player._rejoin_task is rejoin_task
+        # the user stops the player during the backoff: the loop must die
+        player.cancel_group_rejoin()
+        with contextlib.suppress(asyncio.CancelledError):
+            await rejoin_task
+        assert rejoin_task.cancelled()
+        assert joins == [1]
 
 
 @pytest.mark.asyncio

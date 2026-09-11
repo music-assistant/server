@@ -35,7 +35,7 @@ from music_assistant.helpers.api import api_command
 from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.util import inference_thread_budget, is_arm
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import (
     AudioAnalysisProvider,
     InstrumentedSemaphore,
@@ -43,6 +43,11 @@ from music_assistant.models.audio_analysis_provider import (
 from music_assistant.models.music_provider import MusicProvider
 
 LOUDNESS_ANALYSIS_DOMAIN = "loudness_analysis"
+# Virtual AA domain for loudness supplied by music providers (tags, ReplayGain). No AA
+# provider backs it, so it bypasses the provider-availability gate when merging rows.
+PROVIDER_LOUDNESS_DOMAIN = "provider_loudness"
+# Playback normalization prefers provider-supplied loudness over the builtin measurement.
+LOUDNESS_PROVIDER_PRIORITY = (PROVIDER_LOUDNESS_DOMAIN, LOUDNESS_ANALYSIS_DOMAIN)
 SMART_FADES_ANALYSIS_DOMAIN = "smart_fades"
 SONIC_ANALYSIS_DOMAIN = "sonic_analysis"
 # AA domains trusted for frontend-facing track data (bpm/key/waveform), authoritative first.
@@ -238,6 +243,8 @@ class AudioAnalysisController:
         # Monotonic time of the last analysis start, and the monitor that unloads idle models.
         self._last_analysis_activity: float = 0.0
         self._idle_unload_task: asyncio.Task[None] | None = None
+        # In-flight provider finalizes: their session is already gone, but the models are not.
+        self._finalize_tasks: set[asyncio.Task[None]] = set()
 
     def setup(self) -> None:
         """Register the nightly background scan task."""
@@ -537,8 +544,9 @@ class AudioAnalysisController:
         """
         Get merged audio analysis data for a track.
 
-        Only rows from currently available AA providers are included. Rows that fail
-        to parse are deleted, so the track can be re-analyzed.
+        Only rows from currently available AA providers are included; the virtual
+        provider_loudness domain is always included. Rows that fail to parse are
+        deleted, so the track can be re-analyzed.
 
         :param item_id: Provider-native item ID from streamdetails.item_id.
         :param provider_instance_id_or_domain: Music provider instance ID or domain.
@@ -566,9 +574,7 @@ class AudioAnalysisController:
         if not rows:
             return None
 
-        available_aa_domains = {
-            p.domain for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS) if p.available
-        }
+        available_aa_domains = self._available_aa_domains()
         unparsable_ids: list[Any] = []
         merged = _merged_from_rows(rows, available_aa_domains, priority, unparsable_ids)
         # corrupt rows would otherwise block re-analysis forever (their stored
@@ -643,8 +649,8 @@ class AudioAnalysisController:
         """
         Store track loudness measurement from an external source (tags, ReplayGain, etc).
 
-        Persists the loudness values under the builtin loudness_analysis provider so
-        the runtime ebur128 analysis will not re-analyze the track on playback.
+        Persists the values under the virtual provider_loudness AA domain; during
+        playback they take precedence over the builtin loudness measurement.
 
         :param item_id: Provider-native item ID.
         :param provider_instance_id_or_domain: Music provider instance ID or domain.
@@ -667,7 +673,7 @@ class AudioAnalysisController:
         await self.set_audio_analysis(
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
-            aa_provider_domain=LOUDNESS_ANALYSIS_DOMAIN,
+            aa_provider_domain=PROVIDER_LOUDNESS_DOMAIN,
             analysis=analysis,
             media_type=media_type,
         )
@@ -781,11 +787,18 @@ class AudioAnalysisController:
         """
         Stream audio_analysis rows for a given aa_provider_domain.
 
+        analysis_data is yielded as raw bytes rather than str, and may hold data
+        that fails a strict UTF-8 decode; callers are responsible for handling that.
+
         :param aa_provider_domain: Domain of the AA provider whose rows to yield.
         :param media_type: The media type to filter rows by.
         """
+        # fetch as blob: the sqlite driver raises OperationalError on corrupt
+        # non-UTF-8 TEXT; raw bytes defer decoding to the consumer
         query = (
-            f"SELECT * FROM {DB_TABLE_AUDIO_ANALYSIS} "
+            f"SELECT id, media_type, item_id, provider, aa_provider_domain, "
+            f"CAST(analysis_data AS BLOB) AS analysis_data, analysis_version, timestamp_created "
+            f"FROM {DB_TABLE_AUDIO_ANALYSIS} "
             f"WHERE aa_provider_domain = :aa_provider_domain AND media_type = :media_type"
         )
         async for row in self.mass.music.database.iter_rows_from_query(
@@ -804,8 +817,9 @@ class AudioAnalysisController:
         Yield one merged AudioAnalysisData per track present in primary_aa_domain.
 
         Unlike get_audio_analysis, the music provider need not be loaded — rows
-        are merged purely from the database, gated only on AA-provider
-        availability. Used by bulk consumers (e.g. similarity index rebuild).
+        are merged purely from the database, gated on AA-provider availability
+        (the virtual provider_loudness domain always passes this gate). Used by
+        bulk consumers (e.g. similarity index rebuild).
 
         Rows are streamed and grouped on the fly: only the rows for the
         currently-folding (item_id, provider) pair are held in memory at once,
@@ -823,9 +837,7 @@ class AudioAnalysisController:
             wins per-field conflicts (see get_audio_analysis). When None, all available
             providers are merged latest-write-wins.
         """
-        available_aa_domains = {
-            p.domain for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS) if p.available
-        }
+        available_aa_domains = self._available_aa_domains()
         if primary_aa_domain not in available_aa_domains:
             LOGGER.warning(
                 "iter_merged_audio_analysis_rows called with offline primary AA domain "
@@ -837,7 +849,10 @@ class AudioAnalysisController:
         # EXISTS subquery scopes to the primary domain's universe at the DB level;
         # ORDER BY (item_id, provider, ts) lets us fold each track in one streaming pass.
         query = (
-            f"SELECT item_id, provider, aa_provider_domain, analysis_data, id "
+            f"SELECT item_id, provider, aa_provider_domain, "
+            # fetch as blob: the sqlite driver raises OperationalError on corrupt
+            # non-UTF-8 TEXT; raw bytes let _parse_row skip just the bad row
+            f"CAST(aa1.analysis_data AS BLOB) AS analysis_data, id "
             f"FROM {DB_TABLE_AUDIO_ANALYSIS} aa1 "
             f"WHERE aa1.media_type = :media_type "
             f"AND EXISTS ("
@@ -1167,10 +1182,7 @@ class AudioAnalysisController:
         return tuple(
             domain
             for domain in FILESYSTEM_PROVIDER_DOMAINS
-            if any(
-                p.domain == domain and p.available
-                for p in self.mass.get_providers(ProviderType.MUSIC)
-            )
+            if any(p.domain == domain and p.available for p in self.mass.providers)
         )
 
     async def _find_candidates_missing_analysis(
@@ -1337,7 +1349,11 @@ class AudioAnalysisController:
         for provider_id in provider_ids:
             provider = self.mass.get_provider(provider_id)
             if provider and isinstance(provider, AudioAnalysisProvider) and provider.available:
-                self.mass.create_task(provider.finalize(session_key))
+                # finalize runs the whole-track inference, long after the session was popped
+                # above, so track it: it is what keeps the models in use from here on.
+                task = self.mass.create_task(provider.finalize(session_key))
+                self._finalize_tasks.add(task)
+                task.add_done_callback(self._finalize_tasks.discard)
 
     def _cancel_providers(self, session_key: str) -> None:
         """Cancel each provider in the session."""
@@ -1369,7 +1385,7 @@ class AudioAnalysisController:
         """Unload heavy models once no analysis has run for MODEL_IDLE_UNLOAD_SECONDS."""
         while True:
             await asyncio.sleep(MODEL_IDLE_CHECK_INTERVAL_SECONDS)
-            if self._active_sessions:
+            if self._active_sessions or self._finalize_tasks:
                 # Keep the timer fresh while analysis is running.
                 self._last_analysis_activity = time.monotonic()
                 continue
@@ -1405,7 +1421,7 @@ class AudioAnalysisController:
         if not provider_ids:
             return
 
-        async def _process(prov_id: str) -> str | None:
+        async def _process(prov_id: str) -> tuple[str, tuple[str, datetime | None] | None] | None:
             try:
                 provider = self.mass.get_provider(prov_id)
                 if not (
@@ -1432,22 +1448,38 @@ class AudioAnalysisController:
                     contention,
                     len(self._active_sessions),
                 )
-                return prov_id
+                # a timeout tracks server load rather than the audio, so the track stays
+                # pending for the next run instead of being recorded against it
+                return prov_id, None
+            except AudioAnalysisError as err:
+                # the provider judged this track unanalyzable, so its own wording is what
+                # the user should see in the failures overview
+                self.logger.warning(
+                    "Provider %s failed analysis for %s: %s", prov_id, session_key, err.reason
+                )
+                return prov_id, (err.reason, err.retry_at)
             except Exception as err:
                 # process_pcm_chunk is provider-implemented (torch/numpy/ffmpeg); evict
                 # the provider that fails on a chunk rather than crashing the session.
                 self.logger.warning("Error processing PCM chunk on provider %s: %s", prov_id, err)
-                return prov_id
+                return prov_id, (
+                    f"audio processing failed ({str(err) or type(err).__name__})",
+                    None,
+                )
             return None
 
         results = await asyncio.gather(*[_process(prov_id) for prov_id in provider_ids])
-        evicted = {prov_id for prov_id in results if prov_id is not None}
+        evicted = dict(result for result in results if result is not None)
         if evicted:
-            for prov_id in evicted:
+            for prov_id, failure in evicted.items():
                 provider = self.mass.get_provider(prov_id)
                 if provider and isinstance(provider, AudioAnalysisProvider) and provider.available:
-                    self.mass.create_task(provider.cancel(session_key))
-            provider_ids -= evicted
+                    if failure is None:
+                        self.mass.create_task(provider.cancel(session_key))
+                    else:
+                        reason, retry_at = failure
+                        await provider.abort(session_key, reason, retry_at)
+            provider_ids.difference_update(evicted)
             if not provider_ids:
                 self._active_sessions.pop(session_key, None)
 
@@ -1541,3 +1573,9 @@ class AudioAnalysisController:
         except ValueError, TypeError:
             value = DEFAULT_BACKGROUND_SCAN_CONCURRENCY
         return max(1, min(value, 16))
+
+    def _available_aa_domains(self) -> set[str]:
+        """Return available AA provider domains plus the virtual provider-loudness domain."""
+        return {
+            p.domain for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS) if p.available
+        } | {PROVIDER_LOUDNESS_DOMAIN}

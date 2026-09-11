@@ -90,12 +90,24 @@ class AsyncProcess:
         self._stdout_lock = asyncio.Lock()
         self._stdin_lock = asyncio.Lock()
         self._close_called = False
+        self._stdin_eof = False
         self._returncode: int | None = None
 
     @property
     def closed(self) -> bool:
         """Return if the process was closed."""
         return self._close_called or self.returncode is not None
+
+    @property
+    def stdin_closed(self) -> bool:
+        """
+        Return if stdin can no longer be written to.
+
+        True once end of file was written: that closes the pipe for good while the
+        process itself lives on, so a caller that means to keep feeding it has to
+        read this rather than :attr:`closed`.
+        """
+        return self._stdin_eof or self.closed
 
     @property
     def returncode(self) -> int | None:
@@ -184,12 +196,23 @@ class AsyncProcess:
             return await self.proc.stdout.read(n)
 
     async def write(self, data: bytes) -> None:
-        """Write data to process stdin."""
+        """
+        Write data to process stdin.
+
+        Data handed over after :meth:`write_eof` is dropped rather than queued:
+        the transport closed the pipe behind that eof and it cannot be reopened.
+
+        :param data: Bytes to write.
+        """
         if self._close_called or self.proc is None:
             return
         if self.proc.stdin is None:
             return
         async with self._stdin_lock:
+            # checked under the lock: a write that waited here while end of file
+            # was written has missed its pipe, which the transport closed behind it
+            if self._stdin_eof:
+                return
             self.proc.stdin.write(data)
             await self.proc.stdin.drain()
 
@@ -214,7 +237,7 @@ class AsyncProcess:
 
         :param timeout: Seconds to wait for the buffer to empty.
         """
-        if self._close_called or self.proc is None or self.proc.stdin is None:
+        if self._close_called or self._stdin_eof or self.proc is None or self.proc.stdin is None:
             yield True
             return
         async with self._stdin_lock:
@@ -222,14 +245,18 @@ class AsyncProcess:
 
     async def write_eof(self) -> None:
         """Write end of file to to process stdin."""
-        if self._close_called or self.proc is None:
-            return
-        if self.proc.stdin is None:
+        if self._close_called or self.proc is None or self.proc.stdin is None:
             return
         async with self._stdin_lock:
+            # checked under the lock, like write(): a second end of file that
+            # waited here has nothing left to close
+            if self._stdin_eof or not self.proc.stdin.can_write_eof():
+                return
+            # whatever the write below does, stdin is spent: the transport closes
+            # the pipe on eof, and every error it raises is a pipe already gone
+            self._stdin_eof = True
             try:
-                if self.proc.stdin.can_write_eof():
-                    self.proc.stdin.write_eof()
+                self.proc.stdin.write_eof()
                 await self.proc.stdin.drain()
             except (
                 AttributeError,
@@ -286,7 +313,13 @@ class AsyncProcess:
         return (stdout, stderr)
 
     async def close(self) -> None:
-        """Close/terminate the process and wait for exit."""
+        """
+        Close/terminate the process and wait for exit.
+
+        An enclosing timeout is not a reliable bound on this call: the cleanup may
+        swallow the cancellation and run to completion, and a cancellation that does
+        land is only re-raised after the terminate/SIGKILL escalation has run.
+        """
         if self._close_called and self.returncode is not None:
             # Already closed and reaped, so there is nothing left to signal or
             # drain. The stream locks below are still held by that first call
@@ -310,12 +343,15 @@ class AsyncProcess:
             with suppress(ProcessLookupError, OSError):
                 self.proc.send_signal(SIGINT)
 
+        # Cancellation landing on the drains or the reap below must not walk away from a
+        # child that is still running, so it is held here and re-raised at the very end.
+        cancelled: asyncio.CancelledError | None = None
+
         # ensure we have no more readers active and stdout is drained
         with suppress(TimeoutError, asyncio.CancelledError):
             await asyncio.wait_for(self._stdout_lock.acquire(), 5)
         if self.proc.stdout and not self.proc.stdout.at_eof():
-            with suppress(Exception):
-                await asyncio.wait_for(self.proc.stdout.read(-1), PIPE_DRAIN_TIMEOUT)
+            cancelled = await self._drain_pipe(self.proc.stdout, cancelled)
         # if we have a stderr task active, allow it to finish
         if self._stderr_reader_task:
             with suppress(TimeoutError, asyncio.CancelledError):
@@ -324,8 +360,7 @@ class AsyncProcess:
             with suppress(TimeoutError, asyncio.CancelledError):
                 await asyncio.wait_for(self._stderr_lock.acquire(), 5)
             # drain stderr
-            with suppress(Exception):
-                await asyncio.wait_for(self.proc.stderr.read(-1), PIPE_DRAIN_TIMEOUT)
+            cancelled = await self._drain_pipe(self.proc.stderr, cancelled)
 
         # make sure the process is really cleaned up.
         # especially with pipes this can cause deadlocks if not properly guarded
@@ -336,10 +371,12 @@ class AsyncProcess:
             try:
                 # use communicate to flush all pipe buffers
                 await asyncio.wait_for(self.proc.communicate(), 2)
-            except TimeoutError:
+            except (TimeoutError, asyncio.CancelledError) as err:
+                if isinstance(err, asyncio.CancelledError):
+                    cancelled = cancelled or err
                 terminate_attempts += 1
                 self.logger.debug(
-                    "Process %s with PID %s did not stop in time (attempt %d). Sending SIGKILL...",
+                    "Process %s with PID %s is still running (attempt %d). Sending SIGKILL...",
                     self.name,
                     pid,
                     terminate_attempts,
@@ -363,6 +400,8 @@ class AsyncProcess:
             self.proc.pid,
             self.returncode,
         )
+        if cancelled is not None:
+            raise cancelled
 
     async def kill(self) -> None:
         """
@@ -481,6 +520,24 @@ class AsyncProcess:
             if line := raw.decode("utf-8", errors="ignore").strip():
                 yield line
 
+    async def _drain_pipe(
+        self, stream: asyncio.StreamReader, cancelled: asyncio.CancelledError | None
+    ) -> asyncio.CancelledError | None:
+        """
+        Read whatever is left in one of the process' pipes, bounded by the drain timeout.
+
+        :param stream: The stream to drain.
+        :param cancelled: A cancellation the caller already recorded, if any.
+        :return: The first cancellation seen, so the caller can re-raise it once the
+            process is reaped, or None when none has landed yet.
+        """
+        try:
+            with suppress(Exception):
+                await asyncio.wait_for(stream.read(-1), PIPE_DRAIN_TIMEOUT)
+        except asyncio.CancelledError as err:
+            return cancelled or err
+        return cancelled
+
     async def _drain_stdin_locked(self, timeout: float) -> bool:
         """
         Empty the stdin write buffer, with the write lock already held.
@@ -530,7 +587,17 @@ class AsyncProcess:
             # retrieving the failure is what keeps asyncio from reporting it as
             # unhandled once the task is collected, so log it here rather than
             # dropping the only trace of it
-            self.logger.warning("The %s task ended with error: %s", description, err)
+            level = logging.DEBUG if self._is_expected_task_error(err) else logging.WARNING
+            self.logger.log(level, "The %s task ended with error: %s", description, err)
+
+    def _is_expected_task_error(self, err: BaseException) -> bool:
+        """
+        Return whether a helper task error is an expected outcome rather than a failure.
+
+        Subclasses override this to keep known-benign errors out of the warning
+        log; such errors are still logged, at debug level.
+        """
+        return False
 
 
 async def check_output(

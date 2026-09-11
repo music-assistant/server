@@ -55,17 +55,51 @@ BUFFER_SIZE_MAP: Final[dict[str, int]] = {
     BufferSize.MAXIMUM: 1200,
 }
 
+# DSD retains high-rate F32 PCM. Bound each buffer's payload as well as its duration;
+# current and next-track buffers can coexist on the hosts eligible for each preset.
+DSD_BUFFER_MAX_BYTES: Final[dict[str, int]] = {
+    BufferSize.MINIMAL: 64 * 1024 * 1024,
+    BufferSize.BALANCED: 128 * 1024 * 1024,
+    BufferSize.MAXIMUM: 256 * 1024 * 1024,
+}
+
 # Buffer size for radio streams (short rolling buffer)
 RADIO_BUFFER_SIZE: Final[int] = 15
 
-# Ceiling on how fast a single queue item is handed to a player, once it has had its opening
-# burst. Music Assistant serves audio for listening, not for collecting: at twice playback the
-# player's buffer still grows in realtime, while pulling a whole catalogue takes about as long
-# as listening to it would. These are the fastest we go, not a target - a player that needs
-# feeding more gently (Chromecast is the known case) can be paced slower than this.
-# Do not remove this to "fix" slow buffering; raise the burst instead. See the usage policy.
-SINGLE_ITEM_READRATE: Final[str] = "1.2"
-SINGLE_ITEM_READRATE_INITIAL_BURST: Final[str] = "60"
+
+# Ceiling on how fast stream output is handed to a player, once it has had its opening
+# burst. Music Assistant serves audio for listening, not for collecting: barely above
+# playback speed the player's buffer still grows, while pulling a whole catalogue takes
+# about as long as listening to it would.
+# Do not remove this pacing to "fix" slow buffering. See the usage policy.
+class PacingProfile(StrEnum):
+    """Pace at which a stream's output is handed to a player."""
+
+    # a track handed over on its own. The opening chunk is what a gapless player holds
+    # before it starts, and the head start rides out a hiccup later in the track
+    DEFAULT = "default"
+    # the flow stream, and sources that hand their audio over just-in-time. Those are
+    # radio and a Spotify music provider track on its Soloist backend, not Spotify
+    # Connect, which is an AUDIO_SOURCE and takes LOW_LATENCY. Such a source delivers
+    # ~1.1x at best, and what it banks ahead is all its end-of-track crossfade has.
+    NEAR_REALTIME = "near_realtime"
+    # live AudioSource streams, where whatever the burst hands over sits in the
+    # player's buffer as listening delay
+    LOW_LATENCY = "low_latency"
+
+
+_PACING: Final[dict[PacingProfile, tuple[str, str]]] = {
+    PacingProfile.DEFAULT: ("1.1", "60"),
+    PacingProfile.NEAR_REALTIME: ("1.03", "3"),
+    PacingProfile.LOW_LATENCY: ("1.02", "0.5"),
+}
+
+
+def output_pacing_args(profile: PacingProfile = PacingProfile.DEFAULT) -> list[str]:
+    """Return the ffmpeg pacing arguments for a stream handed to a player."""
+    readrate, burst = _PACING[profile]
+    return ["-readrate", readrate, "-readrate_initial_burst", burst]
+
 
 # Time to keep the flow stream response open after the last audio byte of a queue.
 # Players buffer a few seconds ahead of what they actually render; some of them drop

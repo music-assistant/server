@@ -20,6 +20,7 @@ if TYPE_CHECKING:
         ItemMapping,
         MediaItemType,
         Playlist,
+        Radio,
         RecommendationFolder,
         Track,
     )
@@ -92,6 +93,22 @@ class PluginProvider(Provider):
         if ProviderFeature.AUDIO_SOURCE in self.supported_features:
             raise NotImplementedError
         return []
+
+    def get_player_audio_sources(self, player_id: str) -> list[AudioSource] | None:
+        """
+        Return the AudioSources this plugin has bound to the given player.
+
+        Plugins that expose one source per (connected) player override this so
+        consumers can scope source listings to a single player: return the
+        player's own sources, or an empty list when the player has none on this
+        plugin. The default of None means the plugin's sources are not
+        player-bound and apply to every player.
+
+        Sync on purpose: called from the player's (sync) state calculation.
+
+        :param player_id: The player to return the bound AudioSources for.
+        """
+        return None
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
@@ -466,6 +483,25 @@ class PluginProvider(Provider):
 
         :param prov_playlist_id: Provider-scoped playlist id.
         :param page: Zero-based page index for paginated results.
+        """
+        raise NotImplementedError
+
+    async def get_radio(self, prov_radio_id: str) -> Radio:
+        """
+        Return details of a single radio station owned by this plugin.
+
+        :param prov_radio_id: Provider-scoped radio id.
+        """
+        raise NotImplementedError
+
+    async def get_dynamic_radio_tracks(self, prov_radio_id: str) -> list[Track]:
+        """
+        Return a fresh batch of tracks for a dynamic radio station owned by this plugin.
+
+        Return an empty batch to signal the station's feed is exhausted; the queue then
+        plays out its remaining items and ends.
+
+        :param prov_radio_id: Provider-scoped radio id.
         """
         raise NotImplementedError
 

@@ -5,14 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Sequence
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Final, cast
 
 from music_assistant_models.background_task import TaskSchedule
-from music_assistant_models.enums import ArtistType, MediaType, ProviderFeature
+from music_assistant_models.enums import ArtistType, ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import (
     AudioError,
     InvalidDataError,
@@ -162,6 +162,10 @@ class MusicProvider(Provider):
 
     Music Provider implementations should inherit from this base model.
     """
+
+    # whether a playlist on this provider accepts the same track more than once;
+    # providers that dedupe entries server-side must override this to False
+    playlist_duplicates_supported = True
 
     def __init__(
         self,
@@ -657,6 +661,24 @@ class MusicProvider(Provider):
 
         Only called if provider supports ProviderFeature.SIMILAR_ARTISTS.
         """
+        raise NotImplementedError
+
+    async def get_track_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Track | None:
+        """Retrieve track by external ID (ISRC, MusicBrainz, etc.)."""
+        raise NotImplementedError
+
+    async def get_album_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Album | None:
+        """Retrieve album by external ID (MusicBrainz, Discogs, etc.)."""
+        raise NotImplementedError
+
+    async def get_artist_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Artist | None:
+        """Retrieve artist by external ID (MusicBrainz, etc.)."""
         raise NotImplementedError
 
     async def get_resume_position(
@@ -1331,29 +1353,40 @@ class MusicProvider(Provider):
             # so failing to import its tracks does not make the album result set incomplete
             if sync_album_tracks:
                 try:
-                    await self.import_album_tracks(prov_item.item_id, prov_item.name)
+                    await self.import_album_tracks(prov_item.item_id, prov_item)
                 except Exception as err:
                     self._handle_sync_item_failure(MediaType.ALBUM, prov_item.uri, err)
         return cur_db_ids
 
-    async def import_album_tracks(self, prov_album_id: str, album_name: str | None = None) -> None:
+    async def import_album_tracks(self, prov_album_id: str, album: Album | None = None) -> None:
         """
         Import all tracks of the given (provider) album into the Music Assistant library.
 
         :param prov_album_id: The provider item id of the album.
-        :param album_name: Optional album name, used for logging/progress only.
+        :param album: The album the tracks belong to.
+            Fetched from the provider when not given.
         """
         self.logger.debug(
             "Importing Album Tracks into the Music Assistant library for album %s.",
-            album_name or prov_album_id,
+            album.name if album else prov_album_id,
         )
-        for item_count, prov_track in enumerate(
-            await self.get_album_tracks(prov_album_id), start=1
-        ):
+        prov_tracks = await self.get_album_tracks(prov_album_id)
+        # some providers leave the (redundant) album off the tracks in an album listing.
+        # without it the track is stored unfiled, so resolve it once for the whole import.
+        if album is None and any(prov_track.album is None for prov_track in prov_tracks):
+            with suppress(MusicAssistantError, NotImplementedError):
+                album = await self.get_album(prov_album_id)
+        album_mapping = ItemMapping.from_item(album) if album else None
+        for item_count, prov_track in enumerate(prov_tracks, start=1):
             self._update_sync_task_item_status(MediaType.TRACK, item_count, prov_track.name)
             try:
-                sync_details = await self.mass.music.tracks.get_library_item_sync_details(
-                    prov_track.provider_mappings,
+                if prov_track.album is None and album_mapping is not None:
+                    prov_track.album = album_mapping
+                sync_details = cast(
+                    "TrackSyncDetails | None",
+                    await self.mass.music.tracks.get_library_item_sync_details(
+                        prov_track.provider_mappings,
+                    ),
                 )
                 # batch all writes for this item into a single commit
                 async with self.mass.music.database.deferred_commit():
@@ -1363,8 +1396,12 @@ class MusicProvider(Provider):
                             prov_map.in_library = True
                         library_track = await self.mass.music.tracks.add_item_to_library(prov_track)
                         db_id = int(library_track.item_id)
-                    elif not self._check_provider_mappings(sync_details, prov_track, True):
+                    elif (
+                        not self._check_provider_mappings(sync_details, prov_track, True)
                         # existing library track but provider mapping doesn't match
+                        # or backfill a missing album(_tracks) link for existing tracks
+                        or (prov_track.album and not sync_details.has_album)
+                    ):
                         library_track = await self.mass.music.tracks.update_item_in_library(
                             sync_details.item_id, prov_track
                         )

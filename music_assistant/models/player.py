@@ -27,7 +27,13 @@ from music_assistant_models.constants import (
     PLAYER_CONTROL_NATIVE,
     PLAYER_CONTROL_NONE,
 )
-from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    MediaType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+    ProviderFeature,
+)
 from music_assistant_models.errors import ActionUnavailable, UnsupportedFeaturedException
 from music_assistant_models.player import (
     DeviceInfo,
@@ -66,6 +72,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.player import get_default_player_icon
 from music_assistant.helpers.util import html_to_markdown
+from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.audio_processing import ActiveSourceAudioDetails
@@ -421,6 +428,11 @@ class Player(ABC):
     # apart from a real pause - time is then the only signal left. Leave at None for
     # devices that report a source they no longer play as stopped by themselves.
     _attr_external_pause_idle_timeout: int | None = None
+    # Set this on players that play upcoming tracks from their own cached copy of the
+    # queue (which may not be refreshable, e.g. the Sonos cloud queue): a stream request
+    # for a queue item away from the playhead is then refused, so the player re-reads
+    # the queue instead of silently playing a stale cached track.
+    _attr_strict_queue_item_requests: bool = False
 
     def __init__(self, provider: PlayerProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -620,23 +632,34 @@ class Player(ABC):
         return type(self).run_setup_flow is not Player.run_setup_flow
 
     @property
+    def setup_flow_available(self) -> bool:
+        """
+        Return if this player's setup flow currently has anything to offer.
+
+        Override to hide the reconfigure action while there is nothing left to set up,
+        so the user is not sent into a flow that can only abort. Only consulted for a
+        player that implements a flow of its own.
+        """
+        return True
+
+    @property
     @final
     def has_setup_flow(self) -> bool:
         """
         Return if an interactive setup flow can be started for this player.
 
-        True when the player implements its own setup flow, or when it wraps a
-        (non-native) protocol child player that does. Unlike ``needs_setup`` this stays
-        True once setup completed, so the UI can offer to re-run the flow on demand
-        (e.g. to redo a pairing step that was skipped).
+        True when the player implements its own setup flow and that flow currently has
+        something to offer, or when it wraps a (non-native) protocol child player that
+        does. Unlike ``needs_setup`` this stays True once setup completed, so the UI can
+        offer to re-run the flow on demand (e.g. to redo a pairing step that was skipped).
         """
         if self.implements_setup_flow:
-            return True
+            return self.setup_flow_available
         for output_protocol in self.output_protocols:
             if output_protocol.is_native:
                 continue
             child = self.mass.players.get_player(output_protocol.output_protocol_id)
-            if child is not None and child.implements_setup_flow:
+            if child is not None and child.has_setup_flow:
                 return True
         return False
 
@@ -1688,6 +1711,18 @@ class Player(ABC):
         Otherwise checks the native player's GAPLESS_PLAYBACK feature.
         """
         return self._check_feature_with_active_protocol(PlayerFeature.GAPLESS_PLAYBACK)
+
+    @property
+    @final
+    def strict_queue_item_requests(self) -> bool:
+        """
+        Return whether queue item stream requests must match the queue's playhead.
+
+        When set, a stream request for a queue item the queue no longer places at or
+        around the playhead is refused, so the player re-reads the queue instead of
+        playing a track out of a stale cached copy of it.
+        """
+        return self._attr_strict_queue_item_requests
 
     @property
     @final
@@ -3037,12 +3072,10 @@ class Player(ABC):
             else None
         )
         image_url = (metadata.image_url if metadata else None) or source_image_url
-        elapsed_time, elapsed_time_last_updated = _resolve_position(
-            metadata.elapsed_time if metadata else None,
-            metadata.elapsed_time_last_updated if metadata else None,
-            self.elapsed_time,
-            self.elapsed_time_last_updated,
-        )
+        # the final playback state already resolves the source's own position against
+        # the clock this player reports (protocol player, or its own) - taking it from
+        # there is what keeps current_media and PlayerState.elapsed_time in agreement
+        _, elapsed_time, elapsed_time_last_updated = self.__final_playback_state
         return PlayerMedia(
             uri=session.source_uri or session.source_id,
             media_type=MediaType.AUDIO_SOURCE,
@@ -3057,7 +3090,7 @@ class Player(ABC):
             # carried so this object can be handed back to the player and still
             # resolve, as the announcement restore does
             queue_session_id=session.playback_session_id,
-            elapsed_time=elapsed_time,
+            elapsed_time=int(elapsed_time) if elapsed_time is not None else None,
             elapsed_time_last_updated=elapsed_time_last_updated,
         )
 
@@ -3109,6 +3142,30 @@ class Player(ABC):
                     repeat_mode=session.repeat_mode,
                 )
             )
+        # standing entries for the audio sources plugins bound to this player, so they
+        # are selectable from the source menu without a session being active first;
+        # an already listed uri is skipped: the live session entry above carries the
+        # live shuffle/repeat state and must win
+        present_ids = {x.id for x in sources}
+        for prov in self.mass.get_providers_supporting_feature(ProviderFeature.AUDIO_SOURCE):
+            if not isinstance(prov, PluginProvider):
+                continue
+            for source in prov.get_player_audio_sources(self.player_id) or ():
+                if not (uri := source.uri) or uri in present_ids:
+                    continue
+                present_ids.add(uri)
+                sources.append(
+                    PlayerSource(
+                        id=uri,
+                        name=source.name,
+                        passive=not source.can_initiate,
+                        can_play_pause=source.can_play_pause,
+                        can_seek=source.can_seek,
+                        can_next_previous=source.can_next_previous,
+                        can_shuffle=source.can_shuffle,
+                        can_repeat=source.can_repeat,
+                    )
+                )
         return sources
 
     @cached_property
@@ -3252,9 +3309,11 @@ class Player(ABC):
                 # that would otherwise reintroduce it.
                 return False
             # Don't include (playing) players that have group members (they are group leaders)
+            # Use the normalized members: a solo player that reports itself as its only
+            # member (e.g. a detached Sendspin client) is not a group leader.
             if (  # noqa: SIM103
                 player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
-                and player.group_members
+                and player.state.group_members
             ):
                 return False
             return True
@@ -3290,8 +3349,9 @@ class Player(ABC):
                 result.add(player.player_id)
 
         # Scenario 2: External source is active - don't include protocol-based grouping
-        # When an external source (e.g., Spotify Connect, TV) is active, grouping via
-        # protocols (AirPlay, Sendspin, etc.) wouldn't work - only native grouping is available.
+        # When the device plays something MA does not produce (a TV input, line-in, its own
+        # streaming endpoint), grouping via protocols (AirPlay, Sendspin, etc.) wouldn't
+        # work - only native grouping is available.
         if self._has_external_source_active():
             return result
 
@@ -3339,7 +3399,7 @@ class Player(ABC):
         # a live external source playing on this player is what it is playing, and MA
         # put it there, so it outranks whatever the device reports about itself
         if (session := self.mass.players.get_audio_source_session(self.player_id)) is not None:
-            return session.source_uri or session.player_id
+            return session.active_source
 
         # always prefer active MA source but add a guard to detect if player is really playing
         # something different, such as a line-in or TV input, we use an explicit list here
@@ -3403,8 +3463,9 @@ class Player(ABC):
         """
         Check if an external (non-MA-managed) source is currently active.
 
-        External sources include things like Spotify Connect, TV input, etc.
-        When an external source is active, protocol-based grouping is not available.
+        External sources are the ones MA does not produce itself, such as a TV input,
+        line-in, or the device's own streaming endpoint. When one is active,
+        protocol-based grouping is not available.
 
         :return: True if an external source is active, False otherwise.
         """
@@ -3414,6 +3475,11 @@ class Player(ABC):
 
         # Player's own ID means MA queue is (or was) active
         if active_source == self.player_id:
+            return False
+
+        # A live AudioSource (e.g. Spotify Connect) is audio MA produces itself, unlike
+        # the device's own streaming endpoint or a line-in it switched to
+        if self.mass.players.is_live_audio_source(active_source):
             return False
 
         # If it's a known queue ID it's MA-managed; anything else is external
@@ -3434,7 +3500,7 @@ class Player(ABC):
 
         for member_id in self.can_group_with:
             if player := self.mass.players.get_player(member_id):
-                if player.type != PlayerType.UNKNOWN:
+                if player.type not in (PlayerType.UNKNOWN, PlayerType.SOURCE):
                     result.add(player)
                 continue  # already a player ID
             # Check if member_id is a provider instance ID
@@ -3444,7 +3510,7 @@ class Player(ABC):
                     provider_filter=provider.instance_id,
                     return_protocol_players=True,
                 ):
-                    if player.type != PlayerType.UNKNOWN:
+                    if player.type not in (PlayerType.UNKNOWN, PlayerType.SOURCE):
                         result.add(player)
         return result
 

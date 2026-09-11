@@ -331,6 +331,16 @@ class FFMpeg(AsyncProcess):
             info.bit_rate,
         )
 
+    def _is_expected_task_error(self, err: BaseException) -> bool:
+        """Return whether a helper task error is an expected outcome rather than a failure."""
+        # deferred import: the provider models pull the controller graph in at
+        # import time, which this low-level helper must stay clear of
+        from music_assistant.models.music_provider import ProviderStreamLimitError  # noqa: PLC0415
+
+        # a provider with no free source-stream slot is a normal outcome of a
+        # speculative prefetch: the caller retries once the current stream releases it
+        return isinstance(err, ProviderStreamLimitError)
+
 
 def parse_ffmpeg_stream_info(line: str) -> FFMpegStreamInfo | None:
     """
@@ -567,13 +577,16 @@ def get_ffmpeg_args(
                 "-f",
                 input_format.content_type.value,
             ]
-        if input_format.codec_type != ContentType.UNKNOWN:
+        elif input_format.codec_type != ContentType.UNKNOWN:
+            # ffmpeg honours the last -acodec it is given, so this must not follow the
+            # raw PCM decoder declared above
             input_args += ["-acodec", input_format.codec_type.name.lower()]
 
         # add input path at the end
         input_args += ["-i", input_path]
 
     # collect output args
+    # anything below that moves the encoded size needs OUTPUT_ENCODING_REVISION bumped too
     output_args = get_ffmpeg_channel_args(output_format)
     if output_path.upper() == "NULL":
         # devnull stream: nothing is encoded here, so there is no channel count to declare
@@ -616,7 +629,9 @@ def get_ffmpeg_args(
             "wav",
         ]
     elif output_format.content_type == ContentType.FLAC:
-        # use level 0 compression for fastest encoding
+        # level 0 for the fastest encoding, but it sizes the block by time. That gives
+        # 1152 samples at 44.1kHz where libFLAC uses 4096 from -5 up, so 3.5x the frame
+        # headers and CRCs for the same audio: 22% more to encode, 43% more to decode.
         sample_fmt = "s32" if output_format.bit_depth > 16 else "s16"
         output_args += [
             "-sample_fmt",
@@ -627,6 +642,8 @@ def get_ffmpeg_args(
             "flac",
             "-compression_level",
             "0",
+            "-frame_size",
+            "4096",
         ]
     else:
         raise RuntimeError("Invalid/unsupported output format specified")

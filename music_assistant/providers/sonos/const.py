@@ -82,3 +82,11 @@ NON_HIRES_MODELS = (
     "Connect:Amp",
     "Table lamp",
 )
+
+# How much of the queue one itemWindow response describes. A speaker only asks for a new
+# window once it runs out, so a shallow one leaves it reloading at a track boundary, which
+# Sonos can fail. A track it cached before a queue edit is refused when it asks for it, so
+# it reads the queue again. The previous item keeps skip-back working. The speaker's own
+# sizes are never exceeded.
+PREVIOUS_ITEMS = 1
+UPCOMING_ITEMS = 10

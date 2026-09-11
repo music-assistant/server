@@ -59,6 +59,9 @@ class PlayerQueueData:
     credited_albums: set[Album] = field(default_factory=set)
     # the user this queue plays for (drives per-user recency/filtering). Persisted.
     userid: str | None = None
+    # pinned autoplay/crossfade toggle overrides; None = follow the global default. Persisted.
+    autoplay_override: bool | None = None
+    crossfade_override: bool | None = None
 
     # runtime-only fields below; not persisted, reset to these defaults on restart
     prev_state: CompareState | None = None
@@ -76,6 +79,10 @@ class PlayerQueueData:
     flow_mode_stream_log: list[PlayLogEntry] = field(default_factory=list)
     # queue_item_id most recently handed to the player as the next item
     next_item_id_enqueued: str | None = None
+    # queue_item_id whose audio the player last started fetching. Unlike index_in_buffer,
+    # which the crossfade preload raises to a track the player was never given, this only
+    # moves when audio actually goes out
+    last_served_item_id: str | None = None
     # set when the queue items changed since the last cache write; the debounced saver writes the
     # (heavier) items payload only when this is set
     items_cache_dirty: bool = False
@@ -111,6 +118,8 @@ class PlayerQueueData:
             ),
             "source_items": [item.to_dict() for item in self.source_items],
             "userid": self.userid,
+            "autoplay_override": self.autoplay_override,
+            "crossfade_override": self.crossfade_override,
         }
 
     @staticmethod
@@ -200,6 +209,8 @@ class PlayerQueueData:
             enqueued_media_items=enqueued_media_items,
             credited_albums=credited_albums,
             userid=state_data.get("userid"),
+            autoplay_override=state_data.get("autoplay_override"),
+            crossfade_override=state_data.get("crossfade_override"),
         )
 
     @staticmethod

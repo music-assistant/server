@@ -39,9 +39,8 @@ class BackendEventType(StrEnum):
     CONNECTION_LOST = "connection_lost"
     # a non-fatal backend error worth surfacing (message in the ``error`` field)
     ERROR = "error"
-    # the backend lost its Spotify authentication and needs the user to log in again
-    AUTH_REQUIRED = "auth_required"
-    # the backend failed permanently and the provider must unload with an error
+    # the backend failed permanently: the provider gives up this daemon, or unloads
+    # entirely when the event's ``provider_wide`` flag is set
     FATAL_ERROR = "fatal_error"
     # any other backend activity; carries at most refreshed context/track uris
     OTHER = "other"
@@ -141,7 +140,8 @@ class BackendEvent:
     percentage (VOLUME events), ``error`` the failure description (ERROR and
     FATAL_ERROR events), ``queue`` the session's queue view (QUEUE_CHANGED
     events) and ``options`` the session's playback options (OPTIONS_CHANGED
-    events).
+    events). ``provider_wide`` applies to FATAL_ERROR events only: it marks a
+    failure of the engine as a whole rather than of this one daemon.
     """
 
     type: BackendEventType
@@ -153,6 +153,7 @@ class BackendEvent:
     error: str | None = None
     queue: BackendQueueState | None = None
     options: BackendPlaybackOptions | None = None
+    provider_wide: bool = False
 
 
 # Awaited by the backend for every normalized event, in emit order.

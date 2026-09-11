@@ -409,7 +409,9 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 
 - **Role-based access**: Admin vs User roles
 - **Command-level enforcement**: API commands can require specific roles
-- **Player/Provider filtering**: Users can be restricted to specific players/providers
+- **Player filtering**: Users can be restricted to specific players. Which music sources a
+  user may see is not set on the user: it follows from the owner and sharing on each source
+  (`config/providers/set_access`)
 - **Token revocation**: Immediate WebSocket disconnect on token revocation
 
 ### Network Security
@@ -463,6 +465,7 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 ```python
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 
+
 @api_command("my_command")
 async def my_command():
     user = get_current_user()
@@ -475,6 +478,7 @@ async def my_command():
 ```python
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_token
 
+
 @api_command("my_command")
 async def my_command():
     token = get_current_token()
@@ -484,6 +488,7 @@ async def my_command():
 **Requiring a scope:**
 ```python
 from music_assistant_models.auth import Scope
+
 
 @api_command("admin_only_command", required_scope=Scope.CONFIG_CORE_WRITE)
 async def admin_command():

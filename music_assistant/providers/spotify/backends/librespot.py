@@ -60,11 +60,6 @@ class LibrespotBackend(SpotifyPlaybackBackend):
             bit_rate=320,
         )
 
-    @property
-    def max_concurrent_streams(self) -> int:
-        """Spotify accounts tolerate two concurrent sessions (main + librespot)."""
-        return 2
-
     async def setup(self) -> None:
         """
         Validate the librespot binary and install the stored playback credential.
@@ -95,6 +90,7 @@ class LibrespotBackend(SpotifyPlaybackBackend):
         seek_position: int = 0,
         *,
         streamdetails: StreamDetails | None = None,
+        continuation: bool = False,
     ) -> AsyncGenerator[bytes]:
         """
         Yield the Ogg Vorbis audio for one Spotify URI.
@@ -103,12 +99,13 @@ class LibrespotBackend(SpotifyPlaybackBackend):
             ``spotify:episode:<id>``).
         :param seek_position: Position in seconds to start from.
         :param streamdetails: Unused: every item is fetched on its own.
+        :param continuation: Unused: every item is fetched on its own.
         """
         # librespot's --single-track parser wants its own spotify://type:id form
         librespot_uri = spotify_uri.replace("spotify:", "spotify://", 1)
         self.logger.log(VERBOSE_LOG_LEVEL, "Start streaming %s using librespot", spotify_uri)
         if not self._librespot_bin:
-            raise AudioError("Librespot binary not available")
+            raise AudioError("Spotify playback could not be set up")
 
         args = [
             self._librespot_bin,
@@ -140,7 +137,7 @@ class LibrespotBackend(SpotifyPlaybackBackend):
             provider = self.provider
 
             async def log_librespot_output() -> None:
-                """Log librespot output if verbose logging is enabled."""
+                """Log librespot's output, and end the process when it reports a fatal error."""
                 async for line in librespot_proc.iter_stderr():
                     log_history.append(line)
                     if "ERROR" in line or "WARNING" in line:
@@ -177,7 +174,8 @@ class LibrespotBackend(SpotifyPlaybackBackend):
 
             if librespot_proc.returncode != 0:
                 raise AudioError(
-                    f"Librespot exited with code {librespot_proc.returncode} for {spotify_uri}"
+                    f"Spotify stopped playing this track unexpectedly "
+                    f"(exit code {librespot_proc.returncode})"
                 )
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
