@@ -1,0 +1,427 @@
+"""Tests for who may see, play, edit and share a Music Assistant playlist."""
+
+from __future__ import annotations
+
+from contextlib import ExitStack
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
+
+import pytest
+from music_assistant_models.access import PlaylistAccess
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.enums import MediaType, ProviderFeature, ProviderSharing
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    InvalidDataError,
+    MediaNotFoundError,
+)
+from music_assistant_models.media_items import Playlist, ProviderMapping
+
+from music_assistant.constants import DB_TABLE_PLAYLISTS, HOMEASSISTANT_SYSTEM_USER
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from music_assistant.controllers.music.media.playlists import PlaylistController
+    from music_assistant.mass import MusicAssistant
+
+# the server fixture below is module scoped, so the tests must share its event loop
+pytestmark = pytest.mark.asyncio(loop_scope="module")
+
+OWNER = User(user_id="user-owner", username="owner", role=UserRole.USER)
+MEMBER = User(user_id="user-member", username="member", role=UserRole.USER)
+GUEST = User(user_id="user-guest", username="guest", role=UserRole.GUEST)
+ADMIN = User(user_id="user-admin", username="admin", role=UserRole.ADMIN)
+HA_SYSTEM = User(user_id="user-ha", username=HOMEASSISTANT_SYSTEM_USER, role=UserRole.SERVICE)
+USERS = {user.user_id: user for user in (OWNER, MEMBER, GUEST, ADMIN, HA_SYSTEM)}
+
+
+@pytest.fixture
+async def playlists(
+    music_mass_module: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> PlaylistController:
+    """Return the playlist controller of a database-only server with a mocked user store."""
+    monkeypatch.setattr(
+        music_mass_module.webserver.auth, "get_user", AsyncMock(side_effect=USERS.get)
+    )
+    return music_mass_module.music.playlists
+
+
+def _as_user(user: User | None) -> ExitStack:
+    """Run the enclosed block as the given user (None for an internal caller)."""
+    stack = ExitStack()
+    for module in ("playlists", "base"):
+        stack.enter_context(
+            patch(
+                f"music_assistant.controllers.music.media.{module}.get_current_user",
+                return_value=user,
+            )
+        )
+    return stack
+
+
+def _playlist(
+    name: str,
+    access: PlaylistAccess | None = None,
+    provider_domain: str = "builtin",
+) -> Playlist:
+    """Build a provider playlist ready to be added to the library."""
+    item_id = uuid4().hex
+    return Playlist(
+        item_id=item_id,
+        provider=provider_domain,
+        name=name,
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=provider_domain,
+                provider_instance=provider_domain,
+                in_library=True,
+            )
+        },
+        owner="Music Assistant",
+        is_editable=True,
+        access=access,
+    )
+
+
+async def _add(playlists: PlaylistController, playlist: Playlist) -> Playlist:
+    """Add the playlist to the library as an internal caller and return the library item."""
+    with _as_user(None):
+        return await playlists.add_item_to_library(playlist)
+
+
+async def _visible_ids(playlists: PlaylistController, user: User | None) -> set[str]:
+    """Return the library ids the given user sees in the playlist listing."""
+    with _as_user(user):
+        return {item.item_id for item in await playlists.library_items(limit=1000)}
+
+
+def _sharing_cases() -> Iterator[Any]:
+    """Yield (record, user, visible) cases, one per sharing mode and viewer."""
+    private = PlaylistAccess(owner=OWNER.user_id)
+    selected = PlaylistAccess(
+        owner=OWNER.user_id, sharing=ProviderSharing.SELECTED, shared_users=[MEMBER.user_id]
+    )
+    members = PlaylistAccess(owner=OWNER.user_id, sharing=ProviderSharing.MEMBERS)
+    everyone = PlaylistAccess(owner=OWNER.user_id, sharing=ProviderSharing.EVERYONE)
+    yield pytest.param(private, OWNER, True, id="private-owner")
+    yield pytest.param(private, MEMBER, False, id="private-member")
+    yield pytest.param(private, ADMIN, False, id="private-admin")
+    yield pytest.param(selected, MEMBER, True, id="selected-listed-member")
+    yield pytest.param(selected, GUEST, False, id="selected-other-user")
+    yield pytest.param(members, MEMBER, True, id="members-member")
+    yield pytest.param(members, ADMIN, True, id="members-admin")
+    yield pytest.param(members, GUEST, False, id="members-guest")
+    yield pytest.param(everyone, GUEST, True, id="everyone-guest")
+    yield pytest.param(None, GUEST, True, id="household-guest")
+
+
+@pytest.mark.parametrize(("access", "user", "visible"), list(_sharing_cases()))
+async def test_listing_follows_the_access_record(
+    playlists: PlaylistController, access: PlaylistAccess | None, user: User, visible: bool
+) -> None:
+    """A listing only holds the playlists the calling user may see, and counts the same way."""
+    added = await _add(playlists, _playlist("Listing", access))
+
+    assert (added.item_id in await _visible_ids(playlists, user)) is visible
+    with _as_user(user):
+        count = await playlists.library_count()
+    assert (count == len(await _visible_ids(playlists, user))) is True
+
+
+async def test_listing_is_unfiltered_for_internal_callers(playlists: PlaylistController) -> None:
+    """Without a user context every playlist is listed, the sync and other internals rely on it."""
+    added = await _add(playlists, _playlist("Internal", PlaylistAccess(owner=OWNER.user_id)))
+
+    assert added.item_id in await _visible_ids(playlists, None)
+
+
+async def test_access_record_survives_the_library_round_trip(
+    playlists: PlaylistController,
+) -> None:
+    """The record is served on the full item and on the summary item alike."""
+    access = PlaylistAccess(
+        owner=OWNER.user_id,
+        sharing=ProviderSharing.SELECTED,
+        shared_users=[MEMBER.user_id],
+        collaborative=True,
+    )
+    added = await _add(playlists, _playlist("Round trip", access))
+
+    assert added.access == access
+    with _as_user(OWNER):
+        summaries = await playlists.library_items(search="Round trip")
+        full_items = await playlists.library_items(search="Round trip", summary=False)
+    assert [x.access for x in summaries if x.item_id == added.item_id] == [access]
+    assert [x.access for x in full_items if x.item_id == added.item_id] == [access]
+
+
+async def test_only_a_music_assistant_playlist_keeps_a_record(
+    playlists: PlaylistController,
+) -> None:
+    """A playlist of a music service follows the access of that service instead."""
+    added = await _add(
+        playlists,
+        _playlist("Service", PlaylistAccess(owner=OWNER.user_id), provider_domain="spotify"),
+    )
+
+    assert added.access is None
+
+
+async def test_unreadable_record_hides_the_playlist(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """A record that can not be read hides its playlist instead of exposing it."""
+    added = await _add(playlists, _playlist("Broken", PlaylistAccess(owner=OWNER.user_id)))
+    await music_mass_module.music.database.update(
+        DB_TABLE_PLAYLISTS, {"item_id": int(added.item_id)}, {"access": "{not json"}
+    )
+
+    assert added.item_id not in await _visible_ids(playlists, OWNER)
+
+
+async def test_get_and_tracks_hide_a_playlist_the_caller_may_not_see(
+    playlists: PlaylistController,
+) -> None:
+    """A single-item fetch behaves as if the playlist does not exist, by library and builtin id."""
+    added = await _add(playlists, _playlist("Hidden", PlaylistAccess(owner=OWNER.user_id)))
+    builtin_id = next(iter(added.provider_mappings)).item_id
+
+    with _as_user(OWNER):
+        assert (await playlists.get(added.item_id, "library")).item_id == added.item_id
+        assert [x async for x in playlists.tracks(builtin_id, "builtin")] == []
+    with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
+        await playlists.get(added.item_id, "library")
+    with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
+        _ = [x async for x in playlists.tracks(added.item_id, "library")]
+    with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
+        _ = [x async for x in playlists.tracks(builtin_id, "builtin")]
+
+
+async def test_sync_lookups_stay_unfiltered(playlists: PlaylistController) -> None:
+    """The lookups the library sync uses find a hidden playlist, so it is never added twice."""
+    added = await _add(playlists, _playlist("Synced", PlaylistAccess(owner=OWNER.user_id)))
+
+    with _as_user(MEMBER):
+        found = await playlists.get_library_item_by_prov_mappings(added.provider_mappings)
+    assert found is not None
+    assert found.item_id == added.item_id
+
+
+@pytest.mark.parametrize(
+    ("user", "expected"),
+    [
+        pytest.param(OWNER, PlaylistAccess(owner=OWNER.user_id), id="member"),
+        pytest.param(HA_SYSTEM, None, id="home-assistant-system-user"),
+        pytest.param(None, None, id="internal"),
+    ],
+)
+async def test_create_playlist_records_the_creator_as_owner(
+    playlists: PlaylistController,
+    music_mass_module: MusicAssistant,
+    user: User | None,
+    expected: PlaylistAccess | None,
+) -> None:
+    """A new Music Assistant playlist is private to its creator; system callers make household ones."""
+    provider = MagicMock()
+    provider.domain = provider.instance_id = "builtin"
+    provider.name = "Music Assistant"
+    provider.supported_features = {
+        ProviderFeature.PLAYLIST_CREATE_TRACKS,
+        ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    }
+    provider.create_playlist = AsyncMock(return_value=_playlist("Created"))
+
+    with (
+        _as_user(user),
+        patch.object(music_mass_module, "get_provider", return_value=provider),
+        patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
+    ):
+        created = await playlists.create_playlist("Created", media_types=[MediaType.TRACK])
+
+    assert created.access == expected
+
+
+async def test_owner_shares_its_playlist(playlists: PlaylistController) -> None:
+    """The owner decides who may see its playlist and whether they may edit it."""
+    added = await _add(playlists, _playlist("Mine", PlaylistAccess(owner=OWNER.user_id)))
+
+    with _as_user(OWNER):
+        updated = await playlists.set_access(
+            added.item_id,
+            ProviderSharing.SELECTED,
+            owner=OWNER.user_id,
+            shared_users=[MEMBER.user_id, OWNER.user_id, MEMBER.user_id],
+            collaborative=True,
+        )
+
+    assert updated.access == PlaylistAccess(
+        owner=OWNER.user_id,
+        sharing=ProviderSharing.SELECTED,
+        shared_users=[MEMBER.user_id],
+        collaborative=True,
+    )
+    assert added.item_id in await _visible_ids(playlists, MEMBER)
+
+
+async def test_set_access_refuses_everyone_but_the_owner_or_an_admin(
+    playlists: PlaylistController,
+) -> None:
+    """A member the playlist is shared with may not change its sharing or owner."""
+    added = await _add(
+        playlists,
+        _playlist("Shared", PlaylistAccess(owner=OWNER.user_id, sharing=ProviderSharing.MEMBERS)),
+    )
+
+    with _as_user(MEMBER), pytest.raises(InsufficientPermissions) as err:
+        await playlists.set_access(added.item_id, ProviderSharing.EVERYONE, owner=OWNER.user_id)
+    assert err.value.translation_key == "playlist_not_owned"
+    with _as_user(OWNER), pytest.raises(InsufficientPermissions):
+        await playlists.set_access(added.item_id, ProviderSharing.PRIVATE, owner=MEMBER.user_id)
+    with _as_user(ADMIN):
+        updated = await playlists.set_access(
+            added.item_id, ProviderSharing.PRIVATE, owner=MEMBER.user_id
+        )
+    assert updated.access == PlaylistAccess(owner=MEMBER.user_id)
+
+
+async def test_set_access_validates_the_users_on_the_record(
+    playlists: PlaylistController,
+) -> None:
+    """Unknown users are refused, and the Home Assistant system user can not own a playlist."""
+    added = await _add(playlists, _playlist("Validated"))
+
+    with _as_user(ADMIN), pytest.raises(InvalidDataError):
+        await playlists.set_access(added.item_id, ProviderSharing.PRIVATE, owner="nobody")
+    with _as_user(ADMIN), pytest.raises(InvalidDataError):
+        await playlists.set_access(
+            added.item_id, ProviderSharing.SELECTED, owner=OWNER.user_id, shared_users=["nobody"]
+        )
+    with _as_user(ADMIN), pytest.raises(InvalidDataError):
+        await playlists.set_access(added.item_id, ProviderSharing.PRIVATE, owner=HA_SYSTEM.user_id)
+    with _as_user(MEMBER), pytest.raises(InsufficientPermissions):
+        # a household playlist is only handed out by an admin
+        await playlists.set_access(added.item_id, ProviderSharing.PRIVATE, owner=MEMBER.user_id)
+
+
+async def test_set_access_refuses_a_music_service_playlist(playlists: PlaylistController) -> None:
+    """A playlist of a music service keeps following the sharing of that service."""
+    added = await _add(playlists, _playlist("Service", provider_domain="spotify"))
+
+    with _as_user(ADMIN), pytest.raises(InvalidDataError) as err:
+        await playlists.set_access(added.item_id, ProviderSharing.PRIVATE, owner=OWNER.user_id)
+    assert err.value.translation_key == "playlist_follows_source"
+
+
+@pytest.mark.parametrize(
+    ("access", "user", "allowed"),
+    [
+        pytest.param(None, MEMBER, True, id="household-anyone"),
+        pytest.param(
+            PlaylistAccess(owner=OWNER.user_id, sharing=ProviderSharing.MEMBERS),
+            OWNER,
+            True,
+            id="shared-owner",
+        ),
+        pytest.param(
+            PlaylistAccess(owner=OWNER.user_id, sharing=ProviderSharing.MEMBERS),
+            MEMBER,
+            False,
+            id="shared-member",
+        ),
+        pytest.param(
+            PlaylistAccess(owner=OWNER.user_id, sharing=ProviderSharing.MEMBERS),
+            ADMIN,
+            True,
+            id="shared-admin",
+        ),
+        pytest.param(
+            PlaylistAccess(
+                owner=OWNER.user_id, sharing=ProviderSharing.MEMBERS, collaborative=True
+            ),
+            MEMBER,
+            True,
+            id="collaborative-member",
+        ),
+        pytest.param(
+            PlaylistAccess(owner=OWNER.user_id, collaborative=True),
+            MEMBER,
+            False,
+            id="collaborative-but-private",
+        ),
+    ],
+)
+async def test_editing_the_items_needs_the_owner_unless_collaborative(
+    playlists: PlaylistController,
+    music_mass_module: MusicAssistant,
+    access: PlaylistAccess | None,
+    user: User,
+    allowed: bool,
+) -> None:
+    """Adding and removing items is for the owner, or for everyone once the flag is set."""
+    added = await _add(playlists, _playlist("Edited", access))
+    expected_error: type[Exception] = InsufficientPermissions
+    if access is not None and access.sharing == ProviderSharing.PRIVATE and user != OWNER:
+        expected_error = MediaNotFoundError
+
+    with (
+        _as_user(user),
+        patch.object(music_mass_module.tasks, "run_background_task") as run_task,
+    ):
+        if allowed:
+            await playlists.add_playlist_tracks(added.item_id, ["library://track/1"])
+            await playlists.remove_playlist_tracks(added.item_id, (1,))
+            assert run_task.call_count == 2
+        else:
+            with pytest.raises(expected_error):
+                await playlists.add_playlist_tracks(added.item_id, ["library://track/1"])
+            with pytest.raises(expected_error):
+                await playlists.remove_playlist_tracks(added.item_id, (1,))
+            run_task.assert_not_called()
+
+
+async def test_removal_needs_the_owner_even_when_collaborative(
+    playlists: PlaylistController,
+) -> None:
+    """Deleting a personal playlist stays with its owner or an admin."""
+    access = PlaylistAccess(
+        owner=OWNER.user_id, sharing=ProviderSharing.MEMBERS, collaborative=True
+    )
+    added = await _add(playlists, _playlist("Removed", access))
+    household = await _add(playlists, _playlist("Household"))
+
+    with _as_user(MEMBER), pytest.raises(InsufficientPermissions):
+        playlists.check_removal_allowed(added)
+    with _as_user(MEMBER):
+        playlists.check_removal_allowed(household)
+    with _as_user(OWNER):
+        playlists.check_removal_allowed(added)
+    with _as_user(ADMIN):
+        playlists.check_removal_allowed(added)
+
+
+async def test_release_user_playlists(playlists: PlaylistController) -> None:
+    """A removed user's playlists become household playlists and it leaves every share list."""
+    owned = await _add(playlists, _playlist("Owned", PlaylistAccess(owner=MEMBER.user_id)))
+    shared_with = await _add(
+        playlists,
+        _playlist(
+            "Shared with",
+            PlaylistAccess(
+                owner=OWNER.user_id,
+                sharing=ProviderSharing.SELECTED,
+                shared_users=[MEMBER.user_id, GUEST.user_id],
+            ),
+        ),
+    )
+    untouched = await _add(playlists, _playlist("Untouched", PlaylistAccess(owner=OWNER.user_id)))
+
+    await playlists.release_user_playlists(MEMBER.user_id)
+
+    assert (await playlists.get_library_item(owned.item_id)).access is None
+    assert (await playlists.get_library_item(shared_with.item_id)).access == PlaylistAccess(
+        owner=OWNER.user_id, sharing=ProviderSharing.SELECTED, shared_users=[GUEST.user_id]
+    )
+    assert (await playlists.get_library_item(untouched.item_id)).access == untouched.access

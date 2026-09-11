@@ -303,6 +303,8 @@
   "common.errors.password_required": "This device requires a password. Run the setup for this player to enter it.",
   "common.errors.player_command_failed": "The command to the player failed.",
   "common.errors.player_unavailable": "The player is not available.",
+  "common.errors.playlist_follows_source": "This playlist follows the sharing of its music source.",
+  "common.errors.playlist_not_owned": "Only the owner of this playlist may change it.",
   "common.errors.provider_permission_denied": "The provider denied this action due to insufficient permissions.",
   "common.errors.provider_stream_limit": "{0} has reached its limit of {1} simultaneous streams. Stop playback on another player and try again.",
   "common.errors.provider_unavailable": "The provider is currently unavailable.",

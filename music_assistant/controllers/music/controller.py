@@ -133,6 +133,7 @@ from music_assistant.helpers.datetime import (
 )
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.provider_access import (
+    access_allows,
     exact_provider,
     source_owner,
     visible_music_sources,
@@ -1378,8 +1379,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         Destructive! Will remove the item and all dependants.
         """
         ctrl = self.get_controller(media_type)
-        # remove from provider(s) library
         full_item = await ctrl.get_library_item(library_item_id)
+        # ctrl is chosen by media_type, so it matches full_item's runtime type
+        cast("MediaControllerBase[MediaItemType]", ctrl).check_removal_allowed(full_item)
+        # remove from provider(s) library
         for prov_mapping in full_item.provider_mappings:
             if not prov_mapping.in_library:
                 continue
@@ -2567,6 +2570,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param item: The already-resolved item to check.
         :param user: The user the playback is for; None for anonymous playback.
         """
+        if isinstance(item, Playlist) and item.access and not access_allows(item.access, user):
+            return False
         return self._item_reachable_via(item, visible_playback_sources(self.mass, user))
 
     def check_item_playable_for_user(

@@ -608,7 +608,7 @@ async def test_add_playlist_tracks_creates_and_runs_background_task(
     handler_called = asyncio.Event()
 
     async def fake_get_library_item(_db_playlist_id: int) -> SimpleNamespace:
-        return SimpleNamespace(name="Test playlist")
+        return SimpleNamespace(name="Test playlist", access=None)
 
     async def fake_handle_add_playlist_tracks(db_playlist_id: str | int, uris: list[str]) -> None:
         assert db_playlist_id == "42"

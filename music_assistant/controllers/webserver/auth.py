@@ -1222,8 +1222,9 @@ class AuthenticationManager:
         await self.database.delete("users", {"user_id": user_id})
         await self.database.commit()
 
-        # the music sources this user owned or was given access to outlive it
+        # the music sources and playlists this user owned or was given access to outlive it
         self.mass.config.release_user_sources(user_id)
+        await self.mass.music.playlists.release_user_playlists(user_id)
 
         # Disconnect all WebSocket connections for this user
         self.webserver.disconnect_websockets_for_user(user_id)

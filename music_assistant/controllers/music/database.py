@@ -360,7 +360,8 @@ class MusicDatabaseSetupMixin:
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL,
             [supported_mediatypes] json NOT NULL DEFAULT '[\"track\"]',
-            [is_dynamic] BOOLEAN NOT NULL DEFAULT 0
+            [is_dynamic] BOOLEAN NOT NULL DEFAULT 0,
+            [access] json
             );"""
         )
         await self.database.execute(

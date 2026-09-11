@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 import pytest
+from music_assistant_models.access import PlaylistAccess
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import (
@@ -22,6 +23,7 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     Genre,
+    Playlist,
     ProviderMapping,
     Track,
     UniqueList,
@@ -284,6 +286,26 @@ def test_check_item_playable_rejects_a_library_item_without_a_reachable_mapping(
     with pytest.raises(MediaNotFoundError) as err:
         controller.check_item_playable_for_user(_library_track(PROV_B), _user(USER_A))
     assert err.value.translation_key == "media_not_available_for_user"
+
+
+def test_check_item_playable_follows_the_access_record_of_a_playlist() -> None:
+    """A personal Music Assistant playlist only plays for the users who may see it."""
+    controller = _controller_with_sources({PROV_A: None})
+    playlist = Playlist(
+        item_id="9",
+        provider="library",
+        name="Mine",
+        provider_mappings={
+            ProviderMapping(item_id="mine", provider_domain="builtin", provider_instance="builtin")
+        },
+        access=PlaylistAccess(owner=USER_A),
+    )
+
+    controller.check_item_playable_for_user(playlist, _user(USER_A))
+    with pytest.raises(MediaNotFoundError):
+        controller.check_item_playable_for_user(playlist, _user(USER_B))
+    with pytest.raises(MediaNotFoundError):
+        controller.check_item_playable_for_user(playlist, None)
 
 
 def test_check_item_playable_rejects_a_provider_item_on_a_hidden_source() -> None:
