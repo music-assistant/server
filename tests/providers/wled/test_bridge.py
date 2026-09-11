@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, cast
@@ -319,6 +320,55 @@ class TestBridgeManagerStart:
 
         assert await manager.start(11988) is True
         assert manager._bridge is bridge
+
+
+class TestBridgeManagerConcurrency:
+    """
+    Startup and teardown must not interleave.
+
+    start() suspends while it registers the Sendspin client and opens the UDP transport,
+    and loaded_in_mass runs as a post-load task that unload_provider never awaits -- so an
+    unload really can land mid-startup, and must not leave the zone live afterwards.
+    """
+
+    async def test_unload_during_startup_still_tears_the_bridge_down(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stop() arriving while start() is suspended must not silently do nothing."""
+        gate = asyncio.Event()
+        bridge = Mock(port=11988)
+
+        async def _suspend_until_gated() -> None:
+            await gate.wait()
+
+        bridge.start = AsyncMock(side_effect=_suspend_until_gated)
+        bridge.stop = AsyncMock()
+        manager = _make_manager(monkeypatch, bridge)
+
+        start_task = asyncio.create_task(manager.start(11988))
+        await asyncio.sleep(0)  # let start() reach the suspended bridge.start()
+        stop_task = asyncio.create_task(manager.stop())
+        await asyncio.sleep(0)  # stop() is now queued behind the lock
+        gate.set()
+        await start_task
+        await stop_task
+
+        bridge.stop.assert_awaited_once()
+        assert manager._bridge is None
+
+    async def test_startup_queued_behind_an_unload_does_not_bring_a_zone_back_up(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The reverse order must not start a bridge for an already-unloaded provider."""
+        bridge = Mock()
+        bridge.start = AsyncMock()
+        manager = _make_manager(monkeypatch, bridge)
+
+        await manager.stop()
+
+        assert await manager.start(11988) is False
+        bridge.start.assert_not_awaited()
+        assert manager._bridge is None
 
 
 class TestBridgeManagerStop:
