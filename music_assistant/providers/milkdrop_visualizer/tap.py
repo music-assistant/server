@@ -68,8 +68,9 @@ VIEWER_QUEUE_FRAMES = 1024
 # How far behind now the ring keeps released frames. An attaching viewer draws
 # the newest past frame at once, and the rest of the ring is the lead ahead.
 RING_PAST_SECONDS = 1.0
-# Ceiling on frames held back before they are due (~3 min, ~8MB per tap); past
-# it the tap stops reading and accepts a hole.
+# Memory ceiling on frames held back before they are due (~8MB per tap). About
+# 3 min at 44.1kHz and less at higher rates, still far beyond any fetch burst;
+# past it the tap stops reading and accepts a hole.
 PENDING_FRAMES = 8192
 
 # Wire tags, matching the format documented in relay.py.
