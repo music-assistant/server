@@ -23,6 +23,7 @@ from music_assistant.constants import (
     DB_TABLE_PLAYLISTS,
     HOMEASSISTANT_SYSTEM_USER,
 )
+from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RESULTS
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -49,6 +50,8 @@ async def playlists(
     monkeypatch.setattr(
         music_mass_module.webserver.auth, "get_user", AsyncMock(side_effect=USERS.get)
     )
+    # the database-only server runs no cache database
+    monkeypatch.setattr(music_mass_module.cache, "delete", AsyncMock())
     return music_mass_module.music.playlists
 
 
@@ -345,7 +348,9 @@ async def test_create_playlist_records_the_creator_as_owner(
     assert created.access == expected
 
 
-async def test_owner_shares_its_playlist(playlists: PlaylistController) -> None:
+async def test_owner_shares_its_playlist(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
     """The owner decides who may see its playlist and whether they may edit it."""
     added = await _add(playlists, _playlist("Mine", PlaylistAccess(owner=OWNER.user_id)))
 
@@ -365,6 +370,10 @@ async def test_owner_shares_its_playlist(playlists: PlaylistController) -> None:
         collaborative=True,
     )
     assert added.item_id in await _visible_ids(playlists, MEMBER)
+    # cached search results held the playlists a user could see before the change
+    dropped = music_mass_module.cache.delete
+    assert isinstance(dropped, AsyncMock)
+    dropped.assert_awaited_once_with(None, category=CACHE_CATEGORY_SEARCH_RESULTS, provider="music")
 
 
 async def test_set_access_refuses_everyone_but_the_owner_or_an_admin(
@@ -476,6 +485,7 @@ async def test_set_access_refuses_a_music_service_playlist(playlists: PlaylistCo
             False,
             id="collaborative-but-private",
         ),
+        pytest.param(PlaylistAccess(owner=OWNER.user_id), ADMIN, True, id="private-admin"),
     ],
 )
 async def test_editing_the_items_needs_the_owner_unless_collaborative(
@@ -523,6 +533,9 @@ async def test_removal_needs_the_owner_even_when_collaborative(
         playlists.check_removal_allowed(added)
     with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
         # a hidden playlist is not even confirmed to exist
+        playlists.check_removal_allowed(private)
+    with _as_user(ADMIN):
+        # a library manager is never masked
         playlists.check_removal_allowed(private)
     with _as_user(MEMBER):
         playlists.check_removal_allowed(household)

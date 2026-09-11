@@ -37,6 +37,7 @@ from music_assistant.constants import (
     PLAYLIST_MEDIA_TYPES,
     PlaylistPlayableItem,
 )
+from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RESULTS
 from music_assistant.controllers.tasks.context import (
     get_current_task,
     report_current_task_failure,
@@ -714,8 +715,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         :param item: The library playlist about to be removed.
         """
+        if self._may_manage(item):
+            return
         self._check_visible(item)
-        self._check_may_manage(item)
+        raise self._not_owned_error(item)
 
     def visible_to_caller(self, playlist: Playlist) -> bool:
         """
@@ -1818,8 +1821,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
         return playlist
 
     async def _get_editable_library_item(self, item_id: int | str) -> Playlist:
-        """Return the library playlist, if the caller may see it and change its items."""
-        playlist = await self._get_visible_library_item(item_id)
+        """Return the library playlist, if the caller may change its items."""
+        playlist = await self.get_library_item(item_id)
+        # a library manager is never masked, anyone else must be able to see it first
+        if not self._may_manage(playlist):
+            self._check_visible(playlist)
         self._check_may_edit_items(playlist)
         return playlist
 
@@ -1886,6 +1892,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         db_id = int(item_id)
         await self.mass.music.database.update(
             self.db_table, {"item_id": db_id}, {"access": serialize_to_json(access)}
+        )
+        # cached search results hold the playlists a user could see at the time
+        await self.mass.cache.delete(
+            None, category=CACHE_CATEGORY_SEARCH_RESULTS, provider=self.mass.music.domain
         )
         playlist = await self.get_library_item(db_id)
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, playlist.uri, playlist)
