@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import builtins
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast, overload
 
 import shortuuid
+from mashumaro import DataClassDictMixin
 from music_assistant_models.auth import Scope, UserRole
 from music_assistant_models.config_entries import (
     ConfigActionResult,
@@ -69,6 +71,16 @@ if TYPE_CHECKING:
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class ShareCandidate(DataClassDictMixin):
+    """A household member a music source can be shared with."""
+
+    user_id: str
+    username: str
+    display_name: str | None = None
+    avatar_url: str | None = None
 
 
 class ProviderConfigMixin:
@@ -405,6 +417,28 @@ class ProviderConfigMixin:
         # the music sources of (other) users change with this, so let every client refresh
         self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
         return await self.get_provider_config(instance_id)
+
+    @api_command("config/providers/share_candidates", required_scope=Scope.CONFIG_PROVIDERS_OWN)
+    async def get_share_candidates(self) -> list[ShareCandidate]:
+        """
+        Return the household members the calling user may share a music source with.
+
+        Every enabled member but the caller itself is listed, without its role or settings.
+        Guests and the Home Assistant system user are not members, so they are left out.
+        """
+        caller, _ = self._access_caller()
+        return [
+            ShareCandidate(
+                user_id=user.user_id,
+                username=user.username,
+                display_name=user.display_name,
+                avatar_url=user.avatar_url,
+            )
+            for user in await self.mass.webserver.auth.list_users()
+            if user.enabled
+            and self._is_member(user)
+            and (caller is None or user.user_id != caller.user_id)
+        ]
 
     def release_user_sources(self, user_id: str) -> None:
         """
@@ -882,12 +916,13 @@ class ProviderConfigMixin:
             then accepted.
         """
         user = await self._validate_access_user(user_id, on_record)
-        if user is None:
-            return
-        if user.role == UserRole.GUEST:
-            raise InvalidDataError("A guest can not own a music source")
-        if user.username == HOMEASSISTANT_SYSTEM_USER:
-            raise InvalidDataError("The Home Assistant system user can not own a music source")
+        if user is not None and not self._is_member(user):
+            raise InvalidDataError("Only a household member can own a music source")
+
+    @staticmethod
+    def _is_member(user: User) -> bool:
+        """Return whether the user is a household member: not a guest nor the HA system user."""
+        return user.role != UserRole.GUEST and user.username != HOMEASSISTANT_SYSTEM_USER
 
     async def _resolve_provider_config_entries(self, provider: Provider) -> list[ConfigEntry]:
         """Return the full config-entry set for a (loaded) provider instance."""
