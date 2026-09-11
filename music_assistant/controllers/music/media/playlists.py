@@ -1935,7 +1935,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """
         user = await self.mass.webserver.auth.get_user(user_id)
         if user is None and not on_record:
-            raise InvalidDataError(f"Unknown or disabled user: {user_id}")
+            raise InvalidDataError(
+                f"Unknown or disabled user: {user_id}",
+                translation_key="unknown_or_disabled_user",
+                translation_args=[user_id],
+            )
         if not owner or user is None:
             return
         if user.role == UserRole.GUEST:
