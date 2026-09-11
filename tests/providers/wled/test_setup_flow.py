@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-from music_assistant.models.setup_flow import SetupFlowContext
+from music_assistant.models.setup_flow import SetupFlowContext, SetupFlowError
 from music_assistant.providers.wled.constants import CONF_PORT, DEFAULT_PORT
 from music_assistant.providers.wled.setup_flow import _next_free_port, run_setup
 
@@ -275,3 +275,61 @@ class TestRunSetupSyncsValuesOverrideOnReconfigure:
         await run_setup(session)
 
         session.mass.config.set_raw_provider_config_value.assert_not_called()
+
+    async def test_new_port_is_applied_before_finish_reloads_the_provider(self) -> None:
+        """
+        The values override must be written before session.finish(), not after.
+
+        session.finish() reloads the provider as part of a reconfigure -- writing the
+        override only afterward would mean that reload (and the bridge it starts) still
+        sees the stale port, and the following write would just fix storage without
+        ever restarting anything.
+        """
+        context = SetupFlowContext(
+            kind="reconfigure",
+            reason="user",
+            domain="wled",
+            instance_id="wled_1",
+            setup_data={CONF_PORT: DEFAULT_PORT},
+            values={CONF_PORT: DEFAULT_PORT + 5},
+        )
+        session = _fake_flow_session(context)
+        session.form.return_value = {CONF_PORT: DEFAULT_PORT + 9}
+        call_order: list[str] = []
+        session.mass.config.set_raw_provider_config_value.side_effect = lambda *_args, **_kwargs: (
+            call_order.append("set_raw_provider_config_value")
+        )
+
+        async def _finish(*_args: object, **_kwargs: object) -> dict[str, str]:
+            call_order.append("finish")
+            return {"instance_id": "wled_1"}
+
+        session.finish = AsyncMock(side_effect=_finish)
+
+        await run_setup(session)
+
+        assert call_order == ["set_raw_provider_config_value", "finish"]
+
+    async def test_override_is_rolled_back_when_finish_fails(self) -> None:
+        """A rejected submit must not leave the values override on an unaccepted port."""
+        context = SetupFlowContext(
+            kind="reconfigure",
+            reason="user",
+            domain="wled",
+            instance_id="wled_1",
+            setup_data={CONF_PORT: DEFAULT_PORT},
+            values={CONF_PORT: DEFAULT_PORT + 5},
+        )
+        session = _fake_flow_session(context)
+        session.form.return_value = {CONF_PORT: DEFAULT_PORT + 9}
+        session.finish = AsyncMock(
+            side_effect=[SetupFlowError("port taken"), {"instance_id": "wled_1"}]
+        )
+
+        await run_setup(session)
+
+        calls = session.mass.config.set_raw_provider_config_value.call_args_list
+        assert calls[0].args == ("wled_1", CONF_PORT, DEFAULT_PORT + 9)  # applied pre-finish
+        assert calls[1].args == ("wled_1", CONF_PORT, DEFAULT_PORT + 5)  # rolled back on failure
+        assert calls[2].args == ("wled_1", CONF_PORT, DEFAULT_PORT + 9)  # re-applied on retry
+        assert session.finish.await_count == 2

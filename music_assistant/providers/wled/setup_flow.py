@@ -63,29 +63,39 @@ async def run_setup(session: SetupSession) -> None:
     errors: dict[str, str] | None = None
     while True:
         submitted = await session.form(entries, step_id="user", errors=errors, last_step=True)
+        # session.finish() only ever persists into setup_data, but _port_from_config
+        # prefers a "values" override over setup_data (see ConfigController.
+        # set_raw_provider_config_value) -- and finish() *also* reloads the provider
+        # for a reconfigure, before we would otherwise get a chance to update that
+        # override. So apply it first: reloading then reads the new port, not a stale
+        # one, and this avoids a second, separate reload just to pick the fix up.
+        applied_port_override_instance_id: str | None = None
+        previous_port_override = session.context.values.get(CONF_PORT)
+        if session.context.kind == "reconfigure" and previous_port_override is not None:
+            assert session.context.instance_id is not None  # always set for reconfigure
+            applied_port_override_instance_id = session.context.instance_id
+            session.mass.config.set_raw_provider_config_value(
+                session.context.instance_id,
+                CONF_PORT,
+                submitted.get(CONF_PORT, suggested_port),
+            )
+        finished = False
         try:
             await session.finish(submitted)
+            finished = True
         except SetupFlowError as err:
             # The engine wraps every finish-time failure (including
             # handle_async_init's duplicate-port check -- reachable if another
             # instance claims the suggested port between the scan above and
             # this submit) in SetupFlowError before it reaches this coroutine.
             errors = {"base": err.translation_key or str(err)}
-            continue
-        if (
-            session.context.kind == "reconfigure"
-            and session.context.values.get(CONF_PORT) is not None
-        ):
-            # session.finish() only ever persists into setup_data. _port_from_config
-            # prefers a "values" override over setup_data, so once the port has been
-            # edited even once through the provider's normal settings page (which
-            # writes to values, see ConfigController.set_raw_provider_config_value),
-            # a port change made *here* would otherwise be silently shadowed by that
-            # stale values entry forever after. Keep both in sync.
-            assert session.context.instance_id is not None  # always set for reconfigure
-            session.mass.config.set_raw_provider_config_value(
-                session.context.instance_id,
-                CONF_PORT,
-                submitted.get(CONF_PORT, suggested_port),
-            )
-        return
+        finally:
+            if not finished and applied_port_override_instance_id is not None:
+                # finish() failed (or was cancelled) after we already wrote the new
+                # port above -- put the override back so a rejected/aborted submit
+                # doesn't leave the port pointed at a value that was never accepted.
+                session.mass.config.set_raw_provider_config_value(
+                    applied_port_override_instance_id, CONF_PORT, previous_port_override
+                )
+        if finished:
+            return
