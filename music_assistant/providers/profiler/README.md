@@ -76,9 +76,10 @@ directory as `report.json` and `report.md`.
   heap growth, though mappings that are never released are still worth a look.
   `rss_anon_mb` climbing is heap growth — re-run with the tracemalloc option enabled
   and compare `growth_since_previous_report` between two reports taken some time apart;
-  `include_object_census=true` shows which object types accumulate. If neither grows but
-  `cgroup_reported_mb` does, the growth is outside the main process (child processes,
-  page cache of streamed files).
+  `include_object_census=true` shows which object types accumulate. `rss_shmem_mb` is the
+  remaining shared-memory part of RSS. If none of the three grows but `cgroup_reported_mb`
+  does, the growth is outside the main process (child processes, page cache of streamed
+  files).
 - **High `events_per_s`**: something is flooding the event bus — see `events.per_type_top`.
 - **Growing `asyncio_tasks`/`tracked_tasks`**: task leak — the locations in
   `asyncio_tasks.top_by_location` show where the leaked tasks are suspended.

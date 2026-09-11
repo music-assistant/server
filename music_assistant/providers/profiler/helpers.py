@@ -35,6 +35,7 @@ RECORDER_FIELDS = (
     "rss_mb",
     "rss_anon_mb",
     "rss_file_mb",
+    "rss_shmem_mb",
     "cgroup_reported_mb",
     "cpu_pct",
     "loop_lag_avg_ms",
@@ -365,9 +366,7 @@ def finalize_recorder_entry(
     """Add process-level metrics to a flight-recorder entry and append it to the stats CSV."""
     mem = proc.memory_info()
     entry["rss_mb"] = round(mem.rss / 1024**2, 1)
-    split = collect_resident_memory_split()
-    entry["rss_anon_mb"] = split["rss_anon_mb"]
-    entry["rss_file_mb"] = split["rss_file_mb"]
+    entry.update(collect_resident_memory_split())
     entry["cgroup_reported_mb"] = collect_cgroup_memory()["cgroup_reported_mb"]
     # cpu percent is measured over the interval since the previous sample
     entry["cpu_pct"] = round(proc.cpu_percent(), 1)
