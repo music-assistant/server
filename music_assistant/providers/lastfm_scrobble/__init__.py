@@ -4,12 +4,12 @@ import asyncio
 import enum
 import logging
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, ClassVar, Final, cast
 
 import pylast
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
-from music_assistant_models.enums import EventType, MediaType, ProviderFeature
+from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.helpers.app_vars import app_var
@@ -28,11 +28,10 @@ _DEFAULT_API_KEY: str = app_var("lastfm_api_key")
 _DEFAULT_API_SECRET: str = app_var("lastfm_api_secret")
 
 
-# we don't have any special supported features (yet)
 # TODO(@anyone): this really should be a frozenset, but that requires
 # updating the PluginProvider base class
 # as well as other similar classes that also use set[ProviderFeature].
-SUPPORTED_FEATURES: Final[set[ProviderFeature]] = set()
+SUPPORTED_FEATURES: Final[set[ProviderFeature]] = {ProviderFeature.SCROBBLE}
 SUPPORTED_SCROBBLE_MEDIA_TYPES: Final[frozenset[MediaType]] = frozenset({MediaType.TRACK})
 
 # Configuration keys
@@ -115,7 +114,7 @@ class LastFMScrobbleProvider(PluginProvider):
     """Plugin provider to support scrobbling of tracks."""
 
     _network: pylast._Network | None
-    _on_unload: list[Callable[[], None]]
+    _handler: LastFMEventHandler | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -129,7 +128,6 @@ class LastFMScrobbleProvider(PluginProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async setup."""
-        self._on_unload: list[Callable[[], None]] = []
         self._network = None
 
         if not self.get_setup_value(CONF_SESSION_KEY):
@@ -146,20 +144,14 @@ class LastFMScrobbleProvider(PluginProvider):
         if self._network is None:
             return
 
-        # subscribe to media_item_played event
-        handler = LastFMEventHandler(self._network, self.logger, self.config)
-        self._on_unload.append(
-            self.mass.subscribe(handler._on_mass_media_item_played, EventType.MEDIA_ITEM_PLAYED)
-        )
+        # built once the provider is registered, so the handler logs under the instance's
+        # own logger rather than the domain-wide one
+        self._handler = LastFMEventHandler(self._network, self.logger, self.config)
 
-    async def unload(self, is_removed: bool = False) -> None:
-        """
-        Handle unload/close of the provider.
-
-        Called when provider is deregistered (e.g. MA exiting or config reloading).
-        """
-        for unload_cb in self._on_unload:
-            unload_cb()
+    async def on_media_item_played(self, report: MediaItemPlaybackProgressReport) -> None:
+        """Forward a playback progress report to Last.fm once the account is authenticated."""
+        if self._handler is not None:
+            await self._handler.on_media_item_played(report)
 
     def _get_network_config(self) -> dict[str, ConfigValueType]:
         """
@@ -177,7 +169,7 @@ class LastFMScrobbleProvider(PluginProvider):
 
 
 class LastFMEventHandler(ScrobblerHelper):
-    """Handle Last.fm event processing for scrobbling and now-playing updates."""
+    """Submit now-playing updates and scrobbles to Last.fm."""
 
     # pylast wraps every failure — including network errors — in PyLastError.
     scrobble_exceptions: ClassVar[tuple[type[Exception], ...]] = (pylast.PyLastError,)

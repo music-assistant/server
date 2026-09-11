@@ -16,14 +16,18 @@ from music_assistant_models.enums import ConfigEntryType, MediaType
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 
 if TYPE_CHECKING:
-    from music_assistant_models.event import MassEvent
     from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
     from music_assistant import MusicAssistant
 
 
 class ScrobblerHelper:
-    """Base class to aid scrobbling media items."""
+    """
+    Base class to aid scrobbling media items.
+
+    A plugin declaring ProviderFeature.SCROBBLE forwards its ``on_media_item_played`` hook
+    to this helper, which applies the configured user and player filters.
+    """
 
     logger: logging.Logger
     config: ScrobblerConfig
@@ -67,22 +71,14 @@ class ScrobblerHelper:
         # we can only rely on fully_played for now
         return bool(report.fully_played)
 
-    def _is_configured(self) -> bool:
-        """Override if subclass needs specific configuration."""
-        return True
+    async def on_media_item_played(self, report: MediaItemPlaybackProgressReport) -> None:
+        """
+        Handle a playback progress report: update now playing and scrobble when due.
 
-    async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
-        """Send a Now Playing update to the scrobbling service."""
-
-    async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
-        """Scrobble."""
-
-    async def _on_mass_media_item_played(self, event: MassEvent) -> None:
-        """Media item has finished playing, we'll scrobble the item."""
+        :param report: The playback progress report of the played item.
+        """
         if not self._is_configured():
             return
-
-        report: MediaItemPlaybackProgressReport = event.data
 
         if self.supported_media_types and report.media_type not in self.supported_media_types:
             self.logger.debug("skipped scrobbling for unsupported media type %s", report.media_type)
@@ -132,6 +128,16 @@ class ScrobblerHelper:
 
         if self.should_scrobble(report):
             await scrobble()
+
+    def _is_configured(self) -> bool:
+        """Override if subclass needs specific configuration."""
+        return True
+
+    async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
+        """Send a Now Playing update to the scrobbling service."""
+
+    async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
+        """Scrobble."""
 
 
 CONF_VERSION_SUFFIX = "suffix_version"
