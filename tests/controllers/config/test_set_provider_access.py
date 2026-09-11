@@ -260,6 +260,25 @@ async def test_a_disabled_owner_keeps_its_source(access_mass: MusicAssistant) ->
     assert config.access == ProviderAccess(owner=owner.user_id, sharing=ProviderSharing.MEMBERS)
 
 
+async def test_a_guest_owning_a_source_is_refused_even_when_unchanged(
+    access_mass: MusicAssistant,
+) -> None:
+    """Keeping the owner only skips the checks while the account is disabled."""
+    admin = await _create_user(access_mass, "admin", UserRole.ADMIN)
+    owner = await _create_user(access_mass, "owner")
+    set_music_source_access(
+        access_mass,
+        {MUSIC_INSTANCE: ProviderAccess(owner=owner.user_id, sharing=ProviderSharing.PRIVATE)},
+    )
+    set_current_user(admin)
+    await access_mass.webserver.auth.update_user_role(owner.user_id, UserRole.GUEST, admin)
+
+    with pytest.raises(InvalidDataError):
+        await access_mass.config.set_provider_access(
+            MUSIC_INSTANCE, owner=owner.user_id, sharing=ProviderSharing.MEMBERS
+        )
+
+
 async def test_a_disabled_member_keeps_its_place_on_the_share_list(
     access_mass: MusicAssistant,
 ) -> None:
