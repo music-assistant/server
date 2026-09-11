@@ -12,6 +12,7 @@ from music_assistant.controllers.streams.audio_buffer import AudioBufferDiscarde
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.providers.milkdrop_visualizer.tap import (
     PENDING_FRAMES,
+    RING_PAST_SECONDS,
     WAVE_SAMPLES,
     Tap,
     TapManager,
@@ -21,6 +22,7 @@ from music_assistant.providers.milkdrop_visualizer.tap import (
     palette_payload,
     pcm_to_mono,
     server_now_us,
+    wave_frame_timestamp,
 )
 
 PCM_FORMAT = AudioFormat(sample_rate=44100, bit_depth=16, channels=2)
@@ -338,6 +340,40 @@ def test_release_due_releases_only_frames_within_lead_of_now() -> None:
     assert list(tap.ring) == [near]
     assert _pending_frames(tap) == [far]
     assert list(queued._items) == [near]
+
+
+def test_release_due_keeps_a_time_window_whatever_the_frame_rate() -> None:
+    """A high frame rate is bounded by time in the ring, not by a frame count."""
+    manager = _manager()
+    tap = Tap("player-1")
+    now_us = server_now_us()
+    step_us = 5_000  # 200 frames/s, well above a typical wave rate
+    start_us = now_us - 3_000_000
+    end_us = now_us + 4_000_000  # still within LEAD_SECONDS(5s), so all are due
+    timestamp_us = start_us
+    while timestamp_us <= end_us:
+        frame = pack_wave_frame(timestamp_us, b"\x80" * WAVE_SAMPLES)
+        tap.pending.append((timestamp_us, frame))
+        timestamp_us += step_us
+    manager._release_due(tap)
+    assert not tap.pending
+    oldest_allowed_us = now_us - int(RING_PAST_SECONDS * 1_000_000) - 5_000
+    assert all(wave_frame_timestamp(frame) >= oldest_allowed_us for frame in tap.ring)
+    assert wave_frame_timestamp(tap.ring[-1]) == end_us
+    assert len(tap.ring) > 512
+
+
+def test_release_due_drops_frames_older_than_the_past_window() -> None:
+    """A ring frame older than RING_PAST_SECONDS is trimmed even with nothing new to release."""
+    manager = _manager()
+    tap = Tap("player-1")
+    now_us = server_now_us()
+    old = pack_wave_frame(now_us - 5_000_000, b"\x80" * WAVE_SAMPLES)
+    recent = pack_wave_frame(now_us - 500_000, b"\x80" * WAVE_SAMPLES)
+    tap.ring.append(old)
+    tap.ring.append(recent)
+    manager._release_due(tap)
+    assert list(tap.ring) == [recent]
 
 
 def test_reset_clears_pending() -> None:

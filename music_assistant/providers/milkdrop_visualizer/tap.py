@@ -63,10 +63,11 @@ IDLE_POLL_SECONDS = 0.5
 # have them stops asking.
 BEAT_RETRY_SECONDS = 3.0
 BEAT_RETRY_ATTEMPTS = 30
-# Frames replayed to a viewer that attaches mid-track (~12s), and the ceiling
-# on one viewer's outbound queue.
-RING_FRAMES = 512
+# Ceiling on one viewer's outbound queue.
 VIEWER_QUEUE_FRAMES = 1024
+# How far behind now the ring keeps released frames. An attaching viewer draws
+# the newest past frame at once, and the rest of the ring is the lead ahead.
+RING_PAST_SECONDS = 1.0
 # Ceiling on frames held back before they are due (~3 min, ~8MB per tap); past
 # it the tap stops reading and accepts a hole.
 PENDING_FRAMES = 8192
@@ -87,6 +88,11 @@ def server_now_us() -> int:
 def pack_wave_frame(timestamp_us: int, samples: bytes) -> bytes:
     """Pack one waveform tail for the wire."""
     return struct.pack(">Bq", WAVE_FRAME_TAG, timestamp_us) + samples
+
+
+def wave_frame_timestamp(frame: bytes) -> int:
+    """Return the play-at timestamp of a packed waveform frame."""
+    return int(struct.unpack_from(">q", frame, 1)[0])
 
 
 def pack_beat_frame(timestamp_us: int, is_downbeat: bool) -> bytes:
@@ -223,9 +229,9 @@ class Tap:
         self.beats: deque[tuple[int, bytes]] = deque(maxlen=4096)
         # Frames read ahead, held until within LEAD_SECONDS of audible.
         self.pending: deque[tuple[int, bytes]] = deque()
-        # Recent packed waveform frames, replayed to a connecting viewer so it
-        # has something to draw before the tap reaches its next chunk.
-        self.ring: deque[bytes] = deque(maxlen=RING_FRAMES)
+        # Released frames from RING_PAST_SECONDS ago through the release lead,
+        # replayed to a viewer that attaches mid-track.
+        self.ring: deque[bytes] = deque()
         # Latest color@v1 fields, replayed to viewers that attach mid-track.
         self.last_color: dict[str, list[int] | None] = {}
         # Beat analysis already fetched for the current item, so a re-anchor
@@ -461,13 +467,20 @@ class TapManager:
         """
         Move pending frames whose play-at time has arrived into the ring and fan them out.
 
+        Also trims the ring to its past window.
+
         :param tap: The tap whose pending queue to release from.
         """
-        threshold_us = server_now_us() + int(LEAD_SECONDS * 1_000_000)
+        now_us = server_now_us()
+        threshold_us = now_us + int(LEAD_SECONDS * 1_000_000)
         while tap.pending and tap.pending[0][0] <= threshold_us:
             _, frame = tap.pending.popleft()
             tap.ring.append(frame)
             tap.fan_out(frame)
+        oldest_us = now_us - int(RING_PAST_SECONDS * 1_000_000)
+        # keep the ring to what an attaching viewer can use
+        while tap.ring and wave_frame_timestamp(tap.ring[0]) < oldest_us:
+            tap.ring.popleft()
 
     def _emit_chunk(
         self, tap: Tap, cursor: TrackCursor, pcm: bytes, pcm_format: AudioFormat
