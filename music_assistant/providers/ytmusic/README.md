@@ -235,7 +235,7 @@ mixes.
 
 | Symptom | Likely cause | What to do |
 | --- | --- | --- |
-| *cookie is missing `__Secure-3PAPISID`* | Copied from a request made before signing in, or from another host. | In the incognito window open your Library first, then copy the `Cookie` header of a `/browse` request — or export `cookies.txt` with a cookie exporter extension and paste that. |
+| *cookie is missing `__Secure-3PAPISID`* | Copied from a request made before signing in, from another host, or from Chrome's "Copy as cURL", which no longer includes cookies (since early 2025). | Export `cookies.txt` with a cookie exporter extension and paste that, or copy the `Cookie` header of a `/browse` request made after opening your Library. |
 | *could not be parsed* | The paste was edited or wrapped oddly. | Paste exactly what the browser/exporter produced. |
 | *session is no longer valid* | Google rotated the session (normal tab kept open, logged out, incognito window closed). | Export a fresh cookie; the cookies.txt route from an incognito window lasts longest. |
 | *PO Token server is not reachable* | The *YT Music PO Token Generator* add-on is not installed/running, or the URL is wrong. | Install/start it; check the URL (default `http://127.0.0.1:4416`). |

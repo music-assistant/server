@@ -2791,7 +2791,7 @@
   "provider.yousee.config_entries.yousee_quality.options.320": "\"High\" - MP4 320kbps",
   "provider.yousee.errors.playlist_create_failed": "Could not create playlist {0}.",
   "provider.yousee.manifest.description": "YouSee Musik, a Danish music streaming service.",
-  "provider.ytmusic.config_entries.cookie.description": "Paste the cookie of a signed-in music.youtube.com session, see the documentation. You can paste the Cookie header value, a 'Copy as cURL' command from your browser's developer tools, or a cookies.txt export from a cookie exporter extension.",
+  "provider.ytmusic.config_entries.cookie.description": "Paste the cookie of a signed-in music.youtube.com session, see the documentation. You can paste a cookies.txt export from a cookie exporter extension, the Cookie header value from your browser's developer tools, or (Firefox) a 'Copy as cURL' command. Note that Chrome's 'Copy as cURL' no longer includes cookies.",
   "provider.ytmusic.config_entries.cookie.label": "Login Cookie",
   "provider.ytmusic.config_entries.po_token_server_url.description": "The URL to the PO Token server. Can be left as default for most people. \n\n**Note that this does require you to have the 'YT Music PO Token Generator' addon installed!**",
   "provider.ytmusic.config_entries.po_token_server_url.label": "PO Token Server URL",

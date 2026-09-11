@@ -5,7 +5,7 @@
     },
     "cookie": {
       "label": "Login Cookie",
-      "description": "Paste the cookie of a signed-in music.youtube.com session, see the documentation. You can paste the Cookie header value, a 'Copy as cURL' command from your browser's developer tools, or a cookies.txt export from a cookie exporter extension."
+      "description": "Paste the cookie of a signed-in music.youtube.com session, see the documentation. You can paste a cookies.txt export from a cookie exporter extension, the Cookie header value from your browser's developer tools, or (Firefox) a 'Copy as cURL' command. Note that Chrome's 'Copy as cURL' no longer includes cookies."
     },
     "po_token_server_url": {
       "label": "PO Token Server URL",
