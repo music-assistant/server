@@ -67,8 +67,8 @@ BEAT_RETRY_ATTEMPTS = 30
 # on one viewer's outbound queue.
 RING_FRAMES = 512
 VIEWER_QUEUE_FRAMES = 1024
-# Ceiling on frames held back before they are due (~3 min); past it the tap
-# stops reading and accepts a hole.
+# Ceiling on frames held back before they are due (~3 min, ~8MB per tap); past
+# it the tap stops reading and accepts a hole.
 PENDING_FRAMES = 8192
 
 # Wire tags, matching the format documented in relay.py.
@@ -391,6 +391,9 @@ class TapManager:
             await asyncio.sleep(IDLE_POLL_SECONDS)
             return cursor
         self._emit_chunk(tap, cursor, pcm, buffer.pcm_format)
+        # a resident chunk is read without suspending, so a catch-up burst
+        # would otherwise hold the event loop for its whole length
+        await asyncio.sleep(0)
         return cursor
 
     def _playing_source(self, player_id: str) -> tuple[PlayerQueue, QueueItem, AudioBuffer] | None:
