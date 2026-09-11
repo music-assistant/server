@@ -494,10 +494,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 if (prov := self.mass.get_provider(instance_id))
                 and (prov.instance_id in requested_providers or prov.domain in requested_providers)
             ]
-        # use cache to avoid repeated searches
+        # use cache to avoid repeated searches; the library results are narrowed to what
+        # the calling user may see, so the entry is kept per user
+        user = get_current_user()
         cache_key = (
             f"{search_query}-{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}-"
-            f"{int(include_library)}-{','.join(search_providers)}"
+            f"{int(include_library)}-{','.join(search_providers)}-"
+            f"{user.user_id if user else ''}"
         )
         if cache := await self.mass.cache.get(
             key=cache_key,
@@ -1284,10 +1287,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     ) -> MediaItemType | None:
         """Get the library item for the given provider item, if present."""
         ctrl = self.get_controller(media_type)
-        return await ctrl.get_library_item_by_prov_id(
+        item = await ctrl.get_library_item_by_prov_id(
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
         )
+        if isinstance(item, Playlist) and not self.playlists.visible_to_caller(item):
+            return None
+        return item
 
     @api_command("music/favorites/add_item", required_scope=Scope.LIBRARY_WRITE)
     async def add_item_to_favorites(

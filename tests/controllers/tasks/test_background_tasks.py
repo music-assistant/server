@@ -47,7 +47,10 @@ from music_assistant.controllers.tasks import (
     update_current_task_progress_text,
 )
 from music_assistant.controllers.tasks.constants import TASK_UPDATE_TIMER_ID
-from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    set_current_user,
+)
 from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
@@ -369,6 +372,30 @@ async def test_priority_task_runs_before_normal(tasks_controller: TasksControlle
     await asyncio.sleep(0.1)
 
     assert execution_order[0] == "priority"
+
+
+async def test_task_runs_without_the_user_context_of_its_caller(
+    tasks_controller: TasksController,
+) -> None:
+    """A managed task is a server-side job, it never acts as the user that queued it."""
+    seen_users: list[User | None] = []
+
+    async def handler() -> None:
+        seen_users.append(get_current_user())
+
+    set_current_user(User(user_id="user-123", username="user123", role=UserRole.USER))
+    try:
+        task = tasks_controller.run_background_task(
+            name="Add playlist tracks",
+            handler=handler,
+            user_id="user-123",
+        )
+        await _wait_for_task_status(tasks_controller, task.id, TaskStatus.SUCCESS)
+    finally:
+        set_current_user(None)
+
+    assert seen_users == [None]
+    assert tasks_controller.get_task(task.id).user_id == "user-123"
 
 
 async def test_user_scoped_task_visibility(tasks_controller: TasksController) -> None:

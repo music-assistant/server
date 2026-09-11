@@ -593,7 +593,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 raise ProviderUnavailableError(f"Provider {source_provider} is not available")
             allowed_provider_instances.add(source_provider)
         allowed_provider_instances.add(provider.instance_id)
-        # the task does not run in the caller's context, so the owner is settled here
+        # a background task runs without a user context, so the owner is settled here
         destination_access = self._new_playlist_access(user)
         return self.mass.tasks.run_background_task(
             name=f"Migrate playlist {source_playlist.name}",
@@ -670,6 +670,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     continue
                 await self._validate_access_user(user_id, on_record=user_id in current_shared)
                 shared.append(user_id)
+        if owner is None and (
+            sharing == ProviderSharing.PRIVATE
+            or (sharing == ProviderSharing.SELECTED and not shared)
+        ):
+            raise InvalidDataError("A playlist without an owner must be shared with someone")
         access = PlaylistAccess(
             owner=owner, sharing=sharing, shared_users=shared, collaborative=collaborative
         )
@@ -705,7 +710,19 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         :param item: The library playlist about to be removed.
         """
+        self._check_visible(item)
         self._check_may_manage(item)
+
+    def visible_to_caller(self, playlist: Playlist) -> bool:
+        """
+        Return whether the calling user may see the given playlist.
+
+        :param playlist: The library playlist to check.
+        """
+        # no user context means an internal (server-side) caller, which is trusted
+        if playlist.access is None or (user := get_current_user()) is None:
+            return True
+        return access_allows(playlist.access, user)
 
     async def _handle_migrate_playlist(
         self,
@@ -1804,9 +1821,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     def _check_visible(self, playlist: Playlist) -> None:
         """Raise when the calling user may not see the given playlist."""
-        if playlist.access is None or access_allows(playlist.access, get_current_user()):
-            return
-        raise MediaNotFoundError(f"playlist not found in library: {playlist.item_id}")
+        if not self.visible_to_caller(playlist):
+            raise MediaNotFoundError(f"playlist not found in library: {playlist.item_id}")
 
     def _check_may_edit_items(self, playlist: Playlist) -> None:
         """Raise when the calling user may not add or remove items of the given playlist."""
@@ -1816,19 +1832,12 @@ class PlaylistController(MediaControllerBase[Playlist]):
             and access_allows(playlist.access, get_current_user())
         ):
             return
-        raise InsufficientPermissions(
-            f"Only the owner of {playlist.name} may change it",
-            translation_key="playlist_not_owned",
-        )
+        raise self._not_owned_error(playlist)
 
     def _check_may_manage(self, playlist: Playlist) -> None:
         """Raise when the calling user may not manage the given playlist."""
-        if self._may_manage(playlist):
-            return
-        raise InsufficientPermissions(
-            f"Only the owner of {playlist.name} may change it",
-            translation_key="playlist_not_owned",
-        )
+        if not self._may_manage(playlist):
+            raise self._not_owned_error(playlist)
 
     def _may_manage(self, playlist: Playlist) -> bool:
         """Return whether the calling user owns the playlist or manages the whole library."""
@@ -1836,6 +1845,14 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if (user := get_current_user()) is None or playlist.access is None:
             return True
         return playlist.access.owner == user.user_id or has_scope(user, Scope.LIBRARY_MANAGE)
+
+    @staticmethod
+    def _not_owned_error(playlist: Playlist) -> InsufficientPermissions:
+        """Return the error for a change only the owner of the playlist may make."""
+        return InsufficientPermissions(
+            f"Only the owner of {playlist.name} may change it",
+            translation_key="playlist_not_owned",
+        )
 
     def _new_playlist_access(self, user: User | None) -> PlaylistAccess | None:
         """Return the access record for a playlist the given user creates, None for household."""
