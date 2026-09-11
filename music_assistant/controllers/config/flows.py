@@ -43,6 +43,7 @@ from music_assistant.models.setup_flow import (
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from music_assistant_models.auth import User
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
@@ -60,6 +61,38 @@ NEXT_STEP_TIMEOUT = 120
 FLOW_ABORT_CLEANUP_TIMEOUT = 10
 
 
+@dataclass(frozen=True)
+class SetupFlowAccess:
+    """Who may receive the steps of a setup flow and interact with it."""
+
+    # required_scope: the scope the starting command required
+    required_scope: Scope
+    # owner_user_id: the user who started the flow; None when the server started it
+    owner_user_id: str | None = None
+
+    def allows(self, user: User) -> bool:
+        """
+        Return whether the given user may receive the flow's steps and interact with it.
+
+        :param user: The user to check.
+        """
+        # imported here: the webserver helpers pull in the full auth stack,
+        # which must not be imported with the config controller at startup
+        from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
+            has_scope,
+        )
+
+        if not has_scope(user, self.required_scope):
+            return False
+        # a flow is private to the user who started it; a user that manages
+        # every music source sees them all
+        return (
+            self.owner_user_id is None
+            or self.owner_user_id == user.user_id
+            or has_scope(user, Scope.CONFIG_PROVIDERS_WRITE)
+        )
+
+
 @dataclass
 class ActiveSetupFlow:
     """Registry record for a running setup flow."""
@@ -67,9 +100,9 @@ class ActiveSetupFlow:
     session: SetupSession
     # target_key: identifies what the flow is (re)configuring; one flow per target
     target_key: str
-    # required_scope: the scope the starting command required; re-checked on
+    # access: who may receive and interact with the flow; re-checked on
     # every flows/* continuation command
-    required_scope: Scope
+    access: SetupFlowAccess
     task: asyncio.Task[None] | None = None
 
 
@@ -79,10 +112,10 @@ class SetupFlowMixin:
     # registry of running flows, keyed by flow_id (lazily created per instance)
     _flows: dict[str, ActiveSetupFlow] | None = None
     _flow_sweep_handle: asyncio.TimerHandle | None = None
-    # required scopes of recently finished flows: terminal steps can publish after
-    # the registry pop (cancel-driven aborts), and the event-scope filter still
+    # access records of recently finished flows: terminal steps can publish after
+    # the registry pop (cancel-driven aborts), and the event filter still
     # needs to resolve them; bounded FIFO
-    _finished_flow_scopes: dict[str, Scope] | None = None
+    _finished_flow_access: dict[str, SetupFlowAccess] | None = None
 
     # Type hints for attributes/methods provided by the class this mixin is used with
     if TYPE_CHECKING:
@@ -116,7 +149,13 @@ class SetupFlowMixin:
             setup_data: dict[str, Any] | None = None,
         ) -> ProviderConfig: ...
 
-    @api_command("config/providers/setup", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
+        def _access_caller(self) -> tuple[User | None, bool]: ...
+
+        def _check_provider_setup_permission(self, manifest: ProviderManifest) -> None: ...
+
+        def _check_provider_manage_permission(self, instance_id: str) -> None: ...
+
+    @api_command("config/providers/setup", required_scope=Scope.CONFIG_PROVIDERS_OWN)
     async def setup_provider(self, provider_domain: str) -> SetupFlowStep:
         """
         Start the setup flow to add a new instance of the given provider.
@@ -124,6 +163,9 @@ class SetupFlowMixin:
         For a provider without a setup flow (no user input needed) the instance is
         created right away and a FINISH step is returned, so the add-provider path
         is uniform for all providers.
+
+        A caller that does not manage every music source may only add a music service
+        that allows more than one account; the new instance is then its own.
 
         :param provider_domain: Domain of the provider to add an instance of.
         """
@@ -133,6 +175,7 @@ class SetupFlowMixin:
         else:
             msg = f"Unknown provider domain: {provider_domain}"
             raise KeyError(msg)
+        self._check_provider_setup_permission(manifest)
         owner = f"provider.{provider_domain}"
         # fail fast on conditions that would otherwise only surface at save
         if manifest.stage == ProviderStage.DEPRECATED:
@@ -159,19 +202,28 @@ class SetupFlowMixin:
                 step_id=self._provider_finish_step_id(config.instance_id),
                 result={"instance_id": config.instance_id},
             )
+        target_key = f"provider_setup:{provider_domain}"
+        user, _ = self._access_caller()
+        if manifest.multi_instance and user is not None:
+            # users add their own account of a multi-account service side by side,
+            # so each user's add flow is its own target
+            target_key = f"{target_key}:{user.user_id}"
         context = SetupFlowContext(kind="setup", reason="user", domain=provider_domain)
         return await self._start_flow(
             flow_coro=flow_module.run_setup,
             context=context,
-            target_key=f"provider_setup:{provider_domain}",
-            required_scope=Scope.CONFIG_PROVIDERS_WRITE,
+            target_key=target_key,
+            required_scope=Scope.CONFIG_PROVIDERS_OWN,
             finish_handler=self._finish_provider_setup,
         )
 
-    @api_command("config/providers/reconfigure", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
+    @api_command("config/providers/reconfigure", required_scope=Scope.CONFIG_PROVIDERS_OWN)
     async def reconfigure_provider(self, instance_id: str) -> SetupFlowStep:
         """
         Start the reconfigure flow on an existing provider instance (covers reauth).
+
+        A caller that does not manage every music source may only reconfigure a music
+        source it owns.
 
         :param instance_id: The provider instance to reconfigure.
         """
@@ -179,6 +231,7 @@ class SetupFlowMixin:
         if not raw_conf:
             msg = f"No config found for provider id {instance_id}"
             raise KeyError(msg)
+        self._check_provider_manage_permission(instance_id)
         domain: str = raw_conf["domain"]
         manifest = self.mass.get_provider_manifest(domain)
         owner = f"provider.{domain}"
@@ -199,7 +252,7 @@ class SetupFlowMixin:
             flow_coro=flow_module.run_setup,
             context=context,
             target_key=f"provider_reconfigure:{instance_id}",
-            required_scope=Scope.CONFIG_PROVIDERS_WRITE,
+            required_scope=Scope.CONFIG_PROVIDERS_OWN,
             finish_handler=self._finish_provider_reconfigure,
         )
 
@@ -320,9 +373,9 @@ class SetupFlowMixin:
         self._check_flow_permission(flow)
         await self._abort_flow(flow, reason="aborted")
 
-    def get_setup_flow_required_scope(self, flow_id: str) -> Scope | None:
+    def get_setup_flow_access(self, flow_id: str) -> SetupFlowAccess | None:
         """
-        Return the scope required to receive/interact with the given setup flow.
+        Return who may receive the steps of the given setup flow and interact with it.
 
         Also resolves recently finished flows (their terminal step can publish
         just after the registry pop). Returns None when the flow is unknown.
@@ -330,18 +383,18 @@ class SetupFlowMixin:
         :param flow_id: The id of the flow.
         """
         if flow := self._setup_flows.get(flow_id):
-            return flow.required_scope
-        if self._finished_flow_scopes:
-            return self._finished_flow_scopes.get(flow_id)
+            return flow.access
+        if self._finished_flow_access:
+            return self._finished_flow_access.get(flow_id)
         return None
 
     def _pop_flow(self, flow: ActiveSetupFlow) -> None:
-        """Remove a flow from the registry, retaining its scope for late events."""
+        """Remove a flow from the registry, retaining its access record for late events."""
         self._setup_flows.pop(flow.session.flow_id, None)
-        if self._finished_flow_scopes is None:
-            self._finished_flow_scopes = {}
-        finished = self._finished_flow_scopes
-        finished[flow.session.flow_id] = flow.required_scope
+        if self._finished_flow_access is None:
+            self._finished_flow_access = {}
+        finished = self._finished_flow_access
+        finished[flow.session.flow_id] = flow.access
         while len(finished) > 64:
             finished.pop(next(iter(finished)))
 
@@ -357,6 +410,16 @@ class SetupFlowMixin:
         ],
     ) -> SetupFlowStep:
         """Register and start a new flow, returning its first published step."""
+        # imported here: the webserver helpers pull in the full auth stack,
+        # which must not be imported with the config controller at startup
+        from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
+            get_current_user,
+        )
+
+        # the flow belongs to the user starting it; no user context means the
+        # server itself started it
+        user = get_current_user()
+        access = SetupFlowAccess(required_scope, user.user_id if user else None)
         # one flow per target: starting anew replaces (aborts) a lingering previous flow.
         # re-scan after every await: the abort yields, so a concurrent start for the same
         # target may have registered a new flow in the meantime
@@ -366,9 +429,7 @@ class SetupFlowMixin:
             await self._abort_flow(existing_flow, reason="replaced")
         flow_id = uuid4().hex
         session = SetupSession(self.mass, flow_id, context, finish_handler)
-        flow = ActiveSetupFlow(
-            session=session, target_key=target_key, required_scope=required_scope
-        )
+        flow = ActiveSetupFlow(session=session, target_key=target_key, access=access)
         self._setup_flows[flow_id] = flow
         LOGGER.debug("Starting setup flow %s for %s", flow_id, target_key)
         flow.task = self.mass.create_task(self._run_flow(flow, flow_coro))
@@ -634,7 +695,7 @@ class SetupFlowMixin:
         raise KeyError(msg)
 
     def _check_flow_permission(self, flow: ActiveSetupFlow) -> None:
-        """Verify the calling user holds the scope the flow's start command required."""
+        """Verify the calling user may interact with the flow (scope and ownership)."""
         # imported here: the webserver helpers pull in the full auth stack,
         # which must not be imported with the config controller at startup
         from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
@@ -644,9 +705,15 @@ class SetupFlowMixin:
 
         user = get_current_user()
         # no user context means an internal (server-side) caller, which is trusted
-        if user is not None and not has_scope(user, flow.required_scope):
+        if user is None:
+            return
+        if not has_scope(user, flow.access.required_scope):
             raise InsufficientPermissions(
-                f"This action requires the {flow.required_scope.value} scope"
+                f"This action requires the {flow.access.required_scope.value} scope"
+            )
+        if not flow.access.allows(user):
+            raise InsufficientPermissions(
+                "Only the user who started this setup flow may interact with it"
             )
 
     def _synthesized_step(

@@ -94,6 +94,17 @@ def own_music_sources(mass: MusicAssistant, user: User | None) -> list[str]:
     ]
 
 
+def source_access(mass: MusicAssistant, instance_id: str) -> ProviderAccess | None:
+    """
+    Return the access record of the given provider instance, or None for a household source.
+
+    :param mass: The MusicAssistant instance.
+    :param instance_id: The provider instance id to look up.
+    """
+    raw_conf = mass.config.get(f"{CONF_PROVIDERS}/{instance_id}", {})
+    return _parse_access(instance_id, raw_conf)
+
+
 def source_owner(mass: MusicAssistant, instance_id: str) -> str | None:
     """
     Return the user id owning the given provider instance, or None for a household source.
@@ -101,8 +112,7 @@ def source_owner(mass: MusicAssistant, instance_id: str) -> str | None:
     :param mass: The MusicAssistant instance.
     :param instance_id: The provider instance id to look up.
     """
-    raw_conf = mass.config.get(f"{CONF_PROVIDERS}/{instance_id}", {})
-    access = _parse_access(instance_id, raw_conf)
+    access = source_access(mass, instance_id)
     return access.owner if access else None
 
 

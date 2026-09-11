@@ -30,6 +30,9 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderAccess
     from music_assistant_models.event import MassEvent
 
+# a role that may add and manage its own music sources; no builtin role holds the scope yet
+SELF_SERVICE_ROLE = "self_service"
+
 
 def utf8_safe(value: object) -> object:
     """

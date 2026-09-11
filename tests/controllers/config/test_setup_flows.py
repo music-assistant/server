@@ -32,6 +32,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import (
     ActionUnavailable,
+    InsufficientPermissions,
     LoginFailed,
     PlayerUnavailableError,
     SetupFailedError,
@@ -40,6 +41,7 @@ from music_assistant_models.player import OutputProtocol
 from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, ENCRYPT_SUFFIX
+from music_assistant.controllers.config.flows import SetupFlowAccess
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.mass import MusicAssistant
@@ -50,7 +52,7 @@ from music_assistant.providers.filesystem_local.setup_flow import (
     run_setup as filesystem_local_run_setup,
 )
 from music_assistant.providers.qobuz.setup_flow import run_setup as qobuz_run_setup
-from tests.common import MockPlayer, MockProvider
+from tests.common import SELF_SERVICE_ROLE, MockPlayer, MockProvider, set_music_source_access
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -58,6 +60,8 @@ if TYPE_CHECKING:
     from music_assistant_models.setup_flow import SetupFlowStep
 
 FAKE_DOMAIN = "_setup_flow_test"
+# a second domain, for the manifests only one test at a time needs
+GATE_DOMAIN = "_setup_flow_gate_test"
 
 USERNAME_ENTRY = ConfigEntry(key="username", type=ConfigEntryType.STRING, required=True)
 PORT_ENTRY = ConfigEntry(key="port", type=ConfigEntryType.INTEGER, required=False, default_value=80)
@@ -919,7 +923,7 @@ async def test_aborted_flow_scope_still_resolvable(flow_mass: MusicAssistant) ->
     def on_event(event: MassEvent) -> None:
         if event.data.type == FlowStepType.ABORT and event.object_id:
             resolvable_at_publish.append(
-                flow_mass.config.get_setup_flow_required_scope(event.object_id) is not None
+                flow_mass.config.get_setup_flow_access(event.object_id) is not None
             )
 
     flow_mass.subscribe(on_event, EventType.SETUP_FLOW_UPDATED)
@@ -929,13 +933,13 @@ async def test_aborted_flow_scope_still_resolvable(flow_mass: MusicAssistant) ->
     # event delivery is async (call_soon); wait for the callback to run
     await _wait_for(lambda: resolvable_at_publish)
     assert resolvable_at_publish == [True]
-    assert (
-        flow_mass.config.get_setup_flow_required_scope(step.flow_id) == Scope.CONFIG_PROVIDERS_WRITE
+    assert flow_mass.config.get_setup_flow_access(step.flow_id) == SetupFlowAccess(
+        Scope.CONFIG_PROVIDERS_OWN
     )
 
 
-async def test_setup_flow_required_scope_accessor(flow_mass: MusicAssistant) -> None:
-    """The event filter's scope accessor reports the flow's scope while it runs."""
+async def test_setup_flow_access_accessor(flow_mass: MusicAssistant) -> None:
+    """The event filter's access accessor reports the flow's scope while it runs."""
 
     async def run_setup(session: SetupSession) -> None:
         await session.form([USERNAME_ENTRY])
@@ -943,11 +947,247 @@ async def test_setup_flow_required_scope_accessor(flow_mass: MusicAssistant) -> 
 
     with _use_flow(flow_mass, run_setup):
         step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
-        assert (
-            flow_mass.config.get_setup_flow_required_scope(step.flow_id)
-            == Scope.CONFIG_PROVIDERS_WRITE
+        assert flow_mass.config.get_setup_flow_access(step.flow_id) == SetupFlowAccess(
+            Scope.CONFIG_PROVIDERS_OWN
         )
-    assert flow_mass.config.get_setup_flow_required_scope("nonexistent") is None
+    assert flow_mass.config.get_setup_flow_access("nonexistent") is None
+
+
+def _use_multi_account_manifest(flow_mass: MusicAssistant) -> None:
+    """Turn the fake provider into a music service that allows more than one account."""
+    manifest = flow_mass._provider_manifests[FAKE_DOMAIN]
+    flow_mass._provider_manifests[FAKE_DOMAIN] = replace(manifest, multi_instance=True)
+
+
+async def _credentials_flow(session: SetupSession) -> None:
+    """Run a single-form setup flow that finishes with the submitted values."""
+    values = await session.form([USERNAME_ENTRY])
+    await session.finish(values)
+
+
+async def test_a_member_owns_the_flow_it_starts(
+    flow_mass: MusicAssistant, self_service_role: str
+) -> None:
+    """
+    A setup flow a member starts is its own; only that member and an admin may use it.
+
+    :param self_service_role: Role id granted the self-service scope.
+    """
+    member = User(user_id="member", username="member", role=self_service_role)
+    other = User(user_id="other", username="other", role=self_service_role)
+    admin = User(user_id="admin", username="admin", role=UserRole.ADMIN)
+    _use_multi_account_manifest(flow_mass)
+    set_current_user(member)
+
+    with _use_flow(flow_mass, _credentials_flow):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+
+    access = flow_mass.config.get_setup_flow_access(step.flow_id)
+    assert access is not None
+    assert access == SetupFlowAccess(Scope.CONFIG_PROVIDERS_OWN, member.user_id)
+    assert access.allows(member)
+    assert access.allows(admin)
+    assert not access.allows(other)
+    assert not access.allows(User(user_id="guest", username="guest", role=UserRole.GUEST))
+    assert not access.allows(User(user_id="plain", username="plain", role=UserRole.USER))
+
+
+async def test_another_member_can_not_continue_a_members_flow(
+    flow_mass: MusicAssistant, self_service_role: str
+) -> None:
+    """
+    Only the member that started a setup flow (and an admin) may drive it.
+
+    :param self_service_role: Role id granted the self-service scope.
+    """
+    member = User(user_id="member", username="member", role=self_service_role)
+    other = User(user_id="other", username="other", role=self_service_role)
+    admin = User(user_id="admin", username="admin", role=UserRole.ADMIN)
+    _use_multi_account_manifest(flow_mass)
+    set_current_user(member)
+
+    with (
+        _use_flow(flow_mass, _credentials_flow),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        set_current_user(other)
+        with pytest.raises(InsufficientPermissions, match="who started this setup flow"):
+            await flow_mass.config.submit_setup_flow(step.flow_id, {"username": "sneak"})
+        with pytest.raises(InsufficientPermissions, match="who started this setup flow"):
+            await flow_mass.config.get_setup_flow(step.flow_id)
+        with pytest.raises(InsufficientPermissions, match="who started this setup flow"):
+            await flow_mass.config.abort_setup_flow(step.flow_id)
+        assert step.flow_id in flow_mass.config._setup_flows
+
+        set_current_user(admin)
+        assert (await flow_mass.config.get_setup_flow(step.flow_id)).step_id == step.step_id
+
+        set_current_user(member)
+        finish_step = await flow_mass.config.submit_setup_flow(step.flow_id, {"username": "m"})
+
+    assert finish_step.type == FlowStepType.FINISH
+    assert finish_step.result is not None
+    instance_id = finish_step.result["instance_id"]
+    assert instance_id.startswith(f"{FAKE_DOMAIN}--")
+    assert (
+        flow_mass.config.get(f"{CONF_PROVIDERS}/{instance_id}/access")
+        == ProviderAccess(owner=member.user_id, sharing=ProviderSharing.PRIVATE).to_dict()
+    )
+    # the finished flow keeps its record, so a late terminal step still resolves
+    assert flow_mass.config.get_setup_flow_access(step.flow_id) == SetupFlowAccess(
+        Scope.CONFIG_PROVIDERS_OWN, member.user_id
+    )
+
+
+async def test_a_server_started_flow_has_no_owner(
+    flow_mass: MusicAssistant, self_service_role: str
+) -> None:
+    """
+    A flow the server itself starts belongs to nobody, so every member may pick it up.
+
+    :param self_service_role: Role id granted the self-service scope.
+    """
+    set_current_user(None)
+
+    with _use_flow(flow_mass, _credentials_flow):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        access = flow_mass.config.get_setup_flow_access(step.flow_id)
+        assert access is not None
+        assert access.owner_user_id is None
+        set_current_user(User(user_id="member", username="member", role=self_service_role))
+        assert (await flow_mass.config.get_setup_flow(step.flow_id)).flow_id == step.flow_id
+
+
+@pytest.mark.parametrize(
+    "manifest_changes",
+    [
+        {},
+        {"builtin": True, "multi_instance": True},
+        {"type": ProviderType.PLAYER, "multi_instance": True},
+    ],
+    ids=["single_account", "builtin", "player"],
+)
+async def test_a_member_may_not_add_a_provider_it_can_not_own(
+    flow_mass: MusicAssistant, self_service_role: str, manifest_changes: dict[str, Any]
+) -> None:
+    """
+    A member only adds a music service that allows more than one account.
+
+    :param self_service_role: Role id granted the self-service scope.
+    :param manifest_changes: The manifest attributes that put the provider off limits.
+    """
+    flow_mass._provider_manifests[GATE_DOMAIN] = replace(
+        flow_mass._provider_manifests[FAKE_DOMAIN], domain=GATE_DOMAIN, **manifest_changes
+    )
+    set_current_user(User(user_id="member", username="member", role=self_service_role))
+
+    try:
+        with (
+            _use_flow(flow_mass, _credentials_flow),
+            pytest.raises(InsufficientPermissions, match="is required to add"),
+        ):
+            await flow_mass.config.setup_provider(GATE_DOMAIN)
+    finally:
+        flow_mass._provider_manifests.pop(GATE_DOMAIN, None)
+
+    # the refusal lands before anything is started or created
+    assert not flow_mass.config._setup_flows
+    assert flow_mass.config.get(f"{CONF_PROVIDERS}/{GATE_DOMAIN}") is None
+
+
+@pytest.mark.usefixtures("self_service_role")
+@pytest.mark.parametrize(
+    ("role", "multi_instance"),
+    [(SELF_SERVICE_ROLE, True), (UserRole.ADMIN, False)],
+    ids=["member_adds_a_multi_account_service", "admin_adds_a_single_account_service"],
+)
+async def test_the_provider_setup_flow_starts_for_a_permitted_caller(
+    flow_mass: MusicAssistant, role: str, multi_instance: bool
+) -> None:
+    """
+    A member adds a multi-account music service, an admin adds any of them.
+
+    :param role: Role id of the calling user.
+    :param multi_instance: Whether the provider allows more than one account.
+    """
+    if multi_instance:
+        _use_multi_account_manifest(flow_mass)
+    set_current_user(User(user_id="caller", username="caller", role=role))
+
+    with _use_flow(flow_mass, _credentials_flow):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+
+    assert step.type == FlowStepType.FORM
+
+
+async def test_members_add_their_own_account_of_a_service_side_by_side(
+    flow_mass: MusicAssistant, self_service_role: str
+) -> None:
+    """
+    A member's add flow for a multi-account service leaves another member's flow running.
+
+    :param self_service_role: Role id granted the self-service scope.
+    """
+    member = User(user_id="member", username="member", role=self_service_role)
+    other = User(user_id="other", username="other", role=self_service_role)
+    _use_multi_account_manifest(flow_mass)
+
+    with _use_flow(flow_mass, _credentials_flow):
+        set_current_user(member)
+        member_step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        set_current_user(other)
+        other_step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        assert set(flow_mass.config._setup_flows) == {member_step.flow_id, other_step.flow_id}
+        # a member starting over replaces its own flow and nobody else's
+        set_current_user(member)
+        restarted_step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+
+    assert set(flow_mass.config._setup_flows) == {restarted_step.flow_id, other_step.flow_id}
+
+
+async def test_a_member_may_only_reconfigure_the_source_it_owns(
+    flow_mass: MusicAssistant, self_service_role: str
+) -> None:
+    """
+    Reconfiguring a music source (reauth included) is up to its owner and an admin.
+
+    :param self_service_role: Role id granted the self-service scope.
+    """
+    member = User(user_id="member", username="member", role=self_service_role)
+    other = User(user_id="other", username="other", role=self_service_role)
+    admin = User(user_id="admin", username="admin", role=UserRole.ADMIN)
+    own_instance = f"{FAKE_DOMAIN}--own"
+    other_instance = f"{FAKE_DOMAIN}--other"
+    household_instance = f"{FAKE_DOMAIN}--house"
+    set_music_source_access(
+        flow_mass,
+        {
+            own_instance: ProviderAccess(owner=member.user_id, sharing=ProviderSharing.PRIVATE),
+            other_instance: ProviderAccess(owner=other.user_id, sharing=ProviderSharing.PRIVATE),
+            household_instance: None,
+        },
+    )
+
+    with _use_flow(flow_mass, _credentials_flow):
+        set_current_user(member)
+        step = await flow_mass.config.reconfigure_provider(own_instance)
+        assert step.type == FlowStepType.FORM
+        access = flow_mass.config.get_setup_flow_access(step.flow_id)
+        assert access is not None
+        assert access.owner_user_id == member.user_id
+        for instance_id in (other_instance, household_instance):
+            with pytest.raises(InsufficientPermissions, match="required to manage"):
+                await flow_mass.config.reconfigure_provider(instance_id)
+        # a source that does not exist is refused on existence, not on ownership
+        with pytest.raises(KeyError):
+            await flow_mass.config.reconfigure_provider(f"{FAKE_DOMAIN}--gone")
+        assert set(flow_mass.config._setup_flows) == {step.flow_id}
+
+        set_current_user(admin)
+        for instance_id in (own_instance, other_instance, household_instance):
+            admin_step = await flow_mass.config.reconfigure_provider(instance_id)
+            assert admin_step.type == FlowStepType.FORM
 
 
 async def test_one_flow_per_target_replaces(
@@ -1216,6 +1456,24 @@ async def test_player_setup_without_flow_aborts(flow_mass: MusicAssistant) -> No
         step = await flow_mass.config.setup_player("test_player_1")
     assert step.type == FlowStepType.ABORT
     assert step.reason == "nothing_to_configure"
+
+
+async def test_a_player_setup_flow_belongs_to_the_admin_who_started_it(
+    flow_mass: MusicAssistant,
+) -> None:
+    """A player's setup flow reaches the admin who started it and other admins, not a service account."""
+    admin = User(user_id="admin", username="admin", role=UserRole.ADMIN)
+    provider = MockProvider("test_players", instance_id="test_players--1")
+    player = _FlowPlayer(provider, "test_player_1", "Player One")
+    set_current_user(admin)
+
+    with patch.object(flow_mass.players, "get_player", return_value=player):
+        step = await flow_mass.config.setup_player("test_player_1")
+
+    access = flow_mass.config.get_setup_flow_access(step.flow_id)
+    assert access == SetupFlowAccess(Scope.CONFIG_PLAYERS_WRITE, admin.user_id)
+    assert access.allows(User(user_id="other_admin", username="other_admin", role=UserRole.ADMIN))
+    assert not access.allows(User(user_id="ha", username="ha", role=UserRole.SERVICE))
 
 
 async def test_player_setup_abort_mid_finish_restores_setup_data(
