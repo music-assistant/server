@@ -291,6 +291,7 @@ class SetupSession:
             StepExpiredError is raised here (and the client countdown runs out).
         :param translation_params: Optional values for placeholders in the step
             translations, e.g. a device code the user has to read off the screen.
+        :param copy_text: Optional value the client may copy to the clipboard.
         """
         step = self._build_step(
             FlowStepType.EXTERNAL,
@@ -298,6 +299,7 @@ class SetupSession:
             url=url,
             expires_in=expires_in,
             translation_params=translation_params,
+            copy_text=copy_text,
         )
         self._publish_step(step)
         return await self._await_with_deadline(awaitable, expires_in)
@@ -578,6 +580,7 @@ class SetupSession:
         result: dict[str, str] | None = None,
         reason: str | None = None,
         translation_params: list[str] | None = None,
+        copy_text: str | None = None,
         expires_in: float | None = None,
     ) -> SetupFlowStep:
         """Build a SetupFlowStep for this flow, stamping owner and absolute deadline."""
@@ -598,6 +601,7 @@ class SetupSession:
             reason=reason,
             translation_owner=self._translation_owner,
             translation_params=translation_params,
+            copy_text=copy_text,
         )
 
     def _prepare_entries(self, entries: list[ConfigEntry]) -> list[ConfigEntry]:
