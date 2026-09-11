@@ -2,13 +2,12 @@
 
 import logging
 import time
-from collections.abc import Callable
 from typing import TYPE_CHECKING, ClassVar, Final
 
 import aiohttp
 from libopensonic.errors import SonicError
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
-from music_assistant_models.enums import EventType, MediaType
+from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.media_items import Audiobook, PodcastEpisode, Track
 
@@ -31,6 +30,7 @@ if TYPE_CHECKING:
     from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
     from music_assistant_models.provider import ProviderManifest
 
+SUPPORTED_FEATURES: Final[set[ProviderFeature]] = {ProviderFeature.SCROBBLE}
 SUPPORTED_SCROBBLE_MEDIA_TYPES: Final[frozenset[MediaType]] = frozenset(
     {
         MediaType.TRACK,
@@ -48,18 +48,13 @@ async def setup(
     if not sonic_prov or not isinstance(sonic_prov, OpenSonicProvider):
         raise SetupFailedError("A Open Subsonic Music provider must be configured first.")
 
-    return SubsonicScrobbleProvider(mass, manifest, config)
+    return SubsonicScrobbleProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 class SubsonicScrobbleProvider(PluginProvider):
     """Plugin provider to support Subsonic scrobbling."""
 
-    def __init__(
-        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
-    ) -> None:
-        """Initialize MusicProvider."""
-        super().__init__(mass, manifest, config)
-        self._on_unload: list[Callable[[], None]] = []
+    _handler: SubsonicScrobbleEventHandler | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -69,25 +64,16 @@ class SubsonicScrobbleProvider(PluginProvider):
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
 
-        handler = SubsonicScrobbleEventHandler(self.mass, self.logger, self.config)
+        self._handler = SubsonicScrobbleEventHandler(self.mass, self.logger, self.config)
 
-        # subscribe to media_item_played event
-        self._on_unload.append(
-            self.mass.subscribe(handler._on_mass_media_item_played, EventType.MEDIA_ITEM_PLAYED)
-        )
-
-    async def unload(self, is_removed: bool = False) -> None:
-        """
-        Handle unload/close of the provider.
-
-        Called when provider is deregistered (e.g. MA exiting or config reloading).
-        """
-        for unload_cb in self._on_unload:
-            unload_cb()
+    async def on_media_item_played(self, report: MediaItemPlaybackProgressReport) -> None:
+        """Forward a playback progress report to the Subsonic server of the playing user."""
+        if self._handler is not None:
+            await self._handler.on_media_item_played(report)
 
 
 class SubsonicScrobbleEventHandler(ScrobblerHelper):
-    """Handles the scrobbling event handling."""
+    """Submit now-playing updates and scrobbles to the Subsonic server of the playing user."""
 
     # SonicError covers Subsonic API failures; aiohttp.ClientError and TimeoutError
     # cover the underlying transport the libopensonic connection uses.
