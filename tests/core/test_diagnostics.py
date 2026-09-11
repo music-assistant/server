@@ -258,7 +258,7 @@ async def test_get_report(mass: MusicAssistant) -> None:
     except RuntimeError:
         logging.getLogger("music_assistant.test").exception("probe failed")
     report = await mass.diagnostics.get_report()
-    assert report["schema_version"] == 1
+    assert report["schema_version"] == 2
     assert "redaction_notice" in report
     assert report["system"]["python_version"]
     assert report["system"]["counts"]["threads"] > 0
