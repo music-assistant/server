@@ -63,3 +63,7 @@ CONF_TRACK_RECONCILIATION_RESCAN_DUE: Final[str] = "track_reconciliation_rescan_
 # max difference in seconds between two track durations to still consider them the same
 # recording; matches the widest duration window compare_track is willing to accept
 TRACK_RECONCILIATION_MAX_DURATION_DELTA: Final[int] = 8
+# max number of library rows that may share one normalized title before the duplicate track
+# walk skips that title. Pairing the rows of a title is quadratic in their count, and a title
+# held by hundreds of rows is a generic one rather than a duplicate
+TRACK_RECONCILIATION_MAX_TITLE_ROWS: Final[int] = 200
