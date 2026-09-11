@@ -53,7 +53,11 @@ from music_assistant.controllers.config.helpers import (
     _with_translation_owner,
 )
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.provider_access import source_owner, visible_music_sources
+from music_assistant.helpers.provider_access import (
+    source_access,
+    source_owner,
+    visible_music_sources,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -353,7 +357,8 @@ class ProviderConfigMixin:
         Set who owns a music source and who else may use it.
 
         An admin may set this for any music source; any other caller may only change the
-        sharing of a source it owns.
+        sharing of a source it owns. The owner and the users on the share list keep their
+        place while their account is disabled.
 
         :param instance_id: The music source (provider instance) to set the access of.
         :param sharing: Who, besides its owner, may use the source.
@@ -368,22 +373,27 @@ class ProviderConfigMixin:
         if manifest.type != ProviderType.MUSIC or manifest.builtin:
             raise InvalidDataError(f"{manifest.name} is always available to the entire household")
         user, manages_all_sources = self._access_caller()
+        current = source_access(self.mass, instance_id)
+        current_owner = current.owner if current else None
         if user is not None and not manages_all_sources:
-            if source_owner(self.mass, instance_id) != user.user_id:
+            if current_owner != user.user_id:
                 raise InsufficientPermissions("Only the owner of a music source may share it")
             if owner != user.user_id:
                 raise InsufficientPermissions(
                     f"The {Scope.CONFIG_PROVIDERS_WRITE.value} scope is required to change "
                     "the owner of a music source"
                 )
+        # a user already on the record keeps its place while its account is disabled, so
+        # enabling the account again restores its access to the source
         if owner is not None:
-            await self._validate_source_owner(owner)
+            await self._validate_source_owner(owner, on_record=owner == current_owner)
         shared: list[str] = []
         if sharing == ProviderSharing.SELECTED:
+            current_shared = set(current.shared_users) if current else set()
             for user_id in dict.fromkeys(shared_users or []):
                 if user_id == owner:
                     continue
-                await self._validate_access_user(user_id)
+                await self._validate_access_user(user_id, on_record=user_id in current_shared)
                 shared.append(user_id)
         access = ProviderAccess(owner=owner, sharing=sharing, shared_users=shared)
         self.set(f"{CONF_PROVIDERS}/{instance_id}/access", access.to_dict())
@@ -850,16 +860,30 @@ class ProviderConfigMixin:
                 "a provider you do not own"
             )
 
-    async def _validate_access_user(self, user_id: str) -> User:
-        """Return the user a music source may be shared with, or raise if it may not."""
+    async def _validate_access_user(self, user_id: str, on_record: bool) -> User | None:
+        """
+        Return the user a music source may be shared with, or raise if it may not.
+
+        :param user_id: The user to look up.
+        :param on_record: Whether the user is already on the access record of the source; a
+            disabled account is then accepted, and None is returned for it.
+        """
         user = await self.mass.webserver.auth.get_user(user_id)
-        if user is None:
+        if user is None and not on_record:
             raise InvalidDataError(f"Unknown or disabled user: {user_id}")
         return user
 
-    async def _validate_source_owner(self, user_id: str) -> None:
-        """Raise when the given user can not own a music source."""
-        user = await self._validate_access_user(user_id)
+    async def _validate_source_owner(self, user_id: str, on_record: bool) -> None:
+        """
+        Raise when the given user can not own a music source.
+
+        :param user_id: The user to look up.
+        :param on_record: Whether the user already owns the source; a disabled account is
+            then accepted.
+        """
+        user = await self._validate_access_user(user_id, on_record)
+        if user is None:
+            return
         if user.role == UserRole.GUEST:
             raise InvalidDataError("A guest can not own a music source")
         if user.username == HOMEASSISTANT_SYSTEM_USER:
