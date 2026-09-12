@@ -1,0 +1,13 @@
+{
+  "type": "music",
+  "domain": "telmore",
+  "name": "Telmore Musik",
+  "stage": "experimental",
+  "description": "Telmore Musik, a Danish music streaming service.",
+  "codeowners": [
+    "@math625f"
+  ],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/telmore/",
+  "multi_instance": true
+}
