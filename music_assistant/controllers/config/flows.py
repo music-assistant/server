@@ -223,7 +223,7 @@ class SetupFlowMixin:
         Start the reconfigure flow on an existing provider instance (covers reauth).
 
         A caller that does not manage every music source may only reconfigure a music
-        source it owns.
+        source it owns, of a provider that members may set up themselves.
 
         :param instance_id: The provider instance to reconfigure.
         """
@@ -234,6 +234,9 @@ class SetupFlowMixin:
         self._check_provider_manage_permission(instance_id)
         domain: str = raw_conf["domain"]
         manifest = self.mass.get_provider_manifest(domain)
+        if not manifest.self_service:
+            # reconfiguring such a provider picks what it reads from, as setting it up does
+            self._check_provider_setup_permission(manifest)
         owner = f"provider.{domain}"
         flow_module = await self._get_setup_flow_module(manifest)
         if flow_module is None:

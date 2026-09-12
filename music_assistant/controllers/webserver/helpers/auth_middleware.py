@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from contextvars import ContextVar
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final, Self, cast
@@ -40,7 +40,7 @@ _GUEST_SCOPES: Final[frozenset[Scope]] = frozenset(
         Scope.CONFIG_PLAYERS_READ,
     }
 )
-_USER_SCOPES: Final[frozenset[Scope]] = _GUEST_SCOPES | {
+_MEMBER_SCOPES: Final[frozenset[Scope]] = _GUEST_SCOPES | {
     Scope.LIBRARY_WRITE,
     Scope.CONFIG_PROVIDERS_READ,
     Scope.CONFIG_CORE_READ,
@@ -48,19 +48,45 @@ _USER_SCOPES: Final[frozenset[Scope]] = _GUEST_SCOPES | {
     Scope.SYSTEM_READ,
 }
 
-# Scopes granted to each of the builtin user roles.
-# Roles are identified by their (string) role id to allow for custom roles in the future:
-# a role id not present in this mapping simply grants no scopes at all.
+# Scopes granted to each of the builtin user roles, which are defined here and never stored.
+# Roles are identified by their (string) role id, admins may create custom roles as well
+# (see set_custom_role_scopes): a role id that is neither builtin nor custom grants no scopes.
 ROLE_SCOPES: Final[Mapping[str, frozenset[Scope]]] = {
     UserRole.ADMIN: frozenset({Scope.ALL}),
-    UserRole.USER: _USER_SCOPES,
+    UserRole.USER: _MEMBER_SCOPES | {Scope.CONFIG_PROVIDERS_OWN},
     UserRole.GUEST: _GUEST_SCOPES,
-    # service accounts (such as the Home Assistant integration) get
-    # slightly elevated rights over a regular user
+    # service accounts (such as the Home Assistant integration) get slightly
+    # elevated rights over a regular user, but can not own a music source
     UserRole.SERVICE: (
-        _USER_SCOPES | {Scope.CONFIG_PLAYERS_WRITE, Scope.USERS_READ, Scope.USERS_IMPERSONATE}
+        _MEMBER_SCOPES | {Scope.CONFIG_PLAYERS_WRITE, Scope.USERS_READ, Scope.USERS_IMPERSONATE}
     ),
 }
+
+# Scopes that stay with the builtin admin role, as each one reaches past a household member
+# into accounts, the private things of other members or the server itself: users.manage sets
+# the password of any user, users.impersonate acts as any user, library.manage manages every
+# playlist including private ones, config.providers.write reconfigures every provider
+# including the Home Assistant plugin that signs users in, config.core.write changes the
+# addresses and sign-up settings of the server and system.manage runs its maintenance
+CUSTOM_ROLE_FORBIDDEN_SCOPES: Final[frozenset[Scope]] = frozenset(
+    {
+        Scope.ALL,
+        Scope.UNKNOWN,
+        Scope.USERS_MANAGE,
+        Scope.USERS_IMPERSONATE,
+        Scope.LIBRARY_MANAGE,
+        Scope.CONFIG_PROVIDERS_WRITE,
+        Scope.CONFIG_CORE_WRITE,
+        Scope.SYSTEM_MANAGE,
+    }
+)
+# Scopes a custom role holds along with a scope that is of no use without them
+_CUSTOM_ROLE_IMPLIED_SCOPES: Final[Mapping[Scope, frozenset[Scope]]] = {
+    Scope.CONFIG_PLAYERS_WRITE: frozenset({Scope.CONFIG_PLAYERS_READ}),
+    Scope.CONFIG_PROVIDERS_OWN: frozenset({Scope.CONFIG_PROVIDERS_READ}),
+}
+# Scopes granted to each of the custom roles, by role id (see set_custom_role_scopes)
+_custom_role_scopes: Final[dict[str, frozenset[Scope]]] = {}
 
 # ContextVar for tracking current user and token across async calls
 current_user: ContextVar[User | None] = ContextVar("current_user", default=None)
@@ -188,8 +214,43 @@ def has_scope(user: User, scope: Scope) -> bool:
     :param user: The user to check.
     :param scope: The scope required.
     """
-    role_scopes = ROLE_SCOPES.get(user.role, frozenset())
+    role_scopes = ROLE_SCOPES.get(user.role)
+    if role_scopes is None:
+        role_scopes = _custom_role_scopes.get(user.role, frozenset())
     return Scope.ALL in role_scopes or scope in role_scopes
+
+
+def custom_role_scopes(scopes: Iterable[Scope]) -> list[Scope]:
+    """
+    Return the sorted scopes a custom role holds when it is granted the given scopes.
+
+    A custom role always holds the scopes of a guest, and the scopes that a granted
+    scope is of no use without.
+
+    :param scopes: The scopes to grant the custom role.
+    :raises InvalidDataError: If a custom role can not be granted one of the scopes.
+    """
+    granted = set(scopes)
+    if refused := granted & CUSTOM_ROLE_FORBIDDEN_SCOPES:
+        raise InvalidDataError(
+            f"A custom role can not be granted {', '.join(sorted(refused))}",
+            translation_key="role_scope_not_allowed",
+        )
+    for scope in list(granted):
+        granted |= _CUSTOM_ROLE_IMPLIED_SCOPES.get(scope, frozenset())
+    return sorted(granted | _GUEST_SCOPES)
+
+
+def set_custom_role_scopes(role_scopes: Mapping[str, Iterable[Scope]]) -> None:
+    """
+    Set the scopes granted by the custom roles, replacing the ones set before.
+
+    :param role_scopes: The scopes each custom role grants, by role id.
+    """
+    _custom_role_scopes.clear()
+    _custom_role_scopes.update(
+        {role_id: frozenset(scopes) for role_id, scopes in role_scopes.items()}
+    )
 
 
 async def resolve_impersonated_user(
