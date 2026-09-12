@@ -193,6 +193,7 @@ async def _authorize_developer_key(
         step_id="developer",
         last_step=True,
         translation_params=[HOSTED_CALLBACK_URL],
+        copy_text=HOSTED_CALLBACK_URL,
     )
     client_id = str(dev_values.get(CONF_CLIENT_ID) or "").strip()
     try:
