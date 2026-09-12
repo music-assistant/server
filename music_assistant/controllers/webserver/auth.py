@@ -1234,6 +1234,10 @@ class AuthenticationManager:
             User(user_id=user_row["user_id"], username=user_row["username"], role=user_row["role"])
         )
 
+        # the playlists it owned or was given access to outlive it as well; this comes last
+        # so the sockets of the user are gone before the deletion first awaits
+        await self.mass.music.playlists.release_user_playlists(user_id)
+
         self.logger.info(
             "User '%s' deleted by admin '%s'",
             user_row["username"],

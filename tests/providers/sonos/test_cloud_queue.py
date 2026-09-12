@@ -358,6 +358,59 @@ async def test_itemwindow_reports_end_of_queue_when_it_cannot_be_described() -> 
     assert body["includesEndOfQueue"] is True
 
 
+async def test_itemwindow_logs_the_speakers_request_at_debug(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test a support case can read what the speaker asked for from one debug line."""
+    player = MagicMock(spec=SonosPlayer)
+    player.player_id = "RINCON_TEST"
+    player.cloud_queue_version = 12.5
+    player.cloud_queue_item_generation = 4
+    player.bare_item_id = SonosPlayer.bare_item_id
+    player.build_cloud_queue_window = AsyncMock(
+        return_value=SonosQueueWindow(includes_beginning=True, includes_end=False)
+    )
+    provider = _make_provider()
+    request = MagicMock()
+    request.query = {
+        "itemId": "track7@4",
+        "reason": "queueCompleted",
+        "previousWindowSize": "9",
+        "upcomingWindowSize": "10",
+        "queueVersion": "11.0",
+    }
+
+    with caplog.at_level(logging.DEBUG, logger="test.sonos.cloud_queue"):
+        await provider._handle_sonos_queue_itemwindow(player, request)
+
+    assert [record.levelno for record in caplog.records] == [logging.DEBUG]
+    message = caplog.records[0].getMessage()
+    assert "RINCON_TEST" in message
+    for expected in ("reason=queueCompleted", "itemId=track7@4", "previous=9", "upcoming=10"):
+        assert expected in message
+    assert "queueVersion=11.0 -> 12.5" in message
+
+
+async def test_version_logs_the_speakers_poll_at_debug(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test the version poll reports which version the speaker holds and which we serve."""
+    player = MagicMock(spec=SonosPlayer)
+    player.player_id = "RINCON_TEST"
+    player.cloud_queue_version = 12.5
+    provider = _make_provider()
+    request = MagicMock()
+    request.query = {"contextVersion": "1", "queueVersion": "11.0"}
+
+    with caplog.at_level(logging.DEBUG, logger="test.sonos.cloud_queue"):
+        await provider._handle_sonos_queue_version(player, request)
+
+    assert [record.levelno for record in caplog.records] == [logging.DEBUG]
+    message = caplog.records[0].getMessage()
+    assert "RINCON_TEST" in message
+    assert "queueVersion=11.0 -> 12.5" in message
+
+
 @pytest.mark.parametrize(
     ("requested", "expected_upcoming"),
     [

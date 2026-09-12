@@ -6,11 +6,13 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.access import PlaylistAccess
 from music_assistant_models.api import CommandMessage, ErrorResultMessage
 from music_assistant_models.auth import Scope, User, UserRole
-from music_assistant_models.enums import EventType, FlowStepType
+from music_assistant_models.enums import EventType, FlowStepType, ProviderSharing
 from music_assistant_models.errors import InsufficientPermissions
 from music_assistant_models.event import MassEvent
+from music_assistant_models.media_items import Playlist, ProviderMapping
 from music_assistant_models.setup_flow import SetupFlowStep
 
 from music_assistant.controllers.config.flows import SetupFlowAccess, SetupFlowMixin
@@ -120,6 +122,7 @@ SELF_SERVICE_COMMANDS = [
     pytest.param(ProviderConfigMixin.invoke_provider_config_action, id="invoke_action"),
     pytest.param(ProviderConfigMixin.save_provider_config, id="save"),
     pytest.param(ProviderConfigMixin.set_provider_access, id="set_access"),
+    pytest.param(ProviderConfigMixin.get_share_candidates, id="share_candidates"),
     pytest.param(ProviderConfigMixin.remove_provider_config, id="remove"),
     pytest.param(ProviderConfigMixin._reload_provider, id="reload"),
     pytest.param(SetupFlowMixin.setup_provider, id="setup"),
@@ -356,3 +359,49 @@ async def test_other_events_are_forwarded_untouched() -> None:
     event = MassEvent(event=EventType.PLAYER_UPDATED, object_id="player_1", data=None)
 
     assert _sent_events(client, event) == [event]
+
+
+def _playlist_event(access: PlaylistAccess | None) -> MassEvent:
+    """Return a media item update event about a Music Assistant playlist with the given record."""
+    playlist = Playlist(
+        item_id="1",
+        provider="library",
+        name="Mine",
+        provider_mappings={
+            ProviderMapping(item_id="mine", provider_domain="builtin", provider_instance="builtin")
+        },
+        access=access,
+    )
+    return MassEvent(event=EventType.MEDIA_ITEM_UPDATED, object_id=playlist.uri, data=playlist)
+
+
+@pytest.mark.parametrize(
+    ("access", "user_role", "user_id", "forwarded"),
+    [
+        pytest.param(None, UserRole.USER, "user_2", True, id="household"),
+        pytest.param(PlaylistAccess(owner="user_1"), UserRole.USER, "user_1", True, id="owner"),
+        pytest.param(PlaylistAccess(owner="user_1"), UserRole.USER, "user_2", False, id="other"),
+        pytest.param(
+            PlaylistAccess(owner="user_1", sharing=ProviderSharing.MEMBERS),
+            UserRole.USER,
+            "user_2",
+            True,
+            id="shared-member",
+        ),
+        pytest.param(
+            PlaylistAccess(owner="user_1", sharing=ProviderSharing.MEMBERS),
+            None,
+            "user_2",
+            False,
+            id="shared-unauthenticated",
+        ),
+    ],
+)
+async def test_personal_playlist_events_only_reach_who_may_see_them(
+    access: PlaylistAccess | None, user_role: str | None, user_id: str, forwarded: bool
+) -> None:
+    """A media item event about a personal playlist is dropped for everyone else."""
+    client = _subscribed_client(user_role, user_id=user_id)
+    event = _playlist_event(access)
+
+    assert _sent_events(client, event) == ([event] if forwarded else [])
