@@ -2,7 +2,7 @@
   "type": "music",
   "domain": "iheartradio",
   "name": "iHeartRadio",
-  "description": "Listen to thousands of live radio stations and podcasts from iHeartRadio across the United States, Canada, Australia, New Zealand and Mexico, with live now-playing information and artwork.",
+  "description": "Listen to thousands of live radio stations and podcasts from iHeartRadio, or start a personalised station around any artist.",
   "codeowners": ["@OzGav"],
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/iheartradio/",

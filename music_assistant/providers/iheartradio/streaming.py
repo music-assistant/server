@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ContentType, MediaType, StreamType
@@ -18,7 +19,7 @@ from music_assistant.controllers.streams.constants import (
     STREAMDETAILS_INBAND_TITLE_KEY,
 )
 
-from .constants import STREAM_METADATA_UPDATE_INTERVAL
+from .constants import REPORT_STATUS_START, STREAM_METADATA_UPDATE_INTERVAL
 from .parsers import parse_now_playing, pick_stream_url, split_episode_item_id
 
 if TYPE_CHECKING:
@@ -42,15 +43,17 @@ class IHeartRadioStreamingManager:
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
-        Return the stream details for a live station or a podcast episode.
+        Return the stream details for a live station, a podcast episode or a radio track.
 
-        :param item_id: The live station id, or the MA episode id.
+        :param item_id: The live station id, the MA episode id or the track id.
         :param media_type: The requested media type.
         """
         if media_type == MediaType.RADIO:
             return await self._station_stream(item_id)
         if media_type == MediaType.PODCAST_EPISODE:
             return await self._episode_stream(item_id)
+        if media_type == MediaType.TRACK:
+            return self._track_stream(item_id)
         raise UnplayableMediaError(f"Unsupported media type: {media_type}")
 
     async def update_stream_metadata(self, streamdetails: StreamDetails, elapsed_time: int) -> None:
@@ -144,6 +147,37 @@ class IHeartRadioStreamingManager:
             allow_seek=True,
             can_seek=True,
         )
+
+    def _track_stream(self, item_id: str) -> StreamDetails:
+        """
+        Return the stream details for a track served by an artist radio batch.
+
+        :param item_id: The iHeartRadio track id.
+        """
+        now = time.time()
+        if (found := self.provider.stations.find(item_id)) is None:
+            raise MediaNotFoundError(f"Track {item_id} is no longer available from iHeartRadio")
+        batch, item = found
+        if batch.urls_expired(now):
+            # a long pause outlives the audio url; refusing keeps the failure named rather
+            # than an opaque ffmpeg error
+            raise MediaNotFoundError(f"Track {item_id} expired while playback was stopped")
+        content = item.get("content") or {}
+        duration = int(content.get("duration") or 0)
+        streamdetails = StreamDetails(
+            provider=self.instance_id,
+            item_id=item_id,
+            audio_format=AudioFormat(content_type=ContentType.AAC),
+            media_type=MediaType.TRACK,
+            stream_type=StreamType.HLS,
+            path=str(item["streamUrl"]),
+            duration=duration or None,
+            allow_seek=duration > 0,
+            can_seek=duration > 0,
+            expiration=batch.seconds_left(now),
+        )
+        self.provider.mass.create_task(self.provider.report_play(item_id, REPORT_STATUS_START, 0))
+        return streamdetails
 
     def _station_metadata(
         self, streamdetails: StreamDetails, now_playing: Mapping[str, Any] | None

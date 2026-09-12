@@ -8,6 +8,7 @@ from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.controllers.streams.constants import STREAMDETAILS_INBAND_TITLE_KEY
 from music_assistant.providers.iheartradio.constants import (
+    PATH_CATALOG_ALBUM,
     PATH_LIVE_STATION,
     PATH_NOW_PLAYING,
     PATH_PODCAST,
@@ -124,3 +125,25 @@ async def test_podcast_categories_skip_placeholder_artwork(
         ("Featured", False),
         ("Business", True),
     ]
+
+
+async def test_album_tracks_are_listed_but_unavailable(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """An album lists its tracks with the album's artwork, none of them playable."""
+    api.responses[PATH_CATALOG_ALBUM.format(album_id="607279")] = {
+        "albumId": 607279,
+        "title": "Full Moon Fever",
+        "artistId": 1805,
+        "artistName": "Tom Petty",
+        "image": "http://image.iheart.com/full-moon-fever.jpg",
+        "tracks": [{"id": 607283, "title": "Free Fallin'", "trackNumber": 1, "duration": 254}],
+    }
+    tracks = await provider.get_album_tracks("607279")
+    assert [(track.name, track.track_number, track.available) for track in tracks] == [
+        ("Free Fallin'", 1, False)
+    ]
+    assert tracks[0].album is not None
+    assert tracks[0].album.item_id == "607279"
+    assert tracks[0].image is not None
+    assert tracks[0].image.path == "http://image.iheart.com/full-moon-fever.jpg"

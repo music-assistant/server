@@ -10,6 +10,14 @@
         "nz": "New Zealand",
         "mx": "Mexico"
       }
+    },
+    "username": {
+      "label": "[%key:common::config_entries::username::label%]",
+      "description": "Optional. Sign in to sync the stations, artists and podcasts you follow. Leave empty to listen as a guest."
+    },
+    "password": {
+      "label": "[%key:common::config_entries::password::label%]",
+      "description": "Optional. The password of your iHeartRadio account."
     }
   },
   "media": {
@@ -31,10 +39,10 @@
   "setup_flow": {
     "user": {
       "title": "Set up iHeartRadio",
-      "description": "Pick the country whose stations you want to listen to."
+      "description": "Pick the country whose stations you want to listen to. Signing in is optional."
     }
   },
   "manifest": {
-    "description": "Listen to thousands of live radio stations and podcasts from iHeartRadio across the United States, Canada, Australia, New Zealand and Mexico, with live now-playing information and artwork."
+    "description": "Listen to thousands of live radio stations and podcasts from iHeartRadio, or start a personalised station around any artist."
   }
 }

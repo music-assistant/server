@@ -9,6 +9,10 @@ import aiohttp
 # -- Config keys --
 
 CONF_COUNTRY: Final[str] = "country"
+# Raw config keys holding the persisted session; never shown in the UI.
+CONF_PROFILE_ID: Final[str] = "profile_id"
+CONF_SESSION_ID: Final[str] = "session_id"
+CONF_SESSION_USERNAME: Final[str] = "session_username"
 
 # -- Regions --
 
@@ -31,7 +35,35 @@ API_LOCALE: Final[str] = "en-US"
 # Per-request timeout for API calls.
 API_TIMEOUT: Final[aiohttp.ClientTimeout] = aiohttp.ClientTimeout(total=20)
 
+# -- Session --
+
+# Each API generation reads the session from its own header pair, so all four go on every
+# request once a session exists.
+HEADER_PROFILE_ID: Final[str] = "X-IHR-Profile-ID"
+HEADER_SESSION_ID: Final[str] = "X-IHR-Session-ID"
+HEADER_USER_ID: Final[str] = "X-User-Id"
+HEADER_SESSION_ID_V2: Final[str] = "X-Session-Id"
+DEVICE_NAME: Final[str] = "web-desktop"
+# The v1/v2 endpoints answer a dead session with a 400 carrying one of these codes.
+SESSION_EXPIRED_CODES: Final[frozenset[int]] = frozenset({2, 101})
+
 # -- Endpoints --
+
+PATH_LOGIN: Final[str] = "/api/v1/account/login"
+PATH_GUEST_LOGIN: Final[str] = "/api/v1/account/loginOrCreateOauthUser"
+PATH_SESSION: Final[str] = "/api/v3/session/sessions"
+PATH_FOLLOWS_LIVE: Final[str] = "/api/v3/profiles/follows/live"
+PATH_FOLLOWS_LIVE_ITEM: Final[str] = "/api/v3/profiles/follows/live/{station_id}"
+PATH_FOLLOWS_ARTIST: Final[str] = "/api/v3/profiles/follows/artist"
+PATH_FOLLOWS_ARTIST_ITEM: Final[str] = "/api/v3/profiles/follows/artist/{artist_id}"
+PATH_PODCAST_FOLLOWS: Final[str] = "/api/v3/podcast/follows"
+PATH_PODCAST_FOLLOW_ITEM: Final[str] = "/api/v3/podcast/follows/{podcast_id}"
+PATH_ARTIST_STATION: Final[str] = "/api/v2/playlists/{profile_id}/ARTIST/{artist_id}"
+PATH_PLAYBACK_STREAMS: Final[str] = "/api/v2/playback/streams"
+PATH_PLAYBACK_REPORTING: Final[str] = "/api/v3/playback/reporting"
+PATH_ARTIST_PROFILE: Final[str] = "/api/v3/artists/profiles/{artist_id}"
+PATH_CATALOG_TRACK: Final[str] = "/api/v3/catalog/tracks/{track_id}"
+PATH_CATALOG_ALBUM: Final[str] = "/api/v3/catalog/album/{album_id}"
 
 PATH_LIVE_STATIONS: Final[str] = "/api/v2/content/liveStations"
 PATH_LIVE_STATION: Final[str] = "/api/v2/content/liveStations/{station_id}"
@@ -67,6 +99,30 @@ STREAM_METADATA_UPDATE_INTERVAL: Final[int] = 15
 # A podcast episode is looked up on its own endpoint, but a PodcastEpisode must name its
 # parent podcast, so the episode's MA id carries both.
 ID_SEPARATOR: Final[str] = ":"
+# An artist radio shares the Radio media type with live stations, whose ids are plain
+# numbers, so its id names the seed artist behind a prefix.
+ARTIST_RADIO_PREFIX: Final[str] = "artist:"
+ARTIST_IMAGE_URL: Final[str] = "https://i.iheart.com/v3/catalog/artist/{artist_id}"
+
+# -- Artist radio --
+
+# Analytics context the API expects on station and playback calls; the website sends
+# this value from an artist page and the API accepts any of its known values.
+PLAYED_FROM: Final[int] = 66
+STATION_TYPE_RADIO: Final[str] = "RADIO"
+# postStreams answers with this error code when a station has run out of songs.
+STATION_OUT_OF_SONGS_CODE: Final[int] = 617
+REPORT_STATUS_START: Final[str] = "START"
+REPORT_STATUS_DONE: Final[str] = "DONE"
+REPORT_STATUS_SKIP: Final[str] = "SKIP"
+# How long a batch's track urls are served for. The urls carry no expiry, so this is a
+# conservative window; a track from an older batch is refused rather than handed to ffmpeg.
+BATCH_URL_TTL: Final[int] = 1800
+# Batches retained per station so queued and recently played tracks stay resolvable; the
+# queue keeps about 25 tracks ahead and a batch holds 3.
+MAX_RETAINED_BATCHES: Final[int] = 12
+# Stations holding batches at once; the least recently played one is dropped past this.
+MAX_ACTIVE_STATIONS: Final[int] = 10
 
 # -- Paging --
 
@@ -74,6 +130,9 @@ ID_SEPARATOR: Final[str] = ":"
 STATION_PAGE_LIMIT: Final[int] = 500
 MARKET_PAGE_LIMIT: Final[int] = 500
 EPISODE_PAGE_LIMIT: Final[int] = 100
+# The follow lists cap their page size at 25.
+FOLLOWS_PAGE_LIMIT: Final[int] = 25
+PODCAST_FOLLOWS_PAGE_LIMIT: Final[int] = 20
 # Podcasts with a decade of episodes exist; cap the walk so listing one cannot fire an
 # unbounded number of requests. The newest episodes are listed first, so a capped listing
 # drops the oldest.
