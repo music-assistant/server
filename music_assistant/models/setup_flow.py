@@ -202,6 +202,7 @@ class SetupSession:
         last_step: bool | None = None,
         expires_in: float | None = None,
         translation_params: list[str] | None = None,
+        copy_text: str | None = None,
     ) -> dict[str, ConfigValueType]:
         """
         Show a form to the user and wait for the submitted (validated) values.
@@ -214,6 +215,7 @@ class SetupSession:
         :param expires_in: Optional deadline in seconds; when it passes,
             StepExpiredError is raised here (and the client countdown runs out).
         :param translation_params: Optional values for placeholders in the step translations.
+        :param copy_text: Optional value the client may copy to the clipboard.
         """
         step = self._build_step(
             FlowStepType.FORM,
@@ -223,6 +225,7 @@ class SetupSession:
             last_step=last_step,
             translation_params=translation_params,
             expires_in=expires_in,
+            copy_text=copy_text,
         )
         for key, error in (errors or {}).items():
             if isinstance(error, SetupFlowError) and error.translation_key:
