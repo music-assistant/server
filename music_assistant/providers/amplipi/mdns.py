@@ -19,10 +19,7 @@ _RESOLVE_TIMEOUT_MS = 1000
 
 async def discovered_controllers(mass: MusicAssistant) -> list[AsyncServiceInfo]:
     """
-    Return every AmpliPi controller currently known to the mDNS cache.
-
-    Only records that resolve are returned; a stale cache entry of a controller that
-    went offline is dropped.
+    Return every AmpliPi controller currently reachable on the network.
 
     :param mass: The MusicAssistant instance.
     """
@@ -39,9 +36,7 @@ async def discovered_controllers(mass: MusicAssistant) -> list[AsyncServiceInfo]
 
 def controller_host(info: AsyncServiceInfo) -> str | None:
     """
-    Return the address to reach the given controller on, preferring its hostname.
-
-    The hostname outlives the advertised address, which is typically a DHCP lease.
+    Return the address to reach the given controller on, or None if it advertises none.
 
     :param info: The controller's resolved mDNS record.
     """
@@ -56,9 +51,6 @@ def controller_matches_host(info: AsyncServiceInfo, host: str) -> bool:
     """
     Return whether the given controller is the one a configured host points at.
 
-    Compares the hostname part of the host against the record's hostname and every
-    address it advertises. A host behind a custom DNS name matches nothing.
-
     :param info: The controller's resolved mDNS record.
     :param host: The host as entered during setup (a bare host, host:port or full URL).
     """
@@ -71,14 +63,11 @@ def controller_matches_host(info: AsyncServiceInfo, host: str) -> bool:
 
 def controller_id(info: AsyncServiceInfo) -> str:
     """
-    Return the identity to record for the given controller: its (normalized) mDNS name.
-
-    The name carries the controller's MAC, so it identifies the unit itself. Names reach
-    us in mixed case (live callbacks) and lowercased (the zeroconf cache), so they are
-    normalized here to compare equal wherever they come from.
+    Return the identity to record for the given controller.
 
     :param info: The controller's resolved mDNS record.
     """
+    # the mDNS name carries the MAC; lowercased as live callbacks and the cache differ in case
     return info.name.lower()
 
 
@@ -86,12 +75,8 @@ def claimed_controllers(mass: MusicAssistant, own_instance_id: str | None) -> se
     """
     Return the ids (see controller_id) of the controllers other AmpliPi instances are set up for.
 
-    Reads the stored configs directly, so an instance that is disabled or failed to load
-    still holds its claim. Configurations predating the stored name hold no claim until
-    the instance fills it in on load.
-
     :param mass: The MusicAssistant instance.
-    :param own_instance_id: The instance being (re)configured, excluded from the scan.
+    :param own_instance_id: The instance being (re)configured, excluded from the result.
     """
     claimed: set[str] = set()
     for instance_id, conf in mass.config.get("providers", {}).items():

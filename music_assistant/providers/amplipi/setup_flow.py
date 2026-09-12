@@ -86,9 +86,8 @@ def _host_to_offer(controllers: list[AsyncServiceInfo], claimed: set[str]) -> st
     """
     Return the address to prefill the host field with.
 
-    Offers the first discovered controller no other instance is set up for. When every
-    discovered controller is taken the field is left empty rather than offering a
-    duplicate; when none is discovered at all the default hostname is offered.
+    This is the first controller no other instance is set up for, an empty string when
+    every controller is taken, or the default hostname when none was discovered.
 
     :param controllers: The controllers discovered on the network.
     :param claimed: Ids of the controllers other instances are set up for.
