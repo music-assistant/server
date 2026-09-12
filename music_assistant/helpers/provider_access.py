@@ -4,7 +4,8 @@ Helpers to derive which music sources a user may see and use.
 Ownership and sharing live on the provider instance (`ProviderConfig.access`); a user's
 set of music sources is derived from those records. The derived set is read straight from
 the raw provider configs, so disabled and unavailable instances count too. Playback narrows
-that set once more: a service the user has an enabled source of is served by that source only.
+that set once more: a streaming service the user has an enabled account of is served by that
+account only.
 """
 
 from __future__ import annotations
@@ -69,15 +70,39 @@ def visible_playback_sources(mass: MusicAssistant, user: User | None) -> list[st
     """
     Return the instance ids of the music sources the given playback user may use.
 
-    A source the user does not own counts only when they have no enabled source of that
-    same service, so playback never moves to another account of a service they have.
+    Another account of a streaming service counts only when the user has no enabled account
+    of that same service, so playback never moves off their own account. Sources whose
+    instances each hold a library of their own are never narrowed this way.
     None means every configured music source may be used.
 
     :param mass: The MusicAssistant instance.
     :param user: The user the playback is for; None for anonymous playback.
     """
     sources = _music_sources(mass)
-    return _without_other_instances_of_own_services(sources, user, _visible_sources(sources, user))
+    return _without_other_instances_of_own_services(
+        mass, sources, user, _visible_sources(sources, user)
+    )
+
+
+def playback_reaches_source(
+    mass: MusicAssistant, instance_id: str, allowed: list[str] | None
+) -> bool:
+    """
+    Return whether an item on the given music source can be served by the allowed sources.
+
+    An account of a streaming service is also reached through another allowed account of
+    that same service, which resolves the very same item ids.
+
+    :param mass: The MusicAssistant instance.
+    :param instance_id: The provider instance the item to play sits on.
+    :param allowed: The music sources the playback user may use, or None for all of them.
+    """
+    if allowed is None or instance_id in allowed:
+        return True
+    domain = _source_domain(mass, instance_id)
+    return _is_streaming_service(mass, instance_id, domain) and any(
+        _source_domain(mass, allowed_id) == domain for allowed_id in allowed
+    )
 
 
 def own_music_sources(mass: MusicAssistant, user: User | None) -> list[str]:
@@ -173,8 +198,8 @@ async def playback_sources(
 
     ``allowed`` holds the sources that may serve this playback, or None when every
     configured music source may; ``preferred`` holds the enabled sources the playback user
-    owns, which are to be tried first. Another account of a service the user has an enabled
-    source of never serves them.
+    owns, which are to be tried first. Another account of a streaming service the user has
+    an enabled account of never serves them.
 
     :param mass: The MusicAssistant instance.
     :param queue_id: The queue the playback belongs to.
@@ -205,13 +230,25 @@ def _visible_sources(sources: list[_MusicSource], user: User | None) -> list[str
 
 
 def _without_other_instances_of_own_services(
-    sources: list[_MusicSource], user: User | None, allowed: list[str] | None
+    mass: MusicAssistant,
+    sources: list[_MusicSource],
+    user: User | None,
+    allowed: list[str] | None,
 ) -> list[str] | None:
-    """Return the allowed sources without the other accounts of the user's own services."""
+    """
+    Return the allowed sources without the other accounts of the user's own services.
+
+    Only a streaming service has one catalog behind its accounts; instances of a local or
+    self-hosted source are libraries of their own and never narrow one another.
+    """
     if user is None:
         return allowed
     own_domains = {
-        source.domain for source in sources if source.enabled and _is_owned_by(source, user)
+        source.domain
+        for source in sources
+        if source.enabled
+        and _is_owned_by(source, user)
+        and _is_streaming_service(mass, source.instance_id, source.domain)
     }
     dropped = {
         source.instance_id
@@ -239,6 +276,30 @@ def _own_enabled_sources(mass: MusicAssistant, user: User | None) -> list[str]:
 def _is_owned_by(source: _MusicSource, user: User) -> bool:
     """Return whether the given user owns the given music source."""
     return source.access is not None and source.access.owner == user.user_id
+
+
+def _source_domain(mass: MusicAssistant, instance_id: str) -> str:
+    """Return the provider domain of a music source, read straight off its raw config."""
+    raw_conf: dict[str, Any] = mass.config.get(f"{CONF_PROVIDERS}/{instance_id}", {})
+    return raw_conf.get("domain") or instance_id
+
+
+def _is_streaming_service(mass: MusicAssistant, instance_id: str, domain: str) -> bool:
+    """
+    Return whether the instances of this music service are accounts of one shared catalog.
+
+    Accounts of a streaming service resolve the same item ids, where instances of a local or
+    self-hosted source each hold a library of their own.
+    """
+    provider = mass.get_provider(instance_id, return_unavailable=True) or next(
+        iter(mass.get_provider_instances(domain, return_unavailable=True)), None
+    )
+    if provider is None:
+        # with nothing loaded to ask, the service counts as a streaming one, so the
+        # own-account rule still holds for a service that failed to load
+        return True
+    # only the music provider model carries the notion of a shared catalog
+    return bool(getattr(provider, "is_streaming_provider", False))
 
 
 def _music_sources(mass: MusicAssistant) -> list[_MusicSource]:

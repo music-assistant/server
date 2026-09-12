@@ -119,6 +119,9 @@ def mass(providers: dict[str, Mock]) -> Mock:
     mass = Mock()
     mass.music.get_library_item_by_prov_id = AsyncMock(return_value=_track())
     mass.get_provider.side_effect = lambda instance_id, **_kwargs: providers.get(instance_id)
+    mass.get_provider_instances.side_effect = lambda domain, **_kwargs: [
+        prov for prov in providers.values() if prov.domain == domain
+    ]
     mass.webserver.auth.get_user = AsyncMock(return_value=None)
     # both instances are household sources unless a test says otherwise
     set_music_source_access(mass, {INSTANCE_A: None, INSTANCE_B: None})

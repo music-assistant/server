@@ -31,11 +31,32 @@ def _user(user_id: str, role: str = UserRole.USER) -> User:
     return User(user_id=user_id, username=user_id, role=role)
 
 
-def _mass() -> MagicMock:
-    """Return a mocked server without any music source configured."""
+def _mass(providers: list[MagicMock] | None = None) -> MagicMock:
+    """
+    Return a mocked server without any music source configured.
+
+    :param providers: The loaded provider instances; a service without one of them counts
+        as a streaming service.
+    """
     mass = MagicMock()
+    loaded = providers or []
+    mass.get_provider.side_effect = lambda instance_id, **_kwargs: next(
+        (prov for prov in loaded if prov.instance_id == instance_id), None
+    )
+    mass.get_provider_instances.side_effect = lambda domain, **_kwargs: [
+        prov for prov in loaded if prov.domain == domain
+    ]
     set_music_source_access(mass, {})
     return mass
+
+
+def _provider(instance_id: str, is_streaming: bool) -> MagicMock:
+    """Return a loaded music provider instance of the service in the given instance id."""
+    provider = MagicMock()
+    provider.instance_id = instance_id
+    provider.domain = instance_id.split("--", maxsplit=1)[0]
+    provider.is_streaming_provider = is_streaming
+    return provider
 
 
 @pytest.mark.parametrize(
@@ -174,6 +195,47 @@ def test_visible_playback_sources_drops_another_account_of_an_own_service() -> N
         "spotify--mine",
         "tidal--theirs",
     ]
+
+
+def test_visible_playback_sources_narrows_a_streaming_service_only() -> None:
+    """Accounts of a streaming service share one catalog, local sources are separate libraries."""
+    mass = _mass(
+        [
+            _provider("filesystem_local--mine", is_streaming=False),
+            _provider("filesystem_local--household", is_streaming=False),
+            _provider("spotify--mine", is_streaming=True),
+            _provider("spotify--theirs", is_streaming=True),
+        ]
+    )
+    set_music_source_access(
+        mass,
+        {
+            "filesystem_local--mine": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE),
+            "filesystem_local--household": None,
+            "spotify--mine": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE),
+            "spotify--theirs": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.EVERYONE),
+        },
+    )
+
+    assert visible_playback_sources(mass, _user(OWNER)) == [
+        "filesystem_local--mine",
+        "filesystem_local--household",
+        "spotify--mine",
+    ]
+
+
+def test_visible_playback_sources_treats_a_service_without_an_instance_as_streaming() -> None:
+    """With no loaded instance to ask, the accounts of a service still follow the rule."""
+    mass = _mass()
+    set_music_source_access(
+        mass,
+        {
+            "spotify--mine": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE),
+            "spotify--theirs": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.EVERYONE),
+        },
+    )
+
+    assert visible_playback_sources(mass, _user(OWNER)) == ["spotify--mine"]
 
 
 def test_visible_playback_sources_ignores_a_disabled_own_service() -> None:

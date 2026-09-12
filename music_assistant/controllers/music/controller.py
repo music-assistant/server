@@ -135,6 +135,7 @@ from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.provider_access import (
     access_allows,
     exact_provider,
+    playback_reaches_source,
     source_owner,
     visible_music_sources,
     visible_playback_sources,
@@ -3585,8 +3586,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             prov.instance_id for prov in self.mass.providers if prov.type == ProviderType.PLUGIN
         }
         if item.provider != "library":
-            return item.provider in allowed or item.provider in plugin_instances
+            return item.provider in plugin_instances or playback_reaches_source(
+                self.mass, item.provider, allowed
+            )
         return any(
-            mapping.provider_instance in allowed or mapping.provider_instance in plugin_instances
+            mapping.provider_instance in plugin_instances
+            or playback_reaches_source(self.mass, mapping.provider_instance, allowed)
             for mapping in item.provider_mappings
         )
