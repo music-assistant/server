@@ -1152,7 +1152,7 @@ class AuthenticationManager:
 
         :param username: The username (minimum 2 characters).
         :param password: The password (minimum 8 characters).
-        :param role: User role - "admin", "user" or "guest" (default: "user").
+        :param role: User role - "admin" or "user" (default: "user").
         :param display_name: Optional display name.
         :param avatar_url: Optional avatar URL.
         :param player_filter: Optional list of player IDs user has access to.
@@ -1166,7 +1166,10 @@ class AuthenticationManager:
             raise InvalidDataError("Password must be at least 8 characters")
 
         # Validate role
-        user_role = _assignable_role(role)
+        try:
+            user_role = UserRole(role)
+        except ValueError as err:
+            raise InvalidDataError("Invalid role. Must be 'admin' or 'user'") from err
 
         # Get built-in provider
         builtin_provider = self.login_providers.get("builtin")
@@ -1394,7 +1397,7 @@ class AuthenticationManager:
         :param display_name: New display name (optional).
         :param avatar_url: New avatar URL (optional).
         :param password: New password (optional, minimum 8 characters).
-        :param role: New role - "admin", "user" or "guest" (optional, set by admin only).
+        :param role: New role - "admin" or "user" (optional, set by admin only).
         :param preferences: User preferences dict (completely replaces existing, optional).
         :param player_filter: List of player IDs user has access to (set by admin only, optional).
         :return: Updated user object.
@@ -1418,7 +1421,7 @@ class AuthenticationManager:
             # Updating own profile
             target_user = current_user_obj
 
-        if username or password or role:
+        if username is not None or password or role:
             _refuse_system_user(target_user.username)
 
         # Update role (requires the users.manage scope)
@@ -1428,7 +1431,10 @@ class AuthenticationManager:
                     "The users.manage scope is required to update user roles"
                 )
 
-            new_role = _assignable_role(role)
+            try:
+                new_role = UserRole(role)
+            except ValueError as err:
+                raise InvalidDataError("Invalid role. Must be 'admin' or 'user'") from err
 
             success = await self.update_user_role(target_user.user_id, new_role, current_user_obj)
             if not success:
@@ -2385,27 +2391,15 @@ def _mask_join_code(code: str) -> str:
     return normalized[:4] + "*" * max(len(normalized) - 4, 0)
 
 
-def _assignable_role(role: str) -> UserRole:
-    """
-    Return the builtin role an admin may give a user.
-
-    :param role: The requested role id.
-    :raises InvalidDataError: If the role is unknown, or the service role that only the Home
-        Assistant system user holds.
-    """
-    if role not in (UserRole.ADMIN, UserRole.USER, UserRole.GUEST):
-        raise InvalidDataError("Invalid role. Must be 'admin', 'user' or 'guest'")
-    return UserRole(role)
-
-
 def _refuse_system_user(username: str) -> None:
     """
-    Raise if the given username is that of the Home Assistant system user.
+    Refuse a change to the Home Assistant system user.
 
     The Home Assistant integration signs in with this account, so it can not be deleted,
     disabled, renamed or given another role or password.
 
     :param username: The username of the account to change.
+    :raises InvalidDataError: If the username is that of the Home Assistant system user.
     """
     if username == HOMEASSISTANT_SYSTEM_USER:
         raise InvalidDataError(

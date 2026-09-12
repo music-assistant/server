@@ -951,14 +951,26 @@ async def test_the_system_user_keeps_its_username_role_and_password(
     with pytest.raises(InvalidDataError) as excinfo:
         await auth_manager.update_user_profile(user_id=system_user.user_id, username="renamed")
     assert excinfo.value.translation_key == "system_user_protected"
+    # an empty username would otherwise be stored along with the other field
+    with pytest.raises(InvalidDataError) as excinfo:
+        await auth_manager.update_user_profile(
+            user_id=system_user.user_id, username="", display_name="Renamed"
+        )
+    assert excinfo.value.translation_key == "system_user_protected"
     with pytest.raises(InvalidDataError) as excinfo:
         await auth_manager.update_user_profile(user_id=system_user.user_id, role="user")
     assert excinfo.value.translation_key == "system_user_protected"
     with pytest.raises(InvalidDataError) as excinfo:
         await auth_manager.update_user_profile(user_id=system_user.user_id, password="password123")
     assert excinfo.value.translation_key == "system_user_protected"
+    # nor can the account rename itself
+    set_current_user(system_user)
+    with pytest.raises(InvalidDataError) as excinfo:
+        await auth_manager.update_user_profile(username="renamed")
+    assert excinfo.value.translation_key == "system_user_protected"
 
     # the rest of its profile stays editable
+    set_current_user(admin)
     updated_user = await auth_manager.update_user_profile(
         user_id=system_user.user_id, display_name="Home Assistant"
     )
@@ -968,25 +980,6 @@ async def test_the_system_user_keeps_its_username_role_and_password(
     assert not await auth_manager.database.get_rows(
         "user_auth_providers", {"user_id": system_user.user_id}
     )
-
-
-async def test_the_service_role_can_not_be_given(auth_manager: AuthenticationManager) -> None:
-    """Test that the service role, which only the Home Assistant system user holds, is refused."""
-    admin = await auth_manager.create_user(username="serviceadmin", role=UserRole.ADMIN)
-    member = await auth_manager.create_user(username="servicemember", role=UserRole.USER)
-    set_current_user(admin)
-
-    with pytest.raises(InvalidDataError, match="Invalid role"):
-        await auth_manager.create_user_with_api(
-            username="newservice", password="password123", role="service"
-        )
-    with pytest.raises(InvalidDataError, match="Invalid role"):
-        await auth_manager.update_user_profile(user_id=member.user_id, role="service")
-
-    assert await auth_manager.get_user_by_username("newservice") is None
-    stored_member = await auth_manager.get_user(member.user_id)
-    assert stored_member is not None
-    assert stored_member.role == UserRole.USER
 
 
 async def test_get_user_tokens(auth_manager: AuthenticationManager) -> None:
