@@ -1693,6 +1693,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 self.mass.signal_event(
                     EventType.PLAYER_ADDED, object_id=player.player_id, data=player
                 )
+            # A freshly registered player is already available/enabled, so no state
+            # transition reaches the debounced update — forward a synthetic one so
+            # active static groups can reconnect the member.
+            self._forward_state_update(
+                player,
+                {
+                    ATTR_AVAILABLE: (False, player.state.available),
+                    ATTR_ENABLED: (False, player.state.enabled),
+                },
+            )
             # register playerqueue for this player (if not a protocol player)
             if player.state.type != PlayerType.PROTOCOL:
                 await self.mass.player_queues.on_player_register(player)
@@ -3114,7 +3124,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 continue
             if _player.state.type != PlayerType.GROUP:
                 continue
-            if player_id in _player.state.group_members:
+            if player_id in _player.state.group_members or (
+                _player.is_active_session and player_id in _player.state.static_group_members
+            ):
                 yield _player
 
     # Protocol linking methods are provided by ProtocolLinkingMixin (protocol_linking.py)

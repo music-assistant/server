@@ -28,6 +28,11 @@ PLAYBACK_START_TIMEOUT: Final[float] = 5.0
 # instead of restarting for every removal.
 REFORM_DEBOUNCE_SECONDS: Final[float] = 2.0
 
+# Reconnect attempts are bounded so a permanently incompatible member cannot keep
+# a task alive, while a short device/leader outage can recover without user action.
+RECONNECT_RETRY_DELAY: Final[float] = 1.0
+RECONNECT_MAX_ATTEMPTS: Final[int] = 3
+
 CONF_ENTRY_SGP_NOTE = ConfigEntry(
     key="sgp_note",
     type=ConfigEntryType.ALERT,
