@@ -54,14 +54,14 @@ def access_allows(access: ProviderAccess | None, user: User | None) -> bool:
     return False
 
 
-def visible_music_sources(mass: MusicAssistant, user: User) -> list[str] | None:
+def visible_music_sources(mass: MusicAssistant, user: User | None) -> list[str] | None:
     """
     Return the instance ids of the music sources the given user may see.
 
     None means the user may see every configured music source.
 
     :param mass: The MusicAssistant instance.
-    :param user: The user to resolve the music sources for.
+    :param user: The user to resolve the music sources for; None for anonymous playback.
     """
     return _visible_sources(_music_sources(mass), user)
 
@@ -84,24 +84,35 @@ def visible_playback_sources(mass: MusicAssistant, user: User | None) -> list[st
     )
 
 
-def playback_reaches_source(
+def playback_instance_for(
     mass: MusicAssistant, instance_id: str, allowed: list[str] | None
-) -> bool:
+) -> str | None:
     """
-    Return whether an item on the given music source can be served by the allowed sources.
+    Return the music source that serves an item sitting on the given source, if any.
 
-    An account of a streaming service is also reached through another allowed account of
-    that same service, which resolves the very same item ids.
+    An account of a streaming service is served through another allowed account of that
+    same service, which resolves the very same item ids. None means no allowed source
+    can serve the item.
 
     :param mass: The MusicAssistant instance.
     :param instance_id: The provider instance the item to play sits on.
     :param allowed: The music sources the playback user may use, or None for all of them.
     """
     if allowed is None or instance_id in allowed:
-        return True
+        return instance_id
     domain = _source_domain(mass, instance_id)
-    return _is_streaming_service(mass, instance_id, domain) and any(
-        _source_domain(mass, allowed_id) == domain for allowed_id in allowed
+    if not _is_streaming_service(mass, instance_id, domain):
+        return None
+    # the allowed set is read off the raw configs and keeps disabled instances, so only a
+    # loaded and available account of the service can stand in
+    return next(
+        (
+            allowed_id
+            for allowed_id in allowed
+            if _source_domain(mass, allowed_id) == domain
+            and exact_provider(mass, allowed_id) is not None
+        ),
+        None,
     )
 
 

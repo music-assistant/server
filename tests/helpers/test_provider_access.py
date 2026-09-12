@@ -14,6 +14,7 @@ from music_assistant.helpers.provider_access import (
     access_allows,
     derived_provider_filter,
     own_music_sources,
+    playback_instance_for,
     playback_sources,
     source_access,
     source_owner,
@@ -281,6 +282,73 @@ def test_visible_playback_sources_leaves_anonymous_playback_alone() -> None:
     )
 
     assert visible_playback_sources(mass, None) is None
+
+
+def test_playback_instance_for_keeps_a_source_the_user_may_use() -> None:
+    """A source within the playback set serves its own items."""
+    mass = _mass([_provider("spotify--mine", is_streaming=True)])
+    set_music_source_access(
+        mass, {"spotify--mine": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE)}
+    )
+
+    assert playback_instance_for(mass, "spotify--mine", ["spotify--mine"]) == "spotify--mine"
+    assert playback_instance_for(mass, "spotify--theirs", None) == "spotify--theirs"
+
+
+def test_playback_instance_for_swaps_in_the_own_account_of_a_service() -> None:
+    """An account left out of the playback set is served by the user's own account of it."""
+    mass = _mass(
+        [
+            _provider("spotify--mine", is_streaming=True),
+            _provider("spotify--theirs", is_streaming=True),
+        ]
+    )
+    set_music_source_access(
+        mass,
+        {
+            "spotify--mine": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE),
+            "spotify--theirs": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.EVERYONE),
+        },
+    )
+
+    assert playback_instance_for(mass, "spotify--theirs", ["spotify--mine"]) == "spotify--mine"
+
+
+def test_playback_instance_for_skips_an_account_that_can_not_play() -> None:
+    """An account without a loaded provider plays nothing, so it never stands in."""
+    mass = _mass([_provider("spotify--theirs", is_streaming=True)])
+    set_music_source_access(
+        mass,
+        {
+            "spotify--mine": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE),
+            "spotify--theirs": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.EVERYONE),
+        },
+    )
+
+    assert playback_instance_for(mass, "spotify--theirs", ["spotify--mine"]) is None
+
+
+def test_playback_instance_for_never_swaps_a_local_source() -> None:
+    """Instances of a local source are libraries of their own, so neither stands in."""
+    mass = _mass(
+        [
+            _provider("filesystem_local--mine", is_streaming=False),
+            _provider("filesystem_local--theirs", is_streaming=False),
+        ]
+    )
+    set_music_source_access(
+        mass,
+        {
+            "filesystem_local--mine": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE),
+            "filesystem_local--theirs": ProviderAccess(
+                owner=MEMBER, sharing=ProviderSharing.EVERYONE
+            ),
+        },
+    )
+
+    assert (
+        playback_instance_for(mass, "filesystem_local--theirs", ["filesystem_local--mine"]) is None
+    )
 
 
 def test_own_music_sources_and_source_owner() -> None:

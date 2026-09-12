@@ -366,6 +366,33 @@ def test_check_item_playable_accepts_a_library_item_mapped_to_a_shared_account_o
     controller.check_item_playable_for_user(_library_track("spotify--theirs"), _user(USER_A))
 
 
+def test_check_item_playable_rejects_a_private_account_of_an_own_service() -> None:
+    """Another member's private account stays out of reach, own account of that service or not."""
+    controller = _controller_with_sources(
+        {"spotify--mine": _private(USER_A), "spotify--theirs": _private(USER_B)},
+        providers=[_music_source_prov("spotify--mine"), _music_source_prov("spotify--theirs")],
+    )
+    item = Track(item_id="42", provider="spotify--theirs", name="Track", provider_mappings=set())
+
+    with pytest.raises(MediaNotFoundError):
+        controller.check_item_playable_for_user(item, _user(USER_A))
+
+
+def test_check_item_playable_rejects_a_shared_account_without_a_playable_own_account() -> None:
+    """A shared account is out of reach while the user's own account of it can not play."""
+    controller = _controller_with_sources(
+        {
+            "spotify--mine": _private(USER_A),
+            "spotify--theirs": ProviderAccess(owner=USER_B, sharing=ProviderSharing.EVERYONE),
+        },
+        providers=[_music_source_prov("spotify--theirs")],
+    )
+    item = Track(item_id="42", provider="spotify--theirs", name="Track", provider_mappings=set())
+
+    with pytest.raises(MediaNotFoundError):
+        controller.check_item_playable_for_user(item, _user(USER_A))
+
+
 def test_check_item_playable_rejects_an_account_of_a_service_the_user_has_none_of() -> None:
     """Without an account of the service, another member's private one stays out of reach."""
     controller = _controller_with_sources(
@@ -420,8 +447,8 @@ def test_check_item_playable_for_anonymous_playback() -> None:
         controller.check_item_playable_for_user(_library_track(PROV_B), None)
 
 
-async def test_a_play_report_stays_off_a_shared_account_of_an_own_service() -> None:
-    """A play is not reported to another member's account of a service the user has too."""
+async def test_a_play_report_moves_to_the_own_account_of_an_own_service() -> None:
+    """A play served through the user's own account of a service is reported there too."""
     own_instance = "tidal--mine"
     other_instance = "tidal--theirs"
     own = _music_source_prov(own_instance, available=True)
@@ -454,7 +481,9 @@ async def test_a_play_report_stays_off_a_shared_account_of_an_own_service() -> N
 
     await controller.mark_item_played(track, is_playing=True, userid=USER_A)
 
-    mass.create_task.assert_not_called()
+    own.on_played.assert_called_once()
+    assert own.on_played.call_args.kwargs["prov_item_id"] == "t1"
+    housemate.on_played.assert_not_called()
 
 
 async def test_a_play_report_never_reaches_another_members_account() -> None:
