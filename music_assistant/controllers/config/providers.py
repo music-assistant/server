@@ -409,15 +409,15 @@ class ProviderConfigMixin:
     @api_command("config/providers/share_candidates", required_scope=Scope.CONFIG_PROVIDERS_OWN)
     async def get_share_candidates(self) -> list[UserSummary]:
         """
-        Return the household members a music source can be shared with.
+        Return the users a music source can be shared with.
 
-        Every enabled member is listed, without its role or settings. Guests and the Home
-        Assistant system user are not members, so they are left out.
+        Every enabled member and the Home Assistant system user are listed, without their role
+        or settings. Guests are left out.
         """
         return [
             UserSummary.from_user(user)
             for user in await self.mass.webserver.auth.list_users()
-            if user.enabled and self._is_member(user)
+            if user.enabled and user.role != UserRole.GUEST
         ]
 
     def release_user_sources(self, user_id: str) -> None:

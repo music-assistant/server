@@ -817,16 +817,13 @@ class AuthenticationManager:
         """
         Get all users (requires the users.read scope).
 
-        System users are excluded from the list.
+        The Home Assistant system user is listed as well, with the service role.
 
         :return: List of user objects.
         """
         user_rows = await self.database.get_rows("users", limit=1000)
         users = []
         for row in user_rows:
-            # Skip system users
-            if row["username"] == HOMEASSISTANT_SYSTEM_USER:
-                continue
             users.append(
                 User(
                     user_id=row["user_id"],
@@ -901,6 +898,8 @@ class AuthenticationManager:
         """
         Disable user account (admin only).
 
+        The Home Assistant system user can not be disabled.
+
         :param user_id: The user ID.
         """
         admin_user = get_current_user()
@@ -915,6 +914,7 @@ class AuthenticationManager:
         user_row = await self.database.get_row("users", {"user_id": user_id})
         if not user_row:
             raise InvalidDataError("User not found")
+        _refuse_system_user(user_row["username"])
 
         await self.database.update(
             "users",
@@ -1200,6 +1200,8 @@ class AuthenticationManager:
         """
         Delete user account (admin only).
 
+        The Home Assistant system user can not be deleted.
+
         :param user_id: The user ID.
         """
         admin_user = get_current_user()
@@ -1214,6 +1216,7 @@ class AuthenticationManager:
         user_row = await self.database.get_row("users", {"user_id": user_id})
         if not user_row:
             raise InvalidDataError("User not found")
+        _refuse_system_user(user_row["username"])
 
         # The ON DELETE CASCADE clauses on the dependent tables never fire, since foreign
         # key enforcement is off on our connections, so remove those rows here.
@@ -1387,6 +1390,7 @@ class AuthenticationManager:
         Update user profile information.
 
         Users can update their own profile. Admins can update any user including role and password.
+        The username, role and password of the Home Assistant system user can not be changed.
 
         :param user_id: User ID to update (optional, defaults to current user).
         :param username: New username (optional).
@@ -1416,6 +1420,9 @@ class AuthenticationManager:
         else:
             # Updating own profile
             target_user = current_user_obj
+
+        if username is not None or password or role:
+            _refuse_system_user(target_user.username)
 
         # Update role (requires the users.manage scope)
         if role:
@@ -2382,3 +2389,21 @@ def _mask_join_code(code: str) -> str:
     """
     normalized = code.upper()
     return normalized[:4] + "*" * max(len(normalized) - 4, 0)
+
+
+def _refuse_system_user(username: str) -> None:
+    """
+    Refuse a change to the Home Assistant system user.
+
+    The Home Assistant integration signs in with this account, so it can not be deleted,
+    disabled, renamed or given another role or password.
+
+    :param username: The username of the account to change.
+    :raises InvalidDataError: If the username is that of the Home Assistant system user.
+    """
+    if username == HOMEASSISTANT_SYSTEM_USER:
+        raise InvalidDataError(
+            "The Home Assistant system account can not be deleted, disabled, renamed "
+            "or given another role or password.",
+            translation_key="system_user_protected",
+        )

@@ -1208,6 +1208,7 @@
     "no_playable_items": "There is nothing to play here.",
     "invalid_data": "The data provided is invalid or could not be processed.",
     "guest_owns_music_sources": "A guest can not own a music source. Reassign or remove the music sources of this user first.",
+    "system_user_protected": "The Home Assistant system account can not be deleted, disabled, renamed or given another role or password.",
     "playlist_not_owned": "Only the owner of this playlist may change it.",
     "playlist_follows_source": "This playlist follows the sharing of its music source.",
     "already_registered": "This item is already registered.",
