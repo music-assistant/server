@@ -3,14 +3,15 @@ Helpers to derive which music sources a user may see and use.
 
 Ownership and sharing live on the provider instance (`ProviderConfig.access`); a user's
 set of music sources is derived from those records. The derived set is read straight from
-the raw provider configs, so disabled and unavailable instances count too.
+the raw provider configs, so disabled and unavailable instances count too. Playback narrows
+that set once more: a service the user has an enabled source of is served by that source only.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from music_assistant_models.auth import UserRole
 from music_assistant_models.config_entries import ProviderAccess
@@ -19,8 +20,6 @@ from music_assistant_models.enums import ProviderSharing, ProviderType
 from music_assistant.constants import CONF_PROVIDERS, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
-
     from music_assistant_models.auth import User
 
     from music_assistant.mass import MusicAssistant
@@ -63,19 +62,22 @@ def visible_music_sources(mass: MusicAssistant, user: User) -> list[str] | None:
     :param mass: The MusicAssistant instance.
     :param user: The user to resolve the music sources for.
     """
-    return _visible_sources(mass, user)
+    return _visible_sources(_music_sources(mass), user)
 
 
 def visible_playback_sources(mass: MusicAssistant, user: User | None) -> list[str] | None:
     """
     Return the instance ids of the music sources the given playback user may use.
 
+    A source the user does not own counts only when they have no enabled source of that
+    same service, so playback never moves to another account of a service they have.
     None means every configured music source may be used.
 
     :param mass: The MusicAssistant instance.
     :param user: The user the playback is for; None for anonymous playback.
     """
-    return _visible_sources(mass, user)
+    sources = _music_sources(mass)
+    return _without_other_instances_of_own_services(sources, user, _visible_sources(sources, user))
 
 
 def own_music_sources(mass: MusicAssistant, user: User | None) -> list[str]:
@@ -87,11 +89,7 @@ def own_music_sources(mass: MusicAssistant, user: User | None) -> list[str]:
     """
     if user is None:
         return []
-    return [
-        instance_id
-        for instance_id, access in _music_source_access(mass)
-        if access is not None and access.owner == user.user_id
-    ]
+    return [source.instance_id for source in _music_sources(mass) if _is_owned_by(source, user)]
 
 
 def source_access(mass: MusicAssistant, instance_id: str) -> ProviderAccess | None:
@@ -174,34 +172,87 @@ async def playback_sources(
     Return the (allowed, preferred) music sources for the queue's playback user.
 
     ``allowed`` holds the sources that may serve this playback, or None when every
-    configured music source may; ``preferred`` holds the sources the playback user owns,
-    which are to be tried first.
+    configured music source may; ``preferred`` holds the enabled sources the playback user
+    owns, which are to be tried first. Another account of a service the user has an enabled
+    source of never serves them.
 
     :param mass: The MusicAssistant instance.
     :param queue_id: The queue the playback belongs to.
     """
     user = await resolve_playback_user(mass, queue_id)
-    return visible_playback_sources(mass, user), own_music_sources(mass, user)
+    return visible_playback_sources(mass, user), _own_enabled_sources(mass, user)
 
 
-def _visible_sources(mass: MusicAssistant, user: User | None) -> list[str] | None:
+class _MusicSource(NamedTuple):
+    """A configured music source, as the access rules read it off the raw config."""
+
+    instance_id: str
+    domain: str
+    enabled: bool
+    access: ProviderAccess | None
+
+
+def _visible_sources(sources: list[_MusicSource], user: User | None) -> list[str] | None:
     """Return the music sources allowed for the user, or None if that is all of them."""
     allowed: list[str] = []
     restricted = False
-    for instance_id, access in _music_source_access(mass):
-        if access_allows(access, user):
-            allowed.append(instance_id)
+    for source in sources:
+        if access_allows(source.access, user):
+            allowed.append(source.instance_id)
         else:
             restricted = True
     return allowed if restricted else None
 
 
-def _music_source_access(mass: MusicAssistant) -> Iterator[tuple[str, ProviderAccess | None]]:
-    """Yield the (instance id, access record) of every configured music source."""
-    for instance_id, raw_conf in mass.config.get(CONF_PROVIDERS, {}).items():
-        if raw_conf.get("type") != ProviderType.MUSIC:
-            continue
-        yield instance_id, _parse_access(instance_id, raw_conf)
+def _without_other_instances_of_own_services(
+    sources: list[_MusicSource], user: User | None, allowed: list[str] | None
+) -> list[str] | None:
+    """Return the allowed sources without the other accounts of the user's own services."""
+    if user is None:
+        return allowed
+    own_domains = {
+        source.domain for source in sources if source.enabled and _is_owned_by(source, user)
+    }
+    dropped = {
+        source.instance_id
+        for source in sources
+        if source.domain in own_domains and not _is_owned_by(source, user)
+    }
+    if not dropped:
+        return allowed
+    # an unrestricted user needs a list of their own once a source is taken out of it
+    remaining = allowed if allowed is not None else [source.instance_id for source in sources]
+    return [instance_id for instance_id in remaining if instance_id not in dropped]
+
+
+def _own_enabled_sources(mass: MusicAssistant, user: User | None) -> list[str]:
+    """Return the instance ids of the enabled music sources the given user owns."""
+    if user is None:
+        return []
+    return [
+        source.instance_id
+        for source in _music_sources(mass)
+        if source.enabled and _is_owned_by(source, user)
+    ]
+
+
+def _is_owned_by(source: _MusicSource, user: User) -> bool:
+    """Return whether the given user owns the given music source."""
+    return source.access is not None and source.access.owner == user.user_id
+
+
+def _music_sources(mass: MusicAssistant) -> list[_MusicSource]:
+    """Return every configured music source, read straight off the raw provider configs."""
+    return [
+        _MusicSource(
+            instance_id=instance_id,
+            domain=raw_conf.get("domain") or instance_id,
+            enabled=raw_conf.get("enabled", True),
+            access=_parse_access(instance_id, raw_conf),
+        )
+        for instance_id, raw_conf in mass.config.get(CONF_PROVIDERS, {}).items()
+        if raw_conf.get("type") == ProviderType.MUSIC
+    ]
 
 
 def _parse_access(instance_id: str, raw_conf: dict[str, Any]) -> ProviderAccess | None:
