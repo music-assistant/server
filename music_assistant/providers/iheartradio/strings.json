@@ -1,0 +1,40 @@
+{
+  "config_entries": {
+    "country": {
+      "label": "Country",
+      "description": "iHeartRadio serves a different catalogue in every country. Pick the one you want to listen to.",
+      "options": {
+        "us": "United States",
+        "ca": "Canada",
+        "au": "Australia",
+        "nz": "New Zealand",
+        "mx": "Mexico"
+      }
+    }
+  },
+  "media": {
+    "folder": {
+      "live_radio": {
+        "name": "Live Radio"
+      },
+      "by_market": {
+        "name": "By City"
+      },
+      "by_genre": {
+        "name": "By Genre"
+      },
+      "podcasts": {
+        "name": "Podcasts"
+      }
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Set up iHeartRadio",
+      "description": "Pick the country whose stations you want to listen to."
+    }
+  },
+  "manifest": {
+    "description": "Listen to thousands of live radio stations and podcasts from iHeartRadio across the United States, Canada, Australia, New Zealand and Mexico, with live now-playing information and artwork."
+  }
+}
