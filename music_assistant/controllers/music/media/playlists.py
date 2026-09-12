@@ -1438,8 +1438,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         cur_item = await self.get_library_item(db_id)
         if get_current_user() is not None:
             # a library add of a matching provider item lands here too, so a personal
-            # playlist is only rewritten by someone who may edit it
-            self._check_may_edit_items(cur_item)
+            # playlist is only rewritten by its owner or a library manager
+            self._check_may_manage(cur_item)
         self._verify_update_allowed(cur_item, update)
         metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
         cur_item.external_ids.update(update.external_ids)
@@ -1760,10 +1760,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # actually add the tracks to the playlist on the provider
         update_current_task_progress(90, f"Adding {len(ids_to_add)} item(s) to playlist")
         await playlist_prov.add_playlist_tracks(playlist_prov_item_id, ids_to_add)
-        # reset 'last_refresh' to force a refresh of the playlist's metadata
-        # in the next scheduled run of the playlist metadata task
-        playlist.metadata.last_refresh = None
-        await self.update_item_in_library(db_playlist_id, playlist)
+        await self._request_metadata_refresh(playlist)
         update_current_task_progress(100, f"Added {len(ids_to_add)} item(s) to playlist")
 
     async def _handle_remove_playlist_tracks(
@@ -1786,10 +1783,19 @@ class PlaylistController(MediaControllerBase[Playlist]):
             msg = f"Provider {provider.name} does not support editing playlists"
             raise InvalidDataError(msg)
         await provider.remove_playlist_tracks(playlist_prov_item_id, positions_to_remove)
-        # reset 'last_refresh' to force a refresh of the playlist's metadata
-        # in the next scheduled run of the playlist metadata task
+        await self._request_metadata_refresh(playlist)
+
+    async def _request_metadata_refresh(self, playlist: Playlist) -> None:
+        """Have the next metadata run refresh the playlist, and announce its changed items."""
+        # server-side bookkeeping after an item change, so it bypasses the edit rights that
+        # a full update of the record needs
         playlist.metadata.last_refresh = None
-        await self.update_item_in_library(db_playlist_id, playlist)
+        await self.mass.music.database.update(
+            self.db_table,
+            {"item_id": int(playlist.item_id)},
+            {"metadata": serialize_to_json(playlist.metadata)},
+        )
+        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, playlist.uri, playlist)
 
     @staticmethod
     async def _add_provider_playlist_tracks(

@@ -620,10 +620,14 @@ async def test_library_add_command_ignores_a_supplied_record(
 async def test_library_add_of_a_matching_item_needs_the_right_to_edit(
     playlists: PlaylistController,
 ) -> None:
-    """Re-adding a provider item that matches a personal playlist rewrites it only for its editors."""
-    added = await _add(playlists, _playlist("Original", PlaylistAccess(owner=OWNER.user_id)))
+    """Re-adding a provider item that matches a personal playlist rewrites it only for its owner."""
+    access = PlaylistAccess(
+        owner=OWNER.user_id, sharing=ProviderSharing.MEMBERS, collaborative=True
+    )
+    added = await _add(playlists, _playlist("Original", access))
     builtin_id = next(iter(added.provider_mappings)).item_id
 
+    # a collaborator may change the items, not the record itself
     with _as_user(MEMBER), pytest.raises(InsufficientPermissions):
         await playlists.add_item_to_library(
             _playlist("Hijacked", item_id=builtin_id), overwrite_existing=True
@@ -636,6 +640,30 @@ async def test_library_add_of_a_matching_item_needs_the_right_to_edit(
     assert renamed.item_id == added.item_id
     assert renamed.name == "Renamed"
     assert renamed.access == added.access
+
+
+async def test_collaborator_edit_completes_its_bookkeeping(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """The refresh marker an item change leaves behind needs no right to rewrite the record."""
+    access = PlaylistAccess(
+        owner=OWNER.user_id, sharing=ProviderSharing.MEMBERS, collaborative=True
+    )
+    added = await _add(playlists, _playlist("Collaborative", access))
+    provider = MagicMock()
+    provider.domain = provider.instance_id = "builtin"
+    provider.available = True
+    provider.supported_features = {ProviderFeature.PLAYLIST_TRACKS_EDIT}
+    provider.remove_playlist_tracks = AsyncMock()
+
+    with (
+        patch.object(music_mass_module, "get_provider", return_value=provider),
+        patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
+    ):
+        await playlists._handle_remove_playlist_tracks(added.item_id, (1,), MEMBER.user_id)
+
+    provider.remove_playlist_tracks.assert_awaited_once()
+    assert (await playlists.get_library_item(added.item_id)).metadata.last_refresh is None
 
 
 async def test_release_user_playlists(
