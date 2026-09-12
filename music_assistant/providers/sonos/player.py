@@ -1034,7 +1034,7 @@ class SonosPlayer(Player):
         self._attr_source_list[source_index] = replace(
             self._attr_source_list[source_index],
             can_shuffle=actions.get("canShuffle", False),
-            can_repeat=actions.get("canRepeat", False) or actions.get("canRepeatOne", False),
+            can_repeat=actions.get("canRepeat", False),
             shuffle_enabled=modes.shuffle,
             repeat_mode=repeat_mode,
         )

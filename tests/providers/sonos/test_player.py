@@ -440,8 +440,8 @@ def test_a_connect_session_reports_its_repeat_mode(
     assert source.repeat_mode is repeat_mode
 
 
-def test_a_source_that_only_offers_repeat_one_can_still_repeat() -> None:
-    """Test a source that can only repeat a single track is not reported as unable to repeat."""
+def test_a_source_that_only_offers_repeat_one_does_not_advertise_repeat() -> None:
+    """Test repeat is only offered when the content can repeat all, the first step of the cycle."""
     player, _ = _speaker_reporting_paused_spotify()
     group = cast("MagicMock", player.client.player.group)
     group.playback_actions.raw_data = {
@@ -453,7 +453,7 @@ def test_a_source_that_only_offers_repeat_one_can_still_repeat() -> None:
     player.on_player_event(None)
 
     source = next(x for x in player._attr_source_list if x.id == SOURCE_SPOTIFY)
-    assert source.can_repeat is True
+    assert source.can_repeat is False
     assert source.can_shuffle is False
 
 
