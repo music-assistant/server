@@ -351,9 +351,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """
         playlist_name = (await self._get_editable_library_item(db_playlist_id)).name
         user = get_current_user()
+        user_id = user.user_id if user else None
         return self.mass.tasks.run_background_task(
             name=f"Add items to playlist {playlist_name}",
-            handler=lambda: self._handle_add_playlist_tracks(db_playlist_id, uris, user),
+            handler=lambda: self._handle_add_playlist_tracks(db_playlist_id, uris, user_id),
             translation_key="add_playlist_tracks",
             translation_owner=self.translation_owner,
             translation_args=[playlist_name],
@@ -370,7 +371,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def add_playlist_track(self, db_playlist_id: str | int, track_uri: str) -> None:
         """Add (single) track to playlist."""
-        await self._handle_add_playlist_tracks(db_playlist_id, [track_uri], get_current_user())
+        user = get_current_user()
+        await self._handle_add_playlist_tracks(
+            db_playlist_id, [track_uri], user.user_id if user else None
+        )
 
     async def remove_playlist_tracks(
         self, db_playlist_id: str | int, positions_to_remove: tuple[int, ...]
@@ -384,10 +388,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """
         playlist_name = (await self._get_editable_library_item(db_playlist_id)).name
         user = get_current_user()
+        user_id = user.user_id if user else None
         return self.mass.tasks.run_background_task(
             name=f"Remove items from playlist {playlist_name}",
             handler=lambda: self._handle_remove_playlist_tracks(
-                db_playlist_id, positions_to_remove, user
+                db_playlist_id, positions_to_remove, user_id
             ),
             translation_key="remove_playlist_tracks",
             translation_owner=self.translation_owner,
@@ -595,8 +600,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 raise ProviderUnavailableError(f"Provider {source_provider} is not available")
             allowed_provider_instances.add(source_provider)
         allowed_provider_instances.add(provider.instance_id)
-        # a background task runs without a user context, so the owner is settled here
-        destination_access = self._new_playlist_access(user)
+        user_id = user.user_id if user else None
         return self.mass.tasks.run_background_task(
             name=f"Migrate playlist {source_playlist.name}",
             handler=lambda: self._handle_migrate_playlist(
@@ -607,8 +611,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 destination_name,
                 match_policy,
                 tuple(sorted(allowed_provider_instances)),
-                destination_access,
-                user,
+                user_id,
             ),
             user_id=user.user_id if user else None,
             metadata={
@@ -750,13 +753,14 @@ class PlaylistController(MediaControllerBase[Playlist]):
         destination_name: str,
         match_policy: PlaylistMatchPolicy,
         allowed_provider_instances: tuple[str, ...],
-        destination_access: PlaylistAccess | None = None,
-        user: User | None = None,
+        user_id: str | None = None,
     ) -> None:
         """Resolve and copy a playlist inside a managed task."""
-        # the source is read as the user that asked for the copy, which may have lost
-        # sight of it since the task was queued
+        # the copy is made as the user that asked for it, which may have lost sight of the
+        # source, or its rights, since the task was queued
+        user = await self._task_user(user_id)
         set_current_user(user)
+        destination_access = self._new_playlist_access(user)
         source_playlist = await self._get_visible_library_item(source_playlist_id)
         if source_playlist.is_dynamic:
             raise InvalidDataError("Dynamic playlists can not be migrated")
@@ -1504,13 +1508,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
             return await provider.get_playlist_tracks(item_id, page=page)
 
     async def _handle_add_playlist_tracks(
-        self, db_playlist_id: str | int, uris: list[str], user: User | None
+        self, db_playlist_id: str | int, uris: list[str], user_id: str | None
     ) -> None:
         """Handle adding playlist items inside a managed task."""
         # ruff: noqa: PLR0915
         # the items are resolved as the user that asked for them, so what that user may not
         # see or play is not copied into the playlist through a task
-        set_current_user(user)
+        set_current_user(await self._task_user(user_id))
         total_requested = len(uris)
         update_current_task_progress(0, "Preparing playlist update")
         db_id = int(db_playlist_id)  # ensure integer
@@ -1752,10 +1756,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         update_current_task_progress(100, f"Added {len(ids_to_add)} item(s) to playlist")
 
     async def _handle_remove_playlist_tracks(
-        self, db_playlist_id: str | int, positions_to_remove: tuple[int, ...], user: User | None
+        self, db_playlist_id: str | int, positions_to_remove: tuple[int, ...], user_id: str | None
     ) -> None:
         """Handle removing playlist items inside a managed task."""
-        set_current_user(user)
+        set_current_user(await self._task_user(user_id))
         db_id = int(db_playlist_id)  # ensure integer
         # the task may run well after it was queued, so the right to edit is checked again
         playlist = await self._get_editable_library_item(db_id)
@@ -1879,6 +1883,21 @@ class PlaylistController(MediaControllerBase[Playlist]):
             f"Only the owner of {playlist.name} may change it",
             translation_key="playlist_not_owned",
         )
+
+    async def _task_user(self, user_id: str | None) -> User | None:
+        """
+        Return the user a queued playlist change runs as, None for an internal caller.
+
+        :param user_id: Id of the user that queued the change, None for an internal caller.
+        :raises InsufficientPermissions: The account was disabled or removed, or lost the
+            right to change the library, while the change was pending.
+        """
+        if user_id is None:
+            return None
+        user = await self.mass.webserver.auth.get_user(user_id)
+        if user is None or not has_scope(user, Scope.LIBRARY_WRITE):
+            raise InsufficientPermissions("The user that queued this change may no longer do so")
+        return user
 
     def _new_playlist_access(self, user: User | None) -> PlaylistAccess | None:
         """Return the access record for a playlist the given user creates, None for household."""

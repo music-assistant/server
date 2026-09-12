@@ -395,7 +395,6 @@ async def test_migrate_playlist_queues_validated_task(
         ("spotify_1", "tidal_1"),
         # no calling user, so the copy becomes a household playlist
         None,
-        None,
     )
 
 
@@ -496,7 +495,6 @@ async def test_migrate_playlist_accepts_static_plugin_source(
         "Smart",
         PlaylistMatchPolicy.SAME_RECORDING,
         ("tidal_1",),
-        None,
         None,
     )
 

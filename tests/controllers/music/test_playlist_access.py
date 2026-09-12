@@ -574,11 +574,16 @@ async def test_adding_a_hidden_playlist_as_source_is_refused_inside_the_task(
     ):
         with pytest.raises(MediaNotFoundError):
             await playlists._handle_add_playlist_tracks(
-                target.item_id, [f"library://playlist/{hidden.item_id}"], MEMBER
+                target.item_id, [f"library://playlist/{hidden.item_id}"], MEMBER.user_id
             )
         # the right to edit the target is checked again when the task runs
         with pytest.raises(InsufficientPermissions):
-            await playlists._handle_add_playlist_tracks(read_only.item_id, [], MEMBER)
+            await playlists._handle_add_playlist_tracks(read_only.item_id, [], MEMBER.user_id)
+        # as is the account itself: disabled, removed or without the right to change the library
+        with pytest.raises(InsufficientPermissions):
+            await playlists._handle_add_playlist_tracks(target.item_id, [], "user-gone")
+        with pytest.raises(InsufficientPermissions):
+            await playlists._handle_add_playlist_tracks(target.item_id, [], GUEST.user_id)
 
 
 async def test_release_user_playlists(playlists: PlaylistController) -> None:

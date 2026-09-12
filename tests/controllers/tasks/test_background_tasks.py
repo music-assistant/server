@@ -638,11 +638,11 @@ async def test_add_playlist_tracks_creates_and_runs_background_task(
         return SimpleNamespace(name="Test playlist", access=None)
 
     async def fake_handle_add_playlist_tracks(
-        db_playlist_id: str | int, uris: list[str], user: SimpleNamespace
+        db_playlist_id: str | int, uris: list[str], user_id: str | None
     ) -> None:
         assert db_playlist_id == "42"
         assert uris == ["spotify://track/1", "spotify://track/2"]
-        assert user.user_id == "user-123"
+        assert user_id == "user-123"
         handler_called.set()
 
     monkeypatch.setattr(playlist_controller, "get_library_item", fake_get_library_item)
