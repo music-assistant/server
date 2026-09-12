@@ -11,8 +11,13 @@ from uuid import uuid4
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import EventType
-from music_assistant_models.errors import InvalidDataError, SetupFailedError
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    InvalidDataError,
+    SetupFailedError,
+)
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.plugin_engines import (
     get_tts_engines,
     select_ai_engine,
@@ -142,15 +147,28 @@ class AIRadioProvider(
             ("ai_radio/queue_dj/set", self.set_queue_dj),
             ("ai_radio/queue_dj/status", self.get_queue_dj_status),
         )
+        # playing a station takes what playing anything takes, and the stations are part of
+        # what everyone browses; creating and editing them configures the plugin
+        playback_scopes = {
+            "ai_radio/stations/list": Scope.LIBRARY_READ,
+            "ai_radio/stations/get": Scope.LIBRARY_READ,
+            "ai_radio/sections/list": Scope.LIBRARY_READ,
+            "ai_radio/sections/get": Scope.LIBRARY_READ,
+            "ai_radio/start": Scope.QUEUES_CONTROL,
+            "ai_radio/stop": Scope.QUEUES_CONTROL,
+            "ai_radio/status": Scope.QUEUES_READ,
+        }
         for command, handler in api_handlers:
             # the queue DJ menu is queue state, not provider config: a client allowed to
             # arm it must also be allowed to read back what is armed
             if command.startswith("ai_radio/queue_dj/"):
                 required_scope = Scope.QUEUES_CONTROL
+            elif command in playback_scopes:
+                required_scope = playback_scopes[command]
             else:
                 required_scope = (
                     Scope.CONFIG_PROVIDERS_READ
-                    if command.endswith(("/list", "/get", "/template", "/validate", "/status"))
+                    if command.endswith(("/list", "/get", "/template", "/validate"))
                     else Scope.CONFIG_PROVIDERS_WRITE
                 )
             self._unregister_handles.append(
@@ -385,6 +403,7 @@ class AIRadioProvider(
         player = self.mass.players.get_player(player_id)
         if player is None:
             raise InvalidDataError(f"Unknown target player: {player_id}")
+        self._check_player_access(player_id)
         if player.available is False:
             raise InvalidDataError(f"Target player is unavailable: {player_id}")
         if player.enabled is False:
@@ -438,6 +457,9 @@ class AIRadioProvider(
     ) -> dict[str, Any]:
         """Stop an active run."""
         selected = self._resolve_session_for_stop(session_id=session_id, station_id=station_id)
+        if selected.queue_id:
+            # a run has a queue once it plays, and stopping the run stops that queue
+            self._check_player_access(selected.queue_id)
 
         # cancel first so the run cannot queue another batch after playback stopped
         if selected.task and not selected.task.done():
@@ -577,3 +599,11 @@ class AIRadioProvider(
             raise KeyError("No active AI Radio run found")
 
         return max(running, key=lambda item: item.created_at)
+
+    @staticmethod
+    def _check_player_access(player_id: str) -> None:
+        """Raise when the calling user is restricted to other players than the given one."""
+        user = get_current_user()
+        if user and user.player_filter and player_id not in user.player_filter:
+            msg = f"{user.username} does not have access to player {player_id}"
+            raise InsufficientPermissions(msg)

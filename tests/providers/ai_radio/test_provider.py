@@ -4,20 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Generator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.auth import Scope
+from music_assistant_models.auth import Scope, User, UserRole
 from music_assistant_models.enums import EventType, PlaybackState, ProviderFeature
 from music_assistant_models.errors import (
+    InsufficientPermissions,
     InvalidDataError,
     PlayerUnavailableError,
     SetupFailedError,
 )
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
 from music_assistant.providers.ai_radio import provider as ai_radio_provider
 from music_assistant.providers.ai_radio.constants import (
@@ -840,7 +843,6 @@ async def test_queue_dj_commands_are_registered_as_queue_control() -> None:
     }
     assert scopes["ai_radio/queue_dj/set"] == Scope.QUEUES_CONTROL
     assert scopes["ai_radio/queue_dj/status"] == Scope.QUEUES_CONTROL
-    assert scopes["ai_radio/status"] == Scope.CONFIG_PROVIDERS_READ
 
 
 async def test_unload_cancels_an_in_flight_engine_recheck() -> None:
@@ -944,3 +946,127 @@ async def test_engine_watchdog_arms_a_reload_after_unloading(
     retry = cast("Any", provider.mass).call_later.call_args
     assert retry.args == (ENGINE_RETRY_DELAY, provider.mass.load_provider, "ai_radio")
     assert retry.kwargs == {"allow_retry": True, "task_id": "load_provider_ai_radio"}
+
+
+@pytest.fixture
+def kitchen_only_user() -> Generator[None]:
+    """Make the calling user a member that only has access to the kitchen player."""
+    set_current_user(
+        User(user_id="kid", username="kid", role=UserRole.USER, player_filter=["kitchen"])
+    )
+    yield
+    set_current_user(None)
+
+
+async def test_stations_are_played_by_everyone_and_edited_by_admins() -> None:
+    """Listing and playing a station takes what playing anything takes; editing configures it."""
+    provider, _, _ = _make_engine_provider(
+        [_make_engine_plugin("p1", ["ai"], ["tts"])],
+        setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"},
+    )
+
+    await provider.loaded_in_mass()
+
+    scopes = {
+        call.args[0]: call.kwargs["required_scope"]
+        for call in cast("Any", provider.mass).register_api_command.call_args_list
+    }
+    for command in (
+        "ai_radio/stations/list",
+        "ai_radio/stations/get",
+        "ai_radio/sections/list",
+        "ai_radio/sections/get",
+    ):
+        assert scopes[command] == Scope.LIBRARY_READ
+    assert scopes["ai_radio/start"] == Scope.QUEUES_CONTROL
+    assert scopes["ai_radio/stop"] == Scope.QUEUES_CONTROL
+    assert scopes["ai_radio/status"] == Scope.QUEUES_READ
+    for command in (
+        "ai_radio/hosts/list",
+        "ai_radio/hosts/get",
+        "ai_radio/hosts/presets/list",
+        "ai_radio/engines/tts/list",
+        "ai_radio/stations/template",
+        "ai_radio/stations/validate",
+    ):
+        assert scopes[command] == Scope.CONFIG_PROVIDERS_READ
+    for command in (
+        "ai_radio/stations/save",
+        "ai_radio/stations/delete",
+        "ai_radio/sections/save",
+        "ai_radio/sections/delete",
+        "ai_radio/hosts/save",
+        "ai_radio/hosts/delete",
+    ):
+        assert scopes[command] == Scope.CONFIG_PROVIDERS_WRITE
+
+
+@pytest.mark.usefixtures("kitchen_only_user")
+async def test_start_run_refuses_a_player_the_user_has_no_access_to() -> None:
+    """A member restricted to some players can not start a station on another one."""
+    player = SimpleNamespace(player_id="living_room", available=True, enabled=True)
+    provider = _make_dynamic_provider(player_obj=player, default_player_id="living_room")
+
+    with pytest.raises(InsufficientPermissions, match="living_room"):
+        await provider.start_run(station_id="station_a")
+
+    assert provider._sessions == {}
+
+
+@pytest.mark.usefixtures("kitchen_only_user")
+async def test_start_run_lets_a_member_play_on_a_player_it_has_access_to() -> None:
+    """A member gets past the access check for a player it may use."""
+    player = SimpleNamespace(player_id="kitchen", available=True, enabled=True)
+    provider = _make_dynamic_provider(player_obj=player, default_player_id="kitchen")
+    provider._hosts = {}
+
+    # past the access check, the station without a host is what stops this run
+    with pytest.raises(InvalidDataError, match="unknown host"):
+        await provider.start_run(station_id="station_a")
+
+
+@pytest.mark.usefixtures("kitchen_only_user")
+async def test_stop_run_refuses_a_run_on_a_player_the_user_has_no_access_to() -> None:
+    """A member restricted to some players can not stop a station playing on another one."""
+    provider = _make_provider()
+    stopped: list[str] = []
+    provider.mass = cast(
+        "Any", SimpleNamespace(player_queues=SimpleNamespace(stop=_recording_stop(stopped)))
+    )
+    provider._sessions["s_run"] = SessionState(
+        session_id="s_run", station_id="st", status="running", queue_id="living_room"
+    )
+
+    with pytest.raises(InsufficientPermissions, match="living_room"):
+        await provider.stop_run(session_id="s_run")
+
+    assert provider._sessions["s_run"].status == "running"
+    assert stopped == []
+
+
+@pytest.mark.usefixtures("kitchen_only_user")
+async def test_stop_run_lets_a_member_stop_a_run_on_a_player_it_has_access_to() -> None:
+    """A member stops a station playing on a player it may use."""
+    provider = _make_provider()
+    provider.logger = cast(
+        "Any",
+        SimpleNamespace(debug=lambda *_a, **_kw: None, info=lambda *_a, **_kw: None),
+    )
+    stopped: list[str] = []
+    provider.mass = cast(
+        "Any",
+        SimpleNamespace(
+            player_queues=SimpleNamespace(
+                get=lambda _queue_id: SimpleNamespace(state=PlaybackState.PLAYING, current_index=3),
+                stop=_recording_stop(stopped),
+            )
+        ),
+    )
+    provider._sessions["s_run"] = SessionState(
+        session_id="s_run", station_id="st", status="running", queue_id="kitchen"
+    )
+
+    result = await provider.stop_run(session_id="s_run")
+
+    assert result["status"] == "stopped"
+    assert stopped == ["kitchen"]
