@@ -586,7 +586,30 @@ async def test_adding_a_hidden_playlist_as_source_is_refused_inside_the_task(
             await playlists._handle_add_playlist_tracks(target.item_id, [], GUEST.user_id)
 
 
-async def test_release_user_playlists(playlists: PlaylistController) -> None:
+async def test_library_add_of_a_matching_item_needs_the_right_to_edit(
+    playlists: PlaylistController,
+) -> None:
+    """Re-adding a provider item that matches a personal playlist rewrites it only for its editors."""
+    added = await _add(playlists, _playlist("Original", PlaylistAccess(owner=OWNER.user_id)))
+    builtin_id = next(iter(added.provider_mappings)).item_id
+
+    with _as_user(MEMBER), pytest.raises(InsufficientPermissions):
+        await playlists.add_item_to_library(
+            _playlist("Hijacked", item_id=builtin_id), overwrite_existing=True
+        )
+    assert (await playlists.get_library_item(added.item_id)).name == "Original"
+    with _as_user(OWNER):
+        renamed = await playlists.add_item_to_library(
+            _playlist("Renamed", item_id=builtin_id), overwrite_existing=True
+        )
+    assert renamed.item_id == added.item_id
+    assert renamed.name == "Renamed"
+    assert renamed.access == added.access
+
+
+async def test_release_user_playlists(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
     """A removed user's playlists become household playlists and it leaves every share list."""
     owned = await _add(playlists, _playlist("Owned", PlaylistAccess(owner=MEMBER.user_id)))
     sole_recipient = await _add(
@@ -608,6 +631,14 @@ async def test_release_user_playlists(playlists: PlaylistController) -> None:
         ),
     )
     untouched = await _add(playlists, _playlist("Untouched", PlaylistAccess(owner=OWNER.user_id)))
+    unreadable = await _add(
+        playlists, _playlist("Unreadable", PlaylistAccess(owner=MEMBER.user_id))
+    )
+    await music_mass_module.music.database.update(
+        DB_TABLE_PLAYLISTS,
+        {"item_id": int(unreadable.item_id)},
+        {"access": '{"owner": "user-member", "shared_users": "not a list"}'},
+    )
 
     await playlists.release_user_playlists(MEMBER.user_id)
 

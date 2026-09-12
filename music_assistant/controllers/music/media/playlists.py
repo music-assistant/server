@@ -707,7 +707,14 @@ class PlaylistController(MediaControllerBase[Playlist]):
         for db_row in await self.mass.music.database.get_rows_from_query(
             query, {"user_id": user_id}, limit=0
         ):
-            access = PlaylistAccess.from_dict(json_loads(db_row["access"]))
+            try:
+                access = PlaylistAccess.from_dict(json_loads(db_row["access"]))
+            except ValueError, TypeError:
+                # a record that can not be read is left for an admin to repair
+                self.logger.warning(
+                    "Skipping the unreadable access record of playlist %s", db_row["item_id"]
+                )
+                continue
             if access.owner == user_id:
                 await self._store_access(db_row["item_id"], None)
                 continue
@@ -1429,6 +1436,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
+        if get_current_user() is not None:
+            # a library add of a matching provider item lands here too, so a personal
+            # playlist is only rewritten by someone who may edit it
+            self._check_may_edit_items(cur_item)
         self._verify_update_allowed(cur_item, update)
         metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
         cur_item.external_ids.update(update.external_ids)
