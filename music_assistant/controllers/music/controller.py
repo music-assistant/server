@@ -1705,7 +1705,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 seconds_played = media_item.duration
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
-        allowed = visible_music_sources(self.mass, user) if user else None
+        allowed = visible_playback_sources(self.mass, user) if user else None
         for prov_mapping in media_item.provider_mappings:
             if allowed is not None and prov_mapping.provider_instance not in allowed:
                 continue
@@ -1818,7 +1818,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         )
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
-        allowed = visible_music_sources(self.mass, user) if user else None
+        allowed = visible_playback_sources(self.mass, user) if user else None
         for prov_mapping in media_item.provider_mappings:
             if allowed is not None and prov_mapping.provider_instance not in allowed:
                 continue

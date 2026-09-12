@@ -240,7 +240,7 @@ def test_visible_playback_sources_leaves_a_service_without_an_instance_alone() -
 
 def test_visible_playback_sources_ignores_a_disabled_own_service() -> None:
     """A disabled source of a service leaves the shared account of it playable."""
-    mass = _mass()
+    mass = _mass([_provider("spotify--theirs", is_streaming=True)])
     set_music_source_access(
         mass,
         {
@@ -371,7 +371,7 @@ async def test_playback_sources_prefers_the_users_own_account_of_a_service() -> 
 
 async def test_playback_sources_skips_a_disabled_own_source() -> None:
     """A disabled source of the user is no playback target to steer to."""
-    mass = _mass()
+    mass = _mass([_provider("spotify--theirs", is_streaming=True)])
     set_music_source_access(
         mass,
         {

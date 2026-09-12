@@ -351,6 +351,21 @@ def test_check_item_playable_accepts_a_shared_account_of_an_own_service() -> Non
     controller.check_item_playable_for_user(item, _user(USER_A))
 
 
+def test_check_item_playable_accepts_a_library_item_mapped_to_a_shared_account_of_an_own_service() -> (
+    None
+):
+    """A library item mapped only to another member's account plays through the user's own."""
+    controller = _controller_with_sources(
+        {
+            "spotify--mine": _private(USER_A),
+            "spotify--theirs": ProviderAccess(owner=USER_B, sharing=ProviderSharing.EVERYONE),
+        },
+        providers=[_music_source_prov("spotify--mine"), _music_source_prov("spotify--theirs")],
+    )
+
+    controller.check_item_playable_for_user(_library_track("spotify--theirs"), _user(USER_A))
+
+
 def test_check_item_playable_rejects_an_account_of_a_service_the_user_has_none_of() -> None:
     """Without an account of the service, another member's private one stays out of reach."""
     controller = _controller_with_sources(
@@ -403,6 +418,43 @@ def test_check_item_playable_for_anonymous_playback() -> None:
     controller.check_item_playable_for_user(_library_track(PROV_A), None)
     with pytest.raises(MediaNotFoundError):
         controller.check_item_playable_for_user(_library_track(PROV_B), None)
+
+
+async def test_a_play_report_stays_off_a_shared_account_of_an_own_service() -> None:
+    """A play is not reported to another member's account of a service the user has too."""
+    own_instance = "tidal--mine"
+    other_instance = "tidal--theirs"
+    own = _music_source_prov(own_instance, available=True)
+    housemate = _music_source_prov(other_instance, available=True)
+    controller = _controller_with_sources(
+        {
+            own_instance: _private(USER_A),
+            other_instance: ProviderAccess(owner=USER_B, sharing=ProviderSharing.EVERYONE),
+        },
+        providers=[own, housemate],
+    )
+    mass: Any = controller.mass
+    mass.get_provider = Mock(
+        side_effect=lambda instance_id, **_kwargs: {
+            own_instance: own,
+            other_instance: housemate,
+        }.get(instance_id)
+    )
+    mass.get_provider_instances = Mock(return_value=[own, housemate])
+    mass.webserver.auth.get_user = AsyncMock(return_value=_user(USER_A))
+    track = Track(
+        item_id="1",
+        provider="library",
+        name="Track",
+        provider_mappings={
+            ProviderMapping(item_id="t1", provider_domain="tidal", provider_instance=other_instance)
+        },
+    )
+    controller._resolve_playlog_item = AsyncMock(return_value=track)  # type: ignore[method-assign]
+
+    await controller.mark_item_played(track, is_playing=True, userid=USER_A)
+
+    mass.create_task.assert_not_called()
 
 
 async def test_a_play_report_never_reaches_another_members_account() -> None:

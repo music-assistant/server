@@ -289,7 +289,8 @@ def _is_streaming_service(mass: MusicAssistant, instance_id: str, domain: str) -
     Return whether the instances of this music service are accounts of one shared catalog.
 
     Accounts of a streaming service resolve the same item ids, where instances of a local or
-    self-hosted source each hold a library of their own.
+    self-hosted source each hold a library of their own. A service without a single loaded
+    instance is not one, since none of its instances can play.
     """
     provider = mass.get_provider(instance_id, return_unavailable=True) or next(
         iter(mass.get_provider_instances(domain, return_unavailable=True)), None
