@@ -6,11 +6,13 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.access import PlaylistAccess
 from music_assistant_models.api import CommandMessage, ErrorResultMessage
 from music_assistant_models.auth import Scope, User, UserRole
-from music_assistant_models.enums import EventType, FlowStepType
+from music_assistant_models.enums import EventType, FlowStepType, ProviderSharing
 from music_assistant_models.errors import InsufficientPermissions
 from music_assistant_models.event import MassEvent
+from music_assistant_models.media_items import Playlist, ProviderMapping
 from music_assistant_models.setup_flow import SetupFlowStep
 
 from music_assistant.controllers.config.flows import SetupFlowAccess, SetupFlowMixin
@@ -25,7 +27,6 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from music_assistant.helpers.api import APICommandHandler
-from tests.common import SELF_SERVICE_ROLE
 
 
 async def _noop_command() -> None:
@@ -120,6 +121,7 @@ SELF_SERVICE_COMMANDS = [
     pytest.param(ProviderConfigMixin.invoke_provider_config_action, id="invoke_action"),
     pytest.param(ProviderConfigMixin.save_provider_config, id="save"),
     pytest.param(ProviderConfigMixin.set_provider_access, id="set_access"),
+    pytest.param(ProviderConfigMixin.get_share_candidates, id="share_candidates"),
     pytest.param(ProviderConfigMixin.remove_provider_config, id="remove"),
     pytest.param(ProviderConfigMixin._reload_provider, id="reload"),
     pytest.param(SetupFlowMixin.setup_provider, id="setup"),
@@ -167,10 +169,12 @@ async def test_admin_scoped_command_rejects_non_admin(role: UserRole) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("command", SELF_SERVICE_COMMANDS)
-@pytest.mark.parametrize("role", [UserRole.USER, UserRole.GUEST])
-async def test_self_service_command_rejects_a_member(role: UserRole, command: Any) -> None:
+@pytest.mark.parametrize("role", [UserRole.GUEST, UserRole.SERVICE])
+async def test_self_service_command_rejects_a_guest_and_a_service_account(
+    role: UserRole, command: Any
+) -> None:
     """
-    Adding and managing your own music sources needs a scope no builtin role holds yet.
+    Adding and managing your own music sources is off limits for a guest and a service account.
 
     :param role: The role of the calling user.
     :param command: The command handler function to dispatch.
@@ -186,11 +190,10 @@ async def test_self_service_command_rejects_a_member(role: UserRole, command: An
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("self_service_role")
-@pytest.mark.parametrize("role", [UserRole.ADMIN, SELF_SERVICE_ROLE], ids=["admin", "granted_role"])
-async def test_self_service_command_allows_admin_and_granted_role(role: str) -> None:
+@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.USER])
+async def test_self_service_command_allows_admin_and_user(role: str) -> None:
     """
-    An admin and a role that was granted the self-service scope both reach the command.
+    An admin and a regular user both reach the command.
 
     :param role: Role id of the calling user.
     """
@@ -284,17 +287,16 @@ async def test_unauthenticated_command_does_not_inherit_a_user() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("self_service_role")
 @pytest.mark.parametrize(
     ("user_id", "role", "delivered"),
     [
-        (FLOW_OWNER, SELF_SERVICE_ROLE, True),
-        ("user_2", SELF_SERVICE_ROLE, False),
-        ("admin", UserRole.ADMIN, True),
+        (FLOW_OWNER, UserRole.USER, True),
         ("user_2", UserRole.USER, False),
+        ("admin", UserRole.ADMIN, True),
+        ("user_2", UserRole.GUEST, False),
         ("user_2", None, False),
     ],
-    ids=["owner", "another_member", "admin", "member_without_the_scope", "unauthenticated"],
+    ids=["owner", "another_member", "admin", "guest", "unauthenticated"],
 )
 async def test_a_member_setup_flow_step_reaches_only_its_owner(
     user_id: str, role: str | None, delivered: bool
@@ -314,26 +316,19 @@ async def test_a_member_setup_flow_step_reaches_only_its_owner(
 
 
 @pytest.mark.asyncio
-async def test_a_server_started_setup_flow_step_reaches_every_member(
-    self_service_role: str,
-) -> None:
-    """
-    A setup flow without an owner is served to anyone holding the scope it started with.
-
-    :param self_service_role: Role id granted the self-service scope.
-    """
+async def test_a_server_started_setup_flow_step_reaches_every_member() -> None:
+    """A setup flow without an owner is served to anyone holding the scope it started with."""
     access = SetupFlowAccess(Scope.CONFIG_PROVIDERS_OWN)
-    client = _subscribed_client(self_service_role, user_id="user_2", access=access)
+    client = _subscribed_client(UserRole.USER, user_id="user_2", access=access)
     event = _flow_event()
 
     assert _sent_events(client, event) == [event]
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("self_service_role")
 @pytest.mark.parametrize(
     ("role", "delivered"),
-    [(UserRole.ADMIN, True), (SELF_SERVICE_ROLE, False)],
+    [(UserRole.ADMIN, True), (UserRole.USER, False)],
     ids=["admin", "member"],
 )
 async def test_an_unknown_setup_flow_step_reaches_only_an_admin(role: str, delivered: bool) -> None:
@@ -356,3 +351,49 @@ async def test_other_events_are_forwarded_untouched() -> None:
     event = MassEvent(event=EventType.PLAYER_UPDATED, object_id="player_1", data=None)
 
     assert _sent_events(client, event) == [event]
+
+
+def _playlist_event(access: PlaylistAccess | None) -> MassEvent:
+    """Return a media item update event about a Music Assistant playlist with the given record."""
+    playlist = Playlist(
+        item_id="1",
+        provider="library",
+        name="Mine",
+        provider_mappings={
+            ProviderMapping(item_id="mine", provider_domain="builtin", provider_instance="builtin")
+        },
+        access=access,
+    )
+    return MassEvent(event=EventType.MEDIA_ITEM_UPDATED, object_id=playlist.uri, data=playlist)
+
+
+@pytest.mark.parametrize(
+    ("access", "user_role", "user_id", "forwarded"),
+    [
+        pytest.param(None, UserRole.USER, "user_2", True, id="household"),
+        pytest.param(PlaylistAccess(owner="user_1"), UserRole.USER, "user_1", True, id="owner"),
+        pytest.param(PlaylistAccess(owner="user_1"), UserRole.USER, "user_2", False, id="other"),
+        pytest.param(
+            PlaylistAccess(owner="user_1", sharing=ProviderSharing.MEMBERS),
+            UserRole.USER,
+            "user_2",
+            True,
+            id="shared-member",
+        ),
+        pytest.param(
+            PlaylistAccess(owner="user_1", sharing=ProviderSharing.MEMBERS),
+            None,
+            "user_2",
+            False,
+            id="shared-unauthenticated",
+        ),
+    ],
+)
+async def test_personal_playlist_events_only_reach_who_may_see_them(
+    access: PlaylistAccess | None, user_role: str | None, user_id: str, forwarded: bool
+) -> None:
+    """A media item event about a personal playlist is dropped for everyone else."""
+    client = _subscribed_client(user_role, user_id=user_id)
+    event = _playlist_event(access)
+
+    assert _sent_events(client, event) == ([event] if forwarded else [])

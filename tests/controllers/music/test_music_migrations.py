@@ -542,3 +542,21 @@ async def test_migration_adds_is_dynamic_column_to_radios(database: DatabaseConn
     )
 
     assert "is_dynamic" in await _table_columns(database, "radios")
+
+
+async def test_migration_adds_access_column_to_playlists(database: DatabaseConnection) -> None:
+    """A pre-59 database gets the playlists.access column; running it twice is harmless."""
+    assert "access" not in await _table_columns(database, "playlists")
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    for _ in range(2):
+        await migrate_database(
+            mass,
+            database,
+            MagicMock(),
+            prev_version=58,
+            create_tables=AsyncMock(),
+        )
+
+    assert "access" in await _table_columns(database, "playlists")

@@ -35,6 +35,8 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     Artist,
     AudioFormat,
+    BrowseFolder,
+    ItemMapping,
     MediaItem,
     MediaItemImage,
     MediaItemMetadata,
@@ -341,6 +343,21 @@ class BuiltinProvider(MusicProvider):
                 yield await self.get_track(item["item_id"])
             except MediaNotFoundError as err:
                 self.report_skipped_sync_item(MediaType.TRACK, item["item_id"], err)
+
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Browse this provider's items.
+
+        :param path: The path to browse, (e.g. builtin://playlists).
+        """
+        if path.split("://", 1)[-1].split("/", maxsplit=1)[0] == "playlists":
+            # the playlists are always library items, as that is where their access record
+            # lives: an empty listing means the caller may see none, not a library that
+            # is not synced yet, so never fall back to the raw files on disk
+            return await self.mass.music.playlists.library_items(
+                provider=self.instance_id, summary=False
+            )
+        return await super().browse(path)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library/subscribed playlists from the provider."""

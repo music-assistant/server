@@ -29,12 +29,13 @@ from music_assistant_models.errors import (
     MusicAssistantError,
 )
 from music_assistant_models.event import MassEvent
+from music_assistant_models.media_items import Playlist
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
-from music_assistant.helpers.provider_access import with_derived_provider_filter
+from music_assistant.helpers.provider_access import access_allows, with_derived_provider_filter
 
 from .helpers.auth_middleware import (
     has_scope,
@@ -611,6 +612,14 @@ class WebsocketClientHandler:
                         return
                 elif not access.allows(user):
                     return
+
+            if (
+                isinstance(event.data, Playlist)
+                and event.data.access is not None
+                and not access_allows(event.data.access, self._authenticated_user)
+            ):
+                # a personal playlist is only announced to the users who may see it
+                return
 
             if event.event == EventType.TASKS_UPDATED:
                 if self._authenticated_user is None:

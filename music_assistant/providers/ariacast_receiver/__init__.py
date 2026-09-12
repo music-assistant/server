@@ -116,6 +116,8 @@ class AriaCastReceiver(PluginProvider):
 
         # MA stream-routing state
         self._active_player_id: str | None = None
+        # The player actually consuming the current stream
+        self._session_player_id: str | None = None
         self._in_use_by_player: str | None = None
         self._active_session_id: str | None = None
 
@@ -312,7 +314,7 @@ class AriaCastReceiver(PluginProvider):
             return
         self._in_use_by_player = owner_player_id
         self._active_session_id = stream_session_id
-        self._active_player_id = player_id  # player_id for cmd_stop/cmd_power, not owner_player_id
+        self._session_player_id = player_id
 
     async def on_source_unselected(
         self, source_id: str, owner_player_id: str, stream_session_id: str
@@ -323,6 +325,7 @@ class AriaCastReceiver(PluginProvider):
         if self._active_session_id != stream_session_id:
             return
         self._active_session_id = None
+        self._session_player_id = None
         if self._in_use_by_player == owner_player_id:
             self._in_use_by_player = None
 
@@ -408,10 +411,9 @@ class AriaCastReceiver(PluginProvider):
                 self._audio_sender_ws = None
 
         self.logger.info("AriaCast sender disconnected from %s", request.remote)
-        # If we were the active stream, mark as not playing so get_audio_stream can exit cleanly
         if self._is_playing:
-            self.logger.debug("Sender disconnected while playing - clearing is_playing")
-            self._is_playing = False
+            # The sender vanished without ever sending a graceful is_playing=false
+            await self._handle_playback_state(False)
         return ws
 
     async def _ws_control(self, request: web.Request) -> web.WebSocketResponse:
@@ -759,16 +761,17 @@ class AriaCastReceiver(PluginProvider):
         if is_playing and not self._in_use_by_player:
             target = self._active_player_id or self._get_target_player_id()
             if target:
-                # _active_player_id holds player_id; _in_use_by_player gets the real
-                # queue_id from on_source_selected once MA confirms the stream
+                # remember the resolved target so a later session reuses it
+                # without re-resolving _get_target_player_id()
                 if not self._active_player_id:
                     self._active_player_id = target
                 self._in_use_by_player = target  # optimistic guard vs duplicate events
                 self.logger.debug("Triggering play on player %s", target)
                 self.mass.create_task(self._safe_play_media(target))
         elif not is_playing and was_playing and self._in_use_by_player:
-            # deselect the owner, not _active_player_id: that can be a protocol player
-            # whose stream we were consumed over, while the session hangs off the owner
+            # deselect the owner, not _session_player_id: that can be a protocol
+            # player whose stream we were consumed over, while the session hangs
+            # off the owner
             owner_player_id = self._in_use_by_player
             source_session = self.mass.players.get_audio_source_session(owner_player_id)
             # Clear the guard before the stop so a fast resume can re-trigger
@@ -853,7 +856,9 @@ class AriaCastReceiver(PluginProvider):
 
     async def _cmd_pause(self) -> None:
         self.logger.info("PAUSE")
-        player_id = self._active_player_id
+        # Stop the protocol player actually holding the stream (e.g. a sync
+        # group's leader) so a paused group stays formed
+        player_id = self._session_player_id or self._active_player_id
         # Clear queue guard before stop so a fast resume can re-trigger play_media
         self._in_use_by_player = None
         self._is_playing = False

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, cast
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 
+from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
@@ -430,12 +431,20 @@ class MSXBridgeProvider(PlayerProvider):
         self.logger.info("MSX Bridge provider unloaded")
 
     async def get_owner_username(self) -> str | None:
-        """Resolve and cache the first enabled user's username for playlog attribution."""
+        """
+        Resolve and cache the first enabled user's username for playlog attribution.
+
+        The Home Assistant system user is never picked.
+        """
         if self._owner_username is None:
             try:
                 users = await self.mass.webserver.auth.list_users()
                 for user in users:
-                    if user.enabled and user.username:
+                    if (
+                        user.enabled
+                        and user.username
+                        and user.username != HOMEASSISTANT_SYSTEM_USER
+                    ):
                         self._owner_username = user.username
                         self.logger.debug("Resolved owner username: %s", self._owner_username)
                         break

@@ -30,6 +30,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.controllers.player_queues.helpers import build_queue_item
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.datetime import now, utc
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.plugin_engines import resolve_ai_engine, resolve_tts_engine
@@ -64,6 +65,7 @@ from .constants import (
 )
 from .helpers import (
     build_slots,
+    check_player_access,
     coerce_float,
     coerce_int,
     format_ai_radio_timestamp,
@@ -221,6 +223,9 @@ class AIRadioRuntimeMixin:
         active_queue = self.mass.player_queues.get_active_queue(player_id)
         if active_queue is not None:
             queue_id = str(active_queue.queue_id)
+        # the run keeps the identity of the user who started it, and a grouped player hands
+        # the show to a queue that user must be allowed to use as well
+        check_player_access(queue_id)
         # a queue runs one host at a time; the show is now that host, so any sticky
         # DJ assignment on the queue is cleared before the show takes it over
         await self.set_queue_dj(queue_id, None)
@@ -424,6 +429,8 @@ class AIRadioRuntimeMixin:
             raise MusicAssistantError("Station is missing source_playlist_id")
 
         playlist = await self.mass.music.playlists.get(playlist_id, provider)
+        # the run plays as the user who started it, so its source must be one they may play
+        self.mass.music.check_item_playable_for_user(playlist, get_current_user())
         playlist_name = playlist.name
         tracks = [track async for track in self.mass.music.playlists.tracks(playlist_id, provider)]
         normalized: list[dict[str, Any]] = []

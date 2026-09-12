@@ -49,7 +49,8 @@ The main orchestrator that manages:
 Handles all authentication and user management:
 
 **Database Schema:**
-- `users` - User accounts with roles (admin/user)
+- `users` - User accounts, each holding the id of a (builtin or custom) role
+- `roles` - Custom user roles (the builtin roles are defined in code and never stored)
 - `user_auth_providers` - Links users to authentication providers (many-to-many)
 - `auth_tokens` - Access tokens with expiration tracking
 - `settings` - Schema version and configuration
@@ -70,11 +71,24 @@ Handles all authentication and user management:
 - Session management and cleanup
 
 **User Roles:**
+
+A role is a named set of scopes. The builtin roles are defined in code (`ROLE_SCOPES` in
+[helpers/auth_middleware.py](helpers/auth_middleware.py)) and can not be changed:
 - `ADMIN` - Full access to all commands and settings
-- `USER` - Standard access (configurable via player/provider filters)
+- `USER` - Standard access, including adding and managing their own music sources
 - `GUEST` - Read-only library access plus player/queue control
-- `SERVICE` - Standard access plus player config, reading user accounts and impersonation
-  (used by the Home Assistant integration)
+- `SERVICE` - Standard access plus player config, reading user accounts and impersonation,
+  but no music sources of its own (used by the Home Assistant integration)
+
+Admins can add custom roles (`auth/role/create`, `auth/role/update`, `auth/role/delete`),
+which are stored in the `roles` table and kept in memory for the scope checks. A custom role
+is a household member: it always holds the guest scopes and the scopes its granted scopes are
+of no use without. The scopes that reach into accounts, the private things of other members or
+the server itself (`users.manage`, `users.impersonate`, `library.manage`,
+`config.providers.write`, `config.core.write` and `system.manage`) stay with the builtin admin
+role. The live sessions of a user are closed when its role, or the
+scopes of its custom role, change, so its clients reconnect with the new scopes. The last
+enabled admin can not lose the admin role.
 
 ### 3. RemoteAccessManager ([remote_access/](remote_access/))
 
@@ -407,8 +421,8 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 
 ### Authorization
 
-- **Role-based access**: Admin vs User roles
-- **Command-level enforcement**: API commands can require specific roles
+- **Role-based access**: Each user holds one (builtin or custom) role, which grants its scopes
+- **Command-level enforcement**: API commands can require a specific scope
 - **Player filtering**: Users can be restricted to specific players. Which music sources a
   user may see is not set on the user: it follows from the owner and sharing on each source
   (`config/providers/set_access`)
