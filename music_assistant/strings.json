@@ -1218,6 +1218,7 @@
     "role_scope_not_allowed": "A custom role can not be granted this permission.",
     "playlist_not_owned": "Only the owner of this playlist may change it.",
     "playlist_follows_source": "This playlist follows the sharing of its music source.",
+    "source_no_owner_must_be_shared": "A music source without an owner must be shared with someone",
     "already_registered": "This item is already registered.",
     "setup_failed": "Setup failed. Please check the configuration and try again.",
     "login_failed": "Login failed. Please check your credentials and try again.",

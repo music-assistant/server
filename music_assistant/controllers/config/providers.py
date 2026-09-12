@@ -358,7 +358,8 @@ class ProviderConfigMixin:
 
         An admin may set this for any music source; any other caller may only change the
         sharing of a source it owns. The owner and the users on the share list keep their
-        place while their account is disabled.
+        place while their account is disabled. A source without an owner must be shared
+        with someone, as nobody could use it otherwise.
 
         :param instance_id: The music source (provider instance) to set the access of.
         :param sharing: Who, besides its owner, may use the source.
@@ -395,6 +396,14 @@ class ProviderConfigMixin:
                     continue
                 await self._validate_access_user(user_id, on_record=user_id in current_shared)
                 shared.append(user_id)
+        if owner is None and (
+            sharing == ProviderSharing.PRIVATE
+            or (sharing == ProviderSharing.SELECTED and not shared)
+        ):
+            raise InvalidDataError(
+                "A music source without an owner must be shared with someone",
+                translation_key="source_no_owner_must_be_shared",
+            )
         access = ProviderAccess(owner=owner, sharing=sharing, shared_users=shared)
         self.set(f"{CONF_PROVIDERS}/{instance_id}/access", access.to_dict())
         self.save(immediate=True)
