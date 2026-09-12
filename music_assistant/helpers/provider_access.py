@@ -295,9 +295,9 @@ def _is_streaming_service(mass: MusicAssistant, instance_id: str, domain: str) -
         iter(mass.get_provider_instances(domain, return_unavailable=True)), None
     )
     if provider is None:
-        # with nothing loaded to ask, the service counts as a streaming one, so the
-        # own-account rule still holds for a service that failed to load
-        return True
+        # with no instance of the service loaded, none of them can serve playback, so
+        # there is nothing to narrow
+        return False
     # only the music provider model carries the notion of a shared catalog
     return bool(getattr(provider, "is_streaming_provider", False))
 

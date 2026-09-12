@@ -35,8 +35,8 @@ def _mass(providers: list[MagicMock] | None = None) -> MagicMock:
     """
     Return a mocked server without any music source configured.
 
-    :param providers: The loaded provider instances; a service without one of them counts
-        as a streaming service.
+    :param providers: The loaded provider instances; a service without one of them is
+        never narrowed for playback.
     """
     mass = MagicMock()
     loaded = providers or []
@@ -171,7 +171,7 @@ def test_visible_playback_sources_for_anonymous_playback() -> None:
 
 def test_visible_playback_sources_drops_another_account_of_an_own_service() -> None:
     """Owning a source of a service keeps playback off the other accounts of it."""
-    mass = _mass()
+    mass = _mass([_provider("spotify--mine", is_streaming=True)])
     set_music_source_access(
         mass,
         {
@@ -224,8 +224,8 @@ def test_visible_playback_sources_narrows_a_streaming_service_only() -> None:
     ]
 
 
-def test_visible_playback_sources_treats_a_service_without_an_instance_as_streaming() -> None:
-    """With no loaded instance to ask, the accounts of a service still follow the rule."""
+def test_visible_playback_sources_leaves_a_service_without_an_instance_alone() -> None:
+    """With no instance of a service loaded, nothing of it can play, so nothing is narrowed."""
     mass = _mass()
     set_music_source_access(
         mass,
@@ -235,7 +235,7 @@ def test_visible_playback_sources_treats_a_service_without_an_instance_as_stream
         },
     )
 
-    assert visible_playback_sources(mass, _user(OWNER)) == ["spotify--mine"]
+    assert visible_playback_sources(mass, _user(OWNER)) is None
 
 
 def test_visible_playback_sources_ignores_a_disabled_own_service() -> None:
@@ -255,7 +255,7 @@ def test_visible_playback_sources_ignores_a_disabled_own_service() -> None:
 
 def test_visible_playback_sources_narrows_a_user_that_sees_everything() -> None:
     """A user without any hidden source still gets an explicit set once one is dropped."""
-    mass = _mass()
+    mass = _mass([_provider("spotify--mine", is_streaming=True)])
     set_music_source_access(
         mass,
         {
@@ -351,7 +351,7 @@ async def test_playback_sources_of_an_anonymous_queue() -> None:
 
 async def test_playback_sources_prefers_the_users_own_account_of_a_service() -> None:
     """The queue plays through the user's own account, never the shared one beside it."""
-    mass = _mass()
+    mass = _mass([_provider("spotify--mine", is_streaming=True)])
     set_music_source_access(
         mass,
         {
