@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+from typing import Self
 from unittest.mock import AsyncMock, Mock, patch
 
+import aiohttp
 import pytest
-import requests.exceptions
-from liblistenbrainz.errors import InvalidAuthTokenException
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.errors import InvalidToken, SetupFailedError
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
 from music_assistant.providers.listenbrainz_scrobble import (
@@ -20,11 +20,49 @@ from music_assistant.providers.listenbrainz_scrobble import (
 )
 
 
-def _mass(setup_data: dict[str, str] | None = None) -> Mock:
+class _FakeResponse:
+    """Stand-in for an aiohttp response used as an async context manager."""
+
+    def __init__(self, payload: dict[str, bool]) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    async def json(self) -> dict[str, bool]:
+        return self._payload
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
+class _FakeSession:
+    """Session whose GET returns a canned validate-token response, or raises a transport error."""
+
+    def __init__(
+        self, *, payload: dict[str, bool] | None = None, error: Exception | None = None
+    ) -> None:
+        self._payload = payload or {}
+        self._error = error
+
+    def get(self, *_args: object, **_kwargs: object) -> _FakeResponse:
+        if self._error is not None:
+            raise self._error
+        return _FakeResponse(self._payload)
+
+
+def _mass(
+    setup_data: dict[str, str] | None = None, *, http_session: _FakeSession | None = None
+) -> Mock:
     """Mock the server, holding the given setup data of the provider."""
     mass = Mock()
     mass.config.get.return_value = setup_data or {}
     mass.config.decrypt_string.side_effect = lambda value: value
+    if http_session is not None:
+        mass.http_session = http_session
     return mass
 
 
@@ -36,10 +74,15 @@ def _config() -> Mock:
     return config
 
 
-def _provider(setup_data: dict[str, str] | None = None) -> ListenBrainzScrobbleProvider:
+def _provider(
+    setup_data: dict[str, str] | None = None, *, http_session: _FakeSession | None = None
+) -> ListenBrainzScrobbleProvider:
     """Build a ListenBrainz provider instance with the given stored setup data."""
     return ListenBrainzScrobbleProvider(
-        _mass(setup_data), Mock(domain="listenbrainz_scrobble"), _config(), SUPPORTED_FEATURES
+        _mass(setup_data, http_session=http_session),
+        Mock(domain="listenbrainz_scrobble"),
+        _config(),
+        SUPPORTED_FEATURES,
     )
 
 
@@ -64,17 +107,40 @@ async def test_setup_declares_the_scrobble_feature() -> None:
     assert ProviderFeature.SCROBBLE in provider.supported_features
 
 
-async def test_the_handler_is_built_from_the_stored_token() -> None:
-    """A stored user token gives the provider a handler that reports to ListenBrainz."""
-    provider = _provider({CONF_USER_TOKEN: "token"})
+async def test_the_handler_is_built_from_a_valid_token() -> None:
+    """A valid stored token gives the provider a handler that reports to ListenBrainz."""
+    provider = _provider(
+        {CONF_USER_TOKEN: "token"}, http_session=_FakeSession(payload={"valid": True})
+    )
 
-    # the client validates the token against the service when it is set
     with patch("music_assistant.providers.listenbrainz_scrobble.ListenBrainz") as client_cls:
         await provider.handle_async_init()
     await provider.loaded_in_mass()
 
-    client_cls.return_value.set_auth_token.assert_called_once_with("token")
+    # the token is checked over http, so the client must not repeat the blocking check
+    client_cls.return_value.set_auth_token.assert_called_once_with("token", check_validity=False)
     assert isinstance(provider._handler, ListenBrainzEventHandler)
+
+
+async def test_an_invalid_token_fails_setup() -> None:
+    """An invalid user token stops the provider loading with an auth error, not a retry loop."""
+    provider = _provider(
+        {CONF_USER_TOKEN: "token"}, http_session=_FakeSession(payload={"valid": False})
+    )
+
+    with pytest.raises(InvalidToken):
+        await provider.handle_async_init()
+
+
+async def test_an_unreachable_service_fails_setup() -> None:
+    """A ListenBrainz that cannot be reached surfaces as a setup error, not a raw one."""
+    provider = _provider(
+        {CONF_USER_TOKEN: "token"},
+        http_session=_FakeSession(error=aiohttp.ClientConnectionError()),
+    )
+
+    with pytest.raises(SetupFailedError):
+        await provider.handle_async_init()
 
 
 async def test_the_hook_forwards_the_report_to_the_handler() -> None:
@@ -86,39 +152,3 @@ async def test_the_hook_forwards_the_report_to_the_handler() -> None:
     await provider.on_media_item_played(report)
 
     provider._handler.on_media_item_played.assert_awaited_once_with(report)
-
-
-async def test_an_invalid_token_fails_setup() -> None:
-    """An invalid user token stops the provider loading with a clear setup error."""
-    provider = _provider({CONF_USER_TOKEN: "token"})
-
-    with patch("music_assistant.providers.listenbrainz_scrobble.ListenBrainz") as client_cls:
-        client_cls.return_value.set_auth_token.side_effect = InvalidAuthTokenException
-        with pytest.raises(SetupFailedError):
-            await provider.handle_async_init()
-
-
-async def test_an_unreachable_service_fails_setup() -> None:
-    """A ListenBrainz that cannot be reached surfaces as a setup error, not a raw one."""
-    provider = _provider({CONF_USER_TOKEN: "token"})
-
-    with patch("music_assistant.providers.listenbrainz_scrobble.ListenBrainz") as client_cls:
-        client_cls.return_value.set_auth_token.side_effect = requests.exceptions.ConnectionError
-        with pytest.raises(SetupFailedError):
-            await provider.handle_async_init()
-
-
-async def test_the_token_check_runs_off_the_event_loop() -> None:
-    """The blocking token validation is handed to a worker thread, not the event loop."""
-    provider = _provider({CONF_USER_TOKEN: "token"})
-
-    with (
-        patch("music_assistant.providers.listenbrainz_scrobble.ListenBrainz") as client_cls,
-        patch(
-            "music_assistant.providers.listenbrainz_scrobble.asyncio.to_thread",
-            new_callable=AsyncMock,
-        ) as to_thread,
-    ):
-        await provider.handle_async_init()
-
-    to_thread.assert_awaited_once_with(client_cls.return_value.set_auth_token, "token")

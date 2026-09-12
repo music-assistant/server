@@ -9,12 +9,13 @@ import logging
 import time
 from typing import TYPE_CHECKING, ClassVar, Final
 
+import aiohttp
 import requests.exceptions
 from liblistenbrainz import Listen, ListenBrainz
-from liblistenbrainz.errors import InvalidAuthTokenException, ListenBrainzException
+from liblistenbrainz.errors import ListenBrainzException
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.errors import InvalidToken, SetupFailedError
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
@@ -58,15 +59,10 @@ class ListenBrainzScrobbleProvider(PluginProvider):
         if not token:
             raise SetupFailedError("User token needs to be set")
         assert token != SECURE_STRING_SUBSTITUTE
+        await self._validate_token(str(api_base_url), str(token))
         client = ListenBrainz(api_base_url=str(api_base_url))
-        # set_auth_token validates the token with a blocking request, so run it off
-        # the event loop and surface any failure as a setup error.
-        try:
-            await asyncio.to_thread(client.set_auth_token, str(token))
-        except InvalidAuthTokenException as err:
-            raise SetupFailedError("Invalid ListenBrainz user token") from err
-        except (ListenBrainzException, requests.exceptions.RequestException) as err:
-            raise SetupFailedError(f"Unable to connect to ListenBrainz: {err}") from err
+        # the token is validated above, so skip the client's own blocking check
+        client.set_auth_token(str(token), check_validity=False)
         self._client = client
 
     async def loaded_in_mass(self) -> None:
@@ -79,6 +75,26 @@ class ListenBrainzScrobbleProvider(PluginProvider):
         """Forward a playback progress report to ListenBrainz."""
         if self._handler is not None:
             await self._handler.on_media_item_played(report)
+
+    async def _validate_token(self, api_base_url: str, token: str) -> None:
+        """
+        Check the configured user token against ListenBrainz.
+
+        :param api_base_url: Base URL of the ListenBrainz API.
+        :param token: The user token to validate.
+        """
+        try:
+            async with self.mass.http_session.get(
+                f"{api_base_url}/1/validate-token",
+                headers={"Authorization": f"Token {token}"},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as response:
+                response.raise_for_status()
+                result = await response.json()
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise SetupFailedError(f"Unable to connect to ListenBrainz: {err}") from err
+        if not result.get("valid"):
+            raise InvalidToken("Invalid ListenBrainz user token")
 
 
 class ListenBrainzEventHandler(ScrobblerHelper):
