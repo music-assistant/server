@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import ConnectionTimeoutError
-from aiosonos.api.models import MusicService
+from aiosonos.api.models import MusicService, PlaybackError
 from aiosonos.api.models import PlayBackState as SonosPlayBackState
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import PlaybackErrorEvent
@@ -48,13 +48,30 @@ def _make_player() -> tuple[SonosPlayer, MagicMock]:
 
 def _make_named_player(name: str) -> SonosPlayer:
     """Create a SonosPlayer that reports the given name as its display name."""
-    player, _ = _make_player()
+    player, mass = _make_player()
     player._cache = {}
     player._attr_name = name
     # the display name prefers the name set in the player config, which has none here
     player._config = MagicMock()
     player._config.name = None
+    mass.streams.base_url = "http://192.168.1.10:9097"
     return player
+
+
+def _playback_error(**fields: object) -> PlaybackErrorEvent:
+    """Build the event a speaker sends when it fails to play an item."""
+    body = cast(
+        "PlaybackError",
+        {
+            "_objectType": "playbackError",
+            "errorCode": "ERROR_PLAYBACK_FAILED",
+            "reason": "ERROR_NO_RESOURCE",
+            "itemId": "abc@3",
+            "trackName": "Long Run 11",
+            **fields,
+        },
+    )
+    return PlaybackErrorEvent(SonosEventType.PLAYBACK_ERROR, "group1", body)
 
 
 async def _connect_player(player: SonosPlayer, client: MagicMock) -> None:
@@ -495,19 +512,7 @@ def test_an_item_refused_by_our_stream_server_is_not_logged_as_an_error(
 ) -> None:
     """Test a 404 from our own stream server, which happens in bursts, only logs at debug."""
     player = _make_named_player("Kantoor")
-    event = PlaybackErrorEvent(
-        SonosEventType.PLAYBACK_ERROR,
-        "group1",
-        {
-            "_objectType": "playbackError",
-            "errorCode": "ERROR_PLAYBACK_FAILED",
-            "reason": "ERROR_NO_RESOURCE",
-            "itemId": "abc@3",
-            "httpStatus": 404,
-            "serviceName": "host:9097",
-            "trackName": "Long Run 11",
-        },
-    )
+    event = _playback_error(httpStatus=404, serviceName="192.168.1.10:9097")
 
     with caplog.at_level(logging.DEBUG, logger="test.sonos.player"):
         player._on_playback_error(event)
@@ -516,22 +521,25 @@ def test_an_item_refused_by_our_stream_server_is_not_logged_as_an_error(
     assert "was refused abc@3 by the stream server" in caplog.text
 
 
+def test_a_404_from_another_service_is_logged_as_a_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test a 404 from a service other than our stream server is a real failure."""
+    player = _make_named_player("Kantoor")
+    event = _playback_error(httpStatus=404, serviceName="radio.example.com:80")
+
+    with caplog.at_level(logging.DEBUG, logger="test.sonos.player"):
+        player._on_playback_error(event)
+
+    assert "could not play Long Run 11 and reported ERROR_PLAYBACK_FAILED" in caplog.text
+
+
 def test_a_playback_error_from_the_speaker_is_logged_as_a_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Test a failure that is not ours names the track and the error the speaker reported."""
     player = _make_named_player("Kantoor")
-    event = PlaybackErrorEvent(
-        SonosEventType.PLAYBACK_ERROR,
-        "group1",
-        {
-            "_objectType": "playbackError",
-            "errorCode": "ERROR_PLAYBACK_FAILED",
-            "reason": "ERROR_DISALLOWED_BY_POLICY",
-            "itemId": "abc@3",
-            "trackName": "Long Run 11",
-        },
-    )
+    event = _playback_error(reason="ERROR_DISALLOWED_BY_POLICY")
 
     with caplog.at_level(logging.DEBUG, logger="test.sonos.player"):
         player._on_playback_error(event)
@@ -541,3 +549,19 @@ def test_a_playback_error_from_the_speaker_is_logged_as_a_warning(
         "could not play Long Run 11 and reported ERROR_PLAYBACK_FAILED (ERROR_DISALLOWED_BY_POLICY)"
         in caplog.text
     )
+
+
+def test_a_group_member_leaves_reporting_playback_errors_to_the_coordinator(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test a speaker synced to another one stays silent, so a group failure is logged once."""
+    player = _make_named_player("Kantoor")
+    client = cast("MagicMock", player.client)
+    client.player.is_coordinator = False
+    client.player.group.coordinator_id = "coordinator"
+    event = _playback_error(reason="ERROR_DISALLOWED_BY_POLICY")
+
+    with caplog.at_level(logging.DEBUG, logger="test.sonos.player"):
+        player._on_playback_error(event)
+
+    assert not caplog.records

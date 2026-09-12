@@ -14,6 +14,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, cast
+from urllib.parse import urlparse
 
 from aiohttp import ClientError
 from aiosonos.api.models import Container, ContainerType, MusicService, SonosCapability
@@ -1045,8 +1046,12 @@ class SonosPlayer(Player):
 
     def _on_playback_error(self, event: SonosEvent) -> None:
         """Log a playback failure the speaker reported for the item it tried to play."""
+        if self.synced_to:
+            # the coordinator plays for the whole group and reports for it
+            return
         error = cast("PlaybackError", event.data)
-        if error.get("httpStatus") == 404:
+        stream_server = urlparse(self.mass.streams.base_url).netloc
+        if error.get("httpStatus") == 404 and error.get("serviceName") == stream_server:
             # our own stream server refused the item: a track the queue moved past or no
             # longer holds. The speaker tries each track it cached before reading the
             # queue again, so these come in bursts
