@@ -18,6 +18,7 @@ import aiohttp
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
+    ExternalID,
     ImageType,
     MediaType,
     ProviderFeature,
@@ -55,6 +56,12 @@ from orjson import JSONDecodeError
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
+from music_assistant.helpers.external_ids import (
+    barcode_to_upc,
+    is_valid_barcode,
+    is_valid_isrc,
+    normalize_external_id,
+)
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.helpers.util import lock
@@ -495,13 +502,30 @@ class SpotifyProvider(MusicProvider):
         track_obj = await self._get_data(f"tracks/{prov_track_id}")
         return parse_track(track_obj, self)
 
+    async def get_track_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Track | None:
+        """Retrieve track by external ID (ISRC)."""
+        if external_id_type != ExternalID.ISRC or not is_valid_isrc(external_id):
+            return None
+        normalized_isrc = normalize_external_id(ExternalID.ISRC, external_id)
+        return await self._get_track_by_external_id(normalized_isrc)
+
+    async def get_album_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Album | None:
+        """Retrieve album by external ID (UPC/Barcode)."""
+        if external_id_type != ExternalID.BARCODE or not is_valid_barcode(external_id):
+            return None
+        normalized_upc = barcode_to_upc(external_id)
+        return await self._get_album_by_external_id(normalized_upc)
+
     @use_cache()
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         if prov_playlist_id == self._get_liked_songs_playlist_id():
             return await self._get_liked_songs_playlist()
 
-        # Check cache to see if this playlist requires global token
         use_global = await self._playlist_requires_global_token(prov_playlist_id)
         if use_global:
             playlist_obj = await self._get_data(
@@ -1286,6 +1310,24 @@ class SpotifyProvider(MusicProvider):
     def _instance_storage_dir(self) -> Path:
         """Return this instance's private storage directory."""
         return Path(self.mass.storage_path) / "spotify" / self.instance_id
+
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
+    async def _get_track_by_external_id(self, external_id: str) -> Track | None:
+        """Retrieve a track by its normalized ISRC using the Spotify API."""
+        result = await self._get_data("search", q=f"isrc:{external_id}", type="track", limit=1)
+        if not result.get("tracks", {}).get("items"):
+            return None
+        track_obj = result["tracks"]["items"][0]
+        return parse_track(track_obj, self)
+
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
+    async def _get_album_by_external_id(self, external_id: str) -> Album | None:
+        """Retrieve an album by its normalized UPC using the Spotify API."""
+        result = await self._get_data("search", q=f"upc:{external_id}", type="album", limit=1)
+        if not result.get("albums", {}).get("items"):
+            return None
+        album_obj = result["albums"]["items"][0]
+        return parse_album(album_obj, self)
 
     async def _get_auth_info(self, use_global_session: bool = False) -> dict[str, Any]:
         """
