@@ -649,3 +649,5 @@ async def test_release_user_playlists(
         owner=OWNER.user_id, sharing=ProviderSharing.SELECTED, shared_users=[GUEST.user_id]
     )
     assert (await playlists.get_library_item(untouched.item_id)).access == untouched.access
+    # the record only we write never looks like this, so the row must not outlive the test
+    await playlists.remove_item_from_library(unreadable.item_id)
