@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.errors import PlayerCommandFailed, SetupFailedError
 from pyamplipi.error import AmpliPiUnreachableError
-from zeroconf import IPVersion
+from zeroconf import IPVersion, ServiceStateChange
 
 from music_assistant.providers.amplipi import mdns, setup, setup_flow
 from music_assistant.providers.amplipi.constants import (
@@ -20,6 +20,7 @@ from music_assistant.providers.amplipi.constants import (
     DEFAULT_HOST,
     MA_STREAM_NAME,
     MA_STREAM_TYPE,
+    MDNS_TYPE,
 )
 from music_assistant.providers.amplipi.provider import AmpliPiPlayerProvider
 
@@ -488,6 +489,179 @@ class TestControllerMatchesHost:
     def test_rejects_other_hosts(self, host: str) -> None:
         """A host behind a custom name or another address is not this controller."""
         assert not mdns.controller_matches_host(_discovery_info(), host)
+
+
+class TestHostnameOf:
+    """Test extracting the hostname part of whatever the user typed as host."""
+
+    @pytest.mark.parametrize(
+        ("host", "expected"),
+        [
+            ("AmpliPi.local", "amplipi.local"),
+            ("192.168.11.148:80", "192.168.11.148"),
+            ("https://amplipi.local/api", "amplipi.local"),
+            ("[fd00::1]", "fd00::1"),
+        ],
+    )
+    def test_extracts_the_hostname(self, host: str, expected: str) -> None:
+        """A bare host, host:port, bracketed IPv6 literal or full URL all yield the hostname."""
+        assert mdns._hostname_of(host) == expected
+
+    @pytest.mark.parametrize("host", ["", "[bad"])
+    def test_unparseable_host_yields_nothing(self, host: str) -> None:
+        """An empty or malformed host cannot be matched, but must not blow up the flow."""
+        assert mdns._hostname_of(host) is None
+
+
+class TestDiscoveredControllers:
+    """Test enumerating the AmpliPi controllers in the mDNS cache."""
+
+    @staticmethod
+    def _mass(cache_names: list[str]) -> MagicMock:
+        mass = MagicMock()
+        mass.discovery.aiozc.zeroconf.cache.cache = dict.fromkeys(cache_names)
+        return mass
+
+    async def test_returns_only_resolvable_amplipi_records(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Other service types, the bare type name and a record that no longer answers are skipped."""
+        resolves = {
+            "amplipi-aa._amplipi._tcp.local.": True,
+            "amplipi-bb._amplipi._tcp.local.": False,
+        }
+        built: list[str] = []
+
+        def fake_info(_type: str, name: str) -> SimpleNamespace:
+            built.append(name)
+            return SimpleNamespace(name=name, async_request=AsyncMock(return_value=resolves[name]))
+
+        monkeypatch.setattr(mdns, "AsyncServiceInfo", fake_info)
+        mass = self._mass(
+            [
+                "amplipi-bb._amplipi._tcp.local.",
+                "_amplipi._tcp.local.",
+                "printer._http._tcp.local.",
+                "amplipi-aa._amplipi._tcp.local.",
+            ]
+        )
+        result = await mdns.discovered_controllers(mass)
+        assert [c.name for c in result] == ["amplipi-aa._amplipi._tcp.local."]
+        assert built == ["amplipi-aa._amplipi._tcp.local.", "amplipi-bb._amplipi._tcp.local."]
+
+    async def test_empty_cache_yields_nothing(self) -> None:
+        """A network without an AmpliPi produces an empty list, not an error."""
+        assert await mdns.discovered_controllers(self._mass([])) == []
+
+
+class TestClaimedControllers:
+    """Test collecting the controllers other AmpliPi instances are set up for."""
+
+    @staticmethod
+    def _mass(configs: dict[str, dict[str, str]], setup_values: dict[str, str]) -> MagicMock:
+        """Build a mass whose stored provider configs and setup values are the given ones."""
+        mass = MagicMock()
+        mass.config.get.side_effect = lambda key, default=None: (
+            configs if key == "providers" else default
+        )
+        mass.config.get_provider_setup_value.side_effect = lambda instance_id, _key: (
+            setup_values.get(instance_id)
+        )
+        return mass
+
+    def test_collects_other_amplipi_instances_only(self) -> None:
+        """Other providers, the instance being reconfigured and unrecorded ones hold no claim."""
+        mass = self._mass(
+            {
+                "amplipi--1": {"domain": "amplipi"},
+                "amplipi--2": {"domain": "amplipi"},
+                "amplipi--3": {"domain": "amplipi"},
+                "sonos": {"domain": "sonos"},
+            },
+            {
+                "amplipi--1": "amplipi-AA._amplipi._tcp.local.",
+                "amplipi--2": "amplipi-bb._amplipi._tcp.local.",
+                "sonos": "amplipi-cc._amplipi._tcp.local.",
+            },
+        )
+        assert mdns.claimed_controllers(mass, "amplipi--2") == {"amplipi-aa._amplipi._tcp.local."}
+
+    def test_a_fresh_setup_sees_every_instance(self) -> None:
+        """With no instance of its own to exclude, every recorded controller is claimed."""
+        mass = self._mass(
+            {"amplipi--1": {"domain": "amplipi"}},
+            {"amplipi--1": "amplipi-aa._amplipi._tcp.local."},
+        )
+        assert mdns.claimed_controllers(mass, None) == {"amplipi-aa._amplipi._tcp.local."}
+
+
+class TestDiscoverControllers:
+    """Test the setup flow's wait for a first controller before enumerating the cache."""
+
+    async def test_enumerates_the_cache_once_a_controller_answers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The wait is only for the first record; the cache then yields every controller."""
+        session = MagicMock()
+        session.mass.discovery.async_find_mdns_service = AsyncMock(return_value=_discovery_info())
+        controllers = [_discovery_info(), _discovery_info(name="amplipi-bb._amplipi._tcp.local.")]
+        scan = AsyncMock(return_value=controllers)
+        monkeypatch.setattr(setup_flow, "discovered_controllers", scan)
+        assert await setup_flow._discover_controllers(session) == controllers
+        session.mass.discovery.async_find_mdns_service.assert_awaited_once_with(
+            MDNS_TYPE, timeout=setup_flow._DISCOVERY_TIMEOUT
+        )
+        scan.assert_awaited_once_with(session.mass)
+
+    async def test_no_answer_yields_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Without any AmpliPi answering in time, the cache is not consulted at all."""
+        session = MagicMock()
+        session.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)
+        scan = AsyncMock()
+        monkeypatch.setattr(setup_flow, "discovered_controllers", scan)
+        assert await setup_flow._discover_controllers(session) == []
+        scan.assert_not_awaited()
+
+
+class TestMdnsBackfill:
+    """Test that a pre-existing instance records its controller identity on load."""
+
+    @staticmethod
+    def _provider_with(setup_values: dict[str, str]) -> AmpliPiPlayerProvider:
+        """Build a provider whose stored setup values are the given ones."""
+        prov = _provider()
+        prov.get_setup_value = lambda key, default=None: setup_values.get(key, default)  # type: ignore[method-assign]
+        prov._update_setup_data = MagicMock()  # type: ignore[method-assign]
+        return prov
+
+    async def test_records_the_matching_controller(self) -> None:
+        """An instance without a recorded identity adopts the record matching its host."""
+        prov = self._provider_with({CONF_HOST: "192.168.11.148"})
+        info = _discovery_info()
+        await prov.on_mdns_service_state_change(info.name, ServiceStateChange.Added, info)
+        cast("MagicMock", prov._update_setup_data).assert_called_once_with(
+            CONF_MDNS_NAME, info.name.lower()
+        )
+
+    async def test_ignores_another_controller(self) -> None:
+        """A record for a different unit must not be adopted."""
+        prov = self._provider_with({CONF_HOST: "amplipi-2.local"})
+        info = _discovery_info()
+        await prov.on_mdns_service_state_change(info.name, ServiceStateChange.Added, info)
+        cast("MagicMock", prov._update_setup_data).assert_not_called()
+
+    async def test_keeps_an_identity_already_recorded(self) -> None:
+        """Once recorded, the identity is never rewritten from later announcements."""
+        prov = self._provider_with({CONF_HOST: "amplipi.local", CONF_MDNS_NAME: "recorded"})
+        info = _discovery_info()
+        await prov.on_mdns_service_state_change(info.name, ServiceStateChange.Added, info)
+        cast("MagicMock", prov._update_setup_data).assert_not_called()
+
+    async def test_ignores_a_removal(self) -> None:
+        """A Removed event carries no record and is not an error."""
+        prov = self._provider_with({CONF_HOST: "amplipi.local"})
+        await prov.on_mdns_service_state_change("gone", ServiceStateChange.Removed, None)
+        cast("MagicMock", prov._update_setup_data).assert_not_called()
 
 
 class TestSetupFlowPrefill:
