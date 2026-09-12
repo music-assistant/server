@@ -15,7 +15,11 @@ from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT
 from music_assistant.mass import MusicAssistant
-from music_assistant.providers.sonos.const import PLAYER_SOURCE_MAP, SOURCE_SPOTIFY
+from music_assistant.providers.sonos.const import (
+    PLAYER_SOURCE_MAP,
+    SOURCE_LINE_IN,
+    SOURCE_SPOTIFY,
+)
 from music_assistant.providers.sonos.player import SonosPlayer
 
 
@@ -475,3 +479,125 @@ def test_a_group_child_reports_the_play_modes_of_its_coordinator() -> None:
     source = next(x for x in player._attr_source_list if x.id == SOURCE_SPOTIFY)
     assert source.can_shuffle is True
     assert source.shuffle_enabled is True
+
+
+def _report_paused_qobuz(group: MagicMock) -> None:
+    """Let the given group report a paused session of a service we did not map."""
+    group.playback_state = SonosPlayBackState.PLAYBACK_STATE_PAUSED
+    group.position = 42.0
+    group.container_type = "playlist"
+    group.active_service = "31"
+    group.playback_metadata = {
+        "container": {"name": "Chill Mix", "service": {"name": "Qobuz"}},
+        "currentItem": {"id": "1", "track": {"name": "Shout"}},
+    }
+    group.playback_actions.raw_data = {
+        "canShuffle": True,
+        "canRepeat": True,
+        "canRepeatOne": True,
+        "canPause": True,
+        "canSeek": True,
+        "canSkip": False,
+    }
+    # a bare MagicMock attribute is truthy, so the play modes are spelled out
+    group.play_modes.shuffle = True
+    group.play_modes.repeat = True
+    group.play_modes.repeat_one = False
+
+
+def _speaker_reporting_paused_qobuz() -> tuple[SonosPlayer, MagicMock]:
+    """Create a connected player whose speaker plays a service we did not map."""
+    player, mass, client = _connected_player()
+    client.player.is_coordinator = True
+    client.player.group_members = ["sonos_player"]
+    player._attr_source_list = [PLAYER_SOURCE_MAP[SOURCE_LINE_IN]]
+    _report_paused_qobuz(client.player.group)
+    return player, mass
+
+
+def test_a_service_we_did_not_map_gets_a_source_entry_with_its_play_modes() -> None:
+    """Test a service we did not map is reported with the play modes the speaker offers for it."""
+    player, _ = _speaker_reporting_paused_qobuz()
+
+    player.on_player_event(None)
+
+    assert player._attr_active_source == "Qobuz"
+    source = next(x for x in player._attr_source_list if x.id == "Qobuz")
+    assert source.name == "Qobuz"
+    assert source.passive is True
+    assert source.can_shuffle is True
+    assert source.can_repeat is True
+    assert source.shuffle_enabled is True
+    assert source.repeat_mode is RepeatMode.ALL
+    assert source.can_play_pause is True
+    assert source.can_seek is True
+    assert source.can_next_previous is False
+    # the entry only exists while the speaker plays it, there is no template for it
+    assert "Qobuz" not in PLAYER_SOURCE_MAP
+
+
+def test_the_entry_of_a_service_we_did_not_map_is_dropped_when_it_stops() -> None:
+    """Test a service we did not map leaves the source list when it is no longer playing."""
+    player, _ = _speaker_reporting_paused_qobuz()
+    player.on_player_event(None)
+    group = cast("MagicMock", player.client.player.group)
+    group.active_service = MusicService.MUSIC_ASSISTANT
+    group.container_type = None
+    del group.playback_metadata["container"]["service"]
+
+    player.on_player_event(None)
+
+    assert not [x for x in player._attr_source_list if x.id == "Qobuz"]
+    assert player._attr_active_source is None
+    source = next(x for x in player._attr_source_list if x.id == SOURCE_LINE_IN)
+    assert source is PLAYER_SOURCE_MAP[SOURCE_LINE_IN]
+
+
+def test_a_service_we_did_not_map_is_replaced_when_another_source_takes_over() -> None:
+    """Test only the source that plays now has an entry when another source takes over."""
+    player, _ = _speaker_reporting_paused_qobuz()
+    player.on_player_event(None)
+    group = cast("MagicMock", player.client.player.group)
+    _report_paused_spotify(group)
+
+    player.on_player_event(None)
+
+    assert not [x for x in player._attr_source_list if x.id == "Qobuz"]
+    source = next(x for x in player._attr_source_list if x.id == SOURCE_SPOTIFY)
+    assert source.can_shuffle is True
+    assert [x for x in player._attr_source_list if x.id == SOURCE_LINE_IN]
+
+
+def test_a_service_we_did_not_map_leaves_the_templates_untouched() -> None:
+    """Test the templates shared between players keep their defaults."""
+    player, _ = _speaker_reporting_paused_qobuz()
+
+    player.on_player_event(None)
+
+    assert PLAYER_SOURCE_MAP[SOURCE_LINE_IN].shuffle_enabled is None
+    assert PLAYER_SOURCE_MAP[SOURCE_SPOTIFY].can_shuffle is False
+    assert len(PLAYER_SOURCE_MAP) == 5
+
+
+def test_the_entry_of_a_service_we_did_not_map_follows_what_the_speaker_reports() -> None:
+    """Test the entry of a service we did not map is rebuilt from the latest speaker state."""
+    player, _ = _speaker_reporting_paused_qobuz()
+    player.on_player_event(None)
+    group = cast("MagicMock", player.client.player.group)
+    group.playback_actions.raw_data = {
+        "canShuffle": False,
+        "canRepeat": False,
+        "canPause": False,
+        "canSeek": False,
+        "canSkip": True,
+    }
+    group.play_modes.shuffle = False
+
+    player.on_player_event(None)
+
+    source = next(x for x in player._attr_source_list if x.id == "Qobuz")
+    assert source.can_shuffle is False
+    assert source.shuffle_enabled is False
+    assert source.can_play_pause is False
+    assert source.can_next_previous is True
+    assert len([x for x in player._attr_source_list if x.id == "Qobuz"]) == 1

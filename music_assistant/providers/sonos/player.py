@@ -38,7 +38,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.util import is_valid_mac_address
-from music_assistant.models.player import Player
+from music_assistant.models.player import Player, PlayerSource
 from music_assistant.providers.sonos.const import (
     NON_HIRES_MODELS,
     PLAYBACK_STATE_MAP,
@@ -1003,10 +1003,18 @@ class SonosPlayer(Player):
         self.logger.debug("Disconnected from player API")
 
     def _reflect_source_play_modes(self, active_group: SonosGroup) -> None:
-        """Report the play modes of the source the speaker runs itself on its source list entry."""
+        """Report the source the speaker runs itself, with its play modes, on its source list."""
         # a source that stopped playing must lose its live state, so every entry starts from
-        # its template again; the templates are shared between players, so never mutated
-        self._attr_source_list = [PLAYER_SOURCE_MAP.get(x.id, x) for x in self._attr_source_list]
+        # its template again; the templates are shared between players, so never mutated.
+        # a service we did not map only has an entry while the speaker plays it, so it is
+        # dropped here and rebuilt below
+        self._attr_source_list = [
+            PLAYER_SOURCE_MAP[x.id] for x in self._attr_source_list if x.id in PLAYER_SOURCE_MAP
+        ]
+        if self._attr_active_source is None:
+            # MA playback has no entry here, the MA queue carries its own play modes
+            return
+        actions = active_group.playback_actions.raw_data
         source_index = next(
             (
                 index
@@ -1016,10 +1024,19 @@ class SonosPlayer(Player):
             None,
         )
         if source_index is None:
-            # MA playback and the services we did not map have no entry here, and the
-            # MA queue carries its own play modes
-            return
-        actions = active_group.playback_actions.raw_data
+            # a service we did not map: the user can not start it from MA and its transport
+            # is whatever the speaker reports for it
+            self._attr_source_list.append(
+                PlayerSource(
+                    id=self._attr_active_source,
+                    name=self._attr_active_source,
+                    passive=True,
+                    can_play_pause=actions.get("canPause", False),
+                    can_seek=actions.get("canSeek", False),
+                    can_next_previous=actions.get("canSkip", False),
+                )
+            )
+            source_index = len(self._attr_source_list) - 1
         modes = active_group.play_modes
         repeat_mode: RepeatMode | None
         if modes.repeat is None and modes.repeat_one is None:
