@@ -24,6 +24,9 @@ def provider() -> YoutubeMusicProvider:
     config.get_value.return_value = "GLOBAL"
     prov = YoutubeMusicProvider(mass, manifest, config)
     prov._po_token_server_url = "http://localhost:4416"
+    prov._headers = {}
+    prov._yt_user = None
+    prov.language = "en"
     return prov
 
 
@@ -116,8 +119,6 @@ async def test_search_is_not_translated(provider: YoutubeMusicProvider) -> None:
     # ytmusicapi matches the (translated) result shelf title against the English filter
     # name, so a filtered search silently returns nothing in most other languages.
     provider.language = "cs"
-    provider._headers = {}
-    provider._yt_user = None
     mock_ytm = MagicMock()
     mock_ytm.search.return_value = []
     search = cast("Any", YoutubeMusicProvider.search).__wrapped__
@@ -125,3 +126,39 @@ async def test_search_is_not_translated(provider: YoutubeMusicProvider) -> None:
         await search(provider, "test", [MediaType.TRACK])
 
     assert mock_ytmusic.call_args.kwargs["language"] == "en"
+
+
+async def test_album_versions_with_versions(provider: YoutubeMusicProvider) -> None:
+    """get_album_versions method of the YTM provider should return other album versions if any exist."""
+    album_with_versions = {
+        "title": "All Stand Together",
+        "other_versions": [
+            {"browseId": "MPREb_LzqETWfppYZ", "title": "All Stand Together (Deluxe)"}
+        ],
+    }
+    with patch(
+        "music_assistant.providers.ytmusic.get_album", AsyncMock(return_value=album_with_versions)
+    ):
+        # call the undecorated function so the @use_cache wrapper stays out of the test
+        get_album_versions = cast("Any", YoutubeMusicProvider.get_album_versions).__wrapped__
+        albums = await get_album_versions(provider, "_")
+
+    assert albums[0].item_id == "MPREb_LzqETWfppYZ"
+    assert albums[0].name == "All Stand Together"
+    assert albums[0].version == "Deluxe"
+
+
+async def test_album_versions_without_versions(provider: YoutubeMusicProvider) -> None:
+    """get_album_versions method of the YTM provider should return nothing if there are no other versions."""
+    album_without_versions = {
+        "title": "All Stand Together",
+    }
+    with patch(
+        "music_assistant.providers.ytmusic.get_album",
+        AsyncMock(return_value=album_without_versions),
+    ):
+        # call the undecorated function so the @use_cache wrapper stays out of the test
+        get_album_versions = cast("Any", YoutubeMusicProvider.get_album_versions).__wrapped__
+        albums = await get_album_versions(provider, "_")
+
+    assert len(albums) == 0
