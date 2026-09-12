@@ -23,13 +23,16 @@ from music_assistant.providers.listenbrainz_scrobble import (
 class _FakeResponse:
     """Stand-in for an aiohttp response used as an async context manager."""
 
-    def __init__(self, payload: dict[str, bool]) -> None:
+    def __init__(self, payload: dict[str, bool], json_error: Exception | None = None) -> None:
         self._payload = payload
+        self._json_error = json_error
 
     def raise_for_status(self) -> None:
         return None
 
     async def json(self) -> dict[str, bool]:
+        if self._json_error is not None:
+            raise self._json_error
         return self._payload
 
     async def __aenter__(self) -> Self:
@@ -43,15 +46,20 @@ class _FakeSession:
     """Session whose GET returns a canned validate-token response, or raises a transport error."""
 
     def __init__(
-        self, *, payload: dict[str, bool] | None = None, error: Exception | None = None
+        self,
+        *,
+        payload: dict[str, bool] | None = None,
+        error: Exception | None = None,
+        json_error: Exception | None = None,
     ) -> None:
         self._payload = payload or {}
         self._error = error
+        self._json_error = json_error
 
     def get(self, *_args: object, **_kwargs: object) -> _FakeResponse:
         if self._error is not None:
             raise self._error
-        return _FakeResponse(self._payload)
+        return _FakeResponse(self._payload, self._json_error)
 
 
 def _mass(
@@ -137,6 +145,16 @@ async def test_an_unreachable_service_fails_setup() -> None:
     provider = _provider(
         {CONF_USER_TOKEN: "token"},
         http_session=_FakeSession(error=aiohttp.ClientConnectionError()),
+    )
+
+    with pytest.raises(SetupFailedError):
+        await provider.handle_async_init()
+
+
+async def test_a_malformed_response_fails_setup() -> None:
+    """A response that cannot be parsed surfaces as a setup error, not a raw one."""
+    provider = _provider(
+        {CONF_USER_TOKEN: "token"}, http_session=_FakeSession(json_error=ValueError("no json"))
     )
 
     with pytest.raises(SetupFailedError):
