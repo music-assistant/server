@@ -586,6 +586,21 @@ async def test_adding_a_hidden_playlist_as_source_is_refused_inside_the_task(
             await playlists._handle_add_playlist_tracks(target.item_id, [], GUEST.user_id)
 
 
+async def test_library_add_command_ignores_a_supplied_record(
+    music_mass_module: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Adding a playlist through the generic library command never sets its owner or sharing."""
+    monkeypatch.setattr(music_mass_module.metadata, "update_metadata", AsyncMock())
+
+    with _as_user(MEMBER):
+        added = await music_mass_module.music.add_item_to_library(
+            _playlist("Crafted", PlaylistAccess(owner=OWNER.user_id))
+        )
+
+    assert isinstance(added, Playlist)
+    assert added.access is None
+
+
 async def test_library_add_of_a_matching_item_needs_the_right_to_edit(
     playlists: PlaylistController,
 ) -> None:

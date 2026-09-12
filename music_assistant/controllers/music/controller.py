@@ -1440,6 +1440,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 item.provider,
             )
         full_item = cast("MediaItemType", full_item)
+        if isinstance(full_item, Playlist):
+            # who a Music Assistant playlist serves is only set through its own commands
+            full_item.access = None
         if full_item.media_type in (MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT):
             # AudioSources and SoundEffects are live provider content (existence
             # depends on a loaded provider) and have no stable library identity,
