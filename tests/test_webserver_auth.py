@@ -418,15 +418,18 @@ async def test_list_users(auth_manager: AuthenticationManager) -> None:
     # Create some test users
     await auth_manager.create_user(username="user1", role=UserRole.USER)
     await auth_manager.create_user(username="user2", role=UserRole.USER)
+    system_user = await auth_manager.get_homeassistant_system_user()
 
     # List all users
     users = await auth_manager.list_users()
 
-    # Should not include system users
     usernames = [u.username for u in users]
     assert "listadmin" in usernames
     assert "user1" in usernames
     assert "user2" in usernames
+    # the Home Assistant system user is listed with its service role
+    listed_system_user = next(u for u in users if u.user_id == system_user.user_id)
+    assert listed_system_user.role == UserRole.SERVICE
 
 
 async def test_disable_enable_user(auth_manager: AuthenticationManager) -> None:
@@ -919,6 +922,71 @@ async def test_cannot_delete_own_account(auth_manager: AuthenticationManager) ->
     # Try to delete own account
     with pytest.raises(InvalidDataError, match="Cannot delete your own account"):
         await auth_manager.delete_user(admin.user_id)
+
+
+async def test_the_system_user_can_not_be_deleted_or_disabled(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Test that the Home Assistant system user can not be deleted or disabled."""
+    admin = await auth_manager.create_user(username="systemadmin", role=UserRole.ADMIN)
+    system_user = await auth_manager.get_homeassistant_system_user()
+    set_current_user(admin)
+
+    for command in (auth_manager.delete_user, auth_manager.disable_user):
+        with pytest.raises(InvalidDataError) as excinfo:
+            await command(system_user.user_id)
+        assert excinfo.value.translation_key == "system_user_protected"
+
+    assert await auth_manager.get_user(system_user.user_id) is not None
+
+
+async def test_the_system_user_keeps_its_username_role_and_password(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Test that the username, role and password of the Home Assistant system user stay."""
+    admin = await auth_manager.create_user(username="systemeditor", role=UserRole.ADMIN)
+    system_user = await auth_manager.get_homeassistant_system_user()
+    set_current_user(admin)
+
+    with pytest.raises(InvalidDataError) as excinfo:
+        await auth_manager.update_user_profile(user_id=system_user.user_id, username="renamed")
+    assert excinfo.value.translation_key == "system_user_protected"
+    with pytest.raises(InvalidDataError) as excinfo:
+        await auth_manager.update_user_profile(user_id=system_user.user_id, role="user")
+    assert excinfo.value.translation_key == "system_user_protected"
+    with pytest.raises(InvalidDataError) as excinfo:
+        await auth_manager.update_user_profile(user_id=system_user.user_id, password="password123")
+    assert excinfo.value.translation_key == "system_user_protected"
+
+    # the rest of its profile stays editable
+    updated_user = await auth_manager.update_user_profile(
+        user_id=system_user.user_id, display_name="Home Assistant"
+    )
+    assert updated_user.display_name == "Home Assistant"
+    assert updated_user.username == HOMEASSISTANT_SYSTEM_USER
+    assert updated_user.role == UserRole.SERVICE
+    assert not await auth_manager.database.get_rows(
+        "user_auth_providers", {"user_id": system_user.user_id}
+    )
+
+
+async def test_the_service_role_can_not_be_given(auth_manager: AuthenticationManager) -> None:
+    """Test that the service role, which only the Home Assistant system user holds, is refused."""
+    admin = await auth_manager.create_user(username="serviceadmin", role=UserRole.ADMIN)
+    member = await auth_manager.create_user(username="servicemember", role=UserRole.USER)
+    set_current_user(admin)
+
+    with pytest.raises(InvalidDataError, match="Invalid role"):
+        await auth_manager.create_user_with_api(
+            username="newservice", password="password123", role="service"
+        )
+    with pytest.raises(InvalidDataError, match="Invalid role"):
+        await auth_manager.update_user_profile(user_id=member.user_id, role="service")
+
+    assert await auth_manager.get_user_by_username("newservice") is None
+    stored_member = await auth_manager.get_user(member.user_id)
+    assert stored_member is not None
+    assert stored_member.role == UserRole.USER
 
 
 async def test_get_user_tokens(auth_manager: AuthenticationManager) -> None:

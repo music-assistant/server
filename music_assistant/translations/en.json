@@ -315,6 +315,7 @@
   "common.errors.retries_exhausted": "Retries exhausted. The operation could not be completed.",
   "common.errors.setup_failed": "Setup failed. Please check the configuration and try again.",
   "common.errors.setup_required": "Music Assistant is not set up yet.",
+  "common.errors.system_user_protected": "The Home Assistant system account can not be deleted, disabled, renamed or given another role or password.",
   "common.errors.unmount_failed": "The previous connection to the remote location could not be closed: {0}",
   "common.errors.unplayable_media": "This media item cannot be played.",
   "common.errors.unsupported_feature": "This feature is not supported.",

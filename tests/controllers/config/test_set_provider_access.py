@@ -358,10 +358,10 @@ async def test_a_disabled_or_unknown_user_is_not_added_to_the_share_list(
     }
 
 
-async def test_a_member_is_served_the_members_it_may_share_with(
+async def test_a_member_is_served_the_users_it_may_share_with(
     access_mass: MusicAssistant,
 ) -> None:
-    """The share list of a source is picked from every enabled member."""
+    """The share list of a source is picked from every enabled member and the system user."""
     admin = await _create_user(access_mass, "admin", UserRole.ADMIN)
     owner = await _create_user(access_mass, "owner")
     member = await access_mass.webserver.auth.create_user(
@@ -369,7 +369,7 @@ async def test_a_member_is_served_the_members_it_may_share_with(
     )
     disabled = await _create_user(access_mass, "disabled")
     await _create_user(access_mass, "party_guest", UserRole.GUEST)
-    await access_mass.webserver.auth.get_homeassistant_system_user()
+    system_user = await access_mass.webserver.auth.get_homeassistant_system_user()
     set_current_user(admin)
     await access_mass.webserver.auth.disable_user(disabled.user_id)
     set_current_user(owner)
@@ -377,7 +377,7 @@ async def test_a_member_is_served_the_members_it_may_share_with(
     candidates = await access_mass.config.get_share_candidates()
 
     assert sorted(candidate.user_id for candidate in candidates) == sorted(
-        [admin.user_id, member.user_id, owner.user_id]
+        [admin.user_id, member.user_id, owner.user_id, system_user.user_id]
     )
     # a member is not told anything about the accounts beyond what the picker shows
     served = next(candidate for candidate in candidates if candidate.user_id == member.user_id)
@@ -396,13 +396,14 @@ async def test_every_share_candidate_is_accepted_on_the_share_list(
     owner = await _create_user(access_mass, "owner")
     await _create_user(access_mass, "admin", UserRole.ADMIN)
     await _create_user(access_mass, "member")
+    await access_mass.webserver.auth.get_homeassistant_system_user()
     set_music_source_access(
         access_mass,
         {MUSIC_INSTANCE: ProviderAccess(owner=owner.user_id, sharing=ProviderSharing.PRIVATE)},
     )
     set_current_user(owner)
     candidates = await access_mass.config.get_share_candidates()
-    assert len(candidates) == 3
+    assert len(candidates) == 4
 
     config = await access_mass.config.set_provider_access(
         MUSIC_INSTANCE,

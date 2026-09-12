@@ -817,16 +817,13 @@ class AuthenticationManager:
         """
         Get all users (requires the users.read scope).
 
-        System users are excluded from the list.
+        The Home Assistant system user is listed as well, with the service role.
 
         :return: List of user objects.
         """
         user_rows = await self.database.get_rows("users", limit=1000)
         users = []
         for row in user_rows:
-            # Skip system users
-            if row["username"] == HOMEASSISTANT_SYSTEM_USER:
-                continue
             users.append(
                 User(
                     user_id=row["user_id"],
@@ -901,6 +898,8 @@ class AuthenticationManager:
         """
         Disable user account (admin only).
 
+        The Home Assistant system user can not be disabled.
+
         :param user_id: The user ID.
         """
         admin_user = get_current_user()
@@ -915,6 +914,7 @@ class AuthenticationManager:
         user_row = await self.database.get_row("users", {"user_id": user_id})
         if not user_row:
             raise InvalidDataError("User not found")
+        _refuse_system_user(user_row["username"])
 
         await self.database.update(
             "users",
@@ -1152,7 +1152,7 @@ class AuthenticationManager:
 
         :param username: The username (minimum 2 characters).
         :param password: The password (minimum 8 characters).
-        :param role: User role - "admin" or "user" (default: "user").
+        :param role: User role - "admin", "user" or "guest" (default: "user").
         :param display_name: Optional display name.
         :param avatar_url: Optional avatar URL.
         :param player_filter: Optional list of player IDs user has access to.
@@ -1166,10 +1166,7 @@ class AuthenticationManager:
             raise InvalidDataError("Password must be at least 8 characters")
 
         # Validate role
-        try:
-            user_role = UserRole(role)
-        except ValueError as err:
-            raise InvalidDataError("Invalid role. Must be 'admin' or 'user'") from err
+        user_role = _assignable_role(role)
 
         # Get built-in provider
         builtin_provider = self.login_providers.get("builtin")
@@ -1200,6 +1197,8 @@ class AuthenticationManager:
         """
         Delete user account (admin only).
 
+        The Home Assistant system user can not be deleted.
+
         :param user_id: The user ID.
         """
         admin_user = get_current_user()
@@ -1214,6 +1213,7 @@ class AuthenticationManager:
         user_row = await self.database.get_row("users", {"user_id": user_id})
         if not user_row:
             raise InvalidDataError("User not found")
+        _refuse_system_user(user_row["username"])
 
         # The ON DELETE CASCADE clauses on the dependent tables never fire, since foreign
         # key enforcement is off on our connections, so remove those rows here.
@@ -1387,13 +1387,14 @@ class AuthenticationManager:
         Update user profile information.
 
         Users can update their own profile. Admins can update any user including role and password.
+        The username, role and password of the Home Assistant system user can not be changed.
 
         :param user_id: User ID to update (optional, defaults to current user).
         :param username: New username (optional).
         :param display_name: New display name (optional).
         :param avatar_url: New avatar URL (optional).
         :param password: New password (optional, minimum 8 characters).
-        :param role: New role - "admin" or "user" (optional, set by admin only).
+        :param role: New role - "admin", "user" or "guest" (optional, set by admin only).
         :param preferences: User preferences dict (completely replaces existing, optional).
         :param player_filter: List of player IDs user has access to (set by admin only, optional).
         :return: Updated user object.
@@ -1417,6 +1418,9 @@ class AuthenticationManager:
             # Updating own profile
             target_user = current_user_obj
 
+        if username or password or role:
+            _refuse_system_user(target_user.username)
+
         # Update role (requires the users.manage scope)
         if role:
             if not may_manage_users:
@@ -1424,10 +1428,7 @@ class AuthenticationManager:
                     "The users.manage scope is required to update user roles"
                 )
 
-            try:
-                new_role = UserRole(role)
-            except ValueError as err:
-                raise InvalidDataError("Invalid role. Must be 'admin' or 'user'") from err
+            new_role = _assignable_role(role)
 
             success = await self.update_user_role(target_user.user_id, new_role, current_user_obj)
             if not success:
@@ -2382,3 +2383,33 @@ def _mask_join_code(code: str) -> str:
     """
     normalized = code.upper()
     return normalized[:4] + "*" * max(len(normalized) - 4, 0)
+
+
+def _assignable_role(role: str) -> UserRole:
+    """
+    Return the builtin role an admin may give a user.
+
+    :param role: The requested role id.
+    :raises InvalidDataError: If the role is unknown, or the service role that only the Home
+        Assistant system user holds.
+    """
+    if role not in (UserRole.ADMIN, UserRole.USER, UserRole.GUEST):
+        raise InvalidDataError("Invalid role. Must be 'admin', 'user' or 'guest'")
+    return UserRole(role)
+
+
+def _refuse_system_user(username: str) -> None:
+    """
+    Raise if the given username is that of the Home Assistant system user.
+
+    The Home Assistant integration signs in with this account, so it can not be deleted,
+    disabled, renamed or given another role or password.
+
+    :param username: The username of the account to change.
+    """
+    if username == HOMEASSISTANT_SYSTEM_USER:
+        raise InvalidDataError(
+            "The Home Assistant system account can not be deleted, disabled, renamed "
+            "or given another role or password.",
+            translation_key="system_user_protected",
+        )
