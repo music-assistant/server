@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from music_assistant_models.enums import MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import Radio, SearchResults
+from music_assistant_models.media_items import Radio, SearchResults, Track
 
 from music_assistant.providers.pandora import provider as provider_module
 from music_assistant.providers.pandora.constants import STATIONS_ENDPOINT
@@ -161,6 +161,7 @@ async def test_get_track_matches_radio_tracks_identity() -> None:
     """A track resolves to the same album and artist by either entry point."""
     provider = _provider()
     listed = (await provider.get_dynamic_radio_tracks(STATION_ID))[0]
+    assert isinstance(listed, Track)
     looked_up = await provider.get_track("TR:S0")
     assert looked_up.album is not None
     assert listed.album is not None
@@ -354,9 +355,10 @@ async def test_track_with_null_album_title_gets_a_fallback_name() -> None:
     tracks = _tracks()
     tracks[0]["albumTitle"] = None
     provider = _provider([tracks])
-    result = await provider.get_dynamic_radio_tracks(STATION_ID)
-    assert result[0].album is not None
-    assert result[0].album.name == "Unknown Album"
+    first = (await provider.get_dynamic_radio_tracks(STATION_ID))[0]
+    assert isinstance(first, Track)
+    assert first.album is not None
+    assert first.album.name == "Unknown Album"
 
 
 async def test_track_with_a_sized_art_entry_missing_url_does_not_crash() -> None:

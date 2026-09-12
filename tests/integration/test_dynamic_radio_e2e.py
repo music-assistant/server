@@ -18,6 +18,7 @@ from music_assistant_models.enums import MediaType, ProviderType, QueueOption
 from music_assistant_models.media_items import ProviderMapping, Radio, Track
 from music_assistant_models.provider import ProviderManifest
 
+from music_assistant.constants import DynamicFeedItem
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 
@@ -54,7 +55,9 @@ class FakeDynamicRadioProvider(MusicProvider):
             },
         )
 
-    async def get_dynamic_radio_tracks(self, prov_radio_id: str) -> list[Track]:
+    async def get_dynamic_radio_tracks(
+        self, prov_radio_id: str, *, sample: bool = False
+    ) -> list[DynamicFeedItem]:
         """Return a fixed batch of fake tracks for the dynamic station."""
         return [
             Track(

@@ -9,6 +9,7 @@ from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import Mock
 
 import pytest
 from music_assistant_models.enums import EventType, MediaType
@@ -20,7 +21,8 @@ from music_assistant.providers.ai_radio.constants import (
     ATTR_QUEUE_DJ,
     ATTR_SESSION_ID,
 )
-from music_assistant.providers.ai_radio.models import PlannedSection, SessionState
+from music_assistant.providers.ai_radio.media import AIRadioMediaMixin, _ShowRun
+from music_assistant.providers.ai_radio.models import PlannedSection
 from music_assistant.providers.ai_radio.queue_dj import AIRadioQueueDJMixin
 from music_assistant.providers.ai_radio.runtime import AIRadioRuntimeMixin
 from music_assistant.providers.ai_radio.storage import AIRadioStorageMixin
@@ -30,12 +32,19 @@ class FakeQueue:
     """Minimal PlayerQueue stand-in."""
 
     def __init__(
-        self, queue_id: str, current_index: int | None, index_in_buffer: int | None
+        self,
+        queue_id: str,
+        current_index: int | None,
+        index_in_buffer: int | None,
+        sources: list[Any] | None = None,
+        ended: bool = False,
     ) -> None:
         """Initialize the fake queue with its playback pointers."""
         self.queue_id = queue_id
         self.current_index = current_index
         self.index_in_buffer = index_in_buffer
+        self.sources = sources or []
+        self.ended = ended
 
 
 class FakeQueueItem:
@@ -133,7 +142,7 @@ class StubConfig:
         return default
 
 
-class DummyQueueDJ(AIRadioQueueDJMixin, AIRadioStorageMixin):
+class DummyQueueDJ(AIRadioQueueDJMixin, AIRadioStorageMixin, AIRadioMediaMixin):
     """Minimal harness for queue DJ state tests."""
 
     instance_id = "ai_radio_test"
@@ -144,6 +153,9 @@ class DummyQueueDJ(AIRadioQueueDJMixin, AIRadioStorageMixin):
         self._hosts: dict[str, dict[str, Any]] = {
             "rick": {"id": "rick", "name": "Rick", "instructions": "x", "tts_engine": ""},
         }
+        self._stations: dict[str, dict[str, Any]] = {}
+        self._show_runs: dict[str, _ShowRun] = {}
+        self._show_library_ids: dict[str, str] = {}
         self._dj_queues: dict[str, Any] = {}
         self._dj_file = tmp_path / "queue_dj.json"
         self._dj_lock = asyncio.Lock()
@@ -161,7 +173,32 @@ class DummyQueueDJ(AIRadioQueueDJMixin, AIRadioStorageMixin):
         self.replanned.append(queue_id)
 
 
-class ReplanQueueDJ(AIRadioRuntimeMixin, AIRadioQueueDJMixin, AIRadioStorageMixin):
+def _dj_harness(tmp_path: Path) -> DummyQueueDJ:
+    """Build a queue DJ harness with a morning_show station bound to host amy."""
+    dj = DummyQueueDJ(tmp_path)
+    dj._hosts["amy"] = {"id": "amy", "name": "Amy", "instructions": "x", "tts_engine": ""}
+    dj._stations["morning_show"] = {"id": "morning_show", "host_id": "amy"}
+    return dj
+
+
+def _fake_queue_with_sources(dj: DummyQueueDJ, queue_id: str, source_uris: list[str]) -> FakeQueue:
+    """Register a fake queue exposing the given source uris on the harness's player_queues."""
+    sources = [SimpleNamespace(uri=uri) for uri in source_uris]
+    queue = FakeQueue(queue_id, None, None, sources=sources)
+    dj.mass.player_queues._queue = queue
+    return queue
+
+
+def _seed_show_run(dj: DummyQueueDJ, station_id: str, queue_id: str = "q1") -> _ShowRun:
+    """Register an in-flight, not-yet-armed show run bound to the given queue."""
+    run = _ShowRun(tracks=[], queue_id=queue_id)
+    dj._show_runs[station_id] = run
+    return run
+
+
+class ReplanQueueDJ(
+    AIRadioRuntimeMixin, AIRadioQueueDJMixin, AIRadioStorageMixin, AIRadioMediaMixin
+):
     """Harness combining the queue DJ mixin with the real planner and clip builder."""
 
     instance_id = "ai_radio_test"
@@ -178,8 +215,10 @@ class ReplanQueueDJ(AIRadioRuntimeMixin, AIRadioQueueDJMixin, AIRadioStorageMixi
         self.logger = logging.getLogger(__name__)
         self.config = cast("Any", StubConfig())
         self._sections = {_transition_section()["id"]: _transition_section()}
-        self._sessions: dict[str, SessionState] = {}
         self._hosts: dict[str, dict[str, Any]] = {host["id"]: host}
+        self._stations: dict[str, dict[str, Any]] = {}
+        self._show_runs: dict[str, _ShowRun] = {}
+        self._show_library_ids: dict[str, str] = {}
         self._dj_queues: dict[str, Any] = {}
         self._dj_file = tmp_path / "queue_dj.json"
         self._dj_lock = asyncio.Lock()
@@ -325,7 +364,7 @@ async def test_set_queue_dj_enables_and_persists(tmp_path: Path) -> None:
     """Arm a queue DJ, persist it, and reload it into a fresh instance."""
     dummy = DummyQueueDJ(tmp_path)
     mapping = await dummy.set_queue_dj("queue-1", "rick")
-    assert mapping == {"queue-1": "rick"}
+    assert mapping == {"queue-1": {"host_id": "rick", "station_id": ""}}
     assert dummy._dj_queues["queue-1"].host_id == "rick"
     assert dummy._dj_queues["queue-1"].dj_session_id
     assert dummy._dj_queues["queue-1"].ready is True
@@ -359,7 +398,548 @@ async def test_status_returns_mapping(tmp_path: Path) -> None:
     """Return the queue-to-host mapping for an armed queue DJ."""
     dummy = DummyQueueDJ(tmp_path)
     await dummy.set_queue_dj("queue-1", "rick")
-    assert await dummy.get_queue_dj_status() == {"queue-1": "rick"}
+    assert await dummy.get_queue_dj_status() == {"queue-1": {"host_id": "rick", "station_id": ""}}
+
+
+async def test_ensure_show_dj_arms_host_for_show_queue(tmp_path: Path) -> None:
+    """Playing a show with no DJ armed yet arms its station's host, once a run exists."""
+    dj = _dj_harness(tmp_path)
+    _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+    run = _seed_show_run(dj, "morning_show")
+
+    await dj._ensure_show_dj("q1")
+
+    state = dj._dj_queues["q1"]
+    assert state.host_id == "amy"
+    assert state.station_id == "morning_show"
+    assert run.dj_armed is True
+    assert run.queue_id == "q1"
+
+
+async def test_ensure_show_dj_does_not_arm_before_a_run_exists(tmp_path: Path) -> None:
+    """A show queue with no fetched-tracks run yet is left alone (nothing to bind against)."""
+    dj = _dj_harness(tmp_path)
+    _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+
+    await dj._ensure_show_dj("q1")
+
+    assert "q1" not in dj._dj_queues
+
+
+async def test_ensure_show_dj_never_overwrites_manual_host(tmp_path: Path) -> None:
+    """A manually picked host survives; only the station binding is restored."""
+    dj = _dj_harness(tmp_path)
+    _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+    state = dj._arm_dj_state("q1", "bob")
+    state.ready = True
+
+    await dj._ensure_show_dj("q1")
+
+    assert dj._dj_queues["q1"].host_id == "bob"
+    assert dj._dj_queues["q1"].station_id == "morning_show"
+
+
+async def test_manual_dj_disabled_mid_show_is_not_rearmed(tmp_path: Path) -> None:
+    """Turning off a manually picked DJ mid-show must not bring the show's host in."""
+    dj = _dj_harness(tmp_path)
+    _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+    run = _seed_show_run(dj, "morning_show")
+    state = dj._arm_dj_state("q1", "rick")
+    state.ready = True
+
+    await dj._ensure_show_dj("q1")
+    assert run.dj_armed is True
+
+    await dj.set_queue_dj("q1", None)
+    await dj._ensure_show_dj("q1")
+
+    assert "q1" not in dj._dj_queues
+
+
+async def test_auto_armed_dj_detaches_and_ends_run_when_source_gone(tmp_path: Path) -> None:
+    """An auto-armed DJ whose show left the queue's sources is disarmed and its run ended."""
+    dj = _dj_harness(tmp_path)
+    _fake_queue_with_sources(dj, "q1", [])
+    state = dj._arm_dj_state("q1", "amy")
+    state.ready = True
+    state.station_id = "morning_show"
+    dj._end_show_run = Mock()  # type: ignore[method-assign]
+
+    await dj._maybe_detach_show_dj("q1")
+
+    assert "q1" not in dj._dj_queues
+    dj._end_show_run.assert_called_once_with("morning_show")
+
+
+async def test_manually_armed_dj_is_never_auto_detached(tmp_path: Path) -> None:
+    """A DJ with no station binding (a manual pick) is left alone by the auto-detach."""
+    dj = _dj_harness(tmp_path)
+    _fake_queue_with_sources(dj, "q1", [])
+    state = dj._arm_dj_state("q1", "amy")
+    state.ready = True
+
+    await dj._maybe_detach_show_dj("q1")
+
+    assert "q1" in dj._dj_queues
+
+
+async def test_status_includes_station_binding(tmp_path: Path) -> None:
+    """The status payload surfaces the station a queue DJ is bound to."""
+    dj = _dj_harness(tmp_path)
+    state = dj._arm_dj_state("q1", "amy")
+    state.station_id = "morning_show"
+
+    status = await dj.get_queue_dj_status()
+
+    assert status == {"q1": {"host_id": "amy", "station_id": "morning_show"}}
+
+
+async def test_on_dj_queue_event_auto_arms_a_show_queue(tmp_path: Path) -> None:
+    """A queue event for a freshly loaded show arms its host without an explicit dj call."""
+    dj = _dj_harness(tmp_path)
+    _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+    _seed_show_run(dj, "morning_show")
+
+    await dj._on_dj_queue_event(
+        cast("Any", SimpleNamespace(event=EventType.QUEUE_ADDED, object_id="q1"))
+    )
+
+    state = dj._dj_queues["q1"]
+    assert state.host_id == "amy"
+    assert state.station_id == "morning_show"
+    # armed twice: once by set_queue_dj's own arm, once by the event's usual replan request
+    assert dj.replanned == ["q1", "q1"]
+
+
+async def test_on_dj_queue_event_does_not_rearm_an_ended_show_queue(tmp_path: Path) -> None:
+    """An ended queue keeps its sources; detaching must not flap-rearm on the next event."""
+    dj = _dj_harness(tmp_path)
+    queue = _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+    run = _seed_show_run(dj, "morning_show")
+    dj._end_show_run = Mock(wraps=dj._end_show_run)  # type: ignore[method-assign]
+
+    # first pass: arms, then immediately detaches because the queue already ended
+    queue.ended = True
+    await dj._on_dj_queue_event(
+        cast("Any", SimpleNamespace(event=EventType.QUEUE_ITEMS_UPDATED, object_id="q1"))
+    )
+    assert "q1" not in dj._dj_queues
+    dj._end_show_run.assert_called_once_with("morning_show")
+    assert run.dj_armed is True  # the popped run itself stays armed; it is simply gone
+
+    # a later event on the same still-ended queue must not re-arm: the run is gone
+    await dj._on_dj_queue_event(
+        cast("Any", SimpleNamespace(event=EventType.QUEUE_UPDATED, object_id="q1"))
+    )
+    assert "q1" not in dj._dj_queues
+    dj._end_show_run.assert_called_once_with("morning_show")
+
+
+async def test_manual_disable_mid_show_is_not_rearmed(tmp_path: Path) -> None:
+    """A user disabling the DJ mid-show must not get it re-armed by the next queue event."""
+    dj = _dj_harness(tmp_path)
+    _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+    run = _seed_show_run(dj, "morning_show")
+
+    await dj._ensure_show_dj("q1")
+    assert "q1" in dj._dj_queues
+
+    # the user turns the DJ off from the player menu; the show keeps playing (run alive)
+    await dj.set_queue_dj("q1", None)
+    assert "q1" not in dj._dj_queues
+
+    await dj._on_dj_queue_event(
+        cast("Any", SimpleNamespace(event=EventType.QUEUE_ITEMS_UPDATED, object_id="q1"))
+    )
+
+    assert "q1" not in dj._dj_queues
+    assert run.dj_armed is True
+
+
+async def test_replaying_a_show_arms_again_on_a_fresh_run(tmp_path: Path) -> None:
+    """A brand new run (after _end_show_run) is armed again, even for the same station."""
+    dj = _dj_harness(tmp_path)
+    _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+    old_run = _seed_show_run(dj, "morning_show")
+    await dj._ensure_show_dj("q1")
+    assert "q1" in dj._dj_queues
+    assert old_run.dj_armed is True
+
+    dj._end_show_run("morning_show")
+    await dj.set_queue_dj("q1", None)
+    assert "q1" not in dj._dj_queues
+
+    new_run = _seed_show_run(dj, "morning_show")
+    await dj._ensure_show_dj("q1")
+
+    assert "q1" in dj._dj_queues
+    assert dj._dj_queues["q1"].host_id == "amy"
+    assert new_run.dj_armed is True
+
+
+async def test_on_dj_queue_event_ends_run_for_bound_station_on_player_removed(
+    tmp_path: Path,
+) -> None:
+    """Removing the player behind a show-bound DJ also ends that station's run."""
+    dj = _dj_harness(tmp_path)
+    _fake_queue_with_sources(dj, "q1", [])
+    state = dj._arm_dj_state("q1", "amy")
+    state.station_id = "morning_show"
+    dj._end_show_run = Mock()  # type: ignore[method-assign]
+
+    await dj._on_dj_queue_event(
+        cast("Any", SimpleNamespace(event=EventType.PLAYER_REMOVED, object_id="q1"))
+    )
+
+    assert "q1" not in dj._dj_queues
+    dj._end_show_run.assert_called_once_with("morning_show")
+
+
+async def test_ensure_show_dj_arms_via_the_shows_library_uri(tmp_path: Path) -> None:
+    """A queue sourcing the show by its library identity still arms the show's host."""
+    dj = _dj_harness(tmp_path)
+    dj._show_library_ids = {"7": "morning_show"}
+    _fake_queue_with_sources(dj, "q1", ["library://radio/7"])
+    run = _seed_show_run(dj, "morning_show")
+
+    await dj._ensure_show_dj("q1")
+
+    state = dj._dj_queues["q1"]
+    assert state.host_id == "amy"
+    assert state.station_id == "morning_show"
+    assert run.queue_id == "q1"
+
+
+async def test_ensure_show_dj_skips_arming_for_a_deleted_host(tmp_path: Path) -> None:
+    """A show whose host was deleted is not armed, and the event handler does not raise."""
+    dj = _dj_harness(tmp_path)
+    _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+    _seed_show_run(dj, "morning_show")
+    del dj._hosts["amy"]
+
+    await dj._ensure_show_dj("q1")
+
+    assert "q1" not in dj._dj_queues
+
+
+async def test_orphaned_run_after_manual_disable_ends_when_the_queue_ends(
+    tmp_path: Path,
+) -> None:
+    """A run orphaned by a manual DJ disable is still ended once its queue ends."""
+    dj = _dj_harness(tmp_path)
+    queue = _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+    _seed_show_run(dj, "morning_show")
+    await dj._ensure_show_dj("q1")
+
+    # the user turns the DJ off mid-show; the run stays alive with the queue
+    await dj.set_queue_dj("q1", None)
+    assert "morning_show" in dj._show_runs
+
+    queue.ended = True
+    await dj._on_dj_queue_event(
+        cast("Any", SimpleNamespace(event=EventType.QUEUE_UPDATED, object_id="q1"))
+    )
+
+    assert "morning_show" not in dj._show_runs
+
+
+async def test_host_deleted_mid_run_still_ends_the_run_at_queue_end(tmp_path: Path) -> None:
+    """A run whose DJ state was dropped for a deleted host is still ended at queue end."""
+    dj = _dj_harness(tmp_path)
+    queue = _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+    _seed_show_run(dj, "morning_show")
+    await dj._ensure_show_dj("q1")
+
+    # the host is deleted; the replan pass drops the DJ state without ending the run
+    del dj._hosts["amy"]
+    dj._dj_queues.pop("q1")
+
+    queue.ended = True
+    await dj._on_dj_queue_event(
+        cast("Any", SimpleNamespace(event=EventType.QUEUE_UPDATED, object_id="q1"))
+    )
+
+    assert "morning_show" not in dj._show_runs
+
+
+async def test_player_removed_ends_a_bound_run_without_dj_state(tmp_path: Path) -> None:
+    """Removing the player behind a run ends it even when no DJ state exists anymore."""
+    dj = _dj_harness(tmp_path)
+    _seed_show_run(dj, "morning_show")
+
+    await dj._on_dj_queue_event(
+        cast("Any", SimpleNamespace(event=EventType.PLAYER_REMOVED, object_id="q1"))
+    )
+
+    assert "morning_show" not in dj._show_runs
+
+
+async def test_orphaned_run_survives_while_its_queue_still_plays_the_show(
+    tmp_path: Path,
+) -> None:
+    """A run without DJ state is kept as long as its queue still sources the show."""
+    dj = _dj_harness(tmp_path)
+    _fake_queue_with_sources(dj, "q1", [f"{dj.instance_id}://radio/morning_show"])
+    _seed_show_run(dj, "morning_show")
+
+    await dj._on_dj_queue_event(
+        cast("Any", SimpleNamespace(event=EventType.QUEUE_ITEMS_UPDATED, object_id="q1"))
+    )
+
+    assert "morning_show" in dj._show_runs
+
+
+async def test_repair_never_treats_a_trailing_outro_as_stale(tmp_path: Path) -> None:
+    """An outro clip carries no gap-next id, so repair must not delete it for lacking one."""
+    tracks = [_track(index) for index in range(2)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    state = dummy._dj_queues["queue-1"]
+    outro = FakeQueueItem(
+        "Song Transition",
+        duration=30,
+        extra={ATTR_QUEUE_DJ: True, ATTR_SESSION_ID: state.dj_session_id},
+    )
+    dummy.player_queues._items = [*tracks, outro]
+
+    repaired = dummy._repair_dj_clips("queue-1", state, dummy.player_queues.items("queue-1"), -1)
+
+    assert repaired is False
+    assert dummy.player_queues.deleted == []
+
+
+async def test_splice_dj_clip_inserts_after_the_last_window_track(tmp_path: Path) -> None:
+    """An end_of_playlist section splices its clip after the target, not before it."""
+    tracks = [_track(index) for index in range(2)]
+    dummy = _make_replan_dj(tmp_path, list(tracks))
+    state = dummy._dj_queues["queue-1"]
+    program = dummy._build_program({"id": "", "name": "AI DJ Rick"}, dummy._hosts["rick"])
+    section = PlannedSection(
+        order=0,
+        clip_id="",
+        section_id="Song_Transition",
+        section_name="Song Transition",
+        when="end_of_playlist",
+        insert_at_index=len(tracks),
+        prompt="",
+        max_chars=200,
+        web_search_mode="disabled",
+    )
+    items = list(dummy.player_queues.items("queue-1"))
+
+    outcome = dummy._splice_dj_clip(
+        queue_id="queue-1",
+        items=items,
+        guard_index=-1,
+        state=state,
+        program=program,
+        target={"item_id": tracks[-1].queue_item_id},
+        section=section,
+        after_target=True,
+    )
+
+    assert outcome == "injected"
+    assert items[-1].extra_attributes[ATTR_QUEUE_DJ] is True
+    assert items[-1].extra_attributes.get(ATTR_GAP_NEXT_ID) is None
+
+
+async def test_replan_plans_an_outro_when_the_show_run_is_exhausted(tmp_path: Path) -> None:
+    """A replan plans and splices an outro once the bound show's run is fully served."""
+    tracks = [_track(index) for index in range(2)]
+    host = _must_host()
+    host["section_order"] = [{"when": "end_of_playlist", "flow": [{"MUST": "Song_Transition"}]}]
+    dummy = _make_replan_dj(tmp_path, list(tracks), current_index=-1, index_in_buffer=-1, host=host)
+    state = dummy._dj_queues["queue-1"]
+    state.station_id = "station_a"
+    dummy._show_runs["station_a"] = _ShowRun(tracks=[], queue_id="queue-1")
+
+    await dummy._replan_queue("queue-1")
+
+    final_items = dummy.player_queues.items("queue-1")
+    assert final_items[-1].extra_attributes[ATTR_QUEUE_DJ] is True
+    assert final_items[-1].extra_attributes.get(ATTR_GAP_NEXT_ID) is None
+
+
+async def test_replan_leaves_the_start_of_playlist_rule_to_the_feed(tmp_path: Path) -> None:
+    """
+    An exhausted, not yet started show gets its outro from the DJ but never its intro.
+
+    The intro rides the show feed's first page, so the DJ must skip the host's
+    start_of_playlist rule even while the queue has not started playing.
+    """
+    tracks = [_track(index) for index in range(2)]
+    host = _must_host()
+    host["section_order"] = [
+        {"when": "start_of_playlist", "flow": [{"MUST": "Song_Transition"}]},
+        {"when": "end_of_playlist", "flow": [{"MUST": "Song_Transition"}]},
+    ]
+    dummy = _make_replan_dj(
+        tmp_path, list(tracks), current_index=None, index_in_buffer=None, host=host
+    )
+    state = dummy._dj_queues["queue-1"]
+    state.station_id = "station_a"
+    dummy._show_runs["station_a"] = _ShowRun(tracks=[], queue_id="queue-1")
+
+    await dummy._replan_queue("queue-1")
+
+    final_items = dummy.player_queues.items("queue-1")
+    assert len(final_items) == 3  # both tracks, outro clip
+    assert final_items[0].queue_item_id == tracks[0].queue_item_id
+    assert final_items[-1].extra_attributes[ATTR_QUEUE_DJ] is True
+    assert final_items[-1].extra_attributes.get(ATTR_GAP_NEXT_ID) is None
+
+
+def _outro_host() -> dict[str, Any]:
+    """Return a host that always plans a section at the end of the playlist."""
+    host = _must_host()
+    host["section_order"] = [{"when": "end_of_playlist", "flow": [{"MUST": "Song_Transition"}]}]
+    return host
+
+
+def _show_track_item(index: int, uri: str) -> FakeQueueItem:
+    """Return a fake music queue item carrying a media item with the given uri."""
+    item = _track(index)
+    item.media_item = cast(
+        "Any",
+        SimpleNamespace(
+            uri=uri, name="", artists=None, media_type=MediaType.TRACK, provider="library"
+        ),
+    )
+    return item
+
+
+def _feed_intro(provider: str = "ai_radio_test") -> FakeQueueItem:
+    """Return a fake intro clip as a show's feed delivers it: a bare sound effect, no attributes."""
+    item = FakeQueueItem("Intro", duration=30)
+    item.media_item = cast(
+        "Any",
+        SimpleNamespace(
+            uri=f"{provider}://sound_effect/show_000",
+            name="Intro",
+            artists=None,
+            media_type=MediaType.SOUND_EFFECT,
+            provider=provider,
+        ),
+    )
+    return item
+
+
+def _exhausted_run(track_uris: list[str]) -> _ShowRun:
+    """Return a fully served show run whose snapshot holds the given track uris."""
+    tracks = cast("Any", [SimpleNamespace(uri=uri) for uri in track_uris])
+    return _ShowRun(tracks=tracks, queue_id="queue-1", cursor=len(track_uris))
+
+
+async def test_outro_is_not_placed_while_the_final_page_is_in_flight(tmp_path: Path) -> None:
+    """No outro splices while the run's final track has not landed in the queue yet."""
+    tracks = [_show_track_item(index, f"library://track/{index}") for index in range(2)]
+    dummy = _make_replan_dj(
+        tmp_path, list(tracks), current_index=-1, index_in_buffer=-1, host=_outro_host()
+    )
+    state = dummy._dj_queues["queue-1"]
+    state.station_id = "station_a"
+    # the run is exhausted, but its final track (2) is still on its way to the queue
+    run_uris = [f"library://track/{index}" for index in range(3)]
+    dummy._show_runs["station_a"] = _exhausted_run(run_uris)
+
+    await dummy._replan_queue("queue-1")
+
+    final_items = dummy.player_queues.items("queue-1")
+    assert not any(item.extra_attributes.get(ATTR_QUEUE_DJ) for item in final_items)
+
+
+async def test_outro_is_placed_after_the_runs_true_final_track(tmp_path: Path) -> None:
+    """The outro splices after the run's final track, not after user-appended tracks."""
+    tracks = [
+        _show_track_item(0, "library://track/0"),
+        _show_track_item(1, "library://track/1"),
+        _track(2),  # user-appended behind the show
+    ]
+    dummy = _make_replan_dj(
+        tmp_path, list(tracks), current_index=-1, index_in_buffer=-1, host=_outro_host()
+    )
+    state = dummy._dj_queues["queue-1"]
+    state.station_id = "station_a"
+    dummy._show_runs["station_a"] = _exhausted_run(["library://track/0", "library://track/1"])
+
+    await dummy._replan_queue("queue-1")
+
+    final_items = dummy.player_queues.items("queue-1")
+    assert len(final_items) == 4
+    assert final_items[2].extra_attributes.get(ATTR_QUEUE_DJ) is True
+    assert final_items[3].queue_item_id == tracks[2].queue_item_id
+
+
+async def test_no_second_outro_behind_user_appended_tracks(tmp_path: Path) -> None:
+    """A placed outro occupies the final track's slot, so a later pass adds no second one."""
+    tracks = [
+        _show_track_item(0, "library://track/0"),
+        _show_track_item(1, "library://track/1"),
+    ]
+    dummy = _make_replan_dj(
+        tmp_path, list(tracks), current_index=-1, index_in_buffer=-1, host=_outro_host()
+    )
+    state = dummy._dj_queues["queue-1"]
+    state.station_id = "station_a"
+    outro = FakeQueueItem(
+        "Song Transition",
+        duration=30,
+        extra={ATTR_QUEUE_DJ: True, ATTR_SESSION_ID: state.dj_session_id},
+    )
+    appended = _track(2)
+    dummy.player_queues._items = [*tracks, outro, appended]
+    dummy._show_runs["station_a"] = _exhausted_run(["library://track/0", "library://track/1"])
+
+    await dummy._replan_queue("queue-1")
+
+    final_items = dummy.player_queues.items("queue-1")
+    dj_clips = [item for item in final_items if item.extra_attributes.get(ATTR_QUEUE_DJ)]
+    assert dj_clips == [outro]
+
+
+def _intro_host() -> dict[str, Any]:
+    """Return a host that always plans a section at the start of the playlist."""
+    host = _must_host()
+    host["section_order"] = [{"when": "start_of_playlist", "flow": [{"MUST": "Song_Transition"}]}]
+    return host
+
+
+async def test_replan_never_plans_the_intro(tmp_path: Path) -> None:
+    """The start_of_playlist slot is never offered to the DJ, not even before playback starts."""
+    tracks = [_track(index) for index in range(3)]
+    dummy = _make_replan_dj(
+        tmp_path, list(tracks), current_index=None, index_in_buffer=None, host=_intro_host()
+    )
+
+    await dummy._replan_queue("queue-1")
+
+    assert dummy.player_queues.loads == []
+
+
+async def test_a_feed_intro_at_the_head_is_a_clip_not_a_song(tmp_path: Path) -> None:
+    """A show intro fed into the queue is skipped by the window and counts for no song."""
+    intro = _feed_intro()
+    tracks = [_track(index) for index in range(3)]
+    dummy = _make_replan_dj(tmp_path, [intro, *tracks], current_index=0, index_in_buffer=0)
+
+    await dummy._replan_queue("queue-1")
+
+    queues = dummy.player_queues
+    # the intro is airing: the gaps before the second and third track are the plannable ones
+    announced = {items[0].extra_attributes[ATTR_GAP_NEXT_ID] for items, _ in queues.loads}
+    assert announced == {tracks[1].queue_item_id, tracks[2].queue_item_id}
+    # the intro is no DJ clip and announces no track, so repair leaves it alone
+    assert queues.deleted == []
+    assert dummy._dj_queues["queue-1"].songs_before_window == 0
+
+
+async def test_is_ai_radio_clip_matches_dj_and_feed_clips_only(tmp_path: Path) -> None:
+    """DJ clips and this provider's fed sound effects are clips; tracks and foreign effects are not."""
+    dummy = _make_replan_dj(tmp_path, [])
+    is_clip = cast("Callable[[Any], bool]", dummy._is_ai_radio_clip)
+    assert is_clip(_dj_clip("x", "sess")) is True
+    assert is_clip(_feed_intro()) is True
+    assert is_clip(_feed_intro(provider="other_provider")) is False
+    assert is_clip(_track(0)) is False
 
 
 async def test_replan_inserts_clip_between_upcoming_tracks(tmp_path: Path) -> None:
@@ -1277,34 +1857,6 @@ async def test_a_repaired_clip_reopens_its_gap(tmp_path: Path) -> None:
 
     assert queues.deleted == [stale.queue_item_id]
     assert queues.loads[-1][0][0].extra_attributes[ATTR_GAP_NEXT_ID] == tracks[3].queue_item_id
-
-
-async def test_replan_yields_the_queue_to_a_running_show(tmp_path: Path) -> None:
-    """A show owning the queue plans its own breaks, so the sticky DJ stays out of it."""
-    dummy = _make_replan_dj(tmp_path, [_track(index) for index in range(4)])
-    dummy._sessions["s1"] = SessionState(
-        session_id="s1", station_id="station_a", queue_id="queue-1"
-    )
-
-    await dummy._replan_queue("queue-1")
-
-    assert dummy.player_queues.loads == []
-    assert dummy._dj_queues["queue-1"].replan_pending is False
-
-
-async def test_replan_ignores_a_show_running_on_another_queue(tmp_path: Path) -> None:
-    """A show elsewhere leaves this queue's DJ working."""
-    dummy = _make_replan_dj(tmp_path, [_track(index) for index in range(4)])
-    dummy._sessions["s1"] = SessionState(
-        session_id="s1", station_id="station_a", queue_id="queue-2"
-    )
-    dummy._sessions["s2"] = SessionState(
-        session_id="s2", station_id="station_b", queue_id="queue-1", status="completed"
-    )
-
-    await dummy._replan_queue("queue-1")
-
-    assert len(dummy.player_queues.loads) == 2
 
 
 async def test_replan_keeps_state_when_the_queue_is_not_registered_yet(tmp_path: Path) -> None:

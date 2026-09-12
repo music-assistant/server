@@ -46,6 +46,7 @@ from music_assistant.constants import (
     CONF_PASSWORD,
     CONF_SOCKS_URL,
     CONF_USERNAME,
+    DynamicFeedItem,
 )
 from music_assistant.helpers.aiohttp_client import create_clientsession, get_socks5_url
 from music_assistant.helpers.util import parse_title_and_version
@@ -213,11 +214,15 @@ class PandoraProvider(MusicProvider):
                 return station
         raise MediaNotFoundError(f"Station {prov_radio_id} not found")
 
-    async def get_dynamic_radio_tracks(self, prov_radio_id: str) -> list[Track]:
+    async def get_dynamic_radio_tracks(
+        self, prov_radio_id: str, *, sample: bool = False
+    ) -> list[DynamicFeedItem]:
         """
         Get the currently playable tracks for the given station.
 
         :param prov_radio_id: The Pandora station id.
+        :param sample: Ignored; the station session already serves every caller the
+            same live fragment without consuming it.
         """
         session = self._get_or_create_session(prov_radio_id)
         fragment = session.current

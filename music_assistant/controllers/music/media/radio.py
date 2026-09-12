@@ -18,7 +18,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import ProviderMapping, Radio, RadioSummary, Track
 
-from music_assistant.constants import DB_TABLE_RADIOS
+from music_assistant.constants import DB_TABLE_RADIOS, DynamicFeedItem
 from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
     update_current_task_progress_from_index,
@@ -97,20 +97,26 @@ class RadioController(MediaControllerBase[Radio]):
 
     async def radio_tracks(self, item_id: str, provider_instance_id_or_domain: str) -> list[Track]:
         """
-        Return a fresh batch of tracks for a dynamic radio station.
+        Return a preview batch of tracks for a dynamic radio station.
 
         :param item_id: The provider (or library) item id of the station.
         :param provider_instance_id_or_domain: The provider instance id or domain the
             item id belongs to ("library" for a library item).
         """
         radio = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-        return await self.dynamic_tracks(radio)
+        # this is the browse/details sample API: it must never consume from the feed
+        # that an actual playback queue pages through
+        batch = await self.dynamic_tracks(radio, sample=True)
+        # a preview lists the music; clips a station weaves into its feed are not part of it
+        return [item for item in batch if isinstance(item, Track)]
 
-    async def dynamic_tracks(self, radio: Radio) -> list[Track]:
+    async def dynamic_tracks(self, radio: Radio, *, sample: bool = False) -> list[DynamicFeedItem]:
         """
-        Return a fresh batch of tracks for an already resolved dynamic radio station.
+        Return a fresh batch of feed items for an already resolved dynamic radio station.
 
         :param radio: The dynamic station to fetch the next batch for.
+        :param sample: True returns a preview batch that must not mutate any
+            playback state.
         """
         if not radio.is_dynamic:
             raise UnsupportedFeaturedException(f"{radio.name} is not a dynamic radio station")
@@ -122,7 +128,7 @@ class RadioController(MediaControllerBase[Radio]):
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
         return await cast("MusicProvider | PluginProvider", provider).get_dynamic_radio_tracks(
-            item_id
+            item_id, sample=sample
         )
 
     async def export_radios(self) -> str:

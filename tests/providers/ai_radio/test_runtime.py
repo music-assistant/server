@@ -1,52 +1,34 @@
-"""Unit tests for AI Radio runtime session flow and logging."""
+"""Unit tests for AI Radio runtime planning and rendering helpers."""
 
 from __future__ import annotations
 
 import asyncio
 import datetime
-import json
 import logging
-import random
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
 from copy import deepcopy
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import (
-    EventType,
-    MediaType,
-    PlaybackState,
-    ProviderFeature,
-    ProviderType,
-)
+from music_assistant_models.enums import ProviderFeature, ProviderType
 from music_assistant_models.errors import MusicAssistantError
-from music_assistant_models.event import MassEvent
-from music_assistant_models.media_items import ProviderMapping, Track
 
 from music_assistant.helpers.datetime import now as host_now
 from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
 from music_assistant.providers.ai_radio import runtime as runtime_module
 from music_assistant.providers.ai_radio.constants import (
     ATTR_HOST_ID,
-    ATTR_MAX_CHARS,
-    ATTR_PROMPT,
     ATTR_SESSION_ID,
-    ATTR_STATION_ID,
     ATTR_WEATHER_REQUIRED,
-    ATTR_WEB_SEARCH_MODE,
     CONF_AI_ENGINE,
     CONF_TTS_ENGINE,
     CONF_WEATHER_PROVIDER,
     TTS_PRONUNCIATION_INSTRUCTIONS,
 )
-from music_assistant.providers.ai_radio.models import PlannedSection, SessionState, Slot
-from music_assistant.providers.ai_radio.queue_dj import AIRadioQueueDJMixin
+from music_assistant.providers.ai_radio.models import PlannedSection, Slot
 from music_assistant.providers.ai_radio.runtime import AIRadioRuntimeMixin
-from music_assistant.providers.ai_radio.storage import AIRadioStorageMixin
 
 
 class StubConfig:
@@ -67,7 +49,6 @@ class DummyRuntime(AIRadioRuntimeMixin):
     def __init__(self, setup_values: dict[str, Any] | None = None) -> None:
         """Initialize minimal state for runtime tests."""
         self.logger = logging.getLogger("tests.ai_radio.runtime")
-        self._sessions: dict[str, SessionState] = {}
         self._sections: dict[str, dict[str, Any]] = {}
         self.config = cast("Any", StubConfig())
         self.instance_id = "ai_radio_test"
@@ -81,7 +62,7 @@ class DummyRuntime(AIRadioRuntimeMixin):
     def _schedule_replan(self, queue_id: str) -> None:
         """No-op stand-in for the queue DJ mixin's replan scheduling."""
 
-    async def set_queue_dj(self, queue_id: str, host_id: str | None) -> dict[str, str]:
+    async def set_queue_dj(self, queue_id: str, host_id: str | None) -> dict[str, dict[str, str]]:
         """No-op stand-in for the queue DJ mixin's set_queue_dj."""
         return {}
 
@@ -99,18 +80,6 @@ class DummyRuntime(AIRadioRuntimeMixin):
                 continue
             sections.append(deepcopy(section))
         return sections, missing
-
-
-class FailingRuntime(DummyRuntime):
-    """Runtime harness that forces show execution failure."""
-
-    async def _run_show(
-        self,
-        session: SessionState,
-        station: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Raise to test failed-session behavior."""
-        raise RuntimeError("boom")
 
 
 def _set_runtime_mass(runtime: AIRadioRuntimeMixin, mass: Any) -> None:
@@ -157,111 +126,6 @@ def _create_engine_mass(feature: ProviderFeature, *providers: Any, **attrs: Any)
     for key, value in attrs.items():
         setattr(mass, key, value)
     return mass
-
-
-async def test_run_session_sets_completed_and_logs(caplog: Any) -> None:
-    """Complete a session and emit start/completion logs."""
-
-    class SuccessfulRuntime(DummyRuntime):
-        async def _run_show(
-            self,
-            session: SessionState,
-            station: dict[str, Any],
-        ) -> dict[str, Any]:
-            """Return a successful show run result."""
-            return {"ok": True}
-
-    runtime = SuccessfulRuntime()
-    session = SessionState(session_id="s1", station_id="station_a")
-    runtime._sessions[session.session_id] = session
-
-    with caplog.at_level(logging.INFO):
-        await runtime._run_session(session.session_id, {"id": "station_a"})
-
-    assert session.status == "completed"
-    assert session.result == {"ok": True}
-    assert any("AI Radio run started" in message for message in caplog.messages)
-    assert any("AI Radio run completed" in message for message in caplog.messages)
-
-
-async def test_run_session_sets_failed_state(caplog: Any) -> None:
-    """Fail a session and keep the error message in state."""
-    runtime = FailingRuntime()
-    session = SessionState(session_id="s2", station_id="station_b")
-    runtime._sessions[session.session_id] = session
-
-    with caplog.at_level(logging.ERROR):
-        await runtime._run_session(session.session_id, {"id": "station_b"})
-
-    assert session.status == "failed"
-    assert session.error == "boom"
-
-
-async def test_run_session_sets_failed_state_with_empty_exception_message() -> None:
-    """Store exception class name when failure has no message."""
-
-    class EmptyError(Exception):
-        """Exception with empty default message."""
-
-    class EmptyFailingRuntime(DummyRuntime):
-        async def _run_show(
-            self,
-            session: SessionState,
-            station: dict[str, Any],
-        ) -> dict[str, Any]:
-            raise EmptyError
-
-    runtime = EmptyFailingRuntime()
-    session = SessionState(session_id="s2b", station_id="station_b")
-    runtime._sessions[session.session_id] = session
-
-    await runtime._run_session(session.session_id, {"id": "station_b"})
-
-    assert session.status == "failed"
-    assert session.error == "EmptyError"
-
-
-async def test_run_session_sets_stopped_state_on_cancellation(caplog: Any) -> None:
-    """Mark session as stopped when runtime execution is cancelled."""
-
-    class CancelledRuntime(DummyRuntime):
-        async def _run_show(
-            self,
-            session: SessionState,
-            station: dict[str, Any],
-        ) -> dict[str, Any]:
-            raise asyncio.CancelledError
-
-    runtime = CancelledRuntime()
-    session = SessionState(session_id="s3", station_id="station_c")
-    runtime._sessions[session.session_id] = session
-
-    with caplog.at_level(logging.INFO), suppress(asyncio.CancelledError):
-        await runtime._run_session(session.session_id, {"id": "station_c"})
-
-    assert session.status == "stopped"
-    assert any("AI Radio run cancelled" in message for message in caplog.messages)
-
-
-async def test_run_session_reschedules_a_replan_for_the_session_queue() -> None:
-    """Re-arm the queue DJ for the session's queue once its show session ends."""
-
-    class ReplanTrackingRuntime(FailingRuntime):
-        def __init__(self) -> None:
-            super().__init__()
-            self.replanned_queue_ids: list[str] = []
-
-        def _schedule_replan(self, queue_id: str) -> None:
-            self.replanned_queue_ids.append(queue_id)
-
-    runtime = ReplanTrackingRuntime()
-    session = SessionState(session_id="s4", station_id="station_d")
-    session.queue_id = "queue_1"
-    runtime._sessions[session.session_id] = session
-
-    await runtime._run_session(session.session_id, {"id": "station_d"})
-
-    assert runtime.replanned_queue_ids == ["queue_1"]
 
 
 async def test_prepare_runtime_tokens_logs_unsupported_weather_provider(caplog: Any) -> None:
@@ -954,6 +818,61 @@ def test_plan_sections_leaves_deferred_tokens_in_the_prompt() -> None:
     assert "B - Two" in prompt
 
 
+def test_plan_sections_can_defer_the_song_tokens() -> None:
+    """With deferred song tokens the prompt keeps them verbatim while guards still see them."""
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, SimpleNamespace(metadata=SimpleNamespace(locale="en_US")))
+    station = {
+        "sections": [
+            {
+                "id": "Intro",
+                "name": "Intro",
+                "type": "ai_text",
+                "web_search": "disabled",
+                "prompt": "First up <next_songinfo>, then <very_next_songinfo>. <weather_hourly>",
+                "constraints": {"max_chars": 200},
+            }
+        ],
+        "section_order": [
+            {
+                "when": "start_of_playlist",
+                "flow": [
+                    {
+                        "OPTIONAL": {
+                            "section": "Intro",
+                            "chance": 100,
+                            "guards": {"require_placeholders_present": ["<next_songinfo>"]},
+                        }
+                    }
+                ],
+            }
+        ],
+    }
+    tracks = [
+        {"index": 0, "songinfo": "A - One", "duration": 200},
+        {"index": 1, "songinfo": "B - Two", "duration": 200},
+    ]
+
+    planned, _history = runtime._plan_sections(
+        session_id="sess",
+        tracks=tracks,
+        program=station,
+        track_index_offset=0,
+        minute_offset=0.0,
+        history_state={},
+        allowed_slot_when=["start_of_playlist"],
+        runtime_tokens={"<weather_hourly>": "12 degrees"},
+        defer_song_tokens=True,
+    )
+
+    assert len(planned) == 1
+    prompt = planned[0].prompt
+    assert prompt.startswith(
+        "First up <next_songinfo>, then <very_next_songinfo>. <weather_hourly>"
+    )
+    assert "A - One" not in prompt
+
+
 def _weather_guarded_station() -> dict[str, Any]:
     """Return a station whose only section requires the weather-hourly token to be present."""
     return {
@@ -1204,84 +1123,6 @@ def test_alternative_weather_section_is_not_weather_required() -> None:
     assert planned[0].weather_required is False
 
 
-def _stub_track(item_id: str) -> Track:
-    """Build a minimal Track with one available ProviderMapping, for build_queue_item."""
-    return Track(
-        item_id=item_id,
-        provider="library",
-        name=f"Track {item_id}",
-        provider_mappings={
-            ProviderMapping(
-                item_id=item_id,
-                provider_domain="library",
-                provider_instance="library",
-            )
-        },
-    )
-
-
-def test_compose_queue_items_places_clips_at_planned_indices() -> None:
-    """Clips are interleaved at their planned indices, carrying their render state."""
-    runtime = DummyRuntime()
-    _set_runtime_mass(runtime, SimpleNamespace())
-    tracks = [
-        {"index": 0, "uri": "library://track/1", "media_item": _stub_track("1")},
-        {"index": 1, "uri": "library://track/2", "media_item": _stub_track("2")},
-    ]
-    sections = [
-        PlannedSection(
-            order=0,
-            clip_id="sess_000",
-            section_id="Intro",
-            section_name="Intro",
-            when="start_of_playlist",
-            insert_at_index=0,
-            prompt="hello <timestamp>",
-            max_chars=200,
-            web_search_mode="disabled",
-        ),
-        PlannedSection(
-            order=1,
-            clip_id="sess_001",
-            section_id="Between",
-            section_name="Between",
-            when="between_songs",
-            insert_at_index=1,
-            prompt="middle <weather_hourly>",
-            max_chars=200,
-            web_search_mode="allow",
-        ),
-    ]
-
-    items = runtime._compose_queue_items(
-        queue_id="player_a",
-        session=SessionState(session_id="sess", station_id="st"),
-        program={"id": "st"},
-        tracks=tracks,
-        sections=sections,
-    )
-
-    assert [item.media_item.item_id for item in items if item.media_item is not None] == [
-        "sess_000",
-        "1",
-        "sess_001",
-        "2",
-    ]
-    intro = items[0]
-    assert intro.media_item is not None
-    assert intro.media_item.media_type == MediaType.SOUND_EFFECT
-    assert intro.extra_attributes[ATTR_PROMPT] == "hello <timestamp>"
-    assert intro.extra_attributes[ATTR_SESSION_ID] == "sess"
-    assert intro.extra_attributes[ATTR_STATION_ID] == "st"
-    assert intro.extra_attributes[ATTR_MAX_CHARS] == 200
-    assert items[2].extra_attributes[ATTR_WEB_SEARCH_MODE] == "allow"
-    # the section name travels as the item's own name, not as an attribute
-    assert intro.name == "Intro"
-    assert "ai_radio_section_name" not in intro.extra_attributes
-    # track items carry no AI Radio state
-    assert items[1].extra_attributes == {}
-
-
 def test_build_program_merges_host_into_station() -> None:
     """The merged program carries the host's persona, sections and section_order."""
     runtime = DummyRuntime()
@@ -1442,540 +1283,6 @@ async def test_get_tts_engine_falls_back_to_provider_selection_when_host_uid_is_
     assert any("unavailable" in message for message in caplog.messages)
 
 
-def _show_mass_stub(**handlers: Any) -> SimpleNamespace:
-    """
-    Build a minimal mass stub for exercising _run_show.
-
-    Any player_queues/players/music/metadata handler not passed gets a no-op default.
-    """
-
-    async def _noop_async(*_args: Any, **_kwargs: Any) -> None:
-        return None
-
-    def _noop_sync(*_args: Any, **_kwargs: Any) -> None:
-        return None
-
-    def _noop_get_active_queue(_player_id: str) -> Any:
-        return None
-
-    def _noop_get_player(_player_id: str) -> Any:
-        return object()
-
-    def _noop_items(_queue_id: str, limit: int = 500, offset: int = 0) -> list[Any]:  # noqa: ARG001
-        return []
-
-    subscribers: list[Callable[[Any], None]] = []
-
-    def _recording_subscribe(
-        cb_func: Callable[[Any], None],
-        event_filter: Any = None,  # noqa: ARG001
-        id_filter: Any = None,  # noqa: ARG001
-    ) -> Callable[[], None]:
-        subscribers.append(cb_func)
-
-        def _unsubscribe() -> None:
-            subscribers.remove(cb_func)
-
-        return _unsubscribe
-
-    def _emit_queue_updated(queue_id: str) -> None:
-        event = MassEvent(event=EventType.QUEUE_UPDATED, object_id=queue_id)
-        for cb_func in subscribers:
-            cb_func(event)
-
-    def _emit_player_removed(player_id: str) -> None:
-        event = MassEvent(event=EventType.PLAYER_REMOVED, object_id=player_id)
-        for cb_func in subscribers:
-            cb_func(event)
-
-    player_queues = SimpleNamespace(
-        clear=handlers.get("clear", _noop_sync),
-        get=handlers.get("get", lambda _queue_id: None),
-        get_active_queue=handlers.get("get_active_queue", _noop_get_active_queue),
-        set_shuffle=handlers.get("set_shuffle", _noop_async),
-        load=handlers.get("load", _noop_async),
-        play_index=handlers.get("play_index", _noop_async),
-        items=handlers.get("items", _noop_items),
-        signal_update=handlers.get("signal_update", _noop_sync),
-        stop=handlers.get("stop", _noop_async),
-    )
-    return SimpleNamespace(
-        player_queues=player_queues,
-        players=SimpleNamespace(get_player=handlers.get("get_player", _noop_get_player)),
-        music=SimpleNamespace(playlists=handlers.get("playlists", SimpleNamespace())),
-        metadata=SimpleNamespace(locale=handlers.get("locale", "en_US")),
-        create_task=handlers.get("create_task", _noop_sync),
-        subscribe=handlers.get("subscribe", _recording_subscribe),
-        emit_queue_updated=_emit_queue_updated,
-        emit_player_removed=_emit_player_removed,
-    )
-
-
-def _stub_queue(state: PlaybackState, current_index: int | None) -> SimpleNamespace:
-    """Build a mutable queue stand-in exposing the fields _await_show_end reads."""
-    return SimpleNamespace(state=state, current_index=current_index)
-
-
-def _stub_clip_queue_item(clip_id: str, session_id: str) -> SimpleNamespace:
-    """Build a queue item stand-in whose extra_attributes carry a session id."""
-    return SimpleNamespace(extra_attributes={ATTR_SESSION_ID: session_id}, item_id=clip_id)
-
-
-def _recording_set_shuffle(log: list[str]) -> Callable[[str, bool], Awaitable[None]]:
-    """Return an async set_shuffle stub that appends "set_shuffle" to the given call-order log."""
-
-    async def _set_shuffle(_queue_id: str, _shuffle_enabled: bool) -> None:
-        log.append("set_shuffle")
-
-    return _set_shuffle
-
-
-def _show_station() -> dict[str, Any]:
-    """Return a station config for _run_show tests, whose section_order yields clips."""
-    return {
-        "id": "st",
-        "name": "Show Station",
-        "default_player_id": "living_room",
-        "source_playlist_id": "playlist-1",
-        "source_playlist_provider": "library",
-        "shuffle_source_tracks": False,
-        "general": {"timezone": "UTC"},
-        "sections": [
-            {
-                "id": "Song_Introduction_Start",
-                "name": "Intro",
-                "type": "ai_text",
-                "web_search": "disabled",
-                "prompt": "Welcome, next up is <next_songinfo>.",
-                "constraints": {"max_chars": 200},
-            },
-            {
-                "id": "Song_Transition",
-                "name": "Transition",
-                "type": "ai_text",
-                "web_search": "disabled",
-                "prompt": "From <prev_songinfo> to <next_songinfo>.",
-                "constraints": {"max_chars": 200},
-            },
-        ],
-        "section_order": [
-            {"when": "start_of_playlist", "flow": [{"MUST": "Song_Introduction_Start"}]},
-            {"when": "between_songs", "flow": [{"MUST": "Song_Transition"}]},
-        ],
-    }
-
-
-class ShowRuntime(DummyRuntime):
-    """Runtime harness exercising the real _run_show with stubbed track sourcing."""
-
-    async def _fetch_source_tracks(
-        self, station: dict[str, Any]
-    ) -> tuple[list[dict[str, Any]], str]:
-        """Return two fixed tracks, each carrying its resolved media item."""
-        return [
-            {"index": 0, "songinfo": "A - One", "duration": 200, "media_item": _stub_track("1")},
-            {"index": 1, "songinfo": "B - Two", "duration": 200, "media_item": _stub_track("2")},
-        ], "Source Playlist"
-
-    async def _prepare_runtime_tokens(self, station: dict[str, Any]) -> dict[str, str]:
-        """Skip the weather lookup; runtime tokens are irrelevant to these tests."""
-        return {}
-
-
-class ShowRuntimeWithDJ(AIRadioQueueDJMixin, AIRadioStorageMixin, ShowRuntime):
-    """ShowRuntime harness that also carries sticky queue DJ state."""
-
-    def __init__(self, tmp_path: Path) -> None:
-        """Initialize show runtime state plus queue DJ bookkeeping."""
-        super().__init__()
-        self._hosts: dict[str, dict[str, Any]] = {
-            "rick": {"id": "rick", "name": "Rick", "instructions": "x", "tts_engine": ""},
-        }
-        self._dj_queues: dict[str, Any] = {}
-        self._dj_file = tmp_path / "queue_dj.json"
-        self._dj_lock = asyncio.Lock()
-        self._unloading = False
-
-
-def _recording_create_task(scheduled: list[str]) -> Callable[..., None]:
-    """Return a create_task stub that records the task id and discards the coroutine."""
-
-    def _create_task(coro: Any, task_id: str | None = None, **_kwargs: Any) -> None:
-        if task_id:
-            scheduled.append(task_id)
-        coro.close()
-
-    return _create_task
-
-
-async def test_run_show_loads_the_whole_show_then_plays_index_zero() -> None:
-    """The show is loaded in one call, fully stamped, before playback is started."""
-    runtime = ShowRuntime()
-    call_order: list[str] = []
-    loaded: list[tuple[Any, dict[str, Any]]] = []
-
-    async def _load(_queue_id: str, queue_items: list[Any], **kwargs: Any) -> None:
-        call_order.append("load")
-        # snapshot media_item + extra_attributes now: asserting on the live queue_item
-        # objects after _run_show returns would pass even if stamping happened later
-        loaded.extend((item.media_item, dict(item.extra_attributes)) for item in queue_items)
-        assert kwargs["shuffle"] is False
-        assert kwargs["keep_remaining"] is False
-        assert kwargs["keep_played"] is False
-
-    async def _play_index(_queue_id: str, index: int) -> None:
-        call_order.append(f"play_index:{index}")
-
-    _set_runtime_mass(
-        runtime,
-        _show_mass_stub(
-            load=_load,
-            play_index=_play_index,
-            clear=lambda _queue_id: call_order.append("clear"),
-            set_shuffle=_recording_set_shuffle(call_order),
-        ),
-    )
-
-    await runtime._run_show(SessionState(session_id="sess", station_id="st"), _show_station())
-
-    assert call_order == ["clear", "set_shuffle", "load", "play_index:0"]
-    clips = [
-        (media_item, attrs)
-        for media_item, attrs in loaded
-        if media_item.media_type == MediaType.SOUND_EFFECT
-    ]
-    assert clips
-    # every clip was already fully stamped at the moment load() was called
-    assert all(attrs[ATTR_PROMPT] for _media_item, attrs in clips)
-    assert all(attrs[ATTR_SESSION_ID] == "sess" for _media_item, attrs in clips)
-
-
-async def test_run_show_targets_active_group_queue() -> None:
-    """Queue and start the show on the active (group) queue when the player is grouped."""
-    runtime = ShowRuntime()
-    clear_calls: list[str] = []
-    load_queue_ids: list[str] = []
-    play_index_queue_ids: list[str] = []
-
-    async def _load(queue_id: str, **_kwargs: Any) -> None:
-        load_queue_ids.append(queue_id)
-
-    async def _play_index(queue_id: str, _index: int) -> None:
-        play_index_queue_ids.append(queue_id)
-
-    _set_runtime_mass(
-        runtime,
-        _show_mass_stub(
-            get_active_queue=lambda _player_id: SimpleNamespace(queue_id="group_1"),
-            clear=clear_calls.append,
-            load=_load,
-            play_index=_play_index,
-        ),
-    )
-    session = SessionState(session_id="s1", station_id="st")
-
-    result = await runtime._run_show(session, _show_station())
-
-    assert result["queue_id"] == "group_1"
-    assert clear_calls == ["group_1"]
-    assert load_queue_ids == ["group_1"]
-    assert play_index_queue_ids == ["group_1"]
-    assert session.queue_id == "group_1"
-
-
-async def test_run_show_clears_the_queues_sticky_dj(tmp_path: Path) -> None:
-    """Starting a show drops that queue's existing sticky DJ assignment."""
-    runtime = ShowRuntimeWithDJ(tmp_path)
-    _set_runtime_mass(runtime, _show_mass_stub())
-    await runtime.set_queue_dj("living_room", "rick")
-    assert "living_room" in runtime._dj_queues
-
-    await runtime._run_show(SessionState(session_id="sess", station_id="st"), _show_station())
-
-    assert "living_room" not in runtime._dj_queues
-    persisted = json.loads(runtime._dj_file.read_text())
-    assert persisted["queues"] == {}
-
-
-async def test_run_show_clears_the_dj_on_the_resolved_group_queue(tmp_path: Path) -> None:
-    """A grouped player's DJ is cleared on the active (group) queue, not the raw player id."""
-    runtime = ShowRuntimeWithDJ(tmp_path)
-    _set_runtime_mass(
-        runtime,
-        _show_mass_stub(get_active_queue=lambda _player_id: SimpleNamespace(queue_id="group_1")),
-    )
-    # a stale assignment on the raw player id must survive untouched: the show never
-    # played there, only on the resolved group queue
-    await runtime.set_queue_dj("living_room", "rick")
-    await runtime.set_queue_dj("group_1", "rick")
-
-    await runtime._run_show(SessionState(session_id="s1", station_id="st"), _show_station())
-
-    assert "group_1" not in runtime._dj_queues
-    assert "living_room" in runtime._dj_queues
-
-
-async def test_run_session_finally_replans_a_dj_armed_mid_show(tmp_path: Path) -> None:
-    """A DJ armed via the menu while a show plays still gets scheduled once the show ends."""
-    runtime = ShowRuntimeWithDJ(tmp_path)
-    scheduled: list[str] = []
-    _set_runtime_mass(runtime, _show_mass_stub(create_task=_recording_create_task(scheduled)))
-    session = SessionState(session_id="sess", station_id="st", queue_id="living_room")
-    runtime._sessions[session.session_id] = session
-
-    # arming mid-show already requested a pass; that pass would drain against the running-show
-    # guard in _replan_queue and clear replan_pending without planning anything, so reset it
-    # here to isolate the finally block's own request instead of piggybacking on this one
-    await runtime.set_queue_dj("living_room", "rick")
-    runtime._dj_queues["living_room"].replan_pending = False
-    scheduled.clear()
-
-    async def _run_show_stub(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        raise RuntimeError("show over")
-
-    runtime._run_show = _run_show_stub  # type: ignore[method-assign]
-
-    await runtime._run_session(session.session_id, {"id": "st"})
-
-    assert scheduled == ["ai_radio_dj_replan_living_room"]
-    assert runtime._dj_queues["living_room"].ready is True
-
-
-async def test_run_show_ends_as_stopped_when_the_user_stops_the_queue() -> None:
-    """A queue stopped part-way through the show ends the run as a user stop."""
-    runtime = DummyRuntime()
-    session = SessionState(session_id="sess", station_id="st")
-    queue = _stub_queue(state=PlaybackState.PLAYING, current_index=0)
-    mass = _show_mass_stub(
-        get=lambda _queue_id: queue,
-        items=lambda _queue_id, limit=500, offset=0: [  # noqa: ARG005
-            _stub_clip_queue_item("sess_000", session_id="sess")
-        ],
-    )
-    _set_runtime_mass(runtime, mass)
-
-    task = asyncio.create_task(
-        runtime._await_show_end(session, "player_a", last_index=5, has_clips=True)
-    )
-    await asyncio.sleep(0)
-    assert not task.done()
-
-    queue.state = PlaybackState.IDLE
-    mass.emit_queue_updated("player_a")
-
-    assert await asyncio.wait_for(task, timeout=1) == "queue_stopped"
-
-
-async def test_run_show_ends_as_exhausted_when_the_show_plays_out() -> None:
-    """Reaching the last enqueued entry ends the run as a normal completion."""
-    runtime = DummyRuntime()
-    session = SessionState(session_id="sess", station_id="st")
-    queue = _stub_queue(state=PlaybackState.PLAYING, current_index=5)
-    mass = _show_mass_stub(
-        get=lambda _queue_id: queue,
-        items=lambda _queue_id, limit=500, offset=0: [  # noqa: ARG005
-            _stub_clip_queue_item("sess_000", session_id="sess")
-        ],
-    )
-    _set_runtime_mass(runtime, mass)
-
-    task = asyncio.create_task(
-        runtime._await_show_end(session, "player_a", last_index=5, has_clips=True)
-    )
-    await asyncio.sleep(0)
-
-    queue.state = PlaybackState.IDLE
-    mass.emit_queue_updated("player_a")
-
-    assert await asyncio.wait_for(task, timeout=1) == "source_exhausted"
-
-
-async def test_run_show_ignores_an_idle_queue_before_playback_starts() -> None:
-    """A queue that has not started yet is not mistaken for a stopped one."""
-    runtime = DummyRuntime()
-    session = SessionState(session_id="sess", station_id="st")
-    queue = _stub_queue(state=PlaybackState.IDLE, current_index=None)
-    mass = _show_mass_stub(
-        get=lambda _queue_id: queue,
-        items=lambda _queue_id, limit=500, offset=0: [  # noqa: ARG005
-            _stub_clip_queue_item("sess_000", session_id="sess")
-        ],
-    )
-    _set_runtime_mass(runtime, mass)
-
-    task = asyncio.create_task(
-        runtime._await_show_end(session, "player_a", last_index=5, has_clips=True)
-    )
-    mass.emit_queue_updated("player_a")
-    await asyncio.sleep(0)
-
-    assert not task.done()
-    task.cancel()
-
-
-async def test_run_show_keeps_a_paused_queue_on_air() -> None:
-    """A paused queue keeps the show running."""
-    runtime = DummyRuntime()
-    session = SessionState(session_id="sess", station_id="st")
-    queue = _stub_queue(state=PlaybackState.PLAYING, current_index=1)
-    mass = _show_mass_stub(
-        get=lambda _queue_id: queue,
-        items=lambda _queue_id, limit=500, offset=0: [  # noqa: ARG005
-            _stub_clip_queue_item("sess_000", session_id="sess")
-        ],
-    )
-    _set_runtime_mass(runtime, mass)
-
-    task = asyncio.create_task(
-        runtime._await_show_end(session, "player_a", last_index=5, has_clips=True)
-    )
-    await asyncio.sleep(0)
-
-    queue.state = PlaybackState.PAUSED
-    mass.emit_queue_updated("player_a")
-    await asyncio.sleep(0)
-
-    assert not task.done()
-    task.cancel()
-
-
-async def test_run_show_ends_when_the_queue_no_longer_holds_its_clips() -> None:
-    """A queue cleared or taken over by other playback ends the run."""
-    runtime = DummyRuntime()
-    session = SessionState(session_id="sess", station_id="st")
-    queue = _stub_queue(state=PlaybackState.PLAYING, current_index=1)
-    queue_items = [_stub_clip_queue_item("sess_000", session_id="sess")]
-    mass = _show_mass_stub(
-        get=lambda _queue_id: queue,
-        items=lambda _queue_id, limit=500, offset=0: queue_items[offset : offset + limit],
-    )
-    _set_runtime_mass(runtime, mass)
-
-    task = asyncio.create_task(
-        runtime._await_show_end(session, "player_a", last_index=5, has_clips=True)
-    )
-    await asyncio.sleep(0)
-
-    queue_items.clear()
-    mass.emit_queue_updated("player_a")
-
-    assert await asyncio.wait_for(task, timeout=1) == "queue_stopped"
-
-
-async def test_run_show_ends_when_its_player_is_removed() -> None:
-    """Removing the target player must not pin the session's slot forever."""
-    runtime = DummyRuntime()
-    session = SessionState(session_id="sess", station_id="st")
-    queue = _stub_queue(state=PlaybackState.PLAYING, current_index=1)
-    queue_holder: list[Any] = [queue]
-    mass = _show_mass_stub(
-        get=lambda _queue_id: queue_holder[0],
-        items=lambda _queue_id, limit=500, offset=0: [  # noqa: ARG005
-            _stub_clip_queue_item("sess_000", session_id="sess")
-        ],
-    )
-    _set_runtime_mass(runtime, mass)
-
-    task = asyncio.create_task(
-        runtime._await_show_end(session, "player_a", last_index=5, has_clips=True)
-    )
-    await asyncio.sleep(0)
-    assert not task.done()
-
-    # on_player_remove pops the queue data before PLAYER_REMOVED is signaled
-    queue_holder[0] = None
-    mass.emit_player_removed("player_a")
-
-    assert await asyncio.wait_for(task, timeout=1) == "queue_stopped"
-
-
-async def test_run_show_keeps_waiting_when_the_show_has_no_clips_to_lose() -> None:
-    """A clip-free show is not mistaken for one whose clips got cleared out."""
-    runtime = DummyRuntime()
-    session = SessionState(session_id="sess", station_id="st")
-    queue = _stub_queue(state=PlaybackState.PLAYING, current_index=0)
-    # track-only queue: no item carries ATTR_SESSION_ID, exactly like a show whose
-    # section rules never selected anything to insert
-    mass = _show_mass_stub(
-        get=lambda _queue_id: queue,
-        items=lambda _queue_id, limit=500, offset=0: [  # noqa: ARG005
-            SimpleNamespace(extra_attributes={})
-        ],
-    )
-    _set_runtime_mass(runtime, mass)
-
-    task = asyncio.create_task(
-        runtime._await_show_end(session, "player_a", last_index=5, has_clips=False)
-    )
-    await asyncio.sleep(0)
-    assert not task.done()
-
-    queue.current_index = 5
-    queue.state = PlaybackState.IDLE
-    mass.emit_queue_updated("player_a")
-
-    assert await asyncio.wait_for(task, timeout=1) == "source_exhausted"
-
-
-async def test_await_show_end_fails_when_playback_never_starts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A show whose playback never starts is declared failed instead of waiting forever."""
-    monkeypatch.setattr(
-        "music_assistant.providers.ai_radio.runtime.SHOW_START_TIMEOUT_SECONDS", 0.05
-    )
-    runtime = DummyRuntime()
-    session = SessionState(session_id="sess", station_id="st")
-    queue = _stub_queue(state=PlaybackState.IDLE, current_index=None)
-    mass = _show_mass_stub(
-        get=lambda _queue_id: queue,
-        items=lambda _queue_id, limit=500, offset=0: [  # noqa: ARG005
-            _stub_clip_queue_item("sess_000", session_id="sess")
-        ],
-    )
-    _set_runtime_mass(runtime, mass)
-
-    with pytest.raises(MusicAssistantError, match="did not start"):
-        await runtime._await_show_end(session, "player_a", last_index=5, has_clips=True)
-
-
-async def test_await_show_end_does_not_time_out_once_playback_starts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Playback starting before the start-timeout elapses lets the show proceed as normal."""
-    monkeypatch.setattr(
-        "music_assistant.providers.ai_radio.runtime.SHOW_START_TIMEOUT_SECONDS", 0.2
-    )
-    runtime = DummyRuntime()
-    session = SessionState(session_id="sess", station_id="st")
-    queue = _stub_queue(state=PlaybackState.IDLE, current_index=None)
-    mass = _show_mass_stub(
-        get=lambda _queue_id: queue,
-        items=lambda _queue_id, limit=500, offset=0: [  # noqa: ARG005
-            _stub_clip_queue_item("sess_000", session_id="sess")
-        ],
-    )
-    _set_runtime_mass(runtime, mass)
-
-    task = asyncio.create_task(
-        runtime._await_show_end(session, "player_a", last_index=5, has_clips=True)
-    )
-    await asyncio.sleep(0)
-    assert not task.done()
-
-    queue.state = PlaybackState.PLAYING
-    queue.current_index = 0
-    mass.emit_queue_updated("player_a")
-    await asyncio.sleep(0)
-    assert not task.done()
-
-    queue.current_index = 5
-    queue.state = PlaybackState.IDLE
-    mass.emit_queue_updated("player_a")
-
-    assert await asyncio.wait_for(task, timeout=1) == "source_exhausted"
-
-
 def test_passes_optional_guards_handles_non_numeric_guard_values() -> None:
     """Treat non-numeric guard values as disabled instead of raising ValueError."""
     runtime = DummyRuntime()
@@ -2051,168 +1358,3 @@ async def test_fetch_source_tracks_skips_tracks_with_no_resolvable_uri(caplog: A
     # the resolved media item travels on the normalized dict, unchanged
     assert [track["media_item"] for track in tracks] == [good_track_1, good_track_2]
     assert any("Track Two" in record.message for record in caplog.records)
-
-
-def test_apply_source_shuffle_returns_unchanged_when_disabled() -> None:
-    """Leave the source list untouched when the station does not request shuffling."""
-    runtime = DummyRuntime()
-    tracks = [{"index": 0, "uri": "a"}, {"index": 1, "uri": "b"}]
-    station = {"shuffle_source_tracks": False}
-
-    result = runtime._apply_source_shuffle(tracks, station)
-
-    assert result is tracks
-
-
-def test_apply_source_shuffle_reorders_and_records_source_index(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Shuffle every track into a new order while keeping all of them and their origin."""
-    # capture the real class before patching it away: runtime.random is the same shared
-    # stdlib module object, so the lambda below would otherwise re-look-up itself
-    original_random_cls = random.Random
-    monkeypatch.setattr(
-        "music_assistant.providers.ai_radio.runtime.random.Random",
-        lambda: original_random_cls(1234),
-    )
-    runtime = DummyRuntime()
-    tracks = [{"uri": f"track/{i}"} for i in range(5)]
-    station = {"shuffle_source_tracks": True}
-
-    result = runtime._apply_source_shuffle(tracks, station)
-
-    assert [track["index"] for track in result] == list(range(len(tracks)))
-    assert {track["uri"] for track in result} == {track["uri"] for track in tracks}
-    for track in result:
-        assert tracks[track["source_index"]]["uri"] == track["uri"]
-    # a seeded shuffle must actually reorder, not silently pass through in place
-    assert [track["source_index"] for track in result] != list(range(len(tracks)))
-
-
-def test_apply_track_duration_limit_keeps_prefix_of_given_order() -> None:
-    """Truncate to the playtime cap by walking the given order, no shuffling."""
-    runtime = DummyRuntime()
-    tracks = [
-        {"uri": "a", "duration": 120},
-        {"uri": "b", "duration": 120},
-        {"uri": "c", "duration": 120},
-        {"uri": "d", "duration": 120},
-    ]
-    station = {"max_duration_minutes": 3}
-
-    result = runtime._apply_track_duration_limit(tracks, station)
-
-    assert [track["uri"] for track in result] == ["a", "b"]
-    assert [track["index"] for track in result] == [0, 1]
-    assert [track["source_index"] for track in result] == [0, 1]
-
-
-def test_apply_track_duration_limit_zero_cap_is_noop() -> None:
-    """A cap of 0 disables truncation entirely."""
-    runtime = DummyRuntime()
-    tracks = [{"uri": "a", "duration": 120}, {"uri": "b", "duration": 120}]
-    station = {"max_duration_minutes": 0}
-
-    result = runtime._apply_track_duration_limit(tracks, station)
-
-    assert result is tracks
-
-
-async def test_run_show_disables_shuffle_before_load() -> None:
-    """Disable queue shuffle before the items are loaded, so sections keep their planned order."""
-    runtime = ShowRuntime()
-    call_order: list[str] = []
-    set_shuffle_calls: list[tuple[str, bool]] = []
-
-    async def _set_shuffle(queue_id: str, shuffle_enabled: bool) -> None:
-        set_shuffle_calls.append((queue_id, shuffle_enabled))
-        call_order.append("set_shuffle")
-
-    async def _load(_queue_id: str, **_kwargs: Any) -> None:
-        call_order.append("load")
-
-    _set_runtime_mass(runtime, _show_mass_stub(set_shuffle=_set_shuffle, load=_load))
-    session = SessionState(session_id="s1", station_id="st")
-
-    await runtime._run_show(session, _show_station())
-
-    assert set_shuffle_calls == [("living_room", False)]
-    assert call_order.index("set_shuffle") < call_order.index("load")
-
-
-async def test_run_show_stays_running_while_the_queue_plays_and_stop_cancels_it() -> None:
-    """The session stays 'running' for as long as the show plays; a stop cancels it mid-show."""
-    runtime = ShowRuntime()
-    queue = _stub_queue(state=PlaybackState.PLAYING, current_index=0)
-    unsubscribed = False
-
-    def _subscribe(
-        cb_func: Callable[[Any], None],  # noqa: ARG001
-        event_filter: Any = None,  # noqa: ARG001
-        id_filter: Any = None,  # noqa: ARG001
-    ) -> Callable[[], None]:
-        def _unsubscribe() -> None:
-            nonlocal unsubscribed
-            unsubscribed = True
-
-        return _unsubscribe
-
-    mass = _show_mass_stub(
-        get=lambda _queue_id: queue,
-        items=lambda _queue_id, limit=500, offset=0: [  # noqa: ARG005
-            _stub_clip_queue_item("sess_000", session_id="s1")
-        ],
-        subscribe=_subscribe,
-    )
-    _set_runtime_mass(runtime, mass)
-    session = SessionState(session_id="s1", station_id="st")
-    runtime._sessions[session.session_id] = session
-
-    task = asyncio.create_task(runtime._run_session(session.session_id, _show_station()))
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-
-    # the show is on air: the session must stay running, exactly like start_run's
-    # max-concurrent-runs and station-already-active guards require
-    assert session.status == "running"
-    assert not task.done()
-
-    # this is what stop_run does to end a run mid-show
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
-    assert session.status == "stopped"
-    assert unsubscribed
-
-
-async def test_run_show_binds_the_session_to_the_target_queue() -> None:
-    """Record the queue a show plays on so stopping the show can stop it."""
-    runtime = ShowRuntime()
-    _set_runtime_mass(runtime, _show_mass_stub())
-    session = SessionState(session_id="s1", station_id="st")
-
-    await runtime._run_show(session, _show_station())
-
-    assert session.queue_id == "living_room"
-
-
-async def test_run_session_reports_a_queue_stop_as_stopped() -> None:
-    """Report a run that ended because the queue was stopped as stopped, not completed."""
-
-    class QueueStoppedRuntime(AIRadioRuntimeMixin):
-        def __init__(self) -> None:
-            self.logger = logging.getLogger("tests.ai_radio.runtime.queue_stopped")
-            self._sessions: dict[str, SessionState] = {}
-
-        async def _run_show(self, session: SessionState, station: dict[str, Any]) -> dict[str, Any]:
-            return {"ended_reason": "queue_stopped"}
-
-    runtime = QueueStoppedRuntime()
-    session = SessionState(session_id="s1", station_id="st")
-    runtime._sessions[session.session_id] = session
-
-    await runtime._run_session(session.session_id, {"id": "st"})
-
-    assert session.status == "stopped"
-    assert session.ended_at is not None
