@@ -122,6 +122,7 @@ SELF_SERVICE_COMMANDS = [
     pytest.param(ProviderConfigMixin.invoke_provider_config_action, id="invoke_action"),
     pytest.param(ProviderConfigMixin.save_provider_config, id="save"),
     pytest.param(ProviderConfigMixin.set_provider_access, id="set_access"),
+    pytest.param(ProviderConfigMixin.get_share_candidates, id="share_candidates"),
     pytest.param(ProviderConfigMixin.remove_provider_config, id="remove"),
     pytest.param(ProviderConfigMixin._reload_provider, id="reload"),
     pytest.param(SetupFlowMixin.setup_provider, id="setup"),

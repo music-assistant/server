@@ -8,7 +8,7 @@ import logging
 from typing import TYPE_CHECKING, Any, cast, overload
 
 import shortuuid
-from music_assistant_models.auth import Scope, UserRole
+from music_assistant_models.auth import Scope, UserRole, UserSummary
 from music_assistant_models.config_entries import (
     ConfigActionResult,
     ConfigEntry,
@@ -405,6 +405,20 @@ class ProviderConfigMixin:
         # the music sources of (other) users change with this, so let every client refresh
         self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
         return await self.get_provider_config(instance_id)
+
+    @api_command("config/providers/share_candidates", required_scope=Scope.CONFIG_PROVIDERS_OWN)
+    async def get_share_candidates(self) -> list[UserSummary]:
+        """
+        Return the household members a music source can be shared with.
+
+        Every enabled member is listed, without its role or settings. Guests and the Home
+        Assistant system user are not members, so they are left out.
+        """
+        return [
+            UserSummary.from_user(user)
+            for user in await self.mass.webserver.auth.list_users()
+            if user.enabled and self._is_member(user)
+        ]
 
     def release_user_sources(self, user_id: str) -> None:
         """
@@ -882,12 +896,13 @@ class ProviderConfigMixin:
             then accepted.
         """
         user = await self._validate_access_user(user_id, on_record)
-        if user is None:
-            return
-        if user.role == UserRole.GUEST:
-            raise InvalidDataError("A guest can not own a music source")
-        if user.username == HOMEASSISTANT_SYSTEM_USER:
-            raise InvalidDataError("The Home Assistant system user can not own a music source")
+        if user is not None and not self._is_member(user):
+            raise InvalidDataError("Only a household member can own a music source")
+
+    @staticmethod
+    def _is_member(user: User) -> bool:
+        """Return whether the user is a household member: not a guest nor the HA system user."""
+        return user.role != UserRole.GUEST and user.username != HOMEASSISTANT_SYSTEM_USER
 
     async def _resolve_provider_config_entries(self, provider: Provider) -> list[ConfigEntry]:
         """Return the full config-entry set for a (loaded) provider instance."""
