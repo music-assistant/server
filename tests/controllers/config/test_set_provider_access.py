@@ -433,6 +433,58 @@ async def test_only_a_real_music_source_can_be_owned(
         )
 
 
+@pytest.mark.parametrize("sharing", [ProviderSharing.PRIVATE, ProviderSharing.SELECTED])
+async def test_an_ownerless_source_must_be_shared_with_someone(
+    access_mass: MusicAssistant, sharing: ProviderSharing
+) -> None:
+    """A source without an owner that nobody could use is refused."""
+    admin = await _create_user(access_mass, "admin", UserRole.ADMIN)
+    owner = await _create_user(access_mass, "owner")
+    set_music_source_access(
+        access_mass,
+        {MUSIC_INSTANCE: ProviderAccess(owner=owner.user_id, sharing=ProviderSharing.MEMBERS)},
+    )
+    set_current_user(admin)
+
+    with pytest.raises(InvalidDataError) as excinfo:
+        await access_mass.config.set_provider_access(
+            MUSIC_INSTANCE, sharing=sharing, shared_users=[]
+        )
+
+    assert excinfo.value.translation_key == "source_no_owner_must_be_shared"
+    assert _stored_access(access_mass, MUSIC_INSTANCE) == {
+        "owner": owner.user_id,
+        "sharing": "members",
+        "shared_users": [],
+    }
+
+
+async def test_an_ownerless_source_shared_with_someone_is_accepted(
+    access_mass: MusicAssistant,
+) -> None:
+    """A source without an owner is fine as long as someone could use it."""
+    admin = await _create_user(access_mass, "admin", UserRole.ADMIN)
+    member = await _create_user(access_mass, "member")
+    set_current_user(admin)
+
+    config = await access_mass.config.set_provider_access(
+        MUSIC_INSTANCE, sharing=ProviderSharing.SELECTED, shared_users=[member.user_id]
+    )
+    assert config.access == ProviderAccess(
+        sharing=ProviderSharing.SELECTED, shared_users=[member.user_id]
+    )
+
+    config = await access_mass.config.set_provider_access(
+        MUSIC_INSTANCE, sharing=ProviderSharing.MEMBERS
+    )
+    assert config.access == ProviderAccess(sharing=ProviderSharing.MEMBERS)
+
+    config = await access_mass.config.set_provider_access(
+        MUSIC_INSTANCE, sharing=ProviderSharing.EVERYONE
+    )
+    assert config.access == ProviderAccess(sharing=ProviderSharing.EVERYONE)
+
+
 async def test_shared_users_are_dropped_unless_the_source_is_shared_with_a_selection(
     access_mass: MusicAssistant,
 ) -> None:

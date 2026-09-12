@@ -322,6 +322,7 @@
   "common.errors.role_scope_not_allowed": "A custom role can not be granted this permission.",
   "common.errors.setup_failed": "Setup failed. Please check the configuration and try again.",
   "common.errors.setup_required": "Music Assistant is not set up yet.",
+  "common.errors.source_no_owner_must_be_shared": "A music source without an owner must be shared with someone",
   "common.errors.system_user_protected": "The Home Assistant system account can not be deleted, disabled, renamed or given another role or password.",
   "common.errors.unmount_failed": "The previous connection to the remote location could not be closed: {0}",
   "common.errors.unplayable_media": "This media item cannot be played.",
