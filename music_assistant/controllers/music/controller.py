@@ -1359,6 +1359,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     ) -> None:
         """Remove (library) item from the favorites."""
         ctrl = self.get_controller(media_type)
+        if media_type == MediaType.PLAYLIST:
+            # a personal playlist is only touched by someone who may see it
+            await self.playlists.get(str(library_item_id), "library", allow_update_metadata=False)
         await ctrl.set_favorite(
             library_item_id,
             False,

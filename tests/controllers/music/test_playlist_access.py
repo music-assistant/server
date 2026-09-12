@@ -307,6 +307,22 @@ async def test_search_results_are_cached_per_user(
     assert len(set(cache_keys)) == 3
 
 
+async def test_favorite_removal_hides_hidden_playlists(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """The shared favorite flag of a playlist is only changed by someone who may see it."""
+    added = await _add(playlists, _playlist("Favorite", PlaylistAccess(owner=OWNER.user_id)))
+    await playlists.set_favorite(added.item_id, True)
+    remove = music_mass_module.music.remove_item_from_favorites
+
+    with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
+        await remove(MediaType.PLAYLIST, added.item_id)
+    assert (await playlists.get_library_item(added.item_id)).favorite is True
+    with _as_user(OWNER):
+        await remove(MediaType.PLAYLIST, added.item_id)
+    assert (await playlists.get_library_item(added.item_id)).favorite is False
+
+
 async def test_sync_lookups_stay_unfiltered(playlists: PlaylistController) -> None:
     """The lookups the library sync uses find a hidden playlist, so it is never added twice."""
     added = await _add(playlists, _playlist("Synced", PlaylistAccess(owner=OWNER.user_id)))
