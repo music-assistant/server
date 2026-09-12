@@ -9,6 +9,7 @@ from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
@@ -113,6 +114,10 @@ async def auth_manager(mass_minimal: MusicAssistant) -> AuthenticationManager:
 
     :param mass_minimal: Minimal MusicAssistant instance.
     """
+    # deleting a user releases its playlists through the music controller, which the
+    # minimal server does not run
+    mass_minimal.music = MagicMock()
+    mass_minimal.music.playlists.release_user_playlists = AsyncMock()
     return mass_minimal.webserver.auth
 
 
@@ -732,6 +737,23 @@ async def test_delete_user_removes_dependent_rows(auth_manager: AuthenticationMa
 
     for table in tables:
         assert await auth_manager.database.get_rows(table, {"user_id": user.user_id}) == []
+
+
+async def test_delete_user_releases_its_playlists(auth_manager: AuthenticationManager) -> None:
+    """
+    Test that the playlists of a deleted user are released.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    admin = await auth_manager.create_user(username="playlistadmin", role=UserRole.ADMIN)
+    leaver = await auth_manager.create_user(username="playlistleaver", role=UserRole.USER)
+
+    set_current_user(admin)
+    await auth_manager.delete_user(leaver.user_id)
+
+    release = auth_manager.mass.music.playlists.release_user_playlists
+    assert isinstance(release, AsyncMock)
+    release.assert_awaited_once_with(leaver.user_id)
 
 
 async def test_delete_user_releases_its_music_sources(auth_manager: AuthenticationManager) -> None:

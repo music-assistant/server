@@ -216,6 +216,7 @@
 # ---
 # name: test_parse_playlist_snapshot[minimal]
   dict({
+    'access': None,
     'date_added': None,
     'external_ids': list([
     ]),
@@ -291,6 +292,7 @@
 # ---
 # name: test_parse_playlist_snapshot[other_user]
   dict({
+    'access': None,
     'date_added': None,
     'external_ids': list([
     ]),

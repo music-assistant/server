@@ -133,6 +133,7 @@ from music_assistant.helpers.datetime import (
 )
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.provider_access import (
+    access_allows,
     exact_provider,
     source_owner,
     visible_music_sources,
@@ -493,10 +494,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 if (prov := self.mass.get_provider(instance_id))
                 and (prov.instance_id in requested_providers or prov.domain in requested_providers)
             ]
-        # use cache to avoid repeated searches
+        # use cache to avoid repeated searches; the library results are narrowed to what
+        # the calling user may see, so the entry is kept per user (and role)
+        user = get_current_user()
         cache_key = (
             f"{search_query}-{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}-"
-            f"{int(include_library)}-{','.join(search_providers)}"
+            f"{int(include_library)}-{','.join(search_providers)}-"
+            f"{f'{user.user_id}:{user.role}' if user else ''}"
         )
         if cache := await self.mass.cache.get(
             key=cache_key,
@@ -1283,10 +1287,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     ) -> MediaItemType | None:
         """Get the library item for the given provider item, if present."""
         ctrl = self.get_controller(media_type)
-        return await ctrl.get_library_item_by_prov_id(
+        item = await ctrl.get_library_item_by_prov_id(
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
         )
+        if isinstance(item, Playlist) and not self.playlists.visible_to_caller(item):
+            return None
+        return item
 
     @api_command("music/favorites/add_item", required_scope=Scope.LIBRARY_WRITE)
     async def add_item_to_favorites(
@@ -1352,6 +1359,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     ) -> None:
         """Remove (library) item from the favorites."""
         ctrl = self.get_controller(media_type)
+        if media_type == MediaType.PLAYLIST:
+            # a personal playlist is only touched by someone who may see it
+            await self.playlists.get(str(library_item_id), "library", allow_update_metadata=False)
         await ctrl.set_favorite(
             library_item_id,
             False,
@@ -1378,8 +1388,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         Destructive! Will remove the item and all dependants.
         """
         ctrl = self.get_controller(media_type)
-        # remove from provider(s) library
         full_item = await ctrl.get_library_item(library_item_id)
+        # ctrl is chosen by media_type, so it matches full_item's runtime type
+        cast("MediaControllerBase[MediaItemType]", ctrl).check_removal_allowed(full_item)
+        # remove from provider(s) library
         for prov_mapping in full_item.provider_mappings:
             if not prov_mapping.in_library:
                 continue
@@ -1431,6 +1443,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 item.provider,
             )
         full_item = cast("MediaItemType", full_item)
+        if isinstance(full_item, Playlist):
+            # who a Music Assistant playlist serves is only set through its own commands
+            full_item.access = None
         if full_item.media_type in (MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT):
             # AudioSources and SoundEffects are live provider content (existence
             # depends on a loaded provider) and have no stable library identity,
@@ -2567,6 +2582,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param item: The already-resolved item to check.
         :param user: The user the playback is for; None for anonymous playback.
         """
+        if isinstance(item, Playlist) and item.access and not access_allows(item.access, user):
+            return False
         return self._item_reachable_via(item, visible_playback_sources(self.mass, user))
 
     def check_item_playable_for_user(
