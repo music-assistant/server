@@ -12,6 +12,7 @@ from music_assistant_models.errors import InvalidToken, SetupFailedError
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
 from music_assistant.providers.listenbrainz_scrobble import (
+    CONF_API_BASE_URL,
     CONF_USER_TOKEN,
     SUPPORTED_FEATURES,
     ListenBrainzEventHandler,
@@ -55,8 +56,10 @@ class _FakeSession:
         self._payload = payload or {}
         self._error = error
         self._json_error = json_error
+        self.requested_url: str | None = None
 
-    def get(self, *_args: object, **_kwargs: object) -> _FakeResponse:
+    def get(self, url: str, *_args: object, **_kwargs: object) -> _FakeResponse:
+        self.requested_url = url
         if self._error is not None:
             raise self._error
         return _FakeResponse(self._payload, self._json_error)
@@ -159,6 +162,28 @@ async def test_a_malformed_response_fails_setup() -> None:
 
     with pytest.raises(SetupFailedError):
         await provider.handle_async_init()
+
+
+async def test_an_unexpected_response_is_a_setup_error() -> None:
+    """A 200 response without a valid flag stays retryable instead of failing auth."""
+    provider = _provider({CONF_USER_TOKEN: "token"}, http_session=_FakeSession(payload={}))
+
+    with pytest.raises(SetupFailedError):
+        await provider.handle_async_init()
+
+
+async def test_a_trailing_slash_in_the_base_url_is_normalized() -> None:
+    """A configured base URL keeps a single slash before the validate-token path."""
+    session = _FakeSession(payload={"valid": True})
+    provider = _provider(
+        {CONF_USER_TOKEN: "token", CONF_API_BASE_URL: "https://lb.example.com/"},
+        http_session=session,
+    )
+
+    with patch("music_assistant.providers.listenbrainz_scrobble.ListenBrainz"):
+        await provider.handle_async_init()
+
+    assert session.requested_url == "https://lb.example.com/1/validate-token"
 
 
 async def test_the_hook_forwards_the_report_to_the_handler() -> None:

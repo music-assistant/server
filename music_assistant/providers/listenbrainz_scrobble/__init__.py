@@ -83,9 +83,10 @@ class ListenBrainzScrobbleProvider(PluginProvider):
         :param api_base_url: Base URL of the ListenBrainz API.
         :param token: The user token to validate.
         """
+        url = f"{api_base_url.rstrip('/')}/1/validate-token"
         try:
             async with self.mass.http_session.get(
-                f"{api_base_url}/1/validate-token",
+                url,
                 headers={"Authorization": f"Token {token}"},
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as response:
@@ -94,7 +95,11 @@ class ListenBrainzScrobbleProvider(PluginProvider):
         except (aiohttp.ClientError, TimeoutError, ValueError) as err:
             # ValueError covers a malformed JSON body from response.json()
             raise SetupFailedError(f"Unable to connect to ListenBrainz: {err}") from err
-        if not result.get("valid"):
+        # only an explicit valid=false proves the token is bad; any other shape is a
+        # response we can't trust, so keep setup retryable instead of failing auth
+        if not isinstance(result, dict) or "valid" not in result:
+            raise SetupFailedError("Unexpected response from ListenBrainz")
+        if not result["valid"]:
             raise InvalidToken("Invalid ListenBrainz user token")
 
 
