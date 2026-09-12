@@ -104,6 +104,7 @@ async def test_a_rejected_session_stops_scrobbling_and_asks_for_reauth(
     err = unload_with_error.call_args.args[0]
     assert isinstance(err, LoginFailed)
     assert err.translation_key == "session_invalid"
+    assert err.translation_owner == "provider.lastfm_scrobble"
     assert err.translation_args == ["Last.fm"]
     assert [r.levelno for r in caplog.records if r.levelno >= logging.WARNING] == [logging.WARNING]
 
