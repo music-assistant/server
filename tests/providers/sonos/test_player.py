@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -9,12 +10,12 @@ from aiohttp import ConnectionTimeoutError
 from aiosonos.api.models import MusicService
 from aiosonos.api.models import PlayBackState as SonosPlayBackState
 from aiosonos.exceptions import CannotConnect, FailedCommand
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import PlaybackState, RepeatMode
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT
 from music_assistant.mass import MusicAssistant
-from music_assistant.providers.sonos.const import SOURCE_SPOTIFY
+from music_assistant.providers.sonos.const import PLAYER_SOURCE_MAP, SOURCE_SPOTIFY
 from music_assistant.providers.sonos.player import SonosPlayer
 
 
@@ -295,8 +296,8 @@ async def test_a_coordinator_change_does_not_end_a_live_source() -> None:
     assert player._attr_active_source == SOURCE_SPOTIFY
 
 
-def _speaker_reporting_paused_spotify() -> tuple[SonosPlayer, MagicMock]:
-    """Create a connected player whose speaker reports the Spotify Connect state we captured."""
+def _connected_player() -> tuple[SonosPlayer, MagicMock, MagicMock]:
+    """Create a connected player with the attributes the state calculation reads."""
     mass = MagicMock()
     mass.closing = False
     player, client = _bind_player(mass)
@@ -305,9 +306,11 @@ def _speaker_reporting_paused_spotify() -> tuple[SonosPlayer, MagicMock]:
     player._attr_group_members = []
     player._attr_can_group_with = set()
     player._provider = MagicMock(instance_id="sonos")
-    client.player.is_coordinator = True
-    client.player.group_members = ["sonos_player"]
-    group = client.player.group
+    return player, mass, client
+
+
+def _report_paused_spotify(group: MagicMock) -> None:
+    """Let the given group report the paused Spotify Connect state we captured."""
     group.playback_state = SonosPlayBackState.PLAYBACK_STATE_PAUSED
     group.position = 42.0
     group.container_type = "spotify.connect"
@@ -316,6 +319,19 @@ def _speaker_reporting_paused_spotify() -> tuple[SonosPlayer, MagicMock]:
         "container": {"name": "Spotify", "service": {"name": "Spotify"}},
         "currentItem": {"id": "1", "track": {"name": "Shout"}},
     }
+    group.playback_actions.raw_data = {"canShuffle": True, "canRepeat": True, "canRepeatOne": True}
+    # a bare MagicMock attribute is truthy, so the play modes are spelled out
+    group.play_modes.shuffle = True
+    group.play_modes.repeat = False
+    group.play_modes.repeat_one = True
+
+
+def _speaker_reporting_paused_spotify() -> tuple[SonosPlayer, MagicMock]:
+    """Create a connected player whose speaker reports the Spotify Connect state we captured."""
+    player, mass, client = _connected_player()
+    client.player.is_coordinator = True
+    client.player.group_members = ["sonos_player"]
+    _report_paused_spotify(client.player.group)
     return player, mass
 
 
@@ -331,3 +347,131 @@ def test_a_paused_connect_session_is_handed_to_the_stale_source_check() -> None:
     # so the speaker only has to opt in and let the state calculation see it
     assert player._attr_external_pause_idle_timeout == EXTERNAL_PAUSE_IDLE_TIMEOUT
     player.update_state.assert_called_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_set_shuffle_is_forwarded_to_the_speaker() -> None:
+    """Test the shuffle command reaches the source the speaker runs itself."""
+    player, client = _bind_player(MagicMock())
+    client.player.group.set_play_modes = AsyncMock()
+
+    await player.set_shuffle(True)
+
+    client.player.group.set_play_modes.assert_awaited_once_with(shuffle=True)
+
+
+@pytest.mark.parametrize(
+    ("repeat_mode", "repeat", "repeat_one"),
+    [
+        (RepeatMode.OFF, False, False),
+        (RepeatMode.ALL, True, False),
+        (RepeatMode.ONE, False, True),
+    ],
+)
+@pytest.mark.asyncio
+async def test_set_repeat_is_forwarded_to_the_speaker(
+    repeat_mode: RepeatMode, repeat: bool, repeat_one: bool
+) -> None:
+    """Test each repeat mode reaches the speaker as the two flags Sonos knows."""
+    player, client = _bind_player(MagicMock())
+    client.player.group.set_play_modes = AsyncMock()
+
+    await player.set_repeat(repeat_mode)
+
+    client.player.group.set_play_modes.assert_awaited_once_with(
+        repeat=repeat, repeat_one=repeat_one
+    )
+
+
+def test_a_connect_session_reports_its_play_modes() -> None:
+    """Test the play modes of a source the speaker runs itself land on its source list entry."""
+    player, _ = _speaker_reporting_paused_spotify()
+
+    player.on_player_event(None)
+
+    source = next(x for x in player._attr_source_list if x.id == SOURCE_SPOTIFY)
+    assert source.can_shuffle is True
+    assert source.can_repeat is True
+    assert source.shuffle_enabled is True
+    # the template is shared with every other Sonos player, so it may not be touched
+    assert PLAYER_SOURCE_MAP[SOURCE_SPOTIFY].can_shuffle is False
+    assert PLAYER_SOURCE_MAP[SOURCE_SPOTIFY].shuffle_enabled is None
+
+
+def test_the_play_modes_of_a_source_that_stopped_are_dropped() -> None:
+    """Test a source that is no longer playing stops reporting its last play modes."""
+    player, _ = _speaker_reporting_paused_spotify()
+    player.on_player_event(None)
+    group = cast("MagicMock", player.client.player.group)
+    group.active_service = MusicService.MUSIC_ASSISTANT
+    group.container_type = None
+    del group.playback_metadata["container"]["service"]
+
+    player.on_player_event(None)
+
+    source = next(x for x in player._attr_source_list if x.id == SOURCE_SPOTIFY)
+    assert source is PLAYER_SOURCE_MAP[SOURCE_SPOTIFY]
+    assert source.can_shuffle is False
+    assert source.shuffle_enabled is None
+    assert source.repeat_mode is None
+
+
+@pytest.mark.parametrize(
+    ("repeat", "repeat_one", "repeat_mode"),
+    [
+        (False, False, RepeatMode.OFF),
+        (True, False, RepeatMode.ALL),
+        (True, True, RepeatMode.ONE),
+        (None, None, None),
+    ],
+)
+def test_a_connect_session_reports_its_repeat_mode(
+    repeat: bool | None, repeat_one: bool | None, repeat_mode: RepeatMode | None
+) -> None:
+    """Test the two repeat flags Sonos reports are mapped to the repeat mode they mean."""
+    player, _ = _speaker_reporting_paused_spotify()
+    group = cast("MagicMock", player.client.player.group)
+    group.play_modes.repeat = repeat
+    group.play_modes.repeat_one = repeat_one
+
+    player.on_player_event(None)
+
+    source = next(x for x in player._attr_source_list if x.id == SOURCE_SPOTIFY)
+    assert source.repeat_mode is repeat_mode
+
+
+def test_a_source_that_only_offers_repeat_one_does_not_advertise_repeat() -> None:
+    """Test repeat is only offered when the content can repeat all, the first step of the cycle."""
+    player, _ = _speaker_reporting_paused_spotify()
+    group = cast("MagicMock", player.client.player.group)
+    group.playback_actions.raw_data = {
+        "canShuffle": False,
+        "canRepeat": False,
+        "canRepeatOne": True,
+    }
+
+    player.on_player_event(None)
+
+    source = next(x for x in player._attr_source_list if x.id == SOURCE_SPOTIFY)
+    assert source.can_repeat is False
+    assert source.can_shuffle is False
+
+
+def test_a_group_child_reports_the_play_modes_of_its_coordinator() -> None:
+    """Test a player synced to another one reads the play modes of the group it plays in."""
+    player, mass, client = _connected_player()
+    client.player.is_coordinator = False
+    client.player.group.coordinator_id = "sonos_leader"
+    client.player.group.playback_actions.raw_data = {"canShuffle": False}
+    client.player.group.play_modes.shuffle = None
+    client.player.group.play_modes.repeat = None
+    client.player.group.play_modes.repeat_one = None
+    group_parent = MagicMock()
+    _report_paused_spotify(group_parent.client.player.group)
+    mass.players.get_player.return_value = group_parent
+
+    player.on_player_event(None)
+
+    source = next(x for x in player._attr_source_list if x.id == SOURCE_SPOTIFY)
+    assert source.can_shuffle is True
+    assert source.shuffle_enabled is True
