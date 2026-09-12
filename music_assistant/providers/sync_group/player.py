@@ -145,20 +145,15 @@ class SyncGroupPlayer(Player):
             base_features.add(PlayerFeature.POWER)
         if self.is_dynamic:
             base_features.add(PlayerFeature.SET_MEMBERS)
-        if self.sync_leader:
-            # add features supported by the sync leader
-            for feature in EXTRA_FEATURES_FROM_MEMBERS:
-                if feature in self.sync_leader.state.supported_features:
-                    base_features.add(feature)
-        else:
-            # derive features from all (configured) group members
-            # so that features like volume control are always advertised
-            for member_id in self._attr_group_members:
-                member_player = self.mass.players.get_player(member_id)
-                if member_player and member_player.state.available:
-                    for feature in EXTRA_FEATURES_FROM_MEMBERS:
-                        if feature in member_player.state.supported_features:
-                            base_features.add(feature)
+        # Derive member features from all current group members. Group commands
+        # are fanned out to every capable member, so an active sync leader that
+        # lacks a control must not hide that control from the group.
+        for member_id in self._attr_group_members:
+            member_player = self.mass.players.get_player(member_id)
+            if member_player and member_player.state.available:
+                for feature in EXTRA_FEATURES_FROM_MEMBERS:
+                    if feature in member_player.state.supported_features:
+                        base_features.add(feature)
         return base_features
 
     @property

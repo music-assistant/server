@@ -3264,14 +3264,17 @@ class Player(ABC):
             base_features.add(PlayerFeature.POWER)
         else:
             base_features.discard(PlayerFeature.POWER)
-        if self.volume_control != PLAYER_CONTROL_NONE:
-            base_features.add(PlayerFeature.VOLUME_SET)
-        else:
-            base_features.discard(PlayerFeature.VOLUME_SET)
-        if self.mute_control != PLAYER_CONTROL_NONE:
-            base_features.add(PlayerFeature.VOLUME_MUTE)
-        else:
-            base_features.discard(PlayerFeature.VOLUME_MUTE)
+        # Group providers derive volume and mute capabilities from their members;
+        # the group itself intentionally has no native control to resolve here.
+        if self.type != PlayerType.GROUP:
+            if self.volume_control != PLAYER_CONTROL_NONE:
+                base_features.add(PlayerFeature.VOLUME_SET)
+            else:
+                base_features.discard(PlayerFeature.VOLUME_SET)
+            if self.mute_control != PLAYER_CONTROL_NONE:
+                base_features.add(PlayerFeature.VOLUME_MUTE)
+            else:
+                base_features.discard(PlayerFeature.VOLUME_MUTE)
         if sum(1 for s in self.__final_source_list if not s.passive) >= 2:
             base_features.add(PlayerFeature.SELECT_SOURCE)
         if self.grouping_locked:
