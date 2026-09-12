@@ -16,17 +16,21 @@ from music_assistant.models.player_provider import PlayerProvider
 from .constants import (
     AMPLIPI_API_ERRORS,
     CONF_HOST,
+    CONF_MDNS_NAME,
     EXCLUDED_SELECTABLE_STREAM_TYPES,
     MA_STREAM_NAME,
     MA_STREAM_TYPE,
     POLL_INTERVAL,
 )
+from .mdns import controller_id, controller_matches_host
 from .player import AmpliPiZonePlayer
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
     from pyamplipi.models import Status
     from pyamplipi.models import Stream as AmpliPiStream
+    from zeroconf import ServiceStateChange
+    from zeroconf.asyncio import AsyncServiceInfo
 
 
 def _ma_stream_source_id(stream: AmpliPiStream) -> int | None:
@@ -123,6 +127,17 @@ class AmpliPiPlayerProvider(PlayerProvider):
         # NOTE: we deliberately do not call api.close(): the AmpliPi client was created with
         # Music Assistant's shared http_session, and pyamplipi's close() would close that
         # session, tearing down networking for the rest of Music Assistant.
+
+    async def on_mdns_service_state_change(
+        self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
+    ) -> None:
+        """Handle an AmpliPi controller announcing itself on mDNS."""
+        if info is None or self.get_setup_value(CONF_MDNS_NAME) is not None:
+            return
+        host = cast("str", self.get_setup_value(CONF_HOST))
+        if controller_matches_host(info, host):
+            self.logger.debug("Recording %s as the controller behind %s", name, host)
+            self._update_setup_data(CONF_MDNS_NAME, controller_id(info))
 
     async def ensure_stream(self, source_id: int, url: str) -> int:
         """
