@@ -40,7 +40,8 @@
     }
   },
   "errors": {
-    "auth_failed": "Authorization was not completed. Please try again."
+    "auth_failed": "Authorization was not completed. Please try again.",
+    "session_invalid": "Your {0} session is no longer valid. Please re-authenticate to resume scrobbling."
   },
   "manifest": {
     "description": "Scrobbles your listening history to Last.fm (and others with a compatible API like Libre.fm), building rich listening stats and recommendations."
