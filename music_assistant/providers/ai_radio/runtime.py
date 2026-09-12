@@ -64,6 +64,7 @@ from .constants import (
 )
 from .helpers import (
     build_slots,
+    check_player_access,
     coerce_float,
     coerce_int,
     format_ai_radio_timestamp,
@@ -221,6 +222,9 @@ class AIRadioRuntimeMixin:
         active_queue = self.mass.player_queues.get_active_queue(player_id)
         if active_queue is not None:
             queue_id = str(active_queue.queue_id)
+        # the run keeps the identity of the user who started it, and a grouped player hands
+        # the show to a queue that user must be allowed to use as well
+        check_player_access(queue_id)
         # a queue runs one host at a time; the show is now that host, so any sticky
         # DJ assignment on the queue is cleared before the show takes it over
         await self.set_queue_dj(queue_id, None)

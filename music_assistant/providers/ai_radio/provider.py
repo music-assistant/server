@@ -12,12 +12,10 @@ from uuid import uuid4
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import (
-    InsufficientPermissions,
     InvalidDataError,
     SetupFailedError,
 )
 
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.plugin_engines import (
     get_tts_engines,
     select_ai_engine,
@@ -36,7 +34,7 @@ from .constants import (
     SUPPORTED_FEATURES,
     TRANSLATION_OWNER,
 )
-from .helpers import utc_now_iso
+from .helpers import check_player_access, has_player_access, utc_now_iso
 from .hosts import AIRadioHostsMixin
 from .models import DJQueueState, SessionState
 from .queue_dj import AIRadioQueueDJMixin
@@ -400,10 +398,10 @@ class AIRadioProvider(
         player_id = str(station.get("default_player_id") or "").strip()
         if not player_id:
             raise InvalidDataError("AI Radio requires a target player")
+        check_player_access(player_id)
         player = self.mass.players.get_player(player_id)
         if player is None:
             raise InvalidDataError(f"Unknown target player: {player_id}")
-        self._check_player_access(player_id)
         if player.available is False:
             raise InvalidDataError(f"Target player is unavailable: {player_id}")
         if player.enabled is False:
@@ -436,6 +434,7 @@ class AIRadioProvider(
             session = SessionState(
                 session_id=session_id,
                 station_id=station_id,
+                player_id=player_id,
             )
             self._sessions[session_id] = session
             self._prune_finished_sessions()
@@ -457,9 +456,7 @@ class AIRadioProvider(
     ) -> dict[str, Any]:
         """Stop an active run."""
         selected = self._resolve_session_for_stop(session_id=session_id, station_id=station_id)
-        if selected.queue_id:
-            # a run has a queue once it plays, and stopping the run stops that queue
-            self._check_player_access(selected.queue_id)
+        check_player_access(selected.player_id)
 
         # cancel first so the run cannot queue another batch after playback stopped
         if selected.task and not selected.task.done():
@@ -475,12 +472,17 @@ class AIRadioProvider(
         return selected.as_dict()
 
     async def get_status(self, session_id: str | None = None) -> dict[str, Any]:
-        """Return run status information."""
+        """Return the status of the runs on the players the calling user may use."""
+        visible = {
+            key: session
+            for key, session in self._sessions.items()
+            if has_player_access(session.player_id)
+        }
         if session_id:
-            if session_id not in self._sessions:
+            if session_id not in visible:
                 raise KeyError(f"Unknown session id: {session_id}")
-            return {"sessions": [self._sessions[session_id].as_dict()]}
-        sessions = sorted(self._sessions.values(), key=lambda item: item.created_at, reverse=True)
+            return {"sessions": [visible[session_id].as_dict()]}
+        sessions = sorted(visible.values(), key=lambda item: item.created_at, reverse=True)
         return {"sessions": [session.as_dict() for session in sessions]}
 
     async def _wait_for_engines(self, timeout: float | None = None) -> None:
@@ -599,11 +601,3 @@ class AIRadioProvider(
             raise KeyError("No active AI Radio run found")
 
         return max(running, key=lambda item: item.created_at)
-
-    @staticmethod
-    def _check_player_access(player_id: str) -> None:
-        """Raise when the calling user is restricted to other players than the given one."""
-        user = get_current_user()
-        if user and user.player_filter and player_id not in user.player_filter:
-            msg = f"{user.username} does not have access to player {player_id}"
-            raise InsufficientPermissions(msg)

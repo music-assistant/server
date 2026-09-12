@@ -12,7 +12,11 @@ from typing import Any, cast
 
 import pytest
 from music_assistant_models.enums import EventType, MediaType
-from music_assistant_models.errors import InvalidDataError, MusicAssistantError
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    InvalidDataError,
+    MusicAssistantError,
+)
 
 from music_assistant.providers.ai_radio.constants import (
     ATTR_GAP_NEXT_ID,
@@ -360,6 +364,32 @@ async def test_status_returns_mapping(tmp_path: Path) -> None:
     dummy = DummyQueueDJ(tmp_path)
     await dummy.set_queue_dj("queue-1", "rick")
     assert await dummy.get_queue_dj_status() == {"queue-1": "rick"}
+
+
+@pytest.mark.usefixtures("kitchen_only_user")
+async def test_set_queue_dj_refuses_a_queue_the_user_has_no_access_to(tmp_path: Path) -> None:
+    """A member restricted to some players can not arm or clear the DJ of another queue."""
+    dummy = DummyQueueDJ(tmp_path)
+    dummy._arm_dj_state("living_room", "rick")
+
+    with pytest.raises(InsufficientPermissions, match="living_room"):
+        await dummy.set_queue_dj("living_room", None)
+    with pytest.raises(InsufficientPermissions, match="garage"):
+        await dummy.set_queue_dj("garage", "rick")
+
+    assert set(dummy._dj_queues) == {"living_room"}
+    assert not dummy._dj_file.exists()
+
+
+@pytest.mark.usefixtures("kitchen_only_user")
+async def test_status_only_shows_the_queues_the_user_has_access_to(tmp_path: Path) -> None:
+    """A member restricted to some players does not see the DJs of the other queues."""
+    dummy = DummyQueueDJ(tmp_path)
+    dummy._arm_dj_state("living_room", "rick")
+
+    assert await dummy.set_queue_dj("kitchen", "rick") == {"kitchen": "rick"}
+    assert await dummy.get_queue_dj_status() == {"kitchen": "rick"}
+    assert set(dummy._dj_queues) == {"kitchen", "living_room"}
 
 
 async def test_replan_inserts_clip_between_upcoming_tracks(tmp_path: Path) -> None:
