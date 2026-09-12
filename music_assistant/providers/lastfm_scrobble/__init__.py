@@ -4,13 +4,13 @@ import asyncio
 import enum
 import logging
 import time
-from collections.abc import Mapping
-from typing import TYPE_CHECKING, ClassVar, Final, cast
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING, ClassVar, Final, ParamSpec, cast
 
 import pylast
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.errors import LoginFailed, SetupFailedError
 
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
@@ -40,6 +40,14 @@ CONF_API_SECRET: Final[str] = "_api_secret"
 CONF_SESSION_KEY: Final[str] = "_api_session_key"
 CONF_USERNAME: Final[str] = "_username"
 CONF_PROVIDER: Final[str] = "_provider"
+
+_P = ParamSpec("_P")
+
+# Last.fm error codes meaning the stored session is no longer accepted; pylast reports
+# them as strings
+_SESSION_REJECTED_CODES: Final[frozenset[str]] = frozenset(
+    {str(pylast.STATUS_AUTH_FAILED), str(pylast.STATUS_INVALID_SK)}
+)
 
 
 class _NetworkType(enum.Enum):
@@ -150,8 +158,15 @@ class LastFMScrobbleProvider(PluginProvider):
 
     async def on_media_item_played(self, report: MediaItemPlaybackProgressReport) -> None:
         """Forward a playback progress report to Last.fm once the account is authenticated."""
-        if self._handler is not None:
+        if self._handler is None:
+            return
+        try:
             await self._handler.on_media_item_played(report)
+        except LoginFailed as err:
+            # stop submitting right away: the unload below only runs after a short delay
+            self._handler = None
+            self.logger.warning("%s, re-authenticate this plugin to resume scrobbling", err)
+            self.unload_with_error(err)
 
     def _get_network_config(self) -> dict[str, ConfigValueType]:
         """
@@ -189,7 +204,7 @@ class LastFMEventHandler(ScrobblerHelper):
         """Send a now-playing update to Last.fm."""
         # the lastfm client is not async friendly,
         # so we need to run it in a executor thread
-        await asyncio.to_thread(
+        await self._submit(
             self._network.update_now_playing,
             report.artist,
             self.get_name(report),
@@ -200,11 +215,11 @@ class LastFMEventHandler(ScrobblerHelper):
 
     async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
         """Scrobble a track to Last.fm."""
-        # the listenbrainz client is not async friendly,
+        # the lastfm client is not async friendly,
         # so we need to run it in a executor thread
         # NOTE: album artist and track number are not available without an extra API call
         # so they won't be scrobbled
-        await asyncio.to_thread(
+        await self._submit(
             self._network.scrobble,
             report.artist or "unknown artist",
             self.get_name(report),
@@ -213,6 +228,27 @@ class LastFMEventHandler(ScrobblerHelper):
             duration=report.duration,
             mbid=report.mbid,
         )
+
+    async def _submit(
+        self, method: Callable[_P, object], *args: _P.args, **kwargs: _P.kwargs
+    ) -> None:
+        """
+        Run a blocking pylast network call in a worker thread.
+
+        :param method: The pylast network method to call with the given arguments.
+        :raises LoginFailed: If Last.fm no longer accepts the stored session.
+        """
+        try:
+            await asyncio.to_thread(method, *args, **kwargs)
+        except pylast.WSError as err:
+            if str(err.status) not in _SESSION_REJECTED_CODES:
+                raise
+            raise LoginFailed(
+                f"{self._network.name} rejected the stored session ({err})",
+                translation_key="session_invalid",
+                translation_args=[self._network.name],
+                translation_owner="provider.lastfm_scrobble",
+            ) from err
 
 
 def get_network(config: dict[str, ConfigValueType]) -> pylast._Network:
