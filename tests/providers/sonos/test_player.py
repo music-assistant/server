@@ -531,6 +531,7 @@ def test_a_404_from_another_service_is_logged_as_a_warning(
     with caplog.at_level(logging.DEBUG, logger="test.sonos.player"):
         player._on_playback_error(event)
 
+    assert len([record for record in caplog.records if record.levelno >= logging.WARNING]) == 1
     assert "could not play Long Run 11 and reported ERROR_PLAYBACK_FAILED" in caplog.text
 
 
