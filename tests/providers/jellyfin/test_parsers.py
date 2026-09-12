@@ -13,6 +13,7 @@ from aiojellyfin.session import SessionConfiguration
 from mashumaro.codecs.json import JSONDecoder
 from music_assistant_models.enums import ContentType
 
+from music_assistant.mass import MusicAssistant
 from music_assistant.providers.jellyfin.const import (
     ITEM_KEY_CONTAINER,
     ITEM_KEY_MEDIA_CHANNELS,
@@ -84,12 +85,12 @@ async def test_parse_albums(
 
 @pytest.mark.parametrize("example", TRACK_FIXTURES, ids=lambda val: str(val.stem))
 async def test_parse_tracks(
-    example: pathlib.Path, connection: Connection, snapshot: SnapshotAssertion
+    mass: MusicAssistant, example: pathlib.Path, connection: Connection, snapshot: SnapshotAssertion
 ) -> None:
     """Test we can parse tracks."""
     async with aiofiles.open(example, encoding="utf-8") as fp:
         raw_data = ARTIST_DECODER.decode(await fp.read())
-    parsed = parse_track(_LOGGER, "xx-instance-id-xx", connection, raw_data).to_dict()
+    parsed = parse_track(mass, _LOGGER, "xx-instance-id-xx", connection, raw_data).to_dict()
     # sort external Ids to ensure they are always in the same order for snapshot testing
     parsed["external_ids"]
     assert snapshot == parsed
