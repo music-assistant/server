@@ -63,8 +63,6 @@ async def run_setup(session: SetupSession) -> None:
         if controller is not None and controller_id(controller) in claimed:
             errors = {CONF_HOST: "already_configured"}
             continue
-        # tie the instance to the controller's mDNS identity (when the host could be
-        # matched to one), so a later setup run can spot it as already configured
         if controller is not None:
             setup_data[CONF_MDNS_NAME] = controller_id(controller)
         else:
@@ -78,9 +76,6 @@ async def run_setup(session: SetupSession) -> None:
 
 async def _discover_controllers(session: SetupSession) -> list[AsyncServiceInfo]:
     """Return the AmpliPi controllers on the network, waiting briefly for a first answer."""
-    # the instance name carries the controller's MAC, so any instance of the service type
-    # is accepted rather than one fixed name; the wait is only for the first record to show
-    # up, after which every cached one is enumerated
     if await session.mass.discovery.async_find_mdns_service(MDNS_TYPE, timeout=_DISCOVERY_TIMEOUT):
         return await discovered_controllers(session.mass)
     LOGGER.debug("No %s service found on mDNS", MDNS_TYPE)

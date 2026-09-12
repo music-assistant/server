@@ -134,8 +134,6 @@ class AmpliPiPlayerProvider(PlayerProvider):
         """Handle an AmpliPi controller announcing itself on mDNS."""
         if info is None or self.get_setup_value(CONF_MDNS_NAME) is not None:
             return
-        # instances configured before the controller's mDNS name was recorded fill it in
-        # here, so the setup flow can spot a duplicate controller without loading them
         host = cast("str", self.get_setup_value(CONF_HOST))
         if controller_matches_host(info, host):
             self.logger.debug("Recording %s as the controller behind %s", name, host)

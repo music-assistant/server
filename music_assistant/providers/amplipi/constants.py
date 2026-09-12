@@ -15,9 +15,6 @@ AMPLIPI_API_ERRORS = (AmpliPiError, aiohttp.ClientError, TimeoutError, Validatio
 
 
 CONF_HOST = "host"
-# setup_data key holding the mDNS name of the controller an instance is set up for. It
-# carries the controller's MAC, so it identifies the unit even when the host is entered
-# differently (hostname vs. address) and lets the setup flow refuse a duplicate.
 CONF_MDNS_NAME = "mdns_name"
 
 # AmpliPi advertises under its own service type, as an instance named "amplipi-<mac>"

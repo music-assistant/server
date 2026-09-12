@@ -14,8 +14,6 @@ from .constants import CONF_MDNS_NAME, DOMAIN, MDNS_TYPE
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
-# per-record resolve budget when enumerating the cached controllers; the records are
-# already in the zeroconf cache, so a live controller answers well within this
 _RESOLVE_TIMEOUT_MS = 1000
 
 
