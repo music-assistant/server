@@ -57,9 +57,20 @@ class _FakeSession:
         self._error = error
         self._json_error = json_error
         self.requested_url: str | None = None
+        self.requested_headers: dict[str, str] | None = None
+        self.requested_timeout: object = None
 
-    def get(self, url: str, *_args: object, **_kwargs: object) -> _FakeResponse:
+    def get(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        timeout: object = None,
+        **_kwargs: object,
+    ) -> _FakeResponse:
         self.requested_url = url
+        self.requested_headers = headers
+        self.requested_timeout = timeout
         if self._error is not None:
             raise self._error
         return _FakeResponse(self._payload, self._json_error)
@@ -120,15 +131,17 @@ async def test_setup_declares_the_scrobble_feature() -> None:
 
 async def test_the_handler_is_built_from_a_valid_token() -> None:
     """A valid stored token gives the provider a handler that reports to ListenBrainz."""
-    provider = _provider(
-        {CONF_USER_TOKEN: "token"}, http_session=_FakeSession(payload={"valid": True})
-    )
+    session = _FakeSession(payload={"valid": True})
+    provider = _provider({CONF_USER_TOKEN: "token"}, http_session=session)
 
     with patch("music_assistant.providers.listenbrainz_scrobble.ListenBrainz") as client_cls:
         await provider.handle_async_init()
     await provider.loaded_in_mass()
 
-    # the token is checked over http, so the client must not repeat the blocking check
+    # the check is authenticated and bounded by a finite timeout, and the client must
+    # not repeat the blocking check
+    assert session.requested_headers == {"Authorization": "Token token"}
+    assert isinstance(session.requested_timeout, aiohttp.ClientTimeout)
     client_cls.return_value.set_auth_token.assert_called_once_with("token", check_validity=False)
     assert isinstance(provider._handler, ListenBrainzEventHandler)
 

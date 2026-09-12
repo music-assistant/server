@@ -95,11 +95,12 @@ class ListenBrainzScrobbleProvider(PluginProvider):
         except (aiohttp.ClientError, TimeoutError, ValueError) as err:
             # ValueError covers a malformed JSON body from response.json()
             raise SetupFailedError(f"Unable to connect to ListenBrainz: {err}") from err
-        # only an explicit valid=false proves the token is bad; any other shape is a
-        # response we can't trust, so keep setup retryable instead of failing auth
-        if not isinstance(result, dict) or "valid" not in result:
+        # only an explicit boolean valid=false proves the token is bad; any other
+        # shape is a response we can't trust, so keep setup retryable
+        valid = result.get("valid") if isinstance(result, dict) else None
+        if not isinstance(valid, bool):
             raise SetupFailedError("Unexpected response from ListenBrainz")
-        if not result["valid"]:
+        if not valid:
             raise InvalidToken("Invalid ListenBrainz user token")
 
 
