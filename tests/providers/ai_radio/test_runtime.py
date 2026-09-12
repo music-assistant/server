@@ -23,7 +23,11 @@ from music_assistant_models.enums import (
     ProviderFeature,
     ProviderType,
 )
-from music_assistant_models.errors import InsufficientPermissions, MusicAssistantError
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 from music_assistant_models.event import MassEvent
 from music_assistant_models.media_items import ProviderMapping, Track
 
@@ -2061,6 +2065,9 @@ async def test_fetch_source_tracks_skips_tracks_with_no_resolvable_uri(caplog: A
     class DummyMusic:
         playlists = DummyPlaylistsController([good_track_1, unresolvable_track, good_track_2])
 
+        def check_item_playable_for_user(self, item: Any, user: Any) -> None:
+            """Let every source through."""
+
     class DummyMass:
         music = DummyMusic()
 
@@ -2077,6 +2084,45 @@ async def test_fetch_source_tracks_skips_tracks_with_no_resolvable_uri(caplog: A
     # the resolved media item travels on the normalized dict, unchanged
     assert [track["media_item"] for track in tracks] == [good_track_1, good_track_2]
     assert any("Track Two" in record.message for record in caplog.records)
+
+
+@pytest.mark.usefixtures("kitchen_only_user")
+async def test_fetch_source_tracks_refuses_a_source_its_user_may_not_play() -> None:
+    """A run never reads the tracks of a source playlist its user has no music source for."""
+    checked: list[str] = []
+    read: list[str] = []
+
+    class DummyPlaylist:
+        name = "Someone Else's Playlist"
+
+    class DummyPlaylistsController:
+        async def get(self, playlist_id: str, provider: str) -> Any:
+            return DummyPlaylist()
+
+        async def tracks(self, playlist_id: str, provider: str) -> Any:
+            read.append(playlist_id)
+            yield None
+
+    class DummyMusic:
+        playlists = DummyPlaylistsController()
+
+        def check_item_playable_for_user(self, item: Any, user: Any) -> None:
+            """Refuse every source, as for a music source the user may not use."""
+            checked.append(user.username)
+            raise MediaNotFoundError("not available on any music source of this user")
+
+    class DummyMass:
+        music = DummyMusic()
+
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, DummyMass())
+    station = {"source_playlist_id": "playlist-1", "source_playlist_provider": "spotify--theirs"}
+
+    with pytest.raises(MediaNotFoundError):
+        await runtime._fetch_source_tracks(station)
+
+    assert checked == ["kid"]
+    assert read == []
 
 
 def test_apply_source_shuffle_returns_unchanged_when_disabled() -> None:

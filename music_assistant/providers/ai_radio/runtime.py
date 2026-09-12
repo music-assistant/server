@@ -30,6 +30,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.controllers.player_queues.helpers import build_queue_item
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.datetime import now, utc
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.plugin_engines import resolve_ai_engine, resolve_tts_engine
@@ -428,6 +429,8 @@ class AIRadioRuntimeMixin:
             raise MusicAssistantError("Station is missing source_playlist_id")
 
         playlist = await self.mass.music.playlists.get(playlist_id, provider)
+        # the run plays as the user who started it, so its source must be one they may play
+        self.mass.music.check_item_playable_for_user(playlist, get_current_user())
         playlist_name = playlist.name
         tracks = [track async for track in self.mass.music.playlists.tracks(playlist_id, provider)]
         normalized: list[dict[str, Any]] = []

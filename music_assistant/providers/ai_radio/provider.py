@@ -456,7 +456,7 @@ class AIRadioProvider(
     ) -> dict[str, Any]:
         """Stop an active run."""
         selected = self._resolve_session_for_stop(session_id=session_id, station_id=station_id)
-        check_player_access(selected.player_id)
+        check_player_access(selected.player_id, selected.queue_id)
 
         # cancel first so the run cannot queue another batch after playback stopped
         if selected.task and not selected.task.done():
@@ -476,7 +476,7 @@ class AIRadioProvider(
         visible = {
             key: session
             for key, session in self._sessions.items()
-            if has_player_access(session.player_id)
+            if has_player_access(session.player_id, session.queue_id)
         }
         if session_id:
             if session_id not in visible:

@@ -1032,16 +1032,26 @@ async def test_start_run_lets_a_member_play_on_a_player_it_has_access_to() -> No
 
 
 @pytest.mark.usefixtures("kitchen_only_user")
-async def test_stop_run_refuses_a_run_on_a_player_the_user_has_no_access_to() -> None:
-    """A member restricted to some players can not stop a station on another one, even starting."""
+@pytest.mark.parametrize(
+    ("player_id", "queue_id"),
+    [("living_room", None), ("kitchen", "living_room")],
+    ids=["starting", "grouped"],
+)
+async def test_stop_run_refuses_a_run_on_a_player_the_user_has_no_access_to(
+    player_id: str, queue_id: str | None
+) -> None:
+    """A member restricted to some players can not stop a run that plays or will play elsewhere."""
     provider = _make_provider()
     stopped: list[str] = []
     provider.mass = cast(
         "Any", SimpleNamespace(player_queues=SimpleNamespace(stop=_recording_stop(stopped)))
     )
-    # a starting run has not resolved its queue yet
     provider._sessions["s_run"] = SessionState(
-        session_id="s_run", station_id="st", player_id="living_room", status="running"
+        session_id="s_run",
+        station_id="st",
+        player_id=player_id,
+        status="running",
+        queue_id=queue_id,
     )
 
     with pytest.raises(InsufficientPermissions, match="living_room"):
@@ -1087,9 +1097,13 @@ async def test_stop_run_lets_a_member_stop_a_run_on_a_player_it_has_access_to() 
 async def test_status_only_shows_the_runs_on_players_the_user_has_access_to() -> None:
     """A member restricted to some players does not see the runs on the other ones."""
     provider = _make_provider()
-    for session_id, player_id in (("s_kitchen", "kitchen"), ("s_living", "living_room")):
+    for session_id, player_id, queue_id in (
+        ("s_kitchen", "kitchen", "kitchen"),
+        ("s_living", "living_room", None),
+        ("s_group", "kitchen", "living_room"),
+    ):
         provider._sessions[session_id] = SessionState(
-            session_id=session_id, station_id="st", player_id=player_id
+            session_id=session_id, station_id="st", player_id=player_id, queue_id=queue_id
         )
 
     status = await provider.get_status()
@@ -1097,5 +1111,6 @@ async def test_status_only_shows_the_runs_on_players_the_user_has_access_to() ->
 
     assert [session["session_id"] for session in status["sessions"]] == ["s_kitchen"]
     assert [session["session_id"] for session in single["sessions"]] == ["s_kitchen"]
-    with pytest.raises(KeyError):
-        await provider.get_status(session_id="s_living")
+    for hidden in ("s_living", "s_group"):
+        with pytest.raises(KeyError):
+            await provider.get_status(session_id=hidden)

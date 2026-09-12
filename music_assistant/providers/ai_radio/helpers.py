@@ -160,21 +160,24 @@ def coerce_int(value: Any, default: int) -> int:
         return default
 
 
-def has_player_access(player_id: str) -> bool:
+def has_player_access(*player_ids: str | None) -> bool:
     """
-    Return whether the calling user may use the given player or queue.
+    Return whether the calling user may use every given player or queue.
 
-    :param player_id: The player or queue to check.
+    :param player_ids: The players or queues to check, None entries are skipped.
     """
     user = get_current_user()
-    return not (user and user.player_filter and player_id not in user.player_filter)
+    if not user or not user.player_filter:
+        return True
+    return all(player_id in user.player_filter for player_id in player_ids if player_id is not None)
 
 
-def check_player_access(player_id: str) -> None:
+def check_player_access(*player_ids: str | None) -> None:
     """
-    Raise when the calling user may not use the given player or queue.
+    Raise when the calling user may not use one of the given players or queues.
 
-    :param player_id: The player or queue to check.
+    :param player_ids: The players or queues to check, None entries are skipped.
     """
-    if not has_player_access(player_id):
-        raise InsufficientPermissions(f"No access to player {player_id}")
+    for player_id in player_ids:
+        if player_id is not None and not has_player_access(player_id):
+            raise InsufficientPermissions(f"No access to player {player_id}")
