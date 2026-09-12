@@ -27,7 +27,6 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from music_assistant.helpers.api import APICommandHandler
-from tests.common import SELF_SERVICE_ROLE
 
 
 async def _noop_command() -> None:
@@ -170,10 +169,12 @@ async def test_admin_scoped_command_rejects_non_admin(role: UserRole) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("command", SELF_SERVICE_COMMANDS)
-@pytest.mark.parametrize("role", [UserRole.USER, UserRole.GUEST])
-async def test_self_service_command_rejects_a_member(role: UserRole, command: Any) -> None:
+@pytest.mark.parametrize("role", [UserRole.GUEST, UserRole.SERVICE])
+async def test_self_service_command_rejects_a_guest_and_a_service_account(
+    role: UserRole, command: Any
+) -> None:
     """
-    Adding and managing your own music sources needs a scope no builtin role holds yet.
+    Adding and managing your own music sources is off limits for a guest and a service account.
 
     :param role: The role of the calling user.
     :param command: The command handler function to dispatch.
@@ -189,11 +190,10 @@ async def test_self_service_command_rejects_a_member(role: UserRole, command: An
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("self_service_role")
-@pytest.mark.parametrize("role", [UserRole.ADMIN, SELF_SERVICE_ROLE], ids=["admin", "granted_role"])
-async def test_self_service_command_allows_admin_and_granted_role(role: str) -> None:
+@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.USER])
+async def test_self_service_command_allows_admin_and_user(role: str) -> None:
     """
-    An admin and a role that was granted the self-service scope both reach the command.
+    An admin and a regular user both reach the command.
 
     :param role: Role id of the calling user.
     """
@@ -287,17 +287,16 @@ async def test_unauthenticated_command_does_not_inherit_a_user() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("self_service_role")
 @pytest.mark.parametrize(
     ("user_id", "role", "delivered"),
     [
-        (FLOW_OWNER, SELF_SERVICE_ROLE, True),
-        ("user_2", SELF_SERVICE_ROLE, False),
-        ("admin", UserRole.ADMIN, True),
+        (FLOW_OWNER, UserRole.USER, True),
         ("user_2", UserRole.USER, False),
+        ("admin", UserRole.ADMIN, True),
+        ("user_2", UserRole.GUEST, False),
         ("user_2", None, False),
     ],
-    ids=["owner", "another_member", "admin", "member_without_the_scope", "unauthenticated"],
+    ids=["owner", "another_member", "admin", "guest", "unauthenticated"],
 )
 async def test_a_member_setup_flow_step_reaches_only_its_owner(
     user_id: str, role: str | None, delivered: bool
@@ -317,26 +316,19 @@ async def test_a_member_setup_flow_step_reaches_only_its_owner(
 
 
 @pytest.mark.asyncio
-async def test_a_server_started_setup_flow_step_reaches_every_member(
-    self_service_role: str,
-) -> None:
-    """
-    A setup flow without an owner is served to anyone holding the scope it started with.
-
-    :param self_service_role: Role id granted the self-service scope.
-    """
+async def test_a_server_started_setup_flow_step_reaches_every_member() -> None:
+    """A setup flow without an owner is served to anyone holding the scope it started with."""
     access = SetupFlowAccess(Scope.CONFIG_PROVIDERS_OWN)
-    client = _subscribed_client(self_service_role, user_id="user_2", access=access)
+    client = _subscribed_client(UserRole.USER, user_id="user_2", access=access)
     event = _flow_event()
 
     assert _sent_events(client, event) == [event]
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("self_service_role")
 @pytest.mark.parametrize(
     ("role", "delivered"),
-    [(UserRole.ADMIN, True), (SELF_SERVICE_ROLE, False)],
+    [(UserRole.ADMIN, True), (UserRole.USER, False)],
     ids=["admin", "member"],
 )
 async def test_an_unknown_setup_flow_step_reaches_only_an_admin(role: str, delivered: bool) -> None:

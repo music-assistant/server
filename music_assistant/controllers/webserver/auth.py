@@ -16,6 +16,7 @@ import jwt as pyjwt
 from music_assistant_models.auth import (
     AuthProviderType,
     AuthToken,
+    Role,
     Scope,
     User,
     UserAuthProvider,
@@ -34,12 +35,15 @@ from music_assistant.constants import (
     MASS_LOGGER_NAME,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    CUSTOM_ROLE_FORBIDDEN_SCOPES,
     ROLE_SCOPES,
+    custom_role_scopes,
     get_current_client_id,
     get_current_peer_address,
     get_current_token,
     get_current_user,
     has_scope,
+    set_custom_role_scopes,
 )
 from music_assistant.controllers.webserver.helpers.auth_providers import (
     AuthResult,
@@ -83,6 +87,15 @@ TOKEN_LIST_LIMIT = 100
 
 HA_TOKEN_SETTING_KEY = "ha_integration_token"
 HA_TOKEN_NAME = "Home Assistant Integration"
+
+# English names of the builtin user roles, in the order the roles are listed
+BUILTIN_ROLE_NAMES = {
+    UserRole.ADMIN: "Administrator",
+    UserRole.USER: "User",
+    UserRole.GUEST: "Guest",
+    UserRole.SERVICE: "Service",
+}
+ROLE_NAME_MAX_LENGTH = 50
 
 # Join code constants (short codes for QR/link-based login)
 JOIN_CODE_LENGTH = 12
@@ -128,6 +141,7 @@ class AuthenticationManager:
         self._join_code_exchange_lock = asyncio.Lock()
         # Serialises the read-modify-write of the user access filters
         self._user_filter_lock = asyncio.Lock()
+        self._custom_roles: dict[str, Role] = {}
         self._access_revoked_callbacks: list[Callable[[User], None]] = []
 
     async def setup(self) -> None:
@@ -139,6 +153,7 @@ class AuthenticationManager:
 
         # Create database schema and handle migrations
         await self._setup_database()
+        await self._load_custom_roles()
 
         # Initialize JWT helper with secret key
         jwt_secret = await self._get_or_create_jwt_secret()
@@ -166,6 +181,7 @@ class AuthenticationManager:
 
     async def close(self) -> None:
         """Cleanup on exit."""
+        set_custom_role_scopes({})
         if self.database:
             await self.database.close()
 
@@ -364,7 +380,7 @@ class AuthenticationManager:
     async def create_user(
         self,
         username: str,
-        role: UserRole = UserRole.USER,
+        role: str = UserRole.USER,
         display_name: str | None = None,
         avatar_url: str | None = None,
         preferences: dict[str, Any] | None = None,
@@ -374,7 +390,7 @@ class AuthenticationManager:
         Create a new user.
 
         :param username: The username.
-        :param role: The user role (default: USER).
+        :param role: The id of the (builtin or custom) role to assign (default: user).
         :param display_name: Optional display name.
         :param avatar_url: Optional avatar URL.
         :param preferences: Optional user preferences dict.
@@ -395,7 +411,7 @@ class AuthenticationManager:
         user_data = {
             "user_id": user_id,
             "username": normalized_username,
-            "role": role.value,
+            "role": role,
             "enabled": True,
             "created_at": created_at.isoformat(),
             "display_name": display_name,
@@ -839,24 +855,31 @@ class AuthenticationManager:
             )
         return [with_derived_provider_filter(self.mass, user) for user in users]
 
-    async def update_user_role(self, user_id: str, new_role: UserRole, admin_user: User) -> bool:
+    async def update_user_role(self, user_id: str, new_role: str, admin_user: User) -> bool:
         """
         Update a user's role (requires the users.manage scope).
 
+        The live sessions of the user are closed when its role changes, so its clients
+        reconnect with the scopes of the new role.
+
         :param user_id: The user ID to update.
-        :param new_role: The new role to assign.
+        :param new_role: The id of the (builtin or custom) role to assign.
         :param admin_user: The user performing the action.
-        :raises InvalidDataError: If the user owns music sources and the new role is guest,
-            as a guest can not own a music source.
+        :raises InvalidDataError: If the role does not exist, if the user is the last enabled
+            administrator, or if the user owns music sources and the new role is guest, as a
+            guest can not own a music source.
         """
         if not has_scope(admin_user, Scope.USERS_MANAGE):
             return False
 
+        self._ensure_role_exists(new_role)
         user_row = await self.database.get_row("users", {"user_id": user_id})
         if not user_row:
             return False
 
         old_role = user_row["role"]
+        if new_role == old_role:
+            return True
         if new_role == UserRole.GUEST and own_music_sources(
             self.mass, User(user_id=user_id, username=user_row["username"], role=old_role)
         ):
@@ -865,16 +888,20 @@ class AuthenticationManager:
                 "Reassign or remove the music sources of this user first.",
                 translation_key="guest_owns_music_sources",
             )
+        await self._ensure_not_last_admin(user_row)
         await self.database.update(
             "users",
             {"user_id": user_id},
-            {"role": new_role.value},
+            {"role": new_role},
         )
+
+        # a session holds the User it authenticated with, so it must reconnect to get the new role
+        self.webserver.disconnect_websockets_for_user(user_id)
         self.logger.info(
             "User role changed: '%s' from '%s' to '%s' by admin '%s'",
             user_row["username"],
             old_role,
-            new_role.value,
+            new_role,
             admin_user.username,
         )
         return True
@@ -1152,7 +1179,7 @@ class AuthenticationManager:
 
         :param username: The username (minimum 2 characters).
         :param password: The password (minimum 8 characters).
-        :param role: User role - "admin" or "user" (default: "user").
+        :param role: The id of the (builtin or custom) role to assign (default: "user").
         :param display_name: Optional display name.
         :param avatar_url: Optional avatar URL.
         :param player_filter: Optional list of player IDs user has access to.
@@ -1165,11 +1192,7 @@ class AuthenticationManager:
         if not password or len(password) < 8:
             raise InvalidDataError("Password must be at least 8 characters")
 
-        # Validate role
-        try:
-            user_role = UserRole(role)
-        except ValueError as err:
-            raise InvalidDataError("Invalid role. Must be 'admin' or 'user'") from err
+        self._ensure_role_exists(role)
 
         # Get built-in provider
         builtin_provider = self.login_providers.get("builtin")
@@ -1180,7 +1203,7 @@ class AuthenticationManager:
         user = await builtin_provider.create_user_with_password(
             username,
             password,
-            role=user_role,
+            role=role,
             player_filter=player_filter,
         )
 
@@ -1257,11 +1280,109 @@ class AuthenticationManager:
 
     @api_command("auth/scopes")
     async def get_role_scopes(self) -> dict[str, list[str]]:
-        """Get the scopes granted to each of the builtin user roles."""
+        """Get the scopes granted by each of the builtin and custom user roles, by role id."""
         return {
-            str(role): sorted(str(scope) for scope in scopes)
-            for role, scopes in ROLE_SCOPES.items()
+            str(role.role_id): sorted(str(scope) for scope in role.scopes)
+            for role in await self.get_roles()
         }
+
+    @api_command("auth/roles")
+    async def get_roles(self) -> list[Role]:
+        """Get all user roles: the builtin roles first, then the custom roles by name."""
+        builtin_roles = [
+            Role(role_id=role_id, name=name, scopes=sorted(ROLE_SCOPES[role_id]), builtin=True)
+            for role_id, name in BUILTIN_ROLE_NAMES.items()
+        ]
+        custom_roles = sorted(self._custom_roles.values(), key=lambda role: role.name.casefold())
+        return [*builtin_roles, *custom_roles]
+
+    @api_command("auth/role/create", required_scope=Scope.USERS_MANAGE)
+    async def create_role(self, name: str, scopes: list[Scope]) -> Role:
+        """
+        Create a custom user role (requires the users.manage scope).
+
+        A custom role holds the scopes of a guest and those a granted scope is of no use
+        without as well, and is never granted the scopes that stay with the admin role.
+
+        :param name: The name of the role, unique among all roles.
+        :param scopes: The scopes the role grants.
+        :raises InvalidDataError: If the name is invalid or taken, or if a custom role can
+            not be granted one of the scopes.
+        """
+        role = Role(
+            role_id=secrets.token_urlsafe(32),
+            name=self._validate_role_name(name),
+            scopes=custom_role_scopes(scopes),
+        )
+        await self.database.insert(
+            "roles",
+            {
+                "role_id": role.role_id,
+                "name": role.name,
+                "scopes": json_dumps(role.scopes),
+                "created_at": utc().isoformat(),
+            },
+        )
+        await self._load_custom_roles()
+        self.logger.info("Custom role '%s' created", role.name)
+        return role
+
+    @api_command("auth/role/update", required_scope=Scope.USERS_MANAGE)
+    async def update_role(
+        self, role_id: str, name: str | None = None, scopes: list[Scope] | None = None
+    ) -> Role:
+        """
+        Update a custom user role (requires the users.manage scope).
+
+        When its scopes change, the live sessions of the users holding the role are closed,
+        so their clients reconnect with the new scopes.
+
+        :param role_id: The id of the custom role.
+        :param name: The new name of the role (optional).
+        :param scopes: The scopes the role grants from now on (optional).
+        :raises InvalidDataError: If the role is builtin or does not exist, if the name is
+            invalid or taken, or if a custom role can not be granted one of the scopes.
+        """
+        role = self._get_custom_role(role_id)
+        updated_role = Role(
+            role_id=role_id,
+            name=role.name if name is None else self._validate_role_name(name, role_id),
+            scopes=role.scopes if scopes is None else custom_role_scopes(scopes),
+        )
+        changes: dict[str, Any] = {"name": updated_role.name}
+        # the stored scopes only change when new ones are given, so a rename keeps the
+        # scopes of a newer version that this one ignores
+        if scopes is not None:
+            changes["scopes"] = json_dumps(updated_role.scopes)
+        await self.database.update("roles", {"role_id": role_id}, changes)
+        await self._load_custom_roles()
+
+        if updated_role.scopes != role.scopes:
+            # the new scopes apply right away, but a client holds its own copy of the scopes
+            # of each role, which it only reloads when it reconnects
+            for row in await self.database.get_rows("users", {"role": role_id}, limit=0):
+                self.webserver.disconnect_websockets_for_user(row["user_id"])
+        self.logger.info("Custom role '%s' updated", updated_role.name)
+        return updated_role
+
+    @api_command("auth/role/delete", required_scope=Scope.USERS_MANAGE)
+    async def delete_role(self, role_id: str) -> None:
+        """
+        Delete a custom user role (requires the users.manage scope).
+
+        :param role_id: The id of the custom role.
+        :raises InvalidDataError: If the role is builtin or does not exist, or if a user
+            (a disabled one included) still holds it.
+        """
+        role = self._get_custom_role(role_id)
+        if await self.database.get_row("users", {"role": role_id}):
+            raise InvalidDataError(
+                f"The role {role.name} is still assigned to one or more users",
+                translation_key="role_in_use",
+            )
+        await self.database.delete("roles", {"role_id": role_id})
+        await self._load_custom_roles()
+        self.logger.info("Custom role '%s' deleted", role.name)
 
     async def update_user_filters(
         self,
@@ -1397,7 +1518,7 @@ class AuthenticationManager:
         :param display_name: New display name (optional).
         :param avatar_url: New avatar URL (optional).
         :param password: New password (optional, minimum 8 characters).
-        :param role: New role - "admin" or "user" (optional, set by admin only).
+        :param role: The id of the (builtin or custom) role to assign (optional, set by admin only).
         :param preferences: User preferences dict (completely replaces existing, optional).
         :param player_filter: List of player IDs user has access to (set by admin only, optional).
         :return: Updated user object.
@@ -1431,12 +1552,7 @@ class AuthenticationManager:
                     "The users.manage scope is required to update user roles"
                 )
 
-            try:
-                new_role = UserRole(role)
-            except ValueError as err:
-                raise InvalidDataError("Invalid role. Must be 'admin' or 'user'") from err
-
-            success = await self.update_user_role(target_user.user_id, new_role, current_user_obj)
+            success = await self.update_user_role(target_user.user_id, role, current_user_obj)
             if not success:
                 raise InvalidDataError("Failed to update role")
 
@@ -1849,6 +1965,17 @@ class AuthenticationManager:
             )
             """
         )
+        # Custom user roles (the builtin roles are defined in code and never stored)
+        await self.database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS roles (
+                role_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                scopes json NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         await self.database.commit()
 
     async def _create_database_indexes(self) -> None:
@@ -2037,6 +2164,87 @@ class AuthenticationManager:
             )
             self.logger.info(
                 "Updated Home Assistant system user role to %s", UserRole.SERVICE.value
+            )
+
+    async def _load_custom_roles(self) -> None:
+        """Load the custom roles from the database, without scopes a custom role can not hold."""
+        custom_roles: dict[str, Role] = {}
+        for row in await self.database.get_rows("roles", limit=0):
+            try:
+                stored_values = {str(value) for value in json_loads(row["scopes"])}
+            except ValueError, TypeError:
+                # the role stays listed, so an admin can still give it its scopes again
+                self.logger.warning("Custom role '%s' has unreadable scopes", row["name"])
+                stored_values = set()
+            # an unknown scope (of a newer version) or one a custom role may not hold
+            # grants nothing, so only that scope is dropped instead of the entire role
+            if refused := {v for v in stored_values if Scope(v) in CUSTOM_ROLE_FORBIDDEN_SCOPES}:
+                self.logger.warning(
+                    "Ignoring scopes %s of custom role '%s'",
+                    ", ".join(sorted(refused)),
+                    row["name"],
+                )
+            custom_roles[row["role_id"]] = Role(
+                role_id=row["role_id"],
+                name=row["name"],
+                scopes=custom_role_scopes(Scope(value) for value in stored_values - refused),
+            )
+        self._custom_roles = custom_roles
+        set_custom_role_scopes({role.role_id: role.scopes for role in custom_roles.values()})
+
+    def _get_custom_role(self, role_id: str) -> Role:
+        """Return the custom role with the given id, raise for a builtin or unknown role."""
+        if role_id in ROLE_SCOPES:
+            raise InvalidDataError(
+                f"The builtin role {role_id} can not be changed or removed",
+                translation_key="builtin_role_readonly",
+            )
+        if role := self._custom_roles.get(role_id):
+            return role
+        raise InvalidDataError(f"Unknown role: {role_id}", translation_key="role_not_found")
+
+    def _ensure_role_exists(self, role_id: str) -> None:
+        """Raise when neither a builtin nor a custom role has the given id."""
+        if role_id not in ROLE_SCOPES and role_id not in self._custom_roles:
+            raise InvalidDataError(f"Unknown role: {role_id}", translation_key="role_not_found")
+
+    def _validate_role_name(self, name: str, role_id: str | None = None) -> str:
+        """
+        Return the given role name without surrounding whitespace, raise if a role can not have it.
+
+        :param name: The name to validate.
+        :param role_id: The id of the custom role the name is for, None for a new role.
+        """
+        name = name.strip()
+        if not name or len(name) > ROLE_NAME_MAX_LENGTH:
+            raise InvalidDataError(
+                f"A role name must be between 1 and {ROLE_NAME_MAX_LENGTH} characters long",
+                translation_key="role_name_invalid",
+                translation_args=[ROLE_NAME_MAX_LENGTH],
+            )
+        taken = {role.name for role in self._custom_roles.values() if role.role_id != role_id}
+        taken.update(ROLE_SCOPES, BUILTIN_ROLE_NAMES.values())
+        if name.casefold() in {taken_name.casefold() for taken_name in taken}:
+            raise InvalidDataError(
+                f"A role named {name} already exists", translation_key="role_name_taken"
+            )
+        return name
+
+    async def _ensure_not_last_admin(self, user_row: Mapping[str, Any]) -> None:
+        """
+        Raise when the given user is the last enabled administrator.
+
+        :param user_row: The users row of the user that is about to lose its admin rights.
+        """
+        if user_row["role"] != UserRole.ADMIN or not user_row["enabled"]:
+            return
+        if not await self.database.get_count_from_query(
+            "SELECT user_id FROM users WHERE role = :role AND enabled = 1 AND user_id != :user_id",
+            {"role": UserRole.ADMIN.value, "user_id": user_row["user_id"]},
+        ):
+            raise InvalidDataError(
+                "Music Assistant needs at least one enabled administrator",
+                translation_key="last_admin",
             )
 
     async def _prune_orphaned_user_rows(self) -> None:

@@ -451,7 +451,7 @@ class BuiltinLoginProvider(LoginProvider):
         self,
         username: str,
         password: str,
-        role: UserRole = UserRole.USER,
+        role: str = UserRole.USER,
         display_name: str | None = None,
         player_filter: list[str] | None = None,
     ) -> User:
@@ -460,7 +460,7 @@ class BuiltinLoginProvider(LoginProvider):
 
         :param username: The username.
         :param password: The password (will be hashed).
-        :param role: The user role (default: USER).
+        :param role: The id of the (builtin or custom) role to assign (default: user).
         :param display_name: Optional display name.
         :param player_filter: Optional list of player IDs user has access to.
         """

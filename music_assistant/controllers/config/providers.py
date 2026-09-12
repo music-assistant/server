@@ -857,8 +857,13 @@ class ProviderConfigMixin:
         if user is None or manages_all_sources:
             return
         # a member may only add what becomes a music source of its own: a music
-        # service that allows more than one account
-        if manifest.type != ProviderType.MUSIC or manifest.builtin or not manifest.multi_instance:
+        # service that allows more than one account and lets members set it up
+        if (
+            manifest.type != ProviderType.MUSIC
+            or manifest.builtin
+            or not manifest.multi_instance
+            or not manifest.self_service
+        ):
             raise InsufficientPermissions(
                 f"The {Scope.CONFIG_PROVIDERS_WRITE.value} scope is required to add {manifest.name}"
             )
