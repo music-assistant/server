@@ -13,7 +13,6 @@ from io import StringIO
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, unquote, urlparse
 
-from aiohttp import ClientError
 from duration_parser import parse as parse_str_duration
 from music_assistant_models.enums import (
     AlbumType,
@@ -50,7 +49,6 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from ytmusicapi.constants import SUPPORTED_LANGUAGES
 from ytmusicapi.exceptions import YTMusicServerError
-from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
 from ytmusicapi.parsers.podcasts import Description
 
 from music_assistant.constants import (
@@ -68,9 +66,11 @@ from music_assistant.helpers.util import (
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
+from .constants import YTM_COOKIE_DOMAIN, YTM_DOMAIN
 from .helpers import (
     YTMSearchFilter,
     add_remove_playlist_tracks,
+    build_headers,
     convert_to_netscape,
     determine_recommendation_icon,
     get_album,
@@ -90,6 +90,7 @@ from .helpers import (
     library_add_remove_album,
     library_add_remove_artist,
     library_add_remove_playlist,
+    ping_po_token_server,
     search,
 )
 
@@ -105,8 +106,6 @@ CONF_COOKIE = "cookie"
 CONF_PO_TOKEN_SERVER_URL = "po_token_server_url"
 DEFAULT_PO_TOKEN_SERVER_URL = "http://127.0.0.1:4416"
 
-YTM_DOMAIN = "https://music.youtube.com"
-YTM_COOKIE_DOMAIN = ".youtube.com"
 YTM_BASE_URL = f"{YTM_DOMAIN}/youtubei/v1/"
 VARIOUS_ARTISTS_YTM_ID = "UCUTXlgdcKU5vfzFqHOWIvkA"
 # Playlist ID's are not unique across instances for lists like 'Liked videos', 'SuperMix' etc.
@@ -198,20 +197,22 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         logging.getLogger("yt_dlp").setLevel(self.logger.level + 10)
         await self._install_packages()
         self._cookie = str(self.get_setup_value(CONF_COOKIE))
-        self._po_token_server_url = (
+        self._po_token_server_url = str(
             self.get_setup_value(CONF_PO_TOKEN_SERVER_URL) or DEFAULT_PO_TOKEN_SERVER_URL
         )
-        if not await self._verify_po_token_url():
+        if not await ping_po_token_server(self.mass.http_session, self._po_token_server_url):
             raise LoginFailed(
                 "PO Token server URL is not reachable. "
                 "Make sure you have installed the YT Music PO Token Generator "
-                "and that it is running."
+                "and that it is running.",
+                translation_key="po_token_server_unreachable",
+                translation_owner=self.translation_owner,
             )
         yt_username = str(self.get_setup_value(CONF_USERNAME))
         self._yt_user = yt_username if is_brand_account(yt_username) else None
         # yt-dlp needs a netscape formatted cookie
         self._netscape_cookie = convert_to_netscape(self._cookie, YTM_COOKIE_DOMAIN)
-        self._initialize_headers()
+        self._headers = build_headers(self._cookie)
         self._initialize_context()
         self._cookies = {"CONSENT": "YES+1"}
         # get default language (that is supported by YTM)
@@ -223,7 +224,11 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         else:
             self.language = "en"
         if not await self._user_has_ytm_premium():
-            raise LoginFailed("User does not have Youtube Music Premium")
+            raise LoginFailed(
+                "User does not have Youtube Music Premium",
+                translation_key="no_premium",
+                translation_owner=self.translation_owner,
+            )
 
     # the checksum invalidates entries cached before the search was pinned to English
     @use_cache(3600 * 24 * 7, cache_checksum="english_search_v1")  # Cache for 7 days
@@ -852,28 +857,6 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         ) as response:
             return await response.text()
 
-    def _initialize_headers(self) -> None:
-        """Initialize the headers to include in the requests."""
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:72.0) Gecko/20100101 Firefox/72.0",
-            "Accept": "*/*",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Content-Type": "application/json",
-            "X-Goog-AuthUser": "0",
-            "x-origin": YTM_DOMAIN,
-            "Cookie": self._cookie,
-        }
-        if "__Secure-3PAPISID" not in self._cookie:
-            raise LoginFailed(
-                "Invalid Cookie detected. Cookie is missing the __Secure-3PAPISID field. "
-                "Please ensure you are passing the correct cookie. "
-                "You can verify this by checking if the string "
-                "'__Secure-3PAPISID' is present in the cookie string."
-            )
-        sapisid = sapisid_from_cookie(self._cookie)
-        headers["Authorization"] = get_authorization(sapisid + " " + YTM_DOMAIN)
-        self._headers = headers
-
     def _initialize_context(self) -> None:
         """Initialize the context to use in requests."""
         self._context = {
@@ -1208,23 +1191,26 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             MediaType.ARTIST, cast("str", artist_id), artist_obj.get("name", "")
         )
 
-    async def _verify_po_token_url(self) -> bool:
-        """Ping the PO Token server and verify the response."""
-        url = f"{self._po_token_server_url}/ping"
-        try:
-            async with self.mass.http_session.get(url) as response:
-                response.raise_for_status()
-                self.logger.debug("PO Token server responded with %s", response.status)
-                return response.status == 200
-        except (ClientError, TimeoutError) as err:
-            self.logger.debug("PO Token server ping failed: %s", err)
-            return False
-
     async def _user_has_ytm_premium(self) -> bool:
         """Check if the user has Youtube Music Premium."""
-        stream_format = await self._get_stream_format(YTM_PREMIUM_CHECK_TRACK_ID)
+        try:
+            stream_format = await self._get_stream_format(YTM_PREMIUM_CHECK_TRACK_ID)
+        except UnplayableMediaError as err:
+            # a failed test stream says nothing about the subscription: the PO Token server
+            # may not be handing out tokens yet or YouTube may be rate limiting, both of
+            # which the provider load retry can outwait - so this must not read as an
+            # auth failure, which is never retried
+            raise SetupFailedError(
+                f"Could not fetch a test stream from YouTube Music: {err}",
+                translation_key="stream_check_failed",
+                translation_owner=self.translation_owner,
+            ) from err
         # Only premium users can stream the HQ stream of this song
         format_id: str = stream_format["format_id"]
+        if format_id != "141":
+            self.logger.debug(
+                "Premium check got format %s instead of 141 for the test track", format_id
+            )
         return format_id == "141"
 
     def _parse_thumbnails(self, thumbnails_obj: list[dict[str, Any]]) -> UniqueList[MediaItemImage]:

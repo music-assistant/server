@@ -5,7 +5,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import ytmusicapi
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, SetupFailedError
+from requests.exceptions import ConnectTimeout
+from ytmusicapi.exceptions import YTMusicServerError
 
 from music_assistant.providers.ytmusic import helpers
 
@@ -31,9 +33,12 @@ def _patch_get_home(error: Exception) -> Any:
 
 
 async def test_signed_out_payload_is_translated_to_login_failed() -> None:
-    """A KeyError carrying the signed-out page must surface as LoginFailed."""
-    with _patch_get_home(SIGNED_OUT_PAYLOAD_ERROR), pytest.raises(LoginFailed):
+    """A KeyError carrying the signed-out page must surface as a localized LoginFailed."""
+    with _patch_get_home(SIGNED_OUT_PAYLOAD_ERROR), pytest.raises(LoginFailed) as exc_info:
         await helpers.get_home(headers={})
+    # the specific key keeps the setup dialog from showing the generic login_failed text
+    assert exc_info.value.translation_key == "cookie_expired"
+    assert exc_info.value.translation_owner == "provider.ytmusic"
 
 
 async def test_unrelated_key_error_still_propagates() -> None:
@@ -92,3 +97,73 @@ async def test_add_playlist_tracks_allows_duplicates() -> None:
         videoIds=["track", "track"],
         duplicates=True,
     )
+
+
+def _patch_get_account_info(result: Any = None, error: Exception | None = None) -> Any:
+    """Patch ytmusicapi.YTMusic so get_account_info() returns result or raises error."""
+    mock_ytm = MagicMock()
+    if error is not None:
+        mock_ytm.get_account_info.side_effect = error
+    else:
+        mock_ytm.get_account_info.return_value = result
+    return patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm)
+
+
+async def test_verify_cookie_accepts_signed_in_session() -> None:
+    """A cookie YouTube answers with account details for passes verification."""
+    with _patch_get_account_info({"accountName": "Someone"}):
+        await helpers.verify_cookie(headers={"Cookie": "x"})
+
+
+async def test_verify_cookie_signed_out_is_reported_as_expired() -> None:
+    """A signed-out answer surfaces as the expired-cookie error."""
+    with (
+        _patch_get_account_info(error=SIGNED_OUT_PAYLOAD_ERROR),
+        pytest.raises(LoginFailed) as exc_info,
+    ):
+        await helpers.verify_cookie(headers={"Cookie": "x"})
+    assert exc_info.value.translation_key == "cookie_expired"
+
+
+async def test_verify_cookie_other_failure_is_reported_as_rejected() -> None:
+    """Any other failure of the verification request is reported as a rejected cookie."""
+    with (
+        _patch_get_account_info(error=KeyError("accountName")),
+        pytest.raises(LoginFailed) as exc_info,
+    ):
+        await helpers.verify_cookie(headers={"Cookie": "x"})
+    assert exc_info.value.translation_key == "cookie_rejected"
+    assert exc_info.value.translation_owner == "provider.ytmusic"
+    assert isinstance(exc_info.value.__cause__, KeyError)
+
+
+async def test_verify_cookie_http_refusal_is_reported_as_rejected() -> None:
+    """A 401/403 from YouTube is about the cookie."""
+    error = YTMusicServerError("Server returned HTTP 401: Unauthorized.\nRequest is missing ...")
+    with _patch_get_account_info(error=error), pytest.raises(LoginFailed) as exc_info:
+        await helpers.verify_cookie(headers={"Cookie": "x"})
+    assert exc_info.value.translation_key == "cookie_rejected"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        YTMusicServerError("Server returned HTTP 429: Too Many Requests.\n"),
+        YTMusicServerError("Server returned HTTP 503: Service Unavailable.\n"),
+        ConnectTimeout("music.youtube.com"),
+    ],
+)
+async def test_verify_cookie_transport_failure_is_not_blamed_on_the_cookie(
+    error: Exception,
+) -> None:
+    """Rate limiting, server errors and network failures are reported as YouTube unreachable."""
+    with _patch_get_account_info(error=error), pytest.raises(SetupFailedError) as exc_info:
+        await helpers.verify_cookie(headers={"Cookie": "x"})
+    assert exc_info.value.translation_key == "youtube_unreachable"
+    assert exc_info.value.__cause__ is error
+
+
+async def test_verify_cookie_unexpected_error_keeps_its_traceback() -> None:
+    """A programming error is not disguised as a cookie problem."""
+    with _patch_get_account_info(error=TypeError("bug")), pytest.raises(TypeError):
+        await helpers.verify_cookie(headers={"Cookie": "x"})

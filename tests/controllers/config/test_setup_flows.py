@@ -551,6 +551,55 @@ async def test_finish_failure_rolls_back_provider_config(flow_mass: MusicAssista
     assert step.flow_id not in flow_mass.config._setup_flows
 
 
+async def test_finish_failure_is_logged(
+    flow_mass: MusicAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A finish failure is logged, as the rolled-back config leaves no other trace of it."""
+
+    async def run_setup(session: SetupSession) -> None:
+        values = await session.form([USERNAME_ENTRY])
+        await session.finish(values)
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(
+            flow_mass, "load_provider_config", AsyncMock(side_effect=LoginFailed("bad creds"))
+        ),
+        caplog.at_level("WARNING"),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        await flow_mass.config.submit_setup_flow(step.flow_id, {"username": "x"})
+    records = [rec for rec in caplog.records if "bad creds" in rec.getMessage()]
+    assert len(records) == 1
+    assert FAKE_DOMAIN in records[0].getMessage()
+    # a handled MA error explains itself, so no traceback is attached
+    assert records[0].exc_info is None
+
+
+async def test_finish_failure_unexpected_error_logs_traceback(
+    flow_mass: MusicAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An unexpected finish failure is logged with its traceback."""
+
+    async def run_setup(session: SetupSession) -> None:
+        values = await session.form([USERNAME_ENTRY])
+        await session.finish(values)
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(
+            flow_mass, "load_provider_config", AsyncMock(side_effect=RuntimeError("boom"))
+        ),
+        caplog.at_level("WARNING"),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        await flow_mass.config.submit_setup_flow(step.flow_id, {"username": "x"})
+    records = [rec for rec in caplog.records if "boom" in rec.getMessage()]
+    assert len(records) == 1
+    assert records[0].exc_info is not None
+    assert "RuntimeError" in caplog.text
+
+
 async def test_finish_failure_author_retry_loop(flow_mass: MusicAssistant) -> None:
     """An author can catch SetupFlowError and re-render the form with the error."""
 

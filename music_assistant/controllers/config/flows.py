@@ -22,6 +22,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import (
     ActionUnavailable,
     InsufficientPermissions,
+    MusicAssistantError,
     SetupFailedError,
 )
 from music_assistant_models.setup_flow import SetupFlowStep
@@ -514,6 +515,9 @@ class SetupFlowMixin:
                 session.context.domain, {}, setup_data=self._encrypt_values(values)
             )
         except Exception as err:
+            # the failed instance is removed again, taking its recorded last_error with it,
+            # so this log line is the only trace of why the setup did not go through
+            self._log_finish_failure(session.context.domain, err)
             raise SetupFlowError(
                 str(err) or err.__class__.__name__,
                 translation_key=getattr(err, "translation_key", None),
@@ -542,6 +546,7 @@ class SetupFlowMixin:
         except Exception as err:
             # reloading with the new values failed: restore the previous setup_data
             self.set(f"{conf_key}/setup_data", snapshot)
+            self._log_finish_failure(instance_id, err)
             raise SetupFlowError(
                 str(err) or err.__class__.__name__,
                 translation_key=getattr(err, "translation_key", None),
@@ -760,6 +765,24 @@ class SetupFlowMixin:
         ):
             return "finish_library_sync"
         return "finish"
+
+    def _log_finish_failure(self, target: str, err: Exception) -> None:
+        """
+        Log why finishing a setup flow failed, as the client dialog is otherwise the only trace.
+
+        :param target: The provider domain or instance id the flow was setting up.
+        :param err: The error raised while creating or reloading the target.
+        """
+        # a handled error (login failed, setup failed, ...) explains itself in its message,
+        # but one wrapping an underlying error - or anything unexpected - can only be
+        # diagnosed from the traceback
+        explained = isinstance(err, MusicAssistantError) and err.__cause__ is None
+        LOGGER.warning(
+            "Setup of %s failed: %s",
+            target,
+            str(err) or err.__class__.__name__,
+            exc_info=None if explained else err,
+        )
 
     def _reconfigure_reason(self, last_error: Any) -> FlowReason:
         """Derive the reconfigure flow reason from the provider's stored last_error."""
