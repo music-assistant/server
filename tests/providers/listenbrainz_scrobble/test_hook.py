@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Self
-from unittest.mock import AsyncMock, Mock, patch
+import logging
+from typing import Any, Self
+from unittest.mock import AsyncMock, Mock
 
 import aiohttp
 import pytest
@@ -24,12 +25,19 @@ from music_assistant.providers.listenbrainz_scrobble import (
 class _FakeResponse:
     """Stand-in for an aiohttp response used as an async context manager."""
 
-    def __init__(self, payload: dict[str, bool], json_error: Exception | None = None) -> None:
-        self._payload = payload
+    def __init__(
+        self,
+        payload: dict[str, bool] | None = None,
+        json_error: Exception | None = None,
+        status_error: Exception | None = None,
+    ) -> None:
+        self._payload = payload or {}
         self._json_error = json_error
+        self._status_error = status_error
 
     def raise_for_status(self) -> None:
-        return None
+        if self._status_error is not None:
+            raise self._status_error
 
     async def json(self) -> dict[str, bool]:
         if self._json_error is not None:
@@ -44,7 +52,7 @@ class _FakeResponse:
 
 
 class _FakeSession:
-    """Session whose GET returns a canned validate-token response, or raises a transport error."""
+    """Records the validate-token GET and the submit-listens POST, or raises a transport error."""
 
     def __init__(
         self,
@@ -52,13 +60,21 @@ class _FakeSession:
         payload: dict[str, bool] | None = None,
         error: Exception | None = None,
         json_error: Exception | None = None,
+        post_error: Exception | None = None,
+        post_status_error: Exception | None = None,
     ) -> None:
         self._payload = payload or {}
         self._error = error
         self._json_error = json_error
+        self._post_error = post_error
+        self._post_status_error = post_status_error
         self.requested_url: str | None = None
         self.requested_headers: dict[str, str] | None = None
         self.requested_timeout: object = None
+        self.posted_url: str | None = None
+        self.posted_headers: dict[str, str] | None = None
+        self.posted_json: dict[str, Any] | None = None
+        self.posted_timeout: object = None
 
     def get(
         self,
@@ -74,6 +90,23 @@ class _FakeSession:
         if self._error is not None:
             raise self._error
         return _FakeResponse(self._payload, self._json_error)
+
+    def post(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        json: dict[str, Any] | None = None,
+        timeout: object = None,
+        **_kwargs: object,
+    ) -> _FakeResponse:
+        self.posted_url = url
+        self.posted_headers = headers
+        self.posted_json = json
+        self.posted_timeout = timeout
+        if self._post_error is not None:
+            raise self._post_error
+        return _FakeResponse(status_error=self._post_status_error)
 
 
 def _mass(
@@ -108,6 +141,17 @@ def _provider(
     )
 
 
+def _handler(session: _FakeSession) -> ListenBrainzEventHandler:
+    """Build a scrobble handler wired to the given fake http session."""
+    return ListenBrainzEventHandler(
+        _mass(http_session=session),
+        "https://api.listenbrainz.org",
+        "token",
+        logging.getLogger(__name__),
+        _config(),
+    )
+
+
 def _report() -> MediaItemPlaybackProgressReport:
     """Build a playback progress report for a fully played track."""
     return MediaItemPlaybackProgressReport(
@@ -118,6 +162,21 @@ def _report() -> MediaItemPlaybackProgressReport:
         seconds_played=180,
         fully_played=True,
         is_playing=False,
+    )
+
+
+def _playing_report() -> MediaItemPlaybackProgressReport:
+    """Build a playback progress report for a track that is currently playing."""
+    return MediaItemPlaybackProgressReport(
+        uri="library://track/1",
+        media_type=MediaType.TRACK,
+        name="track",
+        artists=["artist a", "artist b"],
+        album="album",
+        duration=180,
+        seconds_played=42,
+        fully_played=False,
+        is_playing=True,
     )
 
 
@@ -134,16 +193,15 @@ async def test_the_handler_is_built_from_a_valid_token() -> None:
     session = _FakeSession(payload={"valid": True})
     provider = _provider({CONF_USER_TOKEN: "token"}, http_session=session)
 
-    with patch("music_assistant.providers.listenbrainz_scrobble.ListenBrainz") as client_cls:
-        await provider.handle_async_init()
+    await provider.handle_async_init()
     await provider.loaded_in_mass()
 
-    # the check is authenticated and bounded by a finite timeout, and the client must
-    # not repeat the blocking check
+    # the check is authenticated and bounded by a finite timeout
     assert session.requested_headers == {"Authorization": "Token token"}
     assert isinstance(session.requested_timeout, aiohttp.ClientTimeout)
-    client_cls.return_value.set_auth_token.assert_called_once_with("token", check_validity=False)
     assert isinstance(provider._handler, ListenBrainzEventHandler)
+    assert provider._handler._token == "token"
+    assert provider._handler._api_base_url == "https://api.listenbrainz.org"
 
 
 async def test_an_invalid_token_fails_setup() -> None:
@@ -193,10 +251,68 @@ async def test_a_trailing_slash_in_the_base_url_is_normalized() -> None:
         http_session=session,
     )
 
-    with patch("music_assistant.providers.listenbrainz_scrobble.ListenBrainz"):
-        await provider.handle_async_init()
+    await provider.handle_async_init()
 
     assert session.requested_url == "https://lb.example.com/1/validate-token"
+
+
+async def test_now_playing_is_submitted_with_a_bounded_request() -> None:
+    """A now-playing update posts the listen with a finite timeout and no listened_at."""
+    session = _FakeSession()
+    handler = _handler(session)
+
+    await handler._update_now_playing(_playing_report())
+
+    assert session.posted_url == "https://api.listenbrainz.org/1/submit-listens"
+    assert session.posted_headers == {"Authorization": "Token token"}
+    assert isinstance(session.posted_timeout, aiohttp.ClientTimeout)
+    assert session.posted_timeout.total is not None
+    assert session.posted_json is not None
+    assert session.posted_json["listen_type"] == "playing_now"
+    listen = session.posted_json["payload"][0]
+    # a now-playing update must never carry a listened_at timestamp
+    assert "listened_at" not in listen
+    metadata = listen["track_metadata"]
+    assert metadata["track_name"] == "track"
+    assert metadata["artist_name"] == "artist a, artist b"
+    assert metadata["release_name"] == "album"
+    assert metadata["additional_info"]["duration"] == 180
+    assert metadata["additional_info"]["duration_played"] == 42
+
+
+async def test_a_scrobble_is_submitted_with_a_bounded_request() -> None:
+    """A completed play posts a single listen with a finite timeout and a listened_at."""
+    session = _FakeSession()
+    handler = _handler(session)
+
+    await handler._scrobble(_report())
+
+    assert session.posted_url == "https://api.listenbrainz.org/1/submit-listens"
+    assert session.posted_headers == {"Authorization": "Token token"}
+    assert isinstance(session.posted_timeout, aiohttp.ClientTimeout)
+    assert session.posted_timeout.total is not None
+    assert session.posted_json is not None
+    assert session.posted_json["listen_type"] == "single"
+    assert isinstance(session.posted_json["payload"][0]["listened_at"], int)
+
+
+async def test_a_transport_error_while_scrobbling_is_swallowed() -> None:
+    """A network error while scrobbling is logged and swallowed, leaving the track unmarked."""
+    handler = _handler(_FakeSession(post_error=aiohttp.ClientConnectionError()))
+
+    await handler.on_media_item_played(_report())
+
+    assert handler.last_scrobbled is None
+
+
+async def test_an_api_error_while_scrobbling_is_swallowed() -> None:
+    """A non-2xx reply while scrobbling is logged and swallowed, leaving the track unmarked."""
+    error = aiohttp.ClientResponseError(Mock(), (), status=500)
+    handler = _handler(_FakeSession(post_status_error=error))
+
+    await handler.on_media_item_played(_report())
+
+    assert handler.last_scrobbled is None
 
 
 async def test_the_hook_forwards_the_report_to_the_handler() -> None:
