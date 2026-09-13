@@ -1432,10 +1432,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     f"{uri_media_type.value} items can not be library items"
                 )
             full_item = await self.get_item_by_uri(item)
-        # For builtin provider (manual URLs), use the provided item directly
-        # to preserve custom modifications (name, images, etc.)
-        # For other providers, fetch fresh to ensure data validity
-        elif item.provider == "builtin":
+        # A manual URL track or radio of the builtin provider is used as provided,
+        # to preserve custom modifications (name, images, etc.) that are not stored yet.
+        # Anything else is fetched fresh to ensure data validity
+        elif item.provider == "builtin" and item.media_type in (MediaType.TRACK, MediaType.RADIO):
             full_item = item
         else:
             full_item = await self.get_item(
