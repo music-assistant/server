@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from collections.abc import Generator, Sequence
 from unittest.mock import AsyncMock, patch
 
@@ -242,14 +244,45 @@ class TestSharedCooldown:
         self, provider: FakeProvider, fake_clock: FakeClock
     ) -> None:
         """The 429 that exhausts our retries still holds back the callers behind us."""
-        provider.set_side_effects([RateLimited("rate limited", backoff_time=50)] * 5)
+        provider.set_side_effects([RateLimited("rate limited", backoff_time=200)] * 5)
         with pytest.raises(RetriesExhausted):
             await provider.api_call("test")
         exhausted_at = fake_clock.now
 
         provider.set_side_effects(["ok"])
         assert await provider.api_call("ok") == "ok"
-        assert fake_clock.now - exhausted_at == pytest.approx(50)
+        assert fake_clock.now - exhausted_at == pytest.approx(200)
+
+    async def test_exhausted_retries_gate_without_retry_after(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """Without a Retry-After the gate closes on the backoff we escalated to."""
+        provider.set_side_effects([RateLimited("rate limited")] * 5)
+        with pytest.raises(RetriesExhausted):
+            await provider.api_call("test")
+        exhausted_at = fake_clock.now
+
+        provider.set_side_effects(["ok"])
+        assert await provider.api_call("ok") == "ok"
+        # initial_backoff 4, doubled by each of the 4 retries
+        assert fake_clock.now - exhausted_at == pytest.approx(64)
+
+    async def test_cooldown_armed_while_queued_is_observed(self) -> None:
+        """A caller queued for a free slot rechecks the gate before it calls the api."""
+        throttler = ThrottlerManager(rate_limit=1, period=0.2)
+        async with throttler.acquire():
+            pass  # the only slot of this period is now taken
+
+        async def arm_cooldown() -> None:
+            await asyncio.sleep(0.05)
+            throttler.set_cooldown(0.3)
+
+        armer = asyncio.create_task(arm_cooldown())
+        start_time = time.monotonic()
+        async with throttler.acquire():
+            elapsed = time.monotonic() - start_time
+        await armer
+        assert elapsed >= 0.3
 
 
 class TestExponentialBackoffWithJitter:

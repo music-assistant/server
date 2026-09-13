@@ -127,9 +127,16 @@ class ThrottlerManager:
         """Acquire a free slot from the Throttler, returns the throttled time."""
         if BYPASS_THROTTLER.get():
             yield 0
-        else:
-            cooldown_delay = await self._wait_for_cooldown()
-            yield cooldown_delay + await self.throttler.acquire()
+            return
+        delay = 0.0
+        while True:
+            delay += await self._wait_for_cooldown()
+            delay += await self.throttler.acquire()
+            # a cooldown can be armed while we wait for a free slot, so only leave
+            # the gate once it is still clear with the slot in hand
+            if self._cooldown_until <= time.monotonic():
+                break
+        yield delay
 
     @asynccontextmanager
     async def bypass(self) -> AsyncGenerator[None]:
@@ -211,8 +218,9 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
                         self.logger.info(f"Retrying in {sleep_time:.1f} seconds...")
                         await asyncio.sleep(sleep_time)
                     elif isinstance(e, RateLimited):
-                        # out of retries while still limited: keep the other callers back
-                        throttler.set_cooldown(server_wait)
+                        # out of retries while still limited: keep the other callers back,
+                        # on the escalated backoff since Retry-After can be absent or low
+                        throttler.set_cooldown(max(server_wait, min(exp_backoff, MAX_BACKOFF)))
             else:  # noqa: PLW0120
                 msg = f"Retries exhausted, failed after {throttler.retry_attempts} attempts"
                 raise RetriesExhausted(msg)
