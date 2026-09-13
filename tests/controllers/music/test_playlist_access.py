@@ -570,6 +570,24 @@ async def test_removal_needs_the_owner_even_when_collaborative(
         playlists.check_removal_allowed(added)
 
 
+async def test_library_remove_command_checks_the_owner(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """The library remove command asks the controller before it deletes the playlist."""
+    access = PlaylistAccess(owner=OWNER.user_id, sharing=ProviderSharing.MEMBERS)
+    added = await _add(playlists, _playlist("Removed by command", access))
+
+    with _as_user(MEMBER), pytest.raises(InsufficientPermissions):
+        await music_mass_module.music.remove_item_from_library(MediaType.PLAYLIST, added.item_id)
+    with _as_user(None):
+        assert (await playlists.get_library_item(added.item_id)).access == access
+
+    with _as_user(OWNER):
+        await music_mass_module.music.remove_item_from_library(MediaType.PLAYLIST, added.item_id)
+    with _as_user(None), pytest.raises(MediaNotFoundError):
+        await playlists.get_library_item(added.item_id)
+
+
 async def test_adding_a_hidden_playlist_as_source_is_refused_inside_the_task(
     playlists: PlaylistController, music_mass_module: MusicAssistant
 ) -> None:
