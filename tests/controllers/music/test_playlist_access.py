@@ -428,14 +428,18 @@ async def test_set_access_validates_the_users_on_the_record(
     """Unknown users are refused; a guest and the Home Assistant system user can not own one."""
     added = await _add(playlists, _playlist("Validated"))
 
-    with _as_user(ADMIN), pytest.raises(InvalidDataError):
+    with _as_user(ADMIN), pytest.raises(InvalidDataError) as err:
         await playlists.set_access(added.item_id, ProviderSharing.PRIVATE, owner="nobody")
+    assert err.value.translation_key == "unknown_or_disabled_user"
+    assert err.value.translation_args == ["nobody"]
     with _as_user(ADMIN), pytest.raises(InvalidDataError):
         await playlists.set_access(added.item_id, ProviderSharing.PRIVATE, owner=GUEST.user_id)
-    with _as_user(ADMIN), pytest.raises(InvalidDataError):
+    with _as_user(ADMIN), pytest.raises(InvalidDataError) as err:
         await playlists.set_access(
             added.item_id, ProviderSharing.SELECTED, owner=OWNER.user_id, shared_users=["nobody"]
         )
+    assert err.value.translation_key == "unknown_or_disabled_user"
+    assert err.value.translation_args == ["nobody"]
     with _as_user(ADMIN), pytest.raises(InvalidDataError):
         await playlists.set_access(added.item_id, ProviderSharing.PRIVATE, owner=HA_SYSTEM.user_id)
     with _as_user(MEMBER), pytest.raises(InsufficientPermissions):

@@ -371,17 +371,29 @@ class ProviderConfigMixin:
             raise KeyError(msg)
         manifest = self.mass.get_provider_manifest(raw_conf["domain"])
         if manifest.type != ProviderType.MUSIC or manifest.builtin:
-            raise InvalidDataError(f"{manifest.name} is always available to the entire household")
+            raise InvalidDataError(
+                f"{manifest.name} is always available to everyone",
+                translation_key="source_available_to_everyone",
+                translation_args=[manifest.name],
+            )
         user, manages_all_sources = self._access_caller()
         current = source_access(self.mass, instance_id)
         current_owner = current.owner if current else None
         if user is not None and not manages_all_sources:
+            if current_owner is None:
+                raise InsufficientPermissions(
+                    "Only an administrator can manage a music source that has no owner",
+                    translation_key="source_no_owner_admin_only",
+                )
             if current_owner != user.user_id:
-                raise InsufficientPermissions("Only the owner of a music source may share it")
+                raise InsufficientPermissions(
+                    "Only the owner of a music source may share it",
+                    translation_key="source_sharing_owner_only",
+                )
             if owner != user.user_id:
                 raise InsufficientPermissions(
-                    f"The {Scope.CONFIG_PROVIDERS_WRITE.value} scope is required to change "
-                    "the owner of a music source"
+                    "Only an administrator can change who owns a music source",
+                    translation_key="source_owner_change_admin_only",
                 )
         # a user already on the record keeps its place while its account is disabled, so
         # enabling the account again restores its access to the source
@@ -889,7 +901,11 @@ class ProviderConfigMixin:
         """
         user = await self.mass.webserver.auth.get_user(user_id)
         if user is None and not on_record:
-            raise InvalidDataError(f"Unknown or disabled user: {user_id}")
+            raise InvalidDataError(
+                f"Unknown or disabled user: {user_id}",
+                translation_key="unknown_or_disabled_user",
+                translation_args=[user_id],
+            )
         return user
 
     async def _validate_source_owner(self, user_id: str, on_record: bool) -> None:
@@ -902,7 +918,10 @@ class ProviderConfigMixin:
         """
         user = await self._validate_access_user(user_id, on_record)
         if user is not None and not self._is_member(user):
-            raise InvalidDataError("Only a household member can own a music source")
+            raise InvalidDataError(
+                "Only a member can own a music source",
+                translation_key="source_owner_must_be_member",
+            )
 
     @staticmethod
     def _is_member(user: User) -> bool:

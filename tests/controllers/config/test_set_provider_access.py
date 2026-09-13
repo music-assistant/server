@@ -137,10 +137,11 @@ async def test_owner_may_not_hand_over_its_source(access_mass: MusicAssistant) -
     )
     set_current_user(owner)
 
-    with pytest.raises(InsufficientPermissions):
+    with pytest.raises(InsufficientPermissions) as excinfo:
         await access_mass.config.set_provider_access(
             MUSIC_INSTANCE, owner=other.user_id, sharing=ProviderSharing.PRIVATE
         )
+    assert excinfo.value.translation_key == "source_owner_change_admin_only"
 
 
 async def test_a_member_may_not_share_another_users_source(access_mass: MusicAssistant) -> None:
@@ -153,21 +154,23 @@ async def test_a_member_may_not_share_another_users_source(access_mass: MusicAss
     )
     set_current_user(other)
 
-    with pytest.raises(InsufficientPermissions):
+    with pytest.raises(InsufficientPermissions) as excinfo:
         await access_mass.config.set_provider_access(
             MUSIC_INSTANCE, owner=other.user_id, sharing=ProviderSharing.PRIVATE
         )
+    assert excinfo.value.translation_key == "source_sharing_owner_only"
 
 
-async def test_a_member_may_not_claim_a_household_source(access_mass: MusicAssistant) -> None:
-    """A source of the household is an admin's to hand out, not a member's to take."""
+async def test_a_member_may_not_claim_an_unowned_source(access_mass: MusicAssistant) -> None:
+    """A source with no owner is an admin's to hand out, not a member's to take."""
     member = await _create_user(access_mass, "member")
     set_current_user(member)
 
-    with pytest.raises(InsufficientPermissions):
+    with pytest.raises(InsufficientPermissions) as excinfo:
         await access_mass.config.set_provider_access(
             MUSIC_INSTANCE, sharing=ProviderSharing.PRIVATE, owner=member.user_id
         )
+    assert excinfo.value.translation_key == "source_no_owner_admin_only"
     assert _stored_access(access_mass, MUSIC_INSTANCE) is None
 
 
@@ -186,10 +189,11 @@ async def test_the_system_user_can_not_own_a_source(access_mass: MusicAssistant)
     system_user = await access_mass.webserver.auth.get_homeassistant_system_user()
     set_current_user(admin)
 
-    with pytest.raises(InvalidDataError):
+    with pytest.raises(InvalidDataError) as excinfo:
         await access_mass.config.set_provider_access(
             MUSIC_INSTANCE, sharing=ProviderSharing.PRIVATE, owner=system_user.user_id
         )
+    assert excinfo.value.translation_key == "source_owner_must_be_member"
     assert _stored_access(access_mass, MUSIC_INSTANCE) is None
 
 
@@ -219,10 +223,11 @@ async def test_a_guest_can_not_own_a_source(access_mass: MusicAssistant) -> None
     guest = await _create_user(access_mass, "party_guest", UserRole.GUEST)
     set_current_user(admin)
 
-    with pytest.raises(InvalidDataError):
+    with pytest.raises(InvalidDataError) as excinfo:
         await access_mass.config.set_provider_access(
             MUSIC_INSTANCE, sharing=ProviderSharing.PRIVATE, owner=guest.user_id
         )
+    assert excinfo.value.translation_key == "source_owner_must_be_member"
 
 
 async def test_an_unknown_user_is_refused(access_mass: MusicAssistant) -> None:
@@ -232,14 +237,18 @@ async def test_an_unknown_user_is_refused(access_mass: MusicAssistant) -> None:
     set_current_user(admin)
     await access_mass.webserver.auth.disable_user(disabled.user_id)
 
-    with pytest.raises(InvalidDataError):
+    with pytest.raises(InvalidDataError) as excinfo:
         await access_mass.config.set_provider_access(
             MUSIC_INSTANCE, sharing=ProviderSharing.PRIVATE, owner="does-not-exist"
         )
-    with pytest.raises(InvalidDataError):
+    assert excinfo.value.translation_key == "unknown_or_disabled_user"
+    assert excinfo.value.translation_args == ["does-not-exist"]
+    with pytest.raises(InvalidDataError) as excinfo:
         await access_mass.config.set_provider_access(
             MUSIC_INSTANCE, sharing=ProviderSharing.PRIVATE, owner=disabled.user_id
         )
+    assert excinfo.value.translation_key == "unknown_or_disabled_user"
+    assert excinfo.value.translation_args == [disabled.user_id]
 
 
 async def test_a_disabled_owner_keeps_its_source(access_mass: MusicAssistant) -> None:
@@ -273,10 +282,11 @@ async def test_a_guest_owning_a_source_is_refused_even_when_unchanged(
     )
     set_current_user(admin)
 
-    with pytest.raises(InvalidDataError):
+    with pytest.raises(InvalidDataError) as excinfo:
         await access_mass.config.set_provider_access(
             MUSIC_INSTANCE, owner=guest.user_id, sharing=ProviderSharing.MEMBERS
         )
+    assert excinfo.value.translation_key == "source_owner_must_be_member"
 
 
 async def test_a_disabled_member_keeps_its_place_on_the_share_list(
@@ -344,13 +354,15 @@ async def test_a_disabled_or_unknown_user_is_not_added_to_the_share_list(
     await access_mass.webserver.auth.disable_user(disabled.user_id)
 
     for user_id in (disabled.user_id, "does-not-exist"):
-        with pytest.raises(InvalidDataError):
+        with pytest.raises(InvalidDataError) as excinfo:
             await access_mass.config.set_provider_access(
                 MUSIC_INSTANCE,
                 owner=admin.user_id,
                 sharing=ProviderSharing.SELECTED,
                 shared_users=[member.user_id, user_id],
             )
+        assert excinfo.value.translation_key == "unknown_or_disabled_user"
+        assert excinfo.value.translation_args == [user_id]
     assert _stored_access(access_mass, MUSIC_INSTANCE) == {
         "owner": admin.user_id,
         "sharing": "selected",
@@ -423,14 +435,16 @@ async def test_every_share_candidate_is_accepted_on_the_share_list(
 async def test_only_a_real_music_source_can_be_owned(
     access_mass: MusicAssistant, instance_id: str
 ) -> None:
-    """Players and the builtin provider always serve the entire household."""
+    """Players and the builtin provider always serve everyone."""
     admin = await _create_user(access_mass, "admin", UserRole.ADMIN)
     set_current_user(admin)
 
-    with pytest.raises(InvalidDataError):
+    with pytest.raises(InvalidDataError) as excinfo:
         await access_mass.config.set_provider_access(
             instance_id, sharing=ProviderSharing.PRIVATE, owner=admin.user_id
         )
+    assert excinfo.value.translation_key == "source_available_to_everyone"
+    assert excinfo.value.translation_args == [f"{instance_id} provider"]
 
 
 async def test_shared_users_are_dropped_unless_the_source_is_shared_with_a_selection(
