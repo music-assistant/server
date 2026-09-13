@@ -13,7 +13,7 @@
     }
   },
   "errors": {
-    "po_token_server_unreachable": "The PO Token server is not reachable. Make sure the YT Music PO Token Generator is installed and running; Music Assistant will keep retrying."
+    "po_token_server_unreachable": "The PO Token server is not reachable. Make sure the YT Music PO Token Generator is installed and running."
   },
   "media": {
     "recommendations": {

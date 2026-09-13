@@ -2815,7 +2815,7 @@
   "provider.ytmusic.config_entries.cookie.label": "Login Cookie",
   "provider.ytmusic.config_entries.po_token_server_url.description": "The URL to the PO Token server. Can be left as default for most people. \n\n**Note that this does require you to have the 'YT Music PO Token Generator' addon installed!**",
   "provider.ytmusic.config_entries.po_token_server_url.label": "PO Token Server URL",
-  "provider.ytmusic.errors.po_token_server_unreachable": "The PO Token server is not reachable. Make sure the YT Music PO Token Generator is installed and running; Music Assistant will keep retrying.",
+  "provider.ytmusic.errors.po_token_server_unreachable": "The PO Token server is not reachable. Make sure the YT Music PO Token Generator is installed and running.",
   "provider.ytmusic.manifest.description": "Stream songs and podcasts from YouTube Music.",
   "provider.ytmusic.media.recommendations.mixed_for_you.name": "Mixed for you",
   "provider.zvuk_music.config_entries.quality.description": "Select preferred audio quality.",

@@ -204,8 +204,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
         if not await self._verify_po_token_url():
             # the PO Token server is a separate add-on/container that routinely comes up
             # after Music Assistant on a host reboot; a failed ping says nothing about the
-            # credentials, so report it as a (retried) setup failure rather than a login
-            # failure, which the core treats as needing user action and never retries
+            # credentials, so report it as a setup failure, which the core retries on the
+            # startup path, rather than a login failure, which it never retries
             raise SetupFailedError(
                 "PO Token server URL is not reachable. "
                 "Make sure you have installed the YT Music PO Token Generator "
