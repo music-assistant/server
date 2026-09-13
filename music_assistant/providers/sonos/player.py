@@ -1029,6 +1029,10 @@ class SonosPlayer(Player):
             None,
         )
         if source_index is None:
+            if self._attr_active_source in PLAYER_SOURCE_MAP:
+                # a mapped source this player does not offer itself, such as the line-in of
+                # the coordinator it is synced to
+                return
             # a service we did not map: the user can not start it from MA and its transport
             # is whatever the speaker reports for it
             self._attr_source_list.append(
@@ -1038,7 +1042,8 @@ class SonosPlayer(Player):
                     passive=True,
                     can_play_pause=actions.get("canPause", False),
                     can_seek=actions.get("canSeek", False),
-                    can_next_previous=actions.get("canSkip", False),
+                    can_next_previous=actions.get("canSkip", False)
+                    and actions.get("canSkipBack", False),
                 )
             )
             source_index = len(self._attr_source_list) - 1

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import ConnectionTimeoutError
-from aiosonos.api.models import MusicService, PlaybackError
+from aiosonos.api.models import ContainerType, MusicService, PlaybackError
 from aiosonos.api.models import PlayBackState as SonosPlayBackState
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import PlaybackErrorEvent
@@ -588,7 +588,8 @@ def _report_paused_qobuz(group: MagicMock) -> None:
         "canRepeatOne": True,
         "canPause": True,
         "canSeek": True,
-        "canSkip": False,
+        "canSkip": True,
+        "canSkipBack": False,
     }
     # a bare MagicMock attribute is truthy, so the play modes are spelled out
     group.play_modes.shuffle = True
@@ -622,6 +623,7 @@ def test_a_service_we_did_not_map_gets_a_source_entry_with_its_play_modes() -> N
     assert source.repeat_mode is RepeatMode.ALL
     assert source.can_play_pause is True
     assert source.can_seek is True
+    # skipping is only offered when the speaker allows it in both directions
     assert source.can_next_previous is False
     # the entry only exists while the speaker plays it, there is no template for it
     assert "Qobuz" not in PLAYER_SOURCE_MAP
@@ -681,6 +683,7 @@ def test_the_entry_of_a_service_we_did_not_map_follows_what_the_speaker_reports(
         "canPause": False,
         "canSeek": False,
         "canSkip": True,
+        "canSkipBack": True,
     }
     group.play_modes.shuffle = False
 
@@ -692,3 +695,22 @@ def test_the_entry_of_a_service_we_did_not_map_follows_what_the_speaker_reports(
     assert source.can_play_pause is False
     assert source.can_next_previous is True
     assert len([x for x in player._attr_source_list if x.id == "Qobuz"]) == 1
+
+
+def test_a_group_child_does_not_take_over_the_line_in_of_its_coordinator() -> None:
+    """Test a source the coordinator offers but this player lacks never enters its source list."""
+    player, mass, client = _connected_player()
+    client.player.is_coordinator = False
+    client.player.group.coordinator_id = "sonos_leader"
+    group_parent = MagicMock()
+    group_parent.client.player.group.playback_state = SonosPlayBackState.PLAYBACK_STATE_PLAYING
+    group_parent.client.player.group.position = 0.0
+    group_parent.client.player.group.container_type = ContainerType.LINEIN
+    group_parent.client.player.group.playback_metadata = {}
+    mass.players.get_player.return_value = group_parent
+
+    player.on_player_event(None)
+    player.on_player_event(None)
+
+    assert player._attr_active_source == SOURCE_LINE_IN
+    assert player._attr_source_list == []
