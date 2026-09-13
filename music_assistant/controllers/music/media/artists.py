@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from itertools import zip_longest
-from typing import TYPE_CHECKING, Any, Literal, cast, overload
+from typing import TYPE_CHECKING, Any, Final, Literal, cast, overload
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
     AlbumType,
     ArtistType,
+    EventType,
     MediaType,
     ProviderFeature,
     ProviderType,
@@ -37,6 +38,7 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOK_ARTISTS,
+    DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
@@ -63,8 +65,13 @@ from .base import MediaControllerBase
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from music_assistant_models.event import MassEvent
+
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
+
+# pause between item re-links so a large repair pass does not hog the event loop
+SPLIT_MERGED_ARTISTS_SLEEP_INTERVAL: Final = 0.2
 
 
 class ArtistsController(MediaControllerBase[Artist]):
@@ -79,6 +86,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Initialize class."""
         super().__init__(mass)
         self._db_add_lock = asyncio.Lock()
+        self._split_merged_artists_lock = asyncio.Lock()
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(
@@ -108,6 +116,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             self.get_library_artist_types,
             required_scope=Scope.LIBRARY_READ,
         )
+        self.mass.subscribe(self._on_music_sync_completed, EventType.MUSIC_SYNC_COMPLETED)
 
     @property
     def summary_query(self) -> tuple[str, dict[str, Any]]:
@@ -1042,6 +1051,36 @@ class ArtistsController(MediaControllerBase[Artist]):
             }
         )
 
+    async def split_merged_provider_artists(self) -> None:
+        """
+        Split library artists that a streaming provider knows under several ids.
+
+        Repairs artists merged on a name match before same-provider ids were treated as
+        distinct; runs after provider syncs and is a no-op on a clean library.
+        """
+        if self._split_merged_artists_lock.locked():
+            return
+        async with self._split_merged_artists_lock:
+            query = f"""
+            SELECT item_id, provider_instance FROM {DB_TABLE_PROVIDER_MAPPINGS}
+            WHERE media_type = :media_type AND available = 1
+            GROUP BY item_id, provider_instance
+            HAVING COUNT(*) > 1
+            """
+            rows = await self.mass.music.database.get_rows_from_query(
+                query, {"media_type": MediaType.ARTIST.value}, limit=0
+            )
+            for row in rows:
+                instance = row["provider_instance"]
+                provider = self.mass.get_provider(instance)
+                if not isinstance(provider, MusicProvider) or not provider.is_streaming_provider:
+                    continue
+                await self._split_merged_artist(int(row["item_id"]), instance)
+
+    def _on_music_sync_completed(self, _event: MassEvent) -> None:
+        """Trigger the merged-provider-id artist split when music sync tasks have completed."""
+        self.mass.create_task(self.split_merged_provider_artists())
+
     def _validate_provider_filter(
         self, provider_instance_id_or_domain: str, provider_filter: str | None
     ) -> None:
@@ -1277,3 +1316,110 @@ class ArtistsController(MediaControllerBase[Artist]):
             if isinstance(provider, MusicProvider) and provider.is_streaming_provider:
                 return True
         return False
+
+    async def _split_merged_artist(self, db_id: int, instance: str) -> None:
+        """
+        Split one library artist's surplus mappings on a single provider instance.
+
+        :param db_id: Library id of the artist to inspect.
+        :param instance: Provider instance id that maps the artist under several ids.
+        """
+        try:
+            db_artist = await self.get_library_item(db_id)
+        except MediaNotFoundError:
+            return
+        # provider_mappings is a set: sort so "the first fetched artist" is deterministic
+        mappings = sorted(
+            (
+                m
+                for m in db_artist.provider_mappings
+                if m.provider_instance == instance and m.available
+            ),
+            key=lambda m: m.item_id,
+        )
+        keeper: Artist | None = None
+        fetched: list[tuple[ProviderMapping, Artist]] = []
+        removed: list[ProviderMapping] = []
+        for mapping in mappings:
+            try:
+                prov_artist = await self.get_provider_item(
+                    mapping.item_id, instance, force_refresh=True, allow_fallback=False
+                )
+            except MediaNotFoundError:
+                removed.append(mapping)
+                continue
+            except Exception:
+                # unrelated failure: leave this artist untouched, it is retried next run
+                self.logger.debug(
+                    "Skipping split of artist %s on %s, could not fetch mapping %s",
+                    db_artist.name,
+                    instance,
+                    mapping.item_id,
+                    exc_info=True,
+                )
+                return
+            fetched.append((mapping, prov_artist))
+            if keeper is None and prov_artist.name == db_artist.name:
+                keeper = prov_artist
+        if fetched:
+            keeper = keeper or fetched[0][1]
+            for mapping, prov_artist in fetched:
+                if prov_artist is keeper:
+                    continue
+                if any(
+                    compare_external_ids(keeper.external_ids, prov_artist.external_ids, ext_id)
+                    is True
+                    for ext_id in ARTIST_EXTERNAL_ID_TYPES
+                ):
+                    continue  # a strong external id says this is a legitimate link, keep it
+                removed.append(mapping)
+        if not removed:
+            return
+        for mapping in removed:
+            await self.remove_provider_mapping(db_id, instance, mapping.item_id)
+        relinked = await self._relink_split_artist_items(db_id, instance)
+        self.logger.info(
+            "Split merged artist %s: removed %s mapping(s) on %s, re-linked %s item(s)",
+            db_artist.name,
+            len(removed),
+            instance,
+            relinked,
+        )
+
+    async def _relink_split_artist_items(self, db_id: int, instance: str) -> int:
+        """
+        Re-fetch the artist's albums and tracks on one provider instance to fix their credits.
+
+        :param db_id: Library id of the artist whose surplus mappings were just removed.
+        :param instance: Provider instance id to re-link items on.
+        """
+        relinked = 0
+        for album in await self.get_library_artist_albums(db_id, provider_filter=instance):
+            mapping = next(
+                (m for m in album.provider_mappings if m.provider_instance == instance), None
+            )
+            if mapping is not None:
+                with contextlib.suppress(MediaNotFoundError):
+                    prov_album = await self.mass.music.albums.get_provider_item(
+                        mapping.item_id, instance, force_refresh=True, allow_fallback=False
+                    )
+                    await self.mass.music.albums.update_item_in_library(
+                        album.item_id, prov_album, overwrite=True
+                    )
+                    relinked += 1
+            await asyncio.sleep(SPLIT_MERGED_ARTISTS_SLEEP_INTERVAL)
+        for track in await self.get_library_artist_tracks(db_id, provider_filter=instance):
+            mapping = next(
+                (m for m in track.provider_mappings if m.provider_instance == instance), None
+            )
+            if mapping is not None:
+                with contextlib.suppress(MediaNotFoundError):
+                    prov_track = await self.mass.music.tracks.get_provider_item(
+                        mapping.item_id, instance, force_refresh=True, allow_fallback=False
+                    )
+                    await self.mass.music.tracks.update_item_in_library(
+                        track.item_id, prov_track, overwrite=True
+                    )
+                    relinked += 1
+            await asyncio.sleep(SPLIT_MERGED_ARTISTS_SLEEP_INTERVAL)
+        return relinked
