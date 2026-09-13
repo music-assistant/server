@@ -39,7 +39,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.util import is_valid_mac_address
-from music_assistant.models.player import Player
+from music_assistant.models.player import Player, PlayerSource
 from music_assistant.providers.sonos.const import (
     NON_HIRES_MODELS,
     PLAYBACK_STATE_MAP,
@@ -91,6 +91,8 @@ class SonosPlayer(Player):
     """Holds the details of the (discovered) Sonosplayer."""
 
     _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
+    # the speaker names the service it plays itself, so its source list is trusted
+    _attr_trusts_reported_source = True
     # the speaker plays out of a cached copy of our cloud queue that it refreshes on its
     # own schedule; when it fetches a track the queue has since moved away from the
     # playhead, the server must refuse it so the speaker re-reads the queue
@@ -119,6 +121,17 @@ class SonosPlayer(Player):
         # failures already logged, so the speaker's resends are not logged again
         self.reported_playback_errors: deque[str] = deque(maxlen=REPORTED_ERROR_HISTORY)
         self._announcement_media: PlayerMedia | None = None
+
+    @property
+    def source_list(self) -> list[PlayerSource]:
+        """Return this player's sources; a service we did not map is listed only while it plays."""
+        # the entry of such a service can outlive the source it stands for: once a paused
+        # session is given up on, the speaker keeps reporting it and rebuilds the entry
+        return [
+            x
+            for x in self._attr_source_list
+            if x.id in PLAYER_SOURCE_MAP or x.id == self._attr_active_source
+        ]
 
     @property
     def group_controller(self) -> SonosGroup:
@@ -1008,10 +1021,18 @@ class SonosPlayer(Player):
         self.logger.debug("Disconnected from player API")
 
     def _reflect_source_play_modes(self, active_group: SonosGroup) -> None:
-        """Report the play modes of the source the speaker runs itself on its source list entry."""
+        """Report the source the speaker runs itself, with its play modes, on its source list."""
         # a source that stopped playing must lose its live state, so every entry starts from
-        # its template again; the templates are shared between players, so never mutated
-        self._attr_source_list = [PLAYER_SOURCE_MAP.get(x.id, x) for x in self._attr_source_list]
+        # its template again; the templates are shared between players, so never mutated.
+        # a service we did not map only has an entry while the speaker plays it, so it is
+        # dropped here and rebuilt below
+        self._attr_source_list = [
+            PLAYER_SOURCE_MAP[x.id] for x in self._attr_source_list if x.id in PLAYER_SOURCE_MAP
+        ]
+        if self._attr_active_source is None:
+            # MA playback has no entry here, the MA queue carries its own play modes
+            return
+        actions = active_group.playback_actions.raw_data
         source_index = next(
             (
                 index
@@ -1021,10 +1042,26 @@ class SonosPlayer(Player):
             None,
         )
         if source_index is None:
-            # MA playback and the services we did not map have no entry here, and the
-            # MA queue carries its own play modes
-            return
-        actions = active_group.playback_actions.raw_data
+            if self._attr_active_source in PLAYER_SOURCE_MAP:
+                # a mapped source this player does not offer itself, such as the line-in of
+                # the coordinator it is synced to
+                return
+            # a service we did not map: the user can not start it from MA and its transport
+            # is whatever the speaker reports for it
+            source_id = str(self._attr_active_source)
+            self._attr_source_list.append(
+                PlayerSource(
+                    id=source_id,
+                    name=source_id,
+                    passive=True,
+                    # the speaker reports the action for its current state only
+                    can_play_pause=actions.get("canPlay", False) or actions.get("canPause", False),
+                    can_seek=actions.get("canSeek", False),
+                    can_next_previous=actions.get("canSkip", False)
+                    and actions.get("canSkipBack", False),
+                )
+            )
+            source_index = len(self._attr_source_list) - 1
         modes = active_group.play_modes
         repeat_mode: RepeatMode | None
         if modes.repeat is None and modes.repeat_one is None:
