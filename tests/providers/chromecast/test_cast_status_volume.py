@@ -39,6 +39,7 @@ def _fake_player(app_id: str | None, player_type: PlayerType = PlayerType.PLAYER
     fake.cast_info.is_multichannel_group = False
     fake.cast_info.is_audio_group = False
     fake.on_app_status_changed = None
+    fake._pending_volume = None
     fake.type = player_type
     return fake
 

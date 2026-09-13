@@ -96,6 +96,8 @@ class ChromecastPlayer(Player):
         self.flow_meta_checksum: str | None = None
         self._app_quit_task_id: str = f"cast_quit_app_{player_id}"
         self._media_error_reported = False
+        # holds a volume set deferred while idle; see volume_set for why
+        self._pending_volume: int | None = None
         # set static variables
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
@@ -215,6 +217,14 @@ class ChromecastPlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
+        if self.cc.app_id in (None, IDLE_APP_ID):
+            # some receivers ack an idle volume change but never apply it, then de-dupe a later
+            # repeat of the same value - deferring to app launch dodges both
+            self._pending_volume = volume_level
+            self._attr_volume_level = volume_level
+            self.update_state()
+            return
+        self._pending_volume = None
         # Round to 2 decimal places to avoid floating-point precision issues
         await asyncio.to_thread(self.cc.set_volume, round(volume_level / 100, 2))
 
@@ -512,6 +522,11 @@ class ChromecastPlayer(Player):
 
         self.app_quit_sent = False
 
+        if (pending := self._pending_volume) is not None:
+            # now the app is running, a re-sent value differs from the idle report and sticks
+            self._pending_volume = None
+            await self.volume_set(pending)
+
     def _log_launch_failure(self, app_id: str, reason: str) -> None:
         """
         Log a failed receiver app launch and which config option to try instead.
@@ -608,11 +623,13 @@ class ChromecastPlayer(Player):
         # device that is a player in its own right always reports its own volume.
         volume_level = round(status.volume_level * 100)
         cast_idle = self.cc.app_id in (None, IDLE_APP_ID)
-        self._attr_volume_level = (
-            None
-            if cast_idle and volume_level == 0 and self.type == PlayerType.PROTOCOL
-            else volume_level
-        )
+        if self._pending_volume is not None and cast_idle:
+            # the device still reports its stale level while deferred; show the requested one
+            self._attr_volume_level = self._pending_volume
+        elif cast_idle and volume_level == 0 and self.type == PlayerType.PROTOCOL:
+            self._attr_volume_level = None
+        else:
+            self._attr_volume_level = volume_level
         self._attr_volume_muted = status.volume_muted
         self.update_state()
         if self.on_app_status_changed is not None:
