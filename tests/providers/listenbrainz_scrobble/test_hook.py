@@ -296,19 +296,21 @@ async def test_a_scrobble_is_submitted_with_a_bounded_request() -> None:
     assert isinstance(session.posted_json["payload"][0]["listened_at"], int)
 
 
-async def test_a_transport_error_while_scrobbling_is_swallowed() -> None:
-    """A network error while scrobbling is logged and swallowed, leaving the track unmarked."""
-    handler = _handler(_FakeSession(post_error=aiohttp.ClientConnectionError()))
-
-    await handler.on_media_item_played(_report())
-
-    assert handler.last_scrobbled is None
-
-
-async def test_an_api_error_while_scrobbling_is_swallowed() -> None:
-    """A non-2xx reply while scrobbling is logged and swallowed, leaving the track unmarked."""
-    error = aiohttp.ClientResponseError(Mock(), (), status=500)
-    handler = _handler(_FakeSession(post_status_error=error))
+@pytest.mark.parametrize(
+    "session",
+    [
+        # a request that never connects
+        _FakeSession(post_error=aiohttp.ClientConnectionError()),
+        # a request that stalls until the timeout fires: the case this fix exists for
+        _FakeSession(post_error=TimeoutError()),
+        # the service answering with a non-2xx status
+        _FakeSession(post_status_error=aiohttp.ClientResponseError(Mock(), (), status=500)),
+    ],
+    ids=["connection-error", "timeout", "api-error"],
+)
+async def test_a_failed_submission_is_swallowed(session: _FakeSession) -> None:
+    """A network, timeout, or API error while scrobbling is logged and swallowed, not raised."""
+    handler = _handler(session)
 
     await handler.on_media_item_played(_report())
 
