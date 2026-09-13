@@ -884,9 +884,9 @@ async def test_connection_retains_listener_references() -> None:
 
 async def test_cancelled_connect_closes_the_device_it_creates() -> None:
     """A cancelled connect still closes the device it ends up with."""
-    # pyatv releases the aiohttp session it allocates only when connect() raises an
-    # Exception, so cancelling a pending connect (a discovery update or an unload
-    # restarts the connection loop) left that session unclosed.
+    # pyatv cleans up after itself only when connect() raises an Exception, so
+    # cancelling a pending connect (a discovery update or an unload restarts the
+    # connection loop) left the connections it had already opened behind.
     player = _make_control_player(setup_data={CONF_COMPANION_CREDENTIALS: "companion-creds"})
     device = MagicMock(spec=AppleTV)
     started = asyncio.Event()
@@ -936,6 +936,9 @@ async def test_mrp_connection_uses_dedicated_pairing_credentials() -> None:
     service = config.get_service(Protocol.AirPlay)
     assert service is not None
     assert service.credentials == credentials
+    # pyatv must not open a private aiohttp session; a caller-owned one is also never
+    # closed by pyatv, so a cancelled connect cannot leave one behind
+    assert connect.await_args.kwargs["session"] is player.mass.http_session
     assert player._mrp_state_listener is not None
     assert player._mrp_push_listener is not None
 

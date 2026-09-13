@@ -544,8 +544,8 @@ async def test_all_pairings_reoffered_and_skippable_when_already_paired() -> Non
 
 async def test_cancelled_pairing_closes_the_session_it_starts() -> None:
     """A cancelled pairing start still closes the session it ends up with."""
-    # pyatv releases the aiohttp session it allocates only when pair() raises an
-    # Exception, so abandoning the setup flow left that session unclosed.
+    # pyatv cleans up after itself only when pair() raises an Exception, so abandoning
+    # the setup flow left the started pairing session open.
     player = _control_player()
     pairing = _pyatv_pairing("companion-creds")
     started = asyncio.Event()
