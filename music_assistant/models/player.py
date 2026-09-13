@@ -3402,12 +3402,15 @@ class Player(ABC):
             return session.active_source
 
         # always prefer active MA source but add a guard to detect if player is really playing
-        # something different, such as a line-in or TV input, we use an explicit list here
-        # because many players do not accurately report the active_source
-        # this way, for the obvious cases, we can detect a source "takeover"
-        if self.__active_mass_source and (
-            not self.active_source or self.active_source.lower() not in EXTERNAL_SOURCES
-        ):
+        # something different, such as a line-in or TV input. Many players do not accurately
+        # report the active_source, so only the obvious cases count as a source "takeover":
+        # a source from an explicit list, or one the player lists as a source of its own
+        reported_source = self.active_source
+        takeover = reported_source is not None and (
+            reported_source.lower() in EXTERNAL_SOURCES
+            or any(x.id == reported_source for x in self.source_list)
+        )
+        if self.__active_mass_source and not takeover:
             return self.__active_mass_source
 
         # active source as reported by the player itself
