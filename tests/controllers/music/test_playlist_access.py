@@ -767,14 +767,58 @@ async def test_library_add_command_ignores_a_supplied_record(
 ) -> None:
     """Adding a playlist through the generic library command never sets its owner or sharing."""
     monkeypatch.setattr(music_mass_module.metadata, "update_metadata", AsyncMock())
-
-    with _as_user(MEMBER):
-        added = await music_mass_module.music.add_item_to_library(
-            _playlist("Crafted", PlaylistAccess(owner=OWNER.user_id))
+    crafted = _playlist("Crafted", PlaylistAccess(owner=OWNER.user_id))
+    provider = MagicMock()
+    provider.domain = provider.instance_id = "builtin"
+    provider.available = True
+    provider.library_add = AsyncMock()
+    # the playlist is read from the builtin provider, not taken from the caller
+    provider.get_playlist = AsyncMock(
+        return_value=_playlist(
+            "Stored",
+            PlaylistAccess(owner=OWNER.user_id, sharing=ProviderSharing.EVERYONE),
+            item_id=crafted.item_id,
         )
+    )
+
+    with _as_user(MEMBER), patch.object(music_mass_module, "get_provider", return_value=provider):
+        added = await music_mass_module.music.add_item_to_library(crafted)
 
     assert isinstance(added, Playlist)
+    assert added.name == "Stored"
     assert added.access is None
+
+
+async def test_library_add_command_fetches_a_playlist_instead_of_trusting_it(
+    playlists: PlaylistController,
+    music_mass_module: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crafted playlist can neither move another playlist's mapping nor reach a hidden one."""
+    monkeypatch.setattr(music_mass_module.metadata, "update_metadata", AsyncMock())
+    private = await _add(
+        playlists, _playlist("Private target", PlaylistAccess(owner=OWNER.user_id))
+    )
+    own = await _add(playlists, _playlist("Own target", PlaylistAccess(owner=MEMBER.user_id)))
+    service = await _add(playlists, _playlist("Service target", provider_domain="spotify"))
+
+    def crafted(target: Playlist) -> Playlist:
+        playlist = _playlist("Crafted", item_id=next(iter(target.provider_mappings)).item_id)
+        playlist.provider_mappings |= service.provider_mappings
+        playlist.is_editable = False
+        return playlist
+
+    with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
+        await music_mass_module.music.add_item_to_library(crafted(private), overwrite_existing=True)
+    with _as_user(MEMBER):
+        await music_mass_module.music.add_item_to_library(crafted(own), overwrite_existing=True)
+
+    for playlist in (private, own, service):
+        stored = await playlists.get_library_item(playlist.item_id)
+        assert stored.provider_mappings == playlist.provider_mappings
+    stored_own = await playlists.get_library_item(own.item_id)
+    assert stored_own.name == "Own target"
+    assert stored_own.is_editable
 
 
 async def test_library_add_of_a_matching_item_needs_the_right_to_edit(
