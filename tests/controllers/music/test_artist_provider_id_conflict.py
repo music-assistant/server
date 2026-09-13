@@ -106,3 +106,26 @@ async def test_different_instances_same_name_still_confirms() -> None:
     item = _artist("2", "spotify1", "Artist A", provider_domain="spotify")
 
     assert await ctrl._confirm_library_candidate(db_item, item) is True
+
+
+async def test_confirms_same_artist_external_id_overrides_conflict() -> None:
+    """A shared external id wins over a same-instance id conflict; without it, the conflict stands."""
+    ctrl = _controller({"tidal1": _streaming_provider()})
+    mb_id = {(ExternalID.MB_ARTIST, "123")}
+    a = _artist("1", "tidal1", "loud", external_ids=mb_id)
+    b = _artist("2", "tidal1", "LOUD", external_ids=mb_id)
+
+    assert ctrl._confirms_same_artist(a, b) is True
+
+    a_no_id = _artist("1", "tidal1", "loud")
+    b_no_id = _artist("2", "tidal1", "LOUD")
+
+    assert ctrl._confirms_same_artist(a_no_id, b_no_id) is False
+
+    ctrl_multi = _controller(
+        {"tidal1": _streaming_provider("tidal1"), "spotify1": _streaming_provider("spotify1")}
+    )
+    a_diff_instance = _artist("1", "tidal1", "loud")
+    b_diff_instance = _artist("2", "spotify1", "LOUD", provider_domain="spotify")
+
+    assert ctrl_multi._confirms_same_artist(a_diff_instance, b_diff_instance) is True

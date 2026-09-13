@@ -894,7 +894,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             for candidate in row:
                 if candidate is None or any(
                     compare_artist(existing, candidate)
-                    and not self._has_conflicting_provider_ids(existing, candidate)
+                    and self._confirms_same_artist(existing, candidate)
                     for existing in result
                 ):
                     continue
@@ -1062,14 +1062,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param db_item: Existing library artist that matched on an external id or name.
         :param item: The (provider) artist that is being added to the library.
         """
-        if not await super()._confirm_library_candidate(db_item, item):
-            return False
-        if any(
-            compare_external_ids(db_item.external_ids, item.external_ids, ext_id)
-            for ext_id in ARTIST_EXTERNAL_ID_TYPES
-        ):
-            return True
-        return not self._has_conflicting_provider_ids(db_item, item)
+        return await super()._confirm_library_candidate(
+            db_item, item
+        ) and self._confirms_same_artist(db_item, item)
 
     async def _confirm_artist_match(
         self, db_artist: Artist, candidate: Artist | ItemMapping, strict: bool
@@ -1246,6 +1241,17 @@ class ArtistsController(MediaControllerBase[Artist]):
         item = cast("ArtistSummary", super()._parse_summary_row(db_row))
         item.artist_type = ArtistType(db_row["artist_type"])
         return item
+
+    def _confirms_same_artist(
+        self, base_item: Artist | ItemMapping, compare_item: Artist | ItemMapping
+    ) -> bool:
+        """Return False when conflicting same-instance ids outweigh a name match on these artists."""
+        if any(
+            compare_external_ids(base_item.external_ids, compare_item.external_ids, ext_id)
+            for ext_id in ARTIST_EXTERNAL_ID_TYPES
+        ):
+            return True
+        return not self._has_conflicting_provider_ids(base_item, compare_item)
 
     def _has_conflicting_provider_ids(
         self, base_item: Artist | ItemMapping, compare_item: Artist | ItemMapping
