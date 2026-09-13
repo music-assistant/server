@@ -230,11 +230,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             required_scope=Scope.LIBRARY_READ,
             alias=True,
         )
-        self.mass.register_api_command(
-            f"music/{api_base}/update",
-            self.update_item_in_library,
-            required_scope=Scope.LIBRARY_MANAGE,
-        )
+        self._register_update_command()
         self.mass.register_api_command(
             f"music/{api_base}/remove",
             self.remove_item_from_library,
@@ -1696,6 +1692,19 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             cast("ItemCls", self.item_cls.from_dict(self._parse_db_row(db_row)))
             for db_row in db_rows
         ]
+
+    def _register_update_command(self) -> None:
+        """
+        Register the API command that updates a library item.
+
+        Only a library manager may use it; a controller that checks the caller itself may
+        override this to register its own handler.
+        """
+        self.mass.register_api_command(
+            f"music/{self.api_base}/update",
+            self.update_item_in_library,
+            required_scope=Scope.LIBRARY_MANAGE,
+        )
 
     @final
     async def _get_library_item_by_match(self, item: ItemCls | ItemMapping) -> int | None:
