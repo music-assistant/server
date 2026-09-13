@@ -3232,6 +3232,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 player.extra_data[ATTR_LAST_POLL] = self.mass.loop.time()
                 try:
                     await player.poll()
+                except PlayerUnavailableError:
+                    # a device that is off or unreachable is a normal condition;
+                    # the provider marks the player unavailable itself
+                    self.logger.debug("Player %s is unavailable", player.state.name)
                 except Exception as err:
                     self.logger.warning(
                         "Error while requesting latest state from player %s: %s",
