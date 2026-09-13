@@ -42,6 +42,9 @@ _SENDSPIN_PCM_FORMAT = SendspinAudioFormat(
 _FRAME_SIZE = 4 * 2  # 32-bit float * 2 channels
 _CHUNK_BYTES = b"\x00" * (round(_CHUNK_DURATION_US / 1_000_000 * _SAMPLE_RATE) * _FRAME_SIZE)
 _STALL_US = 3_000_000
+# Audio is committed this far ahead of the clock, so now_us() and the commit timestamps
+# stay on one timeline the way aiosendspin's shared RawMonotonicClock keeps them.
+_SEND_AHEAD_US = 500_000
 
 
 class _FakePushStream:
@@ -49,7 +52,7 @@ class _FakePushStream:
 
     def __init__(self, commit_timestamps: list[int]) -> None:
         self._commit_timestamps = iter(commit_timestamps)
-        self._now_us = 0
+        self._now_us = commit_timestamps[0] - _SEND_AHEAD_US
         self.is_stopped = False
 
     def set_live_source(self, _live: bool) -> None:
@@ -59,13 +62,14 @@ class _FakePushStream:
         pass
 
     async def commit_audio(self) -> int:
-        return next(self._commit_timestamps)
+        timestamp = next(self._commit_timestamps)
+        self._now_us = timestamp - _SEND_AHEAD_US
+        return timestamp
 
     async def sleep_to_limit_buffer(self, _limit_us: int) -> None:
         pass
 
     def now_us(self) -> int:
-        self._now_us += 1_000
         return self._now_us
 
     def stop(self, *, keep_stream: bool = False) -> None:
@@ -82,8 +86,12 @@ async def _fake_audio_source(num_chunks: int) -> AsyncIterator[bytes]:
 
 async def _run_commit_loop(
     monkeypatch: pytest.MonkeyPatch, commit_timestamps: list[int]
-) -> list[int | None]:
-    """Drive one real _run_playback pass and return _timeline_start_us after each commit."""
+) -> tuple[list[int | None], list[int]]:
+    """
+    Drive one real _run_playback pass over the given commit schedule.
+
+    Returns the anchor and the retained history length observed after each commit.
+    """
     player = MagicMock()
     player.player_id = "leader"
     player.mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
@@ -102,17 +110,19 @@ async def _run_commit_loop(
     )
 
     observed_anchors: list[int | None] = []
+    retained_history: list[int] = []
     original_prune = SendspinPlaybackSession._prune_history_locked
 
     def _recording_prune(self: SendspinPlaybackSession, now_monotonic_us: int) -> None:
         observed_anchors.append(self._timeline_start_us)
         original_prune(self, now_monotonic_us)
+        retained_history.append(len(self._history))
 
     monkeypatch.setattr(session, "_prune_history_locked", _recording_prune.__get__(session))
 
     media = PlayerMedia(uri="library://track/1")
     await session._run_playback(media)
-    return observed_anchors
+    return observed_anchors, retained_history
 
 
 async def test_anchor_absorbs_a_mid_stream_rebase(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -125,9 +135,33 @@ async def test_anchor_absorbs_a_mid_stream_rebase(monkeypatch: pytest.MonkeyPatc
         t0 + 2 * _CHUNK_DURATION_US + _STALL_US,
     ]
 
-    anchors = await _run_commit_loop(monkeypatch, commit_timestamps)
+    anchors, _ = await _run_commit_loop(monkeypatch, commit_timestamps)
 
     assert anchors == [t0, t0, t0 + _STALL_US]
+
+
+async def test_stall_does_not_prune_the_chunk_it_just_committed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A stall must not empty the history join-catchup backfills from.
+
+    _prune_history_locked pairs the anchor with a monotonic reference, and a stall moves
+    both. Rebasing only the anchor counts the stall twice and pushes the cutoff past the
+    chunk that was just committed, leaving a late joiner nothing at all to catch up from.
+    Chunks genuinely older than _HISTORY_KEEP_PAST_US are still dropped, as on a steady
+    schedule - the newest one must survive.
+    """
+    t0 = 10_000_000
+    commit_timestamps = [
+        t0,
+        t0 + _CHUNK_DURATION_US,
+        t0 + 2 * _CHUNK_DURATION_US + _STALL_US,
+    ]
+
+    _, retained = await _run_commit_loop(monkeypatch, commit_timestamps)
+
+    assert retained == [1, 2, 1]
 
 
 async def test_anchor_is_stable_with_no_stall(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -135,6 +169,7 @@ async def test_anchor_is_stable_with_no_stall(monkeypatch: pytest.MonkeyPatch) -
     t0 = 5_000_000
     commit_timestamps = [t0 + i * _CHUNK_DURATION_US for i in range(4)]
 
-    anchors = await _run_commit_loop(monkeypatch, commit_timestamps)
+    anchors, retained = await _run_commit_loop(monkeypatch, commit_timestamps)
 
     assert anchors == [t0] * 4
+    assert retained == [1, 2, 3, 4]

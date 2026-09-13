@@ -343,7 +343,7 @@ class SendspinPlaybackSession:
         self._playback_running = False
         self._producer_eof_sent = False
         self._timeline_start_us: int | None = None
-        self._first_commit_monotonic_us: int | None = None
+        self._timeline_monotonic_ref_us: int | None = None
         self._produced_audio_us = 0
         self._history: deque[_HistoryChunk] = deque()
         self._join_catchup: dict[str, _JoinCatchupState] = {}
@@ -456,7 +456,7 @@ class SendspinPlaybackSession:
             self._history.clear()
             self._produced_audio_us = 0
             self._timeline_start_us = None
-            self._first_commit_monotonic_us = None
+            self._timeline_monotonic_ref_us = None
             self._pipeline_config_cache.clear()
             self._preassigned_channels.clear()
 
@@ -771,7 +771,7 @@ class SendspinPlaybackSession:
                 self._history.clear()
                 self._produced_audio_us = 0
                 self._timeline_start_us = None
-                self._first_commit_monotonic_us = None
+                self._timeline_monotonic_ref_us = None
                 self._mapping_dirty = True
         except Exception:
             # A track change stops the previous stream without stream/end, so a failed
@@ -904,9 +904,12 @@ class SendspinPlaybackSession:
                     pcm=pending.pcm,
                 )
                 async with self._state_lock:
+                    # Both references are rebased together, from the same commit, against
+                    # the same amount of produced audio. A stall shifts commit_start_us and
+                    # commit_now_us alike, so pairing a rebased anchor with a fixed monotonic
+                    # reference would count that stall twice in _prune_history_locked.
                     self._timeline_start_us = int(commit_start_us) - self._produced_audio_us
-                    if self._first_commit_monotonic_us is None:
-                        self._first_commit_monotonic_us = commit_now_us
+                    self._timeline_monotonic_ref_us = commit_now_us - self._produced_audio_us
                     self._history.append(committed_history_chunk)
                     self._produced_audio_us += pending.duration_us
                     self._prune_history_locked(commit_now_us)
@@ -1479,7 +1482,7 @@ class SendspinPlaybackSession:
             self._push_stream = None
             self._playback_running = False
             self._timeline_start_us = None
-            self._first_commit_monotonic_us = None
+            self._timeline_monotonic_ref_us = None
             self._produced_audio_us = 0
             self._history.clear()
             # Drop cached DSP decisions so next playback reflects latest config.
@@ -1502,10 +1505,10 @@ class SendspinPlaybackSession:
 
     def _prune_history_locked(self, now_monotonic_us: int) -> None:
         """Drop old history chunks that are fully in the past."""
-        if self._timeline_start_us is None or self._first_commit_monotonic_us is None:
+        if self._timeline_start_us is None or self._timeline_monotonic_ref_us is None:
             return
-        elapsed_real_us = max(0, now_monotonic_us - self._first_commit_monotonic_us)
-        source_now_us = self._timeline_start_us + elapsed_real_us
+        produced_us = max(0, now_monotonic_us - self._timeline_monotonic_ref_us)
+        source_now_us = self._timeline_start_us + produced_us
         cutoff_us = source_now_us - _HISTORY_KEEP_PAST_US
         while self._history and (
             self._history[0].start_time_us + self._history[0].duration_us <= cutoff_us
