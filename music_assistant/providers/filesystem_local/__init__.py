@@ -2222,11 +2222,14 @@ class LocalFileSystemProvider(MusicProvider):
 
         except Exception as err:
             # we don't want the whole sync to crash on one file so we catch all exceptions here
+            # an unreadable/corrupt file is already fully described by the message itself,
+            # so only attach a traceback for errors we did not expect
+            unexpected = not isinstance(err, InvalidDataError)
             self.logger.error(
                 "Error processing %s - %s",
                 item.relative_path,
                 str(err),
-                exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                exc_info=err if unexpected and self.logger.isEnabledFor(logging.DEBUG) else None,
             )
             report_current_task_failure(f"Failed to process {item.relative_path}: {err}")
             # the file is still on the storage, so keep it in the scan result:
