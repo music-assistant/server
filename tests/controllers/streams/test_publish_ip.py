@@ -152,12 +152,12 @@ async def test_ipv6_publish_ip_is_bracketed_in_base_url(
     assert streams_controller.base_url == f"http://[fd00::10]:{streams_controller.publish_port}"
 
 
-async def test_stored_hostname_publish_ip_is_ignored_with_warning(
+async def test_stored_hostname_publish_ip_is_reset_with_warning(
     streams_controller: StreamsController,
     mass_minimal: MusicAssistant,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A stored hostname is ignored: the auto-detected address is published and a warning logged."""
+    """A stored hostname is reset to auto with a warning and the auto-detected address is used."""
     # stored raw, since config.update() rejects a hostname
     mass_minimal.config.set_raw_core_config_value(
         StreamsController.domain, CONF_PUBLISH_IP, HOSTNAME_PUBLISH_IP
@@ -180,6 +180,10 @@ async def test_stored_hostname_publish_ip_is_ignored_with_warning(
 
     assert streams_controller.publish_ip == ALL_ADDRESSES[0]
     assert any("not an IP address" in record.message for record in caplog.records)
+    assert (
+        mass_minimal.config.get_raw_core_config_value(StreamsController.domain, CONF_PUBLISH_IP)
+        == CONF_VALUE_AUTO
+    )
 
 
 @pytest.mark.parametrize(

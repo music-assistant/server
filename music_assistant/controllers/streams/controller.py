@@ -501,13 +501,16 @@ class StreamsController(CoreController):
             None if configured_publish_ip == CONF_VALUE_AUTO else configured_publish_ip
         )
         raw_publish_ip = self.mass.config.get_raw_core_config_value(self.domain, CONF_PUBLISH_IP)
-        if raw_publish_ip and not _is_valid_publish_ip(raw_publish_ip):
-            # config parsing already swapped the invalid stored value for auto, so check
-            # the raw value to tell the user why their setting is ignored
+        if not _is_valid_publish_ip(raw_publish_ip):
+            # config parsing already swapped the invalid stored value for auto; reset the
+            # stored value too, so the setting reads back as auto and this warns only once
             self.logger.warning(
-                "Ignoring Published IP address %r in the streams settings: it is not an "
-                "IP address, so the auto-detected address is used instead",
+                "Published IP address %r in the streams settings is not an IP address, "
+                "resetting it to auto",
                 raw_publish_ip,
+            )
+            self.mass.config.set_raw_core_config_value(
+                self.domain, CONF_PUBLISH_IP, CONF_VALUE_AUTO
             )
         publish_candidates = await get_publish_ip_candidates(include_ipv6=True)
         bind_ip = str(config.get_value(CONF_BIND_IP))
