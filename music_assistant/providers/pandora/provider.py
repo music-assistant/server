@@ -249,6 +249,18 @@ class PandoraProvider(MusicProvider):
             return album
         raise MediaNotFoundError(f"Album {prov_album_id} not found")
 
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
+        """
+        Get the tracks of an album, listed but not playable.
+
+        :param prov_album_id: The Pandora album id.
+        """
+        if (track := self._find_track(prov_album_id)) is None:
+            raise MediaNotFoundError(f"Album {prov_album_id} not found")
+        # Pandora has no album catalogue, so the album only holds the station track it was
+        # created from. Playing a chosen station track on demand is a paid Pandora feature.
+        return [self._parse_track(track, available=False)]
+
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get artist details; Pandora identifies station artists by name only."""
         return self._parse_artist(prov_artist_id)
@@ -573,8 +585,13 @@ class PandoraProvider(MusicProvider):
                 )
         return radio
 
-    def _parse_track(self, obj: dict[str, Any]) -> Track:
-        """Parse a raw fragment track into a Track."""
+    def _parse_track(self, obj: dict[str, Any], available: bool = True) -> Track:
+        """
+        Parse a raw fragment track into a Track.
+
+        :param obj: The raw fragment track.
+        :param available: Whether the track can be played from this listing.
+        """
         name, version = parse_title_and_version(obj.get("songTitle") or "Unknown Song")
         track_id = obj["pandoraId"]
         track = Track(
@@ -590,6 +607,7 @@ class PandoraProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=self._audio_format(),
                     url=obj.get("songDetailURL"),
+                    available=available,
                 )
             },
         )
