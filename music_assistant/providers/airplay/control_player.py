@@ -972,7 +972,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         pairing: PairingHandler | None = None
         started = False
         try:
-            pairing = await pyatv.pair(config, protocol, self.mass.loop, name="Music Assistant")
+            pairing = await self._pyatv_pair(config, protocol)
             await pairing.begin()
             started = True
         except Exception as err:
@@ -986,6 +986,25 @@ class AirPlayControlPlayer(AirPlayPlayer):
                 await pairing.close()
         assert pairing is not None  # reached only when started, i.e. a live session
         return pairing
+
+    async def _pyatv_pair(self, config: AppleTVConfig, protocol: Protocol) -> PairingHandler:
+        """
+        Start a pyatv pairing session, without leaking resources on cancellation.
+
+        :param config: pyatv configuration of the device to pair.
+        :param protocol: The pyatv protocol to pair.
+        """
+        # pair() allocates an aiohttp session and only releases it when it raises an
+        # Exception, so an abandoned setup flow leaks it. Same treatment as connect:
+        # let it finish detached and close the session it hands back.
+        task = asyncio.ensure_future(
+            pyatv.pair(config, protocol, self.mass.loop, name="Music Assistant")
+        )
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            self.mass.create_task(_close_abandoned_pairing(task))
+            raise
 
     async def _finish_pyatv_pairing(self, pairing: PairingHandler, pin: str) -> str:
         """
@@ -1349,3 +1368,11 @@ def _close_abandoned_device(task: asyncio.Task[AppleTV]) -> None:
     if task.cancelled() or task.exception() is not None:
         return
     task.result().close()
+
+
+async def _close_abandoned_pairing(task: asyncio.Task[PairingHandler]) -> None:
+    """Close a pairing session that started after its caller was cancelled."""
+    # a failed pair() closes its own session, so only a started session is left to close
+    with contextlib.suppress(Exception):
+        pairing = await task
+        await pairing.close()
