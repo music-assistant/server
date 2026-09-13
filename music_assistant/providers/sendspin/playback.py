@@ -904,8 +904,7 @@ class SendspinPlaybackSession:
                     pcm=pending.pcm,
                 )
                 async with self._state_lock:
-                    if self._timeline_start_us is None:
-                        self._timeline_start_us = int(commit_start_us)
+                    self._timeline_start_us = int(commit_start_us) - self._produced_audio_us
                     if self._first_commit_monotonic_us is None:
                         self._first_commit_monotonic_us = commit_now_us
                     self._history.append(committed_history_chunk)
