@@ -2209,6 +2209,8 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
             self,
             *args,
             task_id=task_id,
+            # pinned so a wrapped function's own kwargs cannot supply it instead
+            name=task_id,
             abort_existing=False,
             eager_start=True,
             # every caller awaits the flight below and so sees the failure itself; the
