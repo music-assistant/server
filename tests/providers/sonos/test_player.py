@@ -586,7 +586,9 @@ def _report_paused_qobuz(group: MagicMock) -> None:
         "canShuffle": True,
         "canRepeat": True,
         "canRepeatOne": True,
-        "canPause": True,
+        # paused, so the speaker offers play but not pause
+        "canPlay": True,
+        "canPause": False,
         "canSeek": True,
         "canSkip": True,
         "canSkipBack": False,
@@ -622,6 +624,7 @@ def test_a_service_we_did_not_map_gets_a_source_entry_with_its_play_modes() -> N
     assert source.can_repeat is True
     assert source.shuffle_enabled is True
     assert source.repeat_mode is RepeatMode.ALL
+    # either play or pause being available means the source can be paused and resumed
     assert source.can_play_pause is True
     assert source.can_seek is True
     # skipping is only offered when the speaker allows it in both directions

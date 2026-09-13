@@ -1054,7 +1054,8 @@ class SonosPlayer(Player):
                     id=source_id,
                     name=source_id,
                     passive=True,
-                    can_play_pause=actions.get("canPause", False),
+                    # the speaker reports the action for its current state only
+                    can_play_pause=actions.get("canPlay", False) or actions.get("canPause", False),
                     can_seek=actions.get("canSeek", False),
                     can_next_previous=actions.get("canSkip", False)
                     and actions.get("canSkipBack", False),
