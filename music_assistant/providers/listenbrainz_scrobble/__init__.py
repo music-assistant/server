@@ -9,12 +9,13 @@ import logging
 import time
 from typing import TYPE_CHECKING, ClassVar, Final
 
+import aiohttp
 import requests.exceptions
 from liblistenbrainz import Listen, ListenBrainz
 from liblistenbrainz.errors import ListenBrainzException
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.errors import InvalidToken, SetupFailedError
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
@@ -58,8 +59,10 @@ class ListenBrainzScrobbleProvider(PluginProvider):
         if not token:
             raise SetupFailedError("User token needs to be set")
         assert token != SECURE_STRING_SUBSTITUTE
+        await self._validate_token(str(api_base_url), str(token))
         client = ListenBrainz(api_base_url=str(api_base_url))
-        client.set_auth_token(str(token))
+        # the token is validated above, so skip the client's own blocking check
+        client.set_auth_token(str(token), check_validity=False)
         self._client = client
 
     async def loaded_in_mass(self) -> None:
@@ -72,6 +75,33 @@ class ListenBrainzScrobbleProvider(PluginProvider):
         """Forward a playback progress report to ListenBrainz."""
         if self._handler is not None:
             await self._handler.on_media_item_played(report)
+
+    async def _validate_token(self, api_base_url: str, token: str) -> None:
+        """
+        Check the configured user token against ListenBrainz.
+
+        :param api_base_url: Base URL of the ListenBrainz API.
+        :param token: The user token to validate.
+        """
+        url = f"{api_base_url.rstrip('/')}/1/validate-token"
+        try:
+            async with self.mass.http_session.get(
+                url,
+                headers={"Authorization": f"Token {token}"},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as response:
+                response.raise_for_status()
+                result = await response.json()
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            # ValueError covers a malformed JSON body from response.json()
+            raise SetupFailedError(f"Unable to connect to ListenBrainz: {err}") from err
+        # only an explicit boolean valid=false proves the token is bad; any other
+        # shape is a response we can't trust, so keep setup retryable
+        valid = result.get("valid") if isinstance(result, dict) else None
+        if not isinstance(valid, bool):
+            raise SetupFailedError("Unexpected response from ListenBrainz")
+        if not valid:
+            raise InvalidToken("Invalid ListenBrainz user token")
 
 
 class ListenBrainzEventHandler(ScrobblerHelper):
