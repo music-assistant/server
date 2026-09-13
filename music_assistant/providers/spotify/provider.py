@@ -56,7 +56,11 @@ from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.json import SerializableType, json_loads
-from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
+from music_assistant.helpers.throttle_retry import (
+    ThrottlerManager,
+    parse_retry_after,
+    throttle_with_retries,
+)
 from music_assistant.helpers.util import lock
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 from music_assistant.providers.spotify_connect.base import (
@@ -1616,7 +1620,7 @@ class SpotifyProvider(MusicProvider):
         ):
             # handle spotify rate limiter
             if response.status == 429:
-                backoff_time = int(response.headers["Retry-After"])
+                backoff_time = parse_retry_after(response.headers.get("Retry-After"))
                 raise RateLimited("Spotify Rate Limiter", backoff_time=backoff_time)
             # handle temporary server error
             if response.status in (502, 503):
@@ -1667,7 +1671,7 @@ class SpotifyProvider(MusicProvider):
         ) as response:
             # handle spotify rate limiter
             if response.status == 429:
-                backoff_time = int(response.headers["Retry-After"])
+                backoff_time = parse_retry_after(response.headers.get("Retry-After"))
                 raise RateLimited("Spotify Rate Limiter", backoff_time=backoff_time)
             # handle token expired, raise ResourceTemporarilyUnavailable
             # so it will be retried (and the token refreshed)
@@ -1695,7 +1699,7 @@ class SpotifyProvider(MusicProvider):
         ) as response:
             # handle spotify rate limiter
             if response.status == 429:
-                backoff_time = int(response.headers["Retry-After"])
+                backoff_time = parse_retry_after(response.headers.get("Retry-After"))
                 raise RateLimited("Spotify Rate Limiter", backoff_time=backoff_time)
             # handle token expired, raise ResourceTemporarilyUnavailable
             # so it will be retried (and the token refreshed)
@@ -1726,7 +1730,7 @@ class SpotifyProvider(MusicProvider):
         ) as response:
             # handle spotify rate limiter
             if response.status == 429:
-                backoff_time = int(response.headers["Retry-After"])
+                backoff_time = parse_retry_after(response.headers.get("Retry-After"))
                 raise RateLimited("Spotify Rate Limiter", backoff_time=backoff_time)
             # handle token expired, raise ResourceTemporarilyUnavailable
             # so it will be retried (and the token refreshed)
