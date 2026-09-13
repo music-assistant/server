@@ -714,3 +714,14 @@ def test_a_group_child_does_not_take_over_the_line_in_of_its_coordinator() -> No
 
     assert player._attr_active_source == SOURCE_LINE_IN
     assert player._attr_source_list == []
+
+
+def test_a_service_we_did_not_map_leaves_the_source_list_when_it_is_given_up_on() -> None:
+    """Test the entry goes when a paused session is declared over, before the speaker reports."""
+    player, _ = _speaker_reporting_paused_qobuz()
+    player.on_player_event(None)
+
+    player.mark_external_source_ended()
+
+    assert player._attr_active_source is None
+    assert player.source_list == [PLAYER_SOURCE_MAP[SOURCE_LINE_IN]]

@@ -121,6 +121,17 @@ class SonosPlayer(Player):
         self._announcement_media: PlayerMedia | None = None
 
     @property
+    def source_list(self) -> list[PlayerSource]:
+        """Return the sources of this player, a service we did not map only while it plays."""
+        # the entry of such a service can outlive the source it stands for: once a paused
+        # session is given up on, the speaker keeps reporting it and rebuilds the entry
+        return [
+            x
+            for x in self._attr_source_list
+            if x.id in PLAYER_SOURCE_MAP or x.id == self._attr_active_source
+        ]
+
+    @property
     def group_controller(self) -> SonosGroup:
         """Get the group controller, raising if unavailable."""
         if self.client.player.group is None:
