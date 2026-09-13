@@ -36,7 +36,7 @@ def access_allows(access: ProviderAccess | None, user: User | None) -> bool:
     """
     Return whether the given user may use a provider instance with this access record.
 
-    :param access: The instance's access record; None means a household source.
+    :param access: The instance's access record; None means a source of the whole home.
     :param user: The user to check; None means anonymous playback.
     """
     if access is None:
@@ -130,7 +130,7 @@ def own_music_sources(mass: MusicAssistant, user: User | None) -> list[str]:
 
 def source_access(mass: MusicAssistant, instance_id: str) -> ProviderAccess | None:
     """
-    Return the access record of the given provider instance, or None for a household source.
+    Return the access record of the given provider instance, or None for a source of the whole home.
 
     :param mass: The MusicAssistant instance.
     :param instance_id: The provider instance id to look up.
@@ -141,7 +141,7 @@ def source_access(mass: MusicAssistant, instance_id: str) -> ProviderAccess | No
 
 def source_owner(mass: MusicAssistant, instance_id: str) -> str | None:
     """
-    Return the user id owning the given provider instance, or None for a household source.
+    Return the user id owning the given provider instance, or None for a source of the whole home.
 
     :param mass: The MusicAssistant instance.
     :param instance_id: The provider instance id to look up.

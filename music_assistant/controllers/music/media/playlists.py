@@ -643,7 +643,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         :param item_id: Library id of the playlist.
         :param sharing: Who, besides its owner, may see and play the playlist.
-        :param owner: User id of the member owning the playlist, None for a household playlist.
+        :param owner: User id of the member owning the playlist, None for a playlist of the whole home.
         :param shared_users: The user ids the playlist is shared with, SELECTED sharing only.
         :param collaborative: Whether everyone the playlist is shared with may also edit it.
         """
@@ -694,7 +694,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """
         Release the playlists of a user that no longer exists.
 
-        The playlists it owned become household playlists, and it is dropped from the share
+        The playlists it owned become playlists of the whole home, and it is dropped from the share
         list of every other playlist.
 
         :param user_id: Id of the removed user.
@@ -1917,7 +1917,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         return user
 
     def _new_playlist_access(self, user: User | None) -> PlaylistAccess | None:
-        """Return the access record for a playlist the given user creates, None for household."""
+        """Return the access record for a playlist the given user creates, None for the whole home."""
         if user is None or user.username == HOMEASSISTANT_SYSTEM_USER:
             return None
         return PlaylistAccess(owner=user.user_id)
@@ -1942,10 +1942,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
             )
         if not owner or user is None:
             return
-        if user.role == UserRole.GUEST:
-            raise InvalidDataError("A guest can not own a playlist")
-        if user.username == HOMEASSISTANT_SYSTEM_USER:
-            raise InvalidDataError("The Home Assistant system user can not own a playlist")
+        if user.role == UserRole.GUEST or user.username == HOMEASSISTANT_SYSTEM_USER:
+            raise InvalidDataError(
+                "Only a member can own a playlist",
+                translation_key="playlist_owner_must_be_member",
+            )
 
     async def _store_access(self, item_id: str | int, access: PlaylistAccess | None) -> Playlist:
         """Store the access record of a library playlist and announce the change."""
