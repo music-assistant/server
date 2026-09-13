@@ -91,6 +91,8 @@ class SonosPlayer(Player):
     """Holds the details of the (discovered) Sonosplayer."""
 
     _attr_external_pause_idle_timeout = EXTERNAL_PAUSE_IDLE_TIMEOUT
+    # the speaker names the service it plays itself, so its source list is trusted
+    _attr_trusts_reported_source = True
     # the speaker plays out of a cached copy of our cloud queue that it refreshes on its
     # own schedule; when it fetches a track the queue has since moved away from the
     # playhead, the server must refuse it so the speaker re-reads the queue
@@ -122,7 +124,7 @@ class SonosPlayer(Player):
 
     @property
     def source_list(self) -> list[PlayerSource]:
-        """Return the sources of this player, a service we did not map only while it plays."""
+        """Return this player's sources; a service we did not map is listed only while it plays."""
         # the entry of such a service can outlive the source it stands for: once a paused
         # session is given up on, the speaker keeps reporting it and rebuilds the entry
         return [
@@ -1046,10 +1048,11 @@ class SonosPlayer(Player):
                 return
             # a service we did not map: the user can not start it from MA and its transport
             # is whatever the speaker reports for it
+            source_id = str(self._attr_active_source)
             self._attr_source_list.append(
                 PlayerSource(
-                    id=self._attr_active_source,
-                    name=self._attr_active_source,
+                    id=source_id,
+                    name=source_id,
                     passive=True,
                     can_play_pause=actions.get("canPause", False),
                     can_seek=actions.get("canSeek", False),

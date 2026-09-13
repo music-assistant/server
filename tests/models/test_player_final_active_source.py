@@ -28,9 +28,10 @@ def _create_player() -> MockPlayer:
     return player
 
 
-def test_a_source_the_player_lists_itself_takes_over_from_the_ma_queue() -> None:
-    """Test a source the player reports as its own is what it is playing."""
+def test_a_source_a_trusting_player_lists_itself_takes_over_from_the_ma_queue() -> None:
+    """Test a source the player reports as its own is what it is playing, if it is trusted."""
     player = _create_player()
+    player._attr_trusts_reported_source = True
     # "YouTube Music" is deliberately a name that is absent from EXTERNAL_SOURCES
     player._attr_source_list = [
         PlayerSource(id="YouTube Music", name="YouTube Music", passive=True)
@@ -41,6 +42,20 @@ def test_a_source_the_player_lists_itself_takes_over_from_the_ma_queue() -> None
     player.update_state(signal_event=False)
 
     assert player.state.active_source == "YouTube Music"
+
+
+def test_a_listed_device_input_does_not_take_over_when_the_player_is_not_trusted() -> None:
+    """Test a source of an untrusted player does not end the remembered MA queue."""
+    player = _create_player()
+    # "Wi-Fi" is the transport our own stream arrives on for some devices, which they
+    # report as soon as that stream pauses - here right after MA stopped playback
+    player._attr_source_list = [PlayerSource(id="Wi-Fi", name="Wi-Fi")]
+    player._attr_active_source = "Wi-Fi"
+    player._attr_playback_state = PlaybackState.PAUSED
+
+    player.update_state(signal_event=False)
+
+    assert player.state.active_source == PLAYER_ID
 
 
 def test_an_unlisted_source_does_not_take_over_from_the_ma_queue() -> None:
@@ -65,17 +80,3 @@ def test_a_known_external_source_takes_over_from_the_ma_queue() -> None:
     player.update_state(signal_event=False)
 
     assert player.state.active_source == "qobuz"
-
-
-def test_the_ma_queue_entry_of_the_final_list_does_not_count_as_a_takeover() -> None:
-    """Test the injected Music Assistant Queue entry is not read as another source."""
-    player = _create_player()
-    player._attr_source_list = []
-    player._attr_active_source = PLAYER_ID
-    player._attr_playback_state = PlaybackState.PLAYING
-
-    player.update_state(signal_event=False)
-
-    assert player.state.active_source == PLAYER_ID
-    assert any(x.id == PLAYER_ID for x in player.state.source_list)
-    assert player.source_list == []

@@ -614,6 +614,7 @@ def test_a_service_we_did_not_map_gets_a_source_entry_with_its_play_modes() -> N
     player.on_player_event(None)
 
     assert player._attr_active_source == "Qobuz"
+    assert any(x.id == "Qobuz" for x in player.source_list)
     source = next(x for x in player._attr_source_list if x.id == "Qobuz")
     assert source.name == "Qobuz"
     assert source.passive is True
@@ -709,6 +710,7 @@ def test_a_group_child_does_not_take_over_the_line_in_of_its_coordinator() -> No
     group_parent.client.player.group.playback_metadata = {}
     mass.players.get_player.return_value = group_parent
 
+    # twice: a transient entry would only be promoted to its template on the next update
     player.on_player_event(None)
     player.on_player_event(None)
 
