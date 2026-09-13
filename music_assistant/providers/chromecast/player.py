@@ -27,6 +27,7 @@ from pychromecast.controllers.media import (
     STREAM_TYPE_LIVE,
 )
 from pychromecast.controllers.multizone import MultizoneController
+from pychromecast.error import PyChromecastError
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 
 from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
@@ -44,6 +45,7 @@ from .constants import (
     DASHBOARD_KEEPALIVE_SUFFIXES,
     MASS_APP_ID,
     SENDSPIN_CAST_APP_ID,
+    VOLUME_REASSERT_GAP,
 )
 from .helpers import CastStatusListener, ChromecastInfo, disconnect_cast
 from .receiver_commands import MassCastCommandController
@@ -64,6 +66,8 @@ class ChromecastPlayer(Player):
     # a quit that is already on the wire cannot be recalled, so a receiver that
     # still reports our app is no longer proof that the session is usable
     app_quit_sent: bool = False
+    # armed while a deferred volume still has to be re-asserted at playback start
+    _reassert_volume: bool = False
 
     def __init__(
         self,
@@ -96,6 +100,8 @@ class ChromecastPlayer(Player):
         self.flow_meta_checksum: str | None = None
         self._app_quit_task_id: str = f"cast_quit_app_{player_id}"
         self._media_error_reported = False
+        # holds a volume set deferred while idle; see volume_set for why
+        self._pending_volume: int | None = None
         # set static variables
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
@@ -215,6 +221,16 @@ class ChromecastPlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
+        if self.cc.app_id in (None, IDLE_APP_ID):
+            # some receivers store a volume set while idle but keep playing at the old level;
+            # defer it and re-assert it for real at playback start
+            self._pending_volume = volume_level
+            self._reassert_volume = True
+            self._attr_volume_level = volume_level
+            self.update_state()
+            return
+        self._pending_volume = None
+        self._reassert_volume = False
         # Round to 2 decimal places to avoid floating-point precision issues
         await asyncio.to_thread(self.cc.set_volume, round(volume_level / 100, 2))
 
@@ -237,6 +253,11 @@ class ChromecastPlayer(Player):
         # send queue info to the CC
         media_controller = self.cc.media_controller
         await asyncio.to_thread(media_controller.send_message, data=queuedata, inc_session_id=True)
+        if self._reassert_volume:
+            # no audio is out yet, so applying a volume deferred while idle here lands before
+            # the first sample: the device starts at the new level, with no audible jump
+            self._reassert_volume = False
+            await self._reassert_pending_volume()
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next item on the player."""
@@ -512,6 +533,31 @@ class ChromecastPlayer(Player):
 
         self.app_quit_sent = False
 
+    async def _reassert_pending_volume(self) -> None:
+        """
+        Apply a volume deferred while idle, at playback start.
+
+        A plain send normally suffices: the device still reports the old, pre-idle level,
+        so the target differs from it and takes effect. Only when the device is wedged - it
+        already reports the target but keeps playing the old level, and de-duplicates a
+        resend of its own reported value - is a 1/255 nudge below the target needed first to
+        escape that. cc.set_volume is called directly because volume_set rounds to 0.01,
+        which would swallow the 1/255 step.
+        """
+        target = self._pending_volume
+        self._pending_volume = None
+        if target is None:
+            return
+        level = round(target / 100, 2)
+        reported = self.cc.status.volume_level if self.cc.status else None
+        try:
+            if reported is not None and abs(reported - level) < 1 / 255:
+                await asyncio.to_thread(self.cc.set_volume, max(0.0, level - 1 / 255))
+                await asyncio.sleep(VOLUME_REASSERT_GAP)
+            await asyncio.to_thread(self.cc.set_volume, level)
+        except PyChromecastError as err:
+            self.logger.warning("Could not re-assert volume on %s: %s", self.display_name, err)
+
     def _log_launch_failure(self, app_id: str, reason: str) -> None:
         """
         Log a failed receiver app launch and which config option to try instead.
@@ -608,11 +654,13 @@ class ChromecastPlayer(Player):
         # device that is a player in its own right always reports its own volume.
         volume_level = round(status.volume_level * 100)
         cast_idle = self.cc.app_id in (None, IDLE_APP_ID)
-        self._attr_volume_level = (
-            None
-            if cast_idle and volume_level == 0 and self.type == PlayerType.PROTOCOL
-            else volume_level
-        )
+        if self._pending_volume is not None and cast_idle:
+            # the device still reports its stale level while deferred; show the requested one
+            self._attr_volume_level = self._pending_volume
+        elif cast_idle and volume_level == 0 and self.type == PlayerType.PROTOCOL:
+            self._attr_volume_level = None
+        else:
+            self._attr_volume_level = volume_level
         self._attr_volume_muted = status.volume_muted
         self.update_state()
         if self.on_app_status_changed is not None:

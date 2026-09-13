@@ -27,6 +27,10 @@ APP_LAUNCH_TIMEOUT = 30.0
 # follow-up command can reuse the Cast session instead of starting a new one.
 APP_QUIT_DELAY = 10.0
 
+# Seconds between the two sends of the volume re-assert nudge. A gap is kept because
+# two back-to-back set_volume calls both landing on the receiver was never verified.
+VOLUME_REASSERT_GAP = 0.5
+
 # keepalive media the cast receiver plays while showing a dashboard
 DASHBOARD_KEEPALIVE_SUFFIXES = ("/dashboard-keepalive.mp4", "/keepalive.png")
 
