@@ -51,6 +51,9 @@ PROVIDER_MAPPING_CORRECTION_TASK_ID: Final[str] = "music_provider_mapping_correc
 MUSIC_SYNC_COMPLETION_CHECK_TASK_ID: Final[str] = "music_sync_completion_check"
 TRACK_RECONCILIATION_TASK_ID: Final[str] = "music_track_reconciliation"
 
+# lives in the library database so a restored or reset library re-arms the one-shot split
+SETTING_ARTIST_SPLIT_DONE: Final[str] = "artist_split_done"
+
 # number of duplicate track candidate pairs examined per reconciliation run
 TRACK_RECONCILIATION_BATCH_SIZE: Final[int] = 100
 

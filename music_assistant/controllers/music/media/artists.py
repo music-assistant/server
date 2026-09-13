@@ -39,10 +39,12 @@ from music_assistant.constants import (
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_PROVIDER_MAPPINGS,
+    DB_TABLE_SETTINGS,
     DB_TABLE_TRACK_ARTISTS,
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
 )
+from music_assistant.controllers.music.constants import SETTING_ARTIST_SPLIT_DONE
 from music_assistant.controllers.music.helpers import (
     metadata_for_update,
     provider_mappings_for_update,
@@ -63,7 +65,7 @@ from music_assistant.models.music_provider import MusicProvider
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from music_assistant_models.event import MassEvent
 
@@ -116,7 +118,9 @@ class ArtistsController(MediaControllerBase[Artist]):
             self.get_library_artist_types,
             required_scope=Scope.LIBRARY_READ,
         )
-        self.mass.subscribe(self._on_music_sync_completed, EventType.MUSIC_SYNC_COMPLETED)
+        self._unsubscribe_split_on_sync: Callable[[], None] = self.mass.subscribe(
+            self._on_music_sync_completed, EventType.MUSIC_SYNC_COMPLETED
+        )
 
     @property
     def summary_query(self) -> tuple[str, dict[str, Any]]:
@@ -1056,7 +1060,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         Split library artists that a streaming provider knows under several ids.
 
         Repairs artists merged on a name match before same-provider ids were treated as
-        distinct; runs after provider syncs and is a no-op on a clean library.
+        distinct; a no-op on a clean library. Marks itself done in the library database
+        once a full pass completes so it is not re-run automatically.
         """
         if self._split_merged_artists_lock.locked():
             return
@@ -1076,10 +1081,24 @@ class ArtistsController(MediaControllerBase[Artist]):
                 if not isinstance(provider, MusicProvider) or not provider.is_streaming_provider:
                     continue
                 await self._split_merged_artist(int(row["item_id"]), instance)
+            await self.mass.music.database.insert_or_replace(
+                DB_TABLE_SETTINGS,
+                {"key": SETTING_ARTIST_SPLIT_DONE, "value": "1", "type": "bool"},
+            )
 
-    def _on_music_sync_completed(self, _event: MassEvent) -> None:
-        """Trigger the merged-provider-id artist split when music sync tasks have completed."""
+    async def _on_music_sync_completed(self, _event: MassEvent) -> None:
+        """Trigger the one-shot merged-provider-id artist split after the first completed sync."""
+        self._unsubscribe_split_on_sync()
+        if await self._artist_split_done():
+            return
         self.mass.create_task(self.split_merged_provider_artists())
+
+    async def _artist_split_done(self) -> bool:
+        """Return whether the merged-provider-id artist split has already completed."""
+        row = await self.mass.music.database.get_row(
+            DB_TABLE_SETTINGS, {"key": SETTING_ARTIST_SPLIT_DONE}
+        )
+        return row is not None
 
     def _validate_provider_filter(
         self, provider_instance_id_or_domain: str, provider_filter: str | None

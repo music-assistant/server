@@ -2406,6 +2406,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # ctrl is chosen by media_type, so it matches db_item's runtime type
         await cast("MediaControllerBase[MediaItemType]", ctrl).match_providers(db_item)
 
+    @api_command("music/split_merged_artists", required_scope=Scope.LIBRARY_MANAGE)
+    async def split_merged_artists(self) -> None:
+        """Manually trigger the merged-provider-id artist split."""
+        self.mass.create_task(self.artists.split_merged_provider_artists())
+
     async def update_provider_mapping(
         self,
         media_type: MediaType,

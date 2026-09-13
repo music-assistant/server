@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
-from music_assistant_models.enums import ExternalID
+from music_assistant_models.enums import EventType, ExternalID
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import Artist, ProviderMapping, Track, UniqueList
 
+from music_assistant.constants import DB_TABLE_SETTINGS
+from music_assistant.controllers.music.constants import SETTING_ARTIST_SPLIT_DONE
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -204,6 +207,82 @@ async def test_split_skips_artist_on_unexpected_error(mass: MusicAssistant) -> N
         "1",
         "2",
     }
+
+
+async def test_split_marks_itself_done_after_a_completed_pass(mass: MusicAssistant) -> None:
+    """A pass that runs to completion writes the done marker to the settings table."""
+    _, provider = await _add_merged_artist(mass)
+    provider.artists_by_id = {
+        "1": _prov_artist("1", "Loud"),
+        "2": _prov_artist("2", "Loud"),
+    }
+
+    assert await mass.music.artists._artist_split_done() is False
+    await mass.music.artists.split_merged_provider_artists()
+    assert await mass.music.artists._artist_split_done() is True
+
+
+async def test_split_still_runs_when_marker_is_already_set(mass: MusicAssistant) -> None:
+    """The done marker gates the automatic trigger only, not a direct call to the pass."""
+    await mass.music.database.insert_or_replace(
+        DB_TABLE_SETTINGS, {"key": SETTING_ARTIST_SPLIT_DONE, "value": "1", "type": "bool"}
+    )
+    library_artist, provider = await _add_merged_artist(mass)
+    artist1 = _prov_artist("1", "Loud")
+    artist2 = _prov_artist("2", "Loud")
+    provider.artists_by_id = {"1": artist1, "2": artist2}
+    # a track credited to mapping "2" is what actually causes a split-off artist to be
+    # created (see test_split_relinks_tracks_to_the_right_artist); without one, removing
+    # the surplus mapping alone leaves a single artist behind
+    track2 = _prov_track("t2", artist2, "Track Two")
+    provider.tracks_by_id = {"t2": track2}
+    await mass.music.tracks.add_item_to_library(track2)
+
+    await mass.music.artists.split_merged_provider_artists()
+
+    all_artists = await mass.music.artists.library_items(limit=500, summary=False)
+    assert len(all_artists) == 2
+    original = await mass.music.artists.get_library_item(library_artist.item_id)
+    assert {m.item_id for m in original.provider_mappings if m.provider_instance == INSTANCE} == {
+        "1"
+    }
+
+
+async def test_sync_completed_triggers_split_once_then_stops_listening(
+    mass: MusicAssistant,
+) -> None:
+    """With no marker set, the first sync-completed event triggers the split and unsubscribes."""
+    with patch.object(mass.music.artists, "split_merged_provider_artists") as mock_split:
+        await mass.music.artists._on_music_sync_completed(MagicMock())
+        mock_split.assert_called_once()
+
+        # the handler unsubscribed itself, so a further event does not call it again
+        mass.signal_event(EventType.MUSIC_SYNC_COMPLETED)
+        await asyncio.sleep(0)
+        mock_split.assert_called_once()
+
+
+async def test_sync_completed_does_not_trigger_when_marker_is_set(mass: MusicAssistant) -> None:
+    """With the done marker already set, the sync-completed handler does not trigger the split."""
+    await mass.music.database.insert_or_replace(
+        DB_TABLE_SETTINGS, {"key": SETTING_ARTIST_SPLIT_DONE, "value": "1", "type": "bool"}
+    )
+    with patch.object(mass.music.artists, "split_merged_provider_artists") as mock_split:
+        await mass.music.artists._on_music_sync_completed(MagicMock())
+        mock_split.assert_not_called()
+
+
+async def test_split_merged_artists_command_triggers_regardless_of_marker(
+    mass: MusicAssistant,
+) -> None:
+    """The manual API command triggers the split even when the done marker is set."""
+    await mass.music.database.insert_or_replace(
+        DB_TABLE_SETTINGS, {"key": SETTING_ARTIST_SPLIT_DONE, "value": "1", "type": "bool"}
+    )
+    with patch.object(mass.music.artists, "split_merged_provider_artists") as mock_split:
+        await mass.music.split_merged_artists()
+        await asyncio.sleep(0)
+        mock_split.assert_called_once()
 
 
 async def test_split_noop_while_lock_is_held(mass: MusicAssistant) -> None:
