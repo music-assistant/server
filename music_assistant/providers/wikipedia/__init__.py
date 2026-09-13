@@ -199,6 +199,11 @@ class WikipediaMetadataProvider(MetadataProvider):
                 if response.status == 429:
                     backoff_time = parse_retry_after(response.headers.get("Retry-After"))
                     raise RateLimited("Wikipedia rate limit", backoff_time=backoff_time)
+                if response.status == 503:
+                    backoff_time = parse_retry_after(response.headers.get("Retry-After"))
+                    raise ResourceTemporarilyUnavailable(
+                        "Wikipedia backend overloaded", backoff_time=backoff_time
+                    )
                 response.raise_for_status()
                 return cast("dict[str, Any]", await response.json())
         except (aiohttp.ClientError, TimeoutError, JSONDecodeError) as err:
