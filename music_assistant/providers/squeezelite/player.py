@@ -129,7 +129,6 @@ class SqueezelitePlayer(Player):
         self.multi_client_stream: MultiClientStream | None = None
         self._sync_playpoints: deque[SyncPlayPoint] = deque(maxlen=MIN_REQ_PLAYPOINTS)
         self._do_not_resync_before: float = 0.0
-        self._audio_source_active: bool = False
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
@@ -219,7 +218,6 @@ class SqueezelitePlayer(Player):
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
-        self._audio_source_active = False
         # Clean up any existing multi-client stream
         if self.multi_client_stream is not None:
             await self.multi_client_stream.stop()
@@ -483,15 +481,9 @@ class SqueezelitePlayer(Player):
         if media.source_id and (queue := self.mass.player_queues.get(media.source_id)):
             self.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
             self.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
-        audio_source_active = media.media_type == MediaType.AUDIO_SOURCE
-        low_latency_stream = audio_source_active or media.media_type == MediaType.RADIO
+        low_latency_stream = media.media_type in (MediaType.AUDIO_SOURCE, MediaType.RADIO)
         # live streams start on a smaller buffer (KB, tenths of a second) to cut latency
         stream_threshold, output_threshold = (64, 1) if low_latency_stream else (200, 20)
-        # set the flag on the player that owns the slimclient (may differ from self
-        # during group playback where self is the leader but slimplayer is a member)
-        target_player = self.mass.players.get_player(slimplayer.player_id)
-        if isinstance(target_player, SqueezelitePlayer):
-            target_player._audio_source_active = audio_source_active
         await slimplayer.play_url(
             url=url,
             mime_type=get_mime_type(url.rsplit(".", maxsplit=1)[-1].split("?", maxsplit=1)[0]),
