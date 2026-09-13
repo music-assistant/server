@@ -27,10 +27,12 @@ class FakeProvider:
     The decorator requires `self.throttler` and `self.logger`.
     """
 
-    throttler = ThrottlerManager(rate_limit=100, period=0.01, retry_attempts=5, initial_backoff=4)
-
     def __init__(self) -> None:
         """Initialize."""
+        # a fresh throttler per provider: a cooldown armed by one test must not leak
+        self.throttler = ThrottlerManager(
+            rate_limit=100, period=0.01, retry_attempts=5, initial_backoff=4
+        )
         self.logger = logging.getLogger("test.fake_provider")
         self.call_count = 0
         self._side_effects: list[Exception | str] = []
@@ -68,6 +70,33 @@ def mock_sleep() -> Generator[AsyncMock]:
         "music_assistant.helpers.throttle_retry.asyncio.sleep", new_callable=AsyncMock
     ) as mock:
         yield mock
+
+
+class FakeClock:
+    """Virtual monotonic clock, advanced by the sleeps of the code under test."""
+
+    def __init__(self) -> None:
+        """Initialize."""
+        self.now = 0.0
+
+    async def sleep(self, seconds: float) -> None:
+        """Advance the clock instead of waiting."""
+        self.now += seconds
+
+    def monotonic(self) -> float:
+        """Return the current virtual time."""
+        return self.now
+
+
+@pytest.fixture
+def fake_clock() -> Generator[FakeClock]:
+    """Run the throttler on a virtual clock, so backoffs cost no wall time."""
+    clock = FakeClock()
+    with (
+        patch("music_assistant.helpers.throttle_retry.asyncio.sleep", clock.sleep),
+        patch("music_assistant.helpers.throttle_retry.time.monotonic", clock.monotonic),
+    ):
+        yield clock
 
 
 class TestBasicBehavior:
@@ -196,6 +225,31 @@ class TestRateLimited:
 
         sleep_times = [call.args[0] for call in mock_sleep.call_args_list]
         assert 3600.0 <= sleep_times[0] <= 3960.0
+
+
+class TestSharedCooldown:
+    """A rate limit covers the whole account, so it must hold back every caller."""
+
+    async def test_cooldown_gates_new_callers(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """A call started during a cooldown waits it out before it reaches the api."""
+        provider.throttler.set_cooldown(50)
+        assert await provider.api_call("ok") == "ok"
+        assert fake_clock.now == pytest.approx(50)
+
+    async def test_exhausted_retries_keep_the_gate_closed(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """The 429 that exhausts our retries still holds back the callers behind us."""
+        provider.set_side_effects([RateLimited("rate limited", backoff_time=50)] * 5)
+        with pytest.raises(RetriesExhausted):
+            await provider.api_call("test")
+        exhausted_at = fake_clock.now
+
+        provider.set_side_effects(["ok"])
+        assert await provider.api_call("ok") == "ok"
+        assert fake_clock.now - exhausted_at == pytest.approx(50)
 
 
 class TestExponentialBackoffWithJitter:
