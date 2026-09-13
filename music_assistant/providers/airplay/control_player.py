@@ -524,7 +524,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         if config is None:
             return False
         try:
-            device = await pyatv.connect(config, self.mass.loop)
+            device = await self._pyatv_connect(config)
         except pyatv_exceptions.AuthenticationError, pyatv_exceptions.InvalidCredentialsError:
             self.logger.warning(
                 "Stored Companion credentials are no longer valid for %s",
@@ -573,7 +573,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
             settings = await storage.get_settings(config)
             settings.protocols.airplay.mrp_tunnel = MrpTunnel.Force
         try:
-            device = await pyatv.connect(config, self.mass.loop, storage=storage)
+            device = await self._pyatv_connect(config, storage)
         except (
             pyatv_exceptions.AuthenticationError,
             pyatv_exceptions.InvalidCredentialsError,
@@ -611,6 +611,26 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self.logger.debug("Connected MRP playback monitoring for %s", self.display_name)
         self.update_state()
         return False
+
+    async def _pyatv_connect(
+        self, config: AppleTVConfig, storage: MemoryStorage | None = None
+    ) -> AppleTV:
+        """
+        Connect to a device with pyatv, without leaking resources on cancellation.
+
+        :param config: pyatv configuration of the device to connect to.
+        :param storage: Optional pyatv settings storage for this connection.
+        """
+        # pyatv only releases the aiohttp session it allocates when connect() raises
+        # an Exception, so cancelling the connect leaks that session. Reconnects do
+        # cancel it (a discovery update or an unload restarts the connection loop),
+        # so let the connect run to completion detached and close whatever it returns.
+        task = asyncio.ensure_future(pyatv.connect(config, self.mass.loop, storage=storage))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            task.add_done_callback(_close_abandoned_device)
+            raise
 
     async def _disconnect_control_services(self) -> None:
         """Close all active pyatv connections."""
@@ -1322,3 +1342,10 @@ class _AirPlayPushListener(PushListener):
     def playstatus_error(self, updater: object, exception: Exception) -> None:
         """Handle an MRP push update failure."""
         self._player._handle_push_error(self._device, exception)
+
+
+def _close_abandoned_device(task: asyncio.Task[AppleTV]) -> None:
+    """Close a device that finished connecting after its caller was cancelled."""
+    if task.cancelled() or task.exception() is not None:
+        return
+    task.result().close()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -879,6 +880,36 @@ async def test_connection_retains_listener_references() -> None:
     assert player._companion_listener is not None
     await player._disconnect_control_services()
     assert player._companion_listener is None
+
+
+async def test_cancelled_connect_closes_the_device_it_creates() -> None:
+    """A cancelled connect still closes the device it ends up with."""
+    # pyatv releases the aiohttp session it allocates only when connect() raises an
+    # Exception, so cancelling a pending connect (a discovery update or an unload
+    # restarts the connection loop) left that session unclosed.
+    player = _make_control_player(setup_data={CONF_COMPANION_CREDENTIALS: "companion-creds"})
+    device = MagicMock(spec=AppleTV)
+    started = asyncio.Event()
+    connected = asyncio.Event()
+
+    async def _connect(*_args: object, **_kwargs: object) -> AppleTV:
+        started.set()
+        await connected.wait()
+        return device
+
+    with patch(
+        "music_assistant.providers.airplay.control_player.pyatv.connect", side_effect=_connect
+    ):
+        task = asyncio.create_task(player._connect_companion())
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        connected.set()
+        await asyncio.sleep(0.01)
+
+    device.close.assert_called_once()
+    assert player._companion_device is None
 
 
 async def test_mrp_connection_uses_dedicated_pairing_credentials() -> None:
