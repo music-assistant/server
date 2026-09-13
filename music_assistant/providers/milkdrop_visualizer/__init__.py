@@ -9,7 +9,9 @@ the now-playing views.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
+
+from music_assistant.helpers.util import import_module_in_thread
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -28,6 +30,10 @@ async def setup(
     config: ProviderConfig,
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    from .provider import MilkdropVisualizerProvider  # noqa: PLC0415
-
-    return MilkdropVisualizerProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    module = await import_module_in_thread(
+        ".provider", "music_assistant.providers.milkdrop_visualizer"
+    )
+    return cast(
+        "ProviderInstanceType",
+        module.MilkdropVisualizerProvider(mass, manifest, config, SUPPORTED_FEATURES),
+    )
