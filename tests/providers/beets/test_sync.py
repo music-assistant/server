@@ -20,11 +20,14 @@ REPORT_FAILURE = "music_assistant.providers.beets.report_current_task_failure"
 async def _stored_checksums(provider: BeetsProvider) -> list[dict[str, str]]:
     """Return provider_mappings rows as a previous sync of the current database would store them."""
     albums = await provider.library.get_albums()
+    threshold = provider._ctx.favorite_rating_threshold
     rows = []
     async for batch in provider.library.iter_items():
         for item in batch:
             album = albums.get(item.album_id) if item.album_id else None
-            rows.append({"provider_item_id": str(item.id), "details": item_checksum(item, album)})
+            rows.append(
+                {"provider_item_id": str(item.id), "details": item_checksum(item, album, threshold)}
+            )
     return rows
 
 

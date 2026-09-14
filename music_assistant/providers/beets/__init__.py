@@ -174,7 +174,12 @@ class BeetsProvider(MusicProvider):
         """Get full track details by id."""
         item = await self._get_item(prov_track_id)
         album = await self.library.get_album(item.album_id) if item.album_id else None
-        return parse_track(item, album, self._ctx, item_checksum(item, album))
+        return parse_track(
+            item,
+            album,
+            self._ctx,
+            item_checksum(item, album, self._ctx.favorite_rating_threshold),
+        )
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
@@ -184,7 +189,12 @@ class BeetsProvider(MusicProvider):
         """Get album tracks for given album id."""
         album = await self._get_album(prov_album_id)
         return [
-            parse_track(item, album, self._ctx, item_checksum(item, album))
+            parse_track(
+                item,
+                album,
+                self._ctx,
+                item_checksum(item, album, self._ctx.favorite_rating_threshold),
+            )
             for item in await self.library.get_album_items(album.id)
         ]
 
@@ -262,7 +272,7 @@ class BeetsProvider(MusicProvider):
                         album = await self._album_for(item, albums)
                         item_id = str(item.id)
                         current_ids.add(item_id)
-                        checksum = item_checksum(item, album)
+                        checksum = item_checksum(item, album, self._ctx.favorite_rating_threshold)
                         if previous.get(item_id) == checksum:
                             continue
                         await task_manager.create_task_with_limit(

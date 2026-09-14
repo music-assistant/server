@@ -181,15 +181,25 @@ def album_checksum(album: BeetsRow) -> str:
     return _digest([album.fields, album.flex])
 
 
-def item_checksum(item: BeetsRow, album: BeetsRow | None) -> str:
+def item_checksum(
+    item: BeetsRow, album: BeetsRow | None, favorite_rating_threshold: float | None
+) -> str:
     """
-    Return a checksum that changes whenever the item, its album or their attributes change.
+    Return a checksum that changes whenever the item, its album or its favorite outcome change.
 
     :param item: The beets item row.
     :param album: The item's album row, or None for singletons.
+    :param favorite_rating_threshold: The configured favorite threshold, or None when ratings
+        are ignored.
     """
     return _digest(
-        [item.fields, item.flex, album.fields if album else None, album.flex if album else None]
+        [
+            item.fields,
+            item.flex,
+            album.fields if album else None,
+            album.flex if album else None,
+            parse_favorite(item.flex, favorite_rating_threshold),
+        ]
     )
 
 

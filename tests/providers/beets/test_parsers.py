@@ -172,15 +172,29 @@ def test_item_checksum_follows_item_album_and_flex_changes() -> None:
     """Any change to the item, its album or either's flexible attributes changes the checksum."""
     album = _row(7, album_fields())
     item = _row(1, item_fields(album_id=7))
-    base = item_checksum(item, album)
+    base = item_checksum(item, album, None)
 
-    assert item_checksum(_row(1, item_fields(album_id=7)), _row(7, album_fields())) == base
-    assert item_checksum(_row(1, item_fields(album_id=7, title="Edited")), album) != base
-    assert item_checksum(_row(1, item_fields(album_id=7), flex={"mood": "sad"}), album) != base
-    assert item_checksum(item, _row(7, album_fields(label="Other"))) != base
-    assert item_checksum(item, _row(7, album_fields(), flex={"rating": "1"})) != base
-    assert item_checksum(item, None) != base
+    assert item_checksum(_row(1, item_fields(album_id=7)), _row(7, album_fields()), None) == base
+    assert item_checksum(_row(1, item_fields(album_id=7, title="Edited")), album, None) != base
+    assert (
+        item_checksum(_row(1, item_fields(album_id=7), flex={"mood": "sad"}), album, None) != base
+    )
+    assert item_checksum(item, _row(7, album_fields(label="Other")), None) != base
+    assert item_checksum(item, _row(7, album_fields(), flex={"rating": "1"}), None) != base
+    assert item_checksum(item, None, None) != base
     assert album_checksum(album) != album_checksum(_row(7, album_fields(), flex={"a": "b"}))
+
+
+def test_item_checksum_follows_favorite_outcome_not_threshold() -> None:
+    """The checksum changes when the threshold flips the favorite outcome, and only then."""
+    rated = _row(1, item_fields(), flex={"rating": "0.9"})
+    unrated = _row(2, item_fields())
+    ignored = item_checksum(rated, None, None)
+
+    assert item_checksum(rated, None, 0.95) == ignored
+    assert item_checksum(rated, None, 0.8) != ignored
+    assert item_checksum(rated, None, 0.5) == item_checksum(rated, None, 0.8)
+    assert item_checksum(unrated, None, 0.8) == item_checksum(unrated, None, None)
 
 
 def test_parse_artist_uses_name_as_id_and_drops_invalid_mbid() -> None:
