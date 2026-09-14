@@ -103,10 +103,27 @@ async def test_lookups_by_id_and_artist(beets_db: BeetsDb) -> None:
 
 
 async def test_reading_a_closed_library_raises(beets_db: BeetsDb) -> None:
-    """Reads before open() raise the library error instead of an AttributeError."""
+    """Reads before open() and after close() raise the library error, never a fallback value."""
     library = BeetsLibrary(str(beets_db.path))
     with pytest.raises(BeetsLibraryError):
         await library.count_items()
+    with pytest.raises(BeetsLibraryError):
+        await library.get_albums()
+    with pytest.raises(BeetsLibraryError):
+        await library.get_album(1)
+    with pytest.raises(BeetsLibraryError):
+        await library.get_artist_details("Artist")
+
+    await library.open()
+    await library.close()
+    with pytest.raises(BeetsLibraryError):
+        await library.count_items()
+    with pytest.raises(BeetsLibraryError):
+        await library.get_albums()
+    with pytest.raises(BeetsLibraryError):
+        await library.get_album(1)
+    with pytest.raises(BeetsLibraryError):
+        await library.get_artist_details("Artist")
 
 
 async def test_locked_database_raises_library_error(beets_db: BeetsDb) -> None:

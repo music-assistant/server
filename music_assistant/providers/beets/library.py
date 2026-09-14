@@ -84,6 +84,7 @@ class BeetsLibrary:
 
     async def get_albums(self) -> dict[int, BeetsRow]:
         """Return every album keyed by its beets id."""
+        self._require_open()
         if not self._columns.get("albums"):
             return {}
         rows = await self._fetch_all("SELECT * FROM albums")
@@ -122,6 +123,7 @@ class BeetsLibrary:
 
         :param album_id: The beets album id.
         """
+        self._require_open()
         if not self._columns.get("albums"):
             return None
         rows = await self._fetch_all("SELECT * FROM albums WHERE id = ?", (album_id,))
@@ -147,6 +149,7 @@ class BeetsLibrary:
 
         :param name: The artist name.
         """
+        self._require_open()
         lookups = (
             ("albums", "albumartist", "albumartist_sort", "mb_albumartistid"),
             ("items", "artist", "artist_sort", "mb_artistid"),
@@ -165,6 +168,17 @@ class BeetsLibrary:
             if rows:
                 return (rows[0]["sort_name"] or None, rows[0]["mbid"] or None)
         return None
+
+    def _require_open(self) -> aiosqlite.Connection:
+        """
+        Return the open database connection.
+
+        :raises BeetsLibraryError: If the database connection is not open.
+        """
+        if self._db is None:
+            msg = "The beets library is not open"
+            raise BeetsLibraryError(msg)
+        return self._db
 
     async def _table_columns(self, table: str) -> frozenset[str]:
         rows = await self._fetch_all(f"PRAGMA table_info({table})")
@@ -191,11 +205,9 @@ class BeetsLibrary:
         return result
 
     async def _fetch_all(self, sql: str, params: Sequence[Any] = ()) -> list[sqlite3.Row]:
-        if self._db is None:
-            msg = "The beets library is not open"
-            raise BeetsLibraryError(msg)
+        db = self._require_open()
         try:
-            return list(await self._db.execute_fetchall(sql, tuple(params)))
+            return list(await db.execute_fetchall(sql, tuple(params)))
         except sqlite3.Error as err:
             msg = f"Unable to read {self.db_path}: {err}"
             raise BeetsLibraryError(msg) from err
