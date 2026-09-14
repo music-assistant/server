@@ -76,7 +76,7 @@ def _command_handler(
 
 
 def _sent_error_code(client: Any) -> str | None:
-    """Return the error code of the last sent error message, if any."""
+    """Return the error code of the first sent error message, if any."""
     for call in client._send_message.await_args_list:
         message = call.args[0]
         if isinstance(message, ErrorResultMessage):
@@ -85,7 +85,7 @@ def _sent_error_code(client: Any) -> str | None:
 
 
 def _sent_error_details(client: Any) -> str | None:
-    """Return the message text of the last sent error message, if any."""
+    """Return the message text of the first sent error message, if any."""
     for call in client._send_message.await_args_list:
         message = call.args[0]
         if isinstance(message, ErrorResultMessage):

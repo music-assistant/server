@@ -461,7 +461,7 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 
 1. Define route handler in [controller.py](controller.py) (for HTTP endpoints)
 2. Use `@api_command()` decorator for WebSocket commands (in respective controllers)
-3. Specify authentication requirements: `authenticated=True` and/or `required_scope=Scope.<SCOPE>`
+3. Specify authentication requirements: `authenticated=True` and/or `required_scope=Scope.<SCOPE>` (or a tuple of scopes, one of which the caller needs)
 4. Optionally set `allow_impersonation=True` to let callers execute the command on behalf of
    another user via the injected `user` argument (requires the `users.impersonate` scope
    when targeting another user)
