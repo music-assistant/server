@@ -1207,7 +1207,7 @@
     "media_not_available_for_user": "This is not available on any of your music sources.",
     "no_playable_items": "There is nothing to play here.",
     "invalid_data": "The data provided is invalid or could not be processed.",
-    "guest_owns_music_sources": "A guest can not own a music source. Reassign or remove the music sources of this user first.",
+    "role_can_not_own_music_sources": "This role can not own a music source. Reassign or remove the music sources of this user first.",
     "system_user_protected": "The Home Assistant system account can not be deleted, disabled, renamed or given another role or password.",
     "last_admin": "This is the last administrator. Make another user an administrator first.",
     "builtin_role_readonly": "A builtin role can not be changed or removed.",
