@@ -159,6 +159,10 @@ class IHeartRadioApiClient:
                     response.status == 400 and _error_code(body) in SESSION_EXPIRED_CODES
                 )
                 if not session_rejected:
+                    if not authenticated and response.status == 400:
+                        raise LoginFailed(
+                            f"iHeartRadio rejected the login: {_error_description(body)}"
+                        )
                     return self._handle_response(url, response, body)
         except (aiohttp.ClientError, TimeoutError) as err:
             raise ResourceTemporarilyUnavailable(
