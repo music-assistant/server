@@ -148,7 +148,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 search=None,
                 genre_ids=genre,
                 limit=limit,
-                order_by=order_by,
+                order_by=final_order_by,
                 provider_filter=self._provider_filter_considering_reachability(
                     provider, reachable_via
                 ),

@@ -60,6 +60,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.music.constants import BASE_SORT_FIELD_SQL, LEGACY_SORT_KEYS
 from music_assistant.controllers.music.helpers import search_name_match_clause
 from music_assistant.controllers.music.sorting import (
+    MEDIA_TYPE_SORT_FIELDS,
     SortOptionInfo,
     get_default_direction,
     get_sort_options_for_media_type,
@@ -2149,8 +2150,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param order_by: Legacy string-based order_by parameter.
         :param default: Default order_by string if none specified.
         :return: Resolved order_by string in 'field:direction' format.
+        :raises InvalidDataError: When sort_field is not supported for this media type.
         """
         if sort_field is not None:
+            if sort_field not in MEDIA_TYPE_SORT_FIELDS.get(self.media_type, []):
+                msg = f"Sort field {sort_field.value} is not supported for {self.media_type.value}"
+                raise InvalidDataError(msg)
             # Use per-field default direction if not specified
             direction = sort_direction if sort_direction else get_default_direction(sort_field)
             return f"{sort_field.value}:{direction.value}"
