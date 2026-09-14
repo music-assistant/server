@@ -23,6 +23,7 @@ ahead of the speakers, so pruning follows the push stream's clock instead.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import pairwise
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
@@ -107,6 +108,9 @@ class _CommitLoopTrace:
     retained: list[int] = field(default_factory=list)
     oldest_retained_start_us: list[int | None] = field(default_factory=list)
     player: MagicMock = field(default_factory=MagicMock)
+    # Player-facing calls in the order the commit loop made them: ("elapsed", seconds)
+    # for a published position, ("rebased", None) for a reported anchor rebase.
+    player_calls: list[tuple[str, float | None]] = field(default_factory=list)
 
 
 async def _fake_audio_source(num_chunks: int) -> AsyncIterator[bytes]:
@@ -144,6 +148,12 @@ async def _run_commit_loop(
     )
 
     trace = _CommitLoopTrace(player=player)
+    player.on_flow_timeline_rebased.side_effect = lambda: trace.player_calls.append(
+        ("rebased", None)
+    )
+    player.update_state.side_effect = lambda: trace.player_calls.append(
+        ("elapsed", player._attr_elapsed_time)
+    )
     original_prune = SendspinPlaybackSession._prune_history_locked
 
     def _recording_prune(self: SendspinPlaybackSession, now_monotonic_us: int) -> None:
@@ -274,3 +284,53 @@ async def test_no_rebase_is_reported_on_a_steady_schedule(monkeypatch: pytest.Mo
     trace = await _run_commit_loop(monkeypatch, commit_timestamps)
 
     trace.player.on_flow_timeline_rebased.assert_not_called()
+
+
+async def test_rebase_publishes_its_position_step_on_the_same_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A rebase must publish the corrected position on the commit that rebased.
+
+    The step a rebase puts in the reported position is (buffer_depth + chunk -
+    min_send_ahead) and has nothing to do with how long the stall lasted, so it can be
+    well under the periodic gate's 1s threshold. The gate would then hold the correction
+    back until ordinary playback drifted a full second past the last published value,
+    which is the overshoot this PR exists to remove.
+
+    The fixture keeps a constant send-ahead, so the step here is one chunk - far below
+    the gate - and only the explicit publish can get it out.
+    """
+    t0 = 10_000_000
+    # Enough steady commits that a position is already published before the stall.
+    pre_stall = [t0 + i * _CHUNK_DURATION_US for i in range(20)]
+    commit_timestamps = [*pre_stall, pre_stall[-1] + _CHUNK_DURATION_US + _STALL_US]
+
+    trace = await _run_commit_loop(monkeypatch, commit_timestamps)
+
+    kinds = [kind for kind, _ in trace.player_calls]
+    assert kinds.count("rebased") == 1
+
+    # The rebasing commit published a position, and did so before reporting the rebase:
+    # the beat schedule falls back to elapsed time when the flow log has not recorded
+    # the current track yet.
+    assert kinds[-2:] == ["elapsed", "rebased"]
+
+    elapsed = [seconds for kind, seconds in trace.player_calls if kind == "elapsed"]
+    assert len(elapsed) >= 2, "fixture must publish a position before the stall"
+    # Sub-threshold step: the periodic gate alone would have withheld it.
+    assert abs(elapsed[-1] - elapsed[-2]) < 1.0
+
+
+async def test_steady_commits_publish_on_the_periodic_gate_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a rebase, positions go out on the 1s gate and never more often."""
+    t0 = 10_000_000
+    commit_timestamps = [t0 + i * _CHUNK_DURATION_US for i in range(40)]
+
+    trace = await _run_commit_loop(monkeypatch, commit_timestamps)
+
+    assert "rebased" not in [kind for kind, _ in trace.player_calls]
+    elapsed = [seconds for kind, seconds in trace.player_calls if kind == "elapsed"]
+    assert all(b - a >= 1.0 for a, b in pairwise(elapsed))

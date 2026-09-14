@@ -918,20 +918,29 @@ class SendspinPlaybackSession:
                     self._history.append(committed_history_chunk)
                     self._produced_audio_us += pending.duration_us
                     self._prune_history_locked(commit_now_us)
-                if anchor_shift_us >= ANCHOR_REBASE_SIGNIFICANT_US:
-                    # Beat schedules are published as absolute timestamps derived from the
-                    # anchor, so a rebased anchor leaves them pointing at the pre-stall
-                    # timeline until something re-publishes them. Ordinary elapsed-time
-                    # updates do not, they are not a media identity change.
-                    self.player.on_flow_timeline_rebased()
-                await self._fanout_history_chunk_to_join_processors(committed_history_chunk)
+                anchor_rebased = anchor_shift_us >= ANCHOR_REBASE_SIGNIFICANT_US
                 if self._timeline_start_us is not None:
                     elapsed_real_s = max(0.0, (commit_now_us - self._timeline_start_us) / 1_000_000)
-                    if elapsed_real_s - last_elapsed_update_s >= 1.0:
+                    # A rebase steps the reported position by (buffer_depth + chunk -
+                    # min_send_ahead), independent of how long the stall lasted: forward
+                    # as a deep buffer drains, slightly backward when it was already
+                    # shallow. Either way the step can land under the periodic gate's 1s
+                    # threshold, which would then hold the correction back indefinitely,
+                    # so a rebase publishes on its own commit.
+                    if anchor_rebased or elapsed_real_s - last_elapsed_update_s >= 1.0:
                         last_elapsed_update_s = elapsed_real_s
                         self.player._attr_elapsed_time = elapsed_real_s
                         self.player._attr_elapsed_time_last_updated = time.time()
                         self.player.update_state()
+                if anchor_rebased:
+                    # Beat schedules are published as absolute timestamps derived from the
+                    # anchor, so a rebased anchor leaves them pointing at the pre-stall
+                    # timeline until something re-publishes them. Ordinary elapsed-time
+                    # updates do not, they are not a media identity change. Report it only
+                    # after the elapsed correction above: the schedule falls back to
+                    # elapsed time whenever the flow log has not recorded this track yet.
+                    self.player.on_flow_timeline_rebased()
+                await self._fanout_history_chunk_to_join_processors(committed_history_chunk)
 
         commit_task = asyncio.create_task(_commit_pending_chunks())
         self._attach_task_exception_logger(commit_task, "commit_pending_chunks")
