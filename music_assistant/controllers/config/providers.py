@@ -363,7 +363,7 @@ class ProviderConfigMixin:
 
         :param instance_id: The music source (provider instance) to set the access of.
         :param sharing: Who, besides its owner, may use the source.
-        :param owner: User id of the member owning the source, None for a household source.
+        :param owner: User id of the member owning the source, None for a source of the whole home.
         :param shared_users: The user ids the source is shared with, SELECTED sharing only.
         """
         raw_conf = self.get(f"{CONF_PROVIDERS}/{instance_id}")
@@ -871,7 +871,7 @@ class ProviderConfigMixin:
             return None
         user, manages_all_sources = self._access_caller()
         if user is None or manages_all_sources:
-            # an admin (or the server itself) sets up a source for the entire household
+            # an admin (or the server itself) sets up a source for the whole home
             return None
         return ProviderAccess(owner=user.user_id, sharing=ProviderSharing.PRIVATE)
 
@@ -937,7 +937,7 @@ class ProviderConfigMixin:
 
     @staticmethod
     def _is_member(user: User) -> bool:
-        """Return whether the user is a household member: not a guest nor the HA system user."""
+        """Return whether the user is a member: not a guest nor the HA system user."""
         return user.role != UserRole.GUEST and user.username != HOMEASSISTANT_SYSTEM_USER
 
     async def _resolve_provider_config_entries(self, provider: Provider) -> list[ConfigEntry]:
