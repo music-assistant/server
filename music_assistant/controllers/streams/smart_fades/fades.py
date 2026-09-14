@@ -75,7 +75,7 @@ async def _feed_ffmpeg_stdin(
     proc: AsyncProcess, fade_in_part: bytes | AsyncGenerator[bytes]
 ) -> None:
     """
-    Write the incoming track's head to the mixer, always ending with an EOF.
+    Write the incoming track's head to the mixer, ending with an EOF unless torn down.
 
     :param proc: The mixer process to feed.
     :param fade_in_part: Raw PCM bytes, or a stream delivering them.
@@ -87,9 +87,14 @@ async def _feed_ffmpeg_stdin(
             async for fade_chunk in fade_in_part:
                 await proc.write(fade_chunk)
     finally:
-        # a feed that stops without an EOF leaves ffmpeg waiting for input
-        # while its consumer waits for output
-        await proc.write_eof()
+        # a feed that stops without an EOF leaves ffmpeg waiting for input while
+        # its consumer waits for output. Only cancelling this task skips it: that
+        # is a teardown, where closing the mixer closes stdin and the EOF would
+        # wait forever on a full pipe nobody drains anymore.
+        task = asyncio.current_task()
+        assert task is not None
+        if not task.cancelling():
+            await proc.write_eof()
 
 
 class SmartFade(ABC):
