@@ -19,7 +19,10 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.controllers.players.constants import PlayerLockPurpose
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    get_sendspin_player_id,
+)
 
 if TYPE_CHECKING:
     import logging
@@ -120,6 +123,8 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
                 current_user
                 and current_user.player_filter
                 and player.player_id not in current_user.player_filter
+                # a user may always control the client player they connected on
+                and player.player_id != get_sendspin_player_id()
             ):
                 msg = (
                     f"{current_user.username} does not have access to player {player.display_name}"
