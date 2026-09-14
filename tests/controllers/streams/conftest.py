@@ -9,6 +9,7 @@ import pytest
 
 from music_assistant.controllers.streams.controller import StreamsController
 from music_assistant.controllers.tasks import TasksController
+from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Iterator
@@ -27,9 +28,23 @@ async def streams_controller(mass_minimal: MusicAssistant) -> AsyncGenerator[Str
     await mass_minimal.tasks.setup(await mass_minimal.config.get_core_config("tasks"))
     streams = StreamsController(mass_minimal)
     mass_minimal.streams = streams
+    # setup() overwrites the level of these process-global loggers with the controller
+    # level, so snapshot them and restore afterwards to keep a level a test raised out
+    # of unrelated tests
+    saved_levels = [
+        (logger, logger.level)
+        for logger in (
+            FFMPEG_LOGGER,
+            streams.audio.logger,
+            streams.logger.getChild("smart_fades_mixer"),
+        )
+    ]
     try:
         yield streams
     finally:
+        # restore first: a failed close must not leave a leaked level behind
+        for logger, level in saved_levels:
+            logger.setLevel(level)
         # close unconditionally: a failed assertion must not leave the socket bound
         await streams.close()
         await mass_minimal.tasks.close()

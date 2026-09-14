@@ -149,7 +149,8 @@ SORT_KEYS = {
     "track_artist_name": "artists.search_name ASC, search_name ASC",
     "track_artist_name_desc": "artists.search_name DESC, search_name ASC",
     "random": "RANDOM()",
-    "random_play_count": "RANDOM(), play_count ASC",
+    # least played first, shuffled within equal play counts
+    "random_play_count": "COALESCE(play_count, 0), RANDOM()",
 }
 
 
@@ -1625,6 +1626,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 limit=limit,
                 in_library_only=in_library_only,
                 reachable_via=reachable_via,
+                order_by=order_by,
             )
         else:
             # apply filters
@@ -1940,12 +1942,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         search: str | None,
         genre_ids: list[int] | None,
         provider_filter: list[str] | None,
+        order_by: str | None,
         played_only: bool = False,
         limit: int = 500,
         in_library_only: bool = False,
         reachable_via: list[str] | None = None,
     ) -> None:
-        """Build a fast random subquery with all filters applied."""
+        """Build a fast random subquery honoring the random sort key with all filters applied."""
         sub_query_parts = query_parts.copy()
         sub_join_parts = join_parts.copy()
 
@@ -1971,7 +1974,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if sub_query_parts:
             sub_query += " WHERE " + " AND ".join(self._clean_query_parts(sub_query_parts))
 
-        sub_query += f" ORDER BY RANDOM() LIMIT {limit}"
+        sub_query += f" ORDER BY {SORT_KEYS.get(order_by or 'random', 'RANDOM()')} LIMIT {limit}"
 
         # The query now only consists of the random subquery, which applies all filters
         # within itself
