@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.providers.beets import BeetsProvider
 from music_assistant.providers.beets.library import BeetsLibraryError
@@ -226,7 +227,7 @@ async def test_sync_sets_favorite_and_loudness(
 async def test_process_deletions_removes_tracks_and_emptied_parents(
     make_provider: MakeProvider,
 ) -> None:
-    """Deleted tracks are removed, plus albums and artists left with nothing in the library."""
+    """Deleted tracks lose their beets mapping, and emptied albums and artists are removed."""
     provider = await make_provider()
     music = provider.mass.music
     library_track = MagicMock(
@@ -249,11 +250,52 @@ async def test_process_deletions_removes_tracks_and_emptied_parents(
     await provider._process_deletions({"5"})
 
     music.tracks.get_library_item_by_prov_id.assert_awaited_once_with("5", INSTANCE_ID)
-    music.tracks.remove_item_from_library.assert_awaited_once_with(  # type: ignore[attr-defined]
-        10
+    music.tracks.remove_provider_mapping.assert_awaited_once_with(  # type: ignore[attr-defined]
+        10, INSTANCE_ID, "5"
     )
+    music.tracks.remove_item_from_library.assert_not_awaited()  # type: ignore[attr-defined]
     music.albums.remove_item_from_library.assert_awaited_once_with(20)
     music.artists.remove_item_from_library.assert_awaited_once_with(30)
+
+
+async def test_process_deletions_continues_past_album_already_gone(
+    make_provider: MakeProvider,
+) -> None:
+    """A deleted track whose library album is already gone does not stop the other deletions."""
+    provider = await make_provider()
+    music = provider.mass.music
+    library_tracks = {
+        "5": MagicMock(item_id=10, album=MagicMock(item_id=20), artists=[MagicMock(item_id=30)]),
+        "6": MagicMock(item_id=11, album=MagicMock(item_id=21), artists=[MagicMock(item_id=30)]),
+    }
+    music.tracks.get_library_item_by_prov_id = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda item_id, _instance: library_tracks[item_id]
+    )
+
+    async def _get_album(album_id: int) -> MagicMock:
+        if album_id == 20:
+            msg = f"Album {album_id} not found"
+            raise MediaNotFoundError(msg)
+        return MagicMock(artists=[MagicMock(item_id=31)])
+
+    music.albums.get_library_item = AsyncMock(side_effect=_get_album)  # type: ignore[method-assign]
+    music.albums.tracks = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    music.albums.remove_item_from_library = AsyncMock()  # type: ignore[method-assign]
+    music.artists.albums = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    music.artists.tracks = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    music.artists.remove_item_from_library = AsyncMock()  # type: ignore[method-assign]
+
+    await provider._process_deletions({"5", "6"})
+
+    calls = music.tracks.remove_provider_mapping.await_args_list  # type: ignore[attr-defined]
+    assert sorted(call.args for call in calls) == [
+        (10, INSTANCE_ID, "5"),
+        (11, INSTANCE_ID, "6"),
+    ]
+    music.albums.remove_item_from_library.assert_awaited_once_with(21)
+    assert sorted(
+        call.args[0] for call in music.artists.remove_item_from_library.await_args_list
+    ) == [30, 31]
 
 
 async def test_orphaned_albums_and_artists_are_removed(make_provider: MakeProvider) -> None:

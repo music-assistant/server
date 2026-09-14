@@ -357,7 +357,7 @@ class BeetsProvider(MusicProvider):
         return {str(row["provider_item_id"]): str(row["details"]) for row in rows}
 
     async def _process_deletions(self, deleted_ids: set[str]) -> None:
-        """Remove tracks beets no longer has, and the albums and artists they leave empty."""
+        """Unmap tracks beets no longer has, and remove the albums and artists left empty."""
         album_ids: set[str] = set()
         artist_ids: set[str] = set()
         for item_id in deleted_ids:
@@ -367,12 +367,22 @@ class BeetsProvider(MusicProvider):
             if library_item is None:
                 continue
             if library_item.album:
-                album_ids.add(library_item.album.item_id)
-                # the track's album is an ItemMapping; the library album carries its artists
-                db_album = await self.mass.music.albums.get_library_item(library_item.album.item_id)
-                artist_ids.update(artist.item_id for artist in db_album.artists)
+                try:
+                    # the track's album is an ItemMapping; the library album carries its artists
+                    db_album = await self.mass.music.albums.get_library_item(
+                        library_item.album.item_id
+                    )
+                except MediaNotFoundError:
+                    pass
+                else:
+                    album_ids.add(library_item.album.item_id)
+                    artist_ids.update(artist.item_id for artist in db_album.artists)
             artist_ids.update(artist.item_id for artist in library_item.artists)
-            await self.mass.music.tracks.remove_item_from_library(library_item.item_id)
+            # the library track may also hold another mapping (a re-imported beets item merged
+            # into it, or another provider), which keeps it together with its favorite and history
+            await self.mass.music.tracks.remove_provider_mapping(
+                library_item.item_id, self.instance_id, item_id
+            )
         for album_id in album_ids:
             if not await self.mass.music.albums.tracks(album_id, "library"):
                 await self.mass.music.albums.remove_item_from_library(album_id)
