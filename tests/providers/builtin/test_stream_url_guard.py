@@ -1,0 +1,133 @@
+"""Tests that the builtin provider refuses local filesystem paths."""
+
+from __future__ import annotations
+
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import ProviderMapping, Track
+
+from music_assistant.providers.builtin import BuiltinProvider
+
+LOCAL_PATHS = [
+    "/etc/passwd",
+    "/home/other/private/track.flac",
+    "../../secret.mp3",
+    "file:///etc/passwd",
+    "relative/path.mp3",
+    "",
+]
+
+
+def _make_provider() -> BuiltinProvider:
+    """Return a BuiltinProvider instance with mocked collaborators."""
+    provider = BuiltinProvider.__new__(BuiltinProvider)
+    provider.mass = MagicMock()
+    provider.logger = MagicMock()
+    provider.manifest = MagicMock(domain="builtin")
+    provider.config = MagicMock(instance_id="builtin_1")
+    return provider
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://example.com/stream.mp3",
+        "https://example.com/stream.mp3",
+        "rtsp://example.com/stream",
+        "rtmp://example.com/stream",
+    ],
+)
+def test_ensure_stream_url_accepts_remote_schemes(url: str) -> None:
+    """Remote stream URLs pass the guard unchanged."""
+    BuiltinProvider._ensure_stream_url(url)
+
+
+@pytest.mark.parametrize("item_id", LOCAL_PATHS)
+def test_ensure_stream_url_rejects_local_paths(item_id: str) -> None:
+    """Anything that is not a remote stream URL is refused."""
+    with pytest.raises(MediaNotFoundError):
+        BuiltinProvider._ensure_stream_url(item_id)
+
+
+@pytest.mark.asyncio
+async def test_get_media_info_rejects_local_path_before_probing() -> None:
+    """The sink guard fires before any cache lookup or ffprobe read."""
+    provider = _make_provider()
+    provider._resolve_url = AsyncMock()  # type: ignore[method-assign]
+
+    with pytest.raises(MediaNotFoundError):
+        await provider._get_media_info("/etc/passwd")
+
+    cast("Any", provider.mass).cache.get.assert_not_called()
+    cast("Any", provider._resolve_url).assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_stream_details_rejects_local_path() -> None:
+    """Playback of a local path is blocked at the stream layer."""
+    provider = _make_provider()
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_stream_details("/etc/passwd", MediaType.TRACK)
+
+
+@pytest.mark.asyncio
+async def test_parse_item_rejects_local_path() -> None:
+    """Resolving a local path (get_track/get_radio/enqueue) is blocked."""
+    provider = _make_provider()
+    with pytest.raises(MediaNotFoundError):
+        await provider.parse_item("/etc/passwd", requested_media_type=MediaType.TRACK)
+
+
+@pytest.mark.asyncio
+async def test_add_track_rejects_local_path_without_storing() -> None:
+    """add_track refuses a local path before writing anything to config."""
+    provider = _make_provider()
+    with pytest.raises(MediaNotFoundError):
+        await provider.add_track("/etc/passwd", "Passwords")
+    cast("Any", provider.mass).config.set.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_add_radio_rejects_local_path_without_storing() -> None:
+    """add_radio refuses a local path before writing anything to config."""
+    provider = _make_provider()
+    with pytest.raises(MediaNotFoundError):
+        await provider.add_radio("/etc/passwd", "Passwords")
+    cast("Any", provider.mass).config.set.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_library_add_rejects_local_path_track_without_storing() -> None:
+    """library_add (the add_item object form) refuses a local-path track."""
+    provider = _make_provider()
+    track = Track(
+        item_id="/etc/passwd",
+        provider="builtin",
+        name="Passwords",
+        provider_mappings={
+            ProviderMapping(
+                item_id="/etc/passwd",
+                provider_domain="builtin",
+                provider_instance="builtin_1",
+            )
+        },
+    )
+    with pytest.raises(MediaNotFoundError):
+        await provider.library_add(track)
+    cast("Any", provider.mass).config.set.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_add_track_stores_a_stream_url() -> None:
+    """A remote stream URL is accepted and persisted."""
+    provider = _make_provider()
+    cast("Any", provider.mass).config.get.return_value = []
+    provider.get_track = AsyncMock(return_value=MagicMock(spec=Track))  # type: ignore[method-assign]
+
+    await provider.add_track("http://example.com/song.mp3", "Song")
+
+    cast("Any", provider.mass).config.set.assert_called_once()

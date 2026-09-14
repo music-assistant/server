@@ -406,6 +406,7 @@ class BuiltinProvider(MusicProvider):
             key = CONF_KEY_RADIOS
         else:
             return False
+        self._ensure_stream_url(item.item_id)
         stored_item = StoredItem(item_id=item.item_id, name=item.name)
         if item.image:
             stored_item["image_url"] = item.image.path
@@ -490,6 +491,7 @@ class BuiltinProvider(MusicProvider):
         :param name: Display name.
         :param image_url: Image URL.
         """
+        self._ensure_stream_url(url)
         stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_RADIOS, [])
         # Remove existing entry with same URL if present
         stored_items = [x for x in stored_items if x["item_id"] != url]
@@ -511,10 +513,11 @@ class BuiltinProvider(MusicProvider):
         """
         Add a track.
 
-        :param url: URL or local path.
+        :param url: Stream URL.
         :param name: Display name.
         :param image_url: Image URL.
         """
+        self._ensure_stream_url(url)
         stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_TRACKS, [])
         # Remove existing entry with same URL if present
         stored_items = [x for x in stored_items if x["item_id"] != url]
@@ -1463,8 +1466,29 @@ class BuiltinProvider(MusicProvider):
 
         return url
 
+    @staticmethod
+    def _ensure_stream_url(item_id: str) -> None:
+        """
+        Guard against a builtin track or radio that points at a local filesystem path.
+
+        The builtin provider streams remote URLs only. Local files belong to a
+        filesystem music provider, which is set up and access-controlled separately.
+
+        :param item_id: The track/radio identifier, expected to be a stream URL.
+        :raises MediaNotFoundError: If item_id is not an http(s)/rtsp/rtmp URL.
+        """
+        if not item_id.startswith(BUILTIN_URL_SCHEMES):
+            raise MediaNotFoundError(
+                "The builtin provider only supports stream URLs "
+                "(http, https, rtsp, rtmp), not local file paths"
+            )
+
     async def _get_media_info(self, url: str, force_refresh: bool = False) -> AudioTags:
         """Retrieve mediainfo for url."""
+        # never hand a local filesystem path to ffprobe: the builtin provider streams
+        # remote URLs only, and this is the single choke point every track/radio
+        # resolve and stream call passes through
+        self._ensure_stream_url(url)
         # do we have some cached info for this url ?
         cached_info = await self.mass.cache.get(
             url, provider=self.instance_id, category=CACHE_CATEGORY_MEDIA_INFO
