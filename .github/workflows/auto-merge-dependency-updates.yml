@@ -242,7 +242,7 @@ jobs:
                 # Additional verification: try to download the package.
                 # --ignore-requires-python so the check is not tied to the
                 # runner's Python; we only verify the artifact is fetchable.
-if python3 -m pip download --no-deps --ignore-requires-python "$PACKAGE==$VERSION" > /dev/null 2>&1; then
+                if python3 -m pip download --no-deps --ignore-requires-python "$PACKAGE==$VERSION" > /dev/null 2>&1; then
                   echo "✅ Package $PACKAGE==$VERSION can be downloaded"
                   exit 0
                 else
