@@ -184,12 +184,15 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
         """Call async function using the throttler with retries."""
         throttler = self.throttler
         exp_backoff = throttler.initial_backoff
-        async with throttler.acquire() as delay:
-            if delay != 0:
-                self.logger.debug(
-                    "%s was delayed for %.3f secs due to throttling", func.__name__, delay
-                )
-            for attempt in range(throttler.retry_attempts):
+        for attempt in range(throttler.retry_attempts):
+            # every attempt goes through the gate: a cooldown another caller armed while
+            # we were backing off must hold this retry too, and a retry is a request like
+            # any other, so it takes a rate limit slot of its own
+            async with throttler.acquire() as delay:
+                if delay != 0:
+                    self.logger.debug(
+                        "%s was delayed for %.3f secs due to throttling", func.__name__, delay
+                    )
                 try:
                     return await func(self, *args, **kwargs)
                 except ResourceTemporarilyUnavailable as e:
@@ -221,8 +224,7 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
                         # out of retries while still limited: keep the other callers back,
                         # on the escalated backoff since Retry-After can be absent or low
                         throttler.set_cooldown(max(server_wait, min(exp_backoff, MAX_BACKOFF)))
-            else:  # noqa: PLW0120
-                msg = f"Retries exhausted, failed after {throttler.retry_attempts} attempts"
-                raise RetriesExhausted(msg)
+        msg = f"Retries exhausted, failed after {throttler.retry_attempts} attempts"
+        raise RetriesExhausted(msg)
 
     return wrapper
