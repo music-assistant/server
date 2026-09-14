@@ -233,3 +233,26 @@ async def test_cancelled_feed_does_not_hang_writing_eof() -> None:
             await asyncio.wait_for(feed_task, timeout=2)
     finally:
         await proc.close()
+
+
+@pytest.mark.asyncio
+async def test_source_cancelled_feed_still_ends_the_input() -> None:
+    """A fade-in that raises CancelledError itself still ends the mixer's input with an EOF."""
+    # the child exits only once its stdin reaches EOF
+    proc = AsyncProcess(
+        [sys.executable, "-c", "import sys; sys.stdin.buffer.read()"],
+        stdin=True,
+        name="stdin-reader",
+    )
+    await proc.start()
+
+    async def _cancelled_fade_in() -> AsyncGenerator[bytes]:
+        yield b"\x00" * 1024
+        raise asyncio.CancelledError
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.create_task(_feed_ffmpeg_stdin(proc, _cancelled_fade_in()))
+        assert await proc.wait_with_timeout(2) == 0
+    finally:
+        await proc.close()
