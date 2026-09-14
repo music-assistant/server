@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -80,6 +81,16 @@ async def test_config_entries_offer_rating_threshold(make_provider: MakeProvider
     assert [entry.key for entry in await provider.get_config_entries()] == [
         "favorite_rating_threshold"
     ]
+
+
+async def test_mock_mass_accepts_library_calls(make_provider: MakeProvider) -> None:
+    """The mocked add_item_to_library accepts the keyword call sync code makes."""
+    provider = await make_provider()
+    result: Any = await provider.mass.music.tracks.add_item_to_library(
+        MagicMock(), overwrite_existing=True
+    )
+    assert result.item_id == 1
+    assert result.favorite is False
 
 
 async def test_getters_read_beets(make_provider: MakeProvider, beets_db: BeetsDb) -> None:

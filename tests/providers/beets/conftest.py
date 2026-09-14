@@ -90,7 +90,7 @@ def _mock_mass() -> MagicMock:
     mass.create_task = MagicMock(side_effect=_create_task)
     mass.music.database.get_rows_from_query = AsyncMock(return_value=[])
     mass.music.tracks.add_item_to_library = AsyncMock(
-        side_effect=lambda _track, _overwrite_existing=False: MagicMock(item_id=1, favorite=False)
+        side_effect=lambda *_args, **_kwargs: MagicMock(item_id=1, favorite=False)
     )
     mass.music.tracks.set_favorite = AsyncMock()
     mass.music.tracks.get_library_item_by_prov_id = AsyncMock(return_value=None)
