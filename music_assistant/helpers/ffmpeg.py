@@ -287,7 +287,7 @@ class FFMpeg(AsyncProcess):
             status = "cancelled"
             task = asyncio.current_task()
             assert task is not None
-            # only cancelling this task skips the EOF below, which would block on a
+            # only cancelling this task skips the EOF below, as it could block on a
             # pipe nobody drains anymore; a source-raised cancellation is a clean
             # end that still flushes
             if task.cancelling():

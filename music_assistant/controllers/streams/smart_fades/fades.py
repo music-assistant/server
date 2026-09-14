@@ -92,7 +92,8 @@ async def _feed_ffmpeg_stdin(
         # is a teardown, where closing the mixer closes stdin and the EOF would
         # wait forever on a full pipe nobody drains anymore.
         task = asyncio.current_task()
-        if task is None or not task.cancelling():
+        assert task is not None
+        if not task.cancelling():
             await proc.write_eof()
 
 

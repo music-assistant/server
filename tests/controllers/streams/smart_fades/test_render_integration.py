@@ -232,7 +232,8 @@ async def test_cancelled_feed_does_not_hang_writing_eof() -> None:
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(feed_task, timeout=2)
     finally:
-        await proc.close()
+        # the child never reads its stdin, so a graceful close would only wait out its timeout
+        await proc.kill()
 
 
 @pytest.mark.asyncio
