@@ -621,10 +621,6 @@ class AirPlayControlPlayer(AirPlayPlayer):
         :param config: pyatv configuration of the device to connect to.
         :param storage: Optional pyatv settings storage for this connection.
         """
-        # pyatv cleans up after itself only when connect() raises an Exception, so a
-        # cancel leaves the connections it already opened behind. Reconnects do cancel
-        # it (a discovery update or an unload restarts the connection loop), so let the
-        # connect run to completion detached and close the device it returns.
         task = asyncio.ensure_future(
             pyatv.connect(config, self.mass.loop, session=self.mass.http_session, storage=storage)
         )
@@ -996,8 +992,6 @@ class AirPlayControlPlayer(AirPlayPlayer):
         :param config: pyatv configuration of the device to pair.
         :param protocol: The pyatv protocol to pair.
         """
-        # same treatment as connect: an abandoned setup flow must not leave the started
-        # pairing session behind, so let pair() finish detached and close it.
         task = asyncio.ensure_future(
             pyatv.pair(
                 config,
@@ -1382,6 +1376,5 @@ async def _close_abandoned_pairing(task: asyncio.Task[PairingHandler]) -> None:
     try:
         pairing = await task
     except Exception:
-        # pyatv cleans up a failed pair() itself, leaving nothing to close here
         return
     await pairing.close()
