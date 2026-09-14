@@ -122,7 +122,7 @@ class TestParseArtist:
         assert isinstance(result, Artist)
         assert result.item_id == "123456"
         assert result.name == "Test Artist"
-        assert result.provider == "qobuz"
+        assert result.provider == "qobuz_test"
         assert len(result.provider_mappings) == 1
         mapping = next(iter(result.provider_mappings))
         assert mapping.item_id == "123456"
@@ -180,7 +180,7 @@ class TestParseAlbum:
         assert result.item_id == "789012"
         assert result.name == "Test Album"
         assert result.version == ""
-        assert result.provider == "qobuz"
+        assert result.provider == "qobuz_test"
         assert result.year == 2021
         assert len(result.provider_mappings) == 1
         mapping = next(iter(result.provider_mappings))
@@ -290,7 +290,7 @@ class TestParseTrack:
         assert result.item_id == "345678"
         assert result.name == "Test Track"
         assert result.duration == 240
-        assert result.provider == "qobuz"
+        assert result.provider == "qobuz_test"
         assert result.track_number == 3
         assert result.disc_number == 1
         # performer artist
@@ -405,6 +405,7 @@ class TestParseTrack:
         # Should add only artists with "artist" in their role, not producers
         assert len(result.artists) == 1
         assert result.artists[0].name == "Unknown Artist"
+        assert result.artists[0].provider == "qobuz_test"
 
     async def test_parse_track_missing_performers_key(self, mock_provider: QobuzProvider) -> None:
         """
