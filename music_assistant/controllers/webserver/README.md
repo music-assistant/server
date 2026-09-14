@@ -510,6 +510,9 @@ async def admin_command():
     pass
 ```
 
+A tuple of scopes (`required_scope=(Scope.CONFIG_PROVIDERS_OWN, Scope.LIBRARY_WRITE)`) means the
+caller needs one of them.
+
 Scopes are granted to users through their role, see `ROLE_SCOPES` in
 [helpers/auth_middleware.py](helpers/auth_middleware.py) for the builtin role definitions.
 

@@ -427,20 +427,17 @@ class ProviderConfigMixin:
         self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
         return await self.get_provider_config(instance_id)
 
-    @api_command("config/providers/share_candidates")
+    @api_command(
+        "config/providers/share_candidates",
+        required_scope=(Scope.CONFIG_PROVIDERS_OWN, Scope.LIBRARY_WRITE),
+    )
     async def get_share_candidates(self) -> list[UserSummary]:
         """
         Return the users a music source or playlist can be shared with.
 
         Every enabled member and the Home Assistant system user are listed, without their role
-        or settings. Guests are left out. The caller must hold the config.providers.own or
-        the library.write scope.
+        or settings. Guests are left out.
         """
-        if not self._caller_may_share():
-            raise InsufficientPermissions(
-                f"This command requires the {Scope.CONFIG_PROVIDERS_OWN.value} or "
-                f"{Scope.LIBRARY_WRITE.value} scope"
-            )
         return [
             UserSummary.from_user(user)
             for user in await self.mass.webserver.auth.list_users()
@@ -845,21 +842,6 @@ class ProviderConfigMixin:
         user = get_current_user()
         # no user context means an internal (server-side) caller, which is trusted
         return user, user is None or has_scope(user, Scope.CONFIG_PROVIDERS_WRITE)
-
-    def _caller_may_share(self) -> bool:
-        """Return whether the caller may share a music source or a playlist with members."""
-        # imported here for the same reason as in _access_caller
-        from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
-            get_current_user,
-            has_scope,
-        )
-
-        user = get_current_user()
-        return (
-            user is None
-            or has_scope(user, Scope.CONFIG_PROVIDERS_OWN)
-            or has_scope(user, Scope.LIBRARY_WRITE)
-        )
 
     def _visible_sources_for_caller(self) -> list[str] | None:
         """Return the music sources the calling user may see, None for no restriction."""

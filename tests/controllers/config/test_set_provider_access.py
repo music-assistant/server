@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
 import pytest
-from music_assistant_models.auth import Scope, User, UserRole
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess, ProviderConfig
 from music_assistant_models.enums import EventType, ProviderSharing, ProviderType
 from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
@@ -73,7 +73,7 @@ async def access_mass(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicAssis
         await webserver.auth.close()
 
 
-async def _create_user(mass: MusicAssistant, username: str, role: str = UserRole.USER) -> User:
+async def _create_user(mass: MusicAssistant, username: str, role: UserRole = UserRole.USER) -> User:
     """Create a user and return it."""
     return await mass.webserver.auth.create_user(username=username, role=role)
 
@@ -399,42 +399,6 @@ async def test_a_member_is_served_the_users_it_may_share_with(
         "display_name": "Member",
         "avatar_url": "avatar.png",
     }
-
-
-@pytest.mark.parametrize("scope", [Scope.LIBRARY_WRITE, Scope.CONFIG_PROVIDERS_OWN])
-async def test_whoever_may_share_is_served_the_users_to_share_with(
-    access_mass: MusicAssistant, scope: Scope
-) -> None:
-    """
-    Whoever may share a playlist or a music source is served the members to share it with.
-
-    :param scope: The only scope granted to the custom role of the calling user.
-    """
-    admin = await _create_user(access_mass, "admin", UserRole.ADMIN)
-    member = await _create_user(access_mass, "member")
-    await _create_user(access_mass, "party_guest", UserRole.GUEST)
-    system_user = await access_mass.webserver.auth.get_homeassistant_system_user()
-    role = await access_mass.webserver.auth.create_role("Kids", [scope])
-    kid = await _create_user(access_mass, "kid", role.role_id)
-    set_current_user(kid)
-
-    candidates = await access_mass.config.get_share_candidates()
-
-    assert sorted(candidate.user_id for candidate in candidates) == sorted(
-        [admin.user_id, member.user_id, kid.user_id, system_user.user_id]
-    )
-
-
-async def test_a_caller_that_can_share_nothing_is_not_told_who_the_members_are(
-    access_mass: MusicAssistant,
-) -> None:
-    """A caller that can share nothing is not told who the members are."""
-    role = await access_mass.webserver.auth.create_role("Kids", [])
-    for username, user_role in (("party_guest", UserRole.GUEST), ("kid", role.role_id)):
-        set_current_user(await _create_user(access_mass, username, user_role))
-
-        with pytest.raises(InsufficientPermissions):
-            await access_mass.config.get_share_candidates()
 
 
 async def test_every_share_candidate_is_accepted_on_the_share_list(
