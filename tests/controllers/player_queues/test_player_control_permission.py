@@ -1,14 +1,17 @@
 """
 Tests that queue control honours the player filter while exempting the caller's own client player.
 
-A user restricted to a set of players may still control the client player they connected on
-(browser, desktop or mobile app), which registers itself and is not in their stored filter.
+A user restricted to a set of players may still control the private client player (browser
+session, desktop or mobile app) they connected on, which registers itself and is not in their
+stored filter. The exemption only applies to that private player, so a restricted user cannot
+reach a shared speaker by announcing its id as their client id.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 from music_assistant_models.auth import User, UserRole
@@ -20,9 +23,14 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     sendspin_player_id,
 )
 
-OWN_PLAYER = "browser_session_1"
 ALLOWED_PLAYER = "kitchen"
 OTHER_PLAYER = "living_room"
+OWN_CLIENT = "browser_session_1"
+
+
+def _player(player_id: str, *, private: bool) -> SimpleNamespace:
+    """Build a stand-in player carrying just what the permission check reads."""
+    return SimpleNamespace(player_id=player_id, private=private)
 
 
 @contextmanager
@@ -44,40 +52,57 @@ def _restricted_user(allowed_players: list[str], own_player: str | None = None) 
         current_user.reset(user_token)
 
 
-def _check(queue_id: str) -> None:
-    """Run the queue permission check for the given player in the current context."""
+def _check(queue_id: str, *players: SimpleNamespace) -> None:
+    """Run the queue permission check for the given player against a registry of players."""
+    registry = {player.player_id: player for player in players}
     controller = PlayerQueuesController.__new__(PlayerQueuesController)
+    controller.mass = SimpleNamespace(  # type: ignore[assignment]
+        players=SimpleNamespace(get_player=registry.get)
+    )
     controller._check_player_permission(queue_id)
 
 
 def test_control_of_a_player_outside_the_filter_is_refused() -> None:
     """A restricted user may not control a player they are not allowed to use."""
     with _restricted_user([ALLOWED_PLAYER]), pytest.raises(InsufficientPermissions):
-        _check(OTHER_PLAYER)
+        _check(OTHER_PLAYER, _player(OTHER_PLAYER, private=False))
 
 
 def test_control_of_an_allowed_player_is_permitted() -> None:
     """A player inside the filter stays controllable."""
     with _restricted_user([ALLOWED_PLAYER]):
-        _check(ALLOWED_PLAYER)
+        _check(ALLOWED_PLAYER, _player(ALLOWED_PLAYER, private=False))
 
 
 def test_control_of_the_own_client_player_is_permitted() -> None:
-    """The client player the user connected on is controllable even when not in the filter."""
-    with _restricted_user([ALLOWED_PLAYER], own_player=OWN_PLAYER):
-        _check(OWN_PLAYER)
+    """The private client player the user connected on is controllable even when filtered out."""
+    with _restricted_user([ALLOWED_PLAYER], own_player=OWN_CLIENT):
+        _check(OWN_CLIENT, _player(OWN_CLIENT, private=True))
 
 
 def test_the_client_exemption_does_not_extend_to_other_players() -> None:
     """Connecting a client player grants no access to any other player outside the filter."""
-    with (
-        _restricted_user([ALLOWED_PLAYER], own_player=OWN_PLAYER),
-        pytest.raises(InsufficientPermissions),
+    with _restricted_user([ALLOWED_PLAYER], own_player=OWN_CLIENT), pytest.raises(
+        InsufficientPermissions
     ):
-        _check(OTHER_PLAYER)
+        _check(
+            OTHER_PLAYER,
+            _player(OWN_CLIENT, private=True),
+            _player(OTHER_PLAYER, private=False),
+        )
+
+
+def test_a_shared_speaker_claimed_as_the_client_player_is_refused() -> None:
+    """Announcing a shared speaker's id as the client id does not grant access to it."""
+    # the bound client id is not proof of ownership, so a non-private player claimed this way
+    # must still be refused
+    with _restricted_user([ALLOWED_PLAYER], own_player=OTHER_PLAYER), pytest.raises(
+        InsufficientPermissions
+    ):
+        _check(OTHER_PLAYER, _player(OTHER_PLAYER, private=False))
 
 
 def test_an_unrestricted_user_may_control_any_player() -> None:
     """A user without a filter is unaffected by the check."""
     with _restricted_user([]):
-        _check(OTHER_PLAYER)
+        _check(OTHER_PLAYER, _player(OTHER_PLAYER, private=False))

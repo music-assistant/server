@@ -518,12 +518,18 @@ class TestPlayerCommandPermission:
     """The command decorator enforces the player filter but exempts the caller's own client player."""
 
     async def _stop(
-        self, mock_mass: MagicMock, player_id: str, *, own_player_id: str | None = None
+        self,
+        mock_mass: MagicMock,
+        player_id: str,
+        *,
+        private: bool = False,
+        own_player_id: str | None = None,
     ) -> AsyncMock:
         """Send a stop command as a restricted user and return the isolated handler mock."""
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         player = MockPlayer(provider, player_id, "Client")
+        player._attr_private = private
         player.initialized.set()
         player.update_state(signal_event=False)
         controller._players = {player_id: player}
@@ -545,8 +551,10 @@ class TestPlayerCommandPermission:
     async def test_command_on_the_own_client_player_is_permitted(
         self, mock_mass: MagicMock
     ) -> None:
-        """The client player the user connected on accepts commands even when not in the filter."""
-        handler = await self._stop(mock_mass, "browser_session", own_player_id="browser_session")
+        """A private client player the user connected on accepts commands even when filtered out."""
+        handler = await self._stop(
+            mock_mass, "browser_session", private=True, own_player_id="browser_session"
+        )
         handler.assert_awaited_once_with("browser_session")
 
     async def test_the_client_exemption_does_not_extend_to_other_players(
@@ -555,6 +563,13 @@ class TestPlayerCommandPermission:
         """Connecting a client player grants no command access to any other restricted player."""
         with pytest.raises(InsufficientPermissions):
             await self._stop(mock_mass, "living_room", own_player_id="browser_session")
+
+    async def test_a_shared_speaker_claimed_as_the_client_player_is_refused(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Announcing a shared speaker's id as the client id does not grant command access."""
+        with pytest.raises(InsufficientPermissions):
+            await self._stop(mock_mass, "living_room", private=False, own_player_id="living_room")
 
 
 class TestStateForwarding:
