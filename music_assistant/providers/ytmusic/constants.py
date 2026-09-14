@@ -2,6 +2,13 @@
 
 from enum import StrEnum
 
+YTM_DOMAIN = "https://music.youtube.com"
+YTM_COOKIE_DOMAIN = ".youtube.com"
+# The cookie field YouTube derives the SAPISIDHASH authorization from: without it a cookie
+# was copied from a request that was not signed in.
+COOKIE_AUTH_FIELD = "__Secure-3PAPISID"
+TRANSLATION_OWNER = "provider.ytmusic"
+
 
 class YTMRecommendationIcons(StrEnum):
     """Icons for YTM recommendation types."""

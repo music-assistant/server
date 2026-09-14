@@ -7,10 +7,11 @@ import pytest
 import ytmusicapi
 from aiohttp import ClientError, ServerDisconnectedError
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, SetupFailedError, UnplayableMediaError
 
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.ytmusic import YoutubeMusicProvider
+from music_assistant.providers.ytmusic.helpers import ping_po_token_server
 
 
 @pytest.fixture
@@ -41,11 +42,13 @@ async def test_verify_po_token_url_success(provider: YoutubeMusicProvider) -> No
     """A healthy PO Token server (HTTP 200) verifies successfully."""
     response = MagicMock()
     response.status = 200
-    response.raise_for_status = MagicMock()
     provider.mass.http_session.get = MagicMock(  # type: ignore[method-assign]
         return_value=_ping_context_manager(response=response)
     )
-    assert await provider._verify_po_token_url() is True
+    assert (
+        await ping_po_token_server(provider.mass.http_session, provider._po_token_server_url)
+        is True
+    )
 
 
 @pytest.mark.parametrize(
@@ -68,7 +71,34 @@ async def test_verify_po_token_url_transient_failure(
     provider.mass.http_session.get = MagicMock(  # type: ignore[method-assign]
         return_value=_ping_context_manager(exc=exc)
     )
-    assert await provider._verify_po_token_url() is False
+    assert (
+        await ping_po_token_server(provider.mass.http_session, provider._po_token_server_url)
+        is False
+    )
+
+
+@pytest.mark.parametrize(("format_id", "expected"), [("141", True), ("251", False)])
+async def test_premium_check_reads_the_hq_format(
+    provider: YoutubeMusicProvider, format_id: str, expected: bool
+) -> None:
+    """Only the premium-only HQ format of the test track proves a Premium subscription."""
+    with patch.object(
+        provider, "_get_stream_format", AsyncMock(return_value={"format_id": format_id})
+    ):
+        assert await provider._user_has_ytm_premium() is expected
+
+
+async def test_premium_check_reports_a_failed_test_stream(provider: YoutubeMusicProvider) -> None:
+    """A test stream that cannot be fetched is a retryable setup failure, not a login failure."""
+    stream_error = UnplayableMediaError("Sign in to confirm you're not a bot")
+    with (
+        patch.object(provider, "_get_stream_format", AsyncMock(side_effect=stream_error)),
+        pytest.raises(SetupFailedError) as exc_info,
+    ):
+        await provider._user_has_ytm_premium()
+    assert exc_info.value.translation_key == "stream_check_failed"
+    assert "not a bot" in str(exc_info.value)
+    assert exc_info.value.__cause__ is stream_error
 
 
 async def test_sync_library_unloads_on_invalid_session(provider: YoutubeMusicProvider) -> None:

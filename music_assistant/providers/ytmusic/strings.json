@@ -5,7 +5,7 @@
     },
     "cookie": {
       "label": "Login Cookie",
-      "description": "The Login cookie you grabbed from an existing session, see the documentation."
+      "description": "Paste the cookie of a signed-in music.youtube.com session, see the documentation. You can paste a cookies.txt export from a cookie exporter extension, the Cookie header value from your browser's developer tools, or (Firefox) a 'Copy as cURL' command. Note that Chrome's 'Copy as cURL' no longer includes cookies."
     },
     "po_token_server_url": {
       "label": "PO Token Server URL",
@@ -21,5 +21,15 @@
   },
   "manifest": {
     "description": "Stream songs and podcasts from YouTube Music."
+  },
+  "errors": {
+    "cookie_missing_sapisid": "The cookie is missing the __Secure-3PAPISID field, so it was copied from a request that was not signed in. In the incognito window, open your Library first and copy the Cookie header from a /browse request made after that.",
+    "cookie_expired": "Your YouTube Music session is no longer valid. Export a fresh cookie and reconfigure this provider.",
+    "po_token_server_unreachable": "The PO Token server is not reachable. Install the 'YT Music PO Token Generator' add-on, make sure it is running and check the PO Token Server URL.",
+    "no_premium": "YouTube Music Premium was not detected on this account. Check that the cookie belongs to an account with an active YouTube Music Premium subscription and that the PO Token server is working.",
+    "cookie_rejected": "YouTube Music did not accept this cookie. Make sure it is complete and was copied from a signed-in session; the Music Assistant log has the details.",
+    "stream_check_failed": "Could not fetch a test stream from YouTube Music, so the subscription could not be verified. Check that the PO Token server is working and that the cookie is still valid; the Music Assistant log has the details.",
+    "cookie_malformed": "The cookie could not be parsed. Paste the complete Cookie header value exactly as copied from the browser, without editing it.",
+    "youtube_unreachable": "YouTube Music could not be reached to verify the cookie. Check the server's internet connection and try again in a moment; the Music Assistant log has the details."
   }
 }

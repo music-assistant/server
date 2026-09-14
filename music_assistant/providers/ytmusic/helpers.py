@@ -8,17 +8,42 @@ This also nicely separates the parsing logic from the Youtube Music provider log
 """
 
 import asyncio
+import re
 from collections.abc import Callable
-from http.cookies import SimpleCookie
+from http.cookies import CookieError, SimpleCookie
 from time import time
 from typing import Any, Literal
 
 import ytmusicapi
-from music_assistant_models.errors import LoginFailed
+from aiohttp import ClientError, ClientSession, ClientTimeout
+from music_assistant_models.errors import LoginFailed, SetupFailedError
+from requests.exceptions import RequestException
 from ytmusicapi import LikeStatus
-from ytmusicapi.exceptions import YTMusicError
+from ytmusicapi.exceptions import YTMusicError, YTMusicServerError
+from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
 
-from music_assistant.providers.ytmusic.constants import YTMRecommendationIcons
+from music_assistant.providers.ytmusic.constants import (
+    COOKIE_AUTH_FIELD,
+    TRANSLATION_OWNER,
+    YTM_DOMAIN,
+    YTMRecommendationIcons,
+)
+
+# a browser's "Copy as cURL" command: the cookie sits in a -H 'Cookie: ...' header or,
+# in current Chromium, a -b '...' option; the Windows cmd variant quotes as ^"...^"
+_CURL_COMMAND = re.compile(r"^curl\s", re.IGNORECASE)
+_CURL_COOKIE_HEADER = re.compile(r"""(['"])cookie:\s*(.*?)\^?\1""", re.IGNORECASE | re.DOTALL)
+_CURL_COOKIE_OPTION = re.compile(r"""(?:-b|--cookie)\s+\^?(['"])(.*?)\^?\1""", re.DOTALL)
+_COOKIE_HEADER_NAME = re.compile(r"^cookie:\s*", re.IGNORECASE)
+_CMD_QUOTE = '^"'
+_CMD_ESCAPE = re.compile(r"\^(.)")
+# some exporters prefix HttpOnly cookies with a marker that must not read as a comment
+_NETSCAPE_HTTPONLY_PREFIX = "#HttpOnly_"
+_NETSCAPE_FIELD_COUNT = 7
+_PO_TOKEN_PING_TIMEOUT = ClientTimeout(total=10)
+# ytmusicapi reports an HTTP error as "Server returned HTTP <status>: ..."
+_YTM_HTTP_STATUS = re.compile(r"Server returned HTTP (\d{3})")
+_YTM_REFUSED_STATUSES = frozenset({401, 403})
 
 # subset of ytmusicapi's accepted search filters that we use
 YTMSearchFilter = Literal["artists", "albums", "songs", "playlists", "podcasts"]
@@ -397,6 +422,125 @@ def get_sec(time_str: str) -> int:
     return 0
 
 
+def build_headers(cookie: str) -> dict[str, str]:
+    """
+    Build the authenticated request headers for a raw YouTube Music cookie string.
+
+    :param cookie: The raw ``Cookie`` header value of a signed-in YouTube Music session.
+    """
+    if COOKIE_AUTH_FIELD not in cookie:
+        raise LoginFailed(
+            f"Invalid Cookie detected. Cookie is missing the {COOKIE_AUTH_FIELD} field. "
+            "Please ensure you are passing the correct cookie. "
+            "You can verify this by checking if the string "
+            f"'{COOKIE_AUTH_FIELD}' is present in the cookie string.",
+            translation_key="cookie_missing_sapisid",
+            translation_owner=TRANSLATION_OWNER,
+        )
+    try:
+        sapisid = sapisid_from_cookie(cookie)
+    except (KeyError, CookieError) as err:
+        # SimpleCookie silently drops everything after a value it cannot parse (a stray
+        # space from a sloppy copy is enough), so the field is present but unreadable
+        raise LoginFailed(
+            "The cookie could not be parsed. Paste the complete Cookie header value exactly "
+            "as copied from the browser.",
+            translation_key="cookie_malformed",
+            translation_owner=TRANSLATION_OWNER,
+        ) from err
+    return {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:72.0) Gecko/20100101 Firefox/72.0",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Content-Type": "application/json",
+        "X-Goog-AuthUser": "0",
+        "x-origin": YTM_DOMAIN,
+        "Cookie": cookie,
+        "Authorization": get_authorization(sapisid + " " + YTM_DOMAIN),
+    }
+
+
+def normalize_cookie(raw: str) -> str:
+    """
+    Turn whatever the user pasted into the raw ``Cookie`` header value YouTube expects.
+
+    Accepts the plain header value, a ``Cookie: ...`` header line, a browser's
+    "Copy as cURL" command or a Netscape ``cookies.txt`` export.
+
+    :param raw: The pasted text.
+    """
+    text = raw.strip()
+    if _CURL_COMMAND.match(text):
+        text = _cookie_from_curl(text)
+    elif _is_netscape(text):
+        text = _cookie_from_netscape(text)
+    text = _COOKIE_HEADER_NAME.sub("", text.strip())
+    # a header value wrapped over several lines is rejoined into one
+    pairs = [part.strip() for part in re.split(r"[;\r\n]+", text) if part.strip()]
+    return "; ".join(pairs)
+
+
+async def verify_cookie(headers: dict[str, str]) -> None:
+    """
+    Make one signed-in request to YouTube Music, raising LoginFailed if the cookie is refused.
+
+    :param headers: The authenticated request headers (see :func:`build_headers`).
+    """
+
+    def _get_account_info() -> dict[str, Any]:
+        ytm = ytmusicapi.YTMusic(auth=headers)
+        return ytm.get_account_info()
+
+    try:
+        await _run_ytmusic(_get_account_info)
+    except LoginFailed:
+        raise
+    except YTMusicServerError as err:
+        # only an explicit refusal is about the cookie; a 429/5xx is YouTube having a moment
+        status = _YTM_HTTP_STATUS.search(str(err))
+        if status and int(status.group(1)) in _YTM_REFUSED_STATUSES:
+            raise LoginFailed(
+                f"YouTube Music did not accept the cookie: {err}",
+                translation_key="cookie_rejected",
+                translation_owner=TRANSLATION_OWNER,
+            ) from err
+        raise SetupFailedError(
+            f"YouTube Music could not be reached to verify the cookie: {err}",
+            translation_key="youtube_unreachable",
+            translation_owner=TRANSLATION_OWNER,
+        ) from err
+    except RequestException as err:
+        raise SetupFailedError(
+            f"YouTube Music could not be reached to verify the cookie: {err}",
+            translation_key="youtube_unreachable",
+            translation_owner=TRANSLATION_OWNER,
+        ) from err
+    except (KeyError, IndexError, ValueError, YTMusicError) as err:
+        # an answer that is not the account page (consent or sign-in interstitial, changed
+        # payload) - anything else is a bug and keeps its traceback
+        raise LoginFailed(
+            f"YouTube Music did not accept the cookie: {err}",
+            translation_key="cookie_rejected",
+            translation_owner=TRANSLATION_OWNER,
+        ) from err
+
+
+async def ping_po_token_server(session: ClientSession, base_url: str) -> bool:
+    """
+    Check that the PO Token server answers on its ping endpoint.
+
+    :param session: The aiohttp session to use.
+    :param base_url: The base URL of the PO Token server.
+    """
+    try:
+        async with session.get(
+            f"{base_url.rstrip('/')}/ping", timeout=_PO_TOKEN_PING_TIMEOUT
+        ) as response:
+            return response.status == 200
+    except ClientError, TimeoutError, ValueError:
+        return False
+
+
 def convert_to_netscape(raw_cookie_str: str, domain: str) -> str:
     """Convert a raw cookie into Netscape format, so yt-dl can use it."""
     domain = domain.replace("https://", "")
@@ -454,5 +598,54 @@ def _raise_if_signed_out(err: Exception) -> None:
         return
     raise LoginFailed(
         "Your YouTube Music session is no longer valid. "
-        "Please reconfigure this provider with a fresh cookie."
+        "Please reconfigure this provider with a fresh cookie.",
+        translation_key="cookie_expired",
+        translation_owner=TRANSLATION_OWNER,
     ) from err
+
+
+def _cookie_from_curl(command: str) -> str:
+    """Extract the cookie value from a "Copy as cURL" command."""
+    match = _CURL_COOKIE_HEADER.search(command) or _CURL_COOKIE_OPTION.search(command)
+    if match is None:
+        return command
+    value = match.group(2)
+    if _CMD_QUOTE in command:
+        # the cmd variant caret-escapes every special character inside the value as well
+        value = _CMD_ESCAPE.sub(r"\1", value)
+    return value
+
+
+def _is_netscape(text: str) -> bool:
+    """Check whether the text looks like a Netscape cookies.txt export."""
+    return any(_netscape_fields(line) for line in text.splitlines())
+
+
+def _cookie_from_netscape(text: str) -> str:
+    """Build the raw cookie string from a Netscape cookies.txt export."""
+    pairs: list[str] = []
+    for line in text.splitlines():
+        if not (fields := _netscape_fields(line)):
+            continue
+        domain, _, _, _, _, name, value = fields
+        if not _is_youtube_host(domain):
+            continue
+        pairs.append(f"{name}={value}")
+    return "; ".join(pairs)
+
+
+def _netscape_fields(line: str) -> list[str] | None:
+    """Return the seven tab separated fields of a cookies.txt line, or None for other lines."""
+    line = line.removeprefix(_NETSCAPE_HTTPONLY_PREFIX)
+    if not line.strip() or line.startswith("#"):
+        return None
+    fields = line.rstrip("\r\n").split("\t")
+    if len(fields) != _NETSCAPE_FIELD_COUNT:
+        return None
+    return fields
+
+
+def _is_youtube_host(domain: str) -> bool:
+    """Check whether a cookies.txt domain is youtube.com or one of its subdomains."""
+    host = domain.lstrip(".").lower()
+    return host == "youtube.com" or host.endswith(".youtube.com")
