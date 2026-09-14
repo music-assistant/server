@@ -1207,6 +1207,8 @@ class SendspinPlayer(SendspinBasePlayer):
     _beat_retry_task: asyncio.Task[None] | None = None
     # Queue item the current poller is targeting (so a track switch cancels it).
     _beat_retry_queue_item_id: str | None = None
+    _metadata_generation: int = 0
+    _content_takeover_pending: bool = False
     playback_session: SendspinPlaybackSession
     static_delay_default_ms: int = DEFAULT_SENDSPIN_STATIC_DELAY
     # HA media_player entity announcements are relayed to (ESPHome-backed devices)
@@ -1233,6 +1235,9 @@ class SendspinPlayer(SendspinBasePlayer):
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.MULTI_DEVICE_DSP,
         }
+        self._metadata_generation = 0
+        self._content_takeover_pending = False
+        self._metadata_lock = asyncio.Lock()
         # Keep volume/mute features of the first registration as a workaround for Cast.
         if hello_payload.player_support:
             _supported_commands = hello_payload.player_support.supported_commands
@@ -1412,6 +1417,10 @@ class SendspinPlayer(SendspinBasePlayer):
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         self.update_state()
+        async with self._metadata_lock:
+            self._metadata_generation += 1
+            self._content_takeover_pending = False
+            await self._clear_current_media_metadata(generation=self._metadata_generation)
         # group.stop() snapshots the live position, which it can only do while the push
         # stream is up - cancelling first leaves it re-emitting a stale anchor. Teardown
         # goes in finally so a failing group stop can't strand the session, and nothing
@@ -1480,6 +1489,45 @@ class SendspinPlayer(SendspinBasePlayer):
         """Handle logic when the PlayerConfig is first loaded or updated."""
         await self._apply_preferred_format()
         await self._apply_static_delay()
+
+    async def on_group_content_takeover(self) -> object:
+        """Clear the protocol snapshot before a new content owner joins."""
+        async with self._metadata_lock:
+            self._metadata_generation += 1
+            generation = self._metadata_generation
+            self._content_takeover_pending = True
+            try:
+                await self._clear_current_media_metadata()
+            except BaseException:
+                if generation == self._metadata_generation:
+                    self._content_takeover_pending = False
+                raise
+            return generation
+
+    async def on_group_content_takeover_finished(self, token: object) -> None:
+        """Release the pending takeover when its playback transaction ends."""
+        if not isinstance(token, int):
+            return
+        should_publish = False
+        async with self._metadata_lock:
+            if token == self._metadata_generation:
+                self._content_takeover_pending = False
+                should_publish = self.state.current_media is not None
+        if should_publish:
+            self.mass.create_task(
+                self.send_current_media_metadata(),
+                task_id=f"sendspin_metadata_{self.player_id}",
+                abort_existing=True,
+            )
+
+    async def on_group_content_takeover_aborted(self, token: object) -> None:
+        """Cancel a takeover generation without republishing the previous content."""
+        if not isinstance(token, int):
+            return
+        async with self._metadata_lock:
+            if token == self._metadata_generation:
+                self._metadata_generation += 1
+                self._content_takeover_pending = False
 
     async def set_members(
         self,
@@ -1583,11 +1631,13 @@ class SendspinPlayer(SendspinBasePlayer):
 
     async def send_current_media_metadata(self) -> None:
         """Send the current media metadata to the sendspin group."""
-        if not self.available:
+        if not self.available or self._content_takeover_pending:
             return
+        generation = self._metadata_generation
         current_media = self.state.current_media
         if current_media is None:
-            await self._clear_current_media_metadata()
+            async with self._metadata_lock:
+                await self._clear_current_media_metadata(generation=generation)
             return
         # check if we are playing a MA queue item
         queue_item: QueueItem | None = None
@@ -1599,73 +1649,75 @@ class SendspinPlayer(SendspinBasePlayer):
             )
 
         # Runs even without a queue item so radio / Spotify Connect streams still get art.
-        await self._send_album_artwork(current_media)
+        await self._send_album_artwork(current_media, generation=generation)
+        if not self._metadata_publish_allowed(generation):
+            return
         if queue_item:
-            await self._send_artist_artwork(queue_item)
+            await self._send_artist_artwork(queue_item, generation=generation)
+        if not self._metadata_publish_allowed(generation):
+            return
 
-        track_number: int | None = None
-        year: int | None = None
         album_artist: str | None = None
         if queue_item and queue_item.media_item and is_track(queue_item.media_item):
-            track = queue_item.media_item
-            track_number = track.track_number or None
-            album_mapping = track.album
+            album_mapping = queue_item.media_item.album
+            full_album: Album | None = None
             if album_mapping is not None:
-                year = album_mapping.year
-                if not isinstance(album_mapping, Album):
-                    # Cheap DB-only lookup, no external API call; None if not in library
+                if isinstance(album_mapping, Album):
+                    full_album = album_mapping
+                else:
                     result = await self.mass.music.get_library_item_by_prov_id(
                         MediaType.ALBUM, album_mapping.item_id, album_mapping.provider
                     )
-                    full_album: Album | None = result if isinstance(result, Album) else None
-                else:
-                    full_album = album_mapping
+                    full_album = result if isinstance(result, Album) else None
                 if full_album and full_album.artists:
                     album_artist = full_album.artist_str
+        if not self._metadata_publish_allowed(generation):
+            return
 
-        track_duration = current_media.duration or 0
-        if controller_role := self._controller_role:
-            controller_role.set_seek_max_ms(int(track_duration * 1000) if track_duration else None)
-        repeat = SendspinRepeatMode.OFF
-        if queue and queue.repeat_mode == RepeatMode.ALL:
-            repeat = SendspinRepeatMode.ALL
-        elif queue and queue.repeat_mode == RepeatMode.ONE:
-            repeat = SendspinRepeatMode.ONE
-
-        shuffle = queue.shuffle_enabled if queue else False
         is_playing = self.state.playback_state == PlaybackState.PLAYING
-        track_progress = self._compute_track_progress_ms(current_media, is_playing=is_playing)
-        # A progress beyond the track length is never meaningful to clients.
-        if track_duration:
-            track_progress = min(track_progress, int(track_duration * 1000))
-
-        metadata = Metadata(
-            title=current_media.title,
-            artist=current_media.artist,
-            album_artist=album_artist,
-            album=current_media.album,
-            artwork_url=current_media.image_url,
-            year=year,
-            track=track_number,
-            track_duration=track_duration * 1000 if track_duration is not None else None,
-            track_progress=track_progress,
-            playback_speed=1000 if is_playing else 0,
-            repeat=repeat,
-            shuffle=shuffle,
+        metadata = self._build_current_media_metadata(
+            current_media,
+            queue_item,
+            queue,
+            album_artist,
+            is_playing=is_playing,
         )
+        repeat = metadata.repeat
+        shuffle = metadata.shuffle
+        track_progress = metadata.track_progress
+        if repeat is None or shuffle is None or track_progress is None:
+            return
 
-        # Send metadata to the group
-        if (metadata_role := self._metadata_role) is not None:
-            metadata_role.set_metadata(metadata)
+        if not self._metadata_publish_allowed(generation):
+            return
 
+        async with self._metadata_lock:
+            if not self._metadata_publish_allowed(generation):
+                return
+
+            if (controller_role := self._controller_role) is not None:
+                controller_role.set_seek_max_ms(
+                    int(current_media.duration * 1000) if current_media.duration else None
+                )
+            if (metadata_role := self._metadata_role) is not None:
+                metadata_role.set_metadata(metadata)
+
+        if not self._metadata_publish_allowed(generation):
+            return
         self._publish_repeat_shuffle(repeat, shuffle=shuffle)
 
         # Send color palette derived from the cover art (already computed by
         # the players controller with the Sendspin defined minimum contrast values).
-        if (color_role := self._color_role) is not None:
+        if (
+            self._metadata_publish_allowed(generation)
+            and (color_role := self._color_role) is not None
+        ):
             self._send_color_palette(color_role, current_media.palette)
 
-        await self._send_beat_schedule(queue, queue_item, track_progress, is_playing)
+        if self._metadata_publish_allowed(generation):
+            await self._send_beat_schedule(
+                queue, queue_item, track_progress, is_playing, generation=generation
+            )
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
@@ -1942,17 +1994,41 @@ class SendspinPlayer(SendspinBasePlayer):
         )
         player_role.set_static_delay(config_value)
 
-    async def _send_album_artwork(self, current_media: PlayerMedia) -> str | None:
+    async def _publish_artwork(
+        self,
+        image: Image.Image | None,
+        artwork_url: str | None,
+        generation: int,
+        *,
+        artist: bool = False,
+    ) -> None:
+        """Publish artwork and update its cache after a successful setter call."""
+        async with self._metadata_lock:
+            if not self._metadata_publish_allowed(generation):
+                return
+            artwork_role = self._artwork_role
+            if artwork_role is None:
+                return
+            if artist:
+                await artwork_role.set_artist_artwork(image)
+                self.last_sent_artist_artwork_url = artwork_url
+            else:
+                await artwork_role.set_album_artwork(image)
+                self.last_sent_artwork_url = artwork_url
+
+    async def _send_album_artwork(
+        self, current_media: PlayerMedia, *, generation: int | None = None
+    ) -> str | None:
         """
         Send album artwork to the sendspin group.
 
-        Args:
-            current_media: The current player media.
+        :param current_media: The current player media.
+        :param generation: Metadata generation allowed to publish.
         """
+        generation = self._metadata_generation if generation is None else generation
         # image_url is resolved per-source upstream (radio / Spotify Connect / queue items).
         artwork_url = current_media.image_url
-        if artwork_url != self.last_sent_artwork_url:
-            self.last_sent_artwork_url = artwork_url
+        if self._metadata_publish_allowed(generation) and artwork_url != self.last_sent_artwork_url:
             if artwork_url is not None:
                 # Fetch from the resolved URL so the bytes match artwork_url, even when
                 # radio now-playing art differs from the queue item's own image.
@@ -1966,15 +2042,18 @@ class SendspinPlayer(SendspinBasePlayer):
                 if isinstance(image_data, bytes):
                     # decode through the guard so undecodable art (e.g. SVG) is skipped, not crashed
                     image = await self._decode_artwork(image_data)
-                    if image is not None and (artwork_role := self._artwork_role) is not None:
-                        await artwork_role.set_album_artwork(image)
-            elif (artwork_role := self._artwork_role) is not None:
-                await artwork_role.set_album_artwork(None)
+                    if image is not None:
+                        await self._publish_artwork(image, artwork_url, generation)
+            else:
+                await self._publish_artwork(None, None, generation)
 
         return artwork_url
 
-    async def _send_artist_artwork(self, current_item: QueueItem) -> None:
+    async def _send_artist_artwork(
+        self, current_item: QueueItem, *, generation: int | None = None
+    ) -> None:
         """Send artist artwork to the sendspin group."""
+        generation = self._metadata_generation if generation is None else generation
         artist_artwork_url: str | None = None
 
         if current_item.media_item is not None and is_track(current_item.media_item):
@@ -1991,8 +2070,10 @@ class SendspinPlayer(SendspinBasePlayer):
                 if image is not None:
                     artist_artwork_url = self.mass.metadata.get_image_url(image)
 
-        if artist_artwork_url != self.last_sent_artist_artwork_url:
-            self.last_sent_artist_artwork_url = artist_artwork_url
+        if (
+            self._metadata_publish_allowed(generation)
+            and artist_artwork_url != self.last_sent_artist_artwork_url
+        ):
             if artist_artwork_url is not None:
                 # Fetch bytes from the already-resolved URL to avoid the secondary
                 # provider lookup that get_image_data_for_item triggers for ItemMappings.
@@ -2005,13 +2086,12 @@ class SendspinPlayer(SendspinBasePlayer):
                     artist_image_data = None
                 if isinstance(artist_image_data, bytes):
                     artist_image = await self._decode_artwork(artist_image_data)
-                    if (
-                        artist_image is not None
-                        and (artwork_role := self._artwork_role) is not None
-                    ):
-                        await artwork_role.set_artist_artwork(artist_image)
-            elif (artwork_role := self._artwork_role) is not None:
-                await artwork_role.set_artist_artwork(None)
+                    if artist_image is not None:
+                        await self._publish_artwork(
+                            artist_image, artist_artwork_url, generation, artist=True
+                        )
+            else:
+                await self._publish_artwork(None, None, generation, artist=True)
 
     async def _decode_artwork(self, image_data: bytes) -> Image.Image | None:
         """
@@ -2031,12 +2111,63 @@ class SendspinPlayer(SendspinBasePlayer):
             self.logger.debug("Skipping undecodable artwork: %s", err)
             return None
 
-    async def _clear_current_media_metadata(self) -> None:
+    def _metadata_publish_allowed(self, generation: int) -> bool:
+        """Return whether a metadata task still owns the current snapshot."""
+        return generation == self._metadata_generation and not self._content_takeover_pending
+
+    def _build_current_media_metadata(
+        self,
+        current_media: PlayerMedia,
+        queue_item: QueueItem | None,
+        queue: PlayerQueue | None,
+        album_artist: str | None = None,
+        *,
+        is_playing: bool,
+    ) -> Metadata:
+        """Build metadata for the current media item."""
+        track_number: int | None = None
+        year: int | None = None
+        if queue_item and queue_item.media_item and is_track(queue_item.media_item):
+            track = queue_item.media_item
+            track_number = track.track_number or None
+            if track.album is not None:
+                year = track.album.year
+        track_duration = current_media.duration or 0
+        repeat = SendspinRepeatMode.OFF
+        if queue and queue.repeat_mode == RepeatMode.ALL:
+            repeat = SendspinRepeatMode.ALL
+        elif queue and queue.repeat_mode == RepeatMode.ONE:
+            repeat = SendspinRepeatMode.ONE
+
+        shuffle = queue.shuffle_enabled if queue else False
+        is_playing = self.state.playback_state == PlaybackState.PLAYING
+        track_progress = self._compute_track_progress_ms(current_media, is_playing=is_playing)
+        if track_duration:
+            track_progress = min(track_progress, int(track_duration * 1000))
+
+        return Metadata(
+            title=current_media.title,
+            artist=current_media.artist,
+            album_artist=album_artist,
+            album=current_media.album,
+            artwork_url=current_media.image_url,
+            year=year,
+            track=track_number,
+            track_duration=track_duration * 1000,
+            track_progress=track_progress,
+            playback_speed=1000 if is_playing else 0,
+            repeat=repeat,
+            shuffle=shuffle,
+        )
+
+    async def _clear_current_media_metadata(self, *, generation: int | None = None) -> None:
         """Clear all metadata and artwork from the sendspin group."""
+        if generation is not None and generation != self._metadata_generation:
+            return
         # Stop any in-flight beat-analysis polling task
         self._cancel_beat_retry()
         if (metadata_role := self._metadata_role) is not None:
-            metadata_role.set_metadata(Metadata())
+            metadata_role.set_metadata(None)
         if (visualizer_role := self._visualizer_role) is not None:
             visualizer_role.clear_beat_schedule()
             # Reset to PENDING so beats are re-deferred until the next track's analysis lands.
@@ -2119,7 +2250,9 @@ class SendspinPlayer(SendspinBasePlayer):
             )
         is_playing = self.state.playback_state == PlaybackState.PLAYING
         track_progress = self._compute_track_progress_ms(current_media, is_playing=is_playing)
-        await self._send_beat_schedule(queue, queue_item, track_progress, is_playing)
+        await self._send_beat_schedule(
+            queue, queue_item, track_progress, is_playing, generation=self._metadata_generation
+        )
 
     @staticmethod
     def _flow_track_offset_us(pq_data: PlayerQueueData | None, queue_item: QueueItem) -> int | None:
@@ -2151,8 +2284,13 @@ class SendspinPlayer(SendspinBasePlayer):
         queue_item: QueueItem | None,
         track_progress_ms: int,
         is_playing: bool,
+        *,
+        generation: int | None = None,
     ) -> None:
         """Hydrate per-track beat timings from audio analysis and push to visualizer."""
+        generation = self._metadata_generation if generation is None else generation
+        if not self._metadata_publish_allowed(generation):
+            return
         visualizer_role = self._visualizer_role
         if visualizer_role is None:
             return
@@ -2200,6 +2338,8 @@ class SendspinPlayer(SendspinBasePlayer):
             media_type=sd.media_type,
             priority=(SMART_FADES_ANALYSIS_DOMAIN,),
         )
+        if not self._metadata_publish_allowed(generation):
+            return
         if analysis is None or analysis.beats is None or len(analysis.beats) == 0:
             visualizer_role.clear_beat_schedule()
             # Analysis may still be running (offline NN takes ~5-10 s). Kick a
@@ -2221,6 +2361,8 @@ class SendspinPlayer(SendspinBasePlayer):
             if beat_us < now_us:
                 continue
             beats.append(BeatTiming(timestamp_us=beat_us, is_downbeat=float(b) in downbeats))
+        if not self._metadata_publish_allowed(generation):
+            return
         visualizer_role.clear_beat_schedule()
         if beats:
             visualizer_role.append_beat_schedule(beats)

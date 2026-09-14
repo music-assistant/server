@@ -840,7 +840,7 @@ class TestAdHocLeadershipTransfer:
         controller._transfer_ad_hoc_leadership.assert_not_awaited()
         # the dissolve removes the visualizer from the group and ends the leader's queue
         controller._handle_set_members_with_protocols.assert_awaited_once_with(
-            leader, [], ["visualizer"]
+            leader, [], ["visualizer"], new_content=False
         )
         queue_stop.assert_awaited_once_with("leader")
         controller._handle_cmd_stop.assert_not_awaited()
