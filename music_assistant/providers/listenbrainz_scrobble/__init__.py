@@ -12,10 +12,21 @@ import aiohttp
 from liblistenbrainz import LISTEN_TYPE_PLAYING_NOW, LISTEN_TYPE_SINGLE, Listen
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import InvalidToken, SetupFailedError
+from music_assistant_models.errors import (
+    InvalidToken,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+    SetupFailedError,
+)
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
+from music_assistant.helpers.throttle_retry import (
+    ThrottlerManager,
+    parse_retry_after,
+    throttle_with_retries,
+)
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
@@ -110,12 +121,14 @@ class ListenBrainzScrobbleProvider(PluginProvider):
 class ListenBrainzEventHandler(ScrobblerHelper):
     """Submit now-playing updates and listens to ListenBrainz."""
 
-    # A non-2xx reply becomes aiohttp.ClientResponseError via raise_for_status, and a request
-    # that outlives its timeout raises TimeoutError; both are logged and swallowed so a failed
-    # submission never takes down the playback report handling.
+    # A non-2xx reply becomes aiohttp.ClientResponseError via raise_for_status, a request that
+    # outlives its timeout raises TimeoutError, and exhausted retries on rate-limit/5xx replies
+    # raise RetriesExhausted; all are logged and swallowed so a failed submission never takes
+    # down the playback report handling.
     scrobble_exceptions: ClassVar[tuple[type[Exception], ...]] = (
         aiohttp.ClientError,
         TimeoutError,
+        RetriesExhausted,
     )
 
     def __init__(
@@ -135,6 +148,9 @@ class ListenBrainzEventHandler(ScrobblerHelper):
         self.mass = mass
         self._api_base_url = api_base_url
         self._token = token
+        # low submission volume (one per played track), so a modest throttle never bites in
+        # normal use; the retries are what matter, backing off on rate-limit and 5xx replies
+        self.throttler = ThrottlerManager(rate_limit=1, period=1, retry_attempts=3)
 
     def _get_artist_name(self, report: MediaItemPlaybackProgressReport) -> str:
         """Return the best available artist name for the ListenBrainz payload."""
@@ -174,6 +190,7 @@ class ListenBrainzEventHandler(ScrobblerHelper):
         listen.listened_at = int(time.time())
         await self._submit_listen(listen, LISTEN_TYPE_SINGLE)
 
+    @throttle_with_retries
     async def _submit_listen(self, listen: Listen, listen_type: str) -> None:
         """
         Submit a listen to ListenBrainz with a bounded, cancellable request.
@@ -191,4 +208,17 @@ class ListenBrainzEventHandler(ScrobblerHelper):
             json=body,
             timeout=_REQUEST_TIMEOUT,
         ) as response:
+            # back off and retry while the service is alive but busy; a connection error or
+            # timeout is left to propagate and be dropped rather than hammer a service that
+            # isn't answering at all
+            if response.status == 429:
+                raise RateLimited(
+                    "ListenBrainz rate limit reached",
+                    backoff_time=parse_retry_after(response.headers.get("Retry-After")),
+                )
+            if response.status >= 500:
+                raise ResourceTemporarilyUnavailable(
+                    "ListenBrainz is temporarily unavailable",
+                    backoff_time=parse_retry_after(response.headers.get("Retry-After")),
+                )
             response.raise_for_status()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Self
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import aiohttp
 import pytest
@@ -21,23 +21,29 @@ from music_assistant.providers.listenbrainz_scrobble import (
     setup,
 )
 
+# where the throttle/retry helper sleeps between attempts; patched so retries are instant
+_SLEEP = "music_assistant.helpers.throttle_retry.asyncio.sleep"
+
 
 class _FakeResponse:
     """Stand-in for an aiohttp response used as an async context manager."""
 
     def __init__(
         self,
+        *,
+        status: int = 200,
+        headers: dict[str, str] | None = None,
         payload: dict[str, bool] | None = None,
         json_error: Exception | None = None,
-        status_error: Exception | None = None,
     ) -> None:
+        self.status = status
+        self.headers = headers or {}
         self._payload = payload or {}
         self._json_error = json_error
-        self._status_error = status_error
 
     def raise_for_status(self) -> None:
-        if self._status_error is not None:
-            raise self._status_error
+        if self.status >= 400:
+            raise aiohttp.ClientResponseError(Mock(), (), status=self.status)
 
     async def json(self) -> dict[str, bool]:
         if self._json_error is not None:
@@ -61,13 +67,16 @@ class _FakeSession:
         error: Exception | None = None,
         json_error: Exception | None = None,
         post_error: Exception | None = None,
-        post_status_error: Exception | None = None,
+        post_statuses: list[int] | None = None,
+        post_headers: dict[str, str] | None = None,
     ) -> None:
         self._payload = payload or {}
         self._error = error
         self._json_error = json_error
         self._post_error = post_error
-        self._post_status_error = post_status_error
+        # one status per POST attempt; the last value is reused once the list is exhausted
+        self._post_statuses = list(post_statuses) if post_statuses else [200]
+        self._post_headers = post_headers or {}
         self.requested_url: str | None = None
         self.requested_headers: dict[str, str] | None = None
         self.requested_timeout: object = None
@@ -75,6 +84,7 @@ class _FakeSession:
         self.posted_headers: dict[str, str] | None = None
         self.posted_json: dict[str, Any] | None = None
         self.posted_timeout: object = None
+        self.post_calls = 0
 
     def get(
         self,
@@ -89,7 +99,7 @@ class _FakeSession:
         self.requested_timeout = timeout
         if self._error is not None:
             raise self._error
-        return _FakeResponse(self._payload, self._json_error)
+        return _FakeResponse(payload=self._payload, json_error=self._json_error)
 
     def post(
         self,
@@ -104,9 +114,11 @@ class _FakeSession:
         self.posted_headers = headers
         self.posted_json = json
         self.posted_timeout = timeout
+        status = self._post_statuses[min(self.post_calls, len(self._post_statuses) - 1)]
+        self.post_calls += 1
         if self._post_error is not None:
             raise self._post_error
-        return _FakeResponse(status_error=self._post_status_error)
+        return _FakeResponse(status=status, headers=self._post_headers)
 
 
 def _mass(
@@ -266,7 +278,7 @@ async def test_now_playing_is_submitted_with_a_bounded_request() -> None:
     assert session.posted_url == "https://api.listenbrainz.org/1/submit-listens"
     assert session.posted_headers == {"Authorization": "Token token"}
     assert isinstance(session.posted_timeout, aiohttp.ClientTimeout)
-    assert session.posted_timeout.total is not None
+    assert session.posted_timeout.total == 30
     assert session.posted_json is not None
     assert session.posted_json["listen_type"] == "playing_now"
     listen = session.posted_json["payload"][0]
@@ -290,10 +302,21 @@ async def test_a_scrobble_is_submitted_with_a_bounded_request() -> None:
     assert session.posted_url == "https://api.listenbrainz.org/1/submit-listens"
     assert session.posted_headers == {"Authorization": "Token token"}
     assert isinstance(session.posted_timeout, aiohttp.ClientTimeout)
-    assert session.posted_timeout.total is not None
+    assert session.posted_timeout.total == 30
     assert session.posted_json is not None
     assert session.posted_json["listen_type"] == "single"
     assert isinstance(session.posted_json["payload"][0]["listened_at"], int)
+
+
+async def test_a_successful_submission_marks_the_track_scrobbled() -> None:
+    """A submission that succeeds records the track so it is not scrobbled twice."""
+    session = _FakeSession()
+    handler = _handler(session)
+
+    await handler.on_media_item_played(_report())
+
+    assert session.post_calls == 1
+    assert handler.last_scrobbled == "library://track/1"
 
 
 @pytest.mark.parametrize(
@@ -303,18 +326,46 @@ async def test_a_scrobble_is_submitted_with_a_bounded_request() -> None:
         _FakeSession(post_error=aiohttp.ClientConnectionError()),
         # a request that stalls until the timeout fires: the case this fix exists for
         _FakeSession(post_error=TimeoutError()),
-        # the service answering with a non-2xx status
-        _FakeSession(post_status_error=aiohttp.ClientResponseError(Mock(), (), status=500)),
+        # a non-transient rejection (e.g. a revoked token)
+        _FakeSession(post_statuses=[401]),
     ],
-    ids=["connection-error", "timeout", "api-error"],
+    ids=["connection-error", "timeout", "auth-error"],
 )
 async def test_a_failed_submission_is_swallowed(session: _FakeSession) -> None:
-    """A network, timeout, or API error while scrobbling is logged and swallowed, not raised."""
+    """A transport, timeout, or non-retryable error while scrobbling is swallowed, not raised."""
     handler = _handler(session)
 
     await handler.on_media_item_played(_report())
 
+    # these are not retried: one attempt, then the failure is logged and dropped
+    assert session.post_calls == 1
     assert handler.last_scrobbled is None
+
+
+@pytest.mark.parametrize("status", [429, 503], ids=["rate-limited", "server-error"])
+async def test_a_transient_response_is_retried_then_swallowed(status: int) -> None:
+    """A rate-limit or server error is retried with backoff, then dropped once retries run out."""
+    session = _FakeSession(post_statuses=[status], post_headers={"Retry-After": "0"})
+    handler = _handler(session)
+
+    with patch(_SLEEP, new=AsyncMock()):
+        await handler.on_media_item_played(_report())
+
+    # retried up to the throttler's attempt budget, then swallowed without marking the track
+    assert session.post_calls == 3
+    assert handler.last_scrobbled is None
+
+
+async def test_a_submission_recovers_after_a_retry() -> None:
+    """A listen that is rate-limited once still lands (and is recorded) on the retry."""
+    session = _FakeSession(post_statuses=[429, 200], post_headers={"Retry-After": "0"})
+    handler = _handler(session)
+
+    with patch(_SLEEP, new=AsyncMock()):
+        await handler.on_media_item_played(_report())
+
+    assert session.post_calls == 2
+    assert handler.last_scrobbled == "library://track/1"
 
 
 async def test_the_hook_forwards_the_report_to_the_handler() -> None:
