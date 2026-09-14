@@ -18,6 +18,26 @@ from tests.providers.beets.beets_db import BeetsDb
 INSTANCE_ID = "beets--test"
 
 
+def track_prov_id(beets_id: int, instance_id: str = INSTANCE_ID) -> str:
+    """
+    Return the provider id a beets instance gives a beets item.
+
+    :param beets_id: The beets items.id.
+    :param instance_id: The beets provider instance.
+    """
+    return f"track-{instance_id}-{beets_id}"
+
+
+def album_prov_id(beets_id: int, instance_id: str = INSTANCE_ID) -> str:
+    """
+    Return the provider id a beets instance gives a beets album.
+
+    :param beets_id: The beets albums.id.
+    :param instance_id: The beets provider instance.
+    """
+    return f"album-{instance_id}-{beets_id}"
+
+
 @pytest.fixture
 def beets_db(tmp_path: Path) -> BeetsDb:
     """Return an empty current-schema beets database."""
@@ -51,10 +71,11 @@ async def make_provider(
         beets_directory: str | None = None,
         favorite_rating_threshold: float | None = None,
         open_library: bool = True,
+        instance_id: str = INSTANCE_ID,
     ) -> BeetsProvider:
         provider = BeetsProvider.__new__(BeetsProvider)
         provider.manifest = MagicMock(domain="beets")
-        provider.config = MagicMock(instance_id=INSTANCE_ID)
+        provider.config = MagicMock(instance_id=instance_id)
         provider.config.name = "beets"
         provider.config.get_value = MagicMock(return_value=favorite_rating_threshold)
         provider.logger = MagicMock()
@@ -64,7 +85,7 @@ async def make_provider(
         provider.beets_directory = beets_directory
         provider.sync_running = False
         provider._ctx = ParseContext(
-            instance_id=INSTANCE_ID,
+            instance_id=instance_id,
             domain="beets",
             music_directory=str(music_dir),
             beets_directory=beets_directory,

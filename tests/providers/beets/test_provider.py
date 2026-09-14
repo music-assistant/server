@@ -20,7 +20,7 @@ from music_assistant.providers.beets import BeetsProvider
 from music_assistant.providers.beets.library import BeetsLibraryError
 from music_assistant.providers.beets.setup_flow import run_setup
 from tests.providers.beets.beets_db import ARTIST_MBID, BeetsDb, album_fields, item_fields
-from tests.providers.beets.conftest import INSTANCE_ID
+from tests.providers.beets.conftest import INSTANCE_ID, album_prov_id, track_prov_id
 
 MakeProvider = Callable[..., Awaitable[BeetsProvider]]
 
@@ -100,28 +100,79 @@ async def test_getters_read_beets(make_provider: MakeProvider, beets_db: BeetsDb
     first = beets_db.add_item(**item_fields(album_id=album_id, track=1, title="First"))
     provider = await make_provider()
 
-    track = await provider.get_track(str(first))
+    track = await provider.get_track(track_prov_id(first))
     assert track.name == "First"
     assert isinstance(track.album, Album)
-    assert track.album.item_id == str(album_id)
-    assert (await provider.get_album(str(album_id))).name == "Album"
-    album_tracks = await provider.get_album_tracks(str(album_id))
-    assert [album_track.item_id for album_track in album_tracks] == [str(first), str(second)]
+    assert track.album.item_id == album_prov_id(album_id)
+    assert (await provider.get_album(album_prov_id(album_id))).name == "Album"
+    album_tracks = await provider.get_album_tracks(album_prov_id(album_id))
+    assert [album_track.item_id for album_track in album_tracks] == [
+        track_prov_id(first),
+        track_prov_id(second),
+    ]
     assert (await provider.get_artist("Artist")).mbid == ARTIST_MBID
 
 
-@pytest.mark.parametrize("prov_id", ["9999", "not-a-number"])
-async def test_unknown_ids_raise_media_not_found(make_provider: MakeProvider, prov_id: str) -> None:
+@pytest.mark.parametrize(
+    ("prov_track_id", "prov_album_id"),
+    [(track_prov_id(9999), album_prov_id(9999)), ("not-a-number", "not-a-number")],
+)
+async def test_unknown_ids_raise_media_not_found(
+    make_provider: MakeProvider, prov_track_id: str, prov_album_id: str
+) -> None:
     """Unknown or malformed ids surface as MediaNotFoundError."""
     provider = await make_provider()
     with pytest.raises(MediaNotFoundError):
+        await provider.get_track(prov_track_id)
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_album(prov_album_id)
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_album_tracks(prov_album_id)
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_artist("Nobody")
+
+
+@pytest.mark.parametrize(
+    "prov_id",
+    ["1", album_prov_id(1), track_prov_id(1, "beets--other"), f"track-{INSTANCE_ID}-nope"],
+)
+async def test_track_ids_need_this_instance_track_prefix(
+    make_provider: MakeProvider, beets_db: BeetsDb, music_dir: Path, prov_id: str
+) -> None:
+    """A track id without this instance's track prefix is not found, though beets has item 1."""
+    audio = music_dir / "Artist" / "Album" / "01 Song.flac"
+    audio.parent.mkdir(parents=True)
+    audio.write_bytes(b"fLaC" + bytes(16))
+    album_id = beets_db.add_album(**album_fields())
+    item_id = beets_db.add_item(**item_fields(album_id=album_id))
+    assert (album_id, item_id) == (1, 1)
+    provider = await make_provider()
+
+    with pytest.raises(MediaNotFoundError):
         await provider.get_track(prov_id)
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_stream_details(prov_id, MediaType.TRACK)
+    assert (await provider.get_track(track_prov_id(item_id))).name == "Song"
+
+
+@pytest.mark.parametrize(
+    "prov_id",
+    ["1", track_prov_id(1), album_prov_id(1, "beets--other"), f"album-{INSTANCE_ID}-nope"],
+)
+async def test_album_ids_need_this_instance_album_prefix(
+    make_provider: MakeProvider, beets_db: BeetsDb, prov_id: str
+) -> None:
+    """An album id without this instance's album prefix is not found, though beets has album 1."""
+    album_id = beets_db.add_album(**album_fields())
+    item_id = beets_db.add_item(**item_fields(album_id=album_id))
+    assert (album_id, item_id) == (1, 1)
+    provider = await make_provider()
+
     with pytest.raises(MediaNotFoundError):
         await provider.get_album(prov_id)
     with pytest.raises(MediaNotFoundError):
         await provider.get_album_tracks(prov_id)
-    with pytest.raises(MediaNotFoundError):
-        await provider.get_artist("Nobody")
+    assert (await provider.get_album(album_prov_id(album_id))).name == "Album"
 
 
 async def test_stream_details_for_existing_file(
@@ -134,7 +185,7 @@ async def test_stream_details_for_existing_file(
     item_id = beets_db.add_item(**item_fields())
     provider = await make_provider()
 
-    details = await provider.get_stream_details(str(item_id), MediaType.TRACK)
+    details = await provider.get_stream_details(track_prov_id(item_id), MediaType.TRACK)
 
     assert details.stream_type == StreamType.LOCAL_FILE
     assert details.path == str(audio)
@@ -150,7 +201,7 @@ async def test_stream_details_for_missing_file(
     item_id = beets_db.add_item(**item_fields())
     provider = await make_provider()
     with pytest.raises(MediaNotFoundError):
-        await provider.get_stream_details(str(item_id), MediaType.TRACK)
+        await provider.get_stream_details(track_prov_id(item_id), MediaType.TRACK)
 
 
 async def test_resolve_image_returns_album_art(

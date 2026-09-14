@@ -31,10 +31,12 @@ from music_assistant.helpers.tags import clean_mbid
 from music_assistant.helpers.util import parse_title_and_version
 
 from .constants import (
+    ALBUM_ID_PREFIX,
     ALBUM_TYPE_PRIORITY,
     BEETS_LIST_DELIMITER,
     BEETS_MULTI_VALUE_DELIMITER,
     IMAGE_PATH_PREFIX,
+    TRACK_ID_PREFIX,
 )
 from .library import BeetsRow
 
@@ -48,6 +50,26 @@ class ParseContext:
     music_directory: str
     beets_directory: str | None
     favorite_rating_threshold: float | None
+
+
+def track_item_id(ctx: ParseContext, beets_id: int) -> str:
+    """
+    Return the provider item id of a beets item.
+
+    :param ctx: The provider parse context.
+    :param beets_id: The beets item id.
+    """
+    return f"{TRACK_ID_PREFIX}{ctx.instance_id}-{beets_id}"
+
+
+def album_item_id(ctx: ParseContext, beets_id: int) -> str:
+    """
+    Return the provider item id of a beets album.
+
+    :param ctx: The provider parse context.
+    :param beets_id: The beets album id.
+    """
+    return f"{ALBUM_ID_PREFIX}{ctx.instance_id}-{beets_id}"
 
 
 def split_multi_value(value: object) -> list[str]:
@@ -241,8 +263,8 @@ def parse_album(album: BeetsRow, ctx: ParseContext) -> Album:
     :param ctx: The provider parse context.
     """
     fields = album.fields
-    item_id = str(album.id)
-    name, version = parse_title_and_version(_text(fields.get("album")) or item_id)
+    item_id = album_item_id(ctx, album.id)
+    name, version = parse_title_and_version(_text(fields.get("album")) or str(album.id))
     result = Album(
         item_id=item_id,
         provider=ctx.instance_id,
@@ -308,9 +330,9 @@ def parse_track(item: BeetsRow, album: BeetsRow | None, ctx: ParseContext, check
     :raises InvalidDataError: If neither the item nor its album names an artist.
     """
     fields = item.fields
-    item_id = str(item.id)
+    item_id = track_item_id(ctx, item.id)
     path = decode_path(fields.get("path"))
-    title = _text(fields.get("title")) or (PurePosixPath(path).stem if path else item_id)
+    title = _text(fields.get("title")) or (PurePosixPath(path).stem if path else str(item.id))
     name, version = parse_title_and_version(title)
     track = Track(
         item_id=item_id,

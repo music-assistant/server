@@ -28,6 +28,7 @@ from music_assistant.helpers.util import TaskManager
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
+    ALBUM_ID_PREFIX,
     CONF_BEETS_DIRECTORY,
     CONF_ENTRY_FAVORITE_RATING_THRESHOLD,
     CONF_FAVORITE_RATING_THRESHOLD,
@@ -36,6 +37,7 @@ from .constants import (
     IMAGE_PATH_PREFIX,
     ITEM_BATCH_SIZE,
     SYNC_CONCURRENCY,
+    TRACK_ID_PREFIX,
 )
 from .library import BeetsLibrary, BeetsLibraryError, BeetsRow
 from .parsers import (
@@ -47,6 +49,7 @@ from .parsers import (
     parse_artist,
     parse_audio_format,
     parse_track,
+    track_item_id,
 )
 
 if TYPE_CHECKING:
@@ -233,7 +236,11 @@ class BeetsProvider(MusicProvider):
         if not reference.startswith(IMAGE_PATH_PREFIX):
             msg = f"Image not found: {path}"
             raise MediaNotFoundError(msg)
-        album = await self._get_album(reference.removeprefix(IMAGE_PATH_PREFIX))
+        # image paths carry the bare beets album id, not the namespaced provider album id
+        album = await self.library.get_album(_parse_id(reference, IMAGE_PATH_PREFIX))
+        if album is None:
+            msg = f"Image not found: {path}"
+            raise MediaNotFoundError(msg)
         art_path = expand_path(
             album.fields.get("artpath"), self.music_directory, self.beets_directory
         )
@@ -244,7 +251,9 @@ class BeetsProvider(MusicProvider):
 
     async def _get_item(self, prov_item_id: str) -> BeetsRow:
         """Return the beets item for a provider item id, or raise when beets has none."""
-        item = await self.library.get_item(_parse_id(prov_item_id))
+        item = await self.library.get_item(
+            _parse_id(prov_item_id, f"{TRACK_ID_PREFIX}{self.instance_id}-")
+        )
         if item is None:
             msg = f"Track not found: {prov_item_id}"
             raise MediaNotFoundError(msg)
@@ -252,7 +261,9 @@ class BeetsProvider(MusicProvider):
 
     async def _get_album(self, prov_album_id: str) -> BeetsRow:
         """Return the beets album for a provider album id, or raise when beets has none."""
-        album = await self.library.get_album(_parse_id(prov_album_id))
+        album = await self.library.get_album(
+            _parse_id(prov_album_id, f"{ALBUM_ID_PREFIX}{self.instance_id}-")
+        )
         if album is None:
             msg = f"Album not found: {prov_album_id}"
             raise MediaNotFoundError(msg)
@@ -270,7 +281,7 @@ class BeetsProvider(MusicProvider):
                 async for batch in self.library.iter_items(ITEM_BATCH_SIZE):
                     for item in batch:
                         album = await self._album_for(item, albums)
-                        item_id = str(item.id)
+                        item_id = track_item_id(self._ctx, item.id)
                         current_ids.add(item_id)
                         checksum = item_checksum(item, album, self._ctx.favorite_rating_threshold)
                         if previous.get(item_id) == checksum:
@@ -418,10 +429,19 @@ class BeetsProvider(MusicProvider):
             await self.mass.music.artists.remove_item_from_library(row["item_id"])
 
 
-def _parse_id(prov_item_id: str) -> int:
-    """Return the beets row id encoded in a provider item id."""
+def _parse_id(prov_item_id: str, prefix: str) -> int:
+    """
+    Return the beets row id encoded in a provider item id or image path.
+
+    :param prov_item_id: The provider item id or image path.
+    :param prefix: The prefix the id must start with, followed by the beets row id.
+    :raises MediaNotFoundError: If the id lacks the prefix or the rest is not an integer.
+    """
+    if not prov_item_id.startswith(prefix):
+        msg = f"Invalid beets id: {prov_item_id}"
+        raise MediaNotFoundError(msg)
     try:
-        return int(prov_item_id)
+        return int(prov_item_id.removeprefix(prefix))
     except ValueError as err:
         msg = f"Invalid beets id: {prov_item_id}"
         raise MediaNotFoundError(msg) from err

@@ -212,7 +212,7 @@ def test_parse_album_maps_fields() -> None:
     row = _row(7, album_fields(artpath=b"Artist/Album/cover.jpg"))
     album = parse_album(row, CTX)
 
-    assert album.item_id == "7"
+    assert album.item_id == "album-beets--test-7"
     assert album.name == "Album"
     artist = album.artists[0]
     assert isinstance(artist, Artist)
@@ -230,6 +230,34 @@ def test_parse_album_maps_fields() -> None:
     assert image.type == ImageType.THUMB
     assert image.path == f"album/7?cs={album_checksum(row)}"
     assert image.remotely_accessible is False
+
+
+def test_track_and_album_ids_name_media_type_and_instance() -> None:
+    """Track and album ids carry their media type and instance, and image paths keep the beets id."""
+    album_row = _row(7, album_fields(artpath=b"Artist/Album/cover.jpg"))
+    track = parse_track(_row(42, item_fields(album_id=7)), album_row, CTX, "c")
+    album = parse_album(album_row, CTX)
+
+    assert track.item_id == "track-beets--test-42"
+    assert [mapping.item_id for mapping in track.provider_mappings] == ["track-beets--test-42"]
+    assert album.item_id == "album-beets--test-7"
+    assert [mapping.item_id for mapping in album.provider_mappings] == ["album-beets--test-7"]
+    assert isinstance(track.album, Album)
+    assert track.album.item_id == "album-beets--test-7"
+    assert album.metadata.images is not None
+    assert album.metadata.images[0].path == f"album/7?cs={album_checksum(album_row)}"
+
+
+def test_ids_differ_between_instances() -> None:
+    """The same beets rows get different track and album ids in another beets instance."""
+    item = _row(42, item_fields(album_id=7))
+    album = _row(7, album_fields())
+    other = replace(CTX, instance_id="beets--other")
+
+    assert (
+        parse_track(item, album, CTX, "c").item_id != parse_track(item, album, other, "c").item_id
+    )
+    assert parse_album(album, CTX).item_id != parse_album(album, other).item_id
 
 
 def test_parse_compilation_album_uses_various_artists() -> None:
@@ -263,7 +291,7 @@ def test_parse_track_maps_fields() -> None:
     item = _row(42, item_fields(album_id=7), flex={"mood": "happy", "rating": "0.9"})
     track = parse_track(item, album, replace(CTX, favorite_rating_threshold=0.8), "abc123")
 
-    assert track.item_id == "42"
+    assert track.item_id == "track-beets--test-42"
     assert track.provider == "beets--test"
     assert track.name == "Song"
     assert track.duration == 215
@@ -275,7 +303,7 @@ def test_parse_track_maps_fields() -> None:
         GUEST_MBID,
     ]
     assert isinstance(track.album, Album)
-    assert track.album.item_id == "7"
+    assert track.album.item_id == "album-beets--test-7"
     assert track.mbid == TRACK_MBID
     assert (ExternalID.ISRC, "USRC17607839") in track.external_ids
     assert (ExternalID.ACOUSTID, "9ff5a4e3-0a8b-4d1b-9d7e-0f1d6b9f1c11") in track.external_ids

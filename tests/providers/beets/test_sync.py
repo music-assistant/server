@@ -13,7 +13,7 @@ from music_assistant.providers.beets import BeetsProvider
 from music_assistant.providers.beets.library import BeetsLibraryError, BeetsRow
 from music_assistant.providers.beets.parsers import item_checksum
 from tests.providers.beets.beets_db import BeetsDb, album_fields, item_fields
-from tests.providers.beets.conftest import INSTANCE_ID
+from tests.providers.beets.conftest import INSTANCE_ID, track_prov_id
 
 MakeProvider = Callable[..., Awaitable[BeetsProvider]]
 REPORT_FAILURE = "music_assistant.providers.beets.report_current_task_failure"
@@ -28,7 +28,10 @@ async def _stored_checksums(provider: BeetsProvider) -> list[dict[str, str]]:
         for item in batch:
             album = albums.get(item.album_id) if item.album_id else None
             rows.append(
-                {"provider_item_id": str(item.id), "details": item_checksum(item, album, threshold)}
+                {
+                    "provider_item_id": track_prov_id(item.id),
+                    "details": item_checksum(item, album, threshold),
+                }
             )
     return rows
 
@@ -96,7 +99,7 @@ async def test_only_changed_items_are_updated(
 
     calls = provider.mass.music.tracks.add_item_to_library.await_args_list  # type: ignore[attr-defined]
     assert [(call.args[0].item_id, call.kwargs["overwrite_existing"]) for call in calls] == [
-        (str(edited), True)
+        (track_prov_id(edited), True)
     ]
 
 
@@ -120,7 +123,7 @@ async def test_album_and_flex_edits_resync_items(
 
     calls = provider.mass.music.tracks.add_item_to_library.await_args_list  # type: ignore[attr-defined]
     assert sorted(call.args[0].item_id for call in calls) == sorted(
-        [str(first), str(second), str(loose)]
+        [track_prov_id(first), track_prov_id(second), track_prov_id(loose)]
     )
 
 
@@ -139,7 +142,9 @@ async def test_items_removed_from_beets_are_deleted(
 
     await provider.sync_library(MediaType.TRACK)
 
-    provider._process_deletions.assert_awaited_once_with({str(gone)})  # type: ignore[attr-defined]
+    provider._process_deletions.assert_awaited_once_with(  # type: ignore[attr-defined]
+        {track_prov_id(gone)}
+    )
     provider._process_orphaned_albums_and_artists.assert_awaited_once()  # type: ignore[attr-defined]
 
 
@@ -147,7 +152,7 @@ async def test_empty_library_does_not_delete_previous_items(make_provider: MakeP
     """A beets database that suddenly has no items aborts before deleting anything."""
     provider = await make_provider()
     provider.mass.music.database.get_rows_from_query = AsyncMock(  # type: ignore[method-assign]
-        return_value=[{"provider_item_id": "1", "details": "x"}]
+        return_value=[{"provider_item_id": track_prov_id(1), "details": "x"}]
     )
     _stub_cleanup(provider)
 
@@ -167,8 +172,8 @@ async def test_unreadable_library_does_not_delete(
     provider = await make_provider()
     provider.mass.music.database.get_rows_from_query = AsyncMock(  # type: ignore[method-assign]
         return_value=[
-            {"provider_item_id": "1", "details": "x"},
-            {"provider_item_id": "2", "details": "y"},
+            {"provider_item_id": track_prov_id(1), "details": "x"},
+            {"provider_item_id": track_prov_id(2), "details": "y"},
         ]
     )
     _stub_cleanup(provider)
@@ -193,7 +198,7 @@ async def test_read_error_after_imports_started_does_not_delete(
     beets_db.add_item(**item_fields(title="Second"))
     provider = await make_provider()
     provider.mass.music.database.get_rows_from_query = AsyncMock(  # type: ignore[method-assign]
-        return_value=[{"provider_item_id": "99", "details": "x"}]
+        return_value=[{"provider_item_id": track_prov_id(99), "details": "x"}]
     )
     _stub_cleanup(provider)
     async with aclosing(provider.library.iter_items(1)) as batches:
@@ -216,7 +221,7 @@ async def test_read_error_after_imports_started_does_not_delete(
 
     assert awaited_when_read_failed == [0]
     calls = imports.await_args_list  # type: ignore[attr-defined]
-    assert [call.args[0].item_id for call in calls] == [str(first)]
+    assert [call.args[0].item_id for call in calls] == [track_prov_id(first)]
     provider._process_deletions.assert_not_awaited()  # type: ignore[attr-defined]
     provider._process_orphaned_albums_and_artists.assert_not_awaited()  # type: ignore[attr-defined]
     report.assert_called_once()
@@ -231,7 +236,7 @@ async def test_failing_item_is_reported_and_not_deleted(
     bad = beets_db.add_item(**item_fields(title="Bad", artists="", artist=""))
     provider = await make_provider()
     provider.mass.music.database.get_rows_from_query = AsyncMock(  # type: ignore[method-assign]
-        return_value=[{"provider_item_id": str(bad), "details": "old"}]
+        return_value=[{"provider_item_id": track_prov_id(bad), "details": "old"}]
     )
     _stub_cleanup(provider)
 
@@ -239,7 +244,7 @@ async def test_failing_item_is_reported_and_not_deleted(
         await provider.sync_library(MediaType.TRACK)
 
     calls = provider.mass.music.tracks.add_item_to_library.await_args_list  # type: ignore[attr-defined]
-    assert [call.args[0].item_id for call in calls] == [str(ok)]
+    assert [call.args[0].item_id for call in calls] == [track_prov_id(ok)]
     assert report.call_count == 1
     provider._process_deletions.assert_not_awaited()  # type: ignore[attr-defined]
 
@@ -259,7 +264,7 @@ async def test_sync_sets_favorite_and_loudness(
         1, True
     )
     provider.mass.streams.audio_analysis.set_track_loudness.assert_awaited_once_with(  # type: ignore[attr-defined]
-        str(item_id), INSTANCE_ID, -13.0, -14.0
+        track_prov_id(item_id), INSTANCE_ID, -13.0, -14.0
     )
 
 
@@ -286,11 +291,11 @@ async def test_process_deletions_removes_tracks_and_emptied_parents(
     )
     music.artists.remove_item_from_library = AsyncMock()  # type: ignore[method-assign]
 
-    await provider._process_deletions({"5"})
+    await provider._process_deletions({track_prov_id(5)})
 
-    music.tracks.get_library_item_by_prov_id.assert_awaited_once_with("5", INSTANCE_ID)
+    music.tracks.get_library_item_by_prov_id.assert_awaited_once_with(track_prov_id(5), INSTANCE_ID)
     music.tracks.remove_provider_mapping.assert_awaited_once_with(  # type: ignore[attr-defined]
-        10, INSTANCE_ID, "5"
+        10, INSTANCE_ID, track_prov_id(5)
     )
     music.tracks.remove_item_from_library.assert_not_awaited()  # type: ignore[attr-defined]
     music.albums.remove_item_from_library.assert_awaited_once_with(20)
@@ -304,8 +309,12 @@ async def test_process_deletions_continues_past_album_already_gone(
     provider = await make_provider()
     music = provider.mass.music
     library_tracks = {
-        "5": MagicMock(item_id=10, album=MagicMock(item_id=20), artists=[MagicMock(item_id=30)]),
-        "6": MagicMock(item_id=11, album=MagicMock(item_id=21), artists=[MagicMock(item_id=30)]),
+        track_prov_id(5): MagicMock(
+            item_id=10, album=MagicMock(item_id=20), artists=[MagicMock(item_id=30)]
+        ),
+        track_prov_id(6): MagicMock(
+            item_id=11, album=MagicMock(item_id=21), artists=[MagicMock(item_id=30)]
+        ),
     }
     music.tracks.get_library_item_by_prov_id = AsyncMock(  # type: ignore[method-assign]
         side_effect=lambda item_id, _instance: library_tracks[item_id]
@@ -324,12 +333,12 @@ async def test_process_deletions_continues_past_album_already_gone(
     music.artists.tracks = AsyncMock(return_value=[])  # type: ignore[method-assign]
     music.artists.remove_item_from_library = AsyncMock()  # type: ignore[method-assign]
 
-    await provider._process_deletions({"5", "6"})
+    await provider._process_deletions({track_prov_id(5), track_prov_id(6)})
 
     calls = music.tracks.remove_provider_mapping.await_args_list  # type: ignore[attr-defined]
     assert sorted(call.args for call in calls) == [
-        (10, INSTANCE_ID, "5"),
-        (11, INSTANCE_ID, "6"),
+        (10, INSTANCE_ID, track_prov_id(5)),
+        (11, INSTANCE_ID, track_prov_id(6)),
     ]
     music.albums.remove_item_from_library.assert_awaited_once_with(21)
     assert sorted(

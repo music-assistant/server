@@ -50,6 +50,10 @@ ALBUM_TYPE_PRIORITY: Final[tuple[tuple[str, AlbumType], ...]] = (
 )
 
 IMAGE_PATH_PREFIX: Final = "album/"
+# beets numbers items and albums separately and every library from 1, so provider ids carry
+# the media type and the instance id
+TRACK_ID_PREFIX: Final = "track-"
+ALBUM_ID_PREFIX: Final = "album-"
 SQLITE_BUSY_TIMEOUT: Final = 30.0
 ITEM_BATCH_SIZE: Final = 500
 SYNC_CONCURRENCY: Final = 8
