@@ -56,11 +56,7 @@ def is_own_client_player(player: Player | None) -> bool:
 
     :param player: The player to check, or None.
     """
-    return (
-        player is not None
-        and player.private
-        and player.player_id == get_sendspin_player_id()
-    )
+    return player is not None and player.private and player.player_id == get_sendspin_player_id()
 
 
 @overload

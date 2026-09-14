@@ -82,8 +82,9 @@ def test_control_of_the_own_client_player_is_permitted() -> None:
 
 def test_the_client_exemption_does_not_extend_to_other_players() -> None:
     """Connecting a client player grants no access to any other player outside the filter."""
-    with _restricted_user([ALLOWED_PLAYER], own_player=OWN_CLIENT), pytest.raises(
-        InsufficientPermissions
+    with (
+        _restricted_user([ALLOWED_PLAYER], own_player=OWN_CLIENT),
+        pytest.raises(InsufficientPermissions),
     ):
         _check(
             OTHER_PLAYER,
@@ -96,8 +97,9 @@ def test_a_shared_speaker_claimed_as_the_client_player_is_refused() -> None:
     """Announcing a shared speaker's id as the client id does not grant access to it."""
     # the bound client id is not proof of ownership, so a non-private player claimed this way
     # must still be refused
-    with _restricted_user([ALLOWED_PLAYER], own_player=OTHER_PLAYER), pytest.raises(
-        InsufficientPermissions
+    with (
+        _restricted_user([ALLOWED_PLAYER], own_player=OTHER_PLAYER),
+        pytest.raises(InsufficientPermissions),
     ):
         _check(OTHER_PLAYER, _player(OTHER_PLAYER, private=False))
 

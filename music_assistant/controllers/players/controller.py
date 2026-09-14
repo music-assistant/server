@@ -406,9 +406,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 provider_filter=provider_filter,
                 return_protocol_players=return_protocol_players,
             )
-            if not user_filter
-            or player.player_id in user_filter
-            or is_own_client_player(player)
+            if not user_filter or player.player_id in user_filter or is_own_client_player(player)
         ]
 
     @api_command("players/all", required_scope=Scope.PLAYERS_READ)
