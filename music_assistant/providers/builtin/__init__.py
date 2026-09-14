@@ -291,7 +291,7 @@ class BuiltinProvider(MusicProvider):
                 ),
             )
         # user created playlist - read from M3U file on disk
-        playlist_file = os.path.join(self._playlists_dir, f"{prov_playlist_id}.m3u")
+        playlist_file = self._playlist_file(prov_playlist_id)
         if not await asyncio.to_thread(os.path.isfile, playlist_file):
             raise MediaNotFoundError(f"Playlist file not found: {prov_playlist_id}")
         # read playlist name and image from M3U
@@ -431,7 +431,7 @@ class BuiltinProvider(MusicProvider):
             key = CONF_KEY_RADIOS
         elif media_type == MediaType.PLAYLIST:
             # user-created playlist removal - delete the M3U file
-            playlist_file = os.path.join(self._playlists_dir, f"{prov_item_id}.m3u")
+            playlist_file = self._playlist_file(prov_item_id)
             # Hold both locks so the existence check and unlink cannot race other I/O.
             async with self._get_playlist_lock(prov_item_id), self._playlist_lock:
                 if await asyncio.to_thread(os.path.isfile, playlist_file):
@@ -1637,9 +1637,27 @@ class BuiltinProvider(MusicProvider):
         except KeyError:
             raise MediaNotFoundError(f"No built in playlist: {builtin_playlist_id}")
 
+    def _playlist_file(self, playlist_id: str) -> str:
+        """
+        Return the path of a playlist's M3U file inside the playlists folder.
+
+        :param playlist_id: The provider-side playlist id, used verbatim as the file name.
+        :raises MediaNotFoundError: The id is not a plain file name and would reach elsewhere.
+        """
+        # a playlist id doubles as its file name, so anything with a path separator
+        # ("../x", "./x", an absolute path) or a null byte must not become a file path
+        if (
+            playlist_id in ("", os.curdir, os.pardir)
+            or "\x00" in playlist_id
+            or os.sep in playlist_id
+            or (os.altsep is not None and os.altsep in playlist_id)
+        ):
+            raise MediaNotFoundError(f"Playlist not found: {playlist_id}")
+        return os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
+
     async def _read_m3u_file(self, playlist_id: str) -> str:
         """Read the raw M3U file content for a playlist."""
-        playlist_file = os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
+        playlist_file = self._playlist_file(playlist_id)
         # Hold the same lock delete uses for the existence check and open.
         async with self._playlist_lock:
             if not await asyncio.to_thread(os.path.isfile, playlist_file):
@@ -1657,7 +1675,7 @@ class BuiltinProvider(MusicProvider):
 
         :param playlist_id: The provider-side playlist ID to fingerprint.
         """
-        playlist_file = os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
+        playlist_file = self._playlist_file(playlist_id)
         if not await asyncio.to_thread(os.path.isfile, playlist_file):
             return None
         return self._playlist_generations.get(playlist_id, 0)
@@ -1683,9 +1701,7 @@ class BuiltinProvider(MusicProvider):
         counter = 1
         while True:
             async with self._get_playlist_lock(playlist_id), self._playlist_lock:
-                if not await asyncio.to_thread(
-                    os.path.isfile, os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
-                ):
+                if not await asyncio.to_thread(os.path.isfile, self._playlist_file(playlist_id)):
                     # Bump the generation before creating a new file under this ID.
                     generation = self._playlist_generations[playlist_id] = (
                         self._playlist_generations.get(playlist_id, 0) + 1
@@ -1726,7 +1742,7 @@ class BuiltinProvider(MusicProvider):
         :param playlist_image_url: Optional playlist image URL to embed in the M3U header.
         """
         m3u_content = generate_m3u(playlist_name, entries, playlist_image_url)
-        playlist_file = os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
+        playlist_file = self._playlist_file(playlist_id)
         async with aiofiles.open(playlist_file, "w", encoding="utf-8") as _file:
             await _file.write(m3u_content)
 
@@ -1770,7 +1786,7 @@ class BuiltinProvider(MusicProvider):
         self, prov_playlist_id: str, page: int
     ) -> list[PlaylistPlayableItem]:
         """Get user-created playlist tracks with caching and parallel resolution."""
-        playlist_file = os.path.join(self._playlists_dir, f"{prov_playlist_id}.m3u")
+        playlist_file = self._playlist_file(prov_playlist_id)
         # use file mtime as cache checksum so edits invalidate the cache; nanosecond
         # resolution avoids two writes within the same second (e.g. import immediately
         # followed by a background match) sharing a checksum and hiding the second write
