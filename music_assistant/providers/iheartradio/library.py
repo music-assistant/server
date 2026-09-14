@@ -5,7 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 
 from .constants import (
     FOLLOWS_PAGE_LIMIT,
@@ -66,8 +70,13 @@ class IHeartRadioLibraryManager:
                 PATH_PODCAST_FOLLOWS,
                 params={"limit": PODCAST_FOLLOWS_PAGE_LIMIT, "pageKey": page_key},
             )
-            if not isinstance(payload, dict):
+            if payload is None and page_key is None:
+                # an empty follow list may come back without a body
                 return
+            if not isinstance(payload, dict):
+                # a broken page must not pass as the end of the list, or the sync
+                # would unfollow everything it did not get to see
+                raise InvalidDataError("iHeartRadio returned an invalid podcast follow list")
             for entry in payload.get("data") or []:
                 if isinstance(entry, dict) and (
                     podcast := parse_podcast(entry, self.instance_id, self.domain)
@@ -139,7 +148,9 @@ class IHeartRadioLibraryManager:
                 return entries
             page = payload.get("data") if isinstance(payload, dict) else None
             if not isinstance(page, list):
-                return entries
+                # a broken page must not pass as the end of the list, or the sync
+                # would unfollow everything it did not get to see
+                raise InvalidDataError(f"iHeartRadio returned an invalid follow list for {path}")
             entries.extend(entry for entry in page if isinstance(entry, dict))
             if len(page) < FOLLOWS_PAGE_LIMIT:
                 return entries
