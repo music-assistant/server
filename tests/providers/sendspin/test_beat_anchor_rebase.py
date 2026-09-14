@@ -268,3 +268,30 @@ async def test_a_track_change_during_the_analysis_await_drops_the_stale_publish(
     # is not mistaken for a re-push of it.
     assert player._last_beat_queue_item_id == _QUEUE_ITEM_ID
     assert player._last_beat_anchor_us == _PUBLISHED_ANCHOR_US
+
+
+async def test_a_seek_after_opposing_rebases_anchors_on_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Rebases that net to zero must not leave the rebase flagged as pending.
+
+    Nothing is published when the deltas cancel, so the re-push guard returns early. Left
+    pending, the next update for this same item - a seek - would take the fallback branch
+    and re-derive the anchor already published instead of the position seeked to.
+    """
+    player = _player(monkeypatch, flow_offset_us=None)
+
+    _report_rebase(player, _ANCHOR_DELTA_US)
+    await _send(player, anchor_delta_us=-_ANCHOR_DELTA_US)
+
+    seek_progress_ms = 30_000
+    await player._send_beat_schedule(
+        cast("object", SimpleNamespace(queue_id="q1")),  # type: ignore[arg-type]
+        _queue_item(),
+        seek_progress_ms,
+        True,
+    )
+
+    assert player._last_beat_anchor_us == _NOW_US - seek_progress_ms * 1000
+    assert player._anchor_rebase_pending is False

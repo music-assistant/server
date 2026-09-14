@@ -2230,6 +2230,13 @@ class SendspinPlayer(SendspinBasePlayer):
             and self._last_beat_anchor_us is not None
             and abs(anchor_us - self._last_beat_anchor_us) < ANCHOR_REBASE_SIGNIFICANT_US
         ):
+            # Nothing goes out, but the reported movement is accounted for: the schedule
+            # already published is within a rebase of where it belongs. Deltas that net to
+            # (nearly) zero land here, and leaving them pending would arm the fallback
+            # branch above for the next update on this same item - a seek - which would
+            # then re-derive the pre-seek anchor instead of the position seeked to.
+            self._pending_anchor_delta_us = 0
+            self._anchor_rebase_pending = False
             return
         sd = queue_item.streamdetails
         analysis = await self.mass.streams.audio_analysis.get_audio_analysis(
