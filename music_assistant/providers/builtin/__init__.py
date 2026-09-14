@@ -9,6 +9,7 @@ from collections import defaultdict, deque
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
 from urllib.parse import urlparse
 
@@ -852,9 +853,10 @@ class BuiltinProvider(MusicProvider):
         """
         Resolve an image from an image path.
 
-        Returns raw bytes for a bundled image, or a remote URL / data URI that is
-        fetched from elsewhere. A user-supplied image that is neither is refused: a local
-        filesystem path here would let the image route read an arbitrary server file.
+        Returns raw bytes for a bundled image, a remote URL / data URI fetched from
+        elsewhere, or a local file inside our own directories (bundled assets and
+        generated collages). Any other local path is user-supplied and refused: it would
+        let the image route read an arbitrary server file.
         """
         if path == "logo.png":
             return MASS_LOGO
@@ -866,9 +868,18 @@ class BuiltinProvider(MusicProvider):
             if not is_safe_path(icon_name, str(icons_base)):
                 raise FileNotFoundError(f"Invalid genre icon reference: {path}")
             return str(icons_base.joinpath(icon_name))
-        if not path.startswith(REMOTE_IMAGE_PREFIXES):
-            raise FileNotFoundError(f"Invalid image reference: {path}")
-        return path
+        if path.startswith(REMOTE_IMAGE_PREFIXES):
+            return path
+        # generated collages and bundled provider assets (e.g. the AI Radio cover) are
+        # local files served through this provider; every other local path is
+        # user-supplied and refused, so it can not read an arbitrary server file
+        package_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        collage_dir = os.path.join(self.mass.cache_path, "collage_images")
+        if Path(path).is_absolute() and any(
+            is_safe_path(path, d) for d in (package_dir, collage_dir)
+        ):
+            return path
+        raise FileNotFoundError(f"Invalid image reference: {path}")
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details for a track, radio stream, or sound effect."""

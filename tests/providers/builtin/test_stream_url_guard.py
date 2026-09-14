@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,6 +17,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+import music_assistant
 from music_assistant.constants import MASS_LOGO, VARIOUS_ARTISTS_FANART
 from music_assistant.providers.builtin import BuiltinProvider
 
@@ -33,6 +35,7 @@ def _make_provider() -> BuiltinProvider:
     """Return a BuiltinProvider instance with mocked collaborators."""
     provider = BuiltinProvider.__new__(BuiltinProvider)
     provider.mass = MagicMock()
+    provider.mass.cache_path = "/data/cache"
     provider.logger = MagicMock()
     provider.manifest = MagicMock(domain="builtin")
     provider.config = MagicMock(instance_id="builtin_1")
@@ -204,6 +207,18 @@ async def test_resolve_image_keeps_bundled_images() -> None:
     genre_icon = await provider.resolve_image("genres/rock.png")
     assert isinstance(genre_icon, str)
     assert genre_icon.endswith("rock.png")
+
+
+@pytest.mark.asyncio
+async def test_resolve_image_allows_server_generated_local_files() -> None:
+    """Generated collages and bundled provider assets under our own dirs resolve."""
+    provider = _make_provider()
+    collage = os.path.join(provider.mass.cache_path, "collage_images", "playlist.jpg")
+    assert await provider.resolve_image(collage) == collage
+    bundled = os.path.join(
+        os.path.dirname(music_assistant.__file__), "providers", "ai_radio", "air.png"
+    )
+    assert await provider.resolve_image(bundled) == bundled
 
 
 @pytest.mark.asyncio
