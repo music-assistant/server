@@ -149,10 +149,16 @@ def _track_with_image(item_id: str, image_path: str) -> Track:
 
 @pytest.mark.parametrize(
     "image_url",
-    ["http://x/a.jpg", "https://x/a.jpg", "data:image/png;base64,AAAA"],
+    [
+        "http://x/a.jpg",
+        "https://x/a.jpg",
+        "rtsp://x/stream",
+        "rtmp://x/stream",
+        "data:image/png;base64,AAAA",
+    ],
 )
 def test_ensure_remote_image_url_accepts_remote(image_url: str) -> None:
-    """Remote image URLs and data URIs pass the guard."""
+    """Remote URLs (including stream schemes for embedded art) and data URIs pass."""
     BuiltinProvider._ensure_remote_image_url(image_url)
 
 
@@ -165,10 +171,17 @@ def test_ensure_remote_image_url_rejects_local(image_url: str) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "path", ["http://x/a.jpg", "https://x/a.jpg", "data:image/png;base64,AAAA"]
+    "path",
+    [
+        "http://x/a.jpg",
+        "https://x/a.jpg",
+        "rtsp://x/stream",
+        "rtmp://x/stream",
+        "data:image/png;base64,AAAA",
+    ],
 )
 async def test_resolve_image_returns_remote_reference(path: str) -> None:
-    """resolve_image passes through a remote image reference."""
+    """resolve_image passes through a remote image reference (stream schemes included)."""
     provider = _make_provider()
     assert await provider.resolve_image(path) == path
 
@@ -208,6 +221,26 @@ async def test_add_radio_rejects_local_image_without_storing() -> None:
     provider = _make_provider()
     with pytest.raises(MediaNotFoundError):
         await provider.add_radio("http://ok/stream", "Radio", image_url="/etc/passwd")
+    cast("Any", provider.mass).config.set.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_library_add_rejects_local_path_track_without_storing() -> None:
+    """library_add (the add_item object form) refuses a local-path track."""
+    provider = _make_provider()
+    track = _track_with_image("/etc/passwd", "http://ok/cover.jpg")
+    with pytest.raises(MediaNotFoundError):
+        await provider.library_add(track)
+    cast("Any", provider.mass).config.set.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_library_add_rejects_local_image_without_storing() -> None:
+    """library_add refuses a track whose image is a local path."""
+    provider = _make_provider()
+    track = _track_with_image("http://ok/song.mp3", "/etc/passwd")
+    with pytest.raises(MediaNotFoundError):
+        await provider.library_add(track)
     cast("Any", provider.mass).config.set.assert_not_called()
 
 

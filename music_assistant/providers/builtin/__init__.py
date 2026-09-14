@@ -129,6 +129,10 @@ if TYPE_CHECKING:
 CACHE_CATEGORY_MEDIA_INFO: Final[int] = 1
 CACHE_CATEGORY_PLAYLISTS: Final[int] = 2
 
+# accepted prefixes for a manual item image: a remote stream URL (embedded art carries
+# the track's own stream URL as its path) or an inline data URI, never a local file path
+REMOTE_IMAGE_PREFIXES: Final[tuple[str, ...]] = (*BUILTIN_URL_SCHEMES, "data:image")
+
 # maximum number of detail rows rendered per table in the import matching report
 _IMPORT_REPORT_DETAIL_LIMIT: Final[int] = 200
 # report count bucket for each accepted track-match confidence
@@ -406,8 +410,9 @@ class BuiltinProvider(MusicProvider):
             key = CONF_KEY_RADIOS
         else:
             return False
-        # a local-path item_id or image is refused where it is read
-        # (_get_media_info and resolve_image), so no guard is needed here
+        self._ensure_stream_url(item.item_id)
+        if item.image:
+            self._ensure_remote_image_url(item.image.path)
         stored_item = StoredItem(item_id=item.item_id, name=item.name)
         if item.image:
             stored_item["image_url"] = item.image.path
@@ -847,8 +852,8 @@ class BuiltinProvider(MusicProvider):
         """
         Resolve an image from an image path.
 
-        Returns raw bytes for a bundled image, or an http(s)/data URL that is fetched
-        from elsewhere. A user-supplied image that is neither is refused: a local
+        Returns raw bytes for a bundled image, or a remote URL / data URI that is
+        fetched from elsewhere. A user-supplied image that is neither is refused: a local
         filesystem path here would let the image route read an arbitrary server file.
         """
         if path == "logo.png":
@@ -861,7 +866,7 @@ class BuiltinProvider(MusicProvider):
             if not is_safe_path(icon_name, str(icons_base)):
                 raise FileNotFoundError(f"Invalid genre icon reference: {path}")
             return str(icons_base.joinpath(icon_name))
-        if not path.startswith(("http://", "https://", "data:image")):
+        if not path.startswith(REMOTE_IMAGE_PREFIXES):
             raise FileNotFoundError(f"Invalid image reference: {path}")
         return path
 
@@ -1496,16 +1501,16 @@ class BuiltinProvider(MusicProvider):
         """
         Guard against a manual item image that points at a local filesystem path.
 
-        A manually added track or radio image must be a remote URL. A local path
-        would let the image route read an arbitrary server file.
+        A manually added track or radio image must be a remote URL or data URI. A local
+        path would let the image route read an arbitrary server file.
 
         :param image_url: The image reference supplied for a manual item.
-        :raises MediaNotFoundError: If image_url is not an http(s) or data URL.
+        :raises MediaNotFoundError: If image_url is not a remote URL or data URI.
         """
-        if not image_url.startswith(("http://", "https://", "data:image")):
+        if not image_url.startswith(REMOTE_IMAGE_PREFIXES):
             raise MediaNotFoundError(
-                "The builtin provider only supports remote image URLs "
-                "(http, https) or data URIs for manual items"
+                "The builtin provider only supports remote image URLs or data URIs "
+                "for manual items, not local file paths"
             )
 
     async def _get_media_info(self, url: str, force_refresh: bool = False) -> AudioTags:
