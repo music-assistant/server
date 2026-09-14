@@ -407,6 +407,8 @@ class BuiltinProvider(MusicProvider):
         else:
             return False
         self._ensure_stream_url(item.item_id)
+        if item.image:
+            self._ensure_remote_image_url(item.image.path)
         stored_item = StoredItem(item_id=item.item_id, name=item.name)
         if item.image:
             stored_item["image_url"] = item.image.path
@@ -492,6 +494,8 @@ class BuiltinProvider(MusicProvider):
         :param image_url: Image URL.
         """
         self._ensure_stream_url(url)
+        if image_url:
+            self._ensure_remote_image_url(image_url)
         stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_RADIOS, [])
         # Remove existing entry with same URL if present
         stored_items = [x for x in stored_items if x["item_id"] != url]
@@ -518,6 +522,8 @@ class BuiltinProvider(MusicProvider):
         :param image_url: Image URL.
         """
         self._ensure_stream_url(url)
+        if image_url:
+            self._ensure_remote_image_url(image_url)
         stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_TRACKS, [])
         # Remove existing entry with same URL if present
         stored_items = [x for x in stored_items if x["item_id"] != url]
@@ -842,8 +848,9 @@ class BuiltinProvider(MusicProvider):
         """
         Resolve an image from an image path.
 
-        This either returns (a generator to get) raw bytes of the image or
-        a string with an http(s) URL or local path that is accessible from the server.
+        Returns raw bytes for a bundled image, or an http(s)/data URL that is fetched
+        from elsewhere. A user-supplied image that is neither is refused: a local
+        filesystem path here would let the image route read an arbitrary server file.
         """
         if path == "logo.png":
             return MASS_LOGO
@@ -855,6 +862,8 @@ class BuiltinProvider(MusicProvider):
             if not is_safe_path(icon_name, str(icons_base)):
                 raise FileNotFoundError(f"Invalid genre icon reference: {path}")
             return str(icons_base.joinpath(icon_name))
+        if not path.startswith(("http://", "https://", "data:image")):
+            raise FileNotFoundError(f"Invalid image reference: {path}")
         return path
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
@@ -1483,6 +1492,23 @@ class BuiltinProvider(MusicProvider):
                 "(http, https, rtsp, rtmp), not local file paths"
             )
 
+    @staticmethod
+    def _ensure_remote_image_url(image_url: str) -> None:
+        """
+        Guard against a manual item image that points at a local filesystem path.
+
+        A manually added track or radio image must be a remote URL. A local path
+        would let the image route read an arbitrary server file.
+
+        :param image_url: The image reference supplied for a manual item.
+        :raises MediaNotFoundError: If image_url is not an http(s) or data URL.
+        """
+        if not image_url.startswith(("http://", "https://", "data:image")):
+            raise MediaNotFoundError(
+                "The builtin provider only supports remote image URLs "
+                "(http, https) or data URIs for manual items"
+            )
+
     async def _get_media_info(self, url: str, force_refresh: bool = False) -> AudioTags:
         """Retrieve mediainfo for url."""
         # never hand a local filesystem path to ffprobe: the builtin provider streams
@@ -1496,6 +1522,9 @@ class BuiltinProvider(MusicProvider):
         if cached_info and not force_refresh:
             return AudioTags.parse(cached_info)
         resolved_url = await self._resolve_url(url)
+        # a .pls can resolve to a nested entry, so re-check: a file:// entry must
+        # never reach ffprobe
+        self._ensure_stream_url(resolved_url)
         # parse info with ffprobe (and store in cache)
         media_info = await async_parse_tags(resolved_url)
         if "authSig" in url:
