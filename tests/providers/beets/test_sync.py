@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import aclosing
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.providers.beets import BeetsProvider
-from music_assistant.providers.beets.library import BeetsLibraryError
+from music_assistant.providers.beets.library import BeetsLibraryError, BeetsRow
 from music_assistant.providers.beets.parsers import item_checksum
 from tests.providers.beets.beets_db import BeetsDb, album_fields, item_fields
 from tests.providers.beets.conftest import INSTANCE_ID
@@ -178,6 +179,44 @@ async def test_unreadable_library_does_not_delete(
     with patch(REPORT_FAILURE) as report:
         await provider.sync_library(MediaType.TRACK)
 
+    provider._process_deletions.assert_not_awaited()  # type: ignore[attr-defined]
+    provider._process_orphaned_albums_and_artists.assert_not_awaited()  # type: ignore[attr-defined]
+    report.assert_called_once()
+    assert provider.sync_running is False
+
+
+async def test_read_error_after_imports_started_does_not_delete(
+    make_provider: MakeProvider, beets_db: BeetsDb
+) -> None:
+    """A read that fails while imports are still running waits for them and deletes nothing."""
+    first = beets_db.add_item(**item_fields(title="First"))
+    beets_db.add_item(**item_fields(title="Second"))
+    provider = await make_provider()
+    provider.mass.music.database.get_rows_from_query = AsyncMock(  # type: ignore[method-assign]
+        return_value=[{"provider_item_id": "99", "details": "x"}]
+    )
+    _stub_cleanup(provider)
+    async with aclosing(provider.library.iter_items(1)) as batches:
+        first_batch = await anext(batches)
+    imports = provider.mass.music.tracks.add_item_to_library
+    awaited_when_read_failed: list[int] = []
+
+    async def _fail_after_first_batch() -> AsyncGenerator[list[BeetsRow]]:
+        yield first_batch
+        awaited_when_read_failed.append(imports.await_count)  # type: ignore[attr-defined]
+        msg = "database is locked"
+        raise BeetsLibraryError(msg)
+
+    provider.library.iter_items = MagicMock(  # type: ignore[method-assign]
+        return_value=_fail_after_first_batch()
+    )
+
+    with patch(REPORT_FAILURE) as report:
+        await provider.sync_library(MediaType.TRACK)
+
+    assert awaited_when_read_failed == [0]
+    calls = imports.await_args_list  # type: ignore[attr-defined]
+    assert [call.args[0].item_id for call in calls] == [str(first)]
     provider._process_deletions.assert_not_awaited()  # type: ignore[attr-defined]
     provider._process_orphaned_albums_and_artists.assert_not_awaited()  # type: ignore[attr-defined]
     report.assert_called_once()
