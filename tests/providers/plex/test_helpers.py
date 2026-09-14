@@ -58,6 +58,12 @@ def test_parse_lyrics_malformed_json_as_plain() -> None:
     assert parse_plex_lyrics_payload("{not valid json") == ("{not valid json", False)
 
 
+def test_parse_lyrics_no_lyrics_envelope() -> None:
+    """Plex's no-lyrics envelope yields None, not the raw JSON as plain text."""
+    payload = '{"MediaContainer":{"size":1,"Lyrics":[{}]}}'
+    assert parse_plex_lyrics_payload(payload) is None
+
+
 def test_parse_lyrics_long_offset_no_minute_wrap() -> None:
     """Offsets beyond one hour keep counting minutes instead of wrapping at 60."""
     payload = (

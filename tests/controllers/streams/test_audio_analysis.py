@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import pathlib
 import sqlite3
 from collections.abc import AsyncGenerator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from datetime import UTC, datetime
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -34,8 +36,9 @@ from music_assistant.controllers.streams.audio_analysis import (
     _merged_from_rows,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBufferEOF
+from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.json import json_dumps, json_loads
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import (
     AudioAnalysisProvider,
     InstrumentedSemaphore,
@@ -199,6 +202,94 @@ async def test_distribute_chunk_evicts_provider_on_exception() -> None:
 
     assert "raises" not in controller._active_sessions[session_key]
     assert "ok" in controller._active_sessions[session_key]
+
+
+@pytest.mark.asyncio
+async def test_distribute_chunk_records_failure_when_provider_raises() -> None:
+    """A provider that raises is aborted so the track shows up in the failures overview."""
+    controller = _make_controller()
+    session_key = "track://provider/abc"
+    controller._active_sessions[session_key] = {"raises"}
+
+    raises = _make_aa_provider(
+        "raises",
+        available=True,
+        process_pcm_chunk=AsyncMock(side_effect=RuntimeError("boom")),
+    )
+    controller.mass.get_provider = MagicMock(return_value=raises)  # type: ignore[method-assign]
+
+    await controller._distribute_chunk(session_key, b"\x00" * 1024)
+
+    raises.cancel.assert_not_called()
+    raises.abort.assert_called_once()
+    assert raises.abort.call_args.args[0] == session_key
+    assert "boom" in raises.abort.call_args.args[1]
+    # an unexpected error carries no retry window, so the row blocks until cleared
+    assert raises.abort.call_args.args[2] is None
+
+
+@pytest.mark.asyncio
+async def test_distribute_chunk_keeps_the_provider_failure_reason() -> None:
+    """A reason the provider states itself reaches the failure record unwrapped."""
+    controller = _make_controller()
+    session_key = "track://provider/abc"
+    controller._active_sessions[session_key] = {"raises"}
+
+    raises = _make_aa_provider(
+        "raises",
+        available=True,
+        process_pcm_chunk=AsyncMock(
+            side_effect=AudioAnalysisError("audio decoding failed during loudness measurement")
+        ),
+    )
+    controller.mass.get_provider = MagicMock(return_value=raises)  # type: ignore[method-assign]
+
+    await controller._distribute_chunk(session_key, b"\x00" * 1024)
+
+    raises.abort.assert_called_once_with(
+        session_key, "audio decoding failed during loudness measurement", None
+    )
+
+
+@pytest.mark.asyncio
+async def test_distribute_chunk_forwards_the_provider_retry_time() -> None:
+    """A retry window the provider attaches to its error reaches the failure record."""
+    controller = _make_controller()
+    session_key = "track://provider/abc"
+    controller._active_sessions[session_key] = {"raises"}
+    retry_at = datetime(2026, 9, 2, tzinfo=UTC)
+
+    raises = _make_aa_provider(
+        "raises",
+        available=True,
+        process_pcm_chunk=AsyncMock(
+            side_effect=AudioAnalysisError("models are not loaded", retry_at=retry_at)
+        ),
+    )
+    controller.mass.get_provider = MagicMock(return_value=raises)  # type: ignore[method-assign]
+
+    await controller._distribute_chunk(session_key, b"\x00" * 1024)
+
+    raises.abort.assert_called_once_with(session_key, "models are not loaded", retry_at)
+
+
+@pytest.mark.asyncio
+async def test_distribute_chunk_records_no_failure_on_timeout() -> None:
+    """A timed out provider is cancelled rather than aborted, leaving the track pending."""
+    controller = _make_controller()
+    session_key = "track://provider/abc"
+    controller._active_sessions[session_key] = {"slow"}
+
+    async def _hang(*_args: object, **_kwargs: object) -> None:
+        await asyncio.sleep(10)
+
+    slow = _make_aa_provider("slow", available=True, process_pcm_chunk=AsyncMock(side_effect=_hang))
+    controller.mass.get_provider = MagicMock(return_value=slow)  # type: ignore[method-assign]
+
+    await controller._distribute_chunk(session_key, b"\x00" * 1024, max_interval=0.05)
+
+    slow.abort.assert_not_called()
+    slow.cancel.assert_called_once_with(session_key)
 
 
 def test_get_scan_concurrency_returns_default_on_unset() -> None:
@@ -412,6 +503,7 @@ def _make_aa_provider(
     provider.available = available
     provider.process_pcm_chunk = process_pcm_chunk or AsyncMock(return_value=None)
     provider.cancel = AsyncMock(return_value=None)
+    provider.abort = AsyncMock(return_value=None)
     return provider
 
 
@@ -490,7 +582,7 @@ async def test_find_candidates_handles_sqlite_row_without_get(
     fs_prov = MagicMock()
     fs_prov.domain = "filesystem_local"
     fs_prov.available = True
-    controller.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
+    controller.mass.providers = [fs_prov]  # type: ignore[misc]
 
     class _RowNoGet:
         """Mimics sqlite3.Row: __getitem__ only, no .get()."""
@@ -544,7 +636,7 @@ async def test_find_candidates_query_gates_on_current_version(
     fs_prov = MagicMock()
     fs_prov.domain = "filesystem_local"
     fs_prov.available = True
-    controller.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
+    controller.mass.providers = [fs_prov]  # type: ignore[misc]
 
     captured: dict[str, Any] = {}
 
@@ -1155,6 +1247,118 @@ async def test_iter_merged_audio_analysis_rows_skips_unparsable_rows() -> None:
     assert result[0][2].bpm == 120.0
 
 
+@pytest.fixture
+async def real_audio_analysis_db(tmp_path: pathlib.Path) -> AsyncGenerator[DatabaseConnection]:
+    """Create a real on-disk sqlite DB holding just the audio_analysis table."""
+    db = DatabaseConnection(str(tmp_path / "test.db"))
+    await db.setup()
+    await db.execute(
+        f"CREATE TABLE {DB_TABLE_AUDIO_ANALYSIS}("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, media_type TEXT, item_id TEXT, provider TEXT, "
+        "aa_provider_domain TEXT, analysis_data json, analysis_version INTEGER, "
+        "timestamp_created INTEGER DEFAULT (cast(strftime('%s','now') as int)), "
+        "UNIQUE(item_id,provider,aa_provider_domain,media_type))"
+    )
+    await db.commit()
+    yield db
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_iter_merged_audio_analysis_rows_skips_row_with_invalid_utf8_bytes(
+    real_audio_analysis_db: DatabaseConnection,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A row whose analysis_data TEXT holds bytes that are not valid UTF-8 is skipped."""
+    for item_id, bpm in (("t2", 100.0), ("t3", 200.0)):
+        await real_audio_analysis_db.execute_write(
+            f"INSERT INTO {DB_TABLE_AUDIO_ANALYSIS} "
+            "(media_type, item_id, provider, aa_provider_domain, analysis_data) VALUES "
+            "(:media_type, :item_id, :provider, :aa_provider_domain, :analysis_data)",
+            {
+                "media_type": MediaType.TRACK.value,
+                "item_id": item_id,
+                "provider": "filesystem_local",
+                "aa_provider_domain": SONIC_ANALYSIS_DOMAIN,
+                "analysis_data": json_dumps(AudioAnalysisData(bpm=bpm).to_dict()),
+            },
+        )
+    # invalid UTF-8 must go in via a raw CAST(x'..' AS TEXT) literal;
+    # binding it as a parameter would store a BLOB instead of corrupt TEXT
+    await real_audio_analysis_db.execute_write(
+        f"INSERT INTO {DB_TABLE_AUDIO_ANALYSIS} "
+        "(media_type, item_id, provider, aa_provider_domain, analysis_data) VALUES "
+        "(:media_type, :item_id, :provider, :aa_provider_domain, "
+        "CAST(x'7B226475726174696F6E223A31FFFE7D' AS TEXT))",
+        {
+            "media_type": MediaType.TRACK.value,
+            "item_id": "t1",
+            "provider": "filesystem_local",
+            "aa_provider_domain": SONIC_ANALYSIS_DOMAIN,
+        },
+    )
+
+    streams = MagicMock()
+    streams.mass = MagicMock()
+    streams.mass.music.database = real_audio_analysis_db
+    streams.mass.get_providers = MagicMock(return_value=[_aa_provider_stub(SONIC_ANALYSIS_DOMAIN)])
+    controller = AudioAnalysisController(streams)
+
+    with caplog.at_level("WARNING", logger=audio_analysis_mod.LOGGER.name):
+        result = [
+            x async for x in controller.iter_merged_audio_analysis_rows(SONIC_ANALYSIS_DOMAIN)
+        ]
+
+    assert {item_id for item_id, _provider, _merged in result} == {"t2", "t3"}
+    assert any("Skipping unparsable audio_analysis row" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_iter_audio_analysis_rows_yields_corrupt_row_as_undecodable_bytes(
+    real_audio_analysis_db: DatabaseConnection,
+) -> None:
+    """A corrupt non-UTF-8 row is yielded, not filtered; filtering is the consumer's job."""
+    await real_audio_analysis_db.execute_write(
+        f"INSERT INTO {DB_TABLE_AUDIO_ANALYSIS} "
+        "(media_type, item_id, provider, aa_provider_domain, analysis_data) VALUES "
+        "(:media_type, :item_id, :provider, :aa_provider_domain, :analysis_data)",
+        {
+            "media_type": MediaType.TRACK.value,
+            "item_id": "t1",
+            "provider": "filesystem_local",
+            "aa_provider_domain": SONIC_ANALYSIS_DOMAIN,
+            "analysis_data": json_dumps(AudioAnalysisData(bpm=100.0).to_dict()),
+        },
+    )
+    # invalid UTF-8 must go in via a raw CAST(x'..' AS TEXT) literal;
+    # binding it as a parameter would store a BLOB instead of corrupt TEXT
+    await real_audio_analysis_db.execute_write(
+        f"INSERT INTO {DB_TABLE_AUDIO_ANALYSIS} "
+        "(media_type, item_id, provider, aa_provider_domain, analysis_data) VALUES "
+        "(:media_type, :item_id, :provider, :aa_provider_domain, "
+        "CAST(x'7B226475726174696F6E223A31FFFE7D' AS TEXT))",
+        {
+            "media_type": MediaType.TRACK.value,
+            "item_id": "t2",
+            "provider": "filesystem_local",
+            "aa_provider_domain": SONIC_ANALYSIS_DOMAIN,
+        },
+    )
+
+    streams = MagicMock()
+    streams.mass = MagicMock()
+    streams.mass.music.database = real_audio_analysis_db
+    controller = AudioAnalysisController(streams)
+
+    rows = [row async for row in controller.iter_audio_analysis_rows(SONIC_ANALYSIS_DOMAIN)]
+
+    assert {row["item_id"] for row in rows} == {"t1", "t2"}
+    corrupt_row = next(row for row in rows if row["item_id"] == "t2")
+    assert isinstance(corrupt_row["analysis_data"], bytes)
+    with pytest.raises(UnicodeDecodeError):
+        corrupt_row["analysis_data"].decode("utf-8", errors="strict")
+
+
 @pytest.mark.asyncio
 async def test_iter_merged_audio_analysis_rows_empty_db_yields_nothing() -> None:
     """An empty DB result yields no entries without flushing a sentinel group."""
@@ -1322,7 +1526,7 @@ async def test_coverage_stale_query_counts_null_analysis_version_as_stale() -> N
 async def test_count_candidates_missing_analysis_zero_without_filesystem() -> None:
     """No available filesystem music providers -> 0 pending (no DB query)."""
     c, _ = _stub_controller()
-    c.mass.get_providers = MagicMock(return_value=[])  # type: ignore[method-assign]
+    c.mass.providers = []  # type: ignore[misc]
 
     assert await c._count_candidates_missing_analysis("sonic_analysis", 1) == 0
 
@@ -1335,7 +1539,7 @@ async def test_count_candidates_missing_analysis_queries_with_available_filesyst
     fs_prov = MagicMock()
     fs_prov.domain = domain
     fs_prov.available = True
-    c.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
+    c.mass.providers = [fs_prov]  # type: ignore[misc]
 
     result = await c._count_candidates_missing_analysis("sonic_analysis", 2)
 

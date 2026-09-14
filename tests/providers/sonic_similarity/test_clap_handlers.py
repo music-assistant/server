@@ -149,6 +149,29 @@ class TestRebuildClapIndexFromDatabase:
         plugin._clap_index.save.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_skips_row_with_invalid_utf8_bytes(
+        self, make_plugin: Callable[..., Any], mock_mass: MagicMock
+    ) -> None:
+        """A row whose analysis_data is undecodable bytes is skipped, not raised."""
+        corrupt_row = {
+            "item_id": "x",
+            "provider": "spotify",
+            "aa_provider_domain": "sonic_analysis",
+            "analysis_data": b'{"duration":1\xff\xfe}',
+        }
+        mock_mass._iter_audio_analysis_rows_data = [
+            corrupt_row,
+            make_analysis_row(item_id="y", provider="spotify", clap_embedding=[0.1] * 1024),
+        ]
+        plugin = make_plugin(clap_enabled=True)
+        await plugin._rebuild_clap_index_from_database()
+        plugin._clap_index.add.assert_awaited_once()
+        call_args = plugin._clap_index.add.await_args.args
+        assert call_args[0] == "spotify"
+        assert call_args[1] == "y"
+        plugin._clap_index.save.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_skips_rows_missing_clap_embedding(
         self, make_plugin: Callable[..., Any], mock_mass: MagicMock
     ) -> None:

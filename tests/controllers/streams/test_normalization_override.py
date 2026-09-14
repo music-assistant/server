@@ -87,6 +87,7 @@ def audio(monkeypatch: pytest.MonkeyPatch) -> tuple[StreamsAudio, dict[str, list
     )
     mass.streams.config.get_value.return_value = VolumeNormalizationMode.FALLBACK_DYNAMIC.value
     mass.config.get_player_config = AsyncMock(return_value=MagicMock())
+    mass.player_queues.queue_data_or_none.return_value = None
     return controller, captured
 
 

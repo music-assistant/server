@@ -30,6 +30,8 @@ from music_assistant.constants import (
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_scope,
+    set_current_user,
+    set_impersonated_user,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.models.core_controller import CoreController
@@ -757,6 +759,10 @@ class TasksController(CoreController):
         )
         token = ACTIVE_TASK_ID.set(task_info.id)
         context_token = ACTIVE_TASK_CONTEXT.set(task_context)
+        # a managed task is a server-side job: it inherits the context of whoever queued it
+        # or of the task that finished before it, so it must not act as that user
+        set_current_user(None)
+        set_impersonated_user(None)
         try:
             await managed.handler()
         except asyncio.CancelledError:

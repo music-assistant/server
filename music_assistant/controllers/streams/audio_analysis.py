@@ -35,7 +35,7 @@ from music_assistant.helpers.api import api_command
 from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.util import inference_thread_budget, is_arm
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import (
     AudioAnalysisProvider,
     InstrumentedSemaphore,
@@ -787,11 +787,18 @@ class AudioAnalysisController:
         """
         Stream audio_analysis rows for a given aa_provider_domain.
 
+        analysis_data is yielded as raw bytes rather than str, and may hold data
+        that fails a strict UTF-8 decode; callers are responsible for handling that.
+
         :param aa_provider_domain: Domain of the AA provider whose rows to yield.
         :param media_type: The media type to filter rows by.
         """
+        # fetch as blob: the sqlite driver raises OperationalError on corrupt
+        # non-UTF-8 TEXT; raw bytes defer decoding to the consumer
         query = (
-            f"SELECT * FROM {DB_TABLE_AUDIO_ANALYSIS} "
+            f"SELECT id, media_type, item_id, provider, aa_provider_domain, "
+            f"CAST(analysis_data AS BLOB) AS analysis_data, analysis_version, timestamp_created "
+            f"FROM {DB_TABLE_AUDIO_ANALYSIS} "
             f"WHERE aa_provider_domain = :aa_provider_domain AND media_type = :media_type"
         )
         async for row in self.mass.music.database.iter_rows_from_query(
@@ -842,7 +849,10 @@ class AudioAnalysisController:
         # EXISTS subquery scopes to the primary domain's universe at the DB level;
         # ORDER BY (item_id, provider, ts) lets us fold each track in one streaming pass.
         query = (
-            f"SELECT item_id, provider, aa_provider_domain, analysis_data, id "
+            f"SELECT item_id, provider, aa_provider_domain, "
+            # fetch as blob: the sqlite driver raises OperationalError on corrupt
+            # non-UTF-8 TEXT; raw bytes let _parse_row skip just the bad row
+            f"CAST(aa1.analysis_data AS BLOB) AS analysis_data, id "
             f"FROM {DB_TABLE_AUDIO_ANALYSIS} aa1 "
             f"WHERE aa1.media_type = :media_type "
             f"AND EXISTS ("
@@ -1172,10 +1182,7 @@ class AudioAnalysisController:
         return tuple(
             domain
             for domain in FILESYSTEM_PROVIDER_DOMAINS
-            if any(
-                p.domain == domain and p.available
-                for p in self.mass.get_providers(ProviderType.MUSIC)
-            )
+            if any(p.domain == domain and p.available for p in self.mass.providers)
         )
 
     async def _find_candidates_missing_analysis(
@@ -1414,7 +1421,7 @@ class AudioAnalysisController:
         if not provider_ids:
             return
 
-        async def _process(prov_id: str) -> str | None:
+        async def _process(prov_id: str) -> tuple[str, tuple[str, datetime | None] | None] | None:
             try:
                 provider = self.mass.get_provider(prov_id)
                 if not (
@@ -1441,22 +1448,38 @@ class AudioAnalysisController:
                     contention,
                     len(self._active_sessions),
                 )
-                return prov_id
+                # a timeout tracks server load rather than the audio, so the track stays
+                # pending for the next run instead of being recorded against it
+                return prov_id, None
+            except AudioAnalysisError as err:
+                # the provider judged this track unanalyzable, so its own wording is what
+                # the user should see in the failures overview
+                self.logger.warning(
+                    "Provider %s failed analysis for %s: %s", prov_id, session_key, err.reason
+                )
+                return prov_id, (err.reason, err.retry_at)
             except Exception as err:
                 # process_pcm_chunk is provider-implemented (torch/numpy/ffmpeg); evict
                 # the provider that fails on a chunk rather than crashing the session.
                 self.logger.warning("Error processing PCM chunk on provider %s: %s", prov_id, err)
-                return prov_id
+                return prov_id, (
+                    f"audio processing failed ({str(err) or type(err).__name__})",
+                    None,
+                )
             return None
 
         results = await asyncio.gather(*[_process(prov_id) for prov_id in provider_ids])
-        evicted = {prov_id for prov_id in results if prov_id is not None}
+        evicted = dict(result for result in results if result is not None)
         if evicted:
-            for prov_id in evicted:
+            for prov_id, failure in evicted.items():
                 provider = self.mass.get_provider(prov_id)
                 if provider and isinstance(provider, AudioAnalysisProvider) and provider.available:
-                    self.mass.create_task(provider.cancel(session_key))
-            provider_ids -= evicted
+                    if failure is None:
+                        self.mass.create_task(provider.cancel(session_key))
+                    else:
+                        reason, retry_at = failure
+                        await provider.abort(session_key, reason, retry_at)
+            provider_ids.difference_update(evicted)
             if not provider_ids:
                 self._active_sessions.pop(session_key, None)
 

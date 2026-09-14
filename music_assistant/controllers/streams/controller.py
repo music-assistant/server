@@ -12,6 +12,7 @@ import logging
 import os
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
+from ipaddress import ip_address
 from math import ceil
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
@@ -19,7 +20,7 @@ from uuid import uuid4
 from aiofiles.os import wrap
 from aiohttp import web
 from music_assistant_models.audio_processing import AudioQueueProcessing
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -445,6 +446,7 @@ class StreamsController(CoreController):
                 category="generic",
                 advanced=True,
                 requires_reload=True,
+                validate=_is_valid_publish_ip,
             ),
             ConfigEntry(
                 key=CONF_BIND_PORT,
@@ -498,6 +500,18 @@ class StreamsController(CoreController):
         self._configured_publish_ip = (
             None if configured_publish_ip == CONF_VALUE_AUTO else configured_publish_ip
         )
+        raw_publish_ip = self.mass.config.get_raw_core_config_value(self.domain, CONF_PUBLISH_IP)
+        if not _is_valid_publish_ip(raw_publish_ip):
+            # config parsing already swapped the invalid stored value for auto; reset the
+            # stored value too, so the setting reads back as auto and this warns only once
+            self.logger.warning(
+                "Published IP address %r in the streams settings is not an IP address, "
+                "resetting it to auto",
+                raw_publish_ip,
+            )
+            self.mass.config.set_raw_core_config_value(
+                self.domain, CONF_PUBLISH_IP, CONF_VALUE_AUTO
+            )
         publish_candidates = await get_publish_ip_candidates(include_ipv6=True)
         bind_ip = str(config.get_value(CONF_BIND_IP))
         self._resolve_publish_state(bind_ip, publish_candidates)
@@ -786,8 +800,11 @@ class StreamsController(CoreController):
                     self.logger.error(
                         "Failed to get streamdetails for QueueItem %s: %s", queue_item_id, e
                     )
-                    # a source capacity miss is transient, the item itself is fine
-                    if not isinstance(e, ProviderStreamLimitError):
+                    # a source capacity miss is transient, the item itself is fine.
+                    # neither is a HEAD probe a playback attempt: renderers probe
+                    # speculatively (Sonos at every track boundary), so one transient
+                    # error there must not condemn an item the following GET can play
+                    if request.method == "GET" and not isinstance(e, ProviderStreamLimitError):
                         queue_item.available = False
                     raise web.HTTPNotFound(
                         reason=f"No streamdetails for Queue item: {queue_item_id}"
@@ -945,12 +962,11 @@ class StreamsController(CoreController):
             else:
                 pacing: PacingProfile
                 if queue_item.media_type == MediaType.AUDIO_SOURCE:
-                    pacing = "low_latency"
-                elif player.provider.domain == "musiccast":
-                    # the one known exception; more belong in a per-player table, not here
-                    pacing = "gapless_burst"
+                    pacing = PacingProfile.LOW_LATENCY
+                elif queue_item.streamdetails.is_realtime:
+                    pacing = PacingProfile.NEAR_REALTIME
                 else:
-                    pacing = "default"
+                    pacing = PacingProfile.DEFAULT
                 audio_bytes = get_ffmpeg_stream(
                     audio_input=audio_input,
                     input_format=pcm_format,
@@ -1323,7 +1339,8 @@ class StreamsController(CoreController):
             # restarting (or completely failing) the audio stream by keeping the buffer short.
             # this is reported to be an issue especially with Chromecast players.
             # see for example: https://github.com/music-assistant/support/issues/3717
-            extra_input_args=output_pacing_args(),
+            # one continuous stream, so the player gains nothing from running far ahead
+            extra_input_args=output_pacing_args(PacingProfile.NEAR_REALTIME),
             chunk_size=icy_meta_interval if enable_icy else calculate_content_length(output_format),
         )
         client_disconnected = False
@@ -1941,7 +1958,7 @@ class StreamsController(CoreController):
             filter_params=filter_params,
             # keep the encode stage from reading further ahead than it needs to: a live
             # source's latency is whatever is buffered between it and the player
-            extra_input_args=output_pacing_args("low_latency"),
+            extra_input_args=output_pacing_args(PacingProfile.LOW_LATENCY),
         )
 
     async def _get_audio_source_session_stream(
@@ -2330,6 +2347,21 @@ class StreamsController(CoreController):
 def _same_ip_family(ip: str, other_ip: str) -> bool:
     """Return whether two addresses belong to the same IP family."""
     return (":" in ip) == (":" in other_ip)
+
+
+def _is_valid_publish_ip(value: ConfigValueType) -> bool:
+    """Return whether a configured publish IP value is usable: auto, empty or an IP address."""
+    if not value or value == CONF_VALUE_AUTO:
+        return True
+    if not isinstance(value, str):
+        return False
+    # consumers hand the publish IP to APIs that only take IP literals (mDNS, AirPlay),
+    # so a hostname is rejected rather than resolved
+    try:
+        ip_address(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _root_cause(err: BaseException) -> BaseException:

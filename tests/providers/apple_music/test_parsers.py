@@ -425,7 +425,10 @@ async def test_library_tracks_request_includes_album_relations() -> None:
     _ = [track async for track in manager.get_library_tracks()]
 
     provider.api_client.iter_all_items.assert_called_once_with(
-        "me/library/songs", include="catalog,albums,artists", page_size=_TRACK_PAGE_SIZE
+        "me/library/songs",
+        include="catalog,albums,artists",
+        extend="dateAdded",
+        page_size=_TRACK_PAGE_SIZE,
     )
 
 

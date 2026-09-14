@@ -5,10 +5,13 @@ from __future__ import annotations
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from music_assistant_models.enums import PlaylistMatchPolicy
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import PlaylistMatchPolicy, ProviderSharing
 from music_assistant_models.media_items import Playlist, ProviderMapping
 
 from music_assistant.controllers.music.media.playlists import PlaylistController
+from tests.common import set_music_source_access
 
 
 def _make_controller() -> PlaylistController:
@@ -381,8 +384,8 @@ async def test_import_source_validation_excludes_disabled_provider() -> None:
     )
 
 
-async def test_import_source_validation_respects_user_provider_filter() -> None:
-    """The provider snapshot respects the requesting user's filter."""
+async def test_import_source_validation_respects_user_music_sources() -> None:
+    """The provider snapshot only holds the music sources the requesting user may use."""
     ctrl = _make_controller()
     ctrl_any = cast("Any", ctrl)
     builtin_prov = _make_builtin_provider_mock()
@@ -396,8 +399,14 @@ async def test_import_source_validation_respects_user_provider_filter() -> None:
             _make_provider_config_mock("qobuz--1", "qobuz"),
         ]
     )
-    user = MagicMock()
-    user.provider_filter = {"qobuz--1"}
+    set_music_source_access(
+        ctrl_any.mass,
+        {
+            "spotify--1": ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+            "qobuz--1": ProviderAccess(owner="user-a", sharing=ProviderSharing.PRIVATE),
+        },
+    )
+    user = User(user_id="user-a", username="user-a", role=UserRole.USER)
 
     with (
         patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),
@@ -410,7 +419,7 @@ async def test_import_source_validation_respects_user_provider_filter() -> None:
 
     call_kwargs = ctrl_any.mass.tasks.run_background_task.call_args.kwargs
     await call_kwargs["handler"]()
-    # The user filter narrows both snapshots, except for builtin validation.
+    # The user's music sources narrow both snapshots, except for builtin validation.
     builtin_prov.match_imported_playlist_tracks.assert_awaited_once_with(
         "playlist_1",
         1,
@@ -431,12 +440,18 @@ async def test_import_source_validation_always_includes_builtin() -> None:
     ctrl_any.add_item_to_library = AsyncMock(return_value=_make_playlist())
     ctrl_any.mass.music.providers = [_make_provider_mock("qobuz--1", "qobuz")]
     # builtin is a virtual provider that never appears in the user-configurable provider
-    # list, and the restrictive filter below doesn't mention it either
+    # list, and the restricted user below does not own it either
     ctrl_any.mass.config.get_provider_configs = AsyncMock(
         return_value=[_make_provider_config_mock("qobuz--1", "qobuz")]
     )
-    user = MagicMock()
-    user.provider_filter = {"qobuz--1"}
+    set_music_source_access(
+        ctrl_any.mass,
+        {
+            "spotify--1": ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+            "qobuz--1": ProviderAccess(owner="user-a", sharing=ProviderSharing.PRIVATE),
+        },
+    )
+    user = User(user_id="user-a", username="user-a", role=UserRole.USER)
 
     with (
         patch("music_assistant.controllers.music.media.playlists.MusicProvider", MagicMock),

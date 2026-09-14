@@ -7,7 +7,7 @@ import pytest
 import ytmusicapi
 from aiohttp import ClientError, ServerDisconnectedError
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, SetupFailedError
 
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.ytmusic import YoutubeMusicProvider
@@ -69,6 +69,31 @@ async def test_verify_po_token_url_transient_failure(
         return_value=_ping_context_manager(exc=exc)
     )
     assert await provider._verify_po_token_url() is False
+
+
+async def test_init_unreachable_po_token_server_is_a_retried_setup_failure(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """
+    An unreachable PO Token server at load is a setup failure the core retries, not a login one.
+
+    The PO Token server is a separate add-on/container that routinely comes up after
+    Music Assistant on a host reboot. A LoginFailed is never retried (it waits for the
+    user to fix their credentials), which left the provider dead until a manual reload.
+    """
+    provider.mass.http_session.get = MagicMock(  # type: ignore[method-assign]
+        return_value=_ping_context_manager(exc=ClientError("connection refused"))
+    )
+    with (
+        patch.object(provider, "_install_packages", AsyncMock()),
+        patch.object(provider, "get_setup_value", return_value=""),
+        pytest.raises(SetupFailedError) as exc_info,
+    ):
+        await provider.handle_async_init()
+
+    assert not isinstance(exc_info.value, LoginFailed)
+    assert exc_info.value.translation_key == "po_token_server_unreachable"
+    assert exc_info.value.translation_owner == "provider.ytmusic"
 
 
 async def test_sync_library_unloads_on_invalid_session(provider: YoutubeMusicProvider) -> None:
