@@ -925,10 +925,15 @@ class SendspinPlaybackSession:
                     elapsed_real_s = max(0.0, (commit_now_us - self._timeline_start_us) / 1_000_000)
                     # A rebase steps the reported position by (buffer_depth + chunk -
                     # min_send_ahead), independent of how long the stall lasted: forward
-                    # as a deep buffer drains, slightly backward when it was already
-                    # shallow. Either way the step can land under the periodic gate's 1s
-                    # threshold, which would then hold the correction back indefinitely,
-                    # so a rebase publishes on its own commit.
+                    # as a deep buffer drains, backward when it was shallow and the
+                    # device's send-ahead floor (min buffer or required lead, plus its
+                    # static delay) is the larger term. A forward step of a second or
+                    # more opens the periodic gate below on its own, but a backward one
+                    # closes it for the size of the step plus a second, so the rebasing
+                    # commit has to publish or the correction sits unreported for that
+                    # long. Steps smaller than POSITION_JUMP_THRESHOLD are absorbed as
+                    # ordinary drift by the player model and stay absorbed: the anchor
+                    # set here is still what the next recalculation extrapolates from.
                     if anchor_rebased or elapsed_real_s - last_elapsed_update_s >= 1.0:
                         last_elapsed_update_s = elapsed_real_s
                         self.player._attr_elapsed_time = elapsed_real_s

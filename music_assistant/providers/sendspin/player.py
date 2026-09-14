@@ -2186,12 +2186,7 @@ class SendspinPlayer(SendspinBasePlayer):
         if visualizer_role is None:
             return
         if not is_playing or queue_item is None or queue_item.streamdetails is None:
-            visualizer_role.clear_beat_schedule()
-            self._last_beat_queue_item_id = None
-            self._last_beat_anchor_us = None
-            self._pending_anchor_delta_us = 0
-            self._anchor_rebase_pending = False
-            self._cancel_beat_retry()
+            self._clear_beat_state(visualizer_role)
             return
         # smart_fades is the only AA provider that emits beats. Without it, no
         # beats will ever arrive for this source.
@@ -2199,13 +2194,8 @@ class SendspinPlayer(SendspinBasePlayer):
             p.available and p.domain == "smart_fades"
             for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS)
         ):
-            visualizer_role.clear_beat_schedule()
+            self._clear_beat_state(visualizer_role)
             visualizer_role.set_beat_availability(BeatAvailability.UNAVAILABLE)
-            self._last_beat_queue_item_id = None
-            self._last_beat_anchor_us = None
-            self._pending_anchor_delta_us = 0
-            self._anchor_rebase_pending = False
-            self._cancel_beat_retry()
             return
         provider = cast("SendspinProvider", self.provider)
         now_us = provider.server_api.clock.now_us()
@@ -2224,9 +2214,8 @@ class SendspinPlayer(SendspinBasePlayer):
             and self._last_beat_anchor_us is not None
         ):
             # The flow log has not placed this track yet, so there is no anchor to
-            # recompute from. The timeline has moved by _pending_anchor_delta_us since the
-            # last
-            # schedule went out though - accumulated, because a refresh cancelled while
+            # recompute from. The timeline has moved by _pending_anchor_delta_us since
+            # the last schedule went out though - accumulated, because a refresh cancelled while
             # awaiting analysis never published the movement it carried - so the schedule
             # already published for this item moves by exactly that.
             # Derived from the last anchor rather than from reported progress, which is
@@ -2249,6 +2238,15 @@ class SendspinPlayer(SendspinBasePlayer):
             media_type=sd.media_type,
             priority=(SMART_FADES_ANALYSIS_DOMAIN,),
         )
+        # The analysis await can outlive the media it was started for: a track change
+        # races with it, and the refresh a rebase schedules is not cancelled by the one a
+        # media update schedules (different task ids). Publishing the item captured before
+        # the await would then overwrite the newer track's schedule, and leave
+        # _last_beat_queue_item_id naming the old item so the re-push guard above suppresses
+        # the correction. Re-read the live media instead and drop this run if it moved on.
+        live_media = self.state.current_media
+        if live_media is None or live_media.queue_item_id != queue_item.queue_item_id:
+            return
         if analysis is None or analysis.beats is None or len(analysis.beats) == 0:
             visualizer_role.clear_beat_schedule()
             # Analysis may still be running (offline NN takes ~5-10 s). Kick a
@@ -2277,6 +2275,19 @@ class SendspinPlayer(SendspinBasePlayer):
         self._last_beat_anchor_us = anchor_us
         self._pending_anchor_delta_us = 0
         self._anchor_rebase_pending = False
+
+    def _clear_beat_state(self, visualizer_role: VisualizerGroupRole) -> None:
+        """
+        Drop the published beat schedule and everything tracking it.
+
+        :param visualizer_role: The group's visualizer role to clear the schedule on.
+        """
+        visualizer_role.clear_beat_schedule()
+        self._last_beat_queue_item_id = None
+        self._last_beat_anchor_us = None
+        self._pending_anchor_delta_us = 0
+        self._anchor_rebase_pending = False
+        self._cancel_beat_retry()
 
     # Initial backoff for the beat-analysis poller. The neural beat tracker
     # in smart_fades takes ~5-10 s; retry every 3 s until it lands. Capped so

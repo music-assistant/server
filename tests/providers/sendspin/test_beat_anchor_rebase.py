@@ -18,7 +18,7 @@ depending on it.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 from music_assistant.providers.sendspin.player import SendspinPlayer
@@ -55,11 +55,22 @@ def _player(monkeypatch: pytest.MonkeyPatch, *, flow_offset_us: int | None) -> S
     """Build a SendspinPlayer with only what _send_beat_schedule touches."""
     player = SendspinPlayer.__new__(SendspinPlayer)
     # Both are read-only properties on the real class.
+    # One mock for the life of the player: the tests assert on what was pushed to it.
     monkeypatch.setattr(
-        SendspinPlayer, "_visualizer_role", property(lambda _self: MagicMock()), raising=False
+        SendspinPlayer,
+        "_visualizer_role",
+        property(lambda _self: _self._role_mock),
+        raising=False,
     )
     monkeypatch.setattr(SendspinPlayer, "synced_to", property(lambda _self: None), raising=False)
     monkeypatch.setattr(SendspinPlayer, "player_id", "leader", raising=False)
+    # Re-read after the analysis await to detect a track change that raced with it.
+    monkeypatch.setattr(
+        SendspinPlayer,
+        "state",
+        property(lambda _self: SimpleNamespace(current_media=_self._live_media)),
+        raising=False,
+    )
     monkeypatch.setattr(
         SendspinPlayer,
         "provider",
@@ -70,6 +81,11 @@ def _player(monkeypatch: pytest.MonkeyPatch, *, flow_offset_us: int | None) -> S
         ),
         raising=False,
     )
+    # Harness-only attributes the monkeypatched properties read back; the real class
+    # declares neither, so they are set through an untyped view of the instance.
+    harness = cast("Any", player)
+    harness._role_mock = MagicMock()
+    harness._live_media = SimpleNamespace(queue_item_id=_QUEUE_ITEM_ID)
     player._last_beat_queue_item_id = _QUEUE_ITEM_ID
     player._last_beat_anchor_us = _PUBLISHED_ANCHOR_US
     player._pending_anchor_delta_us = 0
@@ -217,4 +233,38 @@ async def test_opposing_rebases_cancel_out_and_publish_nothing(
 
     await _send(player, anchor_delta_us=-_ANCHOR_DELTA_US)
 
+    assert player._last_beat_anchor_us == _PUBLISHED_ANCHOR_US
+
+
+async def test_a_track_change_during_the_analysis_await_drops_the_stale_publish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A refresh whose media changed under it must not publish the item it captured.
+
+    The refresh a rebase schedules carries its own task id, so a media update does not
+    cancel it: it can still be inside get_audio_analysis() when the track changes. Left
+    unguarded it would overwrite the new track's schedule and then claim the old item in
+    _last_beat_queue_item_id, which makes the re-push guard swallow the correction.
+    """
+    player = _player(monkeypatch, flow_offset_us=None)
+    harness = cast("Any", player)
+    visualizer_role = cast("MagicMock", player._visualizer_role)
+
+    async def _analysis_then_track_change(*_args: object, **_kwargs: object) -> object:
+        harness._live_media = SimpleNamespace(queue_item_id="item-2")
+        return SimpleNamespace(beats=[0.0, 1.0, 2.0], downbeats=[0.0])
+
+    harness.mass.streams.audio_analysis.get_audio_analysis = AsyncMock(
+        side_effect=_analysis_then_track_change
+    )
+
+    await _send(player, anchor_delta_us=_ANCHOR_DELTA_US)
+
+    # The publish path clears the role's schedule before writing the new one, so an
+    # untouched role is proof this run stopped before it could overwrite item-2's.
+    visualizer_role.clear_beat_schedule.assert_not_called()
+    # Still naming the item that is actually published, so the next refresh for item-2
+    # is not mistaken for a re-push of it.
+    assert player._last_beat_queue_item_id == _QUEUE_ITEM_ID
     assert player._last_beat_anchor_us == _PUBLISHED_ANCHOR_US
