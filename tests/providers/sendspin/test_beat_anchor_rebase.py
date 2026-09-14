@@ -58,6 +58,8 @@ def _player(monkeypatch: pytest.MonkeyPatch, *, flow_offset_us: int | None) -> S
     monkeypatch.setattr(
         SendspinPlayer, "_visualizer_role", property(lambda _self: MagicMock()), raising=False
     )
+    monkeypatch.setattr(SendspinPlayer, "synced_to", property(lambda _self: None), raising=False)
+    monkeypatch.setattr(SendspinPlayer, "player_id", "leader", raising=False)
     monkeypatch.setattr(
         SendspinPlayer,
         "provider",
@@ -70,10 +72,15 @@ def _player(monkeypatch: pytest.MonkeyPatch, *, flow_offset_us: int | None) -> S
     )
     player._last_beat_queue_item_id = _QUEUE_ITEM_ID
     player._last_beat_anchor_us = _PUBLISHED_ANCHOR_US
+    player._pending_anchor_delta_us = 0
+    player._anchor_rebase_pending = False
     player._beat_retry_task = None
     player._beat_retry_queue_item_id = None
 
     mass = MagicMock()
+    # on_flow_timeline_rebased hands create_task a coroutine it never awaits here; close
+    # it so the refresh does not run twice and no 'never awaited' warning is raised.
+    mass.create_task.side_effect = lambda coro, **_kwargs: coro.close()
     mass.get_providers.return_value = [SimpleNamespace(available=True, domain="smart_fades")]
     mass.player_queues.queue_data_or_none.return_value = SimpleNamespace(flow_mode_stream_log=[])
     mass.streams.audio_analysis.get_audio_analysis = AsyncMock(
@@ -92,13 +99,20 @@ def _player(monkeypatch: pytest.MonkeyPatch, *, flow_offset_us: int | None) -> S
     return player
 
 
+def _report_rebase(player: SendspinPlayer, anchor_delta_us: int) -> None:
+    """Drive the real rebase entry point, so its accumulation is under test too."""
+    player.on_flow_timeline_rebased(anchor_delta_us)
+
+
 async def _send(player: SendspinPlayer, *, anchor_delta_us: int) -> None:
+    """Report a rebase of anchor_delta_us, then run the publish it would have scheduled."""
+    if anchor_delta_us:
+        _report_rebase(player, anchor_delta_us)
     await player._send_beat_schedule(
         cast("object", SimpleNamespace(queue_id="q1")),  # type: ignore[arg-type]
         _queue_item(),
         _STALE_PROGRESS_MS,
         True,
-        anchor_delta_us=anchor_delta_us,
     )
 
 
@@ -166,3 +180,41 @@ async def test_without_a_delta_the_anchor_still_comes_from_reported_progress(
 
     assert player._last_beat_anchor_us == _NOW_US - _STALE_PROGRESS_MS * 1000
     assert player._last_beat_anchor_us != _PUBLISHED_ANCHOR_US + _ANCHOR_DELTA_US
+
+
+async def test_a_second_rebase_keeps_the_delta_of_a_cancelled_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Two rebases in quick succession must resolve to the sum of both deltas.
+
+    on_flow_timeline_rebased schedules the refresh with abort_existing=True, so a second
+    rebase cancels a refresh still awaiting get_audio_analysis(). The cancelled one never
+    reached its publish, so _last_beat_anchor_us is still pre-rebase; carrying only the
+    second delta would leave the schedule short by the first.
+    """
+    player = _player(monkeypatch, flow_offset_us=None)
+    first_delta_us = 700_000
+    second_delta_us = 900_000
+
+    # The first refresh is cancelled mid-flight: its delta is reported but never published.
+    _report_rebase(player, first_delta_us)
+
+    await _send(player, anchor_delta_us=second_delta_us)
+
+    assert player._last_beat_anchor_us == _PUBLISHED_ANCHOR_US + first_delta_us + second_delta_us
+    # And the movement is consumed, so a later unrelated publish does not re-apply it.
+    assert player._pending_anchor_delta_us == 0
+
+
+async def test_opposing_rebases_cancel_out_and_publish_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deltas that net to zero leave the published schedule exactly where it was."""
+    player = _player(monkeypatch, flow_offset_us=None)
+
+    _report_rebase(player, _ANCHOR_DELTA_US)
+
+    await _send(player, anchor_delta_us=-_ANCHOR_DELTA_US)
+
+    assert player._last_beat_anchor_us == _PUBLISHED_ANCHOR_US
