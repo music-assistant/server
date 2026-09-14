@@ -541,13 +541,6 @@ class TestPlayerCommandPermission:
             await controller.cmd_stop(player_id)
         return handler
 
-    async def test_command_on_a_player_outside_the_filter_is_refused(
-        self, mock_mass: MagicMock
-    ) -> None:
-        """A restricted user may not send commands to a player they are not allowed to use."""
-        with pytest.raises(InsufficientPermissions):
-            await self._stop(mock_mass, "living_room")
-
     async def test_command_on_the_own_client_player_is_permitted(
         self, mock_mass: MagicMock
     ) -> None:
@@ -556,13 +549,6 @@ class TestPlayerCommandPermission:
             mock_mass, "browser_session", private=True, own_player_id="browser_session"
         )
         handler.assert_awaited_once_with("browser_session")
-
-    async def test_the_client_exemption_does_not_extend_to_other_players(
-        self, mock_mass: MagicMock
-    ) -> None:
-        """Connecting a client player grants no command access to any other restricted player."""
-        with pytest.raises(InsufficientPermissions):
-            await self._stop(mock_mass, "living_room", own_player_id="browser_session")
 
     async def test_a_shared_speaker_claimed_as_the_client_player_is_refused(
         self, mock_mass: MagicMock

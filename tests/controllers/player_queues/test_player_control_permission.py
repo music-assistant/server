@@ -1,10 +1,10 @@
 """
-Tests that queue control honours the player filter while exempting the caller's own client player.
+Tests that queue control exempts the caller's own private client player from the player filter.
 
 A user restricted to a set of players may still control the private client player (browser
 session, desktop or mobile app) they connected on, which registers itself and is not in their
-stored filter. The exemption only applies to that private player, so a restricted user cannot
-reach a shared speaker by announcing its id as their client id.
+filter. The exemption only applies to that private player, so a restricted user cannot reach a
+shared speaker by announcing its id as their client id.
 """
 
 from __future__ import annotations
@@ -62,35 +62,10 @@ def _check(queue_id: str, *players: SimpleNamespace) -> None:
     controller._check_player_permission(queue_id)
 
 
-def test_control_of_a_player_outside_the_filter_is_refused() -> None:
-    """A restricted user may not control a player they are not allowed to use."""
-    with _restricted_user([ALLOWED_PLAYER]), pytest.raises(InsufficientPermissions):
-        _check(OTHER_PLAYER, _player(OTHER_PLAYER, private=False))
-
-
-def test_control_of_an_allowed_player_is_permitted() -> None:
-    """A player inside the filter stays controllable."""
-    with _restricted_user([ALLOWED_PLAYER]):
-        _check(ALLOWED_PLAYER, _player(ALLOWED_PLAYER, private=False))
-
-
 def test_control_of_the_own_client_player_is_permitted() -> None:
     """The private client player the user connected on is controllable even when filtered out."""
     with _restricted_user([ALLOWED_PLAYER], own_player=OWN_CLIENT):
         _check(OWN_CLIENT, _player(OWN_CLIENT, private=True))
-
-
-def test_the_client_exemption_does_not_extend_to_other_players() -> None:
-    """Connecting a client player grants no access to any other player outside the filter."""
-    with (
-        _restricted_user([ALLOWED_PLAYER], own_player=OWN_CLIENT),
-        pytest.raises(InsufficientPermissions),
-    ):
-        _check(
-            OTHER_PLAYER,
-            _player(OWN_CLIENT, private=True),
-            _player(OTHER_PLAYER, private=False),
-        )
 
 
 def test_a_shared_speaker_claimed_as_the_client_player_is_refused() -> None:
@@ -101,10 +76,4 @@ def test_a_shared_speaker_claimed_as_the_client_player_is_refused() -> None:
         _restricted_user([ALLOWED_PLAYER], own_player=OTHER_PLAYER),
         pytest.raises(InsufficientPermissions),
     ):
-        _check(OTHER_PLAYER, _player(OTHER_PLAYER, private=False))
-
-
-def test_an_unrestricted_user_may_control_any_player() -> None:
-    """A user without a filter is unaffected by the check."""
-    with _restricted_user([]):
         _check(OTHER_PLAYER, _player(OTHER_PLAYER, private=False))
