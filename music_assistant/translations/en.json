@@ -315,7 +315,7 @@
   "common.errors.resource_busy": "This resource is currently in use elsewhere.",
   "common.errors.resource_temporarily_unavailable": "This resource is temporarily unavailable. Please try again later.",
   "common.errors.retries_exhausted": "Retries exhausted. The operation could not be completed.",
-  "common.errors.role_can_not_own_music_sources": "This role can not own a music source. Reassign or remove the music sources of this user first.",
+  "common.errors.role_can_not_own_music_sources": "This role can not own a music source.",
   "common.errors.role_in_use": "This role is still assigned to one or more users. Give them another role first.",
   "common.errors.role_name_invalid": "A role name must be between 1 and {0} characters long.",
   "common.errors.role_name_taken": "A role with this name already exists.",

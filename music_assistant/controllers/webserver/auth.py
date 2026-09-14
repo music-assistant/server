@@ -888,8 +888,7 @@ class AuthenticationManager:
             self.mass, user_with_new_role
         ):
             raise InvalidDataError(
-                "This role can not own a music source. "
-                "Reassign or remove the music sources of this user first.",
+                "This role can not own a music source.",
                 translation_key="role_can_not_own_music_sources",
             )
         await self._ensure_not_last_admin(user_row)

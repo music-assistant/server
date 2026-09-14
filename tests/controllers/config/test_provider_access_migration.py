@@ -35,7 +35,7 @@ async def _add_user(
     mass: MusicAssistant,
     username: str,
     sources: list[str] | None = None,
-    role: UserRole = UserRole.USER,
+    role: str = UserRole.USER,
 ) -> User:
     """
     Add a user that is restricted to the given music sources, or to nothing at all.
@@ -43,7 +43,7 @@ async def _add_user(
     :param mass: The MusicAssistant instance to add the user to.
     :param username: The username of the new user.
     :param sources: The provider instance ids the user's filter names, if any.
-    :param role: The role of the new user.
+    :param role: The id of the (builtin or custom) role of the new user.
     """
     user = await mass.webserver.auth.create_user(username=username, role=role)
     if sources:
@@ -155,6 +155,26 @@ async def test_a_guest_does_not_become_the_owner_of_a_source(mass: MusicAssistan
     )
     # which is exactly what the guest could see before
     assert _visible(mass, guest, ["spotify--guest", "tidal--dave"]) == ["spotify--guest"]
+
+
+async def test_a_role_without_the_own_scope_does_not_become_the_owner(
+    mass: MusicAssistant,
+) -> None:
+    """A custom role lacking config.providers.own can not own a source, only be shared it."""
+    _prepare(mass, ["spotify--listener", "tidal--dave"])
+    system_user = await mass.webserver.auth.get_homeassistant_system_user()
+    listeners = await mass.webserver.auth.create_role("Listeners", [])
+    listener = await _add_user(mass, "listener", ["spotify--listener"], role=listeners.role_id)
+    await _add_user(mass, "dave", ["tidal--dave"])
+
+    await migrate_provider_access(mass)
+
+    assert _access(mass, "spotify--listener") == ProviderAccess(
+        sharing=ProviderSharing.SELECTED,
+        shared_users=sorted([listener.user_id, system_user.user_id]),
+    )
+    # which is exactly what the listener could see before
+    assert _visible(mass, listener, ["spotify--listener", "tidal--dave"]) == ["spotify--listener"]
 
 
 async def test_filter_of_removed_sources_leaves_the_user_unrestricted(

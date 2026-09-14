@@ -938,8 +938,7 @@ class ProviderConfigMixin:
         # role that holds it may own one (this matches the role-change guard in update_user_role)
         if user is not None and not has_scope(user, Scope.CONFIG_PROVIDERS_OWN):
             raise InvalidDataError(
-                "This role can not own a music source. "
-                "Reassign or remove the music sources of this user first.",
+                "This role can not own a music source.",
                 translation_key="role_can_not_own_music_sources",
             )
 
