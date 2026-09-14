@@ -148,7 +148,7 @@ async def _run_commit_loop(
     )
 
     trace = _CommitLoopTrace(player=player)
-    player.on_flow_timeline_rebased.side_effect = lambda: trace.player_calls.append(
+    player.on_flow_timeline_rebased.side_effect = lambda *_: trace.player_calls.append(
         ("rebased", None)
     )
     player.update_state.side_effect = lambda: trace.player_calls.append(

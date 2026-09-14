@@ -1581,13 +1581,18 @@ class SendspinPlayer(SendspinBasePlayer):
             abort_existing=True,
         )
 
-    def on_flow_timeline_rebased(self) -> None:
-        """Handle the flow stream's audio timeline being rebased forward by a producer stall."""
+    def on_flow_timeline_rebased(self, anchor_delta_us: int) -> None:
+        """
+        Handle the flow stream's audio timeline being rebased by a producer stall.
+
+        :param anchor_delta_us: Signed amount the timeline anchor moved, which is what an
+            already-published beat schedule has to shift by.
+        """
         if self.synced_to is not None:
             # Only the leader publishes the beat schedule.
             return
         self.mass.create_task(
-            self._refresh_beat_schedule(),
+            self._refresh_beat_schedule(anchor_delta_us=anchor_delta_us),
             task_id=f"sendspin_beat_rebase_{self.player_id}",
             abort_existing=True,
         )
@@ -2111,12 +2116,15 @@ class SendspinPlayer(SendspinBasePlayer):
             elapsed_time = self.corrected_elapsed_time if is_playing else self.elapsed_time
         return max(0, int(elapsed_time * 1000)) if elapsed_time is not None else 0
 
-    async def _refresh_beat_schedule(self) -> None:
+    async def _refresh_beat_schedule(self, anchor_delta_us: int = 0) -> None:
         """
         Re-attempt beat hydration only, without re-pushing metadata/artwork.
 
         Lighter than `send_current_media_metadata`: the retry poller uses this so
         late-arriving analysis lands without re-running the full pipeline.
+
+        :param anchor_delta_us: Signed amount the flow timeline anchor just moved, when
+            this refresh follows a rebase. Zero for an ordinary retry.
         """
         current_media = self.state.current_media
         if current_media is None:
@@ -2130,7 +2138,9 @@ class SendspinPlayer(SendspinBasePlayer):
             )
         is_playing = self.state.playback_state == PlaybackState.PLAYING
         track_progress = self._compute_track_progress_ms(current_media, is_playing=is_playing)
-        await self._send_beat_schedule(queue, queue_item, track_progress, is_playing)
+        await self._send_beat_schedule(
+            queue, queue_item, track_progress, is_playing, anchor_delta_us=anchor_delta_us
+        )
 
     @staticmethod
     def _flow_track_offset_us(pq_data: PlayerQueueData | None, queue_item: QueueItem) -> int | None:
@@ -2162,8 +2172,15 @@ class SendspinPlayer(SendspinBasePlayer):
         queue_item: QueueItem | None,
         track_progress_ms: int,
         is_playing: bool,
+        *,
+        anchor_delta_us: int = 0,
     ) -> None:
-        """Hydrate per-track beat timings from audio analysis and push to visualizer."""
+        """
+        Hydrate per-track beat timings from audio analysis and push to visualizer.
+
+        :param anchor_delta_us: Signed amount the flow timeline anchor just moved, when
+            this call follows a rebase. Zero for an ordinary (re)publish.
+        """
         visualizer_role = self._visualizer_role
         if visualizer_role is None:
             return
@@ -2195,6 +2212,18 @@ class SendspinPlayer(SendspinBasePlayer):
         offset_us = self._flow_track_offset_us(pq_data, queue_item)
         if offset_us is not None:
             anchor_us = self.playback_session.flow_track_anchor_us(offset_us)
+        if (
+            anchor_us is None
+            and anchor_delta_us
+            and queue_item.queue_item_id == self._last_beat_queue_item_id
+            and self._last_beat_anchor_us is not None
+        ):
+            # The flow log has not placed this track yet, so there is no anchor to
+            # recompute from. The whole render timeline moved by anchor_delta_us though,
+            # so the schedule already published for this item moves by exactly that.
+            # Derived from the last anchor rather than from reported progress, which is
+            # queue-backed and corrected asynchronously - it can still be pre-rebase here.
+            anchor_us = self._last_beat_anchor_us + anchor_delta_us
         if anchor_us is None:
             anchor_us = now_us - track_progress_ms * 1000
         # Re-push only on track change, seek, or a timeline rebase (anchor jumps

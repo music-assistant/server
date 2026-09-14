@@ -910,15 +910,17 @@ class SendspinPlaybackSession:
                     # chunk absorbs any forward shift aiosendspin applied after a stall.
                     previous_anchor_us = self._timeline_start_us
                     self._timeline_start_us = int(commit_start_us) - self._produced_audio_us
-                    anchor_shift_us = (
-                        abs(self._timeline_start_us - previous_anchor_us)
+                    # Signed: the whole render timeline moved by this much, which is the
+                    # exact correction an already-published beat schedule needs.
+                    anchor_delta_us = (
+                        self._timeline_start_us - previous_anchor_us
                         if previous_anchor_us is not None
                         else 0
                     )
                     self._history.append(committed_history_chunk)
                     self._produced_audio_us += pending.duration_us
                     self._prune_history_locked(commit_now_us)
-                anchor_rebased = anchor_shift_us >= ANCHOR_REBASE_SIGNIFICANT_US
+                anchor_rebased = abs(anchor_delta_us) >= ANCHOR_REBASE_SIGNIFICANT_US
                 if self._timeline_start_us is not None:
                     elapsed_real_s = max(0.0, (commit_now_us - self._timeline_start_us) / 1_000_000)
                     # A rebase steps the reported position by (buffer_depth + chunk -
@@ -936,10 +938,10 @@ class SendspinPlaybackSession:
                     # Beat schedules are published as absolute timestamps derived from the
                     # anchor, so a rebased anchor leaves them pointing at the pre-stall
                     # timeline until something re-publishes them. Ordinary elapsed-time
-                    # updates do not, they are not a media identity change. Report it only
-                    # after the elapsed correction above: the schedule falls back to
-                    # elapsed time whenever the flow log has not recorded this track yet.
-                    self.player.on_flow_timeline_rebased()
+                    # updates do not, they are not a media identity change. The delta goes
+                    # with it so the player can shift an existing schedule by exactly the
+                    # amount the timeline moved, without consulting reported progress.
+                    self.player.on_flow_timeline_rebased(anchor_delta_us)
                 await self._fanout_history_chunk_to_join_processors(committed_history_chunk)
 
         commit_task = asyncio.create_task(_commit_pending_chunks())
