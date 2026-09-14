@@ -74,6 +74,10 @@ PLAYER_SOURCE_MAP = {
     ),
 }
 
+# reported in discovery_info["device"]["deviceFeatures"] for portables (Move/Move 2/Roam)
+# that can be woken from sleep with a Wake-on-LAN packet; not modeled in aiosonos
+DEVICE_FEATURE_WAKEABLE = "WAKEABLE"
+
 UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS = ("Play:1", "Play:3")
 NON_HIRES_MODELS = (
     "Play:1",

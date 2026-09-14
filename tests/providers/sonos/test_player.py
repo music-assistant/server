@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import ConnectionTimeoutError
@@ -12,7 +12,9 @@ from aiosonos.api.models import PlayBackState as SonosPlayBackState
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import PlaybackErrorEvent
 from aiosonos.exceptions import CannotConnect, FailedCommand
+from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import PlaybackState, RepeatMode
+from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT
@@ -35,6 +37,7 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._player_id = "sonos_player"
     player._listen_task = None
     player.connected = False
+    player._wakeable = False
     player.client = client
     player._on_unload_callbacks = []
     player.update_state = MagicMock()  # type: ignore[misc, method-assign]
@@ -133,6 +136,119 @@ async def test_connect_websocket_handshake_failure_reschedules_reconnect() -> No
 
     assert player._attr_available is False
     mass.call_later.assert_called_once()
+
+
+def _wakeable_player() -> tuple[SonosPlayer, MagicMock]:
+    """Create a bound SonosPlayer with a real RINCON id that advertises Wake-on-LAN support."""
+    player, mass = _make_player()
+    player._wakeable = True
+    player._player_id = "RINCON_C438750D189C01400"
+    # the error path on a failed wake reads display_name, which needs these
+    player._cache = {}
+    player._attr_name = "Portable"
+    player._config = MagicMock()
+    player._config.name = None
+    player._provider = MagicMock(instance_id="sonos")
+    return player, mass
+
+
+@pytest.mark.asyncio
+async def test_power_off_only_updates_local_state() -> None:
+    """Test powering off never talks to the speaker: Sonos has no remote sleep command."""
+    player, _ = _wakeable_player()
+    player.connected = True
+
+    with patch("music_assistant.providers.sonos.player.send_magic_packet") as wol:
+        await player.power(False)
+
+    wol.assert_not_called()
+    assert player._attr_powered is False
+    player.update_state.assert_called_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_power_on_while_connected_skips_wake_on_lan() -> None:
+    """Test powering on an already-connected speaker is a local update only."""
+    player, _ = _wakeable_player()
+    player.connected = True
+
+    with patch("music_assistant.providers.sonos.player.send_magic_packet") as wol:
+        await player.power(True)
+
+    wol.assert_not_called()
+    assert player._attr_powered is True
+    player.update_state.assert_called_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_power_on_while_disconnected_wakes_and_reconnects() -> None:
+    """Test powering on a sleeping speaker sends a magic packet and waits for it to reconnect."""
+    player, _ = _wakeable_player()
+
+    async def _connect_side_effect(_retry_on_fail: int = 0) -> None:
+        player.connected = True
+
+    player._connect = AsyncMock(side_effect=_connect_side_effect)  # type: ignore[method-assign]
+
+    with patch(
+        "music_assistant.providers.sonos.player.send_magic_packet", new_callable=AsyncMock
+    ) as wol:
+        await player.power(True)
+
+    wol.assert_awaited_once_with("C4:38:75:0D:18:9C")
+    assert player._attr_powered is True
+    player.update_state.assert_called_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_power_on_gives_up_after_the_speaker_never_responds() -> None:
+    """Test a speaker that never reconnects is reported unavailable rather than retried forever."""
+    player, _ = _wakeable_player()
+    player._connect = AsyncMock(  # type: ignore[method-assign]
+        side_effect=CannotConnect(OSError("no route to host"))
+    )
+
+    with (
+        patch("music_assistant.providers.sonos.player.send_magic_packet", new_callable=AsyncMock),
+        patch("music_assistant.providers.sonos.player.WAKE_ON_LAN_TIMEOUT", 0.05),
+        patch("music_assistant.providers.sonos.player.WAKE_ON_LAN_RETRY_INTERVAL", 0.01),
+        pytest.raises(PlayerUnavailableError, match="did not respond to wake-on-LAN"),
+    ):
+        await player.power(True)
+
+    assert player._attr_available is False
+    player.update_state.assert_called_once()  # type: ignore[attr-defined]
+
+
+def test_a_wakeable_player_with_native_power_control_sleeps_as_powered_off() -> None:
+    """Test losing the connection reads as asleep, not unavailable, when we control power."""
+    player, _ = _wakeable_player()
+
+    with patch.object(SonosPlayer, "power_control", PLAYER_CONTROL_NATIVE):
+        player._mark_disconnected()
+
+    assert player._attr_available is not False
+    assert player._attr_powered is False
+
+
+def test_a_wakeable_player_without_native_power_control_keeps_the_old_semantics() -> None:
+    """Test a wakeable speaker the user routed power control away from stays unavailable."""
+    player, _ = _wakeable_player()
+
+    with patch.object(SonosPlayer, "power_control", PLAYER_CONTROL_NONE):
+        player._mark_disconnected()
+
+    assert player._attr_available is False
+
+
+def test_a_non_wakeable_player_keeps_the_old_semantics() -> None:
+    """Test a speaker without Wake-on-LAN support is unaffected: disconnect means unavailable."""
+    player, _ = _make_player()
+    player._wakeable = False
+
+    player._mark_disconnected()
+
+    assert player._attr_available is False
 
 
 @pytest.mark.asyncio

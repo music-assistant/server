@@ -12,8 +12,9 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
 from aiohttp import ClientError
@@ -22,6 +23,7 @@ from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SonosEvent
 from aiosonos.exceptions import CannotConnect, ConnectionFailed, FailedCommand
+from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     IdentifierType,
     MediaType,
@@ -29,7 +31,7 @@ from music_assistant_models.enums import (
     PlayerFeature,
     RepeatMode,
 )
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
 from music_assistant_models.player import OutputProtocol, PlayerMedia
 
 from music_assistant.constants import (
@@ -39,8 +41,10 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.util import is_valid_mac_address
+from music_assistant.helpers.wake_on_lan import send_magic_packet
 from music_assistant.models.player import Player, PlayerSource
 from music_assistant.providers.sonos.const import (
+    DEVICE_FEATURE_WAKEABLE,
     NON_HIRES_MODELS,
     PLAYBACK_STATE_MAP,
     PLAYER_SOURCE_MAP,
@@ -86,6 +90,11 @@ class SonosQueueWindow:
 # the whole batch until it gives up on the item.
 REPORTED_ERROR_HISTORY = 16
 
+# a wake-on-LAN packet reaches a Sonos portable in ~3s and it announces on mDNS ~5s after
+# that, so give the connection retry loop enough headroom before giving up on it
+WAKE_ON_LAN_TIMEOUT = 15
+WAKE_ON_LAN_RETRY_INTERVAL = 2
+
 
 class SonosPlayer(Player):
     """Holds the details of the (discovered) Sonosplayer."""
@@ -109,6 +118,8 @@ class SonosPlayer(Player):
         self.discovery_info = discovery_info
         self.connected: bool = False
         self._listen_task: asyncio.Task[None] | None = None
+        # whether the speaker advertises Wake-on-LAN support (portables: Move/Move 2/Roam)
+        self._wakeable: bool = False
         # the MA queue the loaded cloud queue serves, and the version the speaker
         # compares against to decide whether its cached copy is still valid
         self.cloud_queue_id: str | None = None
@@ -178,7 +189,21 @@ class SonosPlayer(Player):
             _supported_features.add(PlayerFeature.VOLUME_MUTE)
         _supported_features.add(PlayerFeature.NEXT_PREVIOUS)
         _supported_features.add(PlayerFeature.ENQUEUE)
+        # deviceFeatures is not modeled in aiosonos, so read it defensively - older
+        # firmware may not report it at all
+        device_features = cast("dict[str, Any]", self.discovery_info["device"]).get(
+            "deviceFeatures", []
+        )
+        self._wakeable = any(
+            feature.get("name") == DEVICE_FEATURE_WAKEABLE for feature in device_features
+        )
+        if self._wakeable:
+            _supported_features.add(PlayerFeature.POWER)
         self._attr_supported_features = _supported_features
+        if self._wakes_natively:
+            # the connect above already succeeded, so the speaker is awake right now;
+            # later (re)connects report this themselves, this is only for the first one
+            self._attr_powered = True
 
         self._attr_name = (
             self.discovery_info["device"]["name"]
@@ -256,6 +281,55 @@ class SonosPlayer(Player):
             await self._disconnect()
         except Exception:
             self.logger.exception("Error disconnecting from Sonos player %s", self.name)
+
+    async def power(self, powered: bool) -> None:
+        """
+        Handle POWER command on the player.
+
+        Will only be called if the PlayerFeature.POWER is supported, which we only
+        advertise for portables (Move/Move 2/Roam) that support Wake-on-LAN.
+        Powering off only updates local state and does not put the speaker to sleep:
+        Sonos has no remote sleep command, so the speaker keeps running until it
+        decides to sleep on its own idle timer.
+
+        :param powered: bool if player should be powered on or off.
+        """
+        if not powered:
+            self._attr_powered = False
+            self.update_state()
+            return
+        if self.connected:
+            self._attr_powered = True
+            self.update_state()
+            return
+        mac_address = self._extract_mac_from_player_id()
+        if not mac_address:
+            msg = f"Cannot wake {self.display_name}: no MAC address known"
+            raise PlayerUnavailableError(msg)
+        await send_magic_packet(mac_address)
+        deadline = time.time() + WAKE_ON_LAN_TIMEOUT
+        while not self.connected and time.time() < deadline:
+            # a concurrent reconnect from the mDNS wake announcement may win the race -
+            # _connect() simply no-ops when the speaker is already (being) connected
+            with suppress(ConnectionFailed, CannotConnect, ClientError):
+                await self._connect()
+            if not self.connected:
+                await asyncio.sleep(WAKE_ON_LAN_RETRY_INTERVAL)
+        # annotated local defeats mypy's narrowing: it pins self.connected to the pre-loop
+        # value and cannot see that _connect() flips it
+        woke_up: bool = self.connected
+        if not woke_up:
+            self._attr_available = False
+            self.update_state()
+            msg = f"{self.display_name} did not respond to wake-on-LAN"
+            raise PlayerUnavailableError(
+                msg,
+                translation_key="wake_on_lan_timeout",
+                translation_owner=self.translation_owner,
+                translation_args=[self.display_name],
+            )
+        self._attr_powered = True
+        self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
         """
@@ -749,7 +823,8 @@ class SonosPlayer(Player):
 
     def update_attributes(self) -> None:  # noqa: PLR0915
         """Update the player attributes."""
-        self._attr_available = self.connected
+        if not self._wakes_natively:
+            self._attr_available = self.connected
         if not self.connected:
             return
         # guard against the race where a volume event arrives before aiosonos'
@@ -983,11 +1058,14 @@ class SonosPlayer(Player):
             self.logger.warning("Failed to connect to Sonos player: %s", err)
             if not retry_on_fail or not self.mass.players.get_player(self.player_id):
                 raise
-            self._attr_available = False
+            self._mark_disconnected()
             self.update_state()
             self.reconnect(min(retry_on_fail + 30, 3600))
             return
         self.connected = True
+        if self._wakes_natively:
+            self._attr_available = True
+            self._attr_powered = True
         self.logger.debug("Connected to player API")
         init_ready = asyncio.Event()
 
@@ -1004,7 +1082,7 @@ class SonosPlayer(Player):
                     # this should simply try to reconnect once and if that fails
                     # we rely on mdns to pick it up again later
                     await self._disconnect()
-                    self._attr_available = False
+                    self._mark_disconnected()
                     self.update_state()
                     self.reconnect(5)
 
@@ -1139,3 +1217,15 @@ class SonosPlayer(Player):
 
         # Format as XX:XX:XX:XX:XX:XX
         return ":".join(mac_hex[i : i + 2].upper() for i in range(0, 12, 2))
+
+    @property
+    def _wakes_natively(self) -> bool:
+        """Return whether this player sleeps as powered-off instead of unavailable."""
+        return self._wakeable and self.power_control == PLAYER_CONTROL_NATIVE
+
+    def _mark_disconnected(self) -> None:
+        """Reflect a lost connection: asleep for a natively-wakeable player, else unavailable."""
+        if self._wakes_natively:
+            self._attr_powered = False
+        else:
+            self._attr_available = False
