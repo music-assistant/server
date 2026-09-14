@@ -1,0 +1,12 @@
+{
+  "type": "music",
+  "domain": "beets",
+  "stage": "beta",
+  "name": "beets",
+  "description": "Play the music library you manage with beets.",
+  "codeowners": ["@stellar-aria"],
+  "requirements": [],
+  "multi_instance": true,
+  "self_service": false,
+  "icon": "database-music"
+}

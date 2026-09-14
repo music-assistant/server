@@ -1,0 +1,34 @@
+{
+  "config_entries": {
+    "library_db": {
+      "label": "beets library database",
+      "description": "Path to beets' library.db as seen by Music Assistant, for example /media/beets/library.db. Music Assistant only reads it."
+    },
+    "music_directory": {
+      "label": "Music directory",
+      "description": "Where beets' music directory is mounted, as seen by Music Assistant."
+    },
+    "beets_directory": {
+      "label": "beets music directory on its own host",
+      "description": "Optional. The directory value from your beets config, for example /home/you/Music. Files beets stored with this full path are looked up in the music directory instead."
+    },
+    "favorite_rating_threshold": {
+      "label": "Mark as favorite at rating",
+      "description": "Mark tracks as favorite when their beets rating attribute is at least this value. Leave empty to ignore ratings."
+    }
+  },
+  "manifest": {
+    "description": "Play the music library you manage with beets."
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Set up beets",
+      "description": "Point Music Assistant at your beets library database and music directory. Music Assistant never changes your beets library."
+    }
+  },
+  "errors": {
+    "library_db_not_found": "beets library database {0} does not exist.",
+    "library_db_invalid": "{0} is not a readable beets library database.",
+    "music_directory_not_found": "Music directory {0} does not exist."
+  }
+}
