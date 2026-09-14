@@ -29,11 +29,13 @@ from music_assistant_models.errors import (
     MusicAssistantError,
 )
 from music_assistant_models.event import MassEvent
+from music_assistant_models.media_items import Playlist
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
+from music_assistant.helpers.provider_access import access_allows, with_derived_provider_filter
 
 from .helpers.auth_middleware import (
     has_scope,
@@ -77,6 +79,8 @@ class WebsocketClientHandler:
         self._locale: str | None = None  # UI locale declared by the client (auth arg / set_locale)
         self._is_ingress = is_request_from_ingress(request)
         self._events_unsub_callback: Any = None  # Will be set after authentication
+        # uris of the personal playlists this client was told are gone
+        self._hidden_playlists: set[str] = set()
         # Track WebRTC session ID if this is a WebRTC gateway connection
         self._webrtc_session_id: str | None = request.query.get("webrtc_session_id")
         # try to dynamically detect the base_url of a client if proxied or behind Ingress
@@ -474,7 +478,10 @@ class WebsocketClientHandler:
         await self._send_message(
             SuccessResultMessage(
                 msg.message_id,
-                {"authenticated": True, "user": user.to_dict()},
+                {
+                    "authenticated": True,
+                    "user": with_derived_provider_filter(self.mass, user).to_dict(),
+                },
             )
         )
 
@@ -593,20 +600,25 @@ class WebsocketClientHandler:
                 user = self._authenticated_user
                 if user is None:
                     return
-                required = (
-                    self.mass.config.get_setup_flow_required_scope(event.object_id)
+                access = (
+                    self.mass.config.get_setup_flow_access(event.object_id)
                     if event.object_id
                     else None
                 )
-                if required is None:
+                if access is None:
                     # flow already popped (terminal step race): the flow kind is no
                     # longer known, so require both config scopes to be safe
                     if not has_scope(user, Scope.CONFIG_PROVIDERS_WRITE) or not has_scope(
                         user, Scope.CONFIG_PLAYERS_WRITE
                     ):
                         return
-                elif not has_scope(user, required):
+                elif not access.allows(user):
                     return
+
+            if isinstance(event.data, Playlist) and not self._forward_playlist_event(
+                event, event.data
+            ):
+                return
 
             if event.event == EventType.TASKS_UPDATED:
                 if self._authenticated_user is None:
@@ -621,7 +633,47 @@ class WebsocketClientHandler:
                 )
                 return
 
+            if event.event == EventType.PROVIDERS_UPDATED:
+                # the payload is signalled unfiltered, so narrow it down to the
+                # music sources this client's user may see
+                if self._authenticated_user is None:
+                    return
+                provider_data = self.mass.get_providers_for_user(self._authenticated_user)
+                self._send_message_sync(
+                    MassEvent(
+                        event=event.event,
+                        object_id=event.object_id,
+                        data=provider_data,
+                    )
+                )
+                return
+
             self._send_message_sync(event)
 
         self._events_unsub_callback = self.mass.subscribe(handle_event)
         self._logger.debug("Subscribed to events")
+
+    def _forward_playlist_event(self, event: MassEvent, playlist: Playlist) -> bool:
+        """
+        Return whether an event about a playlist may reach this client as it was signalled.
+
+        A personal playlist is only announced to the users who may see it. A client whose
+        user may no longer see it is instead told once that the playlist is gone, so it
+        drops the row it may still hold.
+
+        :param event: The event about the playlist.
+        :param playlist: The playlist the event carries.
+        """
+        uri = event.object_id
+        if playlist.access is None or access_allows(playlist.access, self._authenticated_user):
+            if uri:
+                self._hidden_playlists.discard(uri)
+            return True
+        if not uri or uri in self._hidden_playlists:
+            return False
+        self._hidden_playlists.add(uri)
+        # only an update can take a playlist away from a client that still holds it; one
+        # created or removed out of sight was never held, nor is anything held before login
+        if event.event == EventType.MEDIA_ITEM_UPDATED and self._authenticated_user:
+            self._send_message_sync(MassEvent(event=EventType.MEDIA_ITEM_DELETED, object_id=uri))
+        return False

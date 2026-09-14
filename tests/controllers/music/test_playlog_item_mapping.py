@@ -44,6 +44,7 @@ class _StubPodcastProvider(MusicProvider):
         self.manifest = MagicMock()
         self.manifest.domain = PROVIDER_ID
         self.logger = MagicMock()
+        self.available = True
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Return the full episode for the given provider episode id."""

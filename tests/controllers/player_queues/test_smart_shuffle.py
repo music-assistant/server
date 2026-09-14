@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import random
+from unittest.mock import AsyncMock, MagicMock, Mock
 
+import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
 from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.constants import CONF_VALUE_DISABLED, CONF_VALUE_ENABLED
 from music_assistant.controllers.music.recency import RecencySnapshot, RecencyWindows
-from music_assistant.controllers.player_queues.smart_shuffle import _arrange
+from music_assistant.controllers.player_queues.smart_shuffle import (
+    SmartShuffle,
+    _arrange,
+    _arrange_for_smart_fades,
+)
 
 NOW = 1_000_000_000
 WEEK = 7 * 24 * 3600
@@ -165,3 +172,85 @@ def test_deterministic_under_seed() -> None:
     random.seed(123)
     second = _ids(_arrange(list(items), _snapshot(), RecencyWindows()))
     assert first == second
+
+
+def test_smart_fade_ordering_activation_gate() -> None:
+    """The option and active Smart Crossfade are both required."""
+    queues = MagicMock()
+    smart_shuffle = SmartShuffle(queues)
+    queue = MagicMock(queue_id="q1", smart_fades_active=True)
+
+    queues.mass.config.get_effective_player_queue_config_value.return_value = CONF_VALUE_ENABLED
+    assert smart_shuffle.is_smart_fade_ordering_enabled(queue) is True
+
+    queue.smart_fades_active = False
+    assert smart_shuffle.is_smart_fade_ordering_enabled(queue) is False
+
+    queue.smart_fades_active = True
+    queues.mass.config.get_effective_player_queue_config_value.return_value = CONF_VALUE_DISABLED
+    assert smart_shuffle.is_smart_fade_ordering_enabled(queue) is False
+
+
+@pytest.mark.asyncio
+async def test_smart_fade_ordering_runs_inside_smart_shuffle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SmartShuffle.arrange owns the Smart Fades ordering step."""
+    queues = MagicMock()
+    smart_shuffle = SmartShuffle(queues)
+    queue = MagicMock(queue_id="q1")
+    items = [_item("a"), _item("b")]
+    preceding = _item("anchor")
+
+    queues.queue_data.return_value.userid = None
+    queues.mass.music.recency.snapshot = AsyncMock(return_value=_snapshot())
+    smart_shuffle.is_smart_fade_ordering_enabled = Mock(  # type: ignore[method-assign]
+        return_value=True
+    )
+    arrange_for_fades = AsyncMock(return_value=list(items))
+    monkeypatch.setattr(
+        "music_assistant.controllers.player_queues.smart_shuffle._arrange_for_smart_fades",
+        arrange_for_fades,
+    )
+
+    result = await smart_shuffle.arrange(queue, items, preceding_item=preceding)
+
+    assert result == items
+    arrange_for_fades.assert_awaited_once()
+    call = arrange_for_fades.await_args
+    assert call is not None
+    assert call.kwargs["preceding_item"] is preceding
+
+
+@pytest.mark.asyncio
+async def test_smart_fades_ordering_stays_inside_recency_tiers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Transition ordering must not move a recent song ahead of a fresh tier."""
+    recent = [_item(f"r{i}", artist=f"R{i}") for i in range(3)]
+    fresh = [_item(f"f{i}", artist=f"F{i}") for i in range(3)]
+    snapshot = _snapshot(song_recent=("r0", "r1", "r2"))
+    windows = RecencyWindows(song_seconds=WEEK, artist_seconds=0, duplicate_gap_seconds=GAP)
+
+    async def reverse_bucket(
+        _mass: object,
+        items: list[QueueItem],
+        **_kwargs: object,
+    ) -> list[QueueItem]:
+        return list(reversed(items))
+
+    monkeypatch.setattr(
+        "music_assistant.controllers.player_queues.smart_shuffle.order_queue_items",
+        reverse_bucket,
+    )
+
+    result = await _arrange_for_smart_fades(
+        MagicMock(),
+        [*recent, *fresh],
+        snapshot,
+        windows,
+        preceding_item=None,
+    )
+
+    index = {_song_id(item): position for position, item in enumerate(result)}
+    assert max(index[f"f{i}"] for i in range(3)) < min(index[f"r{i}"] for i in range(3))

@@ -506,7 +506,7 @@ def _shuffled_queue(ctrl: PlayerQueuesController) -> PlayerQueue:
     ctrl._smart_shuffle = Mock()
     ctrl._smart_shuffle.is_enabled = Mock(return_value=True)
     ctrl._smart_shuffle.arrange = AsyncMock(
-        side_effect=lambda _queue, items: list(items)[::-1],
+        side_effect=lambda _queue, items, **_kw: list(items)[::-1],
     )
     queue = PlayerQueue(
         queue_id="q1",
@@ -581,3 +581,35 @@ async def test_play_with_start_item_keeps_order_when_shuffle_is_off() -> None:
 
     assert [item.queue_item_id for item in ctrl._queue_data["q1"].items] == ["chosen", "b", "c"]
     play_index.assert_awaited_once_with("q1", 0)
+
+
+async def test_add_with_shuffle_reorders_only_mutable_tail_and_passes_anchor() -> None:
+    """ADD keeps the protected prefix fixed and only reshuffles the movable tail."""
+    ctrl = _controller()
+    ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
+    ctrl.get_next_item = Mock(return_value=None)  # type: ignore[method-assign]
+    ctrl._smart_shuffle = Mock()
+    ctrl._smart_shuffle.is_enabled = Mock(return_value=True)
+    ctrl._smart_shuffle.arrange = AsyncMock(side_effect=lambda _queue, items, **_kw: list(items))
+    existing = _items("q1", ["history", "current", "buffered", "protected", "tail1", "tail2"])
+    queue = PlayerQueue(
+        queue_id="q1",
+        active=True,
+        display_name="Q1",
+        available=True,
+        items=len(existing),
+        state=PlaybackState.PLAYING,
+        current_index=1,
+        index_in_buffer=2,
+        shuffle_enabled=True,
+    )
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue, items=list(existing))}
+    added = _items("q1", ["new"])
+
+    await ctrl._enqueue_with_option("q1", added, QueueOption.ADD)
+
+    call = ctrl._smart_shuffle.arrange.await_args
+    assert call is not None
+    assert call.kwargs["preceding_item"] is existing[3]
+    assert [item.queue_item_id for item in call.args[1]] == ["new", "tail1", "tail2"]
+    assert ctrl._queue_data["q1"].items[:4] == existing[:4]

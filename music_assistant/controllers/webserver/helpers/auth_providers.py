@@ -451,20 +451,18 @@ class BuiltinLoginProvider(LoginProvider):
         self,
         username: str,
         password: str,
-        role: UserRole = UserRole.USER,
+        role: str = UserRole.USER,
         display_name: str | None = None,
         player_filter: list[str] | None = None,
-        provider_filter: list[str] | None = None,
     ) -> User:
         """
         Create a new built-in user with password.
 
         :param username: The username.
         :param password: The password (will be hashed).
-        :param role: The user role (default: USER).
+        :param role: The id of the (builtin or custom) role to assign (default: user).
         :param display_name: Optional display name.
         :param player_filter: Optional list of player IDs user has access to.
-        :param provider_filter: Optional list of provider instance IDs user has access to.
         """
         # Create the user
         user = await self.auth_manager.create_user(
@@ -472,7 +470,6 @@ class BuiltinLoginProvider(LoginProvider):
             role=role,
             display_name=display_name,
             player_filter=player_filter,
-            provider_filter=provider_filter,
         )
 
         # Hash password using user_id for enhanced security

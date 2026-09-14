@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import MediaType, RepeatMode
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
@@ -93,6 +93,40 @@ def test_group_regular_track_ignores_wav_preference() -> None:
 
     assert codec == "flac"
     mass.players.get_player.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("media_type", "expected"),
+    [
+        (MediaType.RADIO, (64, 1)),
+        (MediaType.AUDIO_SOURCE, (64, 1)),
+        (MediaType.TRACK, (200, 20)),
+    ],
+)
+async def test_live_streams_start_on_a_smaller_buffer(
+    media_type: MediaType, expected: tuple[int, int]
+) -> None:
+    """Radio and AudioSource streams start on a smaller buffer, also when repeated."""
+    player, mass = _player_with_mocked_mass()
+    player._extra_data = {}
+    mass.player_queues.get.return_value = MagicMock(
+        repeat_mode=RepeatMode.ONE, shuffle_enabled=False
+    )
+    slimplayer = MagicMock()
+    slimplayer.play_url = AsyncMock()
+
+    await player._handle_play_url_for_slimplayer(
+        slimplayer,
+        url="http://127.0.0.1:8097/stream.flac",
+        media=PlayerMedia(uri="fake://x", media_type=media_type, source_id="queue_1"),
+    )
+    # the repeat-one re-enqueue is scheduled, not awaited here
+    mass.call_later.call_args.args[1].close()
+
+    assert slimplayer.play_url.call_count == 2
+    for play_call in slimplayer.play_url.call_args_list:
+        thresholds = (play_call.kwargs["stream_threshold"], play_call.kwargs["output_threshold"])
+        assert thresholds == expected
 
 
 @pytest.mark.parametrize(

@@ -1035,7 +1035,7 @@ def _validate_download_url(url: str) -> None:
 
 def _extract_binary_from_archive(archive_path: Path, dest_path: Path) -> None:
     """
-    Validate the release archive and extract its single soloist binary (blocking).
+    Validate the release archive and extract its soloist binary (blocking).
 
     :raises InvalidArchiveError: The archive is corrupt, unsafe, or does not
         contain exactly one regular ``soloist`` file.
@@ -1050,15 +1050,17 @@ def _extract_binary_from_archive(archive_path: Path, dest_path: Path) -> None:
                     raise InvalidArchiveError(f"unsafe path in soloist archive: {member.name}")
                 if member.isdir():
                     continue
+                total_size += member.size
+                if total_size > _MAX_EXTRACTED_SIZE:
+                    raise InvalidArchiveError("soloist archive exceeds the extracted size limit")
+                # the release ships docs (CHANGELOG.md, THIRD_PARTY_LICENSES.txt) next to
+                # the binary, so we skip siblings instead of refusing the whole archive
+                if name.name != "soloist":
+                    continue
                 if not member.isreg():
                     raise InvalidArchiveError(
                         f"unsupported member type in soloist archive: {member.name}"
                     )
-                total_size += member.size
-                if total_size > _MAX_EXTRACTED_SIZE:
-                    raise InvalidArchiveError("soloist archive exceeds the extracted size limit")
-                if name.name != "soloist":
-                    raise InvalidArchiveError(f"unexpected file in soloist archive: {member.name}")
                 if binary_member is not None:
                     raise InvalidArchiveError("soloist archive contains multiple binaries")
                 binary_member = member

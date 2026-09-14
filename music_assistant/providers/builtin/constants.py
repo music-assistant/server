@@ -27,7 +27,6 @@ class StoredItem(TypedDict):
 
 CONF_KEY_RADIOS = "stored_radios"
 CONF_KEY_TRACKS = "stored_tracks"
-CONF_KEY_PLAYLISTS = "stored_playlists"
 
 
 ALL_FAVORITE_TRACKS = "all_favorite_tracks"

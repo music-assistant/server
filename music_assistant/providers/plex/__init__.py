@@ -9,6 +9,7 @@ import warnings
 from asyncio import Task, TaskGroup
 from collections.abc import Awaitable
 from datetime import MAXYEAR, MINYEAR, UTC, datetime
+from math import isfinite
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 from urllib.parse import urlencode
 from uuid import uuid4
@@ -65,7 +66,11 @@ from plexapi.myplex import MyPlexAccount
 from plexapi.playlist import Playlist as PlexPlaylist
 from plexapi.server import PlexServer
 
-from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS, UNKNOWN_ARTIST
+from music_assistant.constants import (
+    DB_TABLE_PROVIDER_MAPPINGS,
+    LOUDNESS_MEASUREMENT_MIN_LUFS,
+    UNKNOWN_ARTIST,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.tags import async_parse_tags, clean_mbid
 from music_assistant.helpers.util import parse_title_and_version
@@ -153,6 +158,7 @@ PODCAST_EPISODE_PREFIX = "podcast_episode:"
 AUDIOBOOK_PREFIX = "audiobook:"
 CHAPTER_PREFIX = "Chapter"
 EPISODE_PREFIX = "Episode"
+PLEX_LOUDNESS_REFERENCE_LUFS = -18.0
 
 
 async def setup(
@@ -999,6 +1005,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         media_part: PlexMediaPart = media.parts[0]
         audio_streams = media_part.audioStreams()
         audio_stream: PlexAudioStream | None = audio_streams[0] if audio_streams else None
+        loudness = _get_plex_loudness(audio_stream) if audio_stream else None
 
         stream_details = StreamDetails(
             item_id=plex_track.key,
@@ -1014,6 +1021,16 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             can_seek=True,
             allow_seek=True,
         )
+        if loudness:
+            stream_details.loudness, stream_details.loudness_album = loudness
+            self.mass.create_task(
+                self.mass.streams.audio_analysis.set_track_loudness(
+                    item_id=plex_track.key,
+                    provider_instance_id_or_domain=self.instance_id,
+                    loudness=stream_details.loudness,
+                    loudness_album=stream_details.loudness_album,
+                )
+            )
 
         if (
             (quality_bitrate := self._get_stream_quality_bitrate())
@@ -2214,3 +2231,28 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             can_seek=True,
             allow_seek=True,
         )
+
+
+def _get_plex_loudness(audio_stream: PlexAudioStream) -> tuple[float, float | None] | None:
+    """Return valid track and optional album loudness from a Plex audio stream."""
+    value = getattr(audio_stream, "loudness", None)
+    if not isinstance(value, int | float | str):
+        return None
+    try:
+        loudness = float(value)
+    except ValueError:
+        return None
+    if not isfinite(loudness) or loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
+        return None
+
+    album_loudness: float | None = None
+    album_gain = getattr(audio_stream, "albumGain", None)
+    if isinstance(album_gain, int | float | str):
+        try:
+            album_loudness = PLEX_LOUDNESS_REFERENCE_LUFS - float(album_gain)
+        except ValueError:
+            pass
+        else:
+            if not isfinite(album_loudness) or album_loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
+                album_loudness = None
+    return round(loudness, 2), round(album_loudness, 2) if album_loudness is not None else None

@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock
 
+import pytest
 from music_assistant_models.enums import MediaType, PlaybackState, QueueOption
 from music_assistant_models.media_items import (
     ItemMapping,
@@ -178,6 +179,30 @@ async def test_replace_releases_the_audio_of_the_items_it_swapped_out() -> None:
     # the source slot the outgoing item holds has to be free before the new one is started, or a
     # provider that allows only one stream refuses the track the user just picked
     assert order == ["release", "release", "release", "play"]
+
+
+@pytest.mark.parametrize("dynamic", [False, True], ids=["linear", "dynamic"])
+async def test_replace_cancels_the_prewarm_of_the_track_it_swaps_out(dynamic: bool) -> None:
+    """
+    A prewarm still running for the old next track is cancelled before the swap.
+
+    Nothing else stops it: it is only re-triggered near the end of the new track, so left alone
+    it resumes after the swap and warms audio for an item that is no longer on the queue, holding
+    a source slot on a buffer the queue cleanup can no longer reach.
+    """
+    ctrl = _controller(is_dynamic=dynamic, shuffle_enabled=dynamic)
+    replaced = _load_playing_queue(ctrl, with_buffers=True)
+    order: list[str] = []
+    for item in replaced:
+        cast("Any", item.streamdetails).buffer.clear = AsyncMock(
+            side_effect=lambda: order.append("release")
+        )
+    ctrl.mass.cancel_task = Mock(side_effect=order.append)
+
+    await ctrl.play_media("q1", _playlist("pl1", dynamic=dynamic), QueueOption.REPLACE)
+
+    assert order[0] == "prepare_next_audio_buffer_q1"
+    assert order.count("release") == len(replaced)
 
 
 async def test_replace_does_not_hand_the_player_a_next_item_from_the_new_list() -> None:

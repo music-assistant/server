@@ -130,6 +130,18 @@ async def test_login_rejected_credentials_raise_login_failed() -> None:
     assert provider.setup_data_updates == {}
 
 
+async def test_login_without_credentials_asks_for_a_fresh_setup() -> None:
+    """An account linked through the app has nothing to sign in with a second time."""
+    provider = _provider([])
+    provider.get_setup_value = Mock(return_value=None)
+
+    with pytest.raises(LoginFailed, match="set the provider up again"):
+        await OvercastProvider._login(cast("OvercastProvider", provider))
+
+    assert provider.http_session.requests == []
+    assert provider.setup_data_updates == {}
+
+
 async def test_opml_request_returns_document() -> None:
     """A successful export request returns the raw OPML text."""
     provider = _provider([_FakeResponse(status=200, body="<opml/>")])

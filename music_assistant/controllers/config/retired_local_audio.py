@@ -64,7 +64,7 @@ async def cleanup_retired_local_audio(mass: MusicAssistant) -> None:
                 used_by,
             )
         else:
-            await _remove_local_audio_config(mass, instance_ids, player_ids)
+            _remove_local_audio_config(mass, instance_ids, player_ids)
     except Exception as err:
         # keeping a config costs a banner, removing it wrongly costs the user their
         # settings. Broad and around the removal too: an escape here would abort the boot.
@@ -104,7 +104,7 @@ def _local_audio_player_ids(mass: MusicAssistant) -> list[str]:
     ]
 
 
-async def _remove_local_audio_config(
+def _remove_local_audio_config(
     mass: MusicAssistant, instance_ids: list[str], player_ids: list[str]
 ) -> None:
     """
@@ -114,8 +114,6 @@ async def _remove_local_audio_config(
     :param instance_ids: Instance ids of the local_audio provider configs to remove.
     :param player_ids: Player ids of the local_audio player configs to remove.
     """
-    if instance_ids:
-        await mass.webserver.auth.remove_from_user_filters(provider_instance_ids=instance_ids)
     for player_id in player_ids:
         # also drops its DSP/queue settings, saved queue and bridged spb_* children
         mass.players.delete_player_config(player_id)

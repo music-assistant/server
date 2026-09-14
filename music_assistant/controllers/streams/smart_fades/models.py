@@ -240,7 +240,10 @@ class TransitionStrategy(StrEnum):
 
     # a normal phrased candidate cleared the vocal-collision guard
     ENERGY_ALIGNED = "energy_aligned"
-    # every phrased candidate collided; shipped the click-free equal-power fallback
+    # every phrased candidate was rejected; shipped a plain equal-power volume crossfade
+    FALLBACK_CROSSFADE = "fallback_crossfade"
+    # even the fallback crossfade collided too severely; shipped the click-free
+    # equal-power handoff as the last resort
     SHORT_VOCAL_HANDOFF = "short_vocal_handoff"
     # grid unusable but both decks ambient: long unphrased equal-power overlay
     LAZY_OVERLAY = "lazy_overlay"

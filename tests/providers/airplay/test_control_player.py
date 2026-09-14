@@ -810,6 +810,44 @@ def test_lost_companion_connection_keeps_external_state() -> None:
     assert player.active_source == "com.netflix.Netflix"
 
 
+@pytest.mark.parametrize("source", ["companion", "mrp"])
+def test_lost_connection_closes_pyatv_facade(source: str) -> None:
+    """A dropped connection closes the facade instead of leaking its aiohttp session."""
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    if source == "companion":
+        player._companion_device = device
+    else:
+        player._mrp_device = device
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_schedule_connection"),
+    ):
+        player._handle_connection_closed(source, device)
+
+    device.close.assert_called_once_with()
+
+
+def test_close_callback_for_detached_device_leaves_connection_alone() -> None:
+    """A late callback for an already-replaced device never closes the live one."""
+    player = _make_control_player()
+    detached = MagicMock(spec=AppleTV)
+    connected = MagicMock(spec=AppleTV)
+    player._mrp_device = connected
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(player, "_schedule_connection") as schedule_connection,
+    ):
+        player._handle_connection_closed("mrp", detached)
+
+    detached.close.assert_not_called()
+    connected.close.assert_not_called()
+    assert player._mrp_device is connected
+    schedule_connection.assert_not_called()
+
+
 async def test_mrp_retry_does_not_recycle_connected_companion() -> None:
     """A failed MRP monitor leaves an active Companion control channel intact."""
     player = _make_control_player()

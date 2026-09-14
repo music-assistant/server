@@ -20,9 +20,11 @@ if TYPE_CHECKING:
         ItemMapping,
         MediaItemType,
         Playlist,
+        Radio,
         RecommendationFolder,
         Track,
     )
+    from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
     from music_assistant_models.streamdetails import StreamDetails
 
 
@@ -325,6 +327,24 @@ class PluginProvider(Provider):
         :param volume: The new volume level (0-100).
         """
 
+    async def on_media_item_played(self, report: MediaItemPlaybackProgressReport) -> None:
+        """
+        Record a playback progress report of a media item.
+
+        Will only be called if ProviderFeature.SCROBBLE is declared. Fired for every queue,
+        periodically while an item plays and whenever its playback state or the current
+        item changes, so also on pause, when it ends or when it is skipped;
+        ``report.is_playing`` and ``report.fully_played`` tell those apart. May fire before
+        ``loaded_in_mass`` ran, so ignore reports until everything the plugin needs is set
+        up. The report names the playing user and player, so a plugin recording for some of
+        them only filters on those. ``ScrobblerHelper`` (helpers/scrobbler.py) builds the
+        usual now-playing and scrobble handling on top of this hook.
+
+        :param report: The playback progress report of the played item.
+        """
+        if ProviderFeature.SCROBBLE in self.supported_features:
+            raise NotImplementedError
+
     async def get_tts_engines(self) -> list[TTSEngine]:
         """
         Return the TTS engines this plugin exposes.
@@ -482,6 +502,25 @@ class PluginProvider(Provider):
 
         :param prov_playlist_id: Provider-scoped playlist id.
         :param page: Zero-based page index for paginated results.
+        """
+        raise NotImplementedError
+
+    async def get_radio(self, prov_radio_id: str) -> Radio:
+        """
+        Return details of a single radio station owned by this plugin.
+
+        :param prov_radio_id: Provider-scoped radio id.
+        """
+        raise NotImplementedError
+
+    async def get_dynamic_radio_tracks(self, prov_radio_id: str) -> list[Track]:
+        """
+        Return a fresh batch of tracks for a dynamic radio station owned by this plugin.
+
+        Return an empty batch to signal the station's feed is exhausted; the queue then
+        plays out its remaining items and ends.
+
+        :param prov_radio_id: Provider-scoped radio id.
         """
         raise NotImplementedError
 

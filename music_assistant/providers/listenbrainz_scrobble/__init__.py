@@ -7,15 +7,15 @@
 import asyncio
 import logging
 import time
-from collections.abc import Callable
 from typing import TYPE_CHECKING, ClassVar, Final
 
+import aiohttp
 import requests.exceptions
 from liblistenbrainz import Listen, ListenBrainz
 from liblistenbrainz.errors import ListenBrainzException
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
-from music_assistant_models.enums import EventType, MediaType, ProviderFeature
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.errors import InvalidToken, SetupFailedError
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
@@ -31,9 +31,7 @@ if TYPE_CHECKING:
 CONF_USER_TOKEN = "_user_token"
 CONF_API_BASE_URL = "api_base_url"
 LISTENBRAINZ_API_URL = "https://api.listenbrainz.org"
-SUPPORTED_FEATURES: set[ProviderFeature] = (
-    set()
-)  # we don't have any special supported features (yet)
+SUPPORTED_FEATURES: set[ProviderFeature] = {ProviderFeature.SCROBBLE}
 SUPPORTED_SCROBBLE_MEDIA_TYPES: Final[frozenset[MediaType]] = frozenset({MediaType.TRACK})
 
 
@@ -48,17 +46,7 @@ class ListenBrainzScrobbleProvider(PluginProvider):
     """Plugin provider to support scrobbling of tracks."""
 
     _client: ListenBrainz
-
-    def __init__(
-        self,
-        mass: MusicAssistant,
-        manifest: ProviderManifest,
-        config: ProviderConfig,
-        supported_features: set[ProviderFeature],
-    ) -> None:
-        """Initialize MusicProvider."""
-        super().__init__(mass, manifest, config, supported_features)
-        self._on_unload: list[Callable[[], None]] = []
+    _handler: ListenBrainzEventHandler | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -71,33 +59,53 @@ class ListenBrainzScrobbleProvider(PluginProvider):
         if not token:
             raise SetupFailedError("User token needs to be set")
         assert token != SECURE_STRING_SUBSTITUTE
+        await self._validate_token(str(api_base_url), str(token))
         client = ListenBrainz(api_base_url=str(api_base_url))
-        client.set_auth_token(str(token))
+        # the token is validated above, so skip the client's own blocking check
+        client.set_auth_token(str(token), check_validity=False)
         self._client = client
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
 
-        handler = ListenBrainzEventHandler(self._client, self.logger, self.config)
+        self._handler = ListenBrainzEventHandler(self._client, self.logger, self.config)
 
-        # subscribe to media_item_played event
-        self._on_unload.append(
-            self.mass.subscribe(handler._on_mass_media_item_played, EventType.MEDIA_ITEM_PLAYED)
-        )
+    async def on_media_item_played(self, report: MediaItemPlaybackProgressReport) -> None:
+        """Forward a playback progress report to ListenBrainz."""
+        if self._handler is not None:
+            await self._handler.on_media_item_played(report)
 
-    async def unload(self, is_removed: bool = False) -> None:
+    async def _validate_token(self, api_base_url: str, token: str) -> None:
         """
-        Handle unload/close of the provider.
+        Check the configured user token against ListenBrainz.
 
-        Called when provider is deregistered (e.g. MA exiting or config reloading).
+        :param api_base_url: Base URL of the ListenBrainz API.
+        :param token: The user token to validate.
         """
-        for unload_cb in self._on_unload:
-            unload_cb()
+        url = f"{api_base_url.rstrip('/')}/1/validate-token"
+        try:
+            async with self.mass.http_session.get(
+                url,
+                headers={"Authorization": f"Token {token}"},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as response:
+                response.raise_for_status()
+                result = await response.json()
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            # ValueError covers a malformed JSON body from response.json()
+            raise SetupFailedError(f"Unable to connect to ListenBrainz: {err}") from err
+        # only an explicit boolean valid=false proves the token is bad; any other
+        # shape is a response we can't trust, so keep setup retryable
+        valid = result.get("valid") if isinstance(result, dict) else None
+        if not isinstance(valid, bool):
+            raise SetupFailedError("Unexpected response from ListenBrainz")
+        if not valid:
+            raise InvalidToken("Invalid ListenBrainz user token")
 
 
 class ListenBrainzEventHandler(ScrobblerHelper):
-    """Handles the event handling."""
+    """Submit now-playing updates and listens to ListenBrainz."""
 
     # The client raises ListenBrainzException for API/payload errors and lets raw
     # requests network errors (RequestException) propagate.

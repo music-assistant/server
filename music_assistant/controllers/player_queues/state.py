@@ -79,6 +79,10 @@ class PlayerQueueData:
     flow_mode_stream_log: list[PlayLogEntry] = field(default_factory=list)
     # queue_item_id most recently handed to the player as the next item
     next_item_id_enqueued: str | None = None
+    # queue_item_id whose audio the player last started fetching. Unlike index_in_buffer,
+    # which the crossfade preload raises to a track the player was never given, this only
+    # moves when audio actually goes out
+    last_served_item_id: str | None = None
     # set when the queue items changed since the last cache write; the debounced saver writes the
     # (heavier) items payload only when this is set
     items_cache_dirty: bool = False
