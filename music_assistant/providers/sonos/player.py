@@ -37,6 +37,7 @@ from music_assistant.constants import (
     CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
     VERBOSE_LOG_LEVEL,
+    create_sample_rates_config_entry,
 )
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player, PlayerSource
@@ -188,18 +189,6 @@ class SonosPlayer(Player):
         self._attr_device_info.manufacturer = self._provider.manifest.name
         self._attr_can_group_with = {self._provider.instance_id}
 
-        # all current Sonos models accept up to 24-bit/48kHz; the older models in
-        # NON_HIRES_MODELS are limited to 16-bit playback
-        if self._attr_device_info.model in NON_HIRES_MODELS:
-            self._attr_supported_sample_rates = [(44100, 16), (48000, 16)]
-        else:
-            self._attr_supported_sample_rates = [
-                (44100, 16),
-                (48000, 16),
-                (44100, 24),
-                (48000, 24),
-            ]
-
         # Add identifiers for matching with other protocols (like AirPlay, DLNA)
         # The player_id is the Sonos UUID (e.g., RINCON_xxxxxxxxxxxx)
         self._attr_device_info.add_identifier(IdentifierType.UUID, self.player_id)
@@ -236,9 +225,19 @@ class SonosPlayer(Player):
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
+        # Sonos takes 44.1/48 kHz, and the older NON_HIRES_MODELS are limited to 16 bit.
+        # The defaults cover that full hardware range, so the output format only narrows
+        # when the user selects fewer rates.
+        hi_res = self._attr_device_info.model not in NON_HIRES_MODELS
         return [
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
             CONF_ENTRY_PREFER_WAV_FOR_LIVE_SOURCES_DEFAULT_ENABLED,
+            create_sample_rates_config_entry(
+                supported_sample_rates=[44100, 48000],
+                supported_bit_depths=[16, 24] if hi_res else [16],
+                safe_max_sample_rate=48000,
+                safe_max_bit_depth=24 if hi_res else 16,
+            ),
         ]
 
     async def on_unload(self) -> None:
