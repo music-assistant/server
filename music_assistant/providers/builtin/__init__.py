@@ -1,4 +1,4 @@
-"""Built-in/generic provider to handle media from files and (remote) urls."""
+"""Built-in/generic provider to handle media from (remote) urls and on-disk playlists."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from collections import defaultdict, deque
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
 from urllib.parse import urlparse
 
@@ -129,6 +130,10 @@ if TYPE_CHECKING:
 CACHE_CATEGORY_MEDIA_INFO: Final[int] = 1
 CACHE_CATEGORY_PLAYLISTS: Final[int] = 2
 
+# accepted prefixes for a manual item image: a remote stream URL (embedded art carries
+# the track's own stream URL as its path) or an inline data URI, never a local file path
+REMOTE_IMAGE_PREFIXES: Final[tuple[str, ...]] = (*BUILTIN_URL_SCHEMES, "data:image")
+
 # maximum number of detail rows rendered per table in the import matching report
 _IMPORT_REPORT_DETAIL_LIMIT: Final[int] = 200
 # report count bucket for each accepted track-match confidence
@@ -183,7 +188,7 @@ class _ImportTrackMatchResult:
 
 
 class BuiltinProvider(MusicProvider):
-    """Built-in/generic provider to handle (manually added) media from files and (remote) urls."""
+    """Built-in/generic provider for (manually added) media urls and on-disk playlists."""
 
     _playlists_dir: str
     _playlist_lock: asyncio.Lock
@@ -406,6 +411,9 @@ class BuiltinProvider(MusicProvider):
             key = CONF_KEY_RADIOS
         else:
             return False
+        self._ensure_stream_url(item.item_id)
+        if item.image:
+            self._ensure_remote_image_url(item.image.path)
         stored_item = StoredItem(item_id=item.item_id, name=item.name)
         if item.image:
             stored_item["image_url"] = item.image.path
@@ -424,10 +432,10 @@ class BuiltinProvider(MusicProvider):
             self._update_config_value(prov_item_id, False)
             return True
         if media_type == MediaType.TRACK:
-            # regular manual track URL/path
+            # regular manual track URL
             key = CONF_KEY_TRACKS
         elif media_type == MediaType.RADIO:
-            # regular manual radio URL/path
+            # regular manual radio URL
             key = CONF_KEY_RADIOS
         elif media_type == MediaType.PLAYLIST:
             # user-created playlist removal - delete the M3U file
@@ -490,6 +498,9 @@ class BuiltinProvider(MusicProvider):
         :param name: Display name.
         :param image_url: Image URL.
         """
+        self._ensure_stream_url(url)
+        if image_url:
+            self._ensure_remote_image_url(image_url)
         stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_RADIOS, [])
         # Remove existing entry with same URL if present
         stored_items = [x for x in stored_items if x["item_id"] != url]
@@ -511,10 +522,13 @@ class BuiltinProvider(MusicProvider):
         """
         Add a track.
 
-        :param url: URL or local path.
+        :param url: Stream URL.
         :param name: Display name.
         :param image_url: Image URL.
         """
+        self._ensure_stream_url(url)
+        if image_url:
+            self._ensure_remote_image_url(image_url)
         stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_TRACKS, [])
         # Remove existing entry with same URL if present
         stored_items = [x for x in stored_items if x["item_id"] != url]
@@ -839,8 +853,10 @@ class BuiltinProvider(MusicProvider):
         """
         Resolve an image from an image path.
 
-        This either returns (a generator to get) raw bytes of the image or
-        a string with an http(s) URL or local path that is accessible from the server.
+        Returns raw bytes for a bundled image, a remote URL / data URI fetched from
+        elsewhere, or a local file inside our own directories (bundled assets and
+        generated collages). Any other local path is user-supplied and refused: it would
+        let the image route read an arbitrary server file.
         """
         if path == "logo.png":
             return MASS_LOGO
@@ -852,7 +868,18 @@ class BuiltinProvider(MusicProvider):
             if not is_safe_path(icon_name, str(icons_base)):
                 raise FileNotFoundError(f"Invalid genre icon reference: {path}")
             return str(icons_base.joinpath(icon_name))
-        return path
+        if path.startswith(REMOTE_IMAGE_PREFIXES):
+            return path
+        # generated collages and bundled provider assets (e.g. the AI Radio cover) are
+        # local files served through this provider; every other local path is
+        # user-supplied and refused, so it can not read an arbitrary server file
+        package_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        collage_dir = os.path.join(self.mass.cache_path, "collage_images")
+        if Path(path).is_absolute() and any(
+            is_safe_path(path, d) for d in (package_dir, collage_dir)
+        ):
+            return path
+        raise FileNotFoundError(f"Invalid image reference: {path}")
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details for a track, radio stream, or sound effect."""
@@ -1463,8 +1490,46 @@ class BuiltinProvider(MusicProvider):
 
         return url
 
+    @staticmethod
+    def _ensure_stream_url(item_id: str) -> None:
+        """
+        Guard against a builtin track or radio that points at a local filesystem path.
+
+        The builtin provider streams remote URLs only. Local files belong to a
+        filesystem music provider, which is set up and access-controlled separately.
+
+        :param item_id: The track/radio identifier, expected to be a stream URL.
+        :raises MediaNotFoundError: If item_id is not an http(s)/rtsp/rtmp URL.
+        """
+        if not item_id.startswith(BUILTIN_URL_SCHEMES):
+            raise MediaNotFoundError(
+                "The builtin provider only supports stream URLs "
+                "(http, https, rtsp, rtmp), not local file paths"
+            )
+
+    @staticmethod
+    def _ensure_remote_image_url(image_url: str) -> None:
+        """
+        Guard against a manual item image that points at a local filesystem path.
+
+        A manually added track or radio image must be a remote URL or data URI. A local
+        path would let the image route read an arbitrary server file.
+
+        :param image_url: The image reference supplied for a manual item.
+        :raises MediaNotFoundError: If image_url is not a remote URL or data URI.
+        """
+        if not image_url.startswith(REMOTE_IMAGE_PREFIXES):
+            raise MediaNotFoundError(
+                "The builtin provider only supports remote image URLs or data URIs "
+                "for manual items, not local file paths"
+            )
+
     async def _get_media_info(self, url: str, force_refresh: bool = False) -> AudioTags:
         """Retrieve mediainfo for url."""
+        # never hand a local filesystem path to ffprobe: the builtin provider streams
+        # remote URLs only, and this is the single choke point every track/radio
+        # resolve and stream call passes through
+        self._ensure_stream_url(url)
         # do we have some cached info for this url ?
         cached_info = await self.mass.cache.get(
             url, provider=self.instance_id, category=CACHE_CATEGORY_MEDIA_INFO
@@ -1472,6 +1537,9 @@ class BuiltinProvider(MusicProvider):
         if cached_info and not force_refresh:
             return AudioTags.parse(cached_info)
         resolved_url = await self._resolve_url(url)
+        # a .pls can resolve to a nested entry, so re-check: a file:// entry must
+        # never reach ffprobe
+        self._ensure_stream_url(resolved_url)
         # parse info with ffprobe (and store in cache)
         media_info = await async_parse_tags(resolved_url)
         if "authSig" in url:
