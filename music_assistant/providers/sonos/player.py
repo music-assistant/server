@@ -98,6 +98,11 @@ WAKE_ON_LAN_RETRY_INTERVAL = 2
 # than the wake itself, so each attempt gets its own budget
 WAKE_ON_LAN_CONNECT_TIMEOUT = 3
 
+# the speaker withdraws its mDNS announcement several seconds before its radio actually
+# goes dark, so a goodbye is confirmed by polling rather than trusting a single probe
+CHECK_ASLEEP_POLL_INTERVAL = 2
+CHECK_ASLEEP_GRACE_WINDOW = 30
+
 
 class SonosPlayer(Player):
     """Holds the details of the (discovered) Sonosplayer."""
@@ -271,7 +276,7 @@ class SonosPlayer(Player):
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
         for task_id in (
-            f"sonos_reconnect_{self.player_id}",
+            self._reconnect_task_id,
             f"restore_airplay_group_{self.player_id}",
         ):
             # a timer that already fired lives on as a task under the same id,
@@ -306,6 +311,9 @@ class SonosPlayer(Player):
         if not mac_address or not is_valid_mac_address(mac_address):
             msg = f"Cannot wake {self.display_name}: no MAC address known"
             raise PlayerUnavailableError(msg)
+        # a hung reconnect would hold the connect lock for the whole wake budget
+        self.mass.cancel_timer(self._reconnect_task_id)
+        self.mass.cancel_task(self._reconnect_task_id)
         await send_magic_packet(mac_address)
         try:
             async with asyncio.timeout(WAKE_ON_LAN_TIMEOUT):
@@ -333,28 +341,40 @@ class SonosPlayer(Player):
         self._marked_asleep = False
         self.update_state()
 
+    @property
+    def check_asleep_task_id(self) -> str:
+        """Return the task id the goodbye-triggered sleep check for this player runs under."""
+        return f"sonos_check_asleep_{self.player_id}"
+
     async def check_asleep(self) -> None:
         """
         Confirm whether a speaker that withdrew its mDNS announcement went to sleep.
 
-        Marks the player asleep when the speaker no longer answers.
+        Marks the player asleep as soon as the speaker stops answering within the grace window.
         """
         if not self._wakes_natively:
             return
-        # the goodbye alone is not proof: it was seen once while the speaker stayed reachable
-        try:
-            async with asyncio.timeout(2):
-                # 1443 is the port aiosonos' websocket connects to
-                _, writer = await asyncio.open_connection(self.device_info.ip_address, 1443)
-        except OSError, TimeoutError:
-            # no reconnect on purpose: a sleeping speaker comes back through power() or
-            # its own mDNS re-announce
-            await self._disconnect()
-            self._mark_disconnected()
-            self.update_state()
-            return
-        writer.close()
-        await writer.wait_closed()
+        deadline = time.monotonic() + CHECK_ASLEEP_GRACE_WINDOW
+        while True:
+            if not self.connected:
+                # dropped for another reason in the meantime, nothing left to confirm here
+                return
+            try:
+                async with asyncio.timeout(CHECK_ASLEEP_POLL_INTERVAL):
+                    # 1443 is the port aiosonos' websocket connects to
+                    _, writer = await asyncio.open_connection(self.device_info.ip_address, 1443)
+            except OSError, TimeoutError:
+                # no reconnect on purpose: a sleeping speaker comes back through power() or
+                # its own mDNS re-announce
+                await self._disconnect()
+                self._mark_disconnected()
+                self.update_state()
+                return
+            writer.close()
+            await writer.wait_closed()
+            if time.monotonic() >= deadline:
+                return
+            await asyncio.sleep(CHECK_ASLEEP_POLL_INTERVAL)
 
     async def volume_set(self, volume_level: int) -> None:
         """
@@ -1067,8 +1087,7 @@ class SonosPlayer(Player):
         if self.mass.closing:
             return
         # use a task_id to prevent multiple reconnects
-        task_id = f"sonos_reconnect_{self.player_id}"
-        self.mass.call_later(delay, self._connect, delay, task_id=task_id)
+        self.mass.call_later(delay, self._connect, delay, task_id=self._reconnect_task_id)
 
     async def _connect(self, retry_on_fail: int = 0) -> None:
         """Connect to the Sonos player."""
@@ -1086,7 +1105,10 @@ class SonosPlayer(Player):
                     raise
                 self._mark_disconnected()
                 self.update_state()
-                self.reconnect(min(retry_on_fail + 30, 3600))
+                if not self._wakes_natively:
+                    # a committed-asleep portable is woken by power() or the mDNS
+                    # re-announce path, never by retrying a speaker whose radio is dark
+                    self.reconnect(min(retry_on_fail + 30, 3600))
                 return
             self.connected = True
             if self._wakes_natively and self._marked_asleep:
@@ -1254,6 +1276,11 @@ class SonosPlayer(Player):
     def _wakes_natively(self) -> bool:
         """Return whether this player sleeps as powered-off instead of unavailable."""
         return self._wakeable and self.power_control == PLAYER_CONTROL_NATIVE
+
+    @property
+    def _reconnect_task_id(self) -> str:
+        """Return the task id a pending or in-flight reconnect for this player runs under."""
+        return f"sonos_reconnect_{self.player_id}"
 
     def _mark_disconnected(self) -> None:
         """Reflect a confirmed lost connection: asleep for a natively-wakeable player, else unavailable."""

@@ -141,6 +141,23 @@ async def test_connect_websocket_handshake_failure_reschedules_reconnect() -> No
     mass.call_later.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_connect_failure_does_not_reschedule_for_a_wakes_natively_player() -> None:
+    """Test a wakes-natively portable is not retried blindly: power() or mDNS wakes it instead."""
+    player, mass = _make_player()
+    player._wakeable = True
+    player.client.connect = AsyncMock(  # type: ignore[method-assign]
+        side_effect=CannotConnect(OSError("no route to host"))
+    )
+
+    with patch.object(SonosPlayer, "power_control", PLAYER_CONTROL_NATIVE):
+        await player._connect(retry_on_fail=30)
+
+    assert player._attr_powered is False
+    assert player._marked_asleep is True
+    mass.call_later.assert_not_called()
+
+
 def _wakeable_player(
     mass: MusicAssistant | MagicMock | None = None,
 ) -> tuple[SonosPlayer, MagicMock | MusicAssistant]:
@@ -268,6 +285,36 @@ async def test_power_on_bounds_each_connect_attempt() -> None:
     assert player._attr_powered is True
 
 
+@pytest.mark.asyncio
+async def test_power_on_cancels_a_pending_reconnect_before_waking() -> None:
+    """Test waking a sleeping speaker cancels its reconnect first, a hung one holds the lock."""
+    player, mass = _wakeable_player()
+    mass = cast("MagicMock", mass)
+
+    async def _connect_side_effect(_retry_on_fail: int = 0) -> None:
+        player.connected = True
+
+    player._connect = AsyncMock(side_effect=_connect_side_effect)  # type: ignore[method-assign]
+
+    async def _send_magic_packet(_mac: str) -> None:
+        # the cancellation must happen before the packet goes out
+        mass.cancel_timer.assert_called_once_with(player._reconnect_task_id)
+        mass.cancel_task.assert_called_once_with(player._reconnect_task_id)
+
+    with (
+        patch.object(SonosPlayer, "power_control", PLAYER_CONTROL_NATIVE),
+        patch(
+            "music_assistant.providers.sonos.player.send_magic_packet",
+            new_callable=AsyncMock,
+            side_effect=_send_magic_packet,
+        ),
+    ):
+        await player.power(True)
+
+    mass.cancel_timer.assert_called_once_with(player._reconnect_task_id)
+    mass.cancel_task.assert_called_once_with(player._reconnect_task_id)
+
+
 def test_a_wakeable_player_with_native_power_control_sleeps_as_powered_off() -> None:
     """Test losing the connection reads as asleep, not unavailable, when we control power."""
     player, _ = _wakeable_player()
@@ -340,8 +387,37 @@ async def test_check_asleep_confirms_sleep_when_the_probe_is_unreachable() -> No
 
 
 @pytest.mark.asyncio
-async def test_check_asleep_does_nothing_when_the_probe_succeeds() -> None:
-    """Test a reachable player API port treats the goodbye as spurious and changes nothing."""
+async def test_check_asleep_commits_sleep_on_a_later_failed_poll() -> None:
+    """Test a probe that succeeds once but fails on a later poll still commits sleep."""
+    player, _ = _wakeable_player()
+    _give_ip_address(player)
+    player.connected = True
+    player._attr_powered = True
+    player._attr_available = True
+
+    writer = MagicMock()
+    writer.wait_closed = AsyncMock()
+    with (
+        patch.object(SonosPlayer, "power_control", PLAYER_CONTROL_NATIVE),
+        patch("music_assistant.providers.sonos.player.CHECK_ASLEEP_POLL_INTERVAL", 0.01),
+        patch("music_assistant.providers.sonos.player.CHECK_ASLEEP_GRACE_WINDOW", 0.05),
+        patch(
+            "asyncio.open_connection",
+            new_callable=AsyncMock,
+            side_effect=[(MagicMock(), writer), OSError("no route to host")],
+        ),
+    ):
+        await player.check_asleep()
+
+    assert player.connected is False
+    assert player._attr_powered is False
+    assert player._marked_asleep is True
+    player.update_state.assert_called_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_check_asleep_does_nothing_when_every_probe_in_the_window_succeeds() -> None:
+    """Test a speaker that keeps answering for the whole grace window is a spurious goodbye."""
     player, _ = _wakeable_player()
     _give_ip_address(player)
     player.connected = True
@@ -351,6 +427,9 @@ async def test_check_asleep_does_nothing_when_the_probe_succeeds() -> None:
     writer.wait_closed = AsyncMock()
     with (
         patch.object(SonosPlayer, "power_control", PLAYER_CONTROL_NATIVE),
+        patch("music_assistant.providers.sonos.player.CHECK_ASLEEP_POLL_INTERVAL", 0.01),
+        patch("music_assistant.providers.sonos.player.CHECK_ASLEEP_GRACE_WINDOW", 0.03),
+        patch.object(SonosPlayer, "_disconnect", new_callable=AsyncMock) as disconnect,
         patch(
             "asyncio.open_connection",
             new_callable=AsyncMock,
@@ -359,8 +438,7 @@ async def test_check_asleep_does_nothing_when_the_probe_succeeds() -> None:
     ):
         await player.check_asleep()
 
-    writer.close.assert_called_once()
-    writer.wait_closed.assert_awaited_once()
+    disconnect.assert_not_called()
     assert player.connected is True
     assert player._attr_powered is True
     player.update_state.assert_not_called()  # type: ignore[attr-defined]

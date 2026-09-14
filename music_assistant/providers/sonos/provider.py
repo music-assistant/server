@@ -165,7 +165,11 @@ class SonosPlayerProvider(PlayerProvider):
             removed_id = name.split("@", 1)[0]
             sonos_player = self.mass.players.get_player(removed_id)
             if isinstance(sonos_player, SonosPlayer) and sonos_player.connected:
-                self.mass.create_task(sonos_player.check_asleep())
+                # a stable task id so a second goodbye during the poll window does not
+                # start a parallel poller alongside the one already running
+                self.mass.create_task(
+                    sonos_player.check_asleep(), task_id=sonos_player.check_asleep_task_id
+                )
             return
         assert info is not None  # for type checking
         if "uuid" not in info.decoded_properties:
