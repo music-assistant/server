@@ -343,6 +343,73 @@ async def test_power_on_cancels_a_pending_reconnect_before_waking() -> None:
     mass.cancel_task.assert_called_once_with(player._reconnect_task_id)
 
 
+def _woken_player_ready_for_play_media() -> tuple[SonosPlayer, MagicMock]:
+    """Create a wakeable player, flagged as just-woken, ready to accept play_media."""
+    player, mass = _wakeable_player()
+    mass = cast("MagicMock", mass)
+    player.cloud_queue_item_generation = 0
+    player._woken_from_sleep = True
+    mass.streams.base_url = "http://192.168.1.10:9097"
+    client = cast("MagicMock", player.client)
+    client.player.is_passive = False
+    client.player.group.play_cloud_queue = AsyncMock()
+    client.player.group.play = AsyncMock()
+    return player, mass
+
+
+def _queue_item_media() -> PlayerMedia:
+    """Build the media a regular MA queue item is played with."""
+    return PlayerMedia(uri="http://stream", source_id="queue1", queue_item_id="item1")
+
+
+@pytest.mark.asyncio
+async def test_play_media_kicks_playback_when_a_woken_speaker_stays_paused() -> None:
+    """Test a woken speaker still paused after the queue load is nudged with play()."""
+    player, _ = _woken_player_ready_for_play_media()
+    client = cast("MagicMock", player.client)
+    client.player.group.playback_state = SonosPlayBackState.PLAYBACK_STATE_PAUSED
+
+    with (
+        patch.object(SonosPlayer, "flow_mode", property(lambda _self: False)),
+        patch("music_assistant.providers.sonos.player.WAKE_PLAY_KICK_TIMEOUT", 0.05),
+    ):
+        await player.play_media(_queue_item_media())
+
+    client.player.group.play.assert_awaited_once()
+    assert player._woken_from_sleep is False
+
+
+@pytest.mark.asyncio
+async def test_play_media_does_not_kick_playback_when_a_woken_speaker_starts_on_its_own() -> None:
+    """Test a woken speaker already playing after the queue load is not sent an extra play()."""
+    player, _ = _woken_player_ready_for_play_media()
+    client = cast("MagicMock", player.client)
+    client.player.group.playback_state = SonosPlayBackState.PLAYBACK_STATE_PLAYING
+
+    with (
+        patch.object(SonosPlayer, "flow_mode", property(lambda _self: False)),
+        patch("music_assistant.providers.sonos.player.WAKE_PLAY_KICK_TIMEOUT", 0.05),
+    ):
+        await player.play_media(_queue_item_media())
+
+    client.player.group.play.assert_not_awaited()
+    assert player._woken_from_sleep is False
+
+
+@pytest.mark.asyncio
+async def test_play_media_does_not_kick_playback_without_the_woken_flag() -> None:
+    """Test a regular play_media, not preceded by a wake, never triggers the post-wake kick."""
+    player, _ = _woken_player_ready_for_play_media()
+    player._woken_from_sleep = False
+    client = cast("MagicMock", player.client)
+    client.player.group.playback_state = SonosPlayBackState.PLAYBACK_STATE_PAUSED
+
+    with patch.object(SonosPlayer, "flow_mode", property(lambda _self: False)):
+        await player.play_media(_queue_item_media())
+
+    client.player.group.play.assert_not_awaited()
+
+
 def test_a_wakeable_player_with_native_power_control_sleeps_as_powered_off() -> None:
     """Test losing the connection reads as asleep, not unavailable, when we control power."""
     player, _ = _wakeable_player()
@@ -490,6 +557,7 @@ async def test_a_connection_blip_does_not_commit_sleep(timer_mass: MusicAssistan
     player, _ = _wakeable_player(timer_mass)
     player._attr_powered = True
     player._attr_available = True
+    player._is_reachable = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
     async def _start_listening(init_ready: asyncio.Event) -> None:
         init_ready.set()
@@ -510,6 +578,36 @@ async def test_a_connection_blip_does_not_commit_sleep(timer_mass: MusicAssistan
     assert player._attr_available is True
     assert player._marked_asleep is False
     assert f"sonos_reconnect_{player.player_id}" in timer_mass._tracked_timers
+    player._is_reachable.assert_awaited_once_with(2)
+
+
+@pytest.mark.asyncio
+async def test_a_heartbeat_drop_on_an_unreachable_radio_commits_sleep_immediately(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Test a dropped listener with a dark radio commits sleep instead of hanging a reconnect."""
+    player, _ = _wakeable_player(timer_mass)
+    player._attr_powered = True
+    player._attr_available = True
+    player._is_reachable = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+    async def _start_listening(init_ready: asyncio.Event) -> None:
+        init_ready.set()
+        raise ConnectionResetError("socket dropped")
+
+    client = cast("MagicMock", player.client)
+    client.connect = AsyncMock()
+    client.start_listening = _start_listening
+
+    with patch.object(SonosPlayer, "power_control", PLAYER_CONTROL_NATIVE):
+        await player._connect()
+        listener = player._listen_task
+        assert listener is not None
+        await listener
+
+    assert player._attr_powered is False
+    assert player._marked_asleep is True
+    assert timer_mass._tracked_timers == {}
 
 
 @pytest.mark.asyncio

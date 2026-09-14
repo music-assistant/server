@@ -97,6 +97,7 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     player.cloud_queue_version = 1.0
     player.cloud_queue_item_generation = 0
     player._announcement_media = None
+    player._woken_from_sleep = False
     return player, queues
 
 

@@ -97,11 +97,16 @@ WAKE_ON_LAN_RETRY_INTERVAL = 1
 # budget for the full connect (TLS, discovery, websocket, group fetch) once the radio
 # answers; a just-woken speaker's API can still refuse for its first second or so
 WAKE_ON_LAN_CONNECT_TIMEOUT = 15
+# a speaker restored from sleep can keep its transport paused through a queue load; this
+# is how long to wait for it to start playing on its own before kicking it with play()
+WAKE_PLAY_KICK_TIMEOUT = 2
 
 # the speaker withdraws its mDNS announcement several seconds before its radio actually
 # goes dark, so a goodbye is confirmed by polling rather than trusting a single probe
 CHECK_ASLEEP_POLL_INTERVAL = 2
-CHECK_ASLEEP_GRACE_WINDOW = 30
+# an idle (not playing) speaker's radio can stay up well over half a minute after the
+# goodbye, so the grace window has to be generous enough to outlast that
+CHECK_ASLEEP_GRACE_WINDOW = 90
 
 
 class SonosPlayer(Player):
@@ -134,6 +139,9 @@ class SonosPlayer(Player):
         # set once a dropped connection is confirmed as sleep rather than a passing blip;
         # only then may reconnecting flip `powered` back on
         self._marked_asleep: bool = False
+        # set once a connection is (re)established after committed sleep, so play_media
+        # knows to kick a speaker that restores its session paused
+        self._woken_from_sleep: bool = False
         # the MA queue the loaded cloud queue serves, and the version the speaker
         # compares against to decide whether its cached copy is still valid
         self.cloud_queue_id: str | None = None
@@ -343,6 +351,7 @@ class SonosPlayer(Player):
             ) from None
         self._attr_powered = True
         self._marked_asleep = False
+        self._woken_from_sleep = True
         self.update_state()
 
     @property
@@ -582,6 +591,9 @@ class SonosPlayer(Player):
                 self.mass.streams.close_superseded_item_streams(
                     media.source_id, media.queue_session_id
                 )
+            if self._woken_from_sleep:
+                self._woken_from_sleep = False
+                await self._ensure_playing_after_wake()
             return
 
         # play duration-less (long running) radio streams
@@ -1115,6 +1127,7 @@ class SonosPlayer(Player):
                 self._attr_available = True
                 self._attr_powered = True
                 self._marked_asleep = False
+                self._woken_from_sleep = True
             self.logger.debug("Connected to player API")
             init_ready = asyncio.Event()
 
@@ -1135,8 +1148,18 @@ class SonosPlayer(Player):
                             # a wakeable player commits to asleep only once the reconnect
                             # below fails too, so a passing blip changes nothing
                             self._mark_disconnected()
-                        self.update_state()
-                        self.reconnect(5)
+                            self.update_state()
+                            self.reconnect(5)
+                        elif await self._is_reachable(2):
+                            # the radio answered: a passing blip, not sleep - let the
+                            # reconnect below catch it
+                            self.update_state()
+                            self.reconnect(5)
+                        else:
+                            # the radio is dark: commit sleep now instead of letting a
+                            # reconnect hang against it while the player still reads as on
+                            self._mark_disconnected()
+                            self.update_state()
 
             self._listen_task = self.mass.create_task(_listener())
             await init_ready.wait()
@@ -1305,6 +1328,23 @@ class SonosPlayer(Player):
             # MA does not control power here, and a stale True would make a later switch
             # back to native skip the wake as "already on"
             self._attr_powered = None
+
+    async def _ensure_playing_after_wake(self) -> None:
+        """Kick playback if the speaker is still paused after a post-wake queue load."""
+        # a speaker restored from sleep resumes its old session paused and stays that
+        # way through a queue load, so it may need a nudge to actually start playing
+        deadline = time.monotonic() + WAKE_PLAY_KICK_TIMEOUT
+        while True:
+            state = PLAYBACK_STATE_MAP.get(self.group_controller.playback_state)
+            if state == PlaybackState.PLAYING:
+                return
+            if time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(0.25)
+        try:
+            await self.group_controller.play()
+        except FailedCommand as err:
+            self.logger.debug("Could not kick playback after wake: %s", err)
 
 
 def _is_wakeable(discovery_info: SonosDiscoveryInfo) -> bool:
