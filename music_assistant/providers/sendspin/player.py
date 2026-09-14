@@ -120,7 +120,7 @@ from .helpers import (
     pair_method_descriptor,
     pin_code_format,
 )
-from .playback import SendspinPlaybackSession
+from .playback import ANCHOR_REBASE_SIGNIFICANT_US, SendspinPlaybackSession
 
 # Supported group commands for Sendspin players
 SUPPORTED_GROUP_COMMANDS = [
@@ -1581,6 +1581,17 @@ class SendspinPlayer(SendspinBasePlayer):
             abort_existing=True,
         )
 
+    def on_flow_timeline_rebased(self) -> None:
+        """Handle the flow stream's audio timeline being rebased forward by a producer stall."""
+        if self.synced_to is not None:
+            # Only the leader publishes the beat schedule.
+            return
+        self.mass.create_task(
+            self._refresh_beat_schedule(),
+            task_id=f"sendspin_beat_rebase_{self.player_id}",
+            abort_existing=True,
+        )
+
     async def send_current_media_metadata(self) -> None:
         """Send the current media metadata to the sendspin group."""
         if not self.available:
@@ -2186,11 +2197,12 @@ class SendspinPlayer(SendspinBasePlayer):
             anchor_us = self.playback_session.flow_track_anchor_us(offset_us)
         if anchor_us is None:
             anchor_us = now_us - track_progress_ms * 1000
-        # Re-push only on track change or seek (anchor jumps beyond natural drift).
+        # Re-push only on track change, seek, or a timeline rebase (anchor jumps
+        # beyond natural drift).
         if (
             queue_item.queue_item_id == self._last_beat_queue_item_id
             and self._last_beat_anchor_us is not None
-            and abs(anchor_us - self._last_beat_anchor_us) < 500_000
+            and abs(anchor_us - self._last_beat_anchor_us) < ANCHOR_REBASE_SIGNIFICANT_US
         ):
             return
         sd = queue_item.streamdetails

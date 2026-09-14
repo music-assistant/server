@@ -7,17 +7,22 @@ production stalls (server/push_stream.py, _resolve_channel_play_start:
 scheduled at least _min_send_ahead_us() from 'now'"). Before this fix,
 SendspinPlaybackSession._timeline_start_us was captured once from the first
 committed chunk and never updated, so every position derived from it
-(elapsed_time, the beat-schedule anchor, join-catchup history pruning)
-silently overstated how far into the track playback actually was, by the
-stall duration, for the rest of the stream.
+(elapsed_time and the beat-schedule anchor) silently overstated how far into
+the track playback actually was, by the stall duration, for the rest of the
+stream.
 
 Reproduces the stall by driving the real commit loop (_run_playback) with a
 fake push stream whose commit_audio() jumps forward mid-stream, exactly as
 aiosendspin's rebase would.
+
+History pruning is covered here too, because it is the other thing the commit
+loop does per chunk and the anchor is the wrong clock for it: the producer runs
+ahead of the speakers, so pruning follows the push stream's clock instead.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
@@ -26,7 +31,11 @@ from music_assistant_models.dsp import DSPConfig
 from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.models.player import PlayerMedia
-from music_assistant.providers.sendspin.playback import SendspinPlaybackSession
+from music_assistant.providers.sendspin.playback import (
+    _HISTORY_KEEP_PAST_US,
+    ANCHOR_REBASE_SIGNIFICANT_US,
+    SendspinPlaybackSession,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -50,8 +59,19 @@ _SEND_AHEAD_US = 500_000
 class _FakePushStream:
     """Stands in for aiosendspin's PushStream, replaying pre-scripted commit timestamps."""
 
-    def __init__(self, commit_timestamps: list[int]) -> None:
+    def __init__(
+        self, commit_timestamps: list[int], now_timestamps: list[int] | None = None
+    ) -> None:
         self._commit_timestamps = iter(commit_timestamps)
+        # Default: audio is committed a fixed distance ahead of the clock, so now_us() and
+        # the commit timestamps stay on one timeline the way aiosendspin's shared
+        # RawMonotonicClock keeps them. A caller can script the clock separately to model a
+        # producer running faster than realtime and building a buffer.
+        self._now_timestamps = iter(
+            now_timestamps
+            if now_timestamps is not None
+            else [ts - _SEND_AHEAD_US for ts in commit_timestamps]
+        )
         self._now_us = commit_timestamps[0] - _SEND_AHEAD_US
         self.is_stopped = False
 
@@ -63,7 +83,7 @@ class _FakePushStream:
 
     async def commit_audio(self) -> int:
         timestamp = next(self._commit_timestamps)
-        self._now_us = timestamp - _SEND_AHEAD_US
+        self._now_us = next(self._now_timestamps)
         return timestamp
 
     async def sleep_to_limit_buffer(self, _limit_us: int) -> None:
@@ -79,18 +99,32 @@ class _FakePushStream:
         pass
 
 
+@dataclass
+class _CommitLoopTrace:
+    """What the commit loop did, sampled once per committed chunk."""
+
+    anchors: list[int | None] = field(default_factory=list)
+    retained: list[int] = field(default_factory=list)
+    oldest_retained_start_us: list[int | None] = field(default_factory=list)
+    player: MagicMock = field(default_factory=MagicMock)
+
+
 async def _fake_audio_source(num_chunks: int) -> AsyncIterator[bytes]:
     for _ in range(num_chunks):
         yield _CHUNK_BYTES
 
 
 async def _run_commit_loop(
-    monkeypatch: pytest.MonkeyPatch, commit_timestamps: list[int]
-) -> tuple[list[int | None], list[int]]:
+    monkeypatch: pytest.MonkeyPatch,
+    commit_timestamps: list[int],
+    now_timestamps: list[int] | None = None,
+) -> _CommitLoopTrace:
     """
     Drive one real _run_playback pass over the given commit schedule.
 
-    Returns the anchor and the retained history length observed after each commit.
+    :param commit_timestamps: Render timestamp commit_audio() returns for each chunk.
+    :param now_timestamps: Clock reading after each commit. Defaults to a fixed send-ahead
+        behind the commit timestamps.
     """
     player = MagicMock()
     player.player_id = "leader"
@@ -103,26 +137,28 @@ async def _run_commit_loop(
     monkeypatch.setattr(
         session, "_select_session_pcm_formats", lambda: (_PCM_FORMAT, _SENDSPIN_PCM_FORMAT)
     )
-    push_stream = _FakePushStream(commit_timestamps)
+    push_stream = _FakePushStream(commit_timestamps, now_timestamps)
     monkeypatch.setattr(session, "_create_push_stream", lambda: push_stream)
     monkeypatch.setattr(
         "music_assistant.providers.sendspin.playback.import_module_in_thread", AsyncMock()
     )
 
-    observed_anchors: list[int | None] = []
-    retained_history: list[int] = []
+    trace = _CommitLoopTrace(player=player)
     original_prune = SendspinPlaybackSession._prune_history_locked
 
     def _recording_prune(self: SendspinPlaybackSession, now_monotonic_us: int) -> None:
-        observed_anchors.append(self._timeline_start_us)
+        trace.anchors.append(self._timeline_start_us)
         original_prune(self, now_monotonic_us)
-        retained_history.append(len(self._history))
+        trace.retained.append(len(self._history))
+        trace.oldest_retained_start_us.append(
+            self._history[0].start_time_us if self._history else None
+        )
 
     monkeypatch.setattr(session, "_prune_history_locked", _recording_prune.__get__(session))
 
     media = PlayerMedia(uri="library://track/1")
     await session._run_playback(media)
-    return observed_anchors, retained_history
+    return trace
 
 
 async def test_anchor_absorbs_a_mid_stream_rebase(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -135,9 +171,9 @@ async def test_anchor_absorbs_a_mid_stream_rebase(monkeypatch: pytest.MonkeyPatc
         t0 + 2 * _CHUNK_DURATION_US + _STALL_US,
     ]
 
-    anchors, _ = await _run_commit_loop(monkeypatch, commit_timestamps)
+    trace = await _run_commit_loop(monkeypatch, commit_timestamps)
 
-    assert anchors == [t0, t0, t0 + _STALL_US]
+    assert trace.anchors == [t0, t0, t0 + _STALL_US]
 
 
 async def test_stall_does_not_prune_the_chunk_it_just_committed(
@@ -159,9 +195,9 @@ async def test_stall_does_not_prune_the_chunk_it_just_committed(
         t0 + 2 * _CHUNK_DURATION_US + _STALL_US,
     ]
 
-    _, retained = await _run_commit_loop(monkeypatch, commit_timestamps)
+    trace = await _run_commit_loop(monkeypatch, commit_timestamps)
 
-    assert retained == [1, 2, 1]
+    assert trace.retained == [1, 2, 1]
 
 
 async def test_anchor_is_stable_with_no_stall(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -169,7 +205,72 @@ async def test_anchor_is_stable_with_no_stall(monkeypatch: pytest.MonkeyPatch) -
     t0 = 5_000_000
     commit_timestamps = [t0 + i * _CHUNK_DURATION_US for i in range(4)]
 
-    anchors, retained = await _run_commit_loop(monkeypatch, commit_timestamps)
+    trace = await _run_commit_loop(monkeypatch, commit_timestamps)
 
-    assert anchors == [t0] * 4
-    assert retained == [1, 2, 3, 4]
+    assert trace.anchors == [t0] * 4
+    assert trace.retained == [1, 2, 3, 4]
+
+
+async def test_buffered_runahead_keeps_unplayed_history(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    History must be pruned against the speakers, not against the commit tail.
+
+    The producer runs faster than realtime until sleep_to_limit_buffer() throttles it at
+    _PRODUCER_BUFFER_LIMIT_US, so the newest committed chunk is scheduled to render many
+    seconds from now. All of that committed-but-unplayed audio is exactly what a late
+    joiner is backfilled from, so only what has already left the speakers may be dropped.
+    """
+    t0 = 10_000_000
+    num_chunks = 100
+    # Contiguous audio, one chunk per commit...
+    commit_timestamps = [t0 + i * _CHUNK_DURATION_US for i in range(num_chunks)]
+    # ...produced ten times faster than it plays, so the buffer grows to ~9s.
+    now_timestamps = [
+        t0 - _SEND_AHEAD_US + i * (_CHUNK_DURATION_US // 10) for i in range(num_chunks)
+    ]
+
+    trace = await _run_commit_loop(monkeypatch, commit_timestamps, now_timestamps)
+
+    final_now_us = now_timestamps[-1]
+    commit_tail_us = commit_timestamps[-1] + _CHUNK_DURATION_US
+    assert commit_tail_us - final_now_us > 8_000_000, "fixture must actually build a buffer"
+
+    # Everything from the playback position to the commit tail is still there.
+    oldest_start_us = trace.oldest_retained_start_us[-1]
+    assert oldest_start_us is not None
+    assert oldest_start_us <= final_now_us
+    assert trace.retained[-1] * _CHUNK_DURATION_US >= commit_tail_us - final_now_us
+
+    # Chunks that finished rendering more than _HISTORY_KEEP_PAST_US ago are still dropped.
+    assert oldest_start_us >= final_now_us - _HISTORY_KEEP_PAST_US - _CHUNK_DURATION_US
+
+
+async def test_rebase_is_reported_to_the_player(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    A rebase must be reported so the player can re-publish its beat schedule.
+
+    Beat timings go out as absolute server-clock timestamps derived from the anchor, and
+    nothing else re-publishes them mid-track: the media-updated callback fires on media
+    identity changes, not on elapsed-time updates.
+    """
+    t0 = 10_000_000
+    commit_timestamps = [
+        t0,
+        t0 + _CHUNK_DURATION_US,
+        t0 + 2 * _CHUNK_DURATION_US + _STALL_US,
+    ]
+
+    trace = await _run_commit_loop(monkeypatch, commit_timestamps)
+
+    trace.player.on_flow_timeline_rebased.assert_called_once()
+
+
+async def test_no_rebase_is_reported_on_a_steady_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Commit-to-commit jitter below the rebase threshold must not re-publish anything."""
+    t0 = 5_000_000
+    jitter_us = ANCHOR_REBASE_SIGNIFICANT_US // 10
+    commit_timestamps = [t0 + i * _CHUNK_DURATION_US + (i % 2) * jitter_us for i in range(4)]
+
+    trace = await _run_commit_loop(monkeypatch, commit_timestamps)
+
+    trace.player.on_flow_timeline_rebased.assert_not_called()

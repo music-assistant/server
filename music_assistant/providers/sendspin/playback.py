@@ -81,6 +81,10 @@ _JOIN_PROMOTE_ARM_WINDOW_US = 2_000_000
 _JOIN_PROMOTE_TOLERANCE_US = 50_000
 # Abort join catchup if promotion hasn't completed within this.
 _JOIN_PROMOTION_TIMEOUT_S = 15.0
+# How far the flow timeline anchor must move before it counts as a rebase rather than
+# ordinary commit-to-commit jitter. The playback session reports a move this size to the
+# player, and the player re-publishes its beat schedule on one.
+ANCHOR_REBASE_SIGNIFICANT_US = 500_000
 # Retain committed history this far behind real-time for late-join backfill.
 # This pre-history also warms up ffmpeg's internal filter buffers so the DSP
 # output has settled by the time the member's channel goes live.
@@ -343,7 +347,6 @@ class SendspinPlaybackSession:
         self._playback_running = False
         self._producer_eof_sent = False
         self._timeline_start_us: int | None = None
-        self._timeline_monotonic_ref_us: int | None = None
         self._produced_audio_us = 0
         self._history: deque[_HistoryChunk] = deque()
         self._join_catchup: dict[str, _JoinCatchupState] = {}
@@ -456,7 +459,6 @@ class SendspinPlaybackSession:
             self._history.clear()
             self._produced_audio_us = 0
             self._timeline_start_us = None
-            self._timeline_monotonic_ref_us = None
             self._pipeline_config_cache.clear()
             self._preassigned_channels.clear()
 
@@ -771,7 +773,6 @@ class SendspinPlaybackSession:
                 self._history.clear()
                 self._produced_audio_us = 0
                 self._timeline_start_us = None
-                self._timeline_monotonic_ref_us = None
                 self._mapping_dirty = True
         except Exception:
             # A track change stops the previous stream without stream/end, so a failed
@@ -904,15 +905,25 @@ class SendspinPlaybackSession:
                     pcm=pending.pcm,
                 )
                 async with self._state_lock:
-                    # Both references are rebased together, from the same commit, against
-                    # the same amount of produced audio. A stall shifts commit_start_us and
-                    # commit_now_us alike, so pairing a rebased anchor with a fixed monotonic
-                    # reference would count that stall twice in _prune_history_locked.
+                    # Recomputed on every commit, not just the first: commit_start_us is
+                    # always post-rebase, so subtracting the audio produced before this
+                    # chunk absorbs any forward shift aiosendspin applied after a stall.
+                    previous_anchor_us = self._timeline_start_us
                     self._timeline_start_us = int(commit_start_us) - self._produced_audio_us
-                    self._timeline_monotonic_ref_us = commit_now_us - self._produced_audio_us
+                    anchor_shift_us = (
+                        abs(self._timeline_start_us - previous_anchor_us)
+                        if previous_anchor_us is not None
+                        else 0
+                    )
                     self._history.append(committed_history_chunk)
                     self._produced_audio_us += pending.duration_us
                     self._prune_history_locked(commit_now_us)
+                if anchor_shift_us >= ANCHOR_REBASE_SIGNIFICANT_US:
+                    # Beat schedules are published as absolute timestamps derived from the
+                    # anchor, so a rebased anchor leaves them pointing at the pre-stall
+                    # timeline until something re-publishes them. Ordinary elapsed-time
+                    # updates do not, they are not a media identity change.
+                    self.player.on_flow_timeline_rebased()
                 await self._fanout_history_chunk_to_join_processors(committed_history_chunk)
                 if self._timeline_start_us is not None:
                     elapsed_real_s = max(0.0, (commit_now_us - self._timeline_start_us) / 1_000_000)
@@ -1482,7 +1493,6 @@ class SendspinPlaybackSession:
             self._push_stream = None
             self._playback_running = False
             self._timeline_start_us = None
-            self._timeline_monotonic_ref_us = None
             self._produced_audio_us = 0
             self._history.clear()
             # Drop cached DSP decisions so next playback reflects latest config.
@@ -1505,11 +1515,13 @@ class SendspinPlaybackSession:
 
     def _prune_history_locked(self, now_monotonic_us: int) -> None:
         """Drop old history chunks that are fully in the past."""
-        if self._timeline_start_us is None or self._timeline_monotonic_ref_us is None:
-            return
-        produced_us = max(0, now_monotonic_us - self._timeline_monotonic_ref_us)
-        source_now_us = self._timeline_start_us + produced_us
-        cutoff_us = source_now_us - _HISTORY_KEEP_PAST_US
+        # A chunk's start_time_us is its render time on the push stream's own clock, the
+        # same clock now_monotonic_us comes from, so what is leaving the speakers right
+        # now is simply now_monotonic_us. Deriving it from the timeline anchor instead
+        # would tie the cutoff to the commit tail, which sits up to
+        # _PRODUCER_BUFFER_LIMIT_US ahead of the speakers, and would discard the
+        # committed-but-unplayed audio a late joiner backfills from.
+        cutoff_us = now_monotonic_us - _HISTORY_KEEP_PAST_US
         while self._history and (
             self._history[0].start_time_us + self._history[0].duration_us <= cutoff_us
         ):
