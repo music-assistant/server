@@ -9,7 +9,7 @@ from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import SearchResults
 
-from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER, CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.models.music_provider import MusicProvider
@@ -83,8 +83,10 @@ class IHeartRadioProvider(MusicProvider):
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
-        """Return the supported features, library sync only with a signed-in account."""
-        if self.auth is not None and self.auth.is_account:
+        """Return the supported features, library sync only with a configured account."""
+        # Read from setup rather than the session: MA resolves a provider's config entries
+        # (and so its features) before handle_async_init has signed in.
+        if self.get_setup_value(CONF_USERNAME):
             return SUPPORTED_FEATURES | LIBRARY_FEATURES
         return set(SUPPORTED_FEATURES)
 
