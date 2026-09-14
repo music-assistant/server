@@ -1,4 +1,4 @@
-"""Built-in/generic provider to handle media from files and (remote) urls."""
+"""Built-in/generic provider to handle media from (remote) urls and on-disk playlists."""
 
 from __future__ import annotations
 
@@ -183,7 +183,7 @@ class _ImportTrackMatchResult:
 
 
 class BuiltinProvider(MusicProvider):
-    """Built-in/generic provider to handle (manually added) media from files and (remote) urls."""
+    """Built-in/generic provider for (manually added) media urls and on-disk playlists."""
 
     _playlists_dir: str
     _playlist_lock: asyncio.Lock
@@ -406,9 +406,8 @@ class BuiltinProvider(MusicProvider):
             key = CONF_KEY_RADIOS
         else:
             return False
-        self._ensure_stream_url(item.item_id)
-        if item.image:
-            self._ensure_remote_image_url(item.image.path)
+        # a local-path item_id or image is refused where it is read
+        # (_get_media_info and resolve_image), so no guard is needed here
         stored_item = StoredItem(item_id=item.item_id, name=item.name)
         if item.image:
             stored_item["image_url"] = item.image.path
@@ -427,10 +426,10 @@ class BuiltinProvider(MusicProvider):
             self._update_config_value(prov_item_id, False)
             return True
         if media_type == MediaType.TRACK:
-            # regular manual track URL/path
+            # regular manual track URL
             key = CONF_KEY_TRACKS
         elif media_type == MediaType.RADIO:
-            # regular manual radio URL/path
+            # regular manual radio URL
             key = CONF_KEY_RADIOS
         elif media_type == MediaType.PLAYLIST:
             # user-created playlist removal - delete the M3U file

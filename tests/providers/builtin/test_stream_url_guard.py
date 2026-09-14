@@ -12,7 +12,6 @@ from music_assistant_models.media_items import (
     MediaItemImage,
     MediaItemMetadata,
     ProviderMapping,
-    Radio,
     Track,
     UniqueList,
 )
@@ -105,27 +104,6 @@ async def test_add_radio_rejects_local_path_without_storing() -> None:
     provider = _make_provider()
     with pytest.raises(MediaNotFoundError):
         await provider.add_radio("/etc/passwd", "Passwords")
-    cast("Any", provider.mass).config.set.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_library_add_rejects_local_path_track_without_storing() -> None:
-    """library_add (the add_item object form) refuses a local-path track."""
-    provider = _make_provider()
-    track = Track(
-        item_id="/etc/passwd",
-        provider="builtin",
-        name="Passwords",
-        provider_mappings={
-            ProviderMapping(
-                item_id="/etc/passwd",
-                provider_domain="builtin",
-                provider_instance="builtin_1",
-            )
-        },
-    )
-    with pytest.raises(MediaNotFoundError):
-        await provider.library_add(track)
     cast("Any", provider.mass).config.set.assert_not_called()
 
 
@@ -234,34 +212,18 @@ async def test_add_radio_rejects_local_image_without_storing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_library_add_rejects_local_path_radio_without_storing() -> None:
-    """library_add refuses a local-path radio (audio vector, Radio branch)."""
-    provider = _make_provider()
-    radio = Radio(
-        item_id="/etc/passwd",
-        provider="builtin",
-        name="Passwords",
-        provider_mappings={
-            ProviderMapping(
-                item_id="/etc/passwd",
-                provider_domain="builtin",
-                provider_instance="builtin_1",
-            )
-        },
-    )
-    with pytest.raises(MediaNotFoundError):
-        await provider.library_add(radio)
-    cast("Any", provider.mass).config.set.assert_not_called()
+async def test_library_add_keeps_embedded_art_stream_scheme() -> None:
+    """
+    A stream track whose embedded-art image is its own source URL stays addable.
 
-
-@pytest.mark.asyncio
-async def test_library_add_rejects_local_image_without_storing() -> None:
-    """library_add refuses a track whose image is a local path."""
+    The image guard on the direct add commands must not leak into library_add, where
+    a probed rtsp/rtmp item carries its own URL as the cover-art path.
+    """
     provider = _make_provider()
-    track = _track_with_image("http://ok/song.mp3", "/etc/passwd")
-    with pytest.raises(MediaNotFoundError):
-        await provider.library_add(track)
-    cast("Any", provider.mass).config.set.assert_not_called()
+    cast("Any", provider.mass).config.get.return_value = []
+    track = _track_with_image("rtsp://host/stream", "rtsp://host/stream")
+    assert await provider.library_add(track) is True
+    cast("Any", provider.mass).config.set.assert_called_once()
 
 
 @pytest.mark.asyncio
