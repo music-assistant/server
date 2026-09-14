@@ -183,6 +183,8 @@ class SonosPlayerProvider(PlayerProvider):
             assert isinstance(sonos_player, SonosPlayer), (
                 "Player ID already exists but is not a SonosPlayer"
             )
+            # the speaker re-announced, so a poll still in flight must not disconnect it
+            self.mass.cancel_task(sonos_player.check_asleep_task_id)
             # if mass_player := sonos_player.mass_player:
             cur_address = get_primary_ip_address(info)
             if cur_address and cur_address != sonos_player.device_info.ip_address:

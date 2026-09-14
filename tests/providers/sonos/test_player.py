@@ -216,13 +216,17 @@ async def test_power_on_while_disconnected_wakes_and_reconnects() -> None:
     """Test powering on a sleeping speaker sends a magic packet and waits for it to reconnect."""
     player, _ = _wakeable_player()
 
-    async def _connect_side_effect(_retry_on_fail: int = 0) -> None:
+    async def _connect_side_effect() -> None:
         player.connected = True
 
     player._connect = AsyncMock(side_effect=_connect_side_effect)  # type: ignore[method-assign]
+    player._is_reachable = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[False, False, True]
+    )
 
     with (
         patch.object(SonosPlayer, "power_control", PLAYER_CONTROL_NATIVE),
+        patch("music_assistant.providers.sonos.player.WAKE_ON_LAN_RETRY_INTERVAL", 0.01),
         patch(
             "music_assistant.providers.sonos.player.send_magic_packet", new_callable=AsyncMock
         ) as wol,
@@ -230,17 +234,18 @@ async def test_power_on_while_disconnected_wakes_and_reconnects() -> None:
         await player.power(True)
 
     wol.assert_awaited_once_with("C4:38:75:0D:18:9C")
+    assert player._is_reachable.await_count == 3
+    player._connect.assert_awaited_once()
     assert player._attr_powered is True
     player.update_state.assert_called_once()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
-async def test_power_on_gives_up_after_the_speaker_never_responds() -> None:
-    """Test a speaker that never reconnects raises rather than being retried forever."""
+async def test_power_on_gives_up_when_the_radio_never_comes_back_up() -> None:
+    """Test a speaker whose radio never answers raises rather than being retried forever."""
     player, _ = _wakeable_player()
-    player._connect = AsyncMock(  # type: ignore[method-assign]
-        side_effect=CannotConnect(OSError("no route to host"))
-    )
+    player._is_reachable = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    player._connect = AsyncMock()  # type: ignore[method-assign]
 
     with (
         patch.object(SonosPlayer, "power_control", PLAYER_CONTROL_NATIVE),
@@ -254,21 +259,23 @@ async def test_power_on_gives_up_after_the_speaker_never_responds() -> None:
     # a missed wake must not disable the power button: the command dispatcher drops
     # every command for an unavailable player, which would make the retry unreachable
     assert player._attr_available is True
+    player._connect.assert_not_called()
     player.update_state.assert_not_called()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
-async def test_power_on_bounds_each_connect_attempt() -> None:
-    """Test a first connect attempt that never returns does not mask a later successful one."""
+async def test_power_on_retries_connect_after_a_transient_failure() -> None:
+    """Test a connect refused right after the radio comes up is retried within the budget."""
     player, _ = _wakeable_player()
+    player._is_reachable = AsyncMock(return_value=True)  # type: ignore[method-assign]
     attempts = 0
 
-    async def _connect_side_effect(_retry_on_fail: int = 0) -> None:
+    async def _connect_side_effect() -> None:
         nonlocal attempts
         attempts += 1
         if attempts == 1:
-            # a connect to a still-dark radio: it hangs rather than failing outright
-            await asyncio.Event().wait()
+            # the API is not up yet in the first moment after the radio answers
+            raise CannotConnect(OSError("not ready yet"))
         player.connected = True
 
     player._connect = AsyncMock(side_effect=_connect_side_effect)  # type: ignore[method-assign]
@@ -276,7 +283,6 @@ async def test_power_on_bounds_each_connect_attempt() -> None:
     with (
         patch.object(SonosPlayer, "power_control", PLAYER_CONTROL_NATIVE),
         patch("music_assistant.providers.sonos.player.send_magic_packet", new_callable=AsyncMock),
-        patch("music_assistant.providers.sonos.player.WAKE_ON_LAN_CONNECT_TIMEOUT", 0.02),
         patch("music_assistant.providers.sonos.player.WAKE_ON_LAN_RETRY_INTERVAL", 0.01),
     ):
         await player.power(True)
@@ -286,12 +292,34 @@ async def test_power_on_bounds_each_connect_attempt() -> None:
 
 
 @pytest.mark.asyncio
+async def test_power_on_gives_up_if_connect_hangs_forever() -> None:
+    """Test a connect that never returns still raises once the connect budget runs out."""
+    player, _ = _wakeable_player()
+    player._is_reachable = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    async def _connect_side_effect() -> None:
+        await asyncio.Event().wait()
+
+    player._connect = AsyncMock(side_effect=_connect_side_effect)  # type: ignore[method-assign]
+
+    with (
+        patch.object(SonosPlayer, "power_control", PLAYER_CONTROL_NATIVE),
+        patch("music_assistant.providers.sonos.player.send_magic_packet", new_callable=AsyncMock),
+        patch("music_assistant.providers.sonos.player.WAKE_ON_LAN_CONNECT_TIMEOUT", 0.02),
+        patch("music_assistant.providers.sonos.player.WAKE_ON_LAN_RETRY_INTERVAL", 0.01),
+        pytest.raises(PlayerUnavailableError, match="did not respond to wake-on-LAN"),
+    ):
+        await player.power(True)
+
+
+@pytest.mark.asyncio
 async def test_power_on_cancels_a_pending_reconnect_before_waking() -> None:
     """Test waking a sleeping speaker cancels its reconnect first, a hung one holds the lock."""
     player, mass = _wakeable_player()
     mass = cast("MagicMock", mass)
+    player._is_reachable = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
-    async def _connect_side_effect(_retry_on_fail: int = 0) -> None:
+    async def _connect_side_effect() -> None:
         player.connected = True
 
     player._connect = AsyncMock(side_effect=_connect_side_effect)  # type: ignore[method-assign]
@@ -569,6 +597,27 @@ async def test_on_unload_cancels_a_pending_reconnect(timer_mass: MusicAssistant)
 
     assert handle.cancelled()
     assert connect_attempts == []
+
+
+@pytest.mark.asyncio
+async def test_on_unload_cancels_a_pending_check_asleep_poll(timer_mass: MusicAssistant) -> None:
+    """Test a sleep-confirmation poll still running does not disconnect a player once unloaded."""
+    player, _ = _bind_player(timer_mass)
+    polling = asyncio.Event()
+
+    async def _poll() -> None:
+        polling.set()
+        await asyncio.sleep(5)
+
+    task_id = player.check_asleep_task_id
+    timer_mass.call_later(0, _poll, task_id=task_id)
+    await polling.wait()
+    task = timer_mass._tracked_tasks[task_id]
+
+    await player.on_unload()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
 
 @pytest.mark.asyncio
