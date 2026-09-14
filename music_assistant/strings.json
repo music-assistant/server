@@ -1222,7 +1222,6 @@
     "source_available_to_everyone": "{0} is always available to everyone",
     "source_sharing_owner_only": "Only the owner of a music source may share it",
     "source_owner_change_admin_only": "Only an administrator can change who owns a music source",
-    "source_owner_must_be_member": "Only a member can own a music source",
     "source_no_owner_admin_only": "Only an administrator can manage a music source that has no owner",
     "source_no_owner_must_be_shared": "A music source without an owner must be shared with someone",
     "unknown_or_disabled_user": "Unknown or disabled user: {0}",

@@ -26,6 +26,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_dumps, json_loads
+from music_assistant.helpers.provider_access import own_music_sources
 from tests.common import set_music_source_access
 
 if TYPE_CHECKING:
@@ -452,6 +453,8 @@ async def test_dropping_the_own_scope_from_a_role_its_owners_hold_is_allowed(
 
     assert Scope.CONFIG_PROVIDERS_OWN not in updated.scopes
     assert not has_scope(_user(managers.role_id), Scope.CONFIG_PROVIDERS_OWN)
+    # the owner keeps the source it can no longer manage
+    assert own_music_sources(auth_manager.mass, owner) == ["spotify--owned"]
 
 
 async def test_the_last_admin_can_not_give_up_the_admin_role(
