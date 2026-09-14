@@ -75,21 +75,28 @@ async def _feed_ffmpeg_stdin(
     proc: AsyncProcess, fade_in_part: bytes | AsyncGenerator[bytes]
 ) -> None:
     """
-    Write the incoming track's head to the mixer, always ending with an EOF.
+    Write the incoming track's head to the mixer, ending with an EOF unless cancelled.
 
     :param proc: The mixer process to feed.
     :param fade_in_part: Raw PCM bytes, or a stream delivering them.
     """
+    cancelled = False
     try:
         if isinstance(fade_in_part, bytes):
             await proc.write(fade_in_part)
         else:
             async for fade_chunk in fade_in_part:
                 await proc.write(fade_chunk)
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
     finally:
         # a feed that stops without an EOF leaves ffmpeg waiting for input
-        # while its consumer waits for output
-        await proc.write_eof()
+        # while its consumer waits for output. On cancellation, skip it: closing
+        # the mixer closes stdin, while an EOF would wait forever on a full pipe
+        # nobody drains anymore.
+        if not cancelled:
+            await proc.write_eof()
 
 
 class SmartFade(ABC):

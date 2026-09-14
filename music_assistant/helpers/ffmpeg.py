@@ -285,6 +285,13 @@ class FFMpeg(AsyncProcess):
                 await self.write(chunk)
         except asyncio.CancelledError:
             status = "cancelled"
+            task = asyncio.current_task()
+            assert task is not None
+            # Only this task's own cancellation skips the EOF below (avoids blocking
+            # on a pipe nobody drains anymore); a source-raised cancellation is a
+            # clean end and should still flush normally.
+            if task.cancelling():
+                cancelled = True
             raise
         except Exception:
             status = "aborted with error"
