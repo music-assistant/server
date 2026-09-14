@@ -34,6 +34,7 @@ from music_assistant.helpers.diagnostics import (
 )
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.memory import collect_cgroup_memory, parse_proc_status_rss
+from music_assistant.helpers.process import collect_child_process_counts
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.provider import Provider
 
@@ -45,7 +46,7 @@ if TYPE_CHECKING:
     from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 # maximum time one section contributor may take before it is dropped from the report
 SECTION_TIMEOUT = 2.0
 
@@ -157,7 +158,9 @@ class DiagnosticsController(CoreController):
 
     async def _build_system_info(self) -> dict[str, Any]:
         """Collect a point-in-time snapshot of system/runtime info."""
-        disk_info, memory_info = await asyncio.to_thread(self._probe_system_blocking)
+        disk_info, memory_info, child_processes = await asyncio.to_thread(
+            self._probe_system_blocking
+        )
         return {
             "version": self.mass.version,
             "python_version": platform.python_version(),
@@ -176,6 +179,8 @@ class DiagnosticsController(CoreController):
                 "tracked_timers": len(self.mass._tracked_timers),
                 "event_subscribers": len(self.mass._subscribers),
                 "websocket_clients": len(self.mass.webserver.clients),
+                # process names come from /proc and are sanitized like every report string
+                "child_processes": sanitize_data(child_processes),
             },
         }
 
@@ -354,14 +359,16 @@ class DiagnosticsController(CoreController):
         await asyncio.sleep(0.1)
         return max(0.0, round((loop.time() - start - 0.1) * 1000, 1))
 
-    def _probe_system_blocking(self) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Collect disk and memory info (blocking, run in executor)."""
+    def _probe_system_blocking(
+        self,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, int] | None]:
+        """Collect disk, memory and child-process info (blocking, run in executor)."""
         usage = shutil.disk_usage(self.mass.storage_path)
         disk_info = {
             "free_mb": usage.free // (1024 * 1024),
             "total_mb": usage.total // (1024 * 1024),
         }
-        return disk_info, _get_memory_info()
+        return disk_info, _get_memory_info(), collect_child_process_counts()
 
 
 def _format_timestamp(timestamp: float) -> str:

@@ -13,6 +13,7 @@ import logging
 import os
 
 # if TYPE_CHECKING:
+from collections import Counter
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -31,6 +32,8 @@ DEFAULT_CHUNKSIZE = 64000
 # terminate/SIGKILL escalation that actually reaps it.
 PIPE_DRAIN_TIMEOUT = 5
 
+_PROC_ROOT = Path("/proc")
+
 
 def get_subprocess_env(env: dict[str, str] | None = None) -> dict[str, str]:
     """Get environment for subprocess, stripping LD_PRELOAD to avoid jemalloc warnings."""
@@ -39,6 +42,62 @@ def get_subprocess_env(env: dict[str, str] | None = None) -> dict[str, str]:
     if env:
         result.update(env)
     return result
+
+
+def collect_child_process_counts(
+    proc_root: Path = _PROC_ROOT, parent_pid: int | None = None
+) -> dict[str, int] | None:
+    """
+    Return the server's direct child processes grouped by process name.
+
+    Reads Linux /proc so stranded children, such as ffmpeg left behind by an interrupted
+    stream, show up in the always-on diagnostics dump without a psutil dependency. Returns
+    None where /proc is unavailable, for example on non-Linux platforms.
+
+    :param proc_root: Mount point of the proc filesystem (overridable for tests).
+    :param parent_pid: Pid whose children are counted (defaults to this process).
+    """
+    if parent_pid is None:
+        parent_pid = os.getpid()
+    try:
+        entries = list(proc_root.iterdir())
+    except OSError:
+        return None
+    counts: Counter[str] = Counter()
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            # a comm may hold non-UTF-8 bytes, so decode leniently rather than raise
+            stat = (entry / "stat").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            # the process may exit between listing /proc and reading its stat file
+            continue
+        name = parse_child_process_name(stat, parent_pid)
+        if name is not None:
+            counts[name] += 1
+    return dict(sorted(counts.items()))
+
+
+def parse_child_process_name(stat: str, parent_pid: int) -> str | None:
+    """
+    Return the process name from a /proc/<pid>/stat line, or None if it is not a child.
+
+    :param stat: Contents of a /proc/<pid>/stat file.
+    :param parent_pid: Only a line whose parent pid equals this value returns a name.
+    """
+    # the comm field is parenthesized and may itself contain spaces or ')', so anchor on
+    # the last ')': the fields after it start at state, with ppid the second of those.
+    name_start = stat.find("(")
+    name_end = stat.rfind(")")
+    if name_start == -1 or name_end < name_start:
+        return None
+    fields = stat[name_end + 1 :].split()
+    if len(fields) < 2 or not fields[1].isdigit():
+        return None
+    if int(fields[1]) != parent_pid:
+        return None
+    return stat[name_start + 1 : name_end]
 
 
 class AsyncProcess:
