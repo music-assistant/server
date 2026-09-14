@@ -103,6 +103,14 @@ def test_the_user_role_may_own_music_sources_and_the_service_role_may_not() -> N
     }
 
 
+def test_a_tuple_of_scopes_is_held_when_the_role_holds_one_of_them() -> None:
+    """A command may list several scopes, of which the caller needs one."""
+    any_of = (Scope.CONFIG_PROVIDERS_OWN, Scope.LIBRARY_WRITE)
+    assert has_scope(_user(UserRole.USER), any_of)
+    assert has_scope(_user(UserRole.SERVICE), any_of)
+    assert not has_scope(_user(UserRole.GUEST), any_of)
+
+
 def test_every_user_may_list_the_roles_but_only_a_user_manager_may_change_them() -> None:
     """Every signed-in user needs the role names, changing a role takes users.manage."""
     assert getattr(AuthenticationManager.get_roles, "api_authenticated", None) is True

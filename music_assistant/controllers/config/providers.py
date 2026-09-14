@@ -427,10 +427,13 @@ class ProviderConfigMixin:
         self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
         return await self.get_provider_config(instance_id)
 
-    @api_command("config/providers/share_candidates", required_scope=Scope.CONFIG_PROVIDERS_OWN)
+    @api_command(
+        "config/providers/share_candidates",
+        required_scope=(Scope.CONFIG_PROVIDERS_OWN, Scope.LIBRARY_WRITE),
+    )
     async def get_share_candidates(self) -> list[UserSummary]:
         """
-        Return the users a music source can be shared with.
+        Return the users a music source or playlist can be shared with.
 
         Every enabled member and the Home Assistant system user are listed, without their role
         or settings. Guests are left out.
