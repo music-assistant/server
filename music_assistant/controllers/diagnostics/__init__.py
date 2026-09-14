@@ -179,7 +179,8 @@ class DiagnosticsController(CoreController):
                 "tracked_timers": len(self.mass._tracked_timers),
                 "event_subscribers": len(self.mass._subscribers),
                 "websocket_clients": len(self.mass.webserver.clients),
-                "child_processes": child_processes,
+                # process names come from /proc and are sanitized like every report string
+                "child_processes": sanitize_data(child_processes),
             },
         }
 

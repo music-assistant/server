@@ -68,7 +68,8 @@ def collect_child_process_counts(
         if not entry.name.isdigit():
             continue
         try:
-            stat = (entry / "stat").read_text(encoding="utf-8")
+            # a comm may hold non-UTF-8 bytes, so decode leniently rather than raise
+            stat = (entry / "stat").read_text(encoding="utf-8", errors="replace")
         except OSError:
             # the process may exit between listing /proc and reading its stat file
             continue
@@ -92,7 +93,7 @@ def parse_child_process_name(stat: str, parent_pid: int) -> str | None:
     if name_start == -1 or name_end < name_start:
         return None
     fields = stat[name_end + 1 :].split()
-    if len(fields) < 2 or not fields[1].lstrip("-").isdigit():
+    if len(fields) < 2 or not fields[1].isdigit():
         return None
     if int(fields[1]) != parent_pid:
         return None

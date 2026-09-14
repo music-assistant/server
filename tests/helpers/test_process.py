@@ -378,18 +378,30 @@ def test_parse_child_process_name() -> None:
 def test_collect_child_process_counts(tmp_path: Path) -> None:
     """Test that children of the given pid are counted by name from a fake /proc."""
 
-    def _write(pid: int, comm: str, ppid: int) -> None:
+    def _write(pid: int, comm: str, ppid: int, state: str = "S") -> None:
         proc_dir = tmp_path / str(pid)
         proc_dir.mkdir()
-        (proc_dir / "stat").write_text(f"{pid} ({comm}) S {ppid} {pid} {pid} 0 -1\n")
+        (proc_dir / "stat").write_text(f"{pid} ({comm}) {state} {ppid} {pid} {pid} 0 -1\n")
 
     _write(11, "ffmpeg", ppid=100)
     _write(12, "ffmpeg", ppid=100)
     _write(13, "librespot", ppid=100)
     _write(14, "ffmpeg", ppid=999)  # child of another process, not counted
+    _write(15, "ffmpeg", ppid=100, state="Z")  # a defunct child is the leak signal, still counted
     (tmp_path / "self").mkdir()  # non-numeric entries are skipped
-    assert collect_child_process_counts(tmp_path, parent_pid=100) == {"ffmpeg": 2, "librespot": 1}
+    (tmp_path / "42").mkdir()  # a process that exits mid-walk leaves no stat file
+    assert collect_child_process_counts(tmp_path, parent_pid=100) == {"ffmpeg": 3, "librespot": 1}
     # no children of this pid
     assert collect_child_process_counts(tmp_path, parent_pid=555) == {}
     # /proc absent, for example on non-Linux platforms
     assert collect_child_process_counts(tmp_path / "nowhere", parent_pid=100) is None
+
+
+def test_collect_child_process_counts_tolerates_non_utf8_comm(tmp_path: Path) -> None:
+    """Test that a child whose name holds non-UTF-8 bytes is counted, not raised on."""
+    proc_dir = tmp_path / "16"
+    proc_dir.mkdir()
+    (proc_dir / "stat").write_bytes(b"16 (odd\xff name) S 100 16 16 0 -1\n")
+    counts = collect_child_process_counts(tmp_path, parent_pid=100)
+    assert counts is not None
+    assert sum(counts.values()) == 1
