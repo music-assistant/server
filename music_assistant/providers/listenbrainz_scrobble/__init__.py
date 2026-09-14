@@ -122,12 +122,14 @@ class ListenBrainzEventHandler(ScrobblerHelper):
     """Submit now-playing updates and listens to ListenBrainz."""
 
     # A non-2xx reply becomes aiohttp.ClientResponseError via raise_for_status, a request that
-    # outlives its timeout raises TimeoutError, and exhausted retries on rate-limit/5xx replies
-    # raise RetriesExhausted; all are logged and swallowed so a failed submission never takes
+    # outlives its timeout raises TimeoutError, a now-playing update dropped on a rate-limit or
+    # 5xx reply raises ResourceTemporarilyUnavailable, and a scrobble whose retries are spent
+    # raises RetriesExhausted; all are logged and swallowed so a failed submission never takes
     # down the playback report handling.
     scrobble_exceptions: ClassVar[tuple[type[Exception], ...]] = (
         aiohttp.ClientError,
         TimeoutError,
+        ResourceTemporarilyUnavailable,
         RetriesExhausted,
     )
 
@@ -183,7 +185,9 @@ class ListenBrainzEventHandler(ScrobblerHelper):
         )
 
     async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
-        await self._submit_listen(self._make_listen(report), LISTEN_TYPE_PLAYING_NOW)
+        # a now-playing update is real-time and short-lived, so it is sent once without retries:
+        # a later retry would only push a track the listener has already moved past
+        await self._post_listen(self._make_listen(report), LISTEN_TYPE_PLAYING_NOW)
 
     async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
         listen = self._make_listen(report)
@@ -193,7 +197,16 @@ class ListenBrainzEventHandler(ScrobblerHelper):
     @throttle_with_retries
     async def _submit_listen(self, listen: Listen, listen_type: str) -> None:
         """
-        Submit a listen to ListenBrainz with a bounded, cancellable request.
+        Submit a listen to ListenBrainz, retrying rate-limit and server errors with backoff.
+
+        :param listen: The listen to submit, built by :meth:`_make_listen`.
+        :param listen_type: The ListenBrainz listen type, e.g. ``single``.
+        """
+        await self._post_listen(listen, listen_type)
+
+    async def _post_listen(self, listen: Listen, listen_type: str) -> None:
+        """
+        Post a single listen to ListenBrainz over a bounded, cancellable request.
 
         :param listen: The listen to submit, built by :meth:`_make_listen`.
         :param listen_type: The ListenBrainz listen type, e.g. ``single`` or ``playing_now``.
@@ -208,9 +221,9 @@ class ListenBrainzEventHandler(ScrobblerHelper):
             json=body,
             timeout=_REQUEST_TIMEOUT,
         ) as response:
-            # back off and retry while the service is alive but busy; a connection error or
-            # timeout is left to propagate and be dropped rather than hammer a service that
-            # isn't answering at all
+            # a rate-limit or 5xx reply is transient — the retrying caller backs off on these;
+            # a connection error or timeout is left to propagate and be dropped rather than
+            # hammer a service that isn't answering at all
             if response.status == 429:
                 raise RateLimited(
                     "ListenBrainz rate limit reached",

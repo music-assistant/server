@@ -368,6 +368,18 @@ async def test_a_submission_recovers_after_a_retry() -> None:
     assert handler.last_scrobbled == "library://track/1"
 
 
+async def test_a_rate_limited_now_playing_update_is_not_retried() -> None:
+    """A now-playing update is real-time, so a rate-limit reply is dropped, not retried."""
+    session = _FakeSession(post_statuses=[429], post_headers={"Retry-After": "0"})
+    handler = _handler(session)
+
+    await handler.on_media_item_played(_playing_report())
+
+    # sent once and dropped; retrying would only push a stale track
+    assert session.post_calls == 1
+    assert handler.currently_playing is None
+
+
 async def test_the_hook_forwards_the_report_to_the_handler() -> None:
     """A report handed to the provider reaches its scrobble handler."""
     provider = _provider()
