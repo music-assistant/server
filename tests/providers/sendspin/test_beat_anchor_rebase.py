@@ -27,6 +27,8 @@ if TYPE_CHECKING:
     import pytest
     from music_assistant_models.queue_item import QueueItem
 
+    from music_assistant.providers.sendspin.playback import SendspinPlaybackSession
+
 _QUEUE_ITEM_ID = "qi-1"
 _NOW_US = 50_000_000
 _PUBLISHED_ANCHOR_US = 40_000_000
@@ -79,8 +81,9 @@ def _player(monkeypatch: pytest.MonkeyPatch, *, flow_offset_us: int | None) -> S
     )
     player.mass = mass
 
-    player.playback_session = SimpleNamespace(
-        flow_track_anchor_us=lambda offset_us: _PUBLISHED_ANCHOR_US + offset_us
+    player.playback_session = cast(
+        "SendspinPlaybackSession",
+        SimpleNamespace(flow_track_anchor_us=lambda offset_us: _PUBLISHED_ANCHOR_US + offset_us),
     )
     # The flow log is what decides whether the preferred path is available at all.
     monkeypatch.setattr(

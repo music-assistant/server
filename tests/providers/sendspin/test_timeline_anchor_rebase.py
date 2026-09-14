@@ -316,7 +316,9 @@ async def test_rebase_publishes_its_position_step_on_the_same_commit(
     # the current track yet.
     assert kinds[-2:] == ["elapsed", "rebased"]
 
-    elapsed = [seconds for kind, seconds in trace.player_calls if kind == "elapsed"]
+    elapsed = [
+        seconds for kind, seconds in trace.player_calls if kind == "elapsed" and seconds is not None
+    ]
     assert len(elapsed) >= 2, "fixture must publish a position before the stall"
     # Sub-threshold step: the periodic gate alone would have withheld it.
     assert abs(elapsed[-1] - elapsed[-2]) < 1.0
@@ -332,5 +334,7 @@ async def test_steady_commits_publish_on_the_periodic_gate_only(
     trace = await _run_commit_loop(monkeypatch, commit_timestamps)
 
     assert "rebased" not in [kind for kind, _ in trace.player_calls]
-    elapsed = [seconds for kind, seconds in trace.player_calls if kind == "elapsed"]
+    elapsed = [
+        seconds for kind, seconds in trace.player_calls if kind == "elapsed" and seconds is not None
+    ]
     assert all(b - a >= 1.0 for a, b in pairwise(elapsed))
