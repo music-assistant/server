@@ -45,7 +45,6 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_PROVIDERS,
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
-    HOMEASSISTANT_SYSTEM_USER,
 )
 from music_assistant.controllers.config.constants import BASE_KEYS, _ConfigValueT
 from music_assistant.controllers.config.helpers import (
@@ -928,17 +927,20 @@ class ProviderConfigMixin:
         :param on_record: Whether the user already owns the source; a disabled account is
             then accepted.
         """
-        user = await self._validate_access_user(user_id, on_record)
-        if user is not None and not self._is_member(user):
-            raise InvalidDataError(
-                "Only a member can own a music source",
-                translation_key="source_owner_must_be_member",
-            )
+        # imported here: the webserver helpers pull in the full auth stack,
+        # which must not be imported with the config controller at startup
+        from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
+            has_scope,
+        )
 
-    @staticmethod
-    def _is_member(user: User) -> bool:
-        """Return whether the user is a member: not a guest nor the HA system user."""
-        return user.role != UserRole.GUEST and user.username != HOMEASSISTANT_SYSTEM_USER
+        user = await self._validate_access_user(user_id, on_record)
+        # config.providers.own is the scope a member needs to manage its own sources, so only a
+        # role that holds it may own one (this matches the role-change guard in update_user_role)
+        if user is not None and not has_scope(user, Scope.CONFIG_PROVIDERS_OWN):
+            raise InvalidDataError(
+                "This role can not own a music source.",
+                translation_key="role_can_not_own_music_sources",
+            )
 
     async def _resolve_provider_config_entries(self, provider: Provider) -> list[ConfigEntry]:
         """Return the full config-entry set for a (loaded) provider instance."""
