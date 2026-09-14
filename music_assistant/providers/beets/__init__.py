@@ -2,15 +2,29 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from aiofiles.os import wrap
 from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
-from music_assistant_models.errors import MediaNotFoundError, SetupFailedError
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, SetupFailedError
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import (
+    DB_TABLE_ALBUM_ARTISTS,
+    DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_ALBUMS,
+    DB_TABLE_ARTISTS,
+    DB_TABLE_PROVIDER_MAPPINGS,
+    DB_TABLE_TRACK_ARTISTS,
+)
+from music_assistant.controllers.tasks.context import (
+    report_current_task_failure,
+    update_current_task_progress_from_index,
+)
+from music_assistant.helpers.util import TaskManager
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
@@ -20,12 +34,15 @@ from .constants import (
     CONF_LIBRARY_DB,
     CONF_MUSIC_DIRECTORY,
     IMAGE_PATH_PREFIX,
+    ITEM_BATCH_SIZE,
+    SYNC_CONCURRENCY,
 )
 from .library import BeetsLibrary, BeetsLibraryError, BeetsRow
 from .parsers import (
     ParseContext,
     expand_path,
     item_checksum,
+    loudness_from_gains,
     parse_album,
     parse_artist,
     parse_audio_format,
@@ -139,6 +156,20 @@ class BeetsProvider(MusicProvider):
         """Handle unload/close of the provider."""
         await self.library.close()
 
+    async def sync_library(self, media_type: MediaType) -> None:
+        """Run library sync for this provider."""
+        if media_type != MediaType.TRACK:
+            # artists and albums are imported together with their tracks
+            return
+        if self.sync_running:
+            self.logger.warning("Library sync already running for %s", self.name)
+            return
+        self.sync_running = True
+        try:
+            await self._sync_tracks()
+        finally:
+            self.sync_running = False
+
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         item = await self._get_item(prov_track_id)
@@ -216,6 +247,155 @@ class BeetsProvider(MusicProvider):
             msg = f"Album not found: {prov_album_id}"
             raise MediaNotFoundError(msg)
         return album
+
+    async def _sync_tracks(self) -> None:
+        """Import new and changed beets items, then remove what beets no longer has."""
+        previous = await self._get_previous_checksums()
+        current_ids: set[str] = set()
+        try:
+            total = await self.library.count_items()
+            albums: dict[int, BeetsRow | None] = dict(await self.library.get_albums())
+            processed = 0
+            async with TaskManager(self.mass, SYNC_CONCURRENCY) as task_manager:
+                async for batch in self.library.iter_items(ITEM_BATCH_SIZE):
+                    for item in batch:
+                        album = await self._album_for(item, albums)
+                        item_id = str(item.id)
+                        current_ids.add(item_id)
+                        checksum = item_checksum(item, album)
+                        if previous.get(item_id) == checksum:
+                            continue
+                        await task_manager.create_task_with_limit(
+                            self._import_item(item, album, checksum, overwrite=item_id in previous)
+                        )
+                    processed += len(batch)
+                    update_current_task_progress_from_index(
+                        processed, total, f"Read {processed}/{total} beets items"
+                    )
+        except BeetsLibraryError as err:
+            self.logger.error("Aborting sync for %s: %s", self.name, err)
+            report_current_task_failure(f"Sync aborted: unable to read the beets library: {err}")
+            return
+
+        # an empty result for a previously filled library is far more likely a wrong mount
+        # than a user who deleted everything, so keep the library as it is
+        if previous and not current_ids:
+            self.logger.error(
+                "Aborting sync for %s: beets returned no items but %d were previously imported",
+                self.name,
+                len(previous),
+            )
+            report_current_task_failure(
+                f"Sync aborted: beets returned no items but {len(previous)} "
+                "were previously imported"
+            )
+            return
+        if deleted_ids := set(previous) - current_ids:
+            await self._process_deletions(deleted_ids)
+        await self._process_orphaned_albums_and_artists()
+
+    async def _album_for(
+        self, item: BeetsRow, albums: dict[int, BeetsRow | None]
+    ) -> BeetsRow | None:
+        """Return an item's album row, reading albums beets added after the sync started."""
+        if (album_id := item.album_id) is None:
+            return None
+        if album_id not in albums:
+            albums[album_id] = await self.library.get_album(album_id)
+        return albums[album_id]
+
+    async def _import_item(
+        self, item: BeetsRow, album: BeetsRow | None, checksum: str, overwrite: bool
+    ) -> None:
+        """Add or update one beets item in the Music Assistant library."""
+        try:
+            track = parse_track(item, album, self._ctx, checksum)
+            library_item = await self.mass.music.tracks.add_item_to_library(
+                track, overwrite_existing=overwrite
+            )
+            if track.favorite and not library_item.favorite:
+                await self.mass.music.tracks.set_favorite(library_item.item_id, True)
+            if (loudness := loudness_from_gains(item.fields, "track")) is not None:
+                await self.mass.streams.audio_analysis.set_track_loudness(
+                    track.item_id,
+                    self.instance_id,
+                    loudness,
+                    loudness_from_gains(item.fields, "album"),
+                )
+        except Exception as err:
+            # one broken item must not abort the sync; it keeps its previous checksum, so the
+            # next sync retries it, and it stays out of the deletion pass
+            unexpected = not isinstance(err, InvalidDataError)
+            self.logger.error(
+                "Error importing beets item %s: %s",
+                item.id,
+                err,
+                exc_info=err if unexpected and self.logger.isEnabledFor(logging.DEBUG) else None,
+            )
+            report_current_task_failure(f"Failed to import beets item {item.id}: {err}")
+
+    async def _get_previous_checksums(self) -> dict[str, str]:
+        """Return the checksum stored for every beets item this instance imported before."""
+        assert self.mass.music.database
+        query = (
+            f"SELECT provider_item_id, details FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            "WHERE provider_instance = :instance_id AND media_type = 'track'"
+        )
+        rows = await self.mass.music.database.get_rows_from_query(
+            query, {"instance_id": self.instance_id}, limit=0
+        )
+        return {str(row["provider_item_id"]): str(row["details"]) for row in rows}
+
+    async def _process_deletions(self, deleted_ids: set[str]) -> None:
+        """Remove tracks beets no longer has, and the albums and artists they leave empty."""
+        album_ids: set[str] = set()
+        artist_ids: set[str] = set()
+        for item_id in deleted_ids:
+            library_item = await self.mass.music.tracks.get_library_item_by_prov_id(
+                item_id, self.instance_id
+            )
+            if library_item is None:
+                continue
+            if library_item.album:
+                album_ids.add(library_item.album.item_id)
+                # the track's album is an ItemMapping; the library album carries its artists
+                db_album = await self.mass.music.albums.get_library_item(library_item.album.item_id)
+                artist_ids.update(artist.item_id for artist in db_album.artists)
+            artist_ids.update(artist.item_id for artist in library_item.artists)
+            await self.mass.music.tracks.remove_item_from_library(library_item.item_id)
+        for album_id in album_ids:
+            if not await self.mass.music.albums.tracks(album_id, "library"):
+                await self.mass.music.albums.remove_item_from_library(album_id)
+        for artist_id in artist_ids:
+            if not (
+                await self.mass.music.artists.albums(artist_id, "library")
+                or await self.mass.music.artists.tracks(artist_id, "library")
+            ):
+                await self.mass.music.artists.remove_item_from_library(artist_id)
+
+    async def _process_orphaned_albums_and_artists(self) -> None:
+        """Remove albums and artists of this instance that no longer have any tracks."""
+        assert self.mass.music.database
+        params = {"instance_id": self.instance_id}
+        album_query = (
+            f"SELECT item_id FROM {DB_TABLE_ALBUMS} "
+            f"WHERE item_id NOT IN (SELECT album_id FROM {DB_TABLE_ALBUM_TRACKS}) "
+            f"AND item_id IN (SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            "WHERE provider_instance = :instance_id AND media_type = 'album')"
+        )
+        for row in await self.mass.music.database.get_rows_from_query(album_query, params, limit=0):
+            await self.mass.music.albums.remove_item_from_library(row["item_id"])
+        artist_query = (
+            f"SELECT item_id FROM {DB_TABLE_ARTISTS} "
+            f"WHERE item_id NOT IN (SELECT artist_id FROM {DB_TABLE_TRACK_ARTISTS} "
+            f"UNION SELECT artist_id FROM {DB_TABLE_ALBUM_ARTISTS}) "
+            f"AND item_id IN (SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            "WHERE provider_instance = :instance_id AND media_type = 'artist')"
+        )
+        for row in await self.mass.music.database.get_rows_from_query(
+            artist_query, params, limit=0
+        ):
+            await self.mass.music.artists.remove_item_from_library(row["item_id"])
 
 
 def _parse_id(prov_item_id: str) -> int:
