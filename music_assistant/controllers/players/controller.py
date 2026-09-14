@@ -3233,8 +3233,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 try:
                     await player.poll()
                 except PlayerUnavailableError:
-                    # a device that is off or unreachable is a normal condition;
-                    # the provider marks the player unavailable itself
                     self.logger.debug("Player %s is unavailable", player.state.name)
                 except Exception as err:
                     self.logger.warning(
