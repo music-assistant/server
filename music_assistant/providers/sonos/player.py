@@ -94,6 +94,9 @@ REPORTED_ERROR_HISTORY = 16
 # that, so give the connection retry loop enough headroom before giving up on it
 WAKE_ON_LAN_TIMEOUT = 15
 WAKE_ON_LAN_RETRY_INTERVAL = 2
+# a connect to a speaker whose radio is still dark hangs on the stale ARP entry far longer
+# than the wake itself, so each attempt gets its own budget
+WAKE_ON_LAN_CONNECT_TIMEOUT = 3
 
 
 class SonosPlayer(Player):
@@ -118,8 +121,14 @@ class SonosPlayer(Player):
         self.discovery_info = discovery_info
         self.connected: bool = False
         self._listen_task: asyncio.Task[None] | None = None
+        # a wake retry and the mDNS-triggered reconnect can otherwise both connect and
+        # each spawn their own listener task
+        self._connect_lock = asyncio.Lock()
         # whether the speaker advertises Wake-on-LAN support (portables: Move/Move 2/Roam)
-        self._wakeable: bool = False
+        self._wakeable: bool = _is_wakeable(discovery_info)
+        # set once a dropped connection is confirmed as sleep rather than a passing blip;
+        # only then may reconnecting flip `powered` back on
+        self._marked_asleep: bool = False
         # the MA queue the loaded cloud queue serves, and the version the speaker
         # compares against to decide whether its cached copy is still valid
         self.cloud_queue_id: str | None = None
@@ -189,20 +198,12 @@ class SonosPlayer(Player):
             _supported_features.add(PlayerFeature.VOLUME_MUTE)
         _supported_features.add(PlayerFeature.NEXT_PREVIOUS)
         _supported_features.add(PlayerFeature.ENQUEUE)
-        # deviceFeatures is not modeled in aiosonos, so read it defensively - older
-        # firmware may not report it at all
-        device_features = cast("dict[str, Any]", self.discovery_info["device"]).get(
-            "deviceFeatures", []
-        )
-        self._wakeable = any(
-            feature.get("name") == DEVICE_FEATURE_WAKEABLE for feature in device_features
-        )
         if self._wakeable:
             _supported_features.add(PlayerFeature.POWER)
         self._attr_supported_features = _supported_features
         if self._wakes_natively:
-            # the connect above already succeeded, so the speaker is awake right now;
-            # later (re)connects report this themselves, this is only for the first one
+            # power_control only resolves to NATIVE now that POWER is a supported feature,
+            # and the connect above succeeded, so the speaker is awake
             self._attr_powered = True
 
         self._attr_name = (
@@ -286,11 +287,9 @@ class SonosPlayer(Player):
         """
         Handle POWER command on the player.
 
-        Will only be called if the PlayerFeature.POWER is supported, which we only
-        advertise for portables (Move/Move 2/Roam) that support Wake-on-LAN.
-        Powering off only updates local state and does not put the speaker to sleep:
-        Sonos has no remote sleep command, so the speaker keeps running until it
-        decides to sleep on its own idle timer.
+        Powering on wakes a sleeping speaker with a Wake-on-LAN packet and waits for it to
+        reconnect. Powering off only updates local state: Sonos has no remote sleep command,
+        the speaker sleeps on its own idle timer.
 
         :param powered: bool if player should be powered on or off.
         """
@@ -300,36 +299,62 @@ class SonosPlayer(Player):
             return
         if self.connected:
             self._attr_powered = True
+            self._marked_asleep = False
             self.update_state()
             return
         mac_address = self._extract_mac_from_player_id()
-        if not mac_address:
+        if not mac_address or not is_valid_mac_address(mac_address):
             msg = f"Cannot wake {self.display_name}: no MAC address known"
             raise PlayerUnavailableError(msg)
         await send_magic_packet(mac_address)
-        deadline = time.time() + WAKE_ON_LAN_TIMEOUT
-        while not self.connected and time.time() < deadline:
-            # a concurrent reconnect from the mDNS wake announcement may win the race -
-            # _connect() simply no-ops when the speaker is already (being) connected
-            with suppress(ConnectionFailed, CannotConnect, ClientError):
-                await self._connect()
-            if not self.connected:
-                await asyncio.sleep(WAKE_ON_LAN_RETRY_INTERVAL)
-        # annotated local defeats mypy's narrowing: it pins self.connected to the pre-loop
-        # value and cannot see that _connect() flips it
-        woke_up: bool = self.connected
-        if not woke_up:
-            self._attr_available = False
-            self.update_state()
+        try:
+            async with asyncio.timeout(WAKE_ON_LAN_TIMEOUT):
+                while True:
+                    # a concurrent reconnect from the mDNS wake announcement may win the
+                    # race - _connect() simply no-ops once already (being) connected
+                    with suppress(ConnectionFailed, CannotConnect, ClientError, TimeoutError):
+                        async with asyncio.timeout(WAKE_ON_LAN_CONNECT_TIMEOUT):
+                            await self._connect()
+                    # annotated re-read: mypy pins self.connected to its pre-loop value
+                    connected: bool = self.connected
+                    if connected:
+                        break
+                    await asyncio.sleep(WAKE_ON_LAN_RETRY_INTERVAL)
+        except TimeoutError:
+            # available stays true on purpose, so the power button keeps working for a retry
             msg = f"{self.display_name} did not respond to wake-on-LAN"
             raise PlayerUnavailableError(
                 msg,
                 translation_key="wake_on_lan_timeout",
                 translation_owner=self.translation_owner,
                 translation_args=[self.display_name],
-            )
+            ) from None
         self._attr_powered = True
+        self._marked_asleep = False
         self.update_state()
+
+    async def check_asleep(self) -> None:
+        """
+        Confirm whether a speaker that withdrew its mDNS announcement went to sleep.
+
+        Marks the player asleep when the speaker no longer answers.
+        """
+        if not self._wakes_natively:
+            return
+        # the goodbye alone is not proof: it was seen once while the speaker stayed reachable
+        try:
+            async with asyncio.timeout(2):
+                # 1443 is the port aiosonos' websocket connects to
+                _, writer = await asyncio.open_connection(self.device_info.ip_address, 1443)
+        except OSError, TimeoutError:
+            # no reconnect on purpose: a sleeping speaker comes back through power() or
+            # its own mDNS re-announce
+            await self._disconnect()
+            self._mark_disconnected()
+            self.update_state()
+            return
+        writer.close()
+        await writer.wait_closed()
 
     async def volume_set(self, volume_level: int) -> None:
         """
@@ -1049,45 +1074,52 @@ class SonosPlayer(Player):
         """Connect to the Sonos player."""
         if self.mass.closing:
             return
-        if self._listen_task and not self._listen_task.done():
-            self.logger.debug("Already connected to Sonos player: %s", self.player_id)
-            return
-        try:
-            await self.client.connect()
-        except (ConnectionFailed, CannotConnect, ClientError) as err:
-            self.logger.warning("Failed to connect to Sonos player: %s", err)
-            if not retry_on_fail or not self.mass.players.get_player(self.player_id):
-                raise
-            self._mark_disconnected()
-            self.update_state()
-            self.reconnect(min(retry_on_fail + 30, 3600))
-            return
-        self.connected = True
-        if self._wakes_natively:
-            self._attr_available = True
-            self._attr_powered = True
-        self.logger.debug("Connected to player API")
-        init_ready = asyncio.Event()
-
-        async def _listener() -> None:
+        async with self._connect_lock:
+            if self._listen_task and not self._listen_task.done():
+                self.logger.debug("Already connected to Sonos player: %s", self.player_id)
+                return
             try:
-                await self.client.start_listening(init_ready)
-            except Exception as err:
-                if not isinstance(err, ConnectionFailed | asyncio.CancelledError):
-                    self.logger.exception("Error in Sonos player listener")
-            finally:
-                self.logger.info("Disconnected from player API")
-                if self.connected and not self.mass.closing:
-                    # we didn't explicitly disconnect, try to reconnect
-                    # this should simply try to reconnect once and if that fails
-                    # we rely on mdns to pick it up again later
-                    await self._disconnect()
-                    self._mark_disconnected()
-                    self.update_state()
-                    self.reconnect(5)
+                await self.client.connect()
+            except (ConnectionFailed, CannotConnect, ClientError) as err:
+                self.logger.warning("Failed to connect to Sonos player: %s", err)
+                if not retry_on_fail or not self.mass.players.get_player(self.player_id):
+                    raise
+                self._mark_disconnected()
+                self.update_state()
+                self.reconnect(min(retry_on_fail + 30, 3600))
+                return
+            self.connected = True
+            if self._wakes_natively and self._marked_asleep:
+                # only a wake from confirmed sleep turns the player back on; a blip or a
+                # user power-off never sets the flag
+                self._attr_available = True
+                self._attr_powered = True
+                self._marked_asleep = False
+            self.logger.debug("Connected to player API")
+            init_ready = asyncio.Event()
 
-        self._listen_task = self.mass.create_task(_listener())
-        await init_ready.wait()
+            async def _listener() -> None:
+                try:
+                    await self.client.start_listening(init_ready)
+                except Exception as err:
+                    if not isinstance(err, ConnectionFailed | asyncio.CancelledError):
+                        self.logger.exception("Error in Sonos player listener")
+                finally:
+                    self.logger.info("Disconnected from player API")
+                    if self.connected and not self.mass.closing:
+                        # we didn't explicitly disconnect, try to reconnect
+                        # this should simply try to reconnect once and if that fails
+                        # we rely on mdns to pick it up again later
+                        await self._disconnect()
+                        if not self._wakes_natively:
+                            # a wakeable player commits to asleep only once the reconnect
+                            # below fails too, so a passing blip changes nothing
+                            self._mark_disconnected()
+                        self.update_state()
+                        self.reconnect(5)
+
+            self._listen_task = self.mass.create_task(_listener())
+            await init_ready.wait()
 
     async def _disconnect(self) -> None:
         """Disconnect the client and cleanup."""
@@ -1224,8 +1256,26 @@ class SonosPlayer(Player):
         return self._wakeable and self.power_control == PLAYER_CONTROL_NATIVE
 
     def _mark_disconnected(self) -> None:
-        """Reflect a lost connection: asleep for a natively-wakeable player, else unavailable."""
+        """Reflect a confirmed lost connection: asleep for a natively-wakeable player, else unavailable."""
         if self._wakes_natively:
             self._attr_powered = False
+            self._marked_asleep = True
+            # a sleeping speaker is not paused; keeping PAUSED would make the controller's
+            # unpause path command it directly instead of powering it on first
+            self._attr_playback_state = PlaybackState.IDLE
         else:
             self._attr_available = False
+            # MA does not control power here, and a stale True would make a later switch
+            # back to native skip the wake as "already on"
+            self._attr_powered = None
+
+
+def _is_wakeable(discovery_info: SonosDiscoveryInfo) -> bool:
+    """Return whether discovered deviceFeatures advertise Wake-on-LAN support."""
+    # deviceFeatures is not modeled in aiosonos, so read it defensively - older
+    # firmware may not report it, and an entry may not be a dict
+    device_features = cast("dict[str, Any]", discovery_info["device"]).get("deviceFeatures", [])
+    return any(
+        isinstance(feature, dict) and feature.get("name") == DEVICE_FEATURE_WAKEABLE
+        for feature in device_features
+    )
