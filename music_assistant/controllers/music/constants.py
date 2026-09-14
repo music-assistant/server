@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Final
 
+from music_assistant_models.enums import SortDirection, SortField
+
 CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
@@ -63,3 +65,49 @@ CONF_TRACK_RECONCILIATION_RESCAN_DUE: Final[str] = "track_reconciliation_rescan_
 # max difference in seconds between two track durations to still consider them the same
 # recording; matches the widest duration window compare_track is willing to accept
 TRACK_RECONCILIATION_MAX_DURATION_DELTA: Final[int] = 8
+
+# Base SQL mappings for sort fields (can be overridden per MediaType)
+BASE_SORT_FIELD_SQL = {
+    SortField.NAME: "search_name",
+    SortField.SORT_NAME: "search_sort_name",
+    SortField.TIMESTAMP_ADDED: "timestamp_added",
+    SortField.TIMESTAMP_MODIFIED: "timestamp_modified",
+    SortField.LAST_PLAYED: "last_played",
+    SortField.PLAY_COUNT: "play_count",
+    SortField.DURATION: "duration",
+    SortField.YEAR: "year",
+    SortField.POSITION: "position",
+    # ARTIST_NAME is media-type specific, implemented in subclasses
+    SortField.RANDOM: "RANDOM()",
+    SortField.RANDOM_PLAY_COUNT: "RANDOM(), play_count",
+}
+
+# Legacy sort keys for backward compatibility (will be removed in future release)
+LEGACY_SORT_KEYS = {
+    "name": (SortField.NAME, SortDirection.ASC),
+    "name_desc": (SortField.NAME, SortDirection.DESC),
+    "duration": (SortField.DURATION, SortDirection.ASC),
+    "duration_desc": (SortField.DURATION, SortDirection.DESC),
+    "sort_name": (SortField.SORT_NAME, SortDirection.ASC),
+    "sort_name_desc": (SortField.SORT_NAME, SortDirection.DESC),
+    "timestamp_added": (SortField.TIMESTAMP_ADDED, SortDirection.ASC),
+    "timestamp_added_desc": (SortField.TIMESTAMP_ADDED, SortDirection.DESC),
+    "timestamp_modified": (SortField.TIMESTAMP_MODIFIED, SortDirection.ASC),
+    "timestamp_modified_desc": (SortField.TIMESTAMP_MODIFIED, SortDirection.DESC),
+    "last_played": (SortField.LAST_PLAYED, SortDirection.ASC),
+    "last_played_desc": (SortField.LAST_PLAYED, SortDirection.DESC),
+    "play_count": (SortField.PLAY_COUNT, SortDirection.ASC),
+    "play_count_desc": (SortField.PLAY_COUNT, SortDirection.DESC),
+    "year": (SortField.YEAR, SortDirection.ASC),
+    "year_desc": (SortField.YEAR, SortDirection.DESC),
+    "position": (SortField.POSITION, SortDirection.ASC),
+    "position_desc": (SortField.POSITION, SortDirection.DESC),
+    "artist_name": (SortField.ARTIST_NAME, SortDirection.ASC),
+    "artist_name_desc": (SortField.ARTIST_NAME, SortDirection.DESC),
+    "album_artist_name": (SortField.ARTIST_NAME, SortDirection.ASC),
+    "album_artist_name_desc": (SortField.ARTIST_NAME, SortDirection.DESC),
+    "track_artist_name": (SortField.ARTIST_NAME, SortDirection.ASC),
+    "track_artist_name_desc": (SortField.ARTIST_NAME, SortDirection.DESC),
+    "random": (SortField.RANDOM, None),
+    "random_play_count": (SortField.RANDOM_PLAY_COUNT, None),
+}
