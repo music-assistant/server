@@ -1631,6 +1631,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider_filter=provider_filter,
                 played_only=played_only,
                 limit=limit,
+                offset=offset,
                 in_library_only=in_library_only,
                 reachable_via=reachable_via,
             )
@@ -1950,6 +1951,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider_filter: list[str] | None,
         played_only: bool = False,
         limit: int = 500,
+        offset: int = 0,
         in_library_only: bool = False,
         reachable_via: list[str] | None = None,
     ) -> None:
@@ -1979,7 +1981,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if sub_query_parts:
             sub_query += " WHERE " + " AND ".join(self._clean_query_parts(sub_query_parts))
 
-        sub_query += f" ORDER BY RANDOM() LIMIT {limit}"
+        # Sample limit+offset rows so later pages aren't skipped past an exhausted sample.
+        sub_query += f" ORDER BY RANDOM() LIMIT {limit + offset}"
 
         # The query now only consists of the random subquery, which applies all filters
         # within itself
@@ -2156,6 +2159,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             if sort_field not in MEDIA_TYPE_SORT_FIELDS.get(self.media_type, []):
                 msg = f"Sort field {sort_field.value} is not supported for {self.media_type.value}"
                 raise InvalidDataError(msg)
+            # RANDOM fields carry no direction, since _get_sort_sql ignores it anyway.
+            if sort_field in (SortField.RANDOM, SortField.RANDOM_PLAY_COUNT):
+                return sort_field.value
             # Use per-field default direction if not specified
             direction = sort_direction if sort_direction else get_default_direction(sort_field)
             return f"{sort_field.value}:{direction.value}"
@@ -2590,6 +2596,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             SortField.TIMESTAMP_MODIFIED,
             SortField.LAST_PLAYED,
             SortField.PLAY_COUNT,
+            SortField.RANDOM,
+            SortField.RANDOM_PLAY_COUNT,
         }
 
         # additional order options subject to media type

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
-from music_assistant_models.enums import MediaType, SortDirection, SortField
+from music_assistant_models.enums import AlbumType, MediaType, SortDirection, SortField
 from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.music.sorting import (
     MEDIA_TYPE_SORT_FIELDS,
@@ -19,6 +23,59 @@ from music_assistant.mass import MusicAssistant
 def mass_fixture(music_mass_module: MusicAssistant) -> MusicAssistant:
     """Return the module-scoped database-only Music Assistant fixture."""
     return music_mass_module
+
+
+def _mapping() -> ProviderMapping:
+    """Create a library-mapped ProviderMapping with a unique provider_item_id."""
+    return ProviderMapping(
+        item_id=uuid4().hex, provider_domain="test", provider_instance="test_inst", in_library=True
+    )
+
+
+@pytest.fixture(scope="module")
+async def artist_sorted_mass(music_mass_module: MusicAssistant) -> MusicAssistant:
+    """Seed artists/tracks/albums to exercise typed ARTIST_NAME sorting and its JOIN."""
+    mass = music_mass_module
+    artists = {}
+    for name in ("Zebra Artist", "Apple Artist", "Mango Artist"):
+        artist = Artist(item_id="0", provider="library", name=name, provider_mappings={_mapping()})
+        artists[name] = await mass.music.artists.add_item_to_library(artist)
+
+    for idx, (artist_name, year) in enumerate(
+        (("Zebra Artist", 2001), ("Apple Artist", 2002), ("Mango Artist", 2003))
+    ):
+        album = Album(
+            item_id="0",
+            provider="library",
+            name=f"Sort Album {idx}",
+            album_type=AlbumType.ALBUM,
+            year=year,
+            provider_mappings={_mapping()},
+            artists=UniqueList([artists[artist_name]]),
+        )
+        await mass.music.albums.add_item_to_library(album)
+
+        track = Track(
+            item_id="0",
+            provider="library",
+            name=f"Sort Track {idx}",
+            provider_mappings={_mapping()},
+            artists=UniqueList([artists[artist_name]]),
+        )
+        await mass.music.tracks.add_item_to_library(track)
+
+    for idx in range(30):
+        await mass.music.tracks.add_item_to_library(
+            Track(
+                item_id="0",
+                provider="library",
+                name=f"Random Track {idx}",
+                provider_mappings={_mapping()},
+                artists=UniqueList([artists["Zebra Artist"]]),
+            )
+        )
+
+    return mass
 
 
 def test_every_media_type_sort_field_has_a_definition() -> None:
@@ -98,10 +155,6 @@ async def test_resolve_sort_parameters_applies_default_direction(
     assert final_order_by == "year:desc"
 
 
-def test_parse_order_by_supports_new_field_direction_format() -> None:
-    """The new 'field:direction' format must parse into the matching enum values."""
-
-
 @pytest.mark.asyncio
 async def test_parse_order_by_new_format(mass: MusicAssistant) -> None:
     """The new 'field:direction' format must parse into the matching enum values."""
@@ -141,3 +194,44 @@ async def test_get_sort_options_api_matches_media_type(mass: MusicAssistant) -> 
     result = await mass.music.albums.get_sort_options()
     expected = get_sort_options_for_media_type(MediaType.ALBUM)
     assert [o.field for o in result] == [o.field for o in expected]
+
+
+@pytest.mark.asyncio
+async def test_library_items_typed_artist_name_sort_on_tracks(
+    artist_sorted_mass: MusicAssistant,
+) -> None:
+    """Typed sort_field=ARTIST_NAME must add the artist JOIN and order tracks by artist name."""
+    result = await artist_sorted_mass.music.tracks.library_items(
+        sort_field=SortField.ARTIST_NAME,
+        sort_direction=SortDirection.ASC,
+        search="Sort Track",
+        summary=False,
+    )
+    artist_names = [track.artists[0].name for track in result]
+    assert artist_names == ["Apple Artist", "Mango Artist", "Zebra Artist"]
+
+
+@pytest.mark.asyncio
+async def test_library_items_typed_artist_name_sort_on_albums(
+    artist_sorted_mass: MusicAssistant,
+) -> None:
+    """Typed sort_field=ARTIST_NAME must add the artist JOIN and order albums by artist name."""
+    result = await artist_sorted_mass.music.albums.library_items(
+        sort_field=SortField.ARTIST_NAME,
+        sort_direction=SortDirection.ASC,
+        search="Sort Album",
+        summary=False,
+    )
+    artist_names = [album.artists[0].name for album in result]
+    assert artist_names == ["Apple Artist", "Mango Artist", "Zebra Artist"]
+
+
+@pytest.mark.asyncio
+async def test_library_items_random_sort_supports_pagination(
+    artist_sorted_mass: MusicAssistant,
+) -> None:
+    """A random-sorted page with offset > 0 must still return rows (regression test)."""
+    result = await artist_sorted_mass.music.tracks.library_items(
+        sort_field=SortField.RANDOM, limit=5, offset=5, summary=False
+    )
+    assert len(result) == 5
