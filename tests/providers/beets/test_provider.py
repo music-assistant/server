@@ -149,6 +149,23 @@ async def test_unknown_ids_raise_media_not_found(
 
 
 @pytest.mark.parametrize(
+    "remainder",
+    ["0{n}", "+{n}", " {n}", "{n}_0", "-{n}", ""],
+)
+async def test_get_track_rejects_non_canonical_remainder(
+    make_provider: MakeProvider, beets_db: BeetsDb, remainder: str
+) -> None:
+    """Only the exact decimal beets id, with no leading zero or extra characters, resolves."""
+    item_id = beets_db.add_item(**item_fields())
+    provider = await make_provider()
+    bad_id = f"track-{INSTANCE_ID}-{remainder.format(n=item_id)}"
+
+    with pytest.raises(MediaNotFoundError):
+        await provider.get_track(bad_id)
+    assert (await provider.get_track(track_prov_id(item_id))).name == "Song"
+
+
+@pytest.mark.parametrize(
     "prov_id",
     ["1", album_prov_id(1), track_prov_id(1, "beets--other"), f"track-{INSTANCE_ID}-nope"],
 )

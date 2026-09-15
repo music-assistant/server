@@ -432,13 +432,18 @@ def _parse_id(prov_item_id: str, prefix: str) -> int:
 
     :param prov_item_id: The provider item id or image path.
     :param prefix: The prefix the id must start with, followed by the beets row id.
-    :raises MediaNotFoundError: If the id lacks the prefix or the rest is not an integer.
+    :raises MediaNotFoundError: If the id lacks the prefix or the rest is not the canonical
+        decimal form of the beets row id (no sign, whitespace, underscore or leading zero).
     """
     if not prov_item_id.startswith(prefix):
         msg = f"Invalid beets id: {prov_item_id}"
         raise MediaNotFoundError(msg)
-    try:
-        return int(prov_item_id.removeprefix(prefix))
-    except ValueError as err:
+    remainder = prov_item_id.removeprefix(prefix)
+    if not (remainder and remainder.isascii() and remainder.isdigit()):
         msg = f"Invalid beets id: {prov_item_id}"
-        raise MediaNotFoundError(msg) from err
+        raise MediaNotFoundError(msg)
+    value = int(remainder)
+    if remainder != str(value):
+        msg = f"Invalid beets id: {prov_item_id}"
+        raise MediaNotFoundError(msg)
+    return value
