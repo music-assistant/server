@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
@@ -9,6 +10,7 @@ import pytest
 from music_assistant_models.enums import ExternalID, ImageType
 from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import (
+    ItemMapping,
     MediaItemImage,
     ProviderMapping,
     UniqueList,
@@ -261,3 +263,32 @@ async def test_album_tracks_prefer_a_playable_copy(mass: MusicAssistant, unplaya
         ("Shared", playable, True),
         ("Bonus", unplayable, False),
     ]
+
+
+def test_album_from_library_item_mapping_has_no_self_mapping(mass: MusicAssistant) -> None:
+    """A library item mapping has no provider of its own, so it gets no provider mapping."""
+    item = ItemMapping(item_id="42", provider="library", name="Test Album")
+
+    album = mass.music.albums.album_from_item_mapping(item)
+
+    assert album.provider == "library"
+    assert album.item_id == "42"
+    assert album.provider_mappings == set()
+
+
+def test_album_from_provider_item_mapping_keeps_mapping(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider item mapping is converted into a real, resolvable provider mapping."""
+    monkeypatch.setattr(
+        mass,
+        "get_provider",
+        lambda _: SimpleNamespace(domain="spotify", instance_id="spotify_1"),
+    )
+    item = ItemMapping(item_id="abc", provider="spotify_1", name="Test Album")
+
+    album = mass.music.albums.album_from_item_mapping(item)
+
+    assert album.provider_mappings == {
+        ProviderMapping(item_id="abc", provider_domain="spotify", provider_instance="spotify_1")
+    }

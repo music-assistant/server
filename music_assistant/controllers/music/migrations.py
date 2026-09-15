@@ -1014,7 +1014,7 @@ async def migrate_database(  # noqa: PLR0915
     if prev_version <= 59:
         # a library item mapping has no provider of its own, but was briefly stored as a
         # self-referential mapping with the literal string "None" as domain and instance.
-        # Such a mapping never resolves and makes the artist page query a provider that does
+        # Such a mapping never resolves and makes the item page query a provider that does
         # not exist, so drop it.
         provider_mappings_table_exists = await database.get_rows_from_query(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :table_name",
