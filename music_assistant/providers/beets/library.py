@@ -90,7 +90,11 @@ class BeetsLibrary:
             )
             self._db.row_factory = aiosqlite.Row
             columns = {table: await self._table_columns(table) for table in _TABLES}
-        except (sqlite3.Error, BeetsLibraryError) as err:
+        except BeetsLibraryError:
+            # already reports its own reason (from _fetch_all); do not wrap it again
+            await self.close()
+            raise
+        except sqlite3.Error as err:
             await self.close()
             msg = f"Unable to open {self.db_path}: {err}"
             raise BeetsLibraryError(msg) from err
@@ -110,7 +114,7 @@ class BeetsLibrary:
     async def count_items(self) -> int:
         """Return the number of items in the library."""
         rows = await self._fetch_all("SELECT COUNT(*) AS total FROM items")
-        return int(rows[0]["total"]) if rows else 0
+        return int(rows[0]["total"])
 
     async def get_albums(self) -> dict[int, BeetsRow]:
         """Return every album keyed by its beets id."""

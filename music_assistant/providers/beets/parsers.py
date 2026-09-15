@@ -408,10 +408,13 @@ def _artists_from_fields(
             if name := raw_name.strip():
                 result.append(parse_artist(name, ctx, _at(sort_names, index), _at(mbids, index)))
         return result
-    if name := _text(fields.get(single_keys[0])):  # type: ignore[assignment]
+    if single_name := _text(fields.get(single_keys[0])):
         result.append(
             parse_artist(
-                name, ctx, _text(fields.get(single_keys[1])), _text(fields.get(single_keys[2]))
+                single_name,
+                ctx,
+                _text(fields.get(single_keys[1])),
+                _text(fields.get(single_keys[2])),
             )
         )
     return result

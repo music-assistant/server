@@ -26,6 +26,16 @@ async def test_open_fails_for_missing_file_without_creating_it(tmp_path: Path) -
     assert not (tmp_path / "missing.db").exists()
 
 
+async def test_open_of_non_sqlite_file_does_not_double_wrap_the_error(tmp_path: Path) -> None:
+    """A read error while opening is raised as-is, not wrapped again as an open failure."""
+    db_path = tmp_path / "junk.db"
+    db_path.write_bytes(b"not a sqlite database at all")
+    library = BeetsLibrary(str(db_path))
+    with pytest.raises(BeetsLibraryError) as err:
+        await library.open()
+    assert not ("Unable to open" in str(err.value) and "Unable to read" in str(err.value))
+
+
 async def test_open_fails_without_items_table(tmp_path: Path) -> None:
     """A SQLite file that is not a beets library is rejected."""
     db_path = tmp_path / "other.db"
