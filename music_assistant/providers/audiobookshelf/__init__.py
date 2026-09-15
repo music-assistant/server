@@ -90,7 +90,6 @@ from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
-    MusicAssistantError,
 )
 from music_assistant_models.media_items import (
     Artist,
@@ -1898,7 +1897,7 @@ for more details.
         """
         # the updated item only has a single provider mapping given by this provider's parse function
         if len(updated_item.provider_mappings) != 1:
-            raise MusicAssistantError("Expected exactly one provider mapping.")
+            raise InvalidDataError("Expected exactly one provider mapping.")
         updated_provider_mapping = updated_item.provider_mappings.pop()
         updated_provider_mapping.in_library = True
         updated_item.provider_mappings = {updated_provider_mapping}
