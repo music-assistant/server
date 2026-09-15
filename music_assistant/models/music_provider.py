@@ -42,7 +42,6 @@ from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS,
     CONF_ENTRY_LIBRARY_SYNC_DELETIONS,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLIST_TRACKS,
-    DynamicFeedItem,
     PlaylistPlayableItem,
 )
 from music_assistant.controllers.tasks.context import (
@@ -468,13 +467,12 @@ class MusicProvider(Provider):
 
     async def get_dynamic_radio_tracks(
         self, prov_radio_id: str, *, sample: bool = False
-    ) -> list[DynamicFeedItem]:
+    ) -> list[Track]:
         """
-        Return a fresh batch of items for a dynamic radio station.
+        Return a fresh batch of tracks for a dynamic radio station.
 
         Only called for a Radio with `is_dynamic` set. Every call returns a new batch;
-        there is no stable listing and no pagination. A batch holds tracks and may weave
-        in sound effects (spoken clips) the station wants aired at that point of its feed.
+        there is no stable listing and no pagination.
 
         :param prov_radio_id: The provider's ID of the radio station.
         :param sample: True returns a preview batch that must not mutate any

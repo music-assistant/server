@@ -54,7 +54,6 @@ from .constants import (
     DEFAULT_WEATHER_TIMEOUT_SECONDS,
     DEFERRED_PLACEHOLDERS,
     FAHRENHEIT_COUNTRY_CODES,
-    SONG_PLACEHOLDER_TOKENS,
     TTS_PRONUNCIATION_INSTRUCTIONS,
     VALID_WEB_SEARCH_MODES,
     WEATHER_PLACEHOLDER_TOKENS,
@@ -68,7 +67,7 @@ from .helpers import (
     is_empty_section,
     pick_weighted_choice,
     slugify,
-    song_placeholder_values,
+    track_songinfo,
 )
 from .models import (
     PlannedSection,
@@ -189,15 +188,8 @@ class AIRadioRuntimeMixin:
         allowed_slot_when: list[str] | None,
         runtime_tokens: dict[str, str],
         decided_next_item_ids: set[str] | None = None,
-        defer_song_tokens: bool = False,
     ) -> tuple[list[PlannedSection], dict[str, list[tuple[int, float]]]]:
-        """
-        Evaluate section rules and produce planning entries.
-
-        :param defer_song_tokens: Keep the song placeholders verbatim in the planned prompts,
-            for a clip whose neighbours are only known once it sits in a queue. Guards still
-            see them resolved against the given track order.
-        """
+        """Evaluate section rules and produce planning entries."""
         sections = program.get("sections", [])
         section_order = program.get("section_order", [])
         if not isinstance(sections, list) or not sections:
@@ -250,12 +242,6 @@ class AIRadioRuntimeMixin:
             # guards may require a deferred token to be present, so they see the merged view;
             # only the static half is substituted into the stored prompt
             guard_values = {**deferred, **static}
-            if defer_song_tokens:
-                static = {
-                    key: value
-                    for key, value in static.items()
-                    if key not in SONG_PLACEHOLDER_TOKENS
-                }
             for rule in matching_rules:
                 flow = rule.get("flow", [])
                 if not isinstance(flow, list):
@@ -483,12 +469,6 @@ class AIRadioRuntimeMixin:
         section: PlannedSection,
     ) -> QueueItem:
         """Build the queue item for a not-yet-rendered clip."""
-        queue_item = build_queue_item(queue_id, self._section_to_sound_effect(section))
-        queue_item.extra_attributes.update(self._clip_render_contract(session_id, program, section))
-        return queue_item
-
-    def _section_to_sound_effect(self, section: PlannedSection) -> SoundEffect:
-        """Build the sound effect media item a planned clip is played as."""
         clip = SoundEffect(
             item_id=section.clip_id,
             provider=self.instance_id,
@@ -511,22 +491,20 @@ class AIRadioRuntimeMixin:
                 )
             ]
         )
-        return clip
-
-    def _clip_render_contract(
-        self, session_id: str, program: dict[str, Any], section: PlannedSection
-    ) -> dict[str, Any]:
-        """Return the queue item attributes the render path needs to voice a planned clip."""
+        queue_item = build_queue_item(queue_id, clip)
         # the section name already travels as the item's own name, so it is not duplicated here
-        return {
-            ATTR_SESSION_ID: session_id,
-            ATTR_STATION_ID: str(program.get("id") or ""),
-            ATTR_HOST_ID: str(program.get("host_id") or ""),
-            ATTR_PROMPT: section.prompt,
-            ATTR_MAX_CHARS: section.max_chars,
-            ATTR_WEB_SEARCH_MODE: section.web_search_mode,
-            ATTR_WEATHER_REQUIRED: section.weather_required,
-        }
+        queue_item.extra_attributes.update(
+            {
+                ATTR_SESSION_ID: session_id,
+                ATTR_STATION_ID: str(program.get("id") or ""),
+                ATTR_HOST_ID: str(program.get("host_id") or ""),
+                ATTR_PROMPT: section.prompt,
+                ATTR_MAX_CHARS: section.max_chars,
+                ATTR_WEB_SEARCH_MODE: section.web_search_mode,
+                ATTR_WEATHER_REQUIRED: section.weather_required,
+            }
+        )
+        return queue_item
 
     @staticmethod
     def _ai_radio_cover_image_path() -> str:
@@ -541,20 +519,14 @@ class AIRadioRuntimeMixin:
 
     async def _prepare_weather_tokens(self) -> dict[str, str]:
         """Return the weather placeholder tokens, fetching them at most once per cache window."""
-        if (cached := self._cached_weather_tokens()) is not None:
-            return cached
+        cached = self._weather_tokens_cache
+        if cached is not None and (time.monotonic() - cached[0]) < WEATHER_TOKENS_CACHE_SECONDS:
+            return dict(cached[1])
         tokens = await self._fetch_weather_tokens()
         # failed and disabled lookups are cached too, so a broken forecast source cannot
         # put its timeout in front of every replan pass
         self._weather_tokens_cache = (time.monotonic(), tokens)
         return dict(tokens)
-
-    def _cached_weather_tokens(self) -> dict[str, str] | None:
-        """Return the weather tokens of a still-fresh lookup, or None when there is none."""
-        cached = self._weather_tokens_cache
-        if cached is None or (time.monotonic() - cached[0]) >= WEATHER_TOKENS_CACHE_SECONDS:
-            return None
-        return dict(cached[1])
 
     async def _fetch_weather_tokens(self) -> dict[str, str]:
         """Fetch and format weather placeholder tokens from the configured provider."""
@@ -871,7 +843,11 @@ class AIRadioRuntimeMixin:
         prev_track = tracks[slot.prev_index] if slot.prev_index is not None else None
         next_track = tracks[slot.next_index] if slot.next_index is not None else None
         very_next_track = tracks[slot.very_next_index] if slot.very_next_index is not None else None
-        static = song_placeholder_values(prev_track, next_track, very_next_track)
+        static = {
+            "<prev_songinfo>": track_songinfo(prev_track),
+            "<next_songinfo>": track_songinfo(next_track),
+            "<very_next_songinfo>": track_songinfo(very_next_track),
+        }
         deferred = dict.fromkeys(DEFERRED_PLACEHOLDERS, "")
         deferred["<timestamp>"] = format_ai_radio_timestamp(self._configured_now())
         for key, value in runtime_tokens.items():

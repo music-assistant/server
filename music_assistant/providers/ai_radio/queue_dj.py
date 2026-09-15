@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 import aiofiles
-from music_assistant_models.enums import EventType, MediaType
+from music_assistant_models.enums import EventType
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.controllers.player_queues.helpers import committed_index
@@ -341,8 +341,6 @@ class AIRadioQueueDJMixin:
                 for track in window_tracks[1:]
                 if track["item_id"] not in state.decided_gap_ids
             }
-            # a show's intro is not planned here: it rides the feed's first page, since the
-            # queue starts playing that page in the very call that loads it
             allowed_slot_when = ["between_songs"]
             run = self._show_runs.get(state.station_id) if state.station_id else None
             outro_target: dict[str, Any] | None = None
@@ -459,7 +457,9 @@ class AIRadioQueueDJMixin:
         # that would follow the new clip) for an after-target splice, ahead of it otherwise.
         # an outro behind the queue tail has no such slot
         occupant_index = insert_index if after_target else insert_index - 1
-        if occupant_index < len(items) and self._is_ai_radio_clip(items[occupant_index]):
+        if occupant_index < len(items) and items[occupant_index].extra_attributes.get(
+            ATTR_QUEUE_DJ
+        ):
             return "occupied"
         # the planner numbers its clips from zero every pass, so the id comes from the
         # state counter instead to stay unique for the lifetime of the session
@@ -562,7 +562,11 @@ class AIRadioQueueDJMixin:
         """Return the upcoming music items that this pass may plan against."""
         # every upcoming track, decided or not: the planner counts songs and minutes over a
         # contiguous run, and per gap decisions are what keeps the work from being redone
-        return [item for item in items[guard_index + 1 :] if not self._is_ai_radio_clip(item)]
+        return [
+            item
+            for item in items[guard_index + 1 :]
+            if not item.extra_attributes.get(ATTR_QUEUE_DJ)
+        ]
 
     def _dj_window_offsets(self, items: list[QueueItem], window_start_id: str) -> tuple[int, float]:
         """Return the songs and minutes of music playing before the first window track."""
@@ -570,21 +574,10 @@ class AIRadioQueueDJMixin:
         for item in items:
             if item.queue_item_id == window_start_id:
                 break
-            if not self._is_ai_radio_clip(item):
+            if not item.extra_attributes.get(ATTR_QUEUE_DJ):
                 behind.append(item)
         minutes = sum(item.duration or FALLBACK_TRACK_SECONDS for item in behind) / 60.0
         return len(behind), minutes
-
-    def _is_ai_radio_clip(self, item: QueueItem) -> bool:
-        """Return True for one of this provider's spoken clips, DJ-placed or fed by a show."""
-        if item.extra_attributes.get(ATTR_QUEUE_DJ):
-            return True
-        media_item = item.media_item
-        return (
-            media_item is not None
-            and media_item.media_type == MediaType.SOUND_EFFECT
-            and media_item.provider == self.instance_id
-        )
 
     def _drop_unaired_dj_history(
         self, state: DJQueueState, items: list[QueueItem], guard_index: int

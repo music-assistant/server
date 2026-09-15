@@ -26,8 +26,6 @@ if TYPE_CHECKING:
     )
     from music_assistant_models.streamdetails import StreamDetails
 
-    from music_assistant.constants import DynamicFeedItem
-
 
 # separator between the owning provider's instance_id and the provider-scoped engine id;
 # occurs in neither MA instance_ids nor Home Assistant entity_ids
@@ -498,13 +496,12 @@ class PluginProvider(Provider):
 
     async def get_dynamic_radio_tracks(
         self, prov_radio_id: str, *, sample: bool = False
-    ) -> list[DynamicFeedItem]:
+    ) -> list[Track]:
         """
-        Return a fresh batch of items for a dynamic radio station owned by this plugin.
+        Return a fresh batch of tracks for a dynamic radio station owned by this plugin.
 
-        A batch holds tracks and may weave in sound effects (spoken clips) the station
-        wants aired at that point of its feed. Return an empty batch to signal the
-        station's feed is exhausted; the queue then plays out its remaining items and ends.
+        Return an empty batch to signal the station's feed is exhausted; the queue then
+        plays out its remaining items and ends.
 
         :param prov_radio_id: Provider-scoped radio id.
         :param sample: True returns a preview batch that must not mutate any

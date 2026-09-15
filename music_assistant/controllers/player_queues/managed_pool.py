@@ -32,9 +32,8 @@ from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from music_assistant_models.errors import MusicAssistantError
-from music_assistant_models.media_items import SoundEffect, Track
+from music_assistant_models.media_items import Track
 
-from music_assistant.constants import DynamicFeedItem
 from music_assistant.controllers.music.recency import song_keys
 from music_assistant.controllers.player_queues.constants import (
     MANAGED_POOL_SOURCE_CAP,
@@ -85,9 +84,7 @@ class DynamicSource:
     media_item: MediaItemType
     multiplicity: int
     fill_mode: DynamicFillMode
-    # a dynamic feed may weave sound effects (a station's spoken clips) in with its tracks; a
-    # finite source only ever offers tracks
-    candidates: list[DynamicFeedItem] = field(default_factory=list)
+    candidates: list[Track] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -123,9 +120,9 @@ class ManagedPool:
         # finite-source materialized state, keyed by queue id then source uri; see _MaterializedSource
         self._materialized: dict[str, dict[str, _MaterializedSource]] = {}
 
-    async def fill(self, queue_id: str, *, is_initial: bool) -> list[DynamicFeedItem]:
+    async def fill(self, queue_id: str, *, is_initial: bool) -> list[Track]:
         """
-        Build (or top up) the managed pool and return the items to add.
+        Build (or top up) the managed pool and return the tracks to add.
 
         :param queue_id: The queue to fill.
         :param is_initial: True when seeding a fresh pool, False when topping up an existing one.
@@ -178,16 +175,12 @@ class ManagedPool:
         )
         if chosen and self.queues.smart_fade_ordering_enabled(queue):
             # Dynamic Mode already picked the refill tracks. Reorder only that
-            # batch, starting from the queue tail. A sound effect woven into the feed keeps
-            # its slot; only the tracks around it are reordered by fade compatibility.
-            ordered = iter(
-                await order_tracks(
-                    self.mass,
-                    [item for item in chosen if isinstance(item, Track)],
-                    preceding_track=preceding_track,
-                )
+            # batch, starting from the queue tail.
+            chosen = await order_tracks(
+                self.mass,
+                chosen,
+                preceding_track=preceding_track,
             )
-            chosen = [item if isinstance(item, SoundEffect) else next(ordered) for item in chosen]
         # Keep the existing finite-source bookkeeping after ordering: mark dispatched tracks,
         # page more in and retire exhausted sources.
         await self._reconcile_tracks(queue_id, sources, chosen, snapshot, windows)
@@ -266,11 +259,11 @@ class ManagedPool:
             )
         return sources
 
-    async def _fetch_dynamic(self, media_item: MediaItemType) -> list[DynamicFeedItem]:
+    async def _fetch_dynamic(self, media_item: MediaItemType) -> list[Track]:
         """Fetch the next self-managed batch from a dynamic playlist or radio station."""
         with suppress(MusicAssistantError):
-            items = await self.queues.get_dynamic_source_tracks(media_item)
-            return [item for item in items if item.available]
+            tracks = await self.queues.get_dynamic_source_tracks(media_item)
+            return [track for track in tracks if track.available]
         return []
 
     async def _fetch_tracks(self, media_item: MediaItemType) -> list[Track]:
@@ -298,7 +291,7 @@ class ManagedPool:
         self,
         queue_id: str,
         sources: list[DynamicSource],
-        chosen: list[DynamicFeedItem],
+        chosen: list[Track],
         snapshot: RecencySnapshot,
         windows: RecencyWindows,
     ) -> None:
@@ -390,9 +383,9 @@ def allocate_refill(
     weight_model: PoolWeightModel = POOL_WEIGHT_MODEL,
     preceding_artists: set[str] | None = None,
     pool_song_keys: set[tuple[str, str]] | None = None,
-) -> list[DynamicFeedItem]:
+) -> list[Track]:
     """
-    Pick the next batch of items for the managed pool, weighted per source and recency-gated.
+    Pick the next batch of tracks for the managed pool, weighted per source and recency-gated.
 
     Slots are apportioned across sources by weight; each source's candidates are hard-gated against
     the recency snapshot (a within-window track is excluded entirely). A dynamic batch is ordered
@@ -400,11 +393,10 @@ def allocate_refill(
     keeps its own materialized order. If gating leaves nothing, an ungated least-recently-played
     fallback is returned so playback never stalls. The selected source groups are randomly
     interleaved while retaining each source's candidate order, then spaced so no two adjacent tracks
-    share an artist. A sound effect a dynamic feed weaves in has no artist and no play history, so
-    it is never gated and keeps its place in the feed's order.
+    share an artist.
 
-    :param sources: The queue's dynamic sources, each with its already-fetched candidates.
-    :param slots: How many items to add (0 or fewer returns nothing).
+    :param sources: The queue's dynamic sources, each with its already-fetched candidate tracks.
+    :param slots: How many tracks to add (0 or fewer returns nothing).
     :param pool_keys: Tracks already in the queue, to avoid immediate repeats.
     :param snapshot: The play-history snapshot to gate/score against.
     :param windows: The configured recency windows.
@@ -425,8 +417,8 @@ def allocate_refill(
     shares = [slots * (weight or 0) / total_weight for weight in weights]
     taken = [0.0] * len(sources)
     pointers = [0] * len(sources)
-    chosen_by_source: list[list[DynamicFeedItem]] = [[] for _ in sources]
-    chosen_set: set[DynamicFeedItem] = set()
+    chosen_by_source: list[list[Track]] = [[] for _ in sources]
+    chosen_set: set[Track] = set()
     chosen_song_keys: set[tuple[str, str]] = set()
     for _ in range(slots):
         best_index = -1
@@ -490,14 +482,13 @@ def _eligible(
     pool_song_keys: set[tuple[str, str]],
     snapshot: RecencySnapshot,
     windows: RecencyWindows,
-) -> list[DynamicFeedItem]:
+) -> list[Track]:
     """
     Return a source's candidates minus pool/recency-blocked ones.
 
     A finite (TRACKS) source keeps its materialized deque order so it plays through coherently; a
     dynamic batch is ordered fresh-artist first (recently-heard artists nudged back), then
-    least-recently-played. The sort is stable, so items that tie (never played, fresh artist, which
-    a woven-in sound effect always is) keep the feed's own order.
+    least-recently-played.
     """
     # a deliberately-duplicated source uses the short repeat-gap, a singleton the long song window
     window = windows.duplicate_gap_seconds if source.multiplicity > 1 else windows.song_seconds
@@ -509,7 +500,7 @@ def _eligible(
             and pool_song_keys.isdisjoint(song_keys(track))
             and not snapshot.track_recent(track, window)
         ]
-    scored: list[tuple[int, int, int, DynamicFeedItem]] = []
+    scored: list[tuple[int, int, int, Track]] = []
     for track in source.candidates:
         if track in pool_keys or not pool_song_keys.isdisjoint(song_keys(track)):
             continue
@@ -520,7 +511,7 @@ def _eligible(
         # station still plays); then never-played (None) ahead of played; then oldest play first
         artist_recent = any(
             snapshot.artist_recent(artist.name, windows.artist_seconds)
-            for artist in getattr(track, "artists", None) or ()
+            for artist in track.artists
             if artist.name
         )
         scored.append(
@@ -543,11 +534,11 @@ def _ungated_fallback(
     pool_keys: set[Track],
     pool_song_keys: set[tuple[str, str]],
     snapshot: RecencySnapshot,
-) -> list[DynamicFeedItem]:
+) -> list[Track]:
     """Return the globally least-recently-played candidates, ignoring the recency gate."""
-    seen: set[DynamicFeedItem] = set()
+    seen: set[Track] = set()
     seen_song_keys = set(pool_song_keys)
-    pool: list[DynamicFeedItem] = []
+    pool: list[Track] = []
     for source in sources:
         for track in source.candidates:
             if (
@@ -568,9 +559,7 @@ def _ungated_fallback(
     return pool[:slots]
 
 
-def _space_tracks(
-    tracks: list[DynamicFeedItem], preceding: set[str] | None
-) -> list[DynamicFeedItem]:
+def _space_tracks(tracks: list[Track], preceding: set[str] | None) -> list[Track]:
     """
     Reorder the batch to best-effort keep directly-adjacent tracks from sharing an artist.
 
@@ -582,9 +571,9 @@ def _space_tracks(
     return [tracks[index] for index in order]
 
 
-def _track_artist_set(item: DynamicFeedItem) -> set[str]:
-    """Return the lowercased set of artist names for a feed item (empty for a sound effect)."""
-    return {artist.name.lower() for artist in getattr(item, "artists", None) or () if artist.name}
+def _track_artist_set(track: Track) -> set[str]:
+    """Return the lowercased set of artist names for a track."""
+    return {artist.name.lower() for artist in track.artists if artist.name}
 
 
 def _uri(media_item: MediaItemType) -> str | None:

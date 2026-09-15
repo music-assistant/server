@@ -36,7 +36,6 @@ from music_assistant.helpers.tts import (
 )
 
 from .constants import (
-    ATTR_FEED_CLIP,
     ATTR_HOST_ID,
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
@@ -57,12 +56,7 @@ from .constants import (
     TTS_SPEECHNORM_FILTER,
     WEATHER_PLACEHOLDER_TOKENS,
 )
-from .helpers import (
-    coerce_int,
-    format_ai_radio_timestamp,
-    soft_limit_text,
-    song_placeholder_values,
-)
+from .helpers import coerce_int, format_ai_radio_timestamp, soft_limit_text
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -103,11 +97,6 @@ class AIRadioRenderMixin:
         config: ProviderConfig
         logger: logging.Logger
         _hosts: dict[str, dict[str, Any]]
-        _feed_clip_contracts: dict[str, dict[str, Any]]
-
-        def _dj_queue_items(self, queue_id: str) -> list[QueueItem]: ...
-        def _queue_item_to_track(self, index: int, item: QueueItem) -> dict[str, Any]: ...
-        def _is_ai_radio_clip(self, item: QueueItem) -> bool: ...
 
     _render_locks: dict[str, asyncio.Lock]
     _media_cache: dict[str, _CachedClipMedia]
@@ -123,13 +112,6 @@ class AIRadioRenderMixin:
         queue_item = self._find_clip_item(item_id)
         if queue_item is None:
             raise MediaNotFoundError(f"AI Radio clip {item_id} is not in any queue")
-        if ATTR_PROMPT not in queue_item.extra_attributes and (
-            (contract := self._feed_clip_contracts.get(item_id)) is not None
-        ):
-            # a clip that arrived through a show's feed reaches the queue as a bare media
-            # item: it picks up its render contract on first play and keeps it from then on
-            queue_item.extra_attributes.update(contract)
-            self.mass.player_queues.signal_update(queue_item.queue_id, items_changed=True)
         prompt = str(queue_item.extra_attributes.get(ATTR_PROMPT) or "")
         if not prompt:
             self.logger.warning(
@@ -310,9 +292,6 @@ class AIRadioRenderMixin:
         """Resolve the deferred placeholders and generate the spoken script."""
         attributes = queue_item.extra_attributes
         deferred = await self._resolve_deferred_placeholders(prompt)
-        if attributes.get(ATTR_FEED_CLIP):
-            # a feed clip's neighbours are only known once it sits in the queue
-            deferred.update(self._queue_song_placeholders(queue_item))
         empty_weather_tokens = [
             token
             for token in WEATHER_PLACEHOLDER_TOKENS
@@ -367,36 +346,6 @@ class AIRadioRenderMixin:
         if any(token in prompt for token in WEATHER_PLACEHOLDER_TOKENS):
             values.update(await self._prepare_weather_tokens())
         return values
-
-    def _queue_song_placeholders(self, queue_item: QueueItem) -> dict[str, str]:
-        """Return the song placeholders of a clip, filled from the music around it in its queue."""
-        items = self._dj_queue_items(queue_item.queue_id)
-        position = next(
-            (
-                index
-                for index, item in enumerate(items)
-                if item.queue_item_id == queue_item.queue_item_id
-            ),
-            None,
-        )
-        if position is None:
-            return song_placeholder_values(None, None, None)
-        # other clips may sit next to this one (a DJ break spliced right behind an intro), so
-        # the neighbours are the nearest music items, not the adjacent queue slots
-        behind = [
-            (index, item)
-            for index, item in enumerate(items[:position])
-            if not self._is_ai_radio_clip(item)
-        ]
-        ahead = [
-            (index, item)
-            for index, item in enumerate(items[position + 1 :], start=position + 1)
-            if not self._is_ai_radio_clip(item)
-        ]
-        prev_track = self._queue_item_to_track(*behind[-1]) if behind else None
-        next_track = self._queue_item_to_track(*ahead[0]) if ahead else None
-        very_next_track = self._queue_item_to_track(*ahead[1]) if len(ahead) > 1 else None
-        return song_placeholder_values(prev_track, next_track, very_next_track)
 
     async def _mint_clip_media(
         self, queue_item: QueueItem, text: str, clip_id: str

@@ -759,35 +759,6 @@ async def test_replan_plans_an_outro_when_the_show_run_is_exhausted(tmp_path: Pa
     assert final_items[-1].extra_attributes.get(ATTR_GAP_NEXT_ID) is None
 
 
-async def test_replan_leaves_the_start_of_playlist_rule_to_the_feed(tmp_path: Path) -> None:
-    """
-    An exhausted, not yet started show gets its outro from the DJ but never its intro.
-
-    The intro rides the show feed's first page, so the DJ must skip the host's
-    start_of_playlist rule even while the queue has not started playing.
-    """
-    tracks = [_track(index) for index in range(2)]
-    host = _must_host()
-    host["section_order"] = [
-        {"when": "start_of_playlist", "flow": [{"MUST": "Song_Transition"}]},
-        {"when": "end_of_playlist", "flow": [{"MUST": "Song_Transition"}]},
-    ]
-    dummy = _make_replan_dj(
-        tmp_path, list(tracks), current_index=None, index_in_buffer=None, host=host
-    )
-    state = dummy._dj_queues["queue-1"]
-    state.station_id = "station_a"
-    dummy._show_runs["station_a"] = _ShowRun(tracks=[], queue_id="queue-1")
-
-    await dummy._replan_queue("queue-1")
-
-    final_items = dummy.player_queues.items("queue-1")
-    assert len(final_items) == 3  # both tracks, outro clip
-    assert final_items[0].queue_item_id == tracks[0].queue_item_id
-    assert final_items[-1].extra_attributes[ATTR_QUEUE_DJ] is True
-    assert final_items[-1].extra_attributes.get(ATTR_GAP_NEXT_ID) is None
-
-
 def _outro_host() -> dict[str, Any]:
     """Return a host that always plans a section at the end of the playlist."""
     host = _must_host()
@@ -798,28 +769,7 @@ def _outro_host() -> dict[str, Any]:
 def _show_track_item(index: int, uri: str) -> FakeQueueItem:
     """Return a fake music queue item carrying a media item with the given uri."""
     item = _track(index)
-    item.media_item = cast(
-        "Any",
-        SimpleNamespace(
-            uri=uri, name="", artists=None, media_type=MediaType.TRACK, provider="library"
-        ),
-    )
-    return item
-
-
-def _feed_intro(provider: str = "ai_radio_test") -> FakeQueueItem:
-    """Return a fake intro clip as a show's feed delivers it: a bare sound effect, no attributes."""
-    item = FakeQueueItem("Intro", duration=30)
-    item.media_item = cast(
-        "Any",
-        SimpleNamespace(
-            uri=f"{provider}://sound_effect/show_000",
-            name="Intro",
-            artists=None,
-            media_type=MediaType.SOUND_EFFECT,
-            provider=provider,
-        ),
-    )
+    item.media_item = cast("Any", SimpleNamespace(uri=uri, name="", artists=None))
     return item
 
 
@@ -894,52 +844,6 @@ async def test_no_second_outro_behind_user_appended_tracks(tmp_path: Path) -> No
     final_items = dummy.player_queues.items("queue-1")
     dj_clips = [item for item in final_items if item.extra_attributes.get(ATTR_QUEUE_DJ)]
     assert dj_clips == [outro]
-
-
-def _intro_host() -> dict[str, Any]:
-    """Return a host that always plans a section at the start of the playlist."""
-    host = _must_host()
-    host["section_order"] = [{"when": "start_of_playlist", "flow": [{"MUST": "Song_Transition"}]}]
-    return host
-
-
-async def test_replan_never_plans_the_intro(tmp_path: Path) -> None:
-    """The start_of_playlist slot is never offered to the DJ, not even before playback starts."""
-    tracks = [_track(index) for index in range(3)]
-    dummy = _make_replan_dj(
-        tmp_path, list(tracks), current_index=None, index_in_buffer=None, host=_intro_host()
-    )
-
-    await dummy._replan_queue("queue-1")
-
-    assert dummy.player_queues.loads == []
-
-
-async def test_a_feed_intro_at_the_head_is_a_clip_not_a_song(tmp_path: Path) -> None:
-    """A show intro fed into the queue is skipped by the window and counts for no song."""
-    intro = _feed_intro()
-    tracks = [_track(index) for index in range(3)]
-    dummy = _make_replan_dj(tmp_path, [intro, *tracks], current_index=0, index_in_buffer=0)
-
-    await dummy._replan_queue("queue-1")
-
-    queues = dummy.player_queues
-    # the intro is airing: the gaps before the second and third track are the plannable ones
-    announced = {items[0].extra_attributes[ATTR_GAP_NEXT_ID] for items, _ in queues.loads}
-    assert announced == {tracks[1].queue_item_id, tracks[2].queue_item_id}
-    # the intro is no DJ clip and announces no track, so repair leaves it alone
-    assert queues.deleted == []
-    assert dummy._dj_queues["queue-1"].songs_before_window == 0
-
-
-async def test_is_ai_radio_clip_matches_dj_and_feed_clips_only(tmp_path: Path) -> None:
-    """DJ clips and this provider's fed sound effects are clips; tracks and foreign effects are not."""
-    dummy = _make_replan_dj(tmp_path, [])
-    is_clip = cast("Callable[[Any], bool]", dummy._is_ai_radio_clip)
-    assert is_clip(_dj_clip("x", "sess")) is True
-    assert is_clip(_feed_intro()) is True
-    assert is_clip(_feed_intro(provider="other_provider")) is False
-    assert is_clip(_track(0)) is False
 
 
 async def test_replan_inserts_clip_between_upcoming_tracks(tmp_path: Path) -> None:
