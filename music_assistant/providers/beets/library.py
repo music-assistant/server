@@ -10,9 +10,39 @@ from urllib.parse import quote
 
 import aiosqlite
 
-from .constants import ITEM_BATCH_SIZE, SQLITE_BUSY_TIMEOUT
+from .constants import (
+    BEETS_LIST_DELIMITER,
+    BEETS_MULTI_VALUE_DELIMITER,
+    ITEM_BATCH_SIZE,
+    SQLITE_BUSY_TIMEOUT,
+)
 
 _TABLES = ("items", "albums", "item_attributes", "album_attributes")
+# album artists are looked up before track artists
+_SINGLE_ARTIST_LOOKUPS = (
+    ("albums", "albumartist", "albumartist_sort", "mb_albumartistid"),
+    ("items", "artist", "artist_sort", "mb_artistid"),
+)
+_LIST_ARTIST_LOOKUPS = (
+    ("albums", "albumartists", "albumartists_sort", "mb_albumartistids"),
+    ("items", "artists", "artists_sort", "mb_artistids"),
+)
+# a small prefilter cap: the exact match below still runs over every candidate row
+_ARTIST_LIST_LOOKUP_LIMIT = 20
+_LIKE_ESCAPE_CHAR = "\\"
+
+
+def split_multi_value(value: object) -> list[str]:
+    """
+    Split a beets multi-valued field into its values, keeping empty positions.
+
+    :param value: The raw database value.
+    """
+    if not isinstance(value, str) or not value:
+        return []
+    if BEETS_MULTI_VALUE_DELIMITER in value:
+        return value.split(BEETS_MULTI_VALUE_DELIMITER)
+    return value.split(BEETS_LIST_DELIMITER)
 
 
 class BeetsLibraryError(Exception):
@@ -144,17 +174,14 @@ class BeetsLibrary:
         """
         Return the sort name and MusicBrainz id beets holds for an artist name.
 
-        Album artists are looked up before track artists. Returns None when no album or item
-        carries this exact artist name.
+        Album artists are looked up before track artists, exact single-valued columns before
+        the multi-valued lists (so a featured artist is also found). Returns None when no album
+        or item carries this artist name.
 
         :param name: The artist name.
         """
         self._require_open()
-        lookups = (
-            ("albums", "albumartist", "albumartist_sort", "mb_albumartistid"),
-            ("items", "artist", "artist_sort", "mb_artistid"),
-        )
-        for table, name_column, sort_column, mbid_column in lookups:
+        for table, name_column, sort_column, mbid_column in _SINGLE_ARTIST_LOOKUPS:
             columns = self._columns.get(table, frozenset())
             if name_column not in columns:
                 continue
@@ -167,6 +194,24 @@ class BeetsLibrary:
             )
             if rows:
                 return (rows[0]["sort_name"] or None, rows[0]["mbid"] or None)
+        for table, list_column, sort_column, mbid_column in _LIST_ARTIST_LOOKUPS:
+            columns = self._columns.get(table, frozenset())
+            if list_column not in columns:
+                continue
+            sort_expr = sort_column if sort_column in columns else "NULL"
+            mbid_expr = mbid_column if mbid_column in columns else "NULL"
+            rows = await self._fetch_all(
+                f"SELECT {list_column} AS names, {sort_expr} AS sort_names, "
+                f"{mbid_expr} AS mbids FROM {table} WHERE {list_column} LIKE ? "
+                f"ESCAPE '{_LIKE_ESCAPE_CHAR}' LIMIT ?",
+                (_like_pattern(name), _ARTIST_LIST_LOOKUP_LIMIT),
+            )
+            for row in rows:
+                if (index := _index_of(split_multi_value(row["names"]), name)) is None:
+                    continue
+                sort_name = _at(split_multi_value(row["sort_names"]), index)
+                mbid = _at(split_multi_value(row["mbids"]), index)
+                return (sort_name, mbid)
         return None
 
     def _require_open(self) -> aiosqlite.Connection:
@@ -211,3 +256,26 @@ class BeetsLibrary:
         except sqlite3.Error as err:
             msg = f"Unable to read {self.db_path}: {err}"
             raise BeetsLibraryError(msg) from err
+
+
+def _like_pattern(name: str) -> str:
+    """Return a SQL LIKE pattern that matches name as a literal substring."""
+    escaped = name
+    for char in (_LIKE_ESCAPE_CHAR, "%", "_"):
+        escaped = escaped.replace(char, f"{_LIKE_ESCAPE_CHAR}{char}")
+    return f"%{escaped}%"
+
+
+def _index_of(values: list[str], name: str) -> int | None:
+    """Return the index of the element that strips to an exact match of name, or None."""
+    for index, value in enumerate(values):
+        if value.strip() == name:
+            return index
+    return None
+
+
+def _at(values: list[str], index: int) -> str | None:
+    """Return the stripped value at index, or None when it is missing or empty."""
+    if index >= len(values):
+        return None
+    return values[index].strip() or None

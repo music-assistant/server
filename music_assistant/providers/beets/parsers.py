@@ -33,12 +33,11 @@ from music_assistant.helpers.util import parse_title_and_version
 from .constants import (
     ALBUM_ID_PREFIX,
     ALBUM_TYPE_PRIORITY,
-    BEETS_LIST_DELIMITER,
-    BEETS_MULTI_VALUE_DELIMITER,
     IMAGE_PATH_PREFIX,
     TRACK_ID_PREFIX,
 )
 from .library import BeetsRow
+from .library import split_multi_value as split_multi_value  # noqa: PLC0414 (re-exported)
 
 
 @dataclass(frozen=True)
@@ -70,19 +69,6 @@ def album_item_id(ctx: ParseContext, beets_id: int) -> str:
     :param beets_id: The beets album id.
     """
     return f"{ALBUM_ID_PREFIX}{ctx.instance_id}-{beets_id}"
-
-
-def split_multi_value(value: object) -> list[str]:
-    """
-    Split a beets multi-valued field into its values, keeping empty positions.
-
-    :param value: The raw database value.
-    """
-    if not isinstance(value, str) or not value:
-        return []
-    if BEETS_MULTI_VALUE_DELIMITER in value:
-        return value.split(BEETS_MULTI_VALUE_DELIMITER)
-    return value.split(BEETS_LIST_DELIMITER)
 
 
 def decode_path(value: object) -> str | None:

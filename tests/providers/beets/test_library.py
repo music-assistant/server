@@ -102,6 +102,48 @@ async def test_lookups_by_id_and_artist(beets_db: BeetsDb) -> None:
         await library.close()
 
 
+async def test_get_artist_details_finds_featured_artist_in_list_column(
+    beets_db: BeetsDb,
+) -> None:
+    """A name that only appears inside the multi-valued artists list is still found."""
+    beets_db.add_item(**item_fields())
+    library = BeetsLibrary(str(beets_db.path))
+    await library.open()
+    try:
+        assert await library.get_artist_details("Guest") == ("Guest", GUEST_MBID)
+    finally:
+        await library.close()
+
+
+async def test_get_artist_details_requires_an_exact_element_match(beets_db: BeetsDb) -> None:
+    """A substring of a list element, or a name using LIKE wildcard characters, is not a match."""
+    beets_db.add_item(**item_fields())
+    library = BeetsLibrary(str(beets_db.path))
+    await library.open()
+    try:
+        assert await library.get_artist_details("Gue") is None
+        assert await library.get_artist_details("Gu_st") is None
+        assert await library.get_artist_details("%") is None
+        assert await library.get_artist_details("_") is None
+    finally:
+        await library.close()
+
+
+async def test_get_artist_details_from_list_column_skips_legacy_database(
+    legacy_beets_db: BeetsDb,
+) -> None:
+    """A legacy database without the list columns returns None instead of raising."""
+    legacy_beets_db.add_item(
+        path=b"/home/kate/Music/old.mp3", title="Old", artist="Old Artist", genre="Jazz"
+    )
+    library = BeetsLibrary(str(legacy_beets_db.path))
+    await library.open()
+    try:
+        assert await library.get_artist_details("Guest") is None
+    finally:
+        await library.close()
+
+
 async def test_reading_a_closed_library_raises(beets_db: BeetsDb) -> None:
     """Reads before open() and after close() raise the library error, never a fallback value."""
     library = BeetsLibrary(str(beets_db.path))

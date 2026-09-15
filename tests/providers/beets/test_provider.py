@@ -19,7 +19,13 @@ from music_assistant.providers import beets
 from music_assistant.providers.beets import BeetsProvider
 from music_assistant.providers.beets.library import BeetsLibraryError
 from music_assistant.providers.beets.setup_flow import run_setup
-from tests.providers.beets.beets_db import ARTIST_MBID, BeetsDb, album_fields, item_fields
+from tests.providers.beets.beets_db import (
+    ARTIST_MBID,
+    GUEST_MBID,
+    BeetsDb,
+    album_fields,
+    item_fields,
+)
 from tests.providers.beets.conftest import INSTANCE_ID, album_prov_id, track_prov_id
 
 MakeProvider = Callable[..., Awaitable[BeetsProvider]]
@@ -111,6 +117,15 @@ async def test_getters_read_beets(make_provider: MakeProvider, beets_db: BeetsDb
         track_prov_id(second),
     ]
     assert (await provider.get_artist("Artist")).mbid == ARTIST_MBID
+
+
+async def test_get_artist_finds_featured_artist(
+    make_provider: MakeProvider, beets_db: BeetsDb
+) -> None:
+    """A name that only appears in the multi-valued artists list still resolves."""
+    beets_db.add_item(**item_fields())
+    provider = await make_provider()
+    assert (await provider.get_artist("Guest")).mbid == GUEST_MBID
 
 
 @pytest.mark.parametrize(
