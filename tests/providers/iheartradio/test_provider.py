@@ -147,8 +147,9 @@ async def test_album_tracks_are_listed_but_unavailable(
     }
     tracks = await provider.get_album_tracks("607279")
     assert [
-        (track.name, track.disc_number, track.track_number, track.available) for track in tracks
-    ] == [("Free Fallin'", 1, 1, False)]
+        (track.item_id, track.name, track.disc_number, track.track_number, track.available)
+        for track in tracks
+    ] == [("catalog:607283", "Free Fallin'", 1, 1, False)]
     assert tracks[0].album is not None
     assert tracks[0].album.item_id == "607279"
     assert tracks[0].image is not None

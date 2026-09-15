@@ -20,7 +20,12 @@ from music_assistant.controllers.streams.constants import (
 )
 
 from .constants import DATA_STATION_IMAGE, REPORT_STATUS_START, STREAM_METADATA_UPDATE_INTERVAL
-from .parsers import parse_now_playing, pick_stream_url, split_episode_item_id
+from .parsers import (
+    parse_now_playing,
+    pick_stream_url,
+    split_catalog_track_item_id,
+    split_episode_item_id,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -149,6 +154,8 @@ class IHeartRadioStreamingManager:
 
         :param item_id: The iHeartRadio track id.
         """
+        if split_catalog_track_item_id(item_id):
+            raise UnplayableMediaError("Playing a track on demand needs iHeartRadio All Access")
         now = time.time()
         if (found := self.provider.stations.find(item_id)) is None:
             raise MediaNotFoundError(f"Track {item_id} is no longer available from iHeartRadio")
