@@ -763,7 +763,11 @@ class MusicAssistant:
         :param log_exceptions: Set to False when the caller awaits the task and reports
                                its failures itself; the task then logs at debug level
                                instead of warning.
-        :param kwargs: Keyword arguments to pass to the coroutine function.
+        :param kwargs: Keyword arguments to pass to the coroutine function. The options
+            above take these names for themselves, so a coroutine function with a parameter
+            of its own called task_id, name, abort_existing, eager_start or log_exceptions
+            has to be called with that argument positionally, or awaited on a coroutine
+            built by the caller.
         """
         if task_id and (existing := self._tracked_tasks.get(task_id)) and not existing.done():
             # prevent duplicate tasks if task_id is given and already present
