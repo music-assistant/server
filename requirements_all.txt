@@ -46,7 +46,7 @@ ibroadcastaio==0.8.0
 ifaddr==0.2.0
 kaldi-native-fbank==1.22.3
 liblistenbrainz==0.7.0
-librosa==0.11.0
+librosa==1.0.0
 lyricsgenius==3.12.2
 markdownify==1.2.3
 mashumaro==3.20
