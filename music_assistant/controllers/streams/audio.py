@@ -1141,6 +1141,9 @@ class StreamsAudio:
             raw_data = await resp.read()
             encoding = await detect_charset(raw_data, preferred=resp.charset)
             master_m3u_data = raw_data.decode(encoding, errors="replace")
+            # replaces the current selected url with the actual url if there was a 302 forward
+            if url != str(resp.real_url):
+                url = str(resp.real_url)
         substreams = parse_m3u(master_m3u_data)
         # There is a chance that we did not get a master playlist with subplaylists
         # but just a single master/sub playlist with the actual audio stream(s)

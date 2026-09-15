@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import statistics
-import struct
 import time
 from collections import deque
 from collections.abc import Iterator
@@ -130,14 +129,6 @@ class SqueezelitePlayer(Player):
         self.multi_client_stream: MultiClientStream | None = None
         self._sync_playpoints: deque[SyncPlayPoint] = deque(maxlen=MIN_REQ_PLAYPOINTS)
         self._do_not_resync_before: float = 0.0
-        self._audio_source_active: bool = False
-        self._low_latency_stream: bool = False
-        # TEMP: patch slimclient send_strm to adjust buffer thresholds
-        # this can be removed when we did a new release of aioslimproto with this change
-        # after this has been tested in beta for a while
-        client._send_strm = lambda *args, **kwargs: _patched_send_strm(
-            client, self, *args, **kwargs
-        )
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
@@ -227,7 +218,6 @@ class SqueezelitePlayer(Player):
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
-        self._audio_source_active = False
         # Clean up any existing multi-client stream
         if self.multi_client_stream is not None:
             await self.multi_client_stream.stop()
@@ -491,14 +481,9 @@ class SqueezelitePlayer(Player):
         if media.source_id and (queue := self.mass.player_queues.get(media.source_id)):
             self.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
             self.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
-        audio_source_active = media.media_type == MediaType.AUDIO_SOURCE
-        low_latency_stream = audio_source_active or media.media_type == MediaType.RADIO
-        # set the flags on the player that owns the slimclient (may differ from self
-        # during group playback where self is the leader but slimplayer is a member)
-        target_player = self.mass.players.get_player(slimplayer.player_id)
-        if isinstance(target_player, SqueezelitePlayer):
-            target_player._audio_source_active = audio_source_active
-            target_player._low_latency_stream = low_latency_stream
+        low_latency_stream = media.media_type in (MediaType.AUDIO_SOURCE, MediaType.RADIO)
+        # live streams start on a smaller buffer (KB, tenths of a second) to cut latency
+        stream_threshold, output_threshold = (64, 1) if low_latency_stream else (200, 20)
         await slimplayer.play_url(
             url=url,
             mime_type=get_mime_type(url.rsplit(".", maxsplit=1)[-1].split("?", maxsplit=1)[0]),
@@ -509,6 +494,8 @@ class SqueezelitePlayer(Player):
             # instead 'buffer ready' will be called when the buffer is full
             # to coordinate a start of multiple synced players
             autostart=auto_play,
+            stream_threshold=stream_threshold,
+            output_threshold=output_threshold,
         )
         # TODO: When we implement server clock sync, we can remove the pause here
         # and rely on unpause_at + HEADROOM in the buffer_ready handler. LMS
@@ -532,6 +519,8 @@ class SqueezelitePlayer(Player):
                     enqueue=True,
                     send_flush=False,
                     autostart=True,
+                    stream_threshold=stream_threshold,
+                    output_threshold=output_threshold,
                 ),
             )
 
@@ -793,45 +782,3 @@ async def pause_and_unpause(slim_client: SlimClient, pause_duration_ms: int) -> 
     await slim_client.pause()
     unpause_timestamp = slim_client.jiffies + pause_duration_ms
     await slim_client.unpause_at(unpause_timestamp)
-
-
-async def _patched_send_strm(  # noqa: PLR0913
-    self: SlimClient,
-    player: SqueezelitePlayer,
-    command: bytes = b"q",
-    autostart: bytes = b"0",
-    codec_details: bytes = b"p1321",
-    threshold: int = 0,
-    spdif: bytes = b"0",
-    trans_duration: int = 0,
-    trans_type: bytes = b"0",
-    flags: int = 0x20,
-    output_threshold: int = 0,
-    replay_gain: int = 0,
-    server_port: int = 0,
-    server_ip: int = 0,
-    httpreq: bytes = b"",
-) -> None:
-    """Create stream request message based on given arguments."""
-    if player._low_latency_stream:
-        threshold = 64  # KB of input buffer data before autostart or notify
-        output_threshold = (
-            1  # amount of output buffer data before playback starts, in tenths of second
-        )
-    data = struct.pack(
-        "!cc5sBcBcBBBLHL",
-        command,
-        autostart,
-        codec_details,
-        threshold,
-        spdif,
-        trans_duration,
-        trans_type,
-        flags,
-        output_threshold,
-        0,
-        replay_gain,
-        server_port,
-        server_ip,
-    )
-    await self.send_frame(b"strm", data + httpreq)

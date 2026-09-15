@@ -411,6 +411,9 @@ class AlbumsController(MediaControllerBase[Album]):
         unique_ids.update({f"{x.name.lower()}.{x.version.lower()}" for x in db_items})
         for db_item in db_items:
             unique_ids.update(x.item_id for x in db_item.provider_mappings)
+        # where each provider track landed in the result, so a playable copy from another
+        # provider can take the place of an unplayable one
+        provider_slots: dict[str, int] = {}
         for provider_mapping in library_album.provider_mappings:
             if (
                 allowed_providers is not None
@@ -449,7 +452,10 @@ class AlbumsController(MediaControllerBase[Album]):
                 if unique_id in unique_ids:
                     continue
                 unique_id = f"{provider_track.name.lower()}.{provider_track.version.lower()}"
-                if unique_id in unique_ids:
+                slot = provider_slots.get(unique_id)
+                if unique_id in unique_ids and (
+                    slot is None or result[slot].available or not provider_track.available
+                ):
                     continue
                 unique_ids.add(unique_id)
                 provider_track.album = library_album
@@ -457,7 +463,11 @@ class AlbumsController(MediaControllerBase[Album]):
                 album_images = [library_album.image] if library_album.image else []
                 track_images: list[MediaItemImage] = provider_track.metadata.images or []
                 provider_track.metadata.images = UniqueList(album_images + track_images)
-                result.append(provider_track)
+                if slot is None:
+                    provider_slots[unique_id] = len(result)
+                    result.append(provider_track)
+                else:
+                    result[slot] = provider_track
         # NOTE: we need to return the results sorted on disc/track here
         # to ensure the correct order at playback
         return sorted(result, key=lambda x: (x.disc_number, x.track_number))

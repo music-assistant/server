@@ -859,7 +859,7 @@ class WebserverController(CoreController):
         if handler.required_scope and not has_scope(user, handler.required_scope):
             return web.Response(
                 status=403,
-                text=f"This command requires the {handler.required_scope} scope",
+                text=f"This command requires the {handler.required_scope_label} scope",
             )
         return None
 

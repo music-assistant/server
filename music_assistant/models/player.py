@@ -428,6 +428,10 @@ class Player(ABC):
     # apart from a real pause - time is then the only signal left. Leave at None for
     # devices that report a source they no longer play as stopped by themselves.
     _attr_external_pause_idle_timeout: int | None = None
+    # Set this on players whose device names the service it plays itself, so a source
+    # on its own source list counts as a takeover of the remembered MA queue. Leave at
+    # False for devices that also list the transport our own stream arrives on.
+    _attr_trusts_reported_source: bool = False
     # Set this on players that play upcoming tracks from their own cached copy of the
     # queue (which may not be refreshable, e.g. the Sonos cloud queue): a stream request
     # for a queue item away from the playhead is then refused, so the player re-reads
@@ -704,6 +708,17 @@ class Player(ABC):
         the player_id if the player is currently playing a MA queue.
         """
         return self._attr_active_source
+
+    @property
+    def trusts_reported_source(self) -> bool:
+        """
+        Return whether a source this player lists for itself counts as a takeover.
+
+        Most devices do not report their active source accurately, so only the sources
+        in EXTERNAL_SOURCES are trusted. A provider that does report accurately can opt
+        in, so a service Music Assistant has no name of its own for is recognised too.
+        """
+        return self._attr_trusts_reported_source
 
     @property
     def group_members(self) -> list[str]:
@@ -3402,12 +3417,9 @@ class Player(ABC):
             return session.active_source
 
         # always prefer active MA source but add a guard to detect if player is really playing
-        # something different, such as a line-in or TV input, we use an explicit list here
-        # because many players do not accurately report the active_source
-        # this way, for the obvious cases, we can detect a source "takeover"
-        if self.__active_mass_source and (
-            not self.active_source or self.active_source.lower() not in EXTERNAL_SOURCES
-        ):
+        # something different, such as a line-in or TV input. Many players do not accurately
+        # report the active_source, so only the obvious cases count as a source "takeover"
+        if self.__active_mass_source and not self.__reports_source_takeover():
             return self.__active_mass_source
 
         # active source as reported by the player itself
@@ -3588,6 +3600,17 @@ class Player(ABC):
     def __ne__(self, other: object) -> bool:
         """Check inequality of two Player objects."""
         return not self.__eq__(other)
+
+    @final
+    def __reports_source_takeover(self) -> bool:
+        """Return whether the source the player reports for itself took it over."""
+        if (reported_source := self.active_source) is None:
+            return False
+        if reported_source.lower() in EXTERNAL_SOURCES:
+            return True
+        return self.trusts_reported_source and any(
+            x.id == reported_source for x in self.source_list
+        )
 
     @final
     def __external_source_active(self) -> bool:

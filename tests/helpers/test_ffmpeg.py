@@ -701,6 +701,31 @@ async def test_ffmpeg_stream_ignores_cancelled_stdin_feeder() -> None:
     assert b"".join(chunks) == b"\x00" * _BYTES_PER_SECOND
 
 
+async def test_cancelled_stdin_feeder_does_not_hang_on_a_full_pipe() -> None:
+    """A cancelled stdin feeder blocked on a full pipe returns instead of waiting on the EOF."""
+
+    async def endless_input() -> AsyncGenerator[bytes]:
+        chunk = b"\x00" * (1024 * 1024)
+        while True:
+            yield chunk
+
+    # nothing reads the output, so ffmpeg stops reading its input once stdout fills up
+    ffmpeg = FFMpeg(
+        audio_input=endless_input(), input_format=_PCM_FORMAT, output_format=_PCM_FORMAT
+    )
+    await ffmpeg.start()
+    try:
+        feeder = ffmpeg._stdin_feeder_task
+        assert feeder is not None
+        await asyncio.sleep(0.5)
+        assert not feeder.done()
+        feeder.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(feeder, timeout=2)
+    finally:
+        await ffmpeg.close()
+
+
 async def test_ffmpeg_stream_ignores_early_stdin_close() -> None:
     """FFmpeg ending its input early does not report a source failure."""
     chunks = await _collect_chunks(

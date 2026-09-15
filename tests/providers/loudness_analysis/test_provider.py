@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -9,10 +10,12 @@ from music_assistant_models.enums import MediaType, VolumeNormalizationMode
 
 from music_assistant.constants import CONF_LOG_LEVEL
 from music_assistant.controllers.streams.audio_analysis import PROVIDER_LOUDNESS_DOMAIN
+from music_assistant.helpers.datetime import utc
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import AnalysisSessionData
 from music_assistant.providers.loudness_analysis.provider import (
     CONF_WRITE_REPLAYGAIN_TAGS,
+    DECODE_FAILURE_RETRY_DELAY,
     MIN_DURATION_SECONDS,
     LoudnessAnalysisProvider,
     LoudnessSessionData,
@@ -46,7 +49,9 @@ def _make_session_data() -> tuple[LoudnessSessionData, MagicMock]:
     ffmpeg = MagicMock()
     ffmpeg.wait = AsyncMock()
     ffmpeg.close = AsyncMock()
+    ffmpeg.write = AsyncMock()
     ffmpeg.write_eof = AsyncMock()
+    ffmpeg.closed = False
     ffmpeg.log_history = []
 
     session_data = LoudnessSessionData(ffmpeg=ffmpeg)
@@ -179,6 +184,126 @@ async def test_finalize_raises_when_insufficient_duration() -> None:
 
     with pytest.raises(AudioAnalysisError, match="too short"):
         await provider._finalize(session_id)
+
+
+@pytest.mark.asyncio
+async def test_process_pcm_chunk_raises_once_the_decoder_stopped() -> None:
+    """A chunk handed to a stopped decoder must fail the session rather than be dropped."""
+    provider = _make_provider()
+    session_data, _ = _make_session_data()
+    ffmpeg = cast("MagicMock", session_data.ffmpeg)
+    ffmpeg.closed = True
+    provider._data["sess"] = session_data
+    before = utc()
+
+    with pytest.raises(AudioAnalysisError, match="decoding failed") as excinfo:
+        await provider.process_pcm_chunk("sess", b"\x00" * 16)
+
+    ffmpeg.write.assert_not_called()
+    # a dead decoder is an infrastructure fault, so the failure must carry a retry window
+    assert excinfo.value.retry_at is not None
+    assert excinfo.value.retry_at >= before + DECODE_FAILURE_RETRY_DELAY
+
+
+@pytest.mark.asyncio
+async def test_process_pcm_chunk_raises_when_the_pipe_breaks_mid_write() -> None:
+    """A decoder dying between the closed check and the write still fails retryably."""
+    provider = _make_provider()
+    session_data, _ = _make_session_data()
+    ffmpeg = cast("MagicMock", session_data.ffmpeg)
+    ffmpeg.write = AsyncMock(side_effect=BrokenPipeError)
+    provider._data["sess"] = session_data
+    before = utc()
+
+    with pytest.raises(AudioAnalysisError, match="decoding failed") as excinfo:
+        await provider.process_pcm_chunk("sess", b"\x00" * 16)
+
+    assert excinfo.value.retry_at is not None
+    assert excinfo.value.retry_at >= before + DECODE_FAILURE_RETRY_DELAY
+    # only chunks the decoder actually received count towards the duration gates
+    assert session_data.chunks_received == 0
+
+
+@pytest.mark.asyncio
+async def test_process_pcm_chunk_feeds_a_live_decoder() -> None:
+    """While the decoder is alive the chunk is written and counted."""
+    provider = _make_provider()
+    session_data, _ = _make_session_data()
+    provider._data["sess"] = session_data
+
+    await provider.process_pcm_chunk("sess", b"\x00" * 16)
+
+    cast("MagicMock", session_data.ffmpeg).write.assert_awaited_once()
+    assert session_data.chunks_received == 1
+
+
+@pytest.mark.asyncio
+async def test_finalize_raises_when_no_metrics_were_produced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session that produced no loudness reading is reported rather than dropped."""
+    provider = _make_provider()
+    session_data, streamdetails = _make_session_data()
+    session_data.chunks_received = MIN_DURATION_SECONDS + 1
+    session_data.eof_sent = True
+    provider._data["sess"] = session_data
+    provider._sessions["sess"] = AnalysisSessionData(
+        streamdetails=streamdetails,
+        audio_format=MagicMock(),
+    )
+
+    monkeypatch.setattr(
+        "music_assistant.providers.loudness_analysis.provider._parse_ebur128_metrics",
+        lambda _log: (None, None, None),
+    )
+
+    before = utc()
+    with pytest.raises(AudioAnalysisError, match="could not measure loudness") as excinfo:
+        await provider._finalize("sess")
+
+    assert excinfo.value.retry_at is not None
+    assert excinfo.value.retry_at >= before + DECODE_FAILURE_RETRY_DELAY
+
+
+@pytest.mark.asyncio
+async def test_finalize_raises_when_the_decoder_failed() -> None:
+    """A decoder that exited badly is reported rather than dropped."""
+    provider = _make_provider()
+    session_data, streamdetails = _make_session_data()
+    session_data.chunks_received = MIN_DURATION_SECONDS + 1
+    session_data.eof_sent = True
+    cast("MagicMock", session_data.ffmpeg).wait = AsyncMock(side_effect=RuntimeError("ffmpeg died"))
+    provider._data["sess"] = session_data
+    provider._sessions["sess"] = AnalysisSessionData(
+        streamdetails=streamdetails,
+        audio_format=MagicMock(),
+    )
+
+    before = utc()
+    with pytest.raises(AudioAnalysisError, match="decoding failed") as excinfo:
+        await provider._finalize("sess")
+
+    assert excinfo.value.retry_at is not None
+    assert excinfo.value.retry_at >= before + DECODE_FAILURE_RETRY_DELAY
+
+
+@pytest.mark.asyncio
+async def test_abort_releases_the_sessions_decoder() -> None:
+    """abort() must run this provider's cancel cleanup, closing and dropping the decoder."""
+    provider = _make_provider()
+    provider._record_failure = AsyncMock()  # type: ignore[method-assign]
+    session_data, streamdetails = _make_session_data()
+    provider._data["sess"] = session_data
+    provider._sessions["sess"] = AnalysisSessionData(
+        streamdetails=streamdetails,
+        audio_format=MagicMock(),
+    )
+
+    await provider.abort("sess", "audio processing failed (boom)")
+
+    assert "sess" not in provider._data
+    cast("MagicMock", session_data.ffmpeg).close.assert_awaited()
+    provider._record_failure.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
