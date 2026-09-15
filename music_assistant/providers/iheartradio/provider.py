@@ -86,7 +86,7 @@ class IHeartRadioProvider(MusicProvider):
         """Return the supported features, library sync only with a configured account."""
         # Read from setup rather than the session: MA resolves a provider's config entries
         # (and so its features) before handle_async_init has signed in.
-        if self.get_setup_value(CONF_USERNAME):
+if str(self.get_setup_value(CONF_USERNAME) or "").strip():
             return SUPPORTED_FEATURES | LIBRARY_FEATURES
         return set(SUPPORTED_FEATURES)
 
