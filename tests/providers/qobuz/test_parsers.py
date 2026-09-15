@@ -5,8 +5,10 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, call
 
 import pytest
+from aiohttp import client_exceptions
 from music_assistant_models.enums import AlbumType, ExternalID, ImageType, ProviderFeature
 from music_assistant_models.errors import (
+    InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
@@ -576,6 +578,9 @@ class TestExternalIDLookup:
             RateLimited("rate limited", backoff_time=1),
             ResourceTemporarilyUnavailable("temporarily unavailable"),
             RetriesExhausted("retries exhausted"),
+            client_exceptions.ClientError("connection failed"),
+            TimeoutError("request timed out"),
+            InvalidDataError("invalid response"),
         ],
         ids=lambda error: type(error).__name__,
     )
@@ -708,6 +713,9 @@ class TestExternalIDLookup:
             RateLimited("rate limited", backoff_time=1),
             ResourceTemporarilyUnavailable("temporarily unavailable"),
             RetriesExhausted("retries exhausted"),
+            client_exceptions.ClientError("connection failed"),
+            TimeoutError("request timed out"),
+            InvalidDataError("invalid response"),
         ],
         ids=lambda error: type(error).__name__,
     )

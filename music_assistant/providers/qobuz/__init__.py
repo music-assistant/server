@@ -884,7 +884,14 @@ class QobuzProvider(MusicProvider):
                 }
                 if canonical in item_external_ids:
                     return item
-        except (RateLimited, ResourceTemporarilyUnavailable, RetriesExhausted) as err:
+        except (
+            RateLimited,
+            ResourceTemporarilyUnavailable,
+            RetriesExhausted,
+            client_exceptions.ClientError,
+            TimeoutError,
+            InvalidDataError,
+        ) as err:
             raise ProviderUnavailableError("Qobuz is temporarily unavailable") from err
         return None
 
