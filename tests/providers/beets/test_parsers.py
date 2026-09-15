@@ -16,6 +16,8 @@ from music_assistant.providers.beets.library import BeetsRow
 from music_assistant.providers.beets.parsers import (
     ParseContext,
     album_checksum,
+    album_id_prefix,
+    album_item_id,
     expand_path,
     item_checksum,
     loudness_from_gains,
@@ -26,6 +28,8 @@ from music_assistant.providers.beets.parsers import (
     parse_favorite,
     parse_track,
     split_multi_value,
+    track_id_prefix,
+    track_item_id,
 )
 from tests.providers.beets.beets_db import (
     ALBUM_MBID,
@@ -67,6 +71,12 @@ def _row(row_id: int, fields: dict[str, Any], flex: dict[str, Any] | None = None
 def test_split_multi_value(value: object, expected: list[str]) -> None:
     """Values split on beets' delimiter, falling back to '; ' like beets does."""
     assert split_multi_value(value) == expected
+
+
+def test_track_and_album_ids_start_with_their_shared_prefix() -> None:
+    """The id prefix helpers own the format that track_item_id and album_item_id build on."""
+    assert track_item_id(CTX, 5).startswith(track_id_prefix(CTX.instance_id))
+    assert album_item_id(CTX, 5).startswith(album_id_prefix(CTX.instance_id))
 
 
 @pytest.mark.parametrize(

@@ -51,6 +51,24 @@ class ParseContext:
     favorite_rating_threshold: float | None
 
 
+def track_id_prefix(instance_id: str) -> str:
+    """
+    Return the prefix a track provider item id of this instance starts with.
+
+    :param instance_id: The provider instance id.
+    """
+    return f"{TRACK_ID_PREFIX}{instance_id}-"
+
+
+def album_id_prefix(instance_id: str) -> str:
+    """
+    Return the prefix an album provider item id of this instance starts with.
+
+    :param instance_id: The provider instance id.
+    """
+    return f"{ALBUM_ID_PREFIX}{instance_id}-"
+
+
 def track_item_id(ctx: ParseContext, beets_id: int) -> str:
     """
     Return the provider item id of a beets item.
@@ -58,7 +76,7 @@ def track_item_id(ctx: ParseContext, beets_id: int) -> str:
     :param ctx: The provider parse context.
     :param beets_id: The beets item id.
     """
-    return f"{TRACK_ID_PREFIX}{ctx.instance_id}-{beets_id}"
+    return f"{track_id_prefix(ctx.instance_id)}{beets_id}"
 
 
 def album_item_id(ctx: ParseContext, beets_id: int) -> str:
@@ -68,7 +86,7 @@ def album_item_id(ctx: ParseContext, beets_id: int) -> str:
     :param ctx: The provider parse context.
     :param beets_id: The beets album id.
     """
-    return f"{ALBUM_ID_PREFIX}{ctx.instance_id}-{beets_id}"
+    return f"{album_id_prefix(ctx.instance_id)}{beets_id}"
 
 
 def decode_path(value: object) -> str | None:

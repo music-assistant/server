@@ -28,7 +28,6 @@ from music_assistant.helpers.util import TaskManager
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
-    ALBUM_ID_PREFIX,
     CONF_BEETS_DIRECTORY,
     CONF_ENTRY_FAVORITE_RATING_THRESHOLD,
     CONF_FAVORITE_RATING_THRESHOLD,
@@ -37,11 +36,11 @@ from .constants import (
     IMAGE_PATH_PREFIX,
     ITEM_BATCH_SIZE,
     SYNC_CONCURRENCY,
-    TRACK_ID_PREFIX,
 )
 from .library import BeetsLibrary, BeetsLibraryError, BeetsRow
 from .parsers import (
     ParseContext,
+    album_id_prefix,
     expand_path,
     item_checksum,
     loudness_from_gains,
@@ -49,6 +48,7 @@ from .parsers import (
     parse_artist,
     parse_audio_format,
     parse_track,
+    track_id_prefix,
     track_item_id,
 )
 
@@ -249,7 +249,7 @@ class BeetsProvider(MusicProvider):
     async def _get_item(self, prov_item_id: str) -> BeetsRow:
         """Return the beets item for a provider item id, or raise when beets has none."""
         item = await self.library.get_item(
-            _parse_id(prov_item_id, f"{TRACK_ID_PREFIX}{self.instance_id}-")
+            _parse_id(prov_item_id, track_id_prefix(self.instance_id))
         )
         if item is None:
             msg = f"Track not found: {prov_item_id}"
@@ -259,7 +259,7 @@ class BeetsProvider(MusicProvider):
     async def _get_album(self, prov_album_id: str) -> BeetsRow:
         """Return the beets album for a provider album id, or raise when beets has none."""
         album = await self.library.get_album(
-            _parse_id(prov_album_id, f"{ALBUM_ID_PREFIX}{self.instance_id}-")
+            _parse_id(prov_album_id, album_id_prefix(self.instance_id))
         )
         if album is None:
             msg = f"Album not found: {prov_album_id}"
