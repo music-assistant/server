@@ -337,6 +337,13 @@ def test_parse_track_without_album_is_a_singleton() -> None:
     assert parse_track(_row(1, item_fields()), None, CTX, "c").album is None
 
 
+def test_parse_track_with_blank_album_name_has_no_album() -> None:
+    """An album row with a blank name is not attached to the track."""
+    album = _row(7, album_fields(album=""))
+    track = parse_track(_row(1, item_fields(album_id=7)), album, CTX, "c")
+    assert track.album is None
+
+
 def test_parse_track_falls_back_to_single_artist_field() -> None:
     """Without the artists list the single artist field is used."""
     fields = item_fields(artists=None, artists_sort=None, mb_artistids=None)

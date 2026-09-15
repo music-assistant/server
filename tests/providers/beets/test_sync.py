@@ -8,13 +8,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import Album
 
 from music_assistant.controllers.tasks.context import calculate_progress
 from music_assistant.providers.beets import BeetsProvider
 from music_assistant.providers.beets.library import BeetsLibraryError, BeetsRow
 from music_assistant.providers.beets.parsers import item_checksum
 from tests.providers.beets.beets_db import BeetsDb, album_fields, item_fields
-from tests.providers.beets.conftest import INSTANCE_ID, track_prov_id
+from tests.providers.beets.conftest import INSTANCE_ID, album_prov_id, track_prov_id
 
 MakeProvider = Callable[..., Awaitable[BeetsProvider]]
 REPORT_FAILURE = "music_assistant.providers.beets.report_current_task_failure"
@@ -81,6 +82,24 @@ async def test_sync_with_zero_initial_count_does_not_crash_on_progress(
     calls = provider.mass.music.tracks.add_item_to_library.await_args_list  # type: ignore[attr-defined]
     assert [call.args[0].name for call in calls] == ["Song"]
     assert provider.sync_running is False
+
+
+async def test_album_for_falls_back_to_get_album_when_missing_from_pre_read_map(
+    make_provider: MakeProvider, beets_db: BeetsDb
+) -> None:
+    """An album missing from the pre-read albums map is still looked up and set on the track."""
+    album_id = beets_db.add_album(**album_fields())
+    beets_db.add_item(**item_fields(album_id=album_id))
+    provider = await make_provider()
+    provider.library.get_albums = AsyncMock(return_value={})  # type: ignore[method-assign]
+
+    await provider.sync_library(MediaType.TRACK)
+
+    calls = provider.mass.music.tracks.add_item_to_library.await_args_list  # type: ignore[attr-defined]
+    assert len(calls) == 1
+    track = calls[0].args[0]
+    assert isinstance(track.album, Album)
+    assert track.album.item_id == album_prov_id(album_id)
 
 
 async def test_artist_and_album_passes_do_nothing(
