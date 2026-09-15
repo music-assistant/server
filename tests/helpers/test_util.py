@@ -723,6 +723,16 @@ class TestGuardSingleRequest:
         ]
 
     @pytest.mark.asyncio
+    async def test_argument_named_after_a_task_option_reaches_the_wrapped_method(
+        self, mass_minimal: MusicAssistant
+    ) -> None:
+        """A parameter sharing its name with a create_task option is still passed through."""
+        caller = _GuardedCaller(mass_minimal)
+        caller.release.set()
+
+        assert await caller.fetch_named(name="abc", task_id="123") == "abc-123"
+
+    @pytest.mark.asyncio
     async def test_instances_get_their_own_request(self, mass_minimal: MusicAssistant) -> None:
         """Two objects of the same class each issue their own request."""
         first = _GuardedCaller(mass_minimal)
@@ -907,6 +917,13 @@ class _GuardedCaller:
         if self.error is not None:
             raise self.error
         return f"result-{item_id}"
+
+    @guard_single_request
+    async def fetch_named(self, name: str, task_id: str) -> str:
+        """Return the arguments, which are named after options of mass.create_task."""
+        self.calls += 1
+        await self.release.wait()
+        return f"{name}-{task_id}"
 
     @guard_single_request
     async def fetch_item(
