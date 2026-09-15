@@ -654,15 +654,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             [self.media_type],
             limit,
         )
-        if searchresult is None:
-            # the annotation says a provider always returns results, but a provider
-            # that reports SEARCH without implementing it returns nothing at all,
-            # which would take down every lookup that searches all providers at
-            # once: the versions of an album or a track, cross-provider matching
-            self.logger.warning(  # type: ignore[unreachable]
-                "Provider %s returned no search results object", prov.name
-            )
-            return []
         match self.media_type:
             case MediaType.ARTIST:
                 return cast("list[ItemCls]", searchresult.artists)
