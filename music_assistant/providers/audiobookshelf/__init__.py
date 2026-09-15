@@ -1707,27 +1707,34 @@ for more details.
                 # If the book has no audiofiles, we skip -> ebook only.
                 if len(abs_item.media.tracks) == 0:
                     continue
-                self.logger.debug(
-                    'Updated book "%s" via socket.', abs_item.media.metadata.title or ""
+                mass_audiobook = parse_audiobook(
+                    abs_audiobook=abs_item,
+                    audiobook_narrators=await self._get_audiobook_narrators(abs_item),
+                    instance_id=self.instance_id,
+                    domain=self.domain,
+                    token=self._client.token,
+                    base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 )
-                await self.mass.music.audiobooks.add_item_to_library(
-                    parse_audiobook(
-                        abs_audiobook=abs_item,
-                        audiobook_narrators=await self._get_audiobook_narrators(abs_item),
-                        instance_id=self.instance_id,
-                        domain=self.domain,
-                        token=self._client.token,
-                        base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
-                    ),
-                    overwrite_existing=True,
-                )
+                if mass_existing_audiobook := await self.mass.music.get_library_item_by_prov_id(
+                    media_type=MediaType.AUDIOBOOK,
+                    item_id=abs_item.id_,
+                    provider_instance_id_or_domain=self.instance_id,
+                ):
+                    self.logger.debug(
+                        'Updated book "%s" via socket.', abs_item.media.metadata.title or ""
+                    )
+                    await self.mass.music.audiobooks.update_item_in_library(
+                        mass_existing_audiobook.item_id, mass_audiobook, overwrite=True
+                    )
+                else:
+                    self.logger.debug(
+                        'Added book "%s" via socket.', abs_item.media.metadata.title or ""
+                    )
+                    await self.mass.music.audiobooks.add_item_to_library(mass_audiobook)
                 lib = self.libraries.audiobooks.get(abs_item.library_id, None)
                 if lib is not None:
                     lib.item_ids.add(abs_item.id_)
             elif isinstance(abs_item, LibraryItemExpandedPodcast):
-                self.logger.debug(
-                    'Updated podcast "%s" via socket.', abs_item.media.metadata.title or ""
-                )
                 mass_podcast = parse_podcast(
                     abs_podcast=abs_item,
                     instance_id=self.instance_id,
@@ -1735,17 +1742,30 @@ for more details.
                     token=self._client.token,
                     base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 )
-                if not (
+                if (
                     bool(self.config.get_value(CONF_HIDE_EMPTY_PODCASTS))
                     and mass_podcast.total_episodes == 0
                 ):
-                    await self.mass.music.podcasts.add_item_to_library(
-                        mass_podcast,
-                        overwrite_existing=True,
+                    continue
+                if mass_existing_podcast := await self.mass.music.get_library_item_by_prov_id(
+                    media_type=MediaType.PODCAST,
+                    item_id=abs_item.id_,
+                    provider_instance_id_or_domain=self.instance_id,
+                ):
+                    self.logger.debug(
+                        'Updated podcast "%s" via socket.', abs_item.media.metadata.title or ""
                     )
-                    lib = self.libraries.podcasts.get(abs_item.library_id, None)
-                    if lib is not None:
-                        lib.item_ids.add(abs_item.id_)
+                    await self.mass.music.podcasts.update_item_in_library(
+                        mass_existing_podcast.item_id, mass_podcast, overwrite=True
+                    )
+                else:
+                    self.logger.debug(
+                        'Added podcast "%s" via socket.', abs_item.media.metadata.title or ""
+                    )
+                    await self.mass.music.podcasts.add_item_to_library(mass_podcast)
+                lib = self.libraries.podcasts.get(abs_item.library_id, None)
+                if lib is not None:
+                    lib.item_ids.add(abs_item.id_)
         await self._cache_set_helper_libraries()
 
     async def _socket_abs_item_removed(self, item: LibraryItemRemoved) -> None:
