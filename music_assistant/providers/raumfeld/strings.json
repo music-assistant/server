@@ -1,0 +1,15 @@
+{
+  "config_entries": {
+    "host": {
+      "label": "Raumfeld host",
+      "description": "IP address of the device running the Raumfeld host service (a physical Raumfeld device or the Raumfeld app acting as host)."
+    },
+    "port": {
+      "label": "Raumfeld host port",
+      "description": "Port of the Raumfeld host webservice. Only change this if you run the host on a non-default port."
+    }
+  },
+  "manifest": {
+    "description": "Stream music to Teufel Raumfeld (Smart Speaker) multiroom devices."
+  }
+}
