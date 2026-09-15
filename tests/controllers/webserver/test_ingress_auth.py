@@ -145,8 +145,11 @@ async def test_ingress_keeps_the_role_of_an_already_linked_user(
     )
     existing = await auth_manager.create_user(username="alice", role=role)
     await auth_manager.link_user_to_provider(existing, AuthProviderType.HOME_ASSISTANT, "ha_alice")
-    # the Home Assistant account is an admin, yet the stored role must win over it
-    hass_provider = _ready_hass_provider(mass, "ha_alice", admin=True)
+    # the Home Assistant account is an admin and refreshes the display name, yet the stored
+    # role must win over the admin status even as the sign-in does update the user
+    hass_provider = _ready_hass_provider(
+        mass, "ha_alice", admin=True, details=(None, "Alice from HA", None)
+    )
     headers = {"X-Remote-User-ID": "ha_alice", "X-Remote-User-Name": "Alice"}
 
     with _ingress_request(mass, headers, hass_provider=hass_provider) as request:
@@ -155,6 +158,8 @@ async def test_ingress_keeps_the_role_of_an_already_linked_user(
     assert user is not None
     assert user.user_id == existing.user_id
     assert user.role == role
+    # the display name is refreshed from Home Assistant, so the user is genuinely updated
+    assert user.display_name == "Alice from HA"
     # the Home Assistant admin status is never consulted for an already-linked user
     hass_provider.hass.send_command.assert_not_called()
 
