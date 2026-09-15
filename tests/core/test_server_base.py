@@ -96,6 +96,22 @@ async def test_create_task_failure_logged(
     )
 
 
+async def test_create_task_names_only_on_request(mass_minimal: MusicAssistant) -> None:
+    """Test that a task is named only by an explicit name, never by its task_id."""
+
+    async def _work() -> None:
+        return
+
+    named = mass_minimal.create_task(_work(), name="provider_loaded_some_provider")
+    assert named.get_name() == "provider_loaded_some_provider"
+
+    # task ids key on arguments such as image urls, so they must stay out of the name
+    keyed = mass_minimal.create_task(_work(), task_id="palette_fetch_p1_current_https://x/y?sig=1")
+    assert "https://x/y?sig=1" not in keyed.get_name()
+
+    await asyncio.gather(named, keyed)
+
+
 async def test_create_task_replacement_stays_tracked(mass_minimal: MusicAssistant) -> None:
     """Test that a finished task does not untrack a replacement with the same task_id."""
     task_id = "test_replacement"
