@@ -160,8 +160,16 @@ class SonosPlayerProvider(PlayerProvider):
             # picked up before the unload can still arrive after it
             return
         if state_change == ServiceStateChange.Removed:
-            # we don't listen for removed players here.
-            # instead we just wait for the player connection to fail
+            # a portable withdraws its announcement as it goes to sleep, long before the
+            # websocket heartbeat notices; every other player waits for the connection to fail
+            removed_id = name.split("@", 1)[0]
+            sonos_player = self.mass.players.get_player(removed_id)
+            if isinstance(sonos_player, SonosPlayer) and sonos_player.connected:
+                # a stable task id so a second goodbye during the poll window does not
+                # start a parallel poller alongside the one already running
+                self.mass.create_task(
+                    sonos_player.check_asleep(), task_id=sonos_player.check_asleep_task_id
+                )
             return
         assert info is not None  # for type checking
         if "uuid" not in info.decoded_properties:
@@ -175,6 +183,8 @@ class SonosPlayerProvider(PlayerProvider):
             assert isinstance(sonos_player, SonosPlayer), (
                 "Player ID already exists but is not a SonosPlayer"
             )
+            # the speaker re-announced, so a poll still in flight must not disconnect it
+            self.mass.cancel_task(sonos_player.check_asleep_task_id)
             # if mass_player := sonos_player.mass_player:
             cur_address = get_primary_ip_address(info)
             if cur_address and cur_address != sonos_player.device_info.ip_address:

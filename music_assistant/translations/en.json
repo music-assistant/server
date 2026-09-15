@@ -2343,6 +2343,7 @@
   "provider.sonic_similarity.errors.clap_index_unavailable": "The Character index is not available; check the provider logs and reload the provider before rebuilding.",
   "provider.sonic_similarity.manifest.description": "Powers library-wide Similar Tracks, radio mode, and a discover-page row using local audio signatures. Requires both sonic_analysis (perceptual scalars + CLAP embedding) and smart_fades (BPM + musical key) — vector assembly skips tracks missing either signal.",
   "provider.sonos.errors.player_synced_cannot_play": "Player {0} can not accept the play command, it is synced to another player.",
+  "provider.sonos.errors.wake_on_lan_timeout": "{0} did not respond to wake-on-LAN.",
   "provider.sonos.manifest.description": "Play music, manage groups, and control SONOS speakers throughout your home.",
   "provider.sonos_s1.config_entries.household_id.description": "Household ID for the Sonos (S1) system. Will be auto detected if empty.",
   "provider.sonos_s1.config_entries.household_id.label": "Household ID",
