@@ -95,6 +95,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemType,
     Playlist,
+    Podcast,
     PodcastEpisode,
     UniqueList,
 )
@@ -140,7 +141,6 @@ if TYPE_CHECKING:
     from aioaudiobookshelf.schema.events_socket import LibraryItemRemoved
     from aioaudiobookshelf.schema.media_progress import MediaProgress
     from aioaudiobookshelf.schema.user import User
-    from music_assistant_models.media_items import Podcast
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -163,6 +163,7 @@ async def setup(
     return Audiobookshelf(mass, manifest, config, SUPPORTED_FEATURES)
 
 
+M = TypeVar("M", bound=MediaItemType)
 R = TypeVar("R")
 P = ParamSpec("P")
 
@@ -1715,13 +1716,18 @@ for more details.
                     token=self._client.token,
                     base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 )
-                if mass_existing_audiobook := await self.mass.music.get_library_item_by_prov_id(
-                    media_type=MediaType.AUDIOBOOK,
-                    item_id=abs_item.id_,
-                    provider_instance_id_or_domain=self.instance_id,
-                ):
+                if (
+                    mass_existing_audiobook := await self.mass.music.get_library_item_by_prov_id(
+                        media_type=MediaType.AUDIOBOOK,
+                        item_id=abs_item.id_,
+                        provider_instance_id_or_domain=self.instance_id,
+                    )
+                ) and isinstance(mass_existing_audiobook, Audiobook):
                     self.logger.debug(
                         'Updated book "%s" via socket.', abs_item.media.metadata.title or ""
+                    )
+                    mass_audiobook = self._ensure_provider_mapping_in_library(
+                        mass_existing_audiobook, mass_audiobook
                     )
                     await self.mass.music.audiobooks.update_item_in_library(
                         mass_existing_audiobook.item_id, mass_audiobook, overwrite=True
@@ -1747,19 +1753,24 @@ for more details.
                     and mass_podcast.total_episodes == 0
                 ):
                     continue
-                if mass_existing_podcast := await self.mass.music.get_library_item_by_prov_id(
-                    media_type=MediaType.PODCAST,
-                    item_id=abs_item.id_,
-                    provider_instance_id_or_domain=self.instance_id,
-                ):
+                if (
+                    mass_existing_podcast := await self.mass.music.get_library_item_by_prov_id(
+                        media_type=MediaType.PODCAST,
+                        item_id=abs_item.id_,
+                        provider_instance_id_or_domain=self.instance_id,
+                    )
+                ) and isinstance(mass_existing_podcast, Podcast):
                     self.logger.debug(
                         'Updated podcast "%s" via socket.', abs_item.media.metadata.title or ""
+                    )
+                    mass_podcast = self._ensure_provider_mapping_in_library(
+                        mass_existing_podcast, mass_podcast
                     )
                     await self.mass.music.podcasts.update_item_in_library(
                         mass_existing_podcast.item_id, mass_podcast, overwrite=True
                     )
                 else:
-                    self.logger.debug(
+                    self.logger.error(
                         'Added podcast "%s" via socket.', abs_item.media.metadata.title or ""
                     )
                     await self.mass.music.podcasts.add_item_to_library(mass_podcast)
@@ -1848,6 +1859,9 @@ for more details.
                 provider_instance_id_or_domain=self.instance_id,
             )
             if ma_library_playlist is not None and isinstance(ma_library_playlist, Playlist):
+                parsed_playlist = self._ensure_provider_mapping_in_library(
+                    ma_library_playlist, parsed_playlist
+                )
                 await self.mass.music.playlists.update_item_in_library(
                     item_id=ma_library_playlist.item_id, update=parsed_playlist, overwrite=True
                 )
@@ -2216,3 +2230,18 @@ for more details.
                     # We do not try again after a failure. _get_playback_session verifies if a session
                     # exists.
                     self.sessions.pop(session_key, None)
+
+    def _ensure_provider_mapping_in_library(self, current_item: M, updated_item: M) -> M:
+        """
+        Ensure that in_library is set to True on the updated_item if the current_item has it.
+
+        This guarantees, that the UI doesn't "loose" the item in its view.
+        """
+        # the updated item only has a single provider mapping given by this provider's parse function
+        updated_provider_mapping = updated_item.provider_mappings.pop()
+        for provider_mapping in current_item.provider_mappings:
+            if provider_mapping.provider_instance == updated_provider_mapping.provider_instance:
+                updated_provider_mapping.in_library = provider_mapping.in_library
+                break
+        updated_item.provider_mappings = {updated_provider_mapping}
+        return updated_item
