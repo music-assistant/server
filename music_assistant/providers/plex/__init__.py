@@ -27,6 +27,7 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
+    EventType,
     ImageType,
     MediaType,
     ProviderFeature,
@@ -144,6 +145,7 @@ __all__ = [
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Coroutine
 
+    from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
     from plexapi.library import LibraryMediaTag as PlexCollection
     from plexapi.library import MusicSection as PlexMusicSection
@@ -193,7 +195,9 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
     _myplex_account: MyPlexAccount = None
     _baseurl: str
     _notification_task: asyncio.Task[None] | None = None
+    _unsubscribe_sync_completed: Callable[[], None] | None = None
     _content_changed_at: str | None = None
+    _recheck_after_sync: bool = False
 
     @property
     def instance_name_postfix(self) -> str | None:
@@ -394,11 +398,16 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         if self.config.get_value(CONF_SYNC_ON_LIBRARY_CHANGE):
             self._content_changed_at = await self._get_content_changed_at()
             self._notification_task = self.mass.create_task(self._watch_library_changes())
+            self._unsubscribe_sync_completed = self.mass.subscribe(
+                self._on_music_sync_completed, EventType.MUSIC_SYNC_COMPLETED
+            )
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
         if self._notification_task:
             self._notification_task.cancel()
+        if self._unsubscribe_sync_completed:
+            self._unsubscribe_sync_completed()
         await super().unload(is_removed)
 
     @property
@@ -1262,8 +1271,22 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         changed_at = await self._get_content_changed_at()
         if changed_at is not None and changed_at == self._content_changed_at:
             return
+        if any(
+            task.metadata.get("provider_instance") == self.instance_id
+            for task in self.mass.music.active_sync_tasks
+        ):
+            # a sync that is already queued or running ignores the request and may have read
+            # this library before the scan finished, so check again once it is done
+            self._recheck_after_sync = True
+            return
         self._content_changed_at = changed_at
         await self.mass.music.start_sync(providers=[self.instance_id])
+
+    async def _on_music_sync_completed(self, _event: MassEvent) -> None:
+        """Check the library again if it changed while it was being synced."""
+        if self._recheck_after_sync:
+            self._recheck_after_sync = False
+            await self._sync_if_library_changed()
 
     async def _get_content_changed_at(self) -> str | None:
         """Return when Plex last saw the content of this library change, if available."""

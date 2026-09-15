@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 import aiohttp
 import pytest
 import requests
+from music_assistant_models.background_task import BackgroundTask
+from music_assistant_models.enums import EventType
 
 from music_assistant.providers.plex import PlexProvider
 from music_assistant.providers.plex.constants import CONF_SYNC_ON_LIBRARY_CHANGE
@@ -71,6 +73,7 @@ def _make_provider(sync_on_library_change: bool = True, content_changed_at: str 
     """
     mock_mass = MagicMock()
     mock_mass.music.start_sync = AsyncMock()
+    mock_mass.music.active_sync_tasks = []
     mock_config = MagicMock()
     mock_config.instance_id = "plex_instance_1"
     config_values = {
@@ -105,6 +108,14 @@ def _close(coro: Coroutine[Any, Any, Any]) -> MagicMock:
     return MagicMock()
 
 
+def _sync_task(provider_instance: str) -> BackgroundTask:
+    """Build an active library sync task of the given provider instance."""
+    return BackgroundTask(
+        name="Sync tracks",
+        metadata={"task_domain": "music_sync", "provider_instance": provider_instance},
+    )
+
+
 async def test_watcher_is_not_started_by_default() -> None:
     """Holding a socket open to the Plex server is opt-in."""
     provider = _make_provider(sync_on_library_change=False)
@@ -113,20 +124,27 @@ async def test_watcher_is_not_started_by_default() -> None:
     await provider.loaded_in_mass()
 
     provider.mass.create_task.assert_not_called()
+    provider.mass.subscribe.assert_not_called()
 
 
 async def test_watcher_is_started_and_stopped_with_the_provider() -> None:
     """The watcher runs while the provider is loaded and is cancelled on unload."""
     provider = _make_provider()
     provider.mass.create_task = MagicMock(side_effect=_close)
+    unsubscribe = MagicMock()
+    provider.mass.subscribe = MagicMock(return_value=unsubscribe)
 
     await provider.loaded_in_mass()
     task = provider._notification_task
     await provider.unload()
 
     provider.mass.create_task.assert_called_once()
+    provider.mass.subscribe.assert_called_once_with(
+        provider._on_music_sync_completed, EventType.MUSIC_SYNC_COMPLETED
+    )
     assert provider._content_changed_at == "100"
     task.cancel.assert_called_once()
+    unsubscribe.assert_called_once()
 
 
 async def test_finished_scan_starts_a_sync() -> None:
@@ -182,3 +200,43 @@ async def test_sync_starts_when_the_content_version_cannot_be_read() -> None:
     await provider._sync_if_library_changed()
 
     provider.mass.music.start_sync.assert_awaited_once()
+
+
+async def test_change_during_a_sync_of_this_provider_is_synced_once_it_ends() -> None:
+    """A sync that is already queued or running ignores a new request, so the change waits."""
+    provider = _make_provider(content_changed_at="101")
+    provider._content_changed_at = "100"
+    provider.mass.music.active_sync_tasks = [_sync_task("plex_instance_1")]
+
+    await provider._sync_if_library_changed()
+
+    provider.mass.music.start_sync.assert_not_awaited()
+    assert provider._content_changed_at == "100"
+
+    provider.mass.music.active_sync_tasks = []
+    await provider._on_music_sync_completed(MagicMock())
+
+    provider.mass.music.start_sync.assert_awaited_once_with(providers=["plex_instance_1"])
+    assert provider._content_changed_at == "101"
+
+
+async def test_sync_of_another_provider_does_not_hold_back_the_sync() -> None:
+    """Only a sync of this provider would ignore the request."""
+    provider = _make_provider(content_changed_at="101")
+    provider._content_changed_at = "100"
+    provider.mass.music.active_sync_tasks = [_sync_task("other_instance")]
+
+    await provider._sync_if_library_changed()
+
+    provider.mass.music.start_sync.assert_awaited_once_with(providers=["plex_instance_1"])
+
+
+async def test_completed_sync_without_a_reported_change_does_not_check_the_library() -> None:
+    """Every sync ends with this event, and an unreachable server would otherwise sync forever."""
+    provider = _make_provider()
+    provider._plex_server.query = MagicMock(side_effect=requests.ConnectionError("unreachable"))
+
+    await provider._on_music_sync_completed(MagicMock())
+
+    provider._plex_server.query.assert_not_called()
+    provider.mass.music.start_sync.assert_not_awaited()
