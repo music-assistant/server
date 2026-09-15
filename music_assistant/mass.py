@@ -881,7 +881,7 @@ class MusicAssistant:
         command: str,
         handler: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]],
         authenticated: bool = True,
-        required_scope: Scope | None = None,
+        required_scope: Scope | tuple[Scope, ...] | None = None,
         allow_impersonation: bool = False,
         alias: bool = False,
     ) -> Callable[[], None]:
@@ -891,8 +891,8 @@ class MusicAssistant:
         :param command: The command name/path.
         :param handler: The function to handle the command.
         :param authenticated: Whether authentication is required (default: True).
-        :param required_scope: Scope required to execute the command,
-            None means any authenticated user.
+        :param required_scope: Scope required to execute the command, a tuple of scopes
+            of which the caller needs one, None means any authenticated user.
         :param allow_impersonation: Whether the command accepts a 'user' argument
             to execute the command on behalf of another user (default: False).
         :param alias: Whether this is an alias for backward compatibility (default: False).

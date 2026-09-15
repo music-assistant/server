@@ -43,6 +43,7 @@ def _create_mock_provider(
     prov.process_pcm_chunk = AsyncMock()
     prov.finalize = AsyncMock()
     prov.cancel = AsyncMock()
+    prov.abort = AsyncMock()
     return prov
 
 
@@ -512,7 +513,8 @@ async def test_provider_error_during_chunk_processing_evicts_provider(
 
     The first chunk processes successfully. The second chunk's exception
     triggers eviction. The third chunk is not delivered. The provider's
-    cancel hook is dispatched (replaces finalize for evicted providers).
+    abort hook is dispatched (replaces finalize for evicted providers) so
+    the track is recorded as failed rather than silently left pending.
     """
     call_count = 0
 
@@ -529,9 +531,10 @@ async def test_provider_error_during_chunk_processing_evicts_provider(
 
     # Provider was called twice: chunk 1 (success), chunk 2 (raised → evicted)
     assert call_count == 2
-    # Evicted provider does NOT get finalize, but does get cancel
+    # Evicted provider gets abort (which records the failure), not finalize or cancel
     mock_provider.finalize.assert_not_called()
-    mock_provider.cancel.assert_called_once()
+    mock_provider.cancel.assert_not_called()
+    mock_provider.abort.assert_called_once()
 
 
 @pytest.mark.asyncio

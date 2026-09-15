@@ -157,6 +157,27 @@ def test_moving_a_track_to_play_next_dethrones_the_previously_next_track() -> No
     assert ctrl.is_current_window_item("q1", moved_up)
 
 
+def test_inserting_a_track_after_the_buffered_one_dethrones_the_cached_next() -> None:
+    """
+    Refuse the track a player cached as next once another is inserted ahead of it.
+
+    A Sonos speaker caches several tracks ahead and only re-reads when refused or out of
+    queue, so a track added mid-playback (a party guest's request) reaches it only if the
+    stale cached next is refused here.
+    """
+    ctrl = _controller(current_index=0, index_in_buffer=1)
+    data = ctrl._queue_data["q1"]
+    data.last_served_item_id = _item_id_at(ctrl, 1)
+    stale_next = _item_id_at(ctrl, 2)
+    guest = QueueItem.from_media_item("q1", _track("guest"))
+
+    data.items.insert(2, guest)
+    data.queue.items = len(data.items)
+
+    assert not ctrl.is_current_window_item("q1", stale_next)
+    assert ctrl.is_current_window_item("q1", guest.queue_item_id)
+
+
 def test_the_item_after_the_last_one_served_is_allowed() -> None:
     """
     A player asks for the track that follows the one it was last given.

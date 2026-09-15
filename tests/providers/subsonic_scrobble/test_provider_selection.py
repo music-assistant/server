@@ -8,14 +8,18 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
-from music_assistant_models.enums import MediaType, ProviderSharing
+from music_assistant_models.enums import MediaType, ProviderFeature, ProviderSharing
 from music_assistant_models.media_items import Podcast, PodcastEpisode, ProviderMapping, Track
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.providers.opensubsonic.parsers import EP_CHAN_SEP
 from music_assistant.providers.opensubsonic.sonic_provider import OpenSonicProvider
-from music_assistant.providers.subsonic_scrobble import SubsonicScrobbleEventHandler
+from music_assistant.providers.subsonic_scrobble import (
+    SUPPORTED_FEATURES,
+    SubsonicScrobbleEventHandler,
+    SubsonicScrobbleProvider,
+)
 from tests.common import set_music_source_access
 
 INSTANCE_A = "opensubsonic--aaaa"
@@ -69,6 +73,20 @@ def _episode() -> PodcastEpisode:
     )
 
 
+def _report() -> MediaItemPlaybackProgressReport:
+    """Build the report of a library track that was played to the end."""
+    return MediaItemPlaybackProgressReport(
+        uri="library://track/1",
+        media_type=MediaType.TRACK,
+        name="Track",
+        duration=200,
+        seconds_played=200,
+        fully_played=True,
+        is_playing=False,
+        userid=USER_ID,
+    )
+
+
 def _user(user_id: str = USER_ID) -> User:
     return User(user_id=user_id, username=user_id, role=UserRole.USER)
 
@@ -101,6 +119,9 @@ def mass(providers: dict[str, Mock]) -> Mock:
     mass = Mock()
     mass.music.get_library_item_by_prov_id = AsyncMock(return_value=_track())
     mass.get_provider.side_effect = lambda instance_id, **_kwargs: providers.get(instance_id)
+    mass.get_provider_instances.side_effect = lambda domain, **_kwargs: [
+        prov for prov in providers.values() if prov.domain == domain
+    ]
     mass.webserver.auth.get_user = AsyncMock(return_value=None)
     # both instances are household sources unless a test says otherwise
     set_music_source_access(mass, {INSTANCE_A: None, INSTANCE_B: None})
@@ -249,19 +270,32 @@ async def test_scrobble_reaches_the_users_instance(
         mass, {INSTANCE_A: _private(OTHER_USER_ID), INSTANCE_B: _private(USER_ID)}
     )
     mass.webserver.auth.get_user.return_value = _user()
-    report = MediaItemPlaybackProgressReport(
-        uri="library://track/1",
-        media_type=MediaType.TRACK,
-        name="Track",
-        duration=200,
-        seconds_played=200,
-        fully_played=True,
-        is_playing=False,
-        userid=USER_ID,
+
+    await handler._scrobble(_report())
+
+    providers[INSTANCE_B].conn.scrobble.assert_awaited_once()
+    providers[INSTANCE_A].conn.scrobble.assert_not_awaited()
+    assert providers[INSTANCE_B].conn.scrobble.await_args.args[0] == "b-42"
+
+
+async def test_hook_reports_to_the_account_of_the_playing_user(
+    mass: Mock, providers: dict[str, Mock]
+) -> None:
+    """The provider hook submits a played item to the account of the user that played it."""
+    set_music_source_access(
+        mass, {INSTANCE_A: _private(OTHER_USER_ID), INSTANCE_B: _private(USER_ID)}
     )
+    mass.webserver.auth.get_user.return_value = _user()
+    config = Mock()
+    config.get_value.side_effect = lambda _key, default=None: default
+    provider = SubsonicScrobbleProvider(
+        mass, Mock(domain="subsonic_scrobble"), config, SUPPORTED_FEATURES
+    )
+    await provider.loaded_in_mass()
 
-    await handler._scrobble(report)
+    await provider.on_media_item_played(_report())
 
+    assert ProviderFeature.SCROBBLE in provider.supported_features
     providers[INSTANCE_B].conn.scrobble.assert_awaited_once()
     providers[INSTANCE_A].conn.scrobble.assert_not_awaited()
     assert providers[INSTANCE_B].conn.scrobble.await_args.args[0] == "b-42"

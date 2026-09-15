@@ -552,7 +552,10 @@ class SmartPlaylistProvider(PluginProvider):
                 # Use the internal method directly: the public add_playlist_tracks() schedules
                 # a background task and returns immediately, but we need the tracks present
                 # before returning the final playlist to the caller.
-                await self.mass.music.playlists._handle_add_playlist_tracks(db_playlist_id, uris)
+                user = get_current_user()
+                await self.mass.music.playlists._handle_add_playlist_tracks(
+                    db_playlist_id, uris, user.user_id if user else None
+                )
 
         final_playlist = await self.mass.music.playlists.get_library_item(db_playlist_id)
         # Schedule an immediate metadata refresh to build the collage image and detect genres

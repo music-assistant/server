@@ -15,7 +15,7 @@ from music_assistant_models.provider import ProviderManifest
 from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.mass import MusicAssistant
-from tests.common import SELF_SERVICE_ROLE, set_music_source_access
+from tests.common import set_music_source_access
 
 MUSIC_DOMAIN = "own_music"
 PLAYER_DOMAIN = "own_player"
@@ -89,15 +89,9 @@ def _loaded_provider() -> MagicMock:
     return provider
 
 
-async def test_the_owner_renames_its_own_source(
-    own_sources_mass: MusicAssistant, self_service_role: str
-) -> None:
-    """
-    A member may change the config of a music source it owns.
-
-    :param self_service_role: Role id granted the self-service scope.
-    """
-    set_current_user(_user(OWNER_ID, self_service_role))
+async def test_the_owner_renames_its_own_source(own_sources_mass: MusicAssistant) -> None:
+    """A member may change the config of a music source it owns."""
+    set_current_user(_user(OWNER_ID, UserRole.USER))
 
     with patch.object(own_sources_mass, "load_provider_config", AsyncMock()) as mock_load:
         config = await own_sources_mass.config.save_provider_config(
@@ -112,15 +106,14 @@ async def test_the_owner_renames_its_own_source(
 
 @pytest.mark.parametrize("instance_id", [OWN_INSTANCE, HOUSE_INSTANCE])
 async def test_another_member_may_not_save_a_source_it_does_not_own(
-    own_sources_mass: MusicAssistant, self_service_role: str, instance_id: str
+    own_sources_mass: MusicAssistant, instance_id: str
 ) -> None:
     """
     A member may not touch the config of a source of someone else or of the household.
 
-    :param self_service_role: Role id granted the self-service scope.
     :param instance_id: The music source the member tries to save.
     """
-    set_current_user(_user(OTHER_ID, self_service_role))
+    set_current_user(_user(OTHER_ID, UserRole.USER))
 
     with (
         patch.object(own_sources_mass, "load_provider_config", AsyncMock()) as mock_load,
@@ -153,16 +146,10 @@ async def test_an_admin_saves_any_source(
     assert config.name == "Household"
 
 
-async def test_the_owner_removes_its_own_source(
-    own_sources_mass: MusicAssistant, self_service_role: str
-) -> None:
-    """
-    A member may remove a music source it owns, library entries included.
-
-    :param self_service_role: Role id granted the self-service scope.
-    """
+async def test_the_owner_removes_its_own_source(own_sources_mass: MusicAssistant) -> None:
+    """A member may remove a music source it owns, library entries included."""
     music = cast("MagicMock", own_sources_mass.music)
-    set_current_user(_user(OWNER_ID, self_service_role))
+    set_current_user(_user(OWNER_ID, UserRole.USER))
 
     with patch.object(own_sources_mass, "unload_provider", AsyncMock()) as mock_unload:
         await own_sources_mass.config.remove_provider_config(OWN_INSTANCE)
@@ -176,16 +163,15 @@ async def test_the_owner_removes_its_own_source(
 
 @pytest.mark.parametrize("instance_id", [OWN_INSTANCE, HOUSE_INSTANCE, PLAYER_INSTANCE])
 async def test_another_member_may_not_remove_a_source_it_does_not_own(
-    own_sources_mass: MusicAssistant, self_service_role: str, instance_id: str
+    own_sources_mass: MusicAssistant, instance_id: str
 ) -> None:
     """
     A member may not remove a source of someone else, of the household or a player provider.
 
-    :param self_service_role: Role id granted the self-service scope.
     :param instance_id: The provider instance the member tries to remove.
     """
     music = cast("MagicMock", own_sources_mass.music)
-    set_current_user(_user(OTHER_ID, self_service_role))
+    set_current_user(_user(OTHER_ID, UserRole.USER))
 
     with (
         patch.object(own_sources_mass, "unload_provider", AsyncMock()) as mock_unload,
@@ -199,14 +185,10 @@ async def test_another_member_may_not_remove_a_source_it_does_not_own(
 
 
 async def test_removing_an_unknown_source_is_refused_on_existence(
-    own_sources_mass: MusicAssistant, self_service_role: str
+    own_sources_mass: MusicAssistant,
 ) -> None:
-    """
-    A source that does not exist reads as unknown, also for a member that does not own it.
-
-    :param self_service_role: Role id granted the self-service scope.
-    """
-    set_current_user(_user(OTHER_ID, self_service_role))
+    """A source that does not exist reads as unknown, also for a member that does not own it."""
+    set_current_user(_user(OTHER_ID, UserRole.USER))
 
     with pytest.raises(KeyError):
         await own_sources_mass.config.remove_provider_config(f"{MUSIC_DOMAIN}--gone")
@@ -223,15 +205,9 @@ async def test_an_admin_removes_a_household_source(own_sources_mass: MusicAssist
     mock_unload.assert_awaited_once_with(HOUSE_INSTANCE, True)
 
 
-async def test_the_owner_reloads_its_own_source(
-    own_sources_mass: MusicAssistant, self_service_role: str
-) -> None:
-    """
-    A member may reload a music source it owns.
-
-    :param self_service_role: Role id granted the self-service scope.
-    """
-    set_current_user(_user(OWNER_ID, self_service_role))
+async def test_the_owner_reloads_its_own_source(own_sources_mass: MusicAssistant) -> None:
+    """A member may reload a music source it owns."""
+    set_current_user(_user(OWNER_ID, UserRole.USER))
 
     with patch.object(own_sources_mass, "load_provider_config", AsyncMock()) as mock_load:
         await own_sources_mass.config._reload_provider(OWN_INSTANCE)
@@ -240,14 +216,10 @@ async def test_the_owner_reloads_its_own_source(
 
 
 async def test_another_member_may_not_reload_a_household_source(
-    own_sources_mass: MusicAssistant, self_service_role: str
+    own_sources_mass: MusicAssistant,
 ) -> None:
-    """
-    A source of the household is not a member's to reload.
-
-    :param self_service_role: Role id granted the self-service scope.
-    """
-    set_current_user(_user(OTHER_ID, self_service_role))
+    """A source of the household is not a member's to reload."""
+    set_current_user(_user(OTHER_ID, UserRole.USER))
 
     with (
         patch.object(own_sources_mass, "load_provider_config", AsyncMock()) as mock_load,
@@ -258,8 +230,7 @@ async def test_another_member_may_not_reload_a_household_source(
     mock_load.assert_not_awaited()
 
 
-@pytest.mark.usefixtures("self_service_role")
-@pytest.mark.parametrize("role", [SELF_SERVICE_ROLE, UserRole.ADMIN], ids=["member", "admin"])
+@pytest.mark.parametrize("role", [UserRole.USER, UserRole.ADMIN], ids=["member", "admin"])
 async def test_reloading_a_vanished_source_is_a_no_op(
     own_sources_mass: MusicAssistant, role: str
 ) -> None:
@@ -277,15 +248,11 @@ async def test_reloading_a_vanished_source_is_a_no_op(
 
 
 async def test_the_owner_invokes_an_action_on_its_own_source(
-    own_sources_mass: MusicAssistant, self_service_role: str
+    own_sources_mass: MusicAssistant,
 ) -> None:
-    """
-    A member may press an action button in the options of a music source it owns.
-
-    :param self_service_role: Role id granted the self-service scope.
-    """
+    """A member may press an action button in the options of a music source it owns."""
     provider = _loaded_provider()
-    set_current_user(_user(OWNER_ID, self_service_role))
+    set_current_user(_user(OWNER_ID, UserRole.USER))
 
     with patch.object(own_sources_mass, "get_provider", MagicMock(return_value=provider)):
         result = await own_sources_mass.config.invoke_provider_config_action(
@@ -297,15 +264,11 @@ async def test_the_owner_invokes_an_action_on_its_own_source(
 
 
 async def test_another_member_may_not_invoke_an_action_on_a_source_it_does_not_own(
-    own_sources_mass: MusicAssistant, self_service_role: str
+    own_sources_mass: MusicAssistant,
 ) -> None:
-    """
-    An action button of another member's source is off limits, the action never runs.
-
-    :param self_service_role: Role id granted the self-service scope.
-    """
+    """An action button of another member's source is off limits, the action never runs."""
     provider = _loaded_provider()
-    set_current_user(_user(OTHER_ID, self_service_role))
+    set_current_user(_user(OTHER_ID, UserRole.USER))
 
     with (
         patch.object(own_sources_mass, "get_provider", MagicMock(return_value=provider)),

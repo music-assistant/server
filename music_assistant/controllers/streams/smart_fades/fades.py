@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from typing import TYPE_CHECKING
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
@@ -75,7 +76,7 @@ async def _feed_ffmpeg_stdin(
     proc: AsyncProcess, fade_in_part: bytes | AsyncGenerator[bytes]
 ) -> None:
     """
-    Write the incoming track's head to the mixer, always ending with an EOF.
+    Write the incoming track's head to the mixer, ending with an EOF unless torn down.
 
     :param proc: The mixer process to feed.
     :param fade_in_part: Raw PCM bytes, or a stream delivering them.
@@ -87,9 +88,14 @@ async def _feed_ffmpeg_stdin(
             async for fade_chunk in fade_in_part:
                 await proc.write(fade_chunk)
     finally:
-        # a feed that stops without an EOF leaves ffmpeg waiting for input
-        # while its consumer waits for output
-        await proc.write_eof()
+        # a feed that stops without an EOF leaves ffmpeg waiting for input while
+        # its consumer waits for output. Only cancelling this task skips it: that
+        # is a teardown, where closing the mixer closes stdin and the EOF would
+        # wait forever on a full pipe nobody drains anymore.
+        task = asyncio.current_task()
+        assert task is not None
+        if not task.cancelling():
+            await proc.write_eof()
 
 
 class SmartFade(ABC):
@@ -173,29 +179,35 @@ class SmartFade(ABC):
                 fadeout_write_fd = -1  # the feeder owns and closes it now
                 feed_task = asyncio.create_task(_feed_ffmpeg_stdin(proc, fade_in_part))
                 stderr_task = asyncio.create_task(_drain_stderr())
+                # hand stderr to the process so its close() drains the reader into
+                # stderr_lines, keeping the error messages below intact
+                proc.attach_stderr_reader(stderr_task)
                 try:
                     async for chunk in proc.iter_any():
                         got_output = True
                         yield chunk
                 finally:
+                    # A teardown (consumer aborted mid-mix) enters this finally with a
+                    # GeneratorExit or CancelledError in flight; a normal finish or an
+                    # ffmpeg error enters it with none.
+                    aborting = isinstance(sys.exception(), (asyncio.CancelledError, GeneratorExit))
                     if not feed_task.done():
                         feed_task.cancel()
                     with suppress(asyncio.CancelledError):
                         await feed_task
-                    # Bounded wait: on consumer abort a paused-but-alive ffmpeg can
-                    # leave the writer blocked on a full pipe until proc.close()
-                    # (in __aexit__, after this finally) breaks it — the orphaned
-                    # thread then ends on its own, a completed write closed already.
+                    if aborting:
+                        # ffmpeg is still alive and holds an unfinished mix, so a
+                        # graceful close would drag on until its shutdown timeout and
+                        # the fade-out feeder stays blocked on a full pipe until then.
+                        # Kill it outright: nothing past this teardown reads stderr.
+                        await proc.kill()
+                    else:
+                        # ffmpeg has already exited, so close() reaps at once and
+                        # drains the attached stderr into stderr_lines for the checks
+                        # below. Idempotent with the async-with __aexit__ that follows.
+                        await proc.close()
                     with suppress(TimeoutError, asyncio.CancelledError):
                         await asyncio.wait_for(fadeout_task, timeout=2)
-                    # Bounded wait on stderr_task so its output is still captured
-                    # for error reporting on the happy/error paths, but we don't
-                    # hang on consumer abort — ffmpeg is still alive then and
-                    # stderr won't EOF until proc.close() closes stdin, which
-                    # only runs via the async-with __aexit__ *after* this finally.
-                    # wait_for cancels stderr_task on timeout so cleanup proceeds.
-                    with suppress(TimeoutError, asyncio.CancelledError):
-                        await asyncio.wait_for(stderr_task, timeout=2)
 
             if proc.returncode != 0:
                 stderr_msg = "; ".join(stderr_lines) if stderr_lines else "(no stderr)"
@@ -437,10 +449,13 @@ class StandardCrossFade(SmartFade):
             yield pcm_slice
 
         if isinstance(fade_in_part, bytes):
-            async for chunk in super().apply(
-                adjusted_fade_out_part, fade_in_part[:crossfade_size], pcm_format
-            ):
-                yield chunk
+            # aclosing so the mixer ffmpeg tears down here, not from a GC finalizer,
+            # when the consumer aborts (closing this generator)
+            async with aclosing(
+                super().apply(adjusted_fade_out_part, fade_in_part[:crossfade_size], pcm_format)
+            ) as blend:
+                async for chunk in blend:
+                    yield chunk
             for pcm_slice in iter_pcm_slices(fade_in_part[crossfade_size:], pcm_format, 1000):
                 yield pcm_slice
             return
@@ -461,8 +476,14 @@ class StandardCrossFade(SmartFade):
                 taken += len(chunk)
                 yield chunk
 
-        async for chunk in super().apply(adjusted_fade_out_part, _overlap_stream(), pcm_format):
-            yield chunk
+        # aclosing so the mixer ffmpeg tears down here, not from a GC finalizer, when
+        # the consumer aborts mid-overlap (closing this generator while _overlap_stream
+        # is still being read by the mixer's stdin feeder)
+        async with aclosing(
+            super().apply(adjusted_fade_out_part, _overlap_stream(), pcm_format)
+        ) as blend:
+            async for chunk in blend:
+                yield chunk
         if overshoot:
             for pcm_slice in iter_pcm_slices(bytes(overshoot), pcm_format, 1000):
                 yield pcm_slice
