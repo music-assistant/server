@@ -753,8 +753,9 @@ class MusicAssistant:
         :param target: Coroutine function or awaitable to run as a task.
         :param args: Arguments to pass to the coroutine function.
         :param task_id: Optional ID to track and deduplicate tasks.
-        :param name: Optional name identifying the task in log messages, defaults to task_id.
-            Pass this instead of task_id to name a task without deduplicating it.
+        :param name: Optional name identifying the task in log messages. Task ids are not
+            used for this: they key on arguments such as image urls and search terms, which
+            do not belong in a log line. Keep a name free of those too.
         :param abort_existing: If True, cancel existing task with same task_id.
         :param eager_start: If True (default), start task immediately without waiting
                            for next event loop iteration. This ensures proper ordering
@@ -792,9 +793,9 @@ class MusicAssistant:
         # asyncio.Task is used directly for eager_start (immediate execution). An eagerly
         # started task runs its first step inside the constructor, so the name has to be set
         # here: it is what identifies the task in asyncio's own slow-callback warnings and in
-        # the exception log below
+        # the exception log below. Without one asyncio numbers the task itself.
         task: asyncio.Task[_R] = asyncio.Task(
-            coro, loop=self.loop, eager_start=eager_start, name=name or task_id
+            coro, loop=self.loop, eager_start=eager_start, name=name
         )
 
         def task_done_callback(_task: asyncio.Task[Any]) -> None:
