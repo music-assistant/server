@@ -45,6 +45,13 @@ def split_multi_value(value: object) -> list[str]:
     return value.split(BEETS_LIST_DELIMITER)
 
 
+def value_at(values: list[str], index: int) -> str | None:
+    """Return the stripped value at index, or None when it is missing or empty."""
+    if index >= len(values):
+        return None
+    return values[index].strip() or None
+
+
 class BeetsLibraryError(Exception):
     """Raised when the beets library database cannot be opened or read."""
 
@@ -213,8 +220,8 @@ class BeetsLibrary:
             for row in rows:
                 if (index := _index_of(split_multi_value(row["names"]), name)) is None:
                     continue
-                sort_name = _at(split_multi_value(row["sort_names"]), index)
-                mbid = _at(split_multi_value(row["mbids"]), index)
+                sort_name = value_at(split_multi_value(row["sort_names"]), index)
+                mbid = value_at(split_multi_value(row["mbids"]), index)
                 return (sort_name, mbid)
         return None
 
@@ -276,10 +283,3 @@ def _index_of(values: list[str], name: str) -> int | None:
         if value.strip() == name:
             return index
     return None
-
-
-def _at(values: list[str], index: int) -> str | None:
-    """Return the stripped value at index, or None when it is missing or empty."""
-    if index >= len(values):
-        return None
-    return values[index].strip() or None

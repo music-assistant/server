@@ -36,7 +36,7 @@ from .constants import (
     IMAGE_PATH_PREFIX,
     TRACK_ID_PREFIX,
 )
-from .library import BeetsRow
+from .library import BeetsRow, value_at
 from .library import split_multi_value as split_multi_value  # noqa: PLC0414 (re-exported)
 
 
@@ -406,7 +406,9 @@ def _artists_from_fields(
         mbids = split_multi_value(fields.get(multi_keys[2]))
         for index, raw_name in enumerate(names):
             if name := raw_name.strip():
-                result.append(parse_artist(name, ctx, _at(sort_names, index), _at(mbids, index)))
+                result.append(
+                    parse_artist(name, ctx, value_at(sort_names, index), value_at(mbids, index))
+                )
         return result
     if single_name := _text(fields.get(single_keys[0])):
         result.append(
@@ -418,13 +420,6 @@ def _artists_from_fields(
             )
         )
     return result
-
-
-def _at(values: list[str], index: int) -> str | None:
-    """Return the stripped value at index, or None when it is missing or empty."""
-    if index >= len(values):
-        return None
-    return values[index].strip() or None
 
 
 def _genres(fields: Mapping[str, Any]) -> set[str] | None:
