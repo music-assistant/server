@@ -22,11 +22,12 @@ from music_assistant_models.media_items import AudioFormat, ProviderMapping, Tra
 
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
 from music_assistant.constants import (
-    DB_TABLE_AUDIO_ANALYSIS,
     DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
     _default_background_scan_concurrency,
 )
 from music_assistant.controllers.streams.audio_analysis import (
+    AA_DB_SCHEMA,
+    AA_TABLE_ANALYSIS,
     LOUDNESS_ANALYSIS_DOMAIN,
     LOUDNESS_PROVIDER_PRIORITY,
     PROVIDER_LOUDNESS_DOMAIN,
@@ -1249,11 +1250,12 @@ async def test_iter_merged_audio_analysis_rows_skips_unparsable_rows() -> None:
 
 @pytest.fixture
 async def real_audio_analysis_db(tmp_path: pathlib.Path) -> AsyncGenerator[DatabaseConnection]:
-    """Create a real on-disk sqlite DB holding just the audio_analysis table."""
+    """Create a real on-disk sqlite DB with the aa-schema audio_analysis table attached."""
     db = DatabaseConnection(str(tmp_path / "test.db"))
     await db.setup()
+    await db.execute(f"ATTACH DATABASE ':memory:' AS {AA_DB_SCHEMA}")
     await db.execute(
-        f"CREATE TABLE {DB_TABLE_AUDIO_ANALYSIS}("
+        f"CREATE TABLE {AA_TABLE_ANALYSIS}("
         "id INTEGER PRIMARY KEY AUTOINCREMENT, media_type TEXT, item_id TEXT, provider TEXT, "
         "aa_provider_domain TEXT, analysis_data json, analysis_version INTEGER, "
         "timestamp_created INTEGER DEFAULT (cast(strftime('%s','now') as int)), "
@@ -1272,7 +1274,7 @@ async def test_iter_merged_audio_analysis_rows_skips_row_with_invalid_utf8_bytes
     """A row whose analysis_data TEXT holds bytes that are not valid UTF-8 is skipped."""
     for item_id, bpm in (("t2", 100.0), ("t3", 200.0)):
         await real_audio_analysis_db.execute_write(
-            f"INSERT INTO {DB_TABLE_AUDIO_ANALYSIS} "
+            f"INSERT INTO {AA_TABLE_ANALYSIS} "
             "(media_type, item_id, provider, aa_provider_domain, analysis_data) VALUES "
             "(:media_type, :item_id, :provider, :aa_provider_domain, :analysis_data)",
             {
@@ -1286,7 +1288,7 @@ async def test_iter_merged_audio_analysis_rows_skips_row_with_invalid_utf8_bytes
     # invalid UTF-8 must go in via a raw CAST(x'..' AS TEXT) literal;
     # binding it as a parameter would store a BLOB instead of corrupt TEXT
     await real_audio_analysis_db.execute_write(
-        f"INSERT INTO {DB_TABLE_AUDIO_ANALYSIS} "
+        f"INSERT INTO {AA_TABLE_ANALYSIS} "
         "(media_type, item_id, provider, aa_provider_domain, analysis_data) VALUES "
         "(:media_type, :item_id, :provider, :aa_provider_domain, "
         "CAST(x'7B226475726174696F6E223A31FFFE7D' AS TEXT))",
@@ -1319,7 +1321,7 @@ async def test_iter_audio_analysis_rows_yields_corrupt_row_as_undecodable_bytes(
 ) -> None:
     """A corrupt non-UTF-8 row is yielded, not filtered; filtering is the consumer's job."""
     await real_audio_analysis_db.execute_write(
-        f"INSERT INTO {DB_TABLE_AUDIO_ANALYSIS} "
+        f"INSERT INTO {AA_TABLE_ANALYSIS} "
         "(media_type, item_id, provider, aa_provider_domain, analysis_data) VALUES "
         "(:media_type, :item_id, :provider, :aa_provider_domain, :analysis_data)",
         {
@@ -1333,7 +1335,7 @@ async def test_iter_audio_analysis_rows_yields_corrupt_row_as_undecodable_bytes(
     # invalid UTF-8 must go in via a raw CAST(x'..' AS TEXT) literal;
     # binding it as a parameter would store a BLOB instead of corrupt TEXT
     await real_audio_analysis_db.execute_write(
-        f"INSERT INTO {DB_TABLE_AUDIO_ANALYSIS} "
+        f"INSERT INTO {AA_TABLE_ANALYSIS} "
         "(media_type, item_id, provider, aa_provider_domain, analysis_data) VALUES "
         "(:media_type, :item_id, :provider, :aa_provider_domain, "
         "CAST(x'7B226475726174696F6E223A31FFFE7D' AS TEXT))",
@@ -1666,7 +1668,7 @@ async def test_get_audio_analysis_deletes_unparsable_rows(
     assert result is not None
     assert result.bpm == 101.0
     delete_mock = cast("AsyncMock", controller.mass.music.database.delete)
-    delete_mock.assert_awaited_once_with(DB_TABLE_AUDIO_ANALYSIS, {"id": 7})
+    delete_mock.assert_awaited_once_with(AA_TABLE_ANALYSIS, {"id": 7})
     warning = next(r for r in caplog.records if r.name == audio_analysis_mod.LOGGER.name)
     assert "in field spectral_centroid" in warning.getMessage()
 
