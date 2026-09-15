@@ -171,6 +171,13 @@ class MusicDatabaseSetupMixin:
             await self.database.delete_where_query(
                 table, f"{column} not in (SELECT item_id from {parent_table})"
             )
+        # drop the bogus self-referential mapping a library item mapping could pick up: its
+        # domain and instance are the literal string "None", so it never resolves and makes
+        # the item page query a provider that does not exist
+        await self.database.delete_where_query(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            "provider_domain = 'None' OR provider_instance = 'None'",
+        )
         update_current_task_progress_text("Database cleanup finished")
         self.logger.debug("Database cleanup done")
 
