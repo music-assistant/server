@@ -123,7 +123,6 @@ class BeetsProvider(MusicProvider):
                 msg,
                 translation_key="library_db_not_found",
                 translation_owner=self.translation_owner,
-                translation_args=[db_path],
             )
         try:
             await self.library.open()
@@ -133,7 +132,6 @@ class BeetsProvider(MusicProvider):
                 msg,
                 translation_key="library_db_invalid",
                 translation_owner=self.translation_owner,
-                translation_args=[db_path],
             ) from err
         if not await isdir(self.music_directory):
             await self.library.close()
@@ -142,7 +140,6 @@ class BeetsProvider(MusicProvider):
                 msg,
                 translation_key="music_directory_not_found",
                 translation_owner=self.translation_owner,
-                translation_args=[self.music_directory],
             )
         threshold = self.config.get_value(CONF_FAVORITE_RATING_THRESHOLD)
         self._ctx = ParseContext(

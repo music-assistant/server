@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -278,3 +279,11 @@ async def test_manifest_is_not_self_service() -> None:
     manifest = await ProviderManifest.parse(str(Path(beets.__file__).parent / "manifest.json"))
     assert manifest.domain == "beets"
     assert manifest.self_service is False
+
+
+def test_setup_error_strings_have_no_placeholders() -> None:
+    """Setup error strings resolve without params, so a placeholder would show up literally."""
+    strings_path = Path(beets.__file__).parent / "strings.json"
+    strings = json.loads(strings_path.read_text())
+    for message in strings["errors"].values():
+        assert "{" not in message
