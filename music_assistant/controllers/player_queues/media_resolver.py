@@ -778,8 +778,9 @@ class MediaResolver:
         if media_item.media_type == MediaType.FOLDER:
             media_item = cast("BrowseFolder", media_item)
             return list(await self._get_folder_tracks(media_item))
-        # all other: single track or radio item
-        return [cast("MediaItemType", media_item)]
+        # all other: a single track, or a radio item (a finite dynamic radio resolves
+        # to its whole tracklist; a stream or endless radio plays as itself)
+        return await self._resolve_leaf_item(media_item, userid, queue_id)
 
     async def _get_folder_tracks(self, folder: BrowseFolder) -> list[Track]:
         """Fetch (playable) tracks for given browse folder."""
@@ -806,6 +807,21 @@ class MediaResolver:
             tracks += [x for x in resolved if isinstance(x, Track)]
 
         return tracks
+
+    async def _resolve_leaf_item(
+        self, media_item: MediaItemType | BrowseFolder, userid: str | None, queue_id: str | None
+    ) -> list[MediaItemType]:
+        """Resolve a leaf item: a finite dynamic radio expands to its whole tracklist."""
+        if (
+            media_item.media_type == MediaType.RADIO
+            and (radio := cast("Radio", media_item)).is_dynamic
+            and radio.is_finite
+        ):
+            # resolved up front like a playlist instead of feeding the managed pool
+            radio_tracks = await self.mass.music.radio.dynamic_tracks(radio)
+            self._mark_container_played(radio, radio_tracks, userid, queue_id)
+            return list(radio_tracks)
+        return [cast("MediaItemType", media_item)]
 
     def _mark_container_played(
         self,

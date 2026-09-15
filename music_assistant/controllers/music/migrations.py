@@ -1002,6 +1002,17 @@ async def migrate_database(  # noqa: PLR0915
             if "duplicate column" not in str(err):
                 raise
 
+    if prev_version <= 58:
+        # add is_finite column to radio table (meaningful only with is_dynamic: the
+        # feed is served whole and stateless instead of paged)
+        try:
+            await database.execute(
+                f"ALTER TABLE {DB_TABLE_RADIOS} ADD COLUMN is_finite BOOLEAN DEFAULT 0 NOT NULL"
+            )
+        except Exception as err:
+            if "duplicate column" not in str(err):
+                raise
+
     # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
     # with the current code/schema, so the external_ids column must be gone first.
     if prev_version <= 47:

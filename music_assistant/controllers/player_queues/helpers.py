@@ -115,7 +115,11 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
 
 def is_dynamic_source(item: MediaItemType | BrowseFolder) -> TypeGuard[Playlist | Radio]:
     """Return True if the item supplies its own on-demand track feed."""
-    return isinstance(item, Playlist | Radio) and item.is_dynamic
+    if isinstance(item, Radio):
+        # a finite dynamic radio serves its whole tracklist up front instead of
+        # feeding the pool, so it does not make the queue dynamic
+        return item.is_dynamic and not item.is_finite
+    return isinstance(item, Playlist) and item.is_dynamic
 
 
 def find_dynamic_source(queue_data: PlayerQueueData) -> MediaItemType | None:

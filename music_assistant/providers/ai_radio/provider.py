@@ -44,8 +44,6 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
-    from .media import _ShowRun
-
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -83,8 +81,9 @@ class AIRadioProvider(
         self._hosts: dict[str, dict[str, Any]] = {}
         self._dj_queues: dict[str, DJQueueState] = {}
         self._dj_lock = asyncio.Lock()
-        self._show_runs: dict[str, _ShowRun] = {}
-        self._show_runs_lock = asyncio.Lock()
+        # queue_id -> station_id for a show DJ armed this play: keeps a manual disable mid-show
+        # final and, on detach, lets a replay of the ended queue re-arm cleanly
+        self._armed_show_queues: dict[str, str] = {}
         self._show_library_ids: dict[str, str] = {}
         self._storage_dir = Path(self.mass.storage_path) / "ai_radio" / self.instance_id
         self._stations_file = self._storage_dir / "stations.json"

@@ -3,10 +3,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import random
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ImageType
@@ -19,49 +17,24 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from .constants import FALLBACK_TRACK_SECONDS, SHOW_FEED_PAGE_SIZE
+from .constants import FALLBACK_TRACK_SECONDS
 
 if TYPE_CHECKING:
-    from music_assistant_models.player_queue import PlayerQueue
-    from music_assistant_models.queue_item import QueueItem
-
     from music_assistant.mass import MusicAssistant
 
 
-@dataclass(slots=True)
-class _ShowRun:
-    """One in-flight play-through of a show: its track snapshot and feed cursor."""
-
-    # the tracks this run still has to feed
-    tracks: list[Track]
-    # the queue playing this run: a run only ever exists for a queue that sources the show
-    queue_id: str
-    cursor: int = 0
-    # True once the queue DJ has been auto-armed for this run, so a detach (queue ended, show
-    # left the sources) or a manual disable is never immediately re-armed by a later event
-    dj_armed: bool = False
-
-    @property
-    def exhausted(self) -> bool:
-        """Return True when the snapshot has been fully served."""
-        return self.cursor >= len(self.tracks)
-
-
 class AIRadioMediaMixin:
-    """Mixin exposing AI Radio shows as library-backed dynamic Radio media items."""
+    """Mixin exposing AI Radio shows as library-backed finite dynamic Radio media items."""
 
     if TYPE_CHECKING:
         mass: MusicAssistant
         logger: logging.Logger
         _stations: dict[str, dict[str, Any]]
-        _show_runs: dict[str, _ShowRun]
-        _show_runs_lock: asyncio.Lock
         _show_library_ids: dict[str, str]
 
         async def _fetch_source_tracks(
             self, station: dict[str, Any]
         ) -> tuple[list[dict[str, Any]], str]: ...
-        def _dj_queue_items(self, queue_id: str) -> list[QueueItem]: ...
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """
@@ -74,46 +47,19 @@ class AIRadioMediaMixin:
             raise MediaNotFoundError(f"AI Radio show {prov_radio_id} not found")
         return self._station_to_radio(station)
 
-    async def get_dynamic_radio_tracks(
-        self, prov_radio_id: str, *, sample: bool = False
-    ) -> list[Track]:
+    async def get_dynamic_radio_tracks(self, prov_radio_id: str) -> list[Track]:
         """
-        Return the next feed page for a playing show, or a preview batch for a sample.
+        Return a show's complete, freshly shuffled tracklist.
 
-        The consume path pages through a run bound to the queue playing the show (the
-        first call starts it, or resumes it behind the show tracks the queue already
-        holds); the empty batch after the last page is what ends the show's feed. A
-        sample gets a fresh preview slice that consumes nothing.
+        Stateless: every call re-snapshots the source playlist, so it serves browse
+        previews as well as playback with no paging or per-queue run to track.
 
         :param prov_radio_id: The station id of the show.
-        :param sample: True returns a preview batch that must not mutate any
-            playback state.
         """
         station = self._stations.get(prov_radio_id)
         if station is None:
             raise MediaNotFoundError(f"AI Radio show {prov_radio_id} not found")
-        if sample:
-            # a browse/details preview: never touches the playback run
-            tracks = await self._snapshot_show_tracks(station)
-            return tracks[:SHOW_FEED_PAGE_SIZE]
-        # snapshotting awaits, so two concurrent first-calls for the same station
-        # must not both pass the "no active run" check and each start their own run
-        async with self._show_runs_lock:
-            run = self._show_runs.get(prov_radio_id)
-            if run is None:
-                tracks = await self._snapshot_show_tracks(station)
-                # resolved after the snapshot: a queue found before it could have been
-                # cleared or removed while the fetch was in flight
-                queue = self._find_show_queue(prov_radio_id)
-                if queue is None:
-                    # a stray fetch with no queue sourcing the show: serve a one-off
-                    # batch, since there is no queue to bind a run to
-                    return tracks[:SHOW_FEED_PAGE_SIZE]
-                run = self._start_show_run(tracks, queue)
-                self._show_runs[prov_radio_id] = run
-            page = run.tracks[run.cursor : run.cursor + SHOW_FEED_PAGE_SIZE]
-            run.cursor += len(page)
-            return page
+        return await self._snapshot_show_tracks(station)
 
     def _station_to_radio(self, station: dict[str, Any]) -> Radio:
         """Build the Radio media item for a station."""
@@ -123,6 +69,7 @@ class AIRadioMediaMixin:
             provider=self.instance_id,
             name=str(station["name"]),
             is_dynamic=True,
+            is_finite=True,
             provider_mappings={
                 ProviderMapping(
                     item_id=station_id,
@@ -175,35 +122,6 @@ class AIRadioMediaMixin:
         for db_id in prune_db_ids:
             await radio_ctrl.remove_item_from_library(db_id)
 
-    def _end_show_run(self, station_id: str) -> None:
-        """Drop the station's active run so a replay starts fresh."""
-        self._show_runs.pop(station_id, None)
-
-    def _find_show_queue(self, station_id: str) -> PlayerQueue | None:
-        """
-        Return the live queue sourcing this show, preferring the one being filled right now.
-
-        A show has one run at a time, so when two queues play the same show at once the
-        second queue shares the first one's feed instead of getting a run of its own.
-        """
-        # an ended queue keeps its sources, so a persisted one must not shadow the queue
-        # that is starting the show now
-        candidates = [
-            queue
-            for queue in self.mass.player_queues.all()
-            if not queue.ended
-            and any(
-                self._station_id_from_source_uri(source.uri) == station_id
-                for source in queue.sources
-            )
-        ]
-        # a queue's first pool fetch happens on an emptied queue, so among several live
-        # ones the empty one is the requester
-        return next(
-            (queue for queue in candidates if queue.items == 0),
-            candidates[0] if candidates else None,
-        )
-
     def _station_id_from_source_uri(self, uri: str | None) -> str | None:
         """Return the station id a queue source uri points at, if it is one of our shows."""
         if not uri:
@@ -220,7 +138,7 @@ class AIRadioMediaMixin:
         return None
 
     async def _snapshot_show_tracks(self, station: dict[str, Any]) -> list[Track]:
-        """Build one run's track snapshot from the source playlist."""
+        """Build a fresh, shuffled and duration-capped tracklist from the source playlist."""
         source_tracks, _playlist_name = await self._fetch_source_tracks(station)
         if station.get("shuffle_source_tracks", True):
             source_tracks = random.sample(source_tracks, len(source_tracks))
@@ -230,16 +148,6 @@ class AIRadioMediaMixin:
         return [
             track["media_item"] for track in source_tracks if track.get("media_item") is not None
         ]
-
-    def _start_show_run(self, tracks: list[Track], queue: PlayerQueue) -> _ShowRun:
-        """Bind a run to the queue, resuming behind the show tracks it already holds."""
-        # runs live in memory only, so a queue already holding tracks of this show is
-        # resuming it (a restart mid-show): the tracks it holds are not fed again
-        queued_uris = {item.uri for item in self._dj_queue_items(queue.queue_id)}
-        return _ShowRun(
-            tracks=[track for track in tracks if track.uri not in queued_uris],
-            queue_id=queue.queue_id,
-        )
 
     def _apply_duration_cap(
         self, tracks: list[dict[str, Any]], max_minutes: float

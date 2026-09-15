@@ -90,6 +90,7 @@ class RadioController(MediaControllerBase[Radio]):
         SELECT
             {self._summary_base_columns()},
             {self.db_table}.is_dynamic,
+            {self.db_table}.is_finite,
             json_extract({self.db_table}.metadata, '$.description') AS description,
             {self._provider_mappings_query()} AS provider_mappings
             FROM {self.db_table}"""
@@ -97,24 +98,20 @@ class RadioController(MediaControllerBase[Radio]):
 
     async def radio_tracks(self, item_id: str, provider_instance_id_or_domain: str) -> list[Track]:
         """
-        Return a preview batch of tracks for a dynamic radio station.
+        Return a fresh batch of tracks for a dynamic radio station.
 
         :param item_id: The provider (or library) item id of the station.
         :param provider_instance_id_or_domain: The provider instance id or domain the
             item id belongs to ("library" for a library item).
         """
         radio = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-        # this is the browse/details sample API: it must never consume from the feed
-        # that an actual playback queue pages through
-        return await self.dynamic_tracks(radio, sample=True)
+        return await self.dynamic_tracks(radio)
 
-    async def dynamic_tracks(self, radio: Radio, *, sample: bool = False) -> list[Track]:
+    async def dynamic_tracks(self, radio: Radio) -> list[Track]:
         """
         Return a fresh batch of tracks for an already resolved dynamic radio station.
 
         :param radio: The dynamic station to fetch the next batch for.
-        :param sample: True returns a preview batch that must not mutate any
-            playback state.
         """
         if not radio.is_dynamic:
             raise UnsupportedFeaturedException(f"{radio.name} is not a dynamic radio station")
@@ -126,7 +123,7 @@ class RadioController(MediaControllerBase[Radio]):
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
         return await cast("MusicProvider | PluginProvider", provider).get_dynamic_radio_tracks(
-            item_id, sample=sample
+            item_id
         )
 
     async def export_radios(self) -> str:
@@ -283,6 +280,7 @@ class RadioController(MediaControllerBase[Radio]):
                 ),
                 "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
                 "is_dynamic": item.is_dynamic,
+                "is_finite": item.is_finite,
             },
         )
         # update/set external id lookup table
@@ -318,6 +316,7 @@ class RadioController(MediaControllerBase[Radio]):
                 if update.date_added
                 else UNSET,
                 "is_dynamic": update.is_dynamic,
+                "is_finite": update.is_finite,
             },
         )
         # update/set external id lookup table
@@ -337,6 +336,7 @@ class RadioController(MediaControllerBase[Radio]):
         """Parse a raw summary db row into a RadioSummary object."""
         item = cast("RadioSummary", super()._parse_summary_row(db_row))
         item.is_dynamic = bool(db_row["is_dynamic"])
+        item.is_finite = bool(db_row["is_finite"])
         item.metadata.description = db_row["description"]
         return item
 

@@ -34,6 +34,7 @@ from music_assistant_models.media_items import (
     MediaItemType,
     PlayableMediaItemType,
     PodcastEpisode,
+    Radio,
     Track,
     UniqueList,
     media_from_dict,
@@ -872,16 +873,26 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     if not isinstance(media_item, BrowseFolder):
                         source_items.append(media_item)
                 else:
-                    # a play-next track never becomes a source: the pool would re-dispatch it later
+                    # a play-next track never becomes a source: the pool would re-dispatch it
+                    # later. A finite dynamic radio (an AI Radio show) resolves like a playlist
+                    # below but is still recorded: sources are how the queue DJ arms itself;
+                    # stream radios stay out of them.
                     if (
                         not plays_next_track
                         and not isinstance(media_item, BrowseFolder)
-                        and media_item.media_type
-                        in (
-                            MediaType.TRACK,
-                            MediaType.ALBUM,
-                            MediaType.PLAYLIST,
-                            MediaType.ARTIST,
+                        and (
+                            (
+                                isinstance(media_item, Radio)
+                                and media_item.is_dynamic
+                                and media_item.is_finite
+                            )
+                            or media_item.media_type
+                            in (
+                                MediaType.TRACK,
+                                MediaType.ALBUM,
+                                MediaType.PLAYLIST,
+                                MediaType.ARTIST,
+                            )
                         )
                     ):
                         # record the finite parent as a source (kept for a later dynamic

@@ -377,7 +377,8 @@ class MusicDatabaseSetupMixin:
             [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL,
-            [is_dynamic] BOOLEAN NOT NULL DEFAULT 0
+            [is_dynamic] BOOLEAN NOT NULL DEFAULT 0,
+            [is_finite] BOOLEAN DEFAULT 0 NOT NULL
             );"""
         )
         await self.database.execute(

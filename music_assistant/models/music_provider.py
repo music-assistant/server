@@ -465,18 +465,18 @@ class MusicProvider(Provider):
         """Get all playlist tracks for given playlist id."""
         raise NotImplementedError
 
-    async def get_dynamic_radio_tracks(
-        self, prov_radio_id: str, *, sample: bool = False
-    ) -> list[Track]:
+    async def get_dynamic_radio_tracks(self, prov_radio_id: str) -> list[Track]:
         """
         Return a fresh batch of tracks for a dynamic radio station.
 
         Only called for a Radio with `is_dynamic` set. Every call returns a new batch;
         there is no stable listing and no pagination.
 
+        For a Radio with `is_finite` set, the call returns the station's complete
+        tracklist instead of a batch. It is stateless and may be called for browse
+        previews as well as for playback.
+
         :param prov_radio_id: The provider's ID of the radio station.
-        :param sample: True returns a preview batch that must not mutate any
-            playback state.
         """
         raise NotImplementedError
 

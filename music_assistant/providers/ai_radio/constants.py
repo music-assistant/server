@@ -93,12 +93,6 @@ LOUDNESS_MEASURE_TIMEOUT = 60
 # bookkeeping, so it is billed as an average length song
 FALLBACK_TRACK_SECONDS = 210
 
-# tracks returned per get_dynamic_radio_tracks call. Must never exceed the pool's minimum
-# top-up slot count (MANAGED_POOL_TARGET minus the refill trigger threshold): the feed
-# advances its cursor for the whole page, so tracks overflowing the pool's free slots
-# would be dropped silently and never air
-SHOW_FEED_PAGE_SIZE = 20
-
 # spoken clips are handed to MA already decoded, so the filter chain runs once here
 # instead of once per output
 TTS_CLIP_PCM_FORMAT = AudioFormat(

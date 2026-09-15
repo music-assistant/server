@@ -54,9 +54,7 @@ class FakeDynamicRadioProvider(MusicProvider):
             },
         )
 
-    async def get_dynamic_radio_tracks(
-        self, prov_radio_id: str, *, sample: bool = False
-    ) -> list[Track]:
+    async def get_dynamic_radio_tracks(self, prov_radio_id: str) -> list[Track]:
         """Return a fixed batch of fake tracks for the dynamic station."""
         return [
             Track(

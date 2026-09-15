@@ -542,3 +542,20 @@ async def test_migration_adds_is_dynamic_column_to_radios(database: DatabaseConn
     )
 
     assert "is_dynamic" in await _table_columns(database, "radios")
+
+
+async def test_migration_adds_is_finite_column_to_radios(database: DatabaseConnection) -> None:
+    """A pre-59 database gets the radios.is_finite column."""
+    assert "is_finite" not in await _table_columns(database, "radios")
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    await migrate_database(
+        mass,
+        database,
+        MagicMock(),
+        prev_version=58,
+        create_tables=AsyncMock(),
+    )
+
+    assert "is_finite" in await _table_columns(database, "radios")
