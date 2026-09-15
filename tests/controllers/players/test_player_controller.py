@@ -35,6 +35,7 @@ from music_assistant_models.enums import (
     PlayerType,
 )
 from music_assistant_models.errors import (
+    InsufficientPermissions,
     InvalidDataError,
     MusicAssistantError,
     PlayerCommandFailed,
@@ -67,7 +68,10 @@ from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.players import controller as players_controller
 from music_assistant.controllers.players.announcements import ANNOUNCEMENT_TTS_TIMEOUT
 from music_assistant.controllers.players.constants import PlayerLockPurpose
-from music_assistant.controllers.webserver.helpers.auth_middleware import current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    current_user,
+    sendspin_player_id,
+)
 from music_assistant.helpers.tts import TTS_QUERY_TIMEOUT_SECONDS, TTSLanguageNotSupportedError
 from music_assistant.models.player import LinkedOutputProtocol, Player
 from music_assistant.models.player_provider import PlayerProvider
@@ -483,11 +487,14 @@ def _group_with_member(
 
 
 @contextlib.contextmanager
-def _restricted_user(visible_player_ids: list[str]) -> Iterator[None]:
+def _restricted_user(
+    visible_player_ids: list[str], own_player_id: str | None = None
+) -> Iterator[None]:
     """
     Run the wrapped block as a non-admin user that may only see the given players.
 
     :param visible_player_ids: The player ids the user is allowed to see.
+    :param own_player_id: The client player the user connected on, if any.
     """
     # the contextvar is copied into the task an API command runs in, so it stays
     # live for everything that command reaches, internal bookkeeping included
@@ -499,10 +506,56 @@ def _restricted_user(visible_player_ids: list[str]) -> Iterator[None]:
             player_filter=visible_player_ids,
         )
     )
+    player_token = sendspin_player_id.set(own_player_id)
     try:
         yield
     finally:
+        sendspin_player_id.reset(player_token)
         current_user.reset(token)
+
+
+class TestPlayerCommandPermission:
+    """The command decorator enforces the player filter but exempts the caller's own client player."""
+
+    async def _stop(
+        self,
+        mock_mass: MagicMock,
+        player_id: str,
+        *,
+        private: bool = False,
+        own_player_id: str | None = None,
+    ) -> AsyncMock:
+        """Send a stop command as a restricted user and return the isolated handler mock."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, player_id, "Client")
+        player._attr_private = private
+        player.initialized.set()
+        player.update_state(signal_event=False)
+        controller._players = {player_id: player}
+        mock_mass.players = controller
+        controller.get_active_queue = MagicMock(return_value=None)  # type: ignore[method-assign]
+        handler = AsyncMock()
+        controller._handle_cmd_stop = handler  # type: ignore[method-assign]
+        with _restricted_user(["kitchen"], own_player_id=own_player_id):
+            await controller.cmd_stop(player_id)
+        return handler
+
+    async def test_command_on_the_own_client_player_is_permitted(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A private client player the user connected on accepts commands even when filtered out."""
+        handler = await self._stop(
+            mock_mass, "browser_session", private=True, own_player_id="browser_session"
+        )
+        handler.assert_awaited_once_with("browser_session")
+
+    async def test_a_shared_speaker_claimed_as_the_client_player_is_refused(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Announcing a shared speaker's id as the client id does not grant command access."""
+        with pytest.raises(InsufficientPermissions):
+            await self._stop(mock_mass, "living_room", private=False, own_player_id="living_room")
 
 
 class TestStateForwarding:
