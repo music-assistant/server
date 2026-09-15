@@ -86,7 +86,12 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 from music_assistant_models.media_items import (
     Artist,
     Audiobook,
@@ -1716,6 +1721,7 @@ for more details.
                     token=self._client.token,
                     base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 )
+                mass_audiobook = self._socket_ensure_provider_mapping_in_library(mass_audiobook)
                 if (
                     mass_existing_audiobook := await self.mass.music.get_library_item_by_prov_id(
                         media_type=MediaType.AUDIOBOOK,
@@ -1725,9 +1731,6 @@ for more details.
                 ) and isinstance(mass_existing_audiobook, Audiobook):
                     self.logger.debug(
                         'Updated book "%s" via socket.', abs_item.media.metadata.title or ""
-                    )
-                    mass_audiobook = self._ensure_provider_mapping_in_library(
-                        mass_existing_audiobook, mass_audiobook
                     )
                     await self.mass.music.audiobooks.update_item_in_library(
                         mass_existing_audiobook.item_id, mass_audiobook, overwrite=True
@@ -1753,6 +1756,7 @@ for more details.
                     and mass_podcast.total_episodes == 0
                 ):
                     continue
+                mass_podcast = self._socket_ensure_provider_mapping_in_library(mass_podcast)
                 if (
                     mass_existing_podcast := await self.mass.music.get_library_item_by_prov_id(
                         media_type=MediaType.PODCAST,
@@ -1763,14 +1767,11 @@ for more details.
                     self.logger.debug(
                         'Updated podcast "%s" via socket.', abs_item.media.metadata.title or ""
                     )
-                    mass_podcast = self._ensure_provider_mapping_in_library(
-                        mass_existing_podcast, mass_podcast
-                    )
                     await self.mass.music.podcasts.update_item_in_library(
                         mass_existing_podcast.item_id, mass_podcast, overwrite=True
                     )
                 else:
-                    self.logger.error(
+                    self.logger.debug(
                         'Added podcast "%s" via socket.', abs_item.media.metadata.title or ""
                     )
                     await self.mass.music.podcasts.add_item_to_library(mass_podcast)
@@ -1853,15 +1854,13 @@ for more details.
                 owner=self.abs_username,
                 media_type=media_type,
             )
+            parsed_playlist = self._socket_ensure_provider_mapping_in_library(parsed_playlist)
             ma_library_playlist = await self.mass.music.get_library_item_by_prov_id(
                 media_type=MediaType.PLAYLIST,
                 item_id=abs_playlist.id_,
                 provider_instance_id_or_domain=self.instance_id,
             )
             if ma_library_playlist is not None and isinstance(ma_library_playlist, Playlist):
-                parsed_playlist = self._ensure_provider_mapping_in_library(
-                    ma_library_playlist, parsed_playlist
-                )
                 await self.mass.music.playlists.update_item_in_library(
                     item_id=ma_library_playlist.item_id, update=parsed_playlist, overwrite=True
                 )
@@ -1890,6 +1889,20 @@ for more details.
                     with suppress(KeyError):
                         playlist_set.remove(abs_playlist.id_)
         await self._cache_set_helper_libraries()
+
+    def _socket_ensure_provider_mapping_in_library(self, updated_item: M) -> M:
+        """
+        Ensure that in_library is set to True on the updated/ added item during a socket update.
+
+        This guarantees, that the UI doesn't "loose" the item in its view.
+        """
+        # the updated item only has a single provider mapping given by this provider's parse function
+        if len(updated_item.provider_mappings) != 1:
+            raise MusicAssistantError("Expected exactly one provider mapping.")
+        updated_provider_mapping = updated_item.provider_mappings.pop()
+        updated_provider_mapping.in_library = True
+        updated_item.provider_mappings = {updated_provider_mapping}
+        return updated_item
 
     async def _socket_abs_refresh_token_expired(self) -> None:
         await self.reauthenticate()
@@ -2230,18 +2243,3 @@ for more details.
                     # We do not try again after a failure. _get_playback_session verifies if a session
                     # exists.
                     self.sessions.pop(session_key, None)
-
-    def _ensure_provider_mapping_in_library(self, current_item: M, updated_item: M) -> M:
-        """
-        Ensure that in_library is set to True on the updated_item if the current_item has it.
-
-        This guarantees, that the UI doesn't "loose" the item in its view.
-        """
-        # the updated item only has a single provider mapping given by this provider's parse function
-        updated_provider_mapping = updated_item.provider_mappings.pop()
-        for provider_mapping in current_item.provider_mappings:
-            if provider_mapping.provider_instance == updated_provider_mapping.provider_instance:
-                updated_provider_mapping.in_library = provider_mapping.in_library
-                break
-        updated_item.provider_mappings = {updated_provider_mapping}
-        return updated_item
