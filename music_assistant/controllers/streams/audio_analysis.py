@@ -12,7 +12,7 @@ import time
 from collections.abc import AsyncGenerator, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from math import isfinite
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.audio_analysis import AudioAnalysisCoverage
 from music_assistant_models.auth import Scope
@@ -26,6 +26,7 @@ from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_AUDIO_ANALYSIS_FAILURES,
     DB_TABLE_PROVIDER_MAPPINGS,
+    DB_TABLE_SETTINGS,
     DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
     LOUDNESS_MEASUREMENT_MIN_LUFS,
     MASS_LOGGER_NAME,
@@ -53,6 +54,14 @@ SONIC_ANALYSIS_DOMAIN = "sonic_analysis"
 # AA domains trusted for frontend-facing track data (bpm/key/waveform), authoritative first.
 TRACK_EXPORT_AA_PRIORITY = (SMART_FADES_ANALYSIS_DOMAIN, SONIC_ANALYSIS_DOMAIN)
 BACKGROUND_SCAN_TASK_ID = "audio_analysis_background_scan"
+# The analysis tables live in their own SQLite file, attached onto the music connection
+# under this schema name so candidate/coverage queries can still join provider_mappings.
+AA_DB_SCHEMA: Final[str] = "aa"
+AA_DB_FILENAME: Final[str] = "audio_analysis.db"
+AA_DB_SCHEMA_VERSION: Final[int] = 1
+AA_TABLE_ANALYSIS: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_AUDIO_ANALYSIS}"
+AA_TABLE_FAILURES: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_AUDIO_ANALYSIS_FAILURES}"
+AA_TABLE_SETTINGS: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_SETTINGS}"
 BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
 BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER = 1.5
 # Per-run wall-clock cap; in-flight tracks finish, new ones defer to the next run.
@@ -257,6 +266,62 @@ class AudioAnalysisController:
             metadata={"task_domain": "audio_analysis"},
             allow_retry=True,
         )
+
+    async def setup_database(self) -> None:
+        """
+        Attach the audio analysis database and make sure its tables exist.
+
+        Safe to call more than once. Must run after the music database connection exists
+        (it is attached onto that connection) and before any analysis query.
+        """
+        db = self.mass.music.database
+        db_path = os.path.join(self.mass.storage_path, AA_DB_FILENAME)
+        attached = await db.get_rows_from_query("PRAGMA database_list", limit=0)
+        if not any(row["name"] == AA_DB_SCHEMA for row in attached):
+            # ATTACH cannot run inside a transaction
+            await db.commit()
+            await db.execute(f"ATTACH DATABASE :path AS {AA_DB_SCHEMA}", {"path": db_path})
+            # the music connection holds an exclusive lock; the analysis file stays readable
+            # by other processes (diagnostics, exports) and gets WAL like the other db files
+            await db.execute(f"PRAGMA {AA_DB_SCHEMA}.locking_mode=NORMAL;")
+            await db.execute(f"PRAGMA {AA_DB_SCHEMA}.journal_mode=WAL;")
+        await db.execute(
+            f"""CREATE TABLE IF NOT EXISTS {AA_TABLE_SETTINGS}(
+                    [key] TEXT PRIMARY KEY,
+                    [value] TEXT,
+                    [type] TEXT
+                );"""
+        )
+        await db.execute(
+            f"""CREATE TABLE IF NOT EXISTS {AA_TABLE_ANALYSIS}(
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [media_type] TEXT NOT NULL,
+                    [item_id] TEXT NOT NULL,
+                    [provider] TEXT NOT NULL,
+                    [aa_provider_domain] TEXT NOT NULL,
+                    [analysis_data] json NOT NULL,
+                    [analysis_version] INTEGER DEFAULT 1,
+                    [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+                    UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
+        )
+        await db.execute(
+            f"""CREATE TABLE IF NOT EXISTS {AA_TABLE_FAILURES}(
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [media_type] TEXT NOT NULL,
+                    [item_id] TEXT NOT NULL,
+                    [provider] TEXT NOT NULL,
+                    [aa_provider_domain] TEXT NOT NULL,
+                    [reason] TEXT NOT NULL,
+                    [analysis_version] INTEGER NOT NULL DEFAULT 1,
+                    [next_retry] INTEGER,
+                    [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+                    UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
+        )
+        await db.insert_or_replace(
+            AA_TABLE_SETTINGS,
+            {"key": "version", "value": str(AA_DB_SCHEMA_VERSION), "type": "str"},
+        )
+        await db.commit()
 
     async def close(self) -> None:
         """Drain in-flight sessions and chunk workers on shutdown."""
