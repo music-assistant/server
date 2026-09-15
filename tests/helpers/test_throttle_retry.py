@@ -263,6 +263,15 @@ class TestSharedCooldown:
         # initial_backoff 4, doubled by each of the 4 retries
         assert fake_clock.now - exhausted_at == pytest.approx(64)
 
+    async def test_bypassing_caller_still_backs_off(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """A caller that bypasses the gate waits out its own backoff before retrying."""
+        provider.set_side_effects([RateLimited("rate limited", backoff_time=50), "ok"])
+        async with provider.throttler.bypass():
+            assert await provider.api_call("ok") == "ok"
+        assert fake_clock.now >= 50
+
     async def test_retry_waits_out_a_cooldown_armed_while_backing_off(
         self, provider: FakeProvider, fake_clock: FakeClock
     ) -> None:
