@@ -3,7 +3,7 @@
   "domain": "raumfeld",
   "name": "Teufel Raumfeld",
   "description": "Stream music to Teufel Raumfeld (Smart Speaker) multiroom devices.",
-  "codeowners": ["@ernst"],
+  "codeowners": ["@Simanias"],
   "requirements": ["hassfeld==0.3.14"],
   "documentation": "https://music-assistant.io/player-support/raumfeld/",
   "multi_instance": false,
