@@ -104,6 +104,9 @@ ID_SEPARATOR: Final[str] = ":"
 # An artist radio shares the Radio media type with live stations, whose ids are plain
 # numbers, so its id names the seed artist behind a prefix.
 ARTIST_RADIO_PREFIX: Final[str] = "artist:"
+# A track listed from the catalog (an album's tracks) cannot be played, while the same
+# song served by an artist radio can. The listing gets its own id so the two never meet.
+CATALOG_TRACK_PREFIX: Final[str] = "catalog:"
 ARTIST_IMAGE_URL: Final[str] = "https://i.iheart.com/v3/catalog/artist/{artist_id}"
 
 # -- Artist radio --

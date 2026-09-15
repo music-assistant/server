@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -10,7 +11,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, UnplayableMediaError
 from music_assistant_models.media_items import Podcast, Radio
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
@@ -22,6 +23,7 @@ from music_assistant.providers.iheartradio.constants import (
     CONF_SESSION_ID,
     CONF_SESSION_USERNAME,
     PATH_ARTIST_STATION,
+    PATH_CATALOG_TRACK,
     PATH_FOLLOWS_ARTIST,
     PATH_FOLLOWS_ARTIST_ITEM,
     PATH_FOLLOWS_LIVE,
@@ -232,6 +234,23 @@ async def test_artist_radio_batches_and_track_stream(
     assert reports[0]["stationId"] == ARTIST_STATION["id"]
     # a retained track resolves without the catalog
     assert (await provider.get_track(TRACK_ID)).name == "I Won't Back Down"
+
+
+async def test_catalog_listing_stays_unplayable(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """An album's listing of a song stays unplayable while an artist radio serves that song."""
+    station = provider.stations.register("1805", ARTIST_STATION["id"], now=time.time())
+    station.add_batch({TRACK_ID: RADIO_ITEM}, now=time.time())
+    api.responses[PATH_CATALOG_TRACK.format(track_id=TRACK_ID)] = {
+        "tracks": [{"id": int(TRACK_ID), "title": "I Won't Back Down"}]
+    }
+    listing = await provider.get_track(f"catalog:{TRACK_ID}")
+    assert listing.item_id == f"catalog:{TRACK_ID}"
+    assert not listing.available
+    assert (await provider.get_track(TRACK_ID)).available
+    with pytest.raises(UnplayableMediaError):
+        await provider.get_stream_details(f"catalog:{TRACK_ID}", MediaType.TRACK)
 
 
 async def test_expired_batch_is_refused(provider: IHeartRadioProvider, api: FakeApi) -> None:

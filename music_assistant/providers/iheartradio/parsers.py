@@ -24,7 +24,13 @@ from music_assistant_models.streamdetails import StreamMetadata
 
 from music_assistant.helpers.datetime import from_utc_timestamp
 
-from .constants import ARTIST_IMAGE_URL, ARTIST_RADIO_PREFIX, ID_SEPARATOR, STREAM_PREFERENCE
+from .constants import (
+    ARTIST_IMAGE_URL,
+    ARTIST_RADIO_PREFIX,
+    CATALOG_TRACK_PREFIX,
+    ID_SEPARATOR,
+    STREAM_PREFERENCE,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -116,7 +122,11 @@ def parse_artist_radio(artist: Mapping[str, Any], instance_id: str, domain: str)
 
 
 def parse_track(
-    track: Mapping[str, Any], instance_id: str, domain: str, available: bool = True
+    track: Mapping[str, Any],
+    instance_id: str,
+    domain: str,
+    available: bool = True,
+    catalog: bool = False,
 ) -> Track | None:
     """
     Create a Track item from a track payload.
@@ -127,9 +137,13 @@ def parse_track(
     :param instance_id: The provider instance id.
     :param domain: The provider domain.
     :param available: Whether the track can be played through this provider.
+    :param catalog: Whether this is a catalog listing, which gets its own (unplayable) id.
     """
     if not (track_id := _as_id(track.get("id"))):
         return None
+    if catalog:
+        track_id = catalog_track_item_id(track_id)
+        available = False
     mass_track = Track(
         item_id=track_id,
         provider=instance_id,
@@ -395,6 +409,18 @@ def split_artist_radio_item_id(item_id: str) -> str | None:
     """Return the seed artist id of an artist radio item id, None for a live station."""
     if item_id.startswith(ARTIST_RADIO_PREFIX):
         return item_id.removeprefix(ARTIST_RADIO_PREFIX) or None
+    return None
+
+
+def catalog_track_item_id(track_id: str) -> str:
+    """Build the MA item id of a track listed from the catalog."""
+    return f"{CATALOG_TRACK_PREFIX}{track_id}"
+
+
+def split_catalog_track_item_id(item_id: str) -> str | None:
+    """Return the iHeartRadio track id of a catalog listing, None for a radio track."""
+    if item_id.startswith(CATALOG_TRACK_PREFIX):
+        return item_id.removeprefix(CATALOG_TRACK_PREFIX) or None
     return None
 
 

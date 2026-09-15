@@ -36,6 +36,7 @@ from .parsers import (
     parse_podcast_episode,
     parse_track,
     split_artist_radio_item_id,
+    split_catalog_track_item_id,
     split_episode_item_id,
 )
 from .stations import IHeartRadioStationManager
@@ -86,7 +87,7 @@ class IHeartRadioProvider(MusicProvider):
         """Return the supported features, library sync only with a configured account."""
         # Read from setup rather than the session: MA resolves a provider's config entries
         # (and so its features) before handle_async_init has signed in.
-if str(self.get_setup_value(CONF_USERNAME) or "").strip():
+        if str(self.get_setup_value(CONF_USERNAME) or "").strip():
             return SUPPORTED_FEATURES | LIBRARY_FEATURES
         return set(SUPPORTED_FEATURES)
 
@@ -171,15 +172,19 @@ if str(self.get_setup_value(CONF_USERNAME) or "").strip():
         """
         Get full track details by id.
 
-        :param prov_track_id: The iHeartRadio track id.
+        :param prov_track_id: The iHeartRadio track id, or the id of a catalog listing.
         """
-        # a track served by an artist radio is still retained; the catalog answers for the
-        # rest, but those cannot be played
-        if found := self.stations.find(prov_track_id):
-            payload = found[1].get("content") or {}
+        if catalog_track_id := split_catalog_track_item_id(prov_track_id):
+            # an album's listing stays unplayable even while an artist radio holds the song
+            payload = await self.api.get_catalog_track(catalog_track_id) or {}
+            track = parse_track(payload, self.instance_id, self.domain, catalog=True)
+        elif found := self.stations.find(prov_track_id):
+            # a track served by an artist radio is still retained
+            track = parse_track(found[1].get("content") or {}, self.instance_id, self.domain)
         else:
+            # the catalog answers for the rest, but those cannot be played
             payload = await self.api.get_catalog_track(prov_track_id) or {}
-        track = parse_track(payload, self.instance_id, self.domain, found is not None)
+            track = parse_track(payload, self.instance_id, self.domain, available=False)
         if track is None:
             raise MediaNotFoundError(f"Track {prov_track_id} not found")
         return track
@@ -226,7 +231,11 @@ if str(self.get_setup_value(CONF_USERNAME) or "").strip():
         return [
             track
             for item in json_items(album.get("tracks"))
-            if (track := parse_track({**shared, **item}, self.instance_id, self.domain, False))
+            if (
+                track := parse_track(
+                    {**shared, **item}, self.instance_id, self.domain, catalog=True
+                )
+            )
         ]
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
