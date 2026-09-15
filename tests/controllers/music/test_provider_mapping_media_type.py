@@ -66,7 +66,7 @@ class TestProviderMappingMediaTypeScope:
                 provider_mappings={_mapping(audiobook_id)},
             )
         )
-        # item ids are allocated per media type, so the collision only exists while both match
+        # Use matching library IDs to expose cross-media lookups.
         assert int(album.item_id) == int(audiobook.item_id)
 
         album_match = await mass.music.albums.get_library_item_by_prov_id(audiobook_id, provider_id)
@@ -80,7 +80,6 @@ class TestProviderMappingMediaTypeScope:
             audiobook.item_id if shared_provider_id else None
         )
 
-        # The batched lookup also accepts explicit instance and domain selectors.
         batch = await mass.music.albums.get_library_items_by_prov_id(
             provider_instance=provider_id if provider_id == PROVIDER else None,
             provider_domain=provider_id if provider_id != PROVIDER else None,
