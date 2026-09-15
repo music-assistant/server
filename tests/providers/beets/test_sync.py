@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
 
+from music_assistant.controllers.tasks.context import calculate_progress
 from music_assistant.providers.beets import BeetsProvider
 from music_assistant.providers.beets.library import BeetsLibraryError, BeetsRow
 from music_assistant.providers.beets.parsers import item_checksum
@@ -57,6 +58,29 @@ async def test_first_sync_imports_every_item(
     calls = provider.mass.music.tracks.add_item_to_library.await_args_list  # type: ignore[attr-defined]
     assert sorted(call.args[0].name for call in calls) == ["Loose", "Song", "Two"]
     assert all(call.kwargs["overwrite_existing"] is False for call in calls)
+
+
+async def test_sync_with_zero_initial_count_does_not_crash_on_progress(
+    make_provider: MakeProvider, beets_db: BeetsDb
+) -> None:
+    """Beets reporting 0 items at count time, with an item arriving before the first batch, syncs."""
+    beets_db.add_item(**item_fields())
+    provider = await make_provider()
+    provider.library.count_items = AsyncMock(return_value=0)  # type: ignore[method-assign]
+
+    def _update_progress(current: int, total: int, _text: str | None = None) -> int | None:
+        # a real task context raises when total <= 0, exactly like production
+        return calculate_progress(current, total)
+
+    with patch(
+        "music_assistant.providers.beets.update_current_task_progress_from_index",
+        side_effect=_update_progress,
+    ):
+        await provider.sync_library(MediaType.TRACK)
+
+    calls = provider.mass.music.tracks.add_item_to_library.await_args_list  # type: ignore[attr-defined]
+    assert [call.args[0].name for call in calls] == ["Song"]
+    assert provider.sync_running is False
 
 
 async def test_artist_and_album_passes_do_nothing(

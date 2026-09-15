@@ -287,8 +287,9 @@ class BeetsProvider(MusicProvider):
                             self._import_item(item, album, checksum, overwrite=item_id in previous)
                         )
                     processed += len(batch)
+                    # beets may have added items after count_items() ran, including from 0
                     update_current_task_progress_from_index(
-                        processed, total, f"Read {processed}/{total} beets items"
+                        processed, max(total, processed), f"Read {processed}/{total} beets items"
                     )
         except BeetsLibraryError as err:
             self.logger.error("Aborting sync for %s: %s", self.name, err)
