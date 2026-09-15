@@ -46,9 +46,11 @@ from music_assistant.controllers.music.helpers import (
     provider_mappings_for_update,
 )
 from music_assistant.helpers.compare import (
+    ARTIST_EXTERNAL_ID_TYPES,
     compare_album,
     compare_album_name,
     compare_artist,
+    compare_external_ids,
     compare_strings,
     compare_track,
 )
@@ -891,7 +893,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         for row in zip_longest(*listings):
             for candidate in row:
                 if candidate is None or any(
-                    compare_artist(existing, candidate) for existing in result
+                    compare_artist(existing, candidate)
+                    and self._confirms_same_artist(existing, candidate)
+                    for existing in result
                 ):
                     continue
                 result.append(candidate)
@@ -1047,6 +1051,20 @@ class ArtistsController(MediaControllerBase[Artist]):
                 f"provider_filter '{provider_filter}' does not match the requested "
                 f"provider '{provider_instance_id_or_domain}'"
             )
+
+    async def _confirm_library_candidate(self, db_item: Artist, item: Artist | ItemMapping) -> bool:
+        """
+        Return True if a library artist is the same artist as the one being added.
+
+        A streaming provider that knows both under different ids is a distinct artist
+        that merely shares the name, unless a strong external id says otherwise.
+
+        :param db_item: Existing library artist that matched on an external id or name.
+        :param item: The (provider) artist that is being added to the library.
+        """
+        return await super()._confirm_library_candidate(
+            db_item, item
+        ) and self._confirms_same_artist(db_item, item)
 
     async def _confirm_artist_match(
         self, db_artist: Artist, candidate: Artist | ItemMapping, strict: bool
@@ -1223,3 +1241,39 @@ class ArtistsController(MediaControllerBase[Artist]):
         item = cast("ArtistSummary", super()._parse_summary_row(db_row))
         item.artist_type = ArtistType(db_row["artist_type"])
         return item
+
+    def _confirms_same_artist(
+        self, base_item: Artist | ItemMapping, compare_item: Artist | ItemMapping
+    ) -> bool:
+        """Return False when conflicting same-instance ids outweigh a name match on these artists."""
+        if any(
+            compare_external_ids(base_item.external_ids, compare_item.external_ids, ext_id)
+            for ext_id in ARTIST_EXTERNAL_ID_TYPES
+        ):
+            return True
+        return not self._has_conflicting_provider_ids(base_item, compare_item)
+
+    def _has_conflicting_provider_ids(
+        self, base_item: Artist | ItemMapping, compare_item: Artist | ItemMapping
+    ) -> bool:
+        """Return True if a streaming provider instance knows both items under different ids."""
+
+        def _instance_ids(item: Artist | ItemMapping) -> dict[str, set[str]]:
+            ids: dict[str, set[str]] = {}
+            for mapping in getattr(item, "provider_mappings", None) or ():
+                if not mapping.available:
+                    continue
+                ids.setdefault(mapping.provider_instance, set()).add(mapping.item_id)
+            if item.provider and item.item_id and item.available and item.provider != "library":
+                ids.setdefault(item.provider, set()).add(item.item_id)
+            return ids
+
+        base_ids = _instance_ids(base_item)
+        compare_ids = _instance_ids(compare_item)
+        for instance, ids in base_ids.items():
+            if instance not in compare_ids or not ids.isdisjoint(compare_ids[instance]):
+                continue
+            provider = self.mass.get_provider(instance)
+            if isinstance(provider, MusicProvider) and provider.is_streaming_provider:
+                return True
+        return False

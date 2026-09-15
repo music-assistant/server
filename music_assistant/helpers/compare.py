@@ -29,6 +29,8 @@ from music_assistant_models.media_items import (
 from music_assistant.helpers.external_ids import is_valid_isrc, normalize_external_id
 from music_assistant.helpers.util import extract_title_artist_credits, parse_title_and_version
 
+ARTIST_EXTERNAL_ID_TYPES: Final = (ExternalID.MB_ARTIST, ExternalID.DISCOGS, ExternalID.TADB)
+
 IGNORE_VERSIONS = (
     "explicit",  # explicit is matched separately
     "music from and inspired by the motion picture",
@@ -188,7 +190,7 @@ def compare_artist(
     if compare_item_ids(base_item, compare_item):
         return True
     # return early on (un)matched external id
-    for ext_id in (ExternalID.MB_ARTIST, ExternalID.DISCOGS, ExternalID.TADB):
+    for ext_id in ARTIST_EXTERNAL_ID_TYPES:
         external_id_match = compare_external_ids(
             base_item.external_ids, compare_item.external_ids, ext_id
         )
