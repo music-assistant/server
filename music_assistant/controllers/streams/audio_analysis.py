@@ -502,7 +502,7 @@ class AudioAnalysisController:
         prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
         data_json = json_dumps(analysis.to_dict())
         await self.mass.music.database.insert_or_replace(
-            DB_TABLE_AUDIO_ANALYSIS,
+            AA_TABLE_ANALYSIS,
             {
                 "media_type": media_type.value,
                 "item_id": item_id,
@@ -552,7 +552,7 @@ class AudioAnalysisController:
             return
         prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
         await self.mass.music.database.insert_or_replace(
-            DB_TABLE_AUDIO_ANALYSIS_FAILURES,
+            AA_TABLE_FAILURES,
             {
                 "media_type": media_type.value,
                 "item_id": item_id,
@@ -590,13 +590,31 @@ class AudioAnalysisController:
             return
         prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
         await self.mass.music.database.delete(
-            DB_TABLE_AUDIO_ANALYSIS_FAILURES,
+            AA_TABLE_FAILURES,
             {
                 "item_id": item_id,
                 "provider": prov_key,
                 "aa_provider_domain": aa_provider_domain,
                 "media_type": media_type.value,
             },
+        )
+
+    async def delete_audio_analysis(
+        self,
+        item_id: str,
+        provider_key: str,
+        media_type: MediaType = MediaType.TRACK,
+    ) -> None:
+        """
+        Delete every AA provider's analysis rows for one provider mapping.
+
+        :param item_id: Provider-native item ID.
+        :param provider_key: Stored music-provider key (domain or instance_id).
+        :param media_type: The media type of the item.
+        """
+        await self.mass.music.database.delete(
+            AA_TABLE_ANALYSIS,
+            {"media_type": media_type.value, "item_id": item_id, "provider": provider_key},
         )
 
     async def get_audio_analysis(
@@ -628,7 +646,7 @@ class AudioAnalysisController:
             return None
         prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
         rows = await self.mass.music.database.get_rows(
-            DB_TABLE_AUDIO_ANALYSIS,
+            AA_TABLE_ANALYSIS,
             {
                 "item_id": item_id,
                 "provider": prov_key,
@@ -645,7 +663,7 @@ class AudioAnalysisController:
         # corrupt rows would otherwise block re-analysis forever (their stored
         # analysis_version still gates new sessions), so drop them right away
         for row_id in unparsable_ids:
-            await self.mass.music.database.delete(DB_TABLE_AUDIO_ANALYSIS, {"id": row_id})
+            await self.mass.music.database.delete(AA_TABLE_ANALYSIS, {"id": row_id})
         if unparsable_ids:
             self.logger.info(
                 "Deleted %d corrupt audio_analysis row(s) for %s/%s; "
@@ -772,7 +790,7 @@ class AudioAnalysisController:
         params["media_type"] = MediaType.TRACK.value
 
         query = (
-            f"SELECT analysis_data FROM {DB_TABLE_AUDIO_ANALYSIS} "
+            f"SELECT analysis_data FROM {AA_TABLE_ANALYSIS} "
             f"WHERE aa_provider_domain = :domain "
             f"AND media_type = :media_type "
             f"AND provider = :provider "
@@ -815,7 +833,7 @@ class AudioAnalysisController:
             return None
         prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
         row = await self.mass.music.database.get_row(
-            DB_TABLE_AUDIO_ANALYSIS,
+            AA_TABLE_ANALYSIS,
             {
                 "item_id": item_id,
                 "provider": prov_key,
@@ -839,7 +857,7 @@ class AudioAnalysisController:
         :param media_type: The media type to count rows for.
         """
         return await self.mass.music.database.get_count_from_query(
-            f"SELECT id FROM {DB_TABLE_AUDIO_ANALYSIS} "
+            f"SELECT id FROM {AA_TABLE_ANALYSIS} "
             f"WHERE aa_provider_domain = :aa_provider_domain AND media_type = :media_type",
             {"aa_provider_domain": aa_provider_domain, "media_type": media_type.value},
         )
@@ -863,7 +881,7 @@ class AudioAnalysisController:
         query = (
             f"SELECT id, media_type, item_id, provider, aa_provider_domain, "
             f"CAST(analysis_data AS BLOB) AS analysis_data, analysis_version, timestamp_created "
-            f"FROM {DB_TABLE_AUDIO_ANALYSIS} "
+            f"FROM {AA_TABLE_ANALYSIS} "
             f"WHERE aa_provider_domain = :aa_provider_domain AND media_type = :media_type"
         )
         async for row in self.mass.music.database.iter_rows_from_query(
@@ -918,10 +936,10 @@ class AudioAnalysisController:
             # fetch as blob: the sqlite driver raises OperationalError on corrupt
             # non-UTF-8 TEXT; raw bytes let _parse_row skip just the bad row
             f"CAST(aa1.analysis_data AS BLOB) AS analysis_data, id "
-            f"FROM {DB_TABLE_AUDIO_ANALYSIS} aa1 "
+            f"FROM {AA_TABLE_ANALYSIS} aa1 "
             f"WHERE aa1.media_type = :media_type "
             f"AND EXISTS ("
-            f"    SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS} aa2 "
+            f"    SELECT 1 FROM {AA_TABLE_ANALYSIS} aa2 "
             f"    WHERE aa2.item_id = aa1.item_id "
             f"    AND aa2.provider = aa1.provider "
             f"    AND aa2.aa_provider_domain = :primary_aa_domain "
@@ -972,7 +990,7 @@ class AudioAnalysisController:
         # NULL analysis_version (pre-versioning rows) is treated as stale: SQLite
         # evaluates `NULL < N` as NULL (falsy), so it must be matched explicitly.
         stale_query = (
-            f"SELECT id FROM {DB_TABLE_AUDIO_ANALYSIS} "
+            f"SELECT id FROM {AA_TABLE_ANALYSIS} "
             f"WHERE aa_provider_domain = :aa_domain "
             f"  AND media_type = :media_type "
             f"  AND (analysis_version IS NULL OR analysis_version < :current_version)"
@@ -1000,9 +1018,7 @@ class AudioAnalysisController:
         :param aa_domain: When given, only failures for this AA provider domain are returned.
         """
         match = {"aa_provider_domain": aa_domain} if aa_domain is not None else None
-        rows = await self.mass.music.database.get_rows(
-            DB_TABLE_AUDIO_ANALYSIS_FAILURES, match, limit=0
-        )
+        rows = await self.mass.music.database.get_rows(AA_TABLE_FAILURES, match, limit=0)
         return [
             {
                 "item_id": r["item_id"],
@@ -1040,12 +1056,10 @@ class AudioAnalysisController:
             match["aa_provider_domain"] = aa_domain
         if not match:
             return 0
-        rows = await self.mass.music.database.get_rows(
-            DB_TABLE_AUDIO_ANALYSIS_FAILURES, match, limit=0
-        )
+        rows = await self.mass.music.database.get_rows(AA_TABLE_FAILURES, match, limit=0)
         count = len(rows)
         if count:
-            await self.mass.music.database.delete(DB_TABLE_AUDIO_ANALYSIS_FAILURES, match)
+            await self.mass.music.database.delete(AA_TABLE_FAILURES, match)
         return count
 
     async def _run_background_scan(self) -> None:
@@ -1311,7 +1325,7 @@ class AudioAnalysisController:
             f"WHERE pm.media_type = :media_type "
             f"  AND pm.provider_domain IN ({fs_inline}) "
             f"  AND NOT EXISTS ("
-            f"    SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS} aa "
+            f"    SELECT 1 FROM {AA_TABLE_ANALYSIS} aa "
             f"    WHERE aa.item_id = pm.provider_item_id "
             f"      AND aa.provider = pm.provider_instance "
             f"      AND aa.aa_provider_domain = possible.aa_provider_domain "
@@ -1320,7 +1334,7 @@ class AudioAnalysisController:
             f"      AND aa.analysis_version >= possible.current_version"
             f"  ) "
             f"  AND NOT EXISTS ("
-            f"    SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS_FAILURES} f "
+            f"    SELECT 1 FROM {AA_TABLE_FAILURES} f "
             f"    WHERE f.item_id = pm.provider_item_id "
             f"      AND f.provider = pm.provider_instance "
             f"      AND f.aa_provider_domain = possible.aa_provider_domain "
@@ -1356,7 +1370,7 @@ class AudioAnalysisController:
             f"WHERE pm.media_type = :media_type "
             f"  AND pm.provider_domain IN ({fs_inline}) "
             f"  AND NOT EXISTS ("
-            f"    SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS} aa "
+            f"    SELECT 1 FROM {AA_TABLE_ANALYSIS} aa "
             f"    WHERE aa.item_id = pm.provider_item_id "
             f"      AND aa.provider = pm.provider_instance "
             f"      AND aa.aa_provider_domain = :aa_domain "
@@ -1365,7 +1379,7 @@ class AudioAnalysisController:
             f"      AND aa.analysis_version >= :current_version"
             f"  ) "
             f"  AND NOT EXISTS ("
-            f"    SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS_FAILURES} f "
+            f"    SELECT 1 FROM {AA_TABLE_FAILURES} f "
             f"    WHERE f.item_id = pm.provider_item_id "
             f"      AND f.provider = pm.provider_instance "
             f"      AND f.aa_provider_domain = :aa_domain "

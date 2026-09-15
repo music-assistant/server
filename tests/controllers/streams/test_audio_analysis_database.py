@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
+from music_assistant_models.enums import MediaType
 
 from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS,
@@ -17,6 +18,7 @@ from music_assistant.controllers.streams.audio_analysis import (
     AA_DB_FILENAME,
     AA_DB_SCHEMA,
     AA_DB_SCHEMA_VERSION,
+    AA_TABLE_ANALYSIS,
     AudioAnalysisController,
 )
 from music_assistant.helpers.database import DatabaseConnection
@@ -98,3 +100,33 @@ async def test_attached_db_uses_wal_and_normal_locking(
     assert journal[0]["journal_mode"] == "wal"
     locking = await library_db.get_rows_from_query(f"PRAGMA {AA_DB_SCHEMA}.locking_mode", limit=0)
     assert locking[0]["locking_mode"] == "normal"
+
+
+@pytest.mark.asyncio
+async def test_delete_audio_analysis_removes_only_that_provider_key(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """delete_audio_analysis removes only the rows matching the given item/provider key."""
+    ctrl = _make_controller(library_db, tmp_path)
+    await ctrl.setup_database()
+    for provider, domain in (
+        ("fs--a", "loudness_analysis"),
+        ("fs--a", "smart_fades"),
+        ("fs--b", "loudness_analysis"),
+    ):
+        await library_db.insert(
+            AA_TABLE_ANALYSIS,
+            {
+                "media_type": "track",
+                "item_id": "t1",
+                "provider": provider,
+                "aa_provider_domain": domain,
+                "analysis_data": "{}",
+                "analysis_version": 1,
+            },
+        )
+    await ctrl.delete_audio_analysis("t1", "fs--a", MediaType.TRACK)
+    rows = await library_db.get_rows(AA_TABLE_ANALYSIS, limit=0)
+    assert [(r["provider"], r["aa_provider_domain"]) for r in rows] == [
+        ("fs--b", "loudness_analysis")
+    ]

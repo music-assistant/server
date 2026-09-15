@@ -41,7 +41,6 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.constants import DB_TABLE_AUDIO_ANALYSIS
 from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.models.plugin import PluginProvider
@@ -700,11 +699,7 @@ class SonicSimilarityPlugin(PluginProvider):
 
     async def _count_analysis_rows(self) -> int:
         """Return the current count of sonic_analysis track rows in the database."""
-        return await self.mass.music.database.get_count_from_query(
-            f"SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS} "
-            "WHERE aa_provider_domain = :aa_provider_domain AND media_type = :media_type",
-            {"aa_provider_domain": AA_PROVIDER_DOMAIN, "media_type": MediaType.TRACK.value},
-        )
+        return await self.mass.streams.audio_analysis.get_audio_analysis_count(AA_PROVIDER_DOMAIN)
 
     async def _periodic_refresh(self) -> None:
         """Scheduled-task handler: rebuild indexes when the analysis row count changed."""
