@@ -61,7 +61,7 @@ from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 from plexapi.audio import Album as PlexAlbum
 from plexapi.audio import Artist as PlexArtist
 from plexapi.audio import Track as PlexTrack
-from plexapi.base import PlexObject
+from plexapi.base import PlexObject, PlexPartialObject
 from plexapi.myplex import MyPlexAccount
 from plexapi.playlist import Playlist as PlexPlaylist
 from plexapi.server import PlexServer
@@ -102,6 +102,7 @@ from music_assistant.providers.plex.constants import (
     ERR_TRACK_NOT_FOUND,
     FAKE_ARTIST_PREFIX,
     MAX_TOP_TRACKS,
+    METADATA_BATCH_SIZE,
     MIX_CACHE_EXPIRATION,
     MIX_ITEM_PREFIX,
     RECOMMENDATIONS_HUB_PARAMS,
@@ -469,7 +470,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Plex Music."""
         artists_obj = await self._run_async(self._plex_library.all)
-        for artist in artists_obj:
+        async for artist in self._load_full_metadata(artists_obj):
             parsed = await self._parse_or_skip(self._parse_artist, artist, MediaType.ARTIST)
             if parsed is not None:
                 yield parsed
@@ -477,7 +478,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
     async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve all library albums from Plex Music."""
         albums_obj = await self._run_async(self._plex_library.albums)
-        for album in albums_obj:
+        async for album in self._load_full_metadata(albums_obj):
             parsed = await self._parse_or_skip(self._parse_album, album, MediaType.ALBUM)
             if parsed is not None:
                 yield parsed
@@ -520,7 +521,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             )
             if not batch:
                 break
-            for plex_track in batch:
+            async for plex_track in self._load_full_metadata(batch):
                 parsed = await self._parse_or_skip(self._parse_track, plex_track, MediaType.TRACK)
                 if parsed is not None:
                     yield parsed
@@ -889,7 +890,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             tracks_key = f"{mix_key}&type={plexapi.utils.searchType('track')}"
             plex_tracks = await self._run_async(self._plex_library.fetchItems, tracks_key)
             random.shuffle(plex_tracks)
-            for plex_track in plex_tracks:
+            async for plex_track in self._load_full_metadata(plex_tracks):
                 if (
                     track := await self._parse_or_skip(
                         self._parse_track, plex_track, MediaType.TRACK
@@ -902,7 +903,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         plex_playlist: PlexPlaylist = await self._get_data(prov_playlist_id, PlexPlaylist)
         if not (playlist_items := await self._run_async(plex_playlist.items)):
             return result
-        for plex_track in playlist_items:
+        async for plex_track in self._load_full_metadata(playlist_items):
             if (
                 track := await self._parse_or_skip(self._parse_track, plex_track, MediaType.TRACK)
             ) is not None:
@@ -1214,6 +1215,36 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         except plexapi.exceptions.NotFound as err:
             raise MediaNotFoundError(ERR_ITEM_NOT_FOUND.format(item_id=key)) from err
         return cast("PlexObjectT", results)
+
+    async def _load_full_metadata(self, items: list[PlexObjectT]) -> AsyncGenerator[PlexObjectT]:
+        """
+        Yield the given listing results with their full metadata, in the same order.
+
+        :param items: Partial objects as returned by a library listing.
+        """
+        # the include params plexapi itself sends when it reloads a single item
+        params = {
+            key: value
+            for key, value in PlexPartialObject._INCLUDES.items()
+            if value not in (False, 0, "0")
+        }
+        for start in range(0, len(items), METADATA_BATCH_SIZE):
+            chunk = items[start : start + METADATA_BATCH_SIZE]
+            full_items = await self._run_async(
+                self._plex_library.fetchItems,
+                list(dict.fromkeys(item.ratingKey for item in chunk)),
+                params=params,
+                container_size=METADATA_BATCH_SIZE,
+            )
+            by_key = {item.ratingKey: item for item in full_items}
+            for item in chunk:
+                if (full_item := by_key.get(item.ratingKey)) is None:
+                    yield item
+                    continue
+                # plexapi does not treat a multi-key result as a full object, so without
+                # this it would still reload each item on the first attribute it lacks
+                full_item._autoReload = False
+                yield full_item
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         """Get item mapping for a given media type, key, and name."""
