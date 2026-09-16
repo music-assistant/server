@@ -698,6 +698,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             can_seek=True,
             allow_seek=True,
             expiration=expiration,
+            # YouTube throttles delivery to ~playback rate, so treat it as a live-paced source.
+            is_realtime=True,
         )
         if (audio_channels := stream_format.get("audio_channels")) and str(
             audio_channels
