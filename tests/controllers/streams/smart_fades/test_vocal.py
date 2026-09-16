@@ -60,8 +60,8 @@ class TestParseVocalProbabilities:
         assert parse_vocal_probabilities(AudioAnalysisData(duration=240.0)) is None
 
     def test_missing_vocal_activity_key_returns_none(self) -> None:
-        """extra_data present but without a vocal_activity entry."""
-        analysis = AudioAnalysisData(duration=240.0, extra_data={"band_rms": {}})
+        """extra_data present but with no vocal_activity data."""
+        analysis = AudioAnalysisData(duration=240.0, extra_data={"unrelated": "x"})
         assert parse_vocal_probabilities(analysis) is None
 
     @pytest.mark.parametrize(

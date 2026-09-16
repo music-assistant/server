@@ -175,7 +175,7 @@ class TestRebuildClapIndexFromDatabase:
     async def test_skips_rows_missing_clap_embedding(
         self, make_plugin: Callable[..., Any], mock_mass: MagicMock
     ) -> None:
-        """Rows whose extra_data lacks clap_embedding are skipped."""
+        """Rows without a clap_embedding are skipped."""
         mock_mass._iter_audio_analysis_rows_data = [
             make_analysis_row(item_id="x", clap_embedding=None),
         ]
