@@ -19,13 +19,10 @@ def room_to_player_id(room: str) -> str:
     """
     Derive a stable Music Assistant player_id from a Raumfeld room name.
 
-    NOTE: Raumfeld's control API (hassfeld) is keyed by *room name*, so we keep the
-    original room string on the player for issuing commands and only slugify it for
-    the player_id. Renaming a room in the Raumfeld app therefore creates a new
-    player; that is an accepted limitation of the room-name-based identity.
-
     :param room: The Raumfeld room name.
     """
+    # hassfeld is keyed by room name (kept on the player for commands); only the
+    # player_id is slugified, so renaming a room in the app creates a new player
     slug = _slug_re.sub("_", room.strip().lower()).strip("_")
     return f"{PLAYER_ID_PREFIX}_{slug}"
 

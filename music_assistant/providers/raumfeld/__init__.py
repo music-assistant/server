@@ -9,13 +9,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .constants import CONF_HOST, CONF_PORT, DEFAULT_PORT
+from .constants import DEFAULT_PORT, HOST_ERRORS
 from .provider import RaumfeldPlayerProvider
 
 __all__ = [
-    "CONF_HOST",
-    "CONF_PORT",
     "DEFAULT_PORT",
+    "HOST_ERRORS",
     "RaumfeldPlayerProvider",
     "setup",
 ]

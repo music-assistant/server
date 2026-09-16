@@ -1,6 +1,6 @@
 {
   "config_entries": {
-    "host": {
+    "ip_address": {
       "label": "Raumfeld host",
       "description": "IP address of the device running the Raumfeld host service (a physical Raumfeld device or the Raumfeld app acting as host)."
     },

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import aiohttp
 from music_assistant_models.config_entries import ConfigEntry
 
 from music_assistant.constants import (
@@ -12,13 +13,12 @@ from music_assistant.constants import (
 
 DOMAIN = "raumfeld"
 
-# Config entry keys
-CONF_HOST = "host"
-CONF_PORT = "port"
+# Errors expected when the host is (temporarily) unreachable or a zone/room cannot be
+# resolved by hassfeld; used to narrow the try/except around host communication.
+HOST_ERRORS = (aiohttp.ClientError, OSError, TimeoutError, KeyError)
 
-# Default port of the Raumfeld host webservice (raumfeld host / raumserver).
-# The host is the device on the network running the "RaumfeldHost" service
-# (a physical Raumfeld device or the Raumfeld app acting as host).
+# Default port of the Raumfeld host webservice (the device running the "RaumfeldHost"
+# service). Config keys reuse MA's CONF_IP_ADDRESS / CONF_PORT.
 DEFAULT_PORT = 47365
 
 # How long (seconds) to wait for hassfeld to complete its initial discovery

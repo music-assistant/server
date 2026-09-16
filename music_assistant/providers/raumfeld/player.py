@@ -11,7 +11,7 @@ from music_assistant_models.player import DeviceInfo
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import Player
 
-from .constants import PLAYER_CONFIG_ENTRIES
+from .constants import HOST_ERRORS, PLAYER_CONFIG_ENTRIES
 from .helpers import parse_didl_metadata, parse_duration
 
 if TYPE_CHECKING:
@@ -42,14 +42,7 @@ def _map_transport_state(state: str | None) -> PlaybackState:
 
 
 class RaumfeldPlayer(Player):
-    """
-    A single Raumfeld room, exposed to Music Assistant as a player.
-
-    Grouping: Raumfeld groups rooms into dynamic *zones*. We translate MA's
-    leader/members model onto zones via the hassfeld host. Playback and transport
-    commands always target the *zone* the room currently belongs to (a solo room is
-    treated as a single-room zone).
-    """
+    """A single Raumfeld room, exposed to Music Assistant as a player."""
 
     _attr_type = PlayerType.PLAYER
 
@@ -59,7 +52,7 @@ class RaumfeldPlayer(Player):
         player_id: str,
         room: str,
     ) -> None:
-        """Init Player. ``room`` is the Raumfeld room name (the hassfeld control key)."""
+        """Init the player for the given Raumfeld room."""
         super().__init__(provider, player_id)
         self.room = room
         self._attr_name = room
@@ -137,20 +130,11 @@ class RaumfeldPlayer(Player):
         self.update_state()
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
-        """
-        Handle enqueuing the next queue item.
-
-        Raumfeld zone renderers do not expose ``SetNextAVTransportURI``, so we cannot
-        pre-buffer the next item for gapless playback. ENQUEUE is still declared to keep
-        MA out of (non-resumable) flow mode; the queue controller falls back to calling
-        ``play_media`` for each item when the previous one ends.
-
-        :param media: The next media item MA would like to enqueue.
-        """
-        self.logger.debug(
-            "enqueue_next_media not supported natively for %s (no SetNextAVTransportURI)",
-            self.room,
-        )
+        """Handle enqueuing of the next queue item."""
+        # Raumfeld zone renderers have no SetNextAVTransportURI, so the next item can't be
+        # pre-buffered for gapless playback. ENQUEUE is only declared to keep MA out of
+        # (non-resumable) flow mode; the queue controller then plays each item on its own.
+        self.logger.debug("enqueue_next_media not supported natively for %s", self.room)
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command (Raumfeld volume is 0-100, same as MA)."""
@@ -171,16 +155,10 @@ class RaumfeldPlayer(Player):
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
-        """
-        Handle SET_MEMBERS: translate MA group changes into Raumfeld zone changes.
-
-        The leader (this player) owns the zone. Adding a member adds its room to this
-        room's zone; removing a member drops its room. MA-side bookkeeping mirrors the
-        demo provider so that each member's derived ``synced_to`` recomputes.
-        """
+        """Handle SET_MEMBERS: translate MA group changes into Raumfeld zone changes."""
         host = self.raumfeld.host
 
-        # Raumfeld side: add/drop rooms on this room's zone.
+        # this player is the group leader and owns the zone: add/drop each member's room
         for pid in player_ids_to_add or []:
             if (room := self._player_id_to_room(pid)) is not None:
                 await host.async_add_room_to_zone(room, self._current_zone())
@@ -202,12 +180,9 @@ class RaumfeldPlayer(Player):
                 member.update_state()
 
     async def poll(self) -> None:
-        """
-        Poll the Raumfeld host for this room's current state.
-
-        Uses the ``async_*`` getters only: the sync getters in hassfeld wrap
-        ``asyncio.run()`` and cannot be called from within MA's event loop.
-        """
+        """Poll the Raumfeld host for this room's current state."""
+        # only the async_* getters are used here; hassfeld's sync getters wrap
+        # asyncio.run() and can't be called from within MA's event loop
         host = self.raumfeld.host
         zone = self._current_zone()
 
@@ -218,7 +193,7 @@ class RaumfeldPlayer(Player):
                 volume = volume.get("CurrentVolume")
             if volume is not None:
                 self._attr_volume_level = int(volume)
-        except Exception as err:
+        except HOST_ERRORS as err:
             self.logger.debug("Failed to read volume for %s: %r", self.room, err)
 
         # Playback state (per zone). GetTransportInfo -> CurrentTransportState.
@@ -229,7 +204,7 @@ class RaumfeldPlayer(Player):
                 (transport or {}).get("CurrentTransportState")
             )
             playing = self._attr_playback_state == PlaybackState.PLAYING
-        except Exception as err:
+        except HOST_ERRORS as err:
             self.logger.debug("Failed to read transport info for zone %s: %r", zone, err)
 
         # Current media + position (per zone). GetPositionInfo -> TrackURI, RelTime, DIDL.
@@ -279,7 +254,7 @@ class RaumfeldPlayer(Player):
                 if diverged:
                     self._attr_elapsed_time = float(elapsed)
                     self._attr_elapsed_time_last_updated = now
-        except Exception as err:
+        except HOST_ERRORS as err:
             self.logger.debug("Failed to read position info for zone %s: %r", zone, err)
 
         # Poll fast while playing - and for a short window right after a play/resume
@@ -291,33 +266,21 @@ class RaumfeldPlayer(Player):
         self.update_state()
 
     def _mark_play_started(self) -> None:
-        """
-        Record a play/resume command and switch to fast polling for startup.
-
-        Also reset the reported position to 0: on resume, MA re-streams the track from a
-        seek offset and adds that offset to the player's position, so a stale pre-pause
-        position here would be double-counted (a forward jump) until the device reports
-        the new stream's 0-based time. The next poll re-anchors to the real position.
-        """
+        """Record a play/resume command and switch to fast polling."""
         self._play_started_at = time.time()
         self._attr_poll_interval = FAST_POLL_INTERVAL
+        # reset the position: on resume MA adds a seek offset, so a stale pre-pause
+        # position here would be double-counted until the device reports the new stream's
+        # 0-based time (the next poll re-anchors to the real position)
         self._attr_elapsed_time = 0.0
         self._attr_elapsed_time_last_updated = time.time()
 
     def _current_zone(self) -> list[str]:
-        """
-        Return the room-list identifying the zone this room currently controls.
-
-        A room that is not part of an active multi-room zone is treated as its own
-        single-room zone, which is the unit hassfeld's transport commands expect.
-        """
+        """Return the room-list of the zone this room currently controls."""
+        # a room not in an active multi-room zone is treated as its own single-room zone
         return self.raumfeld.get_zone_for_room(self.room) or [self.room]
 
     def _player_id_to_room(self, player_id: str) -> str | None:
-        """
-        Resolve a MA player_id belonging to this provider back to its Raumfeld room.
-
-        :param player_id: The Music Assistant player id to resolve.
-        """
+        """Resolve a MA player_id of this provider back to its Raumfeld room name."""
         player = self.mass.players.get_player(player_id)
         return getattr(player, "room", None)

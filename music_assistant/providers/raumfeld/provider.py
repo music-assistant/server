@@ -24,12 +24,12 @@ from urllib.parse import urlparse
 
 import hassfeld
 
+from music_assistant.constants import CONF_IP_ADDRESS, CONF_PORT
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
-    CONF_HOST,
-    CONF_PORT,
     DEFAULT_PORT,
+    HOST_ERRORS,
     INITIAL_UPDATE_TIMEOUT,
     RECONNECT_INTERVAL,
 )
@@ -55,19 +55,11 @@ class RaumfeldPlayerProvider(PlayerProvider):
         return ()
 
     async def handle_async_init(self) -> None:
-        """
-        Handle async initialization of the provider.
-
-        Deliberately does not connect (or fail) here: a background supervisor connects
-        once the host is reachable and reconnects if it later drops, so a sleeping
-        speaker or a brief network blip never leaves the provider permanently
-        unavailable.
-        """
-        self._host_address = cast("str", self.get_setup_value(CONF_HOST))
+        """Handle async initialization of the provider."""
+        self._host_address = str(self.get_setup_value(CONF_IP_ADDRESS) or "")
         self._host_port = cast("int", self.get_setup_value(CONF_PORT) or DEFAULT_PORT)
-        self.host = hassfeld.RaumfeldHost(
-            self._host_address, self._host_port, session=self.mass.http_session
-        )
+        # a background supervisor owns the connection so a missing or (temporarily)
+        # unreachable host never leaves the provider permanently unavailable
         self._supervisor_task = self.mass.create_task(self._supervise())
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -94,12 +86,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
     def resolve_room_renderer(self, room: str) -> tuple[str | None, str | None]:
         """
-        Return the ``(renderer UUID, renderer IP)`` for a room's media renderer.
-
-        These let Music Assistant link this native player to the same device's other
-        protocol representations (DLNA/Chromecast/Sendspin) instead of listing them as
-        duplicates. The UUID is the renderer UDN without the ``uuid:`` prefix; either
-        value may be ``None`` if the host has not resolved it.
+        Return the ``(renderer UUID, renderer IP)`` for a room, or ``(None, None)``.
 
         :param room: The Raumfeld room name to look up.
         """
@@ -115,28 +102,25 @@ class RaumfeldPlayerProvider(PlayerProvider):
         return uuid, ip_address
 
     async def _supervise(self) -> None:
-        """
-        Keep the connection to the Raumfeld host healthy, without ever hard-failing.
-
-        Retries until the host is reachable, then connects and registers the room
-        players. If the host later becomes unreachable, the (tight-looping) update task
-        is stopped - so hassfeld cannot flood the log - and the supervisor waits for the
-        host to return before reconnecting.
-        """
+        """Supervise the host connection: connect when reachable, pause when it drops."""
         while True:
             try:
                 if not self._connected:
                     await self._try_connect()
                 elif not await self.host.async_host_is_valid():
+                    # stop the update loop so hassfeld's long-polling cannot flood the log
                     await self._disconnect("host became unreachable")
             except asyncio.CancelledError:
                 raise
-            except Exception as err:
+            except HOST_ERRORS as err:
                 self.logger.debug("Raumfeld supervisor error: %r", err)
             await asyncio.sleep(RECONNECT_INTERVAL)
 
     async def _try_connect(self) -> None:
-        """Attempt one connect: validate the host, start the update loop, register rooms."""
+        """Try once to connect to the host and register its rooms."""
+        if not self._host_address:
+            self.logger.debug("No Raumfeld host configured yet; will retry")
+            return
         # a fresh host object avoids stale state left by a previous failed attempt
         self.host = hassfeld.RaumfeldHost(
             self._host_address, self._host_port, session=self.mass.http_session
@@ -162,11 +146,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self.logger.info("Connected to Raumfeld host %s", self._host_address)
 
     async def _disconnect(self, reason: str) -> None:
-        """
-        Stop the update loop and mark players unavailable until the host returns.
-
-        :param reason: Short human-readable reason, logged when a live connection drops.
-        """
+        """Stop the update loop and mark players unavailable until the host returns."""
         if self._connected:
             self.logger.warning("Raumfeld host %s %s - pausing", self._host_address, reason)
         self._connected = False
