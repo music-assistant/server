@@ -19,8 +19,8 @@ from music_assistant.providers.jellyfin import (
     CONF_USERNAME,
     authenticate_with_quick_connect,
     initiate_quick_connect,
+    setup_flow,
 )
-from music_assistant.providers.jellyfin import setup_flow
 from tests.common import get_fixtures_dir, wait_for_sync_completion
 
 if TYPE_CHECKING:
