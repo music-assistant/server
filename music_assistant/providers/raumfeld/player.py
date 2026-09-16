@@ -11,7 +11,7 @@ from music_assistant_models.player import DeviceInfo
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import Player
 
-from .constants import HOST_ERRORS, PLAYER_CONFIG_ENTRIES
+from .constants import HOST_ERRORS, PLAYER_CONFIG_ENTRIES, SUPPORTED_SAMPLE_RATES
 from .helpers import parse_didl_metadata, parse_duration
 
 if TYPE_CHECKING:
@@ -69,6 +69,9 @@ class RaumfeldPlayer(Player):
         self._advance_armed = False
         self._prev_playing = False
         self._attr_device_info = DeviceInfo(model="Raumfeld", manufacturer="Teufel")
+        # Raumfeld renderers are hi-res capable; declaring the rates lets MA output each
+        # source at its native quality (up to 24-bit/192kHz) without manual configuration
+        self._attr_supported_sample_rates = SUPPORTED_SAMPLE_RATES
         # Expose the room's media-renderer UUID and IP so Music Assistant links this
         # native player to the same device's DLNA/Chromecast/Sendspin representations
         # instead of showing them as duplicate players.

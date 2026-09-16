@@ -8,7 +8,6 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_FLOW_MODE_SAMPLE_RATE,
-    create_sample_rates_config_entry,
 )
 
 DOMAIN = "raumfeld"
@@ -32,11 +31,17 @@ RECONNECT_INTERVAL = 30
 # Player id prefix so ids are namespaced and stable-ish per room.
 PLAYER_ID_PREFIX = "raumfeld"
 
-# Per-player config entries. Raumfeld renderers support hi-res PCM up to 24-bit/192kHz;
-# expose the same sample-rate/bit-depth options the DLNA provider does so users can opt
-# into hi-res output (the entry defaults to a safe 48kHz/16-bit selection).
+# Raumfeld renderers are hi-res capable up to 24-bit/192kHz. Declaring the supported
+# (sample_rate, bit_depth) pairs lets MA output each source at its native rate (so 24-bit
+# lossless passes through) without the user having to enable rates by hand.
+SUPPORTED_SAMPLE_RATES = [
+    (sample_rate, bit_depth)
+    for sample_rate in (44100, 48000, 88200, 96000, 176400, 192000)
+    for bit_depth in (16, 24)
+]
+
+# Per-player config entries.
 PLAYER_CONFIG_ENTRIES = [
-    create_sample_rates_config_entry(max_sample_rate=192000, max_bit_depth=24),
     # Hide the flow-mode toggle and keep it forced off. Raumfeld renderers drop the
     # HTTP connection on pause and cannot resume a single continuous (flow) stream, so
     # enabling flow mode would break pause/resume. Providing these keys makes MA replace
