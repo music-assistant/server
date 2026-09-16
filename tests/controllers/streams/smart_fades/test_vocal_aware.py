@@ -552,12 +552,10 @@ class TestMissingOrInvalidVocalDataFallsBackToEnergyOnly:
         """A row using the old wrapped contract disables vocal logic."""
         baseline = _plan(_analysis(120.0, duration=240.0), _analysis(120.0, duration=240.0))
         out = _analysis(120.0, duration=240.0)
-        out.extra_data = {
-            "vocal_activity": {
-                "model": "some_other_model",
-                "frame_duration": 0.1,
-                "probabilities": [0.9] * 2400,
-            }
+        out.vocal_activity = {  # type: ignore[assignment]
+            "model": "some_other_model",
+            "frame_duration": 0.1,
+            "probabilities": [0.9] * 2400,
         }
         plan = _plan(out, _analysis(120.0, duration=240.0))
         assert plan == baseline
@@ -566,7 +564,7 @@ class TestMissingOrInvalidVocalDataFallsBackToEnergyOnly:
         """A tuple timeline is malformed because the provider contract stores a list."""
         baseline = _plan(_analysis(120.0, duration=240.0), _analysis(120.0, duration=240.0))
         out = _analysis(120.0, duration=240.0)
-        out.extra_data = {"vocal_activity": tuple([0.9] * 1800)}
+        out.vocal_activity = tuple([0.9] * 1800)  # type: ignore[assignment]
         plan = _plan(out, _analysis(120.0, duration=240.0))
         assert plan == baseline
 
@@ -574,7 +572,7 @@ class TestMissingOrInvalidVocalDataFallsBackToEnergyOnly:
         """A timeline with fewer than 1800 bins is rejected."""
         baseline = _plan(_analysis(120.0, duration=240.0), _analysis(120.0, duration=240.0))
         out = _analysis(120.0, duration=240.0)
-        out.extra_data = {"vocal_activity": [0.9] * 1000}
+        out.vocal_activity = [0.9] * 1000
         plan = _plan(out, _analysis(120.0, duration=240.0))
         assert plan == baseline
 

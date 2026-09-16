@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from music_assistant.models.audio_analysis import AudioAnalysisData
 
 
@@ -74,3 +76,13 @@ def test_update_merges_new_fields() -> None:
     base.update(AudioAnalysisData(clap_embedding=[0.2] * 1024))
     assert base.bpm == 100.0
     assert base.clap_embedding == [0.2] * 1024
+
+
+def test_non_dict_extra_data_is_left_alone() -> None:
+    """A non-dict extra_data (malformed row) is left untouched, not coerced or raised on."""
+    data = AudioAnalysisData(extra_data="garbage")  # type: ignore[arg-type]
+    extra_data: Any = data.extra_data
+    assert extra_data == "garbage"
+    assert data.clap_embedding is None
+    assert data.vocal_activity is None
+    assert data.band_rms_low is None

@@ -716,12 +716,10 @@ class TestMixerBuild:
         monkeypatch.setattr(SmartCrossFade, "build", fail_smart_build)
         missing = _analysis(120.0, duration=240.0, rms_energy=_rms_with_silent_tail(240.0, 5.0))
         stale = _analysis(120.0, duration=240.0, rms_energy=_rms_with_silent_tail(240.0, 5.0))
-        stale.extra_data = {
-            "vocal_activity": {
-                "model": "firered_aed",
-                "frame_duration": 0.1,
-                "probabilities": [0.9] * 2400,
-            }
+        stale.vocal_activity = {  # type: ignore[assignment]
+            "model": "firered_aed",
+            "frame_duration": 0.1,
+            "probabilities": [0.9] * 2400,
         }
 
         trims: list[int] = []

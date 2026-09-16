@@ -143,6 +143,8 @@ class AudioAnalysisData(DataClassDictMixin):
 
     def __post_init__(self) -> None:
         """Lift arrays that older rows stored under extra_data into their typed fields."""
+        if self.extra_data is not None and not isinstance(self.extra_data, dict):
+            return  # type: ignore[unreachable]
         if not self.extra_data:
             if self.extra_data is not None:
                 self.extra_data = None
