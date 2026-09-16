@@ -1732,7 +1732,7 @@ for more details.
                         'Updated book "%s" via socket.', abs_item.media.metadata.title or ""
                     )
                     await self.mass.music.audiobooks.update_item_in_library(
-                        mass_existing_audiobook.item_id, mass_audiobook, overwrite=True
+                        mass_existing_audiobook.item_id, mass_audiobook
                     )
                 else:
                     self.logger.debug(
@@ -1767,7 +1767,7 @@ for more details.
                         'Updated podcast "%s" via socket.', abs_item.media.metadata.title or ""
                     )
                     await self.mass.music.podcasts.update_item_in_library(
-                        mass_existing_podcast.item_id, mass_podcast, overwrite=True
+                        mass_existing_podcast.item_id, mass_podcast
                     )
                 else:
                     self.logger.debug(
@@ -1861,7 +1861,7 @@ for more details.
             )
             if ma_library_playlist is not None and isinstance(ma_library_playlist, Playlist):
                 await self.mass.music.playlists.update_item_in_library(
-                    item_id=ma_library_playlist.item_id, update=parsed_playlist, overwrite=True
+                    item_id=ma_library_playlist.item_id, update=parsed_playlist
                 )
             else:
                 await self.mass.music.playlists.add_item_to_library(item=parsed_playlist)
