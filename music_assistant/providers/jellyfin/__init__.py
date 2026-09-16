@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import socket
-import asyncio
 import urllib.parse
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
@@ -12,9 +12,8 @@ from types import MethodType
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from aiojellyfin import Connection
+from aiojellyfin import Connection, NotFound, authenticate_by_name
 from aiojellyfin import MediaLibrary as JellyMediaLibrary
-from aiojellyfin import NotFound, authenticate_by_name
 from aiojellyfin.session import SessionConfiguration
 from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError
