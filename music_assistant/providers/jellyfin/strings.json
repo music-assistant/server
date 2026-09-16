@@ -15,6 +15,28 @@
     "verify_ssl": {
       "label": "[%key:common::config_entries::verify_ssl::label%]",
       "description": "[%key:common::config_entries::verify_ssl::description%]"
+    },
+    "auth_method": {
+      "label": "Sign-in method",
+      "options": {
+        "password": "Username and password",
+        "quick_connect": "Quick Connect"
+      }
+    }
+  },
+  "setup_flow": {
+    "auth_method": {
+      "title": "Choose sign-in method"
+    },
+    "quick_connect": {
+      "title": "Connect to Jellyfin"
+    },
+    "quick_connect_approval": {
+      "title": "Approve Music Assistant",
+      "description": "Enter code {0} in Jellyfin Quick Connect to approve this connection."
+    },
+    "error": {
+      "quick_connect_timeout": "Quick Connect approval timed out. Try again."
     }
   },
   "manifest": {
