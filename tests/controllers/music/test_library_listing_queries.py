@@ -485,6 +485,38 @@ async def test_random_order_applies_filters(seeded_mass: MusicAssistant) -> None
     assert {x.item_id for x in items} == {x.item_id for x in expected}
 
 
+async def test_random_play_count_selects_and_orders_least_played(mass: MusicAssistant) -> None:
+    """random_play_count draws the least-played tracks and returns them least-played first."""
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(item_id="0", provider="library", name="PC Artist", provider_mappings={_mapping()})
+    )
+    # distinct counts assigned out of order, so row insertion order can't stand in for play order
+    play_count_by_id: dict[str, int] = {}
+    for idx, count in enumerate((7, 2, 9, 0, 5, 1, 8, 3, 6, 4), 1):
+        track = await mass.music.tracks.add_item_to_library(
+            Track(
+                item_id="0",
+                provider="library",
+                name=f"PC Track {idx:02d}",
+                provider_mappings={_mapping()},
+                artists=UniqueList([artist]),
+            )
+        )
+        await mass.music.database.execute(
+            "UPDATE tracks SET play_count = :count WHERE item_id = :item_id",
+            {"count": count, "item_id": int(track.item_id)},
+        )
+        play_count_by_id[track.item_id] = count
+    await mass.music.database.commit()
+
+    # limit smaller than the library so the candidate subquery, not just the outer sort,
+    # has to apply the play-count bias
+    items = await mass.music.tracks.library_items(order_by="random_play_count", limit=5)
+    ordered_counts = [play_count_by_id[x.item_id] for x in items]
+
+    assert ordered_counts == [0, 1, 2, 3, 4]
+
+
 async def test_album_tracks_returns_album_scoped_disc_and_track_numbers(
     seeded_mass: MusicAssistant,
 ) -> None:

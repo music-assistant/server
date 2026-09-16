@@ -34,6 +34,7 @@ def _provider() -> Any:
     provider.sync_running = False
     provider._sync_nfo_by_dir = {}
     provider._sync_nfo_index_ready = False
+    provider._missing_album_artist_warned = set()
     provider._cue = MagicMock()
     return provider
 
@@ -1982,3 +1983,34 @@ async def test_parse_album_keeps_configured_fallback_for_compilation_nfo() -> No
     )
 
     assert [artist.name for artist in album.artists] == ["Track Artist"]
+
+
+async def test_parse_album_warns_once_per_folder_for_missing_album_artist() -> None:
+    """Only the first track of a folder warns, so an untagged album cannot flood the log."""
+    provider = _missing_album_artist_provider(
+        b"<album><title>My Album</title></album>", fallback_action="various_artists"
+    )
+
+    for filename in ("t1.mp3", "t2.mp3", "t3.mp3"):
+        await provider._parse_album(
+            track_path=f"Artist/My Album/{filename}", track_tags=_missing_album_artist_tags()
+        )
+
+    assert provider.logger.warning.call_count == 1
+    assert provider.logger.debug.call_count == 2
+
+
+async def test_parse_album_warns_for_every_folder_missing_an_album_artist() -> None:
+    """Deduplication is per folder, so a second untagged album still gets its own warning."""
+    provider = _missing_album_artist_provider(
+        b"<album><title>My Album</title></album>", fallback_action="various_artists"
+    )
+
+    await provider._parse_album(
+        track_path="Artist/My Album/t1.mp3", track_tags=_missing_album_artist_tags()
+    )
+    await provider._parse_album(
+        track_path="Artist/Other Album/t1.mp3", track_tags=_missing_album_artist_tags()
+    )
+
+    assert provider.logger.warning.call_count == 2

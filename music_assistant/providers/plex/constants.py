@@ -34,6 +34,9 @@ FAKE_ARTIST_PREFIX = "_fake://"
 # maximum number of tracks returned for an artist's top tracks listing
 MAX_TOP_TRACKS = 25
 
+# number of items requested per call when loading full metadata for a listing
+METADATA_BATCH_SIZE = 500
+
 # sentinel token value for local (unauthenticated) connections, not via plex.tv
 AUTH_TOKEN_UNAUTH = "local_auth"
 

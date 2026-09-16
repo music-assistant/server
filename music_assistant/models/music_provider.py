@@ -42,6 +42,7 @@ from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS,
     CONF_ENTRY_LIBRARY_SYNC_DELETIONS,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLIST_TRACKS,
+    DB_TABLE_PROVIDER_MAPPINGS,
     PlaylistPlayableItem,
 )
 from music_assistant.controllers.tasks.context import (
@@ -88,18 +89,21 @@ LIBRARY_FEATURE_BY_MEDIA_TYPE: Final[dict[MediaType, ProviderFeature]] = {
 @dataclass
 class SyncRunState:
     """
-    Failure state of one library sync run.
+    State of one library sync run.
 
     :param incomplete_media_types: Media types the run failed to collect an item for, which
         makes their result set an unsafe basis for deleting anything from the library.
     :param failures: Number of item failures reported by the run so far.
     :param skipped_item_ids: Provider item id's the provider dropped while listing its
         library, per media type.
+    :param listed_item_ids: Provider item id's the provider listed in its library, per
+        media type.
     """
 
     incomplete_media_types: set[MediaType] = field(default_factory=set)
     failures: int = 0
     skipped_item_ids: dict[MediaType, set[str]] = field(default_factory=dict)
+    listed_item_ids: dict[MediaType, set[str]] = field(default_factory=dict)
 
 
 # scoped per run rather than per provider: a standalone import_album_tracks() is
@@ -1037,7 +1041,7 @@ class MusicProvider(Provider):
         else:
             state.incomplete_media_types.add(media_type)
 
-    async def _run_library_sync(self, media_type: MediaType) -> None:
+    async def _run_library_sync(self, media_type: MediaType) -> None:  # noqa: PLR0915
         """Sync the given media type into the library and process its deletions."""
         # this reference implementation may be overridden
         # with a provider specific approach if needed
@@ -1124,6 +1128,7 @@ class MusicProvider(Provider):
                                 db_id, library_item.provider_mappings
                             )
                         await asyncio.sleep(0)  # yield to eventloop
+            await self._remove_stale_provider_mappings(media_type, cur_db_ids)
         # store current list of id's in cache so we can track changes
         await self.mass.cache.set(
             key=media_type.value,
@@ -1212,6 +1217,47 @@ class MusicProvider(Provider):
         else:
             sync_run_state().incomplete_media_types.add(media_type)
 
+    def _note_listed_sync_item(self, media_type: MediaType, provider_item_id: str) -> None:
+        """Record that the provider listed the given item in its library during this sync."""
+        sync_run_state().listed_item_ids.setdefault(media_type, set()).add(provider_item_id)
+
+    async def _remove_stale_provider_mappings(
+        self, media_type: MediaType, cur_db_ids: set[int]
+    ) -> None:
+        """
+        Remove this provider's mappings to items it no longer lists in its library.
+
+        :param media_type: Media type that was just synced.
+        :param cur_db_ids: Library id's of the items this sync run found on the provider.
+        """
+        if self.is_streaming_provider:
+            # the catalog is larger than the library, so an unlisted item may still exist
+            return
+        sync_state = sync_run_state()
+        listed_item_ids = sync_state.listed_item_ids.get(media_type, set())
+        skipped_item_ids = sync_state.skipped_item_ids.get(media_type, set())
+        seen_item_ids = listed_item_ids | skipped_item_ids
+        # replacing a file makes providers like plex hand out a new id, and the library item
+        # then keeps the mapping to the deleted item next to the new one, still marked
+        # available, so playback fails whenever that one is picked
+        stale_mappings = [
+            (row["item_id"], row["provider_item_id"])
+            async for row in self.mass.music.database.iter_items(
+                DB_TABLE_PROVIDER_MAPPINGS,
+                {"media_type": media_type.value, "provider_instance": self.instance_id},
+            )
+            if row["item_id"] in cur_db_ids and row["provider_item_id"] not in seen_item_ids
+        ]
+        controller = self.mass.music.get_controller(media_type)
+        for db_id, provider_item_id in stale_mappings:
+            self.logger.debug(
+                "Removing mapping %s from %s %s, no longer on the provider",
+                provider_item_id,
+                media_type.value,
+                db_id,
+            )
+            await controller.remove_provider_mapping(db_id, self.instance_id, provider_item_id)
+
     async def _sync_item_genres(
         self,
         media_type: MediaType,
@@ -1238,6 +1284,7 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_artists():
             item_count += 1
             self._update_sync_task_item_status(MediaType.ARTIST, item_count, prov_item.name)
+            self._note_listed_sync_item(MediaType.ARTIST, prov_item.item_id)
             db_id: int | None = None
             try:
                 sync_details = await self.mass.music.artists.get_library_item_sync_details(
@@ -1303,6 +1350,7 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_albums():
             item_count += 1
             self._update_sync_task_item_status(MediaType.ALBUM, item_count, prov_item.name)
+            self._note_listed_sync_item(MediaType.ALBUM, prov_item.item_id)
             db_id: int | None = None
             try:
                 sync_details = await self.mass.music.albums.get_library_item_sync_details(
@@ -1463,7 +1511,7 @@ class MusicProvider(Provider):
                 f" item {prov_item.name} does not exclusively provide strings."
             )
 
-    async def _sync_library_audiobooks(self) -> set[int]:
+    async def _sync_library_audiobooks(self) -> set[int]:  # noqa: PLR0915
         """Sync Library Audiobooks to Music Assistant library."""
         self.logger.debug("Start sync of Audiobooks to Music Assistant library.")
         cur_db_ids: set[int] = set()
@@ -1471,6 +1519,7 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_audiobooks():
             item_count += 1
             self._update_sync_task_item_status(MediaType.AUDIOBOOK, item_count, prov_item.name)
+            self._note_listed_sync_item(MediaType.AUDIOBOOK, prov_item.item_id)
             db_id: int | None = None
             try:
                 sync_details = cast(
@@ -1571,6 +1620,7 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_playlists():
             item_count += 1
             self._update_sync_task_item_status(MediaType.PLAYLIST, item_count, prov_item.name)
+            self._note_listed_sync_item(MediaType.PLAYLIST, prov_item.item_id)
             db_id: int | None = None
             try:
                 library_item = await self.mass.music.playlists.get_library_item_by_prov_mappings(
@@ -1694,6 +1744,7 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_tracks():
             item_count += 1
             self._update_sync_task_item_status(MediaType.TRACK, item_count, prov_item.name)
+            self._note_listed_sync_item(MediaType.TRACK, prov_item.item_id)
             db_id: int | None = None
             try:
                 sync_details = cast(
@@ -1766,6 +1817,7 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_podcasts():
             item_count += 1
             self._update_sync_task_item_status(MediaType.PODCAST, item_count, prov_item.name)
+            self._note_listed_sync_item(MediaType.PODCAST, prov_item.item_id)
             db_id: int | None = None
             try:
                 sync_details = await self.mass.music.podcasts.get_library_item_sync_details(
@@ -1830,6 +1882,7 @@ class MusicProvider(Provider):
         async for prov_item in self.get_library_radios():
             item_count += 1
             self._update_sync_task_item_status(MediaType.RADIO, item_count, prov_item.name)
+            self._note_listed_sync_item(MediaType.RADIO, prov_item.item_id)
             db_id: int | None = None
             try:
                 library_item = await self.mass.music.radio.get_library_item_by_prov_mappings(
