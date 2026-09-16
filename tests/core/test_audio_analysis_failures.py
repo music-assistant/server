@@ -220,7 +220,8 @@ async def _insert_analysis(
             "item_id": item_id,
             "provider": "filesystem_local--abc",
             "aa_provider_domain": aa_domain,
-            "analysis_data": "{}",
+            "header": "{}",
+            "payload": b"",
             "analysis_version": version,
         },
     )

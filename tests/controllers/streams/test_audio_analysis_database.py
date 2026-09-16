@@ -26,11 +26,13 @@ from music_assistant.controllers.streams.audio_analysis import (
     AA_DB_SCHEMA_VERSION,
     AA_TABLE_ANALYSIS,
     AA_TABLE_FAILURES,
+    PROVIDER_LOUDNESS_DOMAIN,
     AudioAnalysisController,
 )
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -255,8 +257,9 @@ async def test_delete_audio_analysis_removes_only_that_provider_key(
                 "item_id": "t1",
                 "provider": provider,
                 "aa_provider_domain": domain,
-                "analysis_data": "{}",
                 "analysis_version": 1,
+                "header": "{}",
+                "payload": b"",
             },
         )
         await library_db.insert(
@@ -276,6 +279,56 @@ async def test_delete_audio_analysis_removes_only_that_provider_key(
         assert [(r["provider"], r["aa_provider_domain"]) for r in rows] == [
             ("fs--b", "loudness_analysis")
         ]
+
+
+@pytest.mark.asyncio
+async def test_newer_schema_version_refuses_to_start(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A file written by a newer build is refused instead of being used or rewritten."""
+    ctrl = _make_controller(library_db, tmp_path)
+    await ctrl.setup_database()
+    await library_db.insert_or_replace(
+        f"{AA_DB_SCHEMA}.{DB_TABLE_SETTINGS}", {"key": "version", "value": "99", "type": "str"}
+    )
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError):
+        await ctrl.setup_database()
+    assert any(
+        record.levelno == logging.ERROR and "newer than this build supports" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_round_trip_through_controller(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """A record written through the controller reads back with its scalars and arrays."""
+    ctrl = _make_controller(library_db, tmp_path)
+    await ctrl.setup_database()
+    music_prov = MagicMock(spec=MusicProvider)
+    music_prov.is_streaming_provider = False
+    music_prov.instance_id = "fs--a"
+    ctrl.mass.get_provider = MagicMock(return_value=music_prov)  # type: ignore[method-assign]
+    ctrl.mass.get_providers = MagicMock(return_value=[])  # type: ignore[method-assign]
+    analysis = AudioAnalysisData(
+        bpm=123.5,
+        key="F#",
+        loudness_integrated=-9.25,
+        beats=[0.5, 1.0, 1.5],
+        rms_energy=[i / 1800 for i in range(1800)],
+    )
+
+    await ctrl.set_audio_analysis("t1", "fs--a", PROVIDER_LOUDNESS_DOMAIN, analysis)
+    stored = await ctrl.get_audio_analysis("t1", "fs--a")
+
+    assert stored is not None
+    assert stored.bpm == 123.5
+    assert stored.key == "F#"
+    assert stored.loudness_integrated == -9.25
+    assert stored.beats == [0.5, 1.0, 1.5]
+    assert stored.rms_energy is not None
+    assert stored.rms_energy == pytest.approx(analysis.rms_energy, abs=1e-3)
 
 
 LEGACY_ANALYSIS_DDL = (
@@ -561,8 +614,9 @@ async def test_relocation_survives_live_writes_after_failed_attempt(
             "item_id": "live1",
             "provider": "fs--a",
             "aa_provider_domain": "loudness_analysis",
-            "analysis_data": "{}",
             "analysis_version": 1,
+            "header": "{}",
+            "payload": b"",
         },
     )
 

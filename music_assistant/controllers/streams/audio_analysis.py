@@ -37,10 +37,11 @@ from music_assistant.constants import (
     LOUDNESS_MEASUREMENT_MIN_LUFS,
     MASS_LOGGER_NAME,
 )
+from music_assistant.controllers.streams.audio_analysis_codec import decode, encode
 from music_assistant.controllers.streams.audio_buffer import AudioBufferDiscarded, AudioBufferEOF
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
-from music_assistant.helpers.json import json_dumps, json_loads
+from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.util import inference_thread_budget, is_arm
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import (
@@ -64,7 +65,7 @@ BACKGROUND_SCAN_TASK_ID = "audio_analysis_background_scan"
 # under this schema name so candidate/coverage queries can still join provider_mappings.
 AA_DB_SCHEMA: Final[str] = "aa"
 AA_DB_FILENAME: Final[str] = "audio_analysis.db"
-AA_DB_SCHEMA_VERSION: Final[int] = 1
+AA_DB_SCHEMA_VERSION: Final[int] = 2
 AA_TABLE_ANALYSIS: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_AUDIO_ANALYSIS}"
 AA_TABLE_FAILURES: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_AUDIO_ANALYSIS_FAILURES}"
 AA_TABLE_SETTINGS: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_SETTINGS}"
@@ -150,13 +151,13 @@ def _parse_row(
     unparsable_ids: list[Any] | None = None,
 ) -> AudioAnalysisData | None:
     """
-    Parse a single audio_analysis row's analysis_data, logging and skipping on error.
+    Parse a single audio_analysis row's packed record, logging and skipping on error.
 
     :param row: The audio_analysis row to parse.
     :param unparsable_ids: When given, the id of a row that fails to parse is appended.
     """
     try:
-        return AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
+        return decode(row["header"], row["payload"])
     except (IndexError, KeyError, TypeError, ValueError) as err:
         row_id = _get_row_value(row, "id")
         # the error itself may embed the full (huge) field value, so log only
@@ -184,16 +185,16 @@ def _merged_from_rows(
     """
     Fold audio_analysis rows into one merged result.
 
-    Rows from AA providers not in available_aa_domains, and rows whose analysis_data
+    Rows from AA providers not in available_aa_domains, and rows whose packed record
     is unparsable, are always skipped. Returns None when no usable row remains.
 
     :param rows: audio_analysis rows ordered oldest-first; each must carry
-        aa_provider_domain and analysis_data.
+        aa_provider_domain, header and payload.
     :param available_aa_domains: AA provider domains currently available.
     :param priority: When None, merge all available providers' rows with latest-write-wins
         (non-None fields). When a tuple of AA provider domains is given, only those domains
         are considered and the first-listed domain wins each per-field conflict.
-    :param unparsable_ids: When given, ids of rows whose analysis_data fails to parse
+    :param unparsable_ids: When given, ids of rows whose packed record fails to parse
         are appended.
     """
     merged = AudioAnalysisData()
@@ -531,7 +532,7 @@ class AudioAnalysisController:
         if not isinstance(provider, MusicProvider):
             return
         prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
-        data_json = json_dumps(analysis.to_dict())
+        header, payload = encode(analysis)
         await self.mass.music.database.insert_or_replace(
             AA_TABLE_ANALYSIS,
             {
@@ -539,8 +540,9 @@ class AudioAnalysisController:
                 "item_id": item_id,
                 "provider": prov_key,
                 "aa_provider_domain": aa_provider_domain,
-                "analysis_data": data_json,
                 "analysis_version": analysis_version,
+                "header": header,
+                "payload": payload,
             },
         )
         await self.clear_analysis_failure(
@@ -831,7 +833,7 @@ class AudioAnalysisController:
         params["media_type"] = MediaType.TRACK.value
 
         query = (
-            f"SELECT analysis_data FROM {AA_TABLE_ANALYSIS} "
+            f"SELECT header FROM {AA_TABLE_ANALYSIS} "
             f"WHERE aa_provider_domain = :domain "
             f"AND media_type = :media_type "
             f"AND provider = :provider "
@@ -844,7 +846,7 @@ class AudioAnalysisController:
         results: list[dict[str, Any]] = []
         for row in rows:
             try:
-                data = json_loads(row["analysis_data"])
+                data = json_loads(row["header"])
             except ValueError, TypeError:
                 continue
             if not isinstance(data, dict):
@@ -913,18 +915,16 @@ class AudioAnalysisController:
         """
         Stream audio_analysis rows for a given aa_provider_domain.
 
-        analysis_data is yielded as raw bytes rather than str, and may hold data
-        that fails a strict UTF-8 decode; callers are responsible for handling that.
+        Rows carry the stored record as its ``header``/``payload`` pair; use
+        :func:`_parse_row` to turn one into an AudioAnalysisData.
 
         :param aa_provider_domain: Domain of the AA provider whose rows to yield.
         :param media_type: The media type to filter rows by.
         """
         self._require_database()
-        # fetch as blob: the sqlite driver raises OperationalError on corrupt
-        # non-UTF-8 TEXT; raw bytes defer decoding to the consumer
         query = (
             f"SELECT id, media_type, item_id, provider, aa_provider_domain, "
-            f"CAST(analysis_data AS BLOB) AS analysis_data, analysis_version, timestamp_created "
+            f"header, payload, analysis_version, timestamp_created "
             f"FROM {AA_TABLE_ANALYSIS} "
             f"WHERE aa_provider_domain = :aa_provider_domain AND media_type = :media_type"
         )
@@ -978,9 +978,7 @@ class AudioAnalysisController:
         # ORDER BY (item_id, provider, ts) lets us fold each track in one streaming pass.
         query = (
             f"SELECT item_id, provider, aa_provider_domain, "
-            # fetch as blob: the sqlite driver raises OperationalError on corrupt
-            # non-UTF-8 TEXT; raw bytes let _parse_row skip just the bad row
-            f"CAST(aa1.analysis_data AS BLOB) AS analysis_data, id "
+            f"aa1.header AS header, aa1.payload AS payload, id "
             f"FROM {AA_TABLE_ANALYSIS} aa1 "
             f"WHERE aa1.media_type = :media_type "
             f"AND EXISTS ("
@@ -1122,6 +1120,7 @@ class AudioAnalysisController:
         Attach the analysis database (if not attached yet) and create its tables.
 
         :param db_path: Path of the analysis database file to attach.
+        :raises RuntimeError: When the file was written by a newer schema version.
         """
         db = self.mass.music.database
         attached = await db.get_rows_from_query("PRAGMA database_list", limit=0)
@@ -1135,6 +1134,17 @@ class AudioAnalysisController:
             await db.execute(f"PRAGMA {AA_DB_SCHEMA}.journal_mode=WAL;")
             await db.execute(f"PRAGMA {AA_DB_SCHEMA}.journal_size_limit = 6144000;")
             await db.execute(f"PRAGMA {AA_DB_SCHEMA}.synchronous=normal;")
+        stored_version = await self._stored_schema_version()
+        if stored_version > AA_DB_SCHEMA_VERSION:
+            self.logger.error(
+                "audio_analysis.db schema version %s is newer than this build supports (%s)",
+                stored_version,
+                AA_DB_SCHEMA_VERSION,
+            )
+            raise RuntimeError(
+                f"{AA_DB_FILENAME} schema version {stored_version} is newer than this build "
+                f"supports ({AA_DB_SCHEMA_VERSION})"
+            )
         await db.execute(
             f"""CREATE TABLE IF NOT EXISTS {AA_TABLE_SETTINGS}(
                     [key] TEXT PRIMARY KEY,
@@ -1157,9 +1167,10 @@ class AudioAnalysisController:
                     [item_id] TEXT NOT NULL,
                     [provider] TEXT NOT NULL,
                     [aa_provider_domain] TEXT NOT NULL,
-                    [analysis_data] json NOT NULL,
                     [analysis_version] INTEGER DEFAULT 1,
                     [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+                    [header] TEXT NOT NULL,
+                    [payload] BLOB NOT NULL,
                     UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
         )
         await db.execute(
@@ -1180,6 +1191,26 @@ class AudioAnalysisController:
             {"key": "version", "value": str(AA_DB_SCHEMA_VERSION), "type": "str"},
         )
         await db.commit()
+
+    async def _stored_schema_version(self) -> int:
+        """Return the schema version recorded in the analysis db, 0 when it has none."""
+        db = self.mass.music.database
+        exists = await db.get_rows_from_query(
+            f"SELECT 1 FROM {AA_DB_SCHEMA}.sqlite_master WHERE type = 'table' AND name = :name",
+            {"name": DB_TABLE_SETTINGS},
+            limit=1,
+        )
+        if not exists:
+            return 0
+        rows = await db.get_rows_from_query(
+            f"SELECT value FROM {AA_TABLE_SETTINGS} WHERE key = 'version'", limit=1
+        )
+        if not rows:
+            return 0
+        try:
+            return int(rows[0]["value"])
+        except TypeError, ValueError:
+            return 0
 
     async def _quarantine_database(self, db_path: str) -> None:
         """
