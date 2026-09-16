@@ -18,7 +18,10 @@ from music_assistant.models.audio_analysis import AudioAnalysisData
 
 
 def _analysis(vocal_activity: object, duration: float | None = 240.0) -> AudioAnalysisData:
-    return AudioAnalysisData(duration=duration, extra_data={"vocal_activity": vocal_activity})
+    return AudioAnalysisData(
+        duration=duration,
+        vocal_activity=vocal_activity,  # type: ignore[arg-type]
+    )
 
 
 # Used only by TestBuildVocalWindowsSustainedEvidenceGate below.
@@ -109,6 +112,18 @@ class TestParseVocalProbabilities:
     def test_missing_or_invalid_duration_returns_none(self, duration: float | None) -> None:
         """Bin timing requires a finite positive analysis duration."""
         assert parse_vocal_probabilities(_analysis([0.1] * 1800, duration=duration)) is None
+
+    def test_legacy_extra_data_row_lifts_into_the_same_timeline(self) -> None:
+        """A pre-typed-field row shaped as extra_data["vocal_activity"] lifts to the same result."""
+        probabilities = [0.2] * 1800
+        legacy = AudioAnalysisData.from_dict(
+            {"duration": 240.0, "extra_data": {"vocal_activity": probabilities}}
+        )
+        assert legacy.extra_data is None
+        assert parse_vocal_probabilities(legacy) == VocalTimeline(
+            probabilities=probabilities,
+            frame_duration=240.0 / 1800,
+        )
 
 
 class TestBuildVocalWindows:

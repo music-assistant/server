@@ -209,3 +209,22 @@ class TestRebuildClapIndexFromDatabase:
         plugin = make_plugin(clap_enabled=True)
         await plugin._rebuild_clap_index_from_database()
         assert plugin._clap_index.add.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_adds_embedding_from_legacy_extra_data_shape(
+        self, make_plugin: Callable[..., Any], mock_mass: MagicMock
+    ) -> None:
+        """A row with the embedding nested under extra_data (pre-typed-field rows) still indexes."""
+        mock_mass._iter_audio_analysis_rows_data = [
+            make_analysis_row(
+                item_id="a", provider="spotify", clap_embedding=[0.1] * 1024, legacy_shape=True
+            ),
+        ]
+        plugin = make_plugin(clap_enabled=True)
+        await plugin._rebuild_clap_index_from_database()
+        plugin._clap_index.add.assert_awaited_once()
+        call_args = plugin._clap_index.add.await_args.args
+        assert call_args[0] == "spotify"
+        assert call_args[1] == "a"
+        assert isinstance(call_args[2], np.ndarray)
+        assert call_args[2].shape == (1024,)
