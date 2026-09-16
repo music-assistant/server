@@ -81,7 +81,8 @@ async def probe_mp3_seek_hints(
             if is_cbr is None:
                 return NO_SEEK_HINTS
             return Mp3SeekHints(skip_bytes, is_cbr)
-    except (ClientError, OSError, TimeoutError) as err:
+    # ValueError: aiohttp refuses provider header values holding control characters
+    except (ClientError, OSError, TimeoutError, ValueError) as err:
         # the url may carry credentials, so it stays out of the log
         LOGGER.debug("Unable to probe MP3 for seek hints: %s", err.__class__.__name__)
         return None

@@ -258,3 +258,14 @@ async def test_probe_mp3_seek_hints_http_error() -> None:
     hints = await probe_mp3_seek_hints(_session(_BrokenSession()), "http://x/a.mp3", {})
 
     assert hints is None
+
+
+@pytest.mark.asyncio
+async def test_probe_mp3_seek_hints_rejected_header() -> None:
+    """A header value aiohttp refuses to send does not break the seek."""
+    async with ClientSession() as session:
+        hints = await probe_mp3_seek_hints(
+            session, "http://127.0.0.1:9/a.mp3", {"X-Bad": "a\r\nb"}, timeout=1
+        )
+
+    assert hints is None
