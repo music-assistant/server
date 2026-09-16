@@ -7,6 +7,7 @@ import contextlib
 import dataclasses
 import logging
 import os
+import sqlite3
 import sys
 import time
 from collections.abc import AsyncGenerator, Iterable, Mapping
@@ -62,6 +63,29 @@ AA_DB_SCHEMA_VERSION: Final[int] = 1
 AA_TABLE_ANALYSIS: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_AUDIO_ANALYSIS}"
 AA_TABLE_FAILURES: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_AUDIO_ANALYSIS_FAILURES}"
 AA_TABLE_SETTINGS: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_SETTINGS}"
+# Legacy rows are copied out of library.db in id ranges of this size, one transaction each.
+RELOCATE_BATCH_SIZE: Final[int] = 5000
+_ANALYSIS_COLUMNS: Final[tuple[str, ...]] = (
+    "id",
+    "media_type",
+    "item_id",
+    "provider",
+    "aa_provider_domain",
+    "analysis_data",
+    "analysis_version",
+    "timestamp_created",
+)
+_FAILURE_COLUMNS: Final[tuple[str, ...]] = (
+    "id",
+    "media_type",
+    "item_id",
+    "provider",
+    "aa_provider_domain",
+    "reason",
+    "analysis_version",
+    "next_retry",
+    "timestamp_created",
+)
 BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
 BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER = 1.5
 # Per-run wall-clock cap; in-flight tracks finish, new ones defer to the next run.
@@ -322,6 +346,9 @@ class AudioAnalysisController:
             {"key": "version", "value": str(AA_DB_SCHEMA_VERSION), "type": "str"},
         )
         await db.commit()
+        # one-time relocation of rows written by earlier versions into library.db
+        await self._relocate_legacy_table(DB_TABLE_AUDIO_ANALYSIS, _ANALYSIS_COLUMNS)
+        await self._relocate_legacy_table(DB_TABLE_AUDIO_ANALYSIS_FAILURES, _FAILURE_COLUMNS)
 
     async def close(self) -> None:
         """Drain in-flight sessions and chunk workers on shutdown."""
@@ -1061,6 +1088,66 @@ class AudioAnalysisController:
         if count:
             await self.mass.music.database.delete(AA_TABLE_FAILURES, match)
         return count
+
+    async def _relocate_legacy_table(self, table: str, columns: tuple[str, ...]) -> None:
+        """Copy a legacy main.<table> into the attached db in id batches, then drop it."""
+        db = self.mass.music.database
+        exists = await db.get_rows_from_query(
+            "SELECT 1 FROM main.sqlite_master WHERE type = 'table' AND name = :name",
+            {"name": table},
+            limit=1,
+        )
+        if not exists:
+            return
+        total = await db.get_count_from_query(f"SELECT id FROM main.{table}")
+        max_id = 0
+        if total:
+            row = await db.get_rows_from_query(
+                f"SELECT MAX(id) AS max_id FROM main.{table}", limit=1
+            )
+            max_id = int(row[0]["max_id"])
+        self.logger.info(
+            "Moving %s rows from library.db table %s to %s", total, table, AA_DB_FILENAME
+        )
+        cols = ", ".join(columns)
+        copied = 0
+        last_id = 0
+        try:
+            while last_id < max_id:
+                # INSERT OR IGNORE makes a retry after a crash skip rows already copied
+                cursor = await db.execute(
+                    f"INSERT OR IGNORE INTO {AA_DB_SCHEMA}.{table} ({cols}) "
+                    f"SELECT {cols} FROM main.{table} "
+                    f"WHERE id > :last_id AND id <= :upper ORDER BY id",
+                    {"last_id": last_id, "upper": last_id + RELOCATE_BATCH_SIZE},
+                )
+                await db.commit()
+                copied += cursor.rowcount
+                last_id += RELOCATE_BATCH_SIZE
+                self.logger.debug("Moved %s/%s rows of %s", min(copied, total), total, table)
+            moved_total = await db.get_count_from_query(f"SELECT id FROM {AA_DB_SCHEMA}.{table}")
+            if moved_total < total:
+                self.logger.error(
+                    "Relocation of %s incomplete (%s of %s rows present in %s); "
+                    "keeping the library.db copy and retrying on next start",
+                    table,
+                    moved_total,
+                    total,
+                    AA_DB_FILENAME,
+                )
+                return
+            await db.execute(f"DROP TABLE main.{table}")
+            await db.commit()
+        except sqlite3.Error as err:
+            self.logger.error(
+                "Relocation of %s failed after %s rows: %s; keeping the library.db copy "
+                "and retrying on next start",
+                table,
+                copied,
+                err,
+            )
+            return
+        self.logger.info("Moved %s rows of %s into %s", total, table, AA_DB_FILENAME)
 
     async def _run_background_scan(self) -> None:
         """Run the scan as decode-once-fan-out streaming over candidate tracks."""
