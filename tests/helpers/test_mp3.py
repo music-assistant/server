@@ -13,7 +13,7 @@ from music_assistant.helpers.mp3 import (
     NO_SEEK_HINTS,
     Mp3SeekHints,
     ffmpeg_http_headers,
-    parse_first_mp3_frame,
+    has_mp3_frame,
     parse_id3v2_tag_size,
     probe_mp3_seek_hints,
 )
@@ -140,54 +140,45 @@ def test_parse_id3v2_tag_size(data: bytes, expected: int) -> None:
 @pytest.mark.parametrize(
     ("data", "expected"),
     [
-        (_frame(_MPEG1, _STEREO, b"Info", 36), True),
-        (_frame(_MPEG1, _MONO, b"Info", 21), True),
-        (_frame(_MPEG2, _STEREO, b"Info", 21), True),
-        (_frame(_MPEG2, _MONO, b"Info", 13), True),
-        (_frame(_MPEG25, _MONO, b"Info", 13), True),
-        (_frame(_MPEG1, _STEREO, b"Xing", 36), False),
-        (_frame(_MPEG2, _MONO, b"Xing", 13), False),
-        (_frame(_MPEG1, _STEREO, b"VBRI", 36), False),
-        (_frame(_MPEG1, _STEREO), False),
-        # an Info tag at the stereo offset does not count for a mono frame
-        (_frame(_MPEG1, _MONO, b"Info", 36), False),
-        (_frame(_MPEG1_LAYER2, _STEREO, b"Info", 36), False),
+        (_frame(_MPEG1, _STEREO), True),
+        (_frame(_MPEG1, _MONO), True),
+        (_frame(_MPEG2, _STEREO), True),
+        (_frame(_MPEG25, _MONO), True),
+        (_frame(_MPEG1_LAYER2, _STEREO), True),
+        (_frame(tag=b"Xing"), True),
         # leading junk before the frame is scanned past
-        (b"\x00\x00\x00" + _frame(_MPEG1, _STEREO, b"Info", 36), True),
+        (b"\x00\x00\x00" + _frame(), True),
         # AAC ADTS shares the sync word but uses the reserved layer
-        (b"\xff\xf1\x50\x80" + bytes(400), None),
-        (b"\xff\xfb\xf0\x00" + bytes(400), None),
-        (b"\xff\xfb\x9c\x00" + bytes(400), None),
-        (b"\xff\xeb\x90\x00" + bytes(400), None),
-        (b"ID3\x03" + bytes(400), None),
-        (_frame(_MPEG1, _STEREO)[:20], None),
-        (b"", None),
+        (b"\xff\xf1\x50\x80" + bytes(400), False),
+        (b"\xff\xfb\xf0\x00" + bytes(400), False),
+        (b"\xff\xfb\x00\x00" + bytes(400), False),
+        (b"\xff\xfb\x9c\x00" + bytes(400), False),
+        (b"\xff\xeb\x90\x00" + bytes(400), False),
+        (b"ID3\x03" + bytes(400), False),
+        (b"\xff\xfb\x90", False),
+        (b"", False),
     ],
     ids=[
-        "mpeg1-stereo-info",
-        "mpeg1-mono-info",
-        "mpeg2-stereo-info",
-        "mpeg2-mono-info",
-        "mpeg25-mono-info",
-        "mpeg1-xing",
-        "mpeg2-mono-xing",
-        "vbri",
-        "no-header",
-        "info-at-wrong-offset",
+        "mpeg1-stereo",
+        "mpeg1-mono",
+        "mpeg2-stereo",
+        "mpeg25-mono",
         "layer2",
+        "vbr-header",
         "leading-junk",
         "adts",
         "bad-bitrate",
+        "free-format",
         "bad-samplerate",
         "reserved-version",
         "stacked-tag",
-        "truncated-frame",
+        "truncated-header",
         "empty",
     ],
 )
-def test_parse_first_mp3_frame(data: bytes, expected: bool | None) -> None:
-    """Only a Layer III frame with an Info header at its side-info offset is CBR."""
-    assert parse_first_mp3_frame(data) is expected
+def test_has_mp3_frame(data: bytes, *, expected: bool) -> None:
+    """Only a valid MPEG audio frame header counts, wherever it sits in the window."""
+    assert has_mp3_frame(data) is expected
 
 
 def test_ffmpeg_http_headers() -> None:
@@ -207,16 +198,25 @@ def test_ffmpeg_http_headers() -> None:
 @pytest.mark.parametrize(
     ("blob", "expected"),
     [
-        (_id3_tag(2000) + _frame(tag=b"Info") * 3, Mp3SeekHints(2010, True)),
-        (_id3_tag(2000, version=4, flags=0x10) + _frame(tag=b"Xing"), Mp3SeekHints(2020, False)),
-        (_frame(tag=b"Info") * 3, Mp3SeekHints(0, True)),
-        (_frame() * 3, Mp3SeekHints(0, False)),
+        (_id3_tag(2000) + _frame(tag=b"Info") * 3, Mp3SeekHints(True, 2010)),
+        (_id3_tag(2000, version=4, flags=0x10) + _frame(tag=b"Xing"), Mp3SeekHints(True, 2020)),
+        (_frame(tag=b"Info") * 3, Mp3SeekHints(True, 0)),
+        (_frame() * 3, Mp3SeekHints(True, 0)),
         (_id3_tag(2000) + _id3_tag(2000) + _frame(tag=b"Info"), NO_SEEK_HINTS),
         (b"fLaC" + bytes(2000), NO_SEEK_HINTS),
         (bytes(range(256)) * 8, NO_SEEK_HINTS),
         (_id3_tag(2000), NO_SEEK_HINTS),
     ],
-    ids=["cbr-tag", "vbr-tag-footer", "cbr-no-tag", "vbr-no-tag", "stacked", "flac", "junk", "eof"],
+    ids=[
+        "cbr-tag",
+        "vbr-tag-footer",
+        "cbr-no-tag",
+        "no-header-no-tag",
+        "stacked",
+        "flac",
+        "junk",
+        "eof",
+    ],
 )
 async def test_probe_mp3_seek_hints(blob: bytes, expected: Mp3SeekHints) -> None:
     """The probe reads the tag header and the first frame behind it, with the given headers."""

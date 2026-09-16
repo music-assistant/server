@@ -142,7 +142,6 @@ from music_assistant.helpers.ffmpeg import (
     get_ffmpeg_stream,
 )
 from music_assistant.helpers.mp3 import (
-    NO_SEEK_HINTS,
     Mp3SeekHints,
     ffmpeg_http_headers,
     probe_mp3_seek_hints,
@@ -4968,18 +4967,18 @@ class StreamsAudio:
             self._mp3_seek_hints[cache_key] = hints
             while len(self._mp3_seek_hints) > MP3_SEEK_HINTS_CACHE_SIZE:
                 self._mp3_seek_hints.popitem(last=False)
-        if hints == NO_SEEK_HINTS:
+        if not hints.fastseek:
             return []
         self.logger.debug(
-            "Seeking %s with %s bytes of ID3 tag skipped (CBR: %s)",
+            "Seeking %s with fastseek, skipping %s bytes of ID3 tag",
             streamdetails.uri,
             hints.skip_bytes,
-            hints.is_cbr,
         )
         args: list[str] = []
         if hints.skip_bytes:
             args += ["-skip_initial_bytes", str(hints.skip_bytes)]
-        # a VBR file would seek by its coarse TOC and could land seconds off
-        if hints.is_cbr and "-fflags" not in extra_input_args:
+        # seeks by bitrate or the Xing TOC instead of decoding up to the position: exact for
+        # CBR, while VBR lands seconds off with a TOC and can be minutes off without one
+        if "-fflags" not in extra_input_args:
             args += ["-fflags", "+fastseek"]
         return args

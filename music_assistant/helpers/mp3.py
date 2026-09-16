@@ -21,29 +21,19 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.mp3")
 
 ID3V2_HEADER_SIZE: Final[int] = 10
-# large enough for the frame header plus the Xing/Info or VBRI header behind it
+# enough to find the first frame header behind the tag, past a little padding
 FIRST_FRAME_WINDOW: Final[int] = 512
 PROBE_TIMEOUT: Final[float] = 3.0
 
-# offset of the Xing/Info header behind the side info, keyed by (is_mpeg1, is_mono),
-# the same table ffmpeg's mp3 demuxer reads it from
-_XING_OFFSETS: Final[dict[tuple[bool, bool], int]] = {
-    (True, False): 4 + 32,
-    (True, True): 4 + 17,
-    (False, False): 4 + 17,
-    (False, True): 4 + 9,
-}
-_VBRI_OFFSET: Final[int] = 4 + 32
-
 
 class Mp3SeekHints(NamedTuple):
-    """What a remote MP3 allows ffmpeg to skip when it seeks."""
+    """What a remote file allows ffmpeg to skip when it seeks."""
 
+    fastseek: bool
     skip_bytes: int
-    is_cbr: bool
 
 
-NO_SEEK_HINTS: Final[Mp3SeekHints] = Mp3SeekHints(0, False)
+NO_SEEK_HINTS: Final[Mp3SeekHints] = Mp3SeekHints(fastseek=False, skip_bytes=0)
 
 
 async def probe_mp3_seek_hints(
@@ -55,8 +45,9 @@ async def probe_mp3_seek_hints(
     """
     Read the head of a remote MP3 to find out how ffmpeg can seek in it quickly.
 
-    Returns NO_SEEK_HINTS when the file offers no shortcut, and None when it could not be
-    read (timeout or network error), in which case asking again later may still succeed.
+    Returns NO_SEEK_HINTS when the file offers no shortcut (no MPEG audio where it should
+    start, or no range support), and None when the file could not be read (timeout or
+    network error), in which case asking again later may still succeed.
 
     :param http_session: The HTTP session to fetch the byte ranges with.
     :param url: URL of the MP3 file.
@@ -77,10 +68,9 @@ async def probe_mp3_seek_hints(
                     return NO_SEEK_HINTS
             else:
                 window = head
-            is_cbr = parse_first_mp3_frame(window)
-            if is_cbr is None:
+            if not has_mp3_frame(window):
                 return NO_SEEK_HINTS
-            return Mp3SeekHints(skip_bytes, is_cbr)
+            return Mp3SeekHints(fastseek=True, skip_bytes=skip_bytes)
     # ValueError: aiohttp refuses provider header values holding control characters
     except (ClientError, OSError, TimeoutError, ValueError) as err:
         # the url may carry credentials, so it stays out of the log
@@ -128,54 +118,32 @@ def parse_id3v2_tag_size(data: bytes) -> int:
     return size
 
 
-def parse_first_mp3_frame(data: bytes) -> bool | None:
+def has_mp3_frame(data: bytes) -> bool:
     """
-    Find the first MPEG audio frame in the data and tell whether it marks a CBR file.
-
-    Returns True when the frame carries a LAME/Xing `Info` header (CBR), False for any
-    other valid frame and None when the data holds no valid MPEG audio frame header.
+    Return whether the data holds a valid MPEG audio frame header.
 
     :param data: Bytes starting where the audio is expected to begin.
     """
-    for offset in range(len(data) - 3):
-        if (header := _parse_frame_header(data[offset : offset + 4])) is None:
-            continue
-        is_mpeg1, is_layer3, is_mono = header
-        if not is_layer3:
-            return False
-        frame = data[offset:]
-        xing_offset = _XING_OFFSETS[(is_mpeg1, is_mono)]
-        tag = frame[xing_offset : xing_offset + 4]
-        if tag == b"Info":
-            return True
-        if tag == b"Xing" or frame[_VBRI_OFFSET : _VBRI_OFFSET + 4] == b"VBRI":
-            return False
-        if len(frame) < _VBRI_OFFSET + 4:
-            # too little data to rule out a VBR header
-            return None
-        return False
-    return None
+    return any(_is_frame_header(data[offset : offset + 4]) for offset in range(len(data) - 3))
 
 
-def _parse_frame_header(header: bytes) -> tuple[bool, bool, bool] | None:
+def _is_frame_header(header: bytes) -> bool:
     """
-    Parse a 4-byte MPEG audio frame header.
-
-    Returns (is_mpeg1, is_layer3, is_mono), or None when the bytes are not a valid header.
+    Return whether the bytes are a valid 4-byte MPEG audio frame header.
 
     :param header: The four candidate header bytes.
     """
     if header[0] != 0xFF or header[1] & 0xE0 != 0xE0:
-        return None
+        return False
     version = (header[1] >> 3) & 0x03
     layer = (header[1] >> 1) & 0x03
     bitrate_index = header[2] >> 4
     sample_rate_index = (header[2] >> 2) & 0x03
     # reserved values, and free-format bitrate which nothing we care about uses;
     # the reserved layer also rules out AAC ADTS, which shares the sync word
-    if version == 0b01 or layer == 0b00 or bitrate_index in (0, 0x0F) or sample_rate_index == 3:
-        return None
-    return version == 0b11, layer == 0b01, (header[3] >> 6) == 0b11
+    return not (
+        version == 0b01 or layer == 0b00 or bitrate_index in (0, 0x0F) or sample_rate_index == 3
+    )
 
 
 async def _fetch_range(

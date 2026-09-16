@@ -959,14 +959,12 @@ _FASTSEEK_ARGS = ["-fflags", "+fastseek"]
 @pytest.mark.parametrize(
     ("hints", "expected_args"),
     [
-        (Mp3SeekHints(31911863, True), [*_SKIP_ARGS, *_FASTSEEK_ARGS]),
-        (Mp3SeekHints(31911863, False), _SKIP_ARGS),
-        (Mp3SeekHints(0, True), _FASTSEEK_ARGS),
-        (Mp3SeekHints(0, False), []),
+        (Mp3SeekHints(True, 31911863), [*_SKIP_ARGS, *_FASTSEEK_ARGS]),
+        (Mp3SeekHints(True, 0), _FASTSEEK_ARGS),
         (NO_SEEK_HINTS, []),
         (None, []),
     ],
-    ids=["cbr-tag", "vbr-tag", "cbr-no-tag", "vbr-no-tag", "no-shortcut", "probe-failed"],
+    ids=["tag", "no-tag", "not-mp3", "probe-failed"],
 )
 async def test_get_media_stream_speeds_up_remote_mp3_seek(
     patch_ffmpeg: type[_FakeFFMpeg],
@@ -974,7 +972,7 @@ async def test_get_media_stream_speeds_up_remote_mp3_seek(
     hints: Mp3SeekHints | None,
     expected_args: list[str],
 ) -> None:
-    """A remote MP3 seek skips the ID3 tag, and seeks by bitrate only for CBR."""
+    """A remote MP3 seek skips the ID3 tag and seeks without decoding up to the position."""
     mp3_probe.result = hints
     streamdetails = _seekable_streamdetails()
     audio = _make_audio_controller()
@@ -1001,7 +999,7 @@ async def test_get_media_stream_probes_remote_mp3_once_per_url(
     """Further seeks in the same episode reuse the probe, also when it found no shortcut."""
     audio = _make_audio_controller()
 
-    for hints in (Mp3SeekHints(100, True), NO_SEEK_HINTS):
+    for hints in (Mp3SeekHints(True, 100), NO_SEEK_HINTS):
         mp3_probe.result = hints
         mp3_probe.calls.clear()
         streamdetails = _seekable_streamdetails()
@@ -1042,7 +1040,7 @@ async def test_get_media_stream_probes_unknown_remote_format(
     mp3_probe: _FakeProbe,
 ) -> None:
     """A feed URL without a known extension is probed, and the probe decides."""
-    mp3_probe.result = Mp3SeekHints(100, True)
+    mp3_probe.result = Mp3SeekHints(True, 100)
     streamdetails = _seekable_streamdetails()
     streamdetails.audio_format = AudioFormat(content_type=ContentType.UNKNOWN)
     audio = _make_audio_controller()
@@ -1077,7 +1075,7 @@ async def test_get_media_stream_leaves_other_seeks_alone(
     variant: str,
 ) -> None:
     """Only a seek in a plain remote MP3 is probed; everything else keeps its args."""
-    mp3_probe.result = Mp3SeekHints(100, True)
+    mp3_probe.result = Mp3SeekHints(True, 100)
     audio = _make_audio_controller()
     streamdetails = _seekable_streamdetails()
     seek_position = 600
