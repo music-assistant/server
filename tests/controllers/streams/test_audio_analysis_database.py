@@ -107,6 +107,48 @@ async def test_attached_db_uses_wal_and_normal_locking(
     assert journal[0]["journal_mode"] == "wal"
     locking = await library_db.get_rows_from_query(f"PRAGMA {AA_DB_SCHEMA}.locking_mode", limit=0)
     assert locking[0]["locking_mode"] == "normal"
+    limit_rows = await library_db.get_rows_from_query(
+        f"PRAGMA {AA_DB_SCHEMA}.journal_size_limit", limit=0
+    )
+    assert limit_rows[0]["journal_size_limit"] == 6144000
+    sync_rows = await library_db.get_rows_from_query(f"PRAGMA {AA_DB_SCHEMA}.synchronous", limit=0)
+    assert sync_rows[0]["synchronous"] == 1
+
+
+@pytest.mark.asyncio
+async def test_unreadable_database_is_quarantined_and_recreated(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An unreadable analysis file is moved aside and replaced with a fresh one."""
+    garbage = b"this is definitely not a sqlite database" * 8
+    (tmp_path / AA_DB_FILENAME).write_bytes(garbage)
+    ctrl = _make_controller(library_db, tmp_path)
+    with caplog.at_level(logging.ERROR):
+        await ctrl.setup_database()
+
+    assert (tmp_path / f"{AA_DB_FILENAME}.corrupt").read_bytes() == garbage
+    tables = await _table_names(library_db, AA_DB_SCHEMA)
+    assert {DB_TABLE_AUDIO_ANALYSIS, DB_TABLE_AUDIO_ANALYSIS_FAILURES, DB_TABLE_SETTINGS} <= tables
+    assert any(
+        record.levelno == logging.ERROR and "unusable" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_setup_database_after_quarantine_is_idempotent(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """A second setup_database call on the replacement file changes nothing."""
+    garbage = b"this is definitely not a sqlite database" * 8
+    (tmp_path / AA_DB_FILENAME).write_bytes(garbage)
+    ctrl = _make_controller(library_db, tmp_path)
+    await ctrl.setup_database()
+    await ctrl.setup_database()
+
+    assert (tmp_path / f"{AA_DB_FILENAME}.corrupt").read_bytes() == garbage
+    rows = await library_db.get_rows(f"{AA_DB_SCHEMA}.{DB_TABLE_SETTINGS}", {"key": "version"})
+    assert len(rows) == 1
 
 
 @pytest.mark.asyncio

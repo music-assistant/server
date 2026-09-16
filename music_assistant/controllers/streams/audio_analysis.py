@@ -70,25 +70,6 @@ AA_TABLE_FAILURES: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_AUDIO_ANALYSIS_FAILUR
 AA_TABLE_SETTINGS: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_SETTINGS}"
 # Legacy rows are copied out of library.db in id ranges of this size, one transaction each.
 RELOCATE_BATCH_SIZE: Final[int] = 5000
-_ANALYSIS_COLUMNS: Final[tuple[str, ...]] = (
-    "media_type",
-    "item_id",
-    "provider",
-    "aa_provider_domain",
-    "analysis_data",
-    "analysis_version",
-    "timestamp_created",
-)
-_FAILURE_COLUMNS: Final[tuple[str, ...]] = (
-    "media_type",
-    "item_id",
-    "provider",
-    "aa_provider_domain",
-    "reason",
-    "analysis_version",
-    "next_retry",
-    "timestamp_created",
-)
 BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
 BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER = 1.5
 # Per-run wall-clock cap; in-flight tracks finish, new ones defer to the next run.
@@ -122,6 +103,26 @@ FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
     "filesystem_local",
     "filesystem_smb",
     "filesystem_nfs",
+)
+
+_ANALYSIS_COLUMNS: Final[tuple[str, ...]] = (
+    "media_type",
+    "item_id",
+    "provider",
+    "aa_provider_domain",
+    "analysis_data",
+    "analysis_version",
+    "timestamp_created",
+)
+_FAILURE_COLUMNS: Final[tuple[str, ...]] = (
+    "media_type",
+    "item_id",
+    "provider",
+    "aa_provider_domain",
+    "reason",
+    "analysis_version",
+    "next_retry",
+    "timestamp_created",
 )
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_analysis")
@@ -301,54 +302,19 @@ class AudioAnalysisController:
         Safe to call more than once. Must run after the music database connection exists
         (it is attached onto that connection) and before any analysis query.
         """
-        db = self.mass.music.database
         db_path = os.path.join(self.mass.storage_path, AA_DB_FILENAME)
-        attached = await db.get_rows_from_query("PRAGMA database_list", limit=0)
-        if not any(row["name"] == AA_DB_SCHEMA for row in attached):
-            # ATTACH cannot run inside a transaction
-            await db.commit()
-            await db.execute(f"ATTACH DATABASE :path AS {AA_DB_SCHEMA}", {"path": db_path})
-            # the music connection holds an exclusive lock; the analysis file stays readable
-            # by other processes (diagnostics, exports) and gets WAL like the other db files
-            await db.execute(f"PRAGMA {AA_DB_SCHEMA}.locking_mode=NORMAL;")
-            await db.execute(f"PRAGMA {AA_DB_SCHEMA}.journal_mode=WAL;")
-        await db.execute(
-            f"""CREATE TABLE IF NOT EXISTS {AA_TABLE_SETTINGS}(
-                    [key] TEXT PRIMARY KEY,
-                    [value] TEXT,
-                    [type] TEXT
-                );"""
-        )
-        await db.execute(
-            f"""CREATE TABLE IF NOT EXISTS {AA_TABLE_ANALYSIS}(
-                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                    [media_type] TEXT NOT NULL,
-                    [item_id] TEXT NOT NULL,
-                    [provider] TEXT NOT NULL,
-                    [aa_provider_domain] TEXT NOT NULL,
-                    [analysis_data] json NOT NULL,
-                    [analysis_version] INTEGER DEFAULT 1,
-                    [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-                    UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
-        )
-        await db.execute(
-            f"""CREATE TABLE IF NOT EXISTS {AA_TABLE_FAILURES}(
-                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                    [media_type] TEXT NOT NULL,
-                    [item_id] TEXT NOT NULL,
-                    [provider] TEXT NOT NULL,
-                    [aa_provider_domain] TEXT NOT NULL,
-                    [reason] TEXT NOT NULL,
-                    [analysis_version] INTEGER NOT NULL DEFAULT 1,
-                    [next_retry] INTEGER,
-                    [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-                    UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
-        )
-        await db.insert_or_replace(
-            AA_TABLE_SETTINGS,
-            {"key": "version", "value": str(AA_DB_SCHEMA_VERSION), "type": "str"},
-        )
-        await db.commit()
+        try:
+            await self._attach_and_create(db_path)
+        except sqlite3.DatabaseError as err:
+            # ATTACH only opens the file lazily, so an unreadable one first shows up here
+            self.logger.error(
+                "Audio analysis database %s is unusable (%s); moving it aside and starting over",
+                db_path,
+                err,
+            )
+            await self._quarantine_database(db_path)
+            # a second failure means the storage path itself is unusable: let it propagate
+            await self._attach_and_create(db_path)
         # one-time relocation of rows written by earlier versions into library.db
         await self._relocate_legacy_table(DB_TABLE_AUDIO_ANALYSIS, _ANALYSIS_COLUMNS)
         await self._relocate_legacy_table(DB_TABLE_AUDIO_ANALYSIS_FAILURES, _FAILURE_COLUMNS)
@@ -1092,6 +1058,78 @@ class AudioAnalysisController:
             await self.mass.music.database.delete(AA_TABLE_FAILURES, match)
         return count
 
+    async def _attach_and_create(self, db_path: str) -> None:
+        """
+        Attach the analysis database (if not attached yet) and create its tables.
+
+        :param db_path: Path of the analysis database file to attach.
+        """
+        db = self.mass.music.database
+        attached = await db.get_rows_from_query("PRAGMA database_list", limit=0)
+        if not any(row["name"] == AA_DB_SCHEMA for row in attached):
+            # ATTACH cannot run inside a transaction
+            await db.commit()
+            await db.execute(f"ATTACH DATABASE :path AS {AA_DB_SCHEMA}", {"path": db_path})
+            # the music connection holds an exclusive lock; the analysis file stays readable
+            # by other processes (diagnostics, exports) and gets WAL like the other db files
+            await db.execute(f"PRAGMA {AA_DB_SCHEMA}.locking_mode=NORMAL;")
+            await db.execute(f"PRAGMA {AA_DB_SCHEMA}.journal_mode=WAL;")
+            await db.execute(f"PRAGMA {AA_DB_SCHEMA}.journal_size_limit = 6144000;")
+            await db.execute(f"PRAGMA {AA_DB_SCHEMA}.synchronous=normal;")
+        await db.execute(
+            f"""CREATE TABLE IF NOT EXISTS {AA_TABLE_SETTINGS}(
+                    [key] TEXT PRIMARY KEY,
+                    [value] TEXT,
+                    [type] TEXT
+                );"""
+        )
+        await db.execute(
+            f"""CREATE TABLE IF NOT EXISTS {AA_TABLE_ANALYSIS}(
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [media_type] TEXT NOT NULL,
+                    [item_id] TEXT NOT NULL,
+                    [provider] TEXT NOT NULL,
+                    [aa_provider_domain] TEXT NOT NULL,
+                    [analysis_data] json NOT NULL,
+                    [analysis_version] INTEGER DEFAULT 1,
+                    [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+                    UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
+        )
+        await db.execute(
+            f"""CREATE TABLE IF NOT EXISTS {AA_TABLE_FAILURES}(
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [media_type] TEXT NOT NULL,
+                    [item_id] TEXT NOT NULL,
+                    [provider] TEXT NOT NULL,
+                    [aa_provider_domain] TEXT NOT NULL,
+                    [reason] TEXT NOT NULL,
+                    [analysis_version] INTEGER NOT NULL DEFAULT 1,
+                    [next_retry] INTEGER,
+                    [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+                    UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
+        )
+        await db.insert_or_replace(
+            AA_TABLE_SETTINGS,
+            {"key": "version", "value": str(AA_DB_SCHEMA_VERSION), "type": "str"},
+        )
+        await db.commit()
+
+    async def _quarantine_database(self, db_path: str) -> None:
+        """
+        Detach an unusable analysis database and move it (and its sidecars) out of the way.
+
+        :param db_path: Path of the analysis database file to move aside.
+        """
+        db = self.mass.music.database
+        with contextlib.suppress(sqlite3.Error):
+            await db.commit()
+            await db.execute(f"DETACH DATABASE {AA_DB_SCHEMA}")
+        for suffix in ("", "-wal", "-shm"):
+            source = f"{db_path}{suffix}"
+            if await asyncio.to_thread(os.path.exists, source):
+                # overwrites an older quarantine; we only ever keep the most recent one
+                await asyncio.to_thread(os.replace, source, f"{source}.corrupt")
+
     async def _relocate_legacy_table(self, table: str, columns: tuple[str, ...]) -> None:
         """
         Copy a legacy main.<table> into the attached db in id batches, then drop it.
@@ -1169,7 +1207,7 @@ class AudioAnalysisController:
                 err,
             )
             return
-        self.logger.info("Moved %s rows of %s into %s", total, table, AA_DB_FILENAME)
+        self.logger.info("Moved %s of %s rows of %s into %s", copied, total, table, AA_DB_FILENAME)
 
     async def _run_background_scan(self) -> None:
         """Run the scan as decode-once-fan-out streaming over candidate tracks."""
@@ -1430,13 +1468,13 @@ class AudioAnalysisController:
             f"WHERE pm.media_type = :media_type "
             f"  AND pm.provider_domain IN ({fs_inline}) "
             f"  AND NOT EXISTS ("
-            f"    SELECT 1 FROM {AA_TABLE_ANALYSIS} aa "
-            f"    WHERE aa.item_id = pm.provider_item_id "
-            f"      AND aa.provider = pm.provider_instance "
-            f"      AND aa.aa_provider_domain = possible.aa_provider_domain "
-            f"      AND aa.media_type = :media_type "
-            f"      AND aa.analysis_version IS NOT NULL "
-            f"      AND aa.analysis_version >= possible.current_version"
+            f"    SELECT 1 FROM {AA_TABLE_ANALYSIS} an "
+            f"    WHERE an.item_id = pm.provider_item_id "
+            f"      AND an.provider = pm.provider_instance "
+            f"      AND an.aa_provider_domain = possible.aa_provider_domain "
+            f"      AND an.media_type = :media_type "
+            f"      AND an.analysis_version IS NOT NULL "
+            f"      AND an.analysis_version >= possible.current_version"
             f"  ) "
             f"  AND NOT EXISTS ("
             f"    SELECT 1 FROM {AA_TABLE_FAILURES} f "
@@ -1475,13 +1513,13 @@ class AudioAnalysisController:
             f"WHERE pm.media_type = :media_type "
             f"  AND pm.provider_domain IN ({fs_inline}) "
             f"  AND NOT EXISTS ("
-            f"    SELECT 1 FROM {AA_TABLE_ANALYSIS} aa "
-            f"    WHERE aa.item_id = pm.provider_item_id "
-            f"      AND aa.provider = pm.provider_instance "
-            f"      AND aa.aa_provider_domain = :aa_domain "
-            f"      AND aa.media_type = :media_type "
-            f"      AND aa.analysis_version IS NOT NULL "
-            f"      AND aa.analysis_version >= :current_version"
+            f"    SELECT 1 FROM {AA_TABLE_ANALYSIS} an "
+            f"    WHERE an.item_id = pm.provider_item_id "
+            f"      AND an.provider = pm.provider_instance "
+            f"      AND an.aa_provider_domain = :aa_domain "
+            f"      AND an.media_type = :media_type "
+            f"      AND an.analysis_version IS NOT NULL "
+            f"      AND an.analysis_version >= :current_version"
             f"  ) "
             f"  AND NOT EXISTS ("
             f"    SELECT 1 FROM {AA_TABLE_FAILURES} f "
