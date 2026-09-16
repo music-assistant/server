@@ -13,8 +13,6 @@ import dataclasses
 import logging
 from typing import Any, Final
 
-import numpy as np
-
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.models.audio_analysis import AudioAnalysisData
 
@@ -29,7 +27,8 @@ ARRAY_FIELDS: Final[tuple[str, ...]] = tuple(
 # envelopes (0..1 or Hz, 1800 bins) and the unit-norm embedding tolerate float16; beat
 # timestamps need float32 (float16 resolves only 0.125 s at five minutes)
 F16_FIELDS: Final[frozenset[str]] = frozenset(ARRAY_FIELDS) - {"beats", "downbeats"}
-_DTYPES: Final[dict[str, np.dtype[Any]]] = {"f16": np.dtype("<f2"), "f32": np.dtype("<f4")}
+# little-endian dtype strings, so building the index needs no numpy at import time
+_DTYPES: Final[dict[str, str]] = {"f16": "<f2", "f32": "<f4"}
 _ARRAY_FIELD_SET: Final[frozenset[str]] = frozenset(ARRAY_FIELDS)
 
 
@@ -40,6 +39,9 @@ def encode(analysis: AudioAnalysisData) -> tuple[str, bytes]:
     :param analysis: The record to store.
     :returns: JSON header (scalars, extra_data and the array index) and the binary payload.
     """
+    # numpy is imported here to keep it off the server startup path
+    import numpy as np  # noqa: PLC0415
+
     doc = {key: value for key, value in analysis.to_dict().items() if value is not None}
     index: list[list[Any]] = []
     parts: list[bytes] = []
@@ -65,6 +67,9 @@ def decode(header: str | bytes, payload: bytes) -> AudioAnalysisData:
     :param payload: Binary payload as written by :func:`encode`.
     :raises ValueError: When an array slice in the header is truncated in the payload.
     """
+    # numpy is imported here to keep it off the server startup path
+    import numpy as np  # noqa: PLC0415
+
     doc = json_loads(header)
     view = memoryview(payload)
     for name, tag, offset, nbytes in doc.pop("arrays", []):
