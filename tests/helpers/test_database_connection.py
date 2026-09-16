@@ -112,6 +112,31 @@ async def test_vacuum_spills_temp_storage_to_disk(db_connection: DatabaseConnect
     assert await _get_temp_store(db_connection) == TEMP_STORE_MEMORY
 
 
+async def test_vacuum_compacts_an_attached_schema(
+    db_connection: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """Test that a schema argument compacts that attached database instead of main."""
+    await db_connection.execute(
+        "ATTACH DATABASE :path AS aa", {"path": str(tmp_path / "attached.db")}
+    )
+    await db_connection.execute("CREATE TABLE aa.t(x INTEGER)")
+    await db_connection.commit()
+    executed: list[str] = []
+    original_execute = db_connection._db.execute
+
+    def record(sql: str, *args: Any, **kwargs: Any) -> Any:
+        executed.append(sql)
+        return original_execute(sql, *args, **kwargs)
+
+    db_connection._db.execute = record  # type: ignore[method-assign]
+    await db_connection.vacuum(schema="aa")
+    db_connection._db.execute = original_execute  # type: ignore[method-assign]
+
+    assert "VACUUM aa" in executed
+    assert "VACUUM" not in executed
+    assert await _get_temp_store(db_connection) == TEMP_STORE_MEMORY
+
+
 async def test_vacuum_restores_temp_store_on_failure(
     db_connection: DatabaseConnection,
 ) -> None:
