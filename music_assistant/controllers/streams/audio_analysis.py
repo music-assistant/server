@@ -1,4 +1,9 @@
-"""Controller for distributing audio analysis to providers."""
+"""
+Controller for distributing audio analysis to providers.
+
+Analysis rows live in `audio_analysis.db` (attached onto the music connection as
+schema `aa`); see `setup_database`.
+"""
 
 from __future__ import annotations
 
