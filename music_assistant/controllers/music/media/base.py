@@ -45,7 +45,6 @@ from music_assistant_models.media_items import (
 from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUM_TRACKS,
-    DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
@@ -390,13 +389,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             )
             # cleanup audio analysis rows for this provider mapping
             for prov_key in (prov_mapping.provider_domain, prov_mapping.provider_instance):
-                await self.mass.music.database.delete(
-                    DB_TABLE_AUDIO_ANALYSIS,
-                    {
-                        "media_type": self.media_type.value,
-                        "item_id": prov_mapping.item_id,
-                        "provider": prov_key,
-                    },
+                await self.mass.streams.audio_analysis.delete_audio_analysis(
+                    prov_mapping.item_id, prov_key, self.media_type
                 )
         # delete genre exclusions for this media item
         await self.mass.music.database.delete(
