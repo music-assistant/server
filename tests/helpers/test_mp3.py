@@ -27,11 +27,11 @@ _STEREO = 0x00
 _MONO = 0xC0
 
 
-def _frame(version: int = _MPEG1, mode: int = _STEREO, tag: bytes = b"", offset: int = 36) -> bytes:
-    """Build a 128 kbps frame with an optional VBR/CBR header tag at the given offset."""
+def _frame(version: int = _MPEG1, mode: int = _STEREO, tag: bytes = b"") -> bytes:
+    """Build a 128 kbps frame, with an optional Info/Xing tag where MPEG1 stereo keeps it."""
     header = bytes([0xFF, version, 0x90, mode])
     body = bytearray(400)
-    body[offset - 4 : offset - 4 + len(tag)] = tag
+    body[32 : 32 + len(tag)] = tag
     return header + bytes(body)
 
 
