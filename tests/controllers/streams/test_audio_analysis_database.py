@@ -14,23 +14,25 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import Track
 
-import music_assistant.controllers.streams.constants as streams_constants
+import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
 from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_AUDIO_ANALYSIS_FAILURES,
     DB_TABLE_SETTINGS,
 )
-from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
-from music_assistant.controllers.streams.constants import (
+from music_assistant.controllers.streams.audio_analysis import (
     AA_DB_FILENAME,
     AA_DB_SCHEMA,
     AA_DB_SCHEMA_VERSION,
     AA_TABLE_ANALYSIS,
     AA_TABLE_FAILURES,
+    PROVIDER_LOUDNESS_DOMAIN,
+    AudioAnalysisController,
 )
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -99,36 +101,6 @@ async def test_setup_database_is_idempotent(
     await ctrl.setup_database()
     rows = await library_db.get_rows(f"{AA_DB_SCHEMA}.{DB_TABLE_SETTINGS}", {"key": "version"})
     assert len(rows) == 1
-
-
-@pytest.mark.asyncio
-async def test_new_file_without_legacy_tables_skips_migration(
-    library_db: DatabaseConnection, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    """A fresh install is stamped with the current version without running the ladder."""
-    ctrl = _make_controller(library_db, tmp_path)
-    with caplog.at_level(logging.INFO):
-        await ctrl.setup_database()
-    assert ctrl.database_ready
-    assert "Migrating" not in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_legacy_tables_recreated_by_stable_are_moved_again(
-    library_db: DatabaseConnection, tmp_path: pathlib.Path
-) -> None:
-    """Rows a stable build wrote into library.db after a switch back are picked up again."""
-    ctrl = _make_controller(library_db, tmp_path)
-    await ctrl.setup_database()
-    await _seed_legacy(library_db, n_analysis=2, n_failures=1)
-
-    await ctrl.setup_database()
-
-    assert {r["item_id"] for r in await library_db.get_rows(AA_TABLE_ANALYSIS)} == {"t0", "t1"}
-    assert len(await library_db.get_rows(AA_TABLE_FAILURES)) == 1
-    main_tables = await _table_names(library_db, "main")
-    assert DB_TABLE_AUDIO_ANALYSIS not in main_tables
-    assert DB_TABLE_AUDIO_ANALYSIS_FAILURES not in main_tables
 
 
 @pytest.mark.asyncio
@@ -285,8 +257,9 @@ async def test_delete_audio_analysis_removes_only_that_provider_key(
                 "item_id": "t1",
                 "provider": provider,
                 "aa_provider_domain": domain,
-                "analysis_data": "{}",
                 "analysis_version": 1,
+                "header": "{}",
+                "payload": b"",
             },
         )
         await library_db.insert(
@@ -306,6 +279,56 @@ async def test_delete_audio_analysis_removes_only_that_provider_key(
         assert [(r["provider"], r["aa_provider_domain"]) for r in rows] == [
             ("fs--b", "loudness_analysis")
         ]
+
+
+@pytest.mark.asyncio
+async def test_newer_schema_version_refuses_to_start(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A file written by a newer build is refused instead of being used or rewritten."""
+    ctrl = _make_controller(library_db, tmp_path)
+    await ctrl.setup_database()
+    await library_db.insert_or_replace(
+        f"{AA_DB_SCHEMA}.{DB_TABLE_SETTINGS}", {"key": "version", "value": "99", "type": "str"}
+    )
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError):
+        await ctrl.setup_database()
+    assert any(
+        record.levelno == logging.ERROR and "newer than this build supports" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_round_trip_through_controller(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """A record written through the controller reads back with its scalars and arrays."""
+    ctrl = _make_controller(library_db, tmp_path)
+    await ctrl.setup_database()
+    music_prov = MagicMock(spec=MusicProvider)
+    music_prov.is_streaming_provider = False
+    music_prov.instance_id = "fs--a"
+    ctrl.mass.get_provider = MagicMock(return_value=music_prov)  # type: ignore[method-assign]
+    ctrl.mass.get_providers = MagicMock(return_value=[])  # type: ignore[method-assign]
+    analysis = AudioAnalysisData(
+        bpm=123.5,
+        key="F#",
+        loudness_integrated=-9.25,
+        beats=[0.5, 1.0, 1.5],
+        rms_energy=[i / 1800 for i in range(1800)],
+    )
+
+    await ctrl.set_audio_analysis("t1", "fs--a", PROVIDER_LOUDNESS_DOMAIN, analysis)
+    stored = await ctrl.get_audio_analysis("t1", "fs--a")
+
+    assert stored is not None
+    assert stored.bpm == 123.5
+    assert stored.key == "F#"
+    assert stored.loudness_integrated == -9.25
+    assert stored.beats == [0.5, 1.0, 1.5]
+    assert stored.rms_energy is not None
+    assert stored.rms_energy == pytest.approx(analysis.rms_energy, abs=1e-3)
 
 
 LEGACY_ANALYSIS_DDL = (
@@ -410,7 +433,7 @@ async def test_relocation_walks_id_ranges_in_batches(
     library_db: DatabaseConnection, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Relocation completes across multiple id-range batches, not just the first one."""
-    monkeypatch.setattr(streams_constants, "RELOCATE_BATCH_SIZE", 4)
+    monkeypatch.setattr(audio_analysis_mod, "RELOCATE_BATCH_SIZE", 4)
     await _seed_legacy(library_db, n_analysis=7, n_failures=0)  # ids 1..19 span 5 batches
     ctrl = _make_controller(library_db, tmp_path)
     await ctrl.setup_database()
@@ -591,8 +614,9 @@ async def test_relocation_survives_live_writes_after_failed_attempt(
             "item_id": "live1",
             "provider": "fs--a",
             "aa_provider_domain": "loudness_analysis",
-            "analysis_data": "{}",
             "analysis_version": 1,
+            "header": "{}",
+            "payload": b"",
         },
     )
 
@@ -735,10 +759,6 @@ async def test_failed_relocation_disables_analysis_until_restart(
     await ctrl.setup_database()
     await _assert_analysis_unavailable(ctrl)
     assert len(await library_db.get_rows(f"main.{failed_table}")) == 2
-    # the version is only stamped once every step succeeded, so the ladder runs again
-    assert (
-        await library_db.get_row(f"{AA_DB_SCHEMA}.{DB_TABLE_SETTINGS}", {"key": "version"}) is None
-    )
     monkeypatch.setattr(library_db, "execute", real_execute)
     restarted = _make_controller(library_db, tmp_path)
     await restarted.setup_database()

@@ -136,12 +136,13 @@ class TestRebuildClapIndexFromDatabase:
     async def test_skips_malformed_json(
         self, make_plugin: Callable[..., Any], mock_mass: MagicMock
     ) -> None:
-        """A row with non-JSON analysis_data is skipped without crashing."""
+        """A row with a non-JSON header is skipped without crashing."""
         malformed_row = {
             "item_id": "x",
             "provider": "spotify",
             "aa_provider_domain": "sonic_analysis",
-            "analysis_data": "not-valid-json",
+            "header": "not-valid-json",
+            "payload": b"",
         }
         mock_mass._iter_audio_analysis_rows_data = [malformed_row]
         plugin = make_plugin(clap_enabled=True)
@@ -150,14 +151,14 @@ class TestRebuildClapIndexFromDatabase:
         plugin._clap_index.save.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_skips_row_with_invalid_utf8_bytes(
+    async def test_skips_row_with_undecodable_header(
         self,
         make_plugin: Callable[..., Any],
         mock_mass: MagicMock,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """
-        A row whose analysis_data is undecodable bytes is skipped and logged, not raised.
+        A row whose header is undecodable bytes is skipped and logged, not raised.
 
         :param caplog: Pytest log capture fixture.
         """
@@ -165,7 +166,8 @@ class TestRebuildClapIndexFromDatabase:
             "item_id": "x",
             "provider": "spotify",
             "aa_provider_domain": "sonic_analysis",
-            "analysis_data": b'{"duration":1\xff\xfe}',
+            "header": b'{"duration":1\xff\xfe}',
+            "payload": b"",
         }
         mock_mass._iter_audio_analysis_rows_data = [
             corrupt_row,
