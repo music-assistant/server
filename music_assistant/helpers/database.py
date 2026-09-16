@@ -540,14 +540,18 @@ class DatabaseConnection:
         freelist_count = await self._get_pragma_int("freelist_count")
         return freelist_count / page_count
 
-    async def vacuum(self) -> None:
-        """Run vacuum command on database."""
+    async def vacuum(self, schema: str | None = None) -> None:
+        """
+        Run vacuum command on database.
+
+        :param schema: Attached schema to compact instead of the main database.
+        """
         # VACUUM rebuilds the whole database in temp storage; with temp_store=memory that
         # copy lives entirely in RAM and OOMs memory constrained devices on large databases,
         # so spill it to a temp file (located at SQLITE_TMPDIR) for the duration.
         await self._db.execute("PRAGMA temp_store=FILE;")
         try:
-            await self._db.execute("VACUUM")
+            await self._db.execute(f"VACUUM {schema}" if schema else "VACUUM")
             await self._db.commit()
         finally:
             await self._db.execute("PRAGMA temp_store=memory;")
