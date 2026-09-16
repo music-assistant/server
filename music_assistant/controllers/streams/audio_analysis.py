@@ -68,14 +68,16 @@ AA_DB_FILENAME: Final[str] = "audio_analysis.db"
 AA_DB_SCHEMA_VERSION: Final[int] = 2
 AA_TABLE_ANALYSIS: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_AUDIO_ANALYSIS}"
 # JSON-shaped analysis table of schema v1, renamed aside at startup and converted away
-AA_TABLE_ANALYSIS_V1: Final[str] = f"{AA_TABLE_ANALYSIS}_v1"
+DB_TABLE_AUDIO_ANALYSIS_V1: Final[str] = f"{DB_TABLE_AUDIO_ANALYSIS}_v1"
+AA_TABLE_ANALYSIS_V1: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_AUDIO_ANALYSIS_V1}"
 AA_TABLE_FAILURES: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_AUDIO_ANALYSIS_FAILURES}"
 AA_TABLE_SETTINGS: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_SETTINGS}"
 # Legacy rows are copied out of library.db in id ranges of this size, one transaction each.
 RELOCATE_BATCH_SIZE: Final[int] = 5000
 # JSON rows are converted to the packed format in cursor batches of this size, one
-# transaction each; progress is logged once per this many rows.
-MIGRATE_BATCH_SIZE: Final[int] = 200
+# transaction each; a fully analysed row is ~230 KB of JSON, so a batch is held in memory
+# twice (decoded and packed) while it converts. Progress is logged once per this many rows.
+MIGRATE_BATCH_SIZE: Final[int] = 100
 MIGRATE_PROGRESS_ROWS: Final[int] = 2000
 BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
 BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER = 1.5
@@ -387,12 +389,10 @@ class AudioAnalysisController:
                 await self._attach_and_create(db_path)
             converted = await self._migrate_json_rows(AA_TABLE_ANALYSIS_V1)
             legacy_converted = await self._migrate_json_rows(f"main.{DB_TABLE_AUDIO_ANALYSIS}")
-            moved = await self._relocate_legacy_table(
-                DB_TABLE_AUDIO_ANALYSIS_FAILURES, _FAILURE_COLUMNS
-            )
+            moved = await self._relocate_legacy_failures()
             if (
                 moved is None
-                or await self._table_exists(AA_DB_SCHEMA, f"{DB_TABLE_AUDIO_ANALYSIS}_v1")
+                or await self._table_exists(AA_DB_SCHEMA, DB_TABLE_AUDIO_ANALYSIS_V1)
                 or await self._table_exists("main", DB_TABLE_AUDIO_ANALYSIS)
             ):
                 raise ProviderUnavailableError("Legacy audio analysis relocation is incomplete")
@@ -997,9 +997,11 @@ class AudioAnalysisController:
         :param media_type: The media type to filter rows by.
         """
         self._require_database()
+        # fetch the header as blob: the sqlite driver raises OperationalError on corrupt
+        # non-UTF-8 TEXT, which would abort the whole scan; decode() takes str or bytes
         query = (
             f"SELECT id, media_type, item_id, provider, aa_provider_domain, "
-            f"header, payload, analysis_version, timestamp_created "
+            f"CAST(header AS BLOB) AS header, payload, analysis_version, timestamp_created "
             f"FROM {AA_TABLE_ANALYSIS} "
             f"WHERE aa_provider_domain = :aa_provider_domain AND media_type = :media_type"
         )
@@ -1053,7 +1055,9 @@ class AudioAnalysisController:
         # ORDER BY (item_id, provider, ts) lets us fold each track in one streaming pass.
         query = (
             f"SELECT item_id, provider, aa_provider_domain, "
-            f"aa1.header AS header, aa1.payload AS payload, id "
+            # fetch the header as blob: the sqlite driver raises OperationalError on corrupt
+            # non-UTF-8 TEXT; bytes let _parse_row skip just the bad row
+            f"CAST(aa1.header AS BLOB) AS header, aa1.payload AS payload, id "
             f"FROM {AA_TABLE_ANALYSIS} aa1 "
             f"WHERE aa1.media_type = :media_type "
             f"AND EXISTS ("
@@ -1228,7 +1232,7 @@ class AudioAnalysisController:
         )
         if any(column["name"] == "analysis_data" for column in columns):
             await db.execute(
-                f"ALTER TABLE {AA_TABLE_ANALYSIS} RENAME TO {DB_TABLE_AUDIO_ANALYSIS}_v1"
+                f"ALTER TABLE {AA_TABLE_ANALYSIS} RENAME TO {DB_TABLE_AUDIO_ANALYSIS_V1}"
             )
             await db.commit()
         await db.execute(
@@ -1344,11 +1348,13 @@ class AudioAnalysisController:
                 return 0
             await db.execute(f"DROP TABLE {source_table}")
             await db.commit()
-        except sqlite3.Error as err:
+        except (sqlite3.Error, TypeError, ValueError) as err:
             self.logger.error(
-                "Conversion of %s failed after %s rows: %s; keeping it and retrying on next start",
+                "Conversion of %s failed after %s rows: %s: %s; keeping it and retrying on "
+                "next start",
                 source_table,
                 converted,
+                type(err).__name__,
                 err,
             )
             return 0
@@ -1428,7 +1434,7 @@ class AudioAnalysisController:
                 # overwrites an older quarantine; we only ever keep the most recent one
                 await asyncio.to_thread(os.replace, source, f"{source}.corrupt")
 
-    async def _relocate_legacy_table(self, table: str, columns: tuple[str, ...]) -> int | None:
+    async def _relocate_legacy_failures(self) -> int | None:
         """
         Copy the legacy main.audio_analysis_failures into the attached db, then drop it.
 
@@ -1439,17 +1445,12 @@ class AudioAnalysisController:
         keep the destination row. Completion is verified by natural key before the legacy
         table is dropped, not by comparing row counts.
 
-        :param table: Name of the legacy table in library.db (main schema) to relocate.
-        :param columns: Column names (excluding id) shared by main.<table> and aa.<table>.
         :returns: Number of rows in the dropped source (0 if absent), or None on failure.
         """
         db = self.mass.music.database
-        exists = await db.get_rows_from_query(
-            "SELECT 1 FROM main.sqlite_master WHERE type = 'table' AND name = :name",
-            {"name": table},
-            limit=1,
-        )
-        if not exists:
+        table = DB_TABLE_AUDIO_ANALYSIS_FAILURES
+        columns = _FAILURE_COLUMNS
+        if not await self._table_exists("main", table):
             return 0
         total = await db.get_count_from_query(f"SELECT id FROM main.{table}")
         max_id = 0

@@ -912,6 +912,65 @@ async def test_migration_failure_keeps_v1_table(
 
 
 @pytest.mark.asyncio
+async def test_migration_keeps_source_when_packing_raises(
+    library_db: DatabaseConnection,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A decode/encode error is caught like a database one: source kept, version unchanged."""
+    ctrl = _make_controller(library_db, tmp_path)
+    await _seed_v1_table(library_db, ctrl, [("t0", '{"bpm": 100.0}')])
+
+    def exploding_encode(_analysis: AudioAnalysisData) -> tuple[str, bytes]:
+        raise TypeError("boom")
+
+    monkeypatch.setattr(audio_analysis_mod, "encode", exploding_encode)
+    with caplog.at_level(logging.ERROR):
+        await ctrl.setup_database()
+
+    assert V1_TABLE_NAME in await _table_names(library_db, AA_DB_SCHEMA)
+    assert await _stored_version(library_db) == 1
+    assert any(
+        record.levelno == logging.ERROR and "TypeError" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_incomplete_conversion_keeps_source_table(
+    library_db: DatabaseConnection,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A row that silently fails to land keeps the source table for the next start."""
+    ctrl = _make_controller(library_db, tmp_path)
+    await _seed_v1_table(library_db, ctrl, [("t0", '{"bpm": 100.0}'), ("t1", '{"bpm": 110.0}')])
+    real_execute = library_db.execute
+
+    async def dropping_execute(query: str, values: dict[str, Any] | None = None) -> Any:
+        if (
+            query.lstrip().upper().startswith("INSERT OR IGNORE INTO AA.AUDIO_ANALYSIS ")
+            and values is not None
+            and values["item_id"] == "t1"
+        ):
+            return MagicMock()  # the write is silently dropped, no error raised
+        return await real_execute(query, values)
+
+    monkeypatch.setattr(library_db, "execute", dropping_execute)
+    with caplog.at_level(logging.ERROR):
+        await ctrl.setup_database()
+
+    assert V1_TABLE_NAME in await _table_names(library_db, AA_DB_SCHEMA)
+    assert await _stored_version(library_db) == 1
+    assert any(
+        record.levelno == logging.ERROR and "incomplete" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
 async def test_analysis_db_is_compacted_after_conversion(
     library_db: DatabaseConnection, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
