@@ -594,3 +594,40 @@ async def test_migration_drops_none_provider_mappings(database: DatabaseConnecti
         f"SELECT item_id, provider_domain, provider_instance FROM {DB_TABLE_PROVIDER_MAPPINGS}"
     )
     assert [(r["provider_domain"], r["provider_instance"]) for r in rows] == [("qobuz", "qobuz--1")]
+
+
+async def test_migration_adds_is_endless_stream_column_to_radios(
+    database: DatabaseConnection,
+) -> None:
+    """
+    A pre-61 database gets the radios.is_endless_stream column, backfilled from is_dynamic.
+
+    A dynamic station's tracklist is never a stream, so it backfills to False; a plain
+    station stays True. Running the migration twice is harmless.
+    """
+    await database.execute("ALTER TABLE radios ADD COLUMN is_dynamic BOOLEAN NOT NULL DEFAULT 0")
+    await database.execute(
+        "INSERT INTO radios (item_id, external_ids, is_dynamic) VALUES (1, '[]', 1)"
+    )
+    await database.execute(
+        "INSERT INTO radios (item_id, external_ids, is_dynamic) VALUES (2, '[]', 0)"
+    )
+    await database.commit()
+    assert "is_endless_stream" not in await _table_columns(database, "radios")
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    for _ in range(2):
+        await migrate_database(
+            mass,
+            database,
+            MagicMock(),
+            prev_version=60,
+            create_tables=AsyncMock(),
+        )
+
+    assert "is_endless_stream" in await _table_columns(database, "radios")
+    rows = await database.get_rows_from_query(
+        "SELECT item_id, is_endless_stream FROM radios ORDER BY item_id"
+    )
+    assert [(row["item_id"], row["is_endless_stream"]) for row in rows] == [(1, 0), (2, 1)]

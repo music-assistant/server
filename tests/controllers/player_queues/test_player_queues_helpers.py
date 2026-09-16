@@ -54,13 +54,14 @@ def _playlist(*, is_dynamic: bool, name: str = "PL") -> Playlist:
     )
 
 
-def _radio(*, is_dynamic: bool, name: str = "R") -> Radio:
+def _radio(*, is_dynamic: bool, is_endless_stream: bool = True, name: str = "R") -> Radio:
     return Radio(
         item_id=name.lower(),
         provider="test",
         name=name,
         provider_mappings=_PROVIDER_MAPPINGS,
         is_dynamic=is_dynamic,
+        is_endless_stream=is_endless_stream,
     )
 
 
@@ -151,6 +152,14 @@ class TestIsDynamicSource:
     def test_non_dynamic_radio(self) -> None:
         """A non-dynamic (live-stream) radio is not a dynamic source."""
         assert is_dynamic_source(_radio(is_dynamic=False)) is False
+
+    def test_finite_radio(self) -> None:
+        """A finite radio station (e.g. an AI Radio show) does not feed the pool."""
+        assert is_dynamic_source(_radio(is_dynamic=False, is_endless_stream=False)) is False
+
+    def test_stream_radio(self) -> None:
+        """A live-stream radio does not feed the pool."""
+        assert is_dynamic_source(_radio(is_dynamic=False, is_endless_stream=True)) is False
 
     def test_track(self) -> None:
         """A track is never a dynamic source."""

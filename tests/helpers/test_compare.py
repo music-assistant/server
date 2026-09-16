@@ -2015,13 +2015,19 @@ def test_compare_radio() -> None:
     """Test the radio compare helper."""
 
     def _radio(
-        item_id: str, provider: str, name: str, *, is_dynamic: bool = False
+        item_id: str,
+        provider: str,
+        name: str,
+        *,
+        is_dynamic: bool = False,
+        is_endless_stream: bool = True,
     ) -> media_items.Radio:
         return media_items.Radio(
             item_id=item_id,
             provider=provider,
             name=name,
             is_dynamic=is_dynamic,
+            is_endless_stream=is_endless_stream,
             provider_mappings={
                 media_items.ProviderMapping(
                     item_id=item_id, provider_domain=provider, provider_instance=provider
@@ -2041,3 +2047,10 @@ def test_compare_radio() -> None:
     # ... but it is still recognised as itself
     same = _radio("c", "pandora", "Chill Vibes", is_dynamic=True)
     assert compare.compare_radio(station, same) is True
+
+    show = _radio("d", "ai_radio", "Chill Vibes", is_endless_stream=False)
+    # a finite tracklisted station is provider-owned too: never name-matched to a stream
+    assert compare.compare_radio(show, live_a) is False
+    assert compare.compare_radio(live_a, show) is False
+    same_show = _radio("d", "ai_radio", "Chill Vibes", is_endless_stream=False)
+    assert compare.compare_radio(show, same_show) is True
