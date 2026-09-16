@@ -327,7 +327,7 @@ def _ambient_unblendable_ctx() -> tuple[AudioAnalysisData, AudioAnalysisData]:
 def _vocal_unblendable_ctx() -> TransitionContext:
     """Build the same ambient pair, but with the incoming deck fully sung: never qualifies."""
     aa_out, aa_in = _ambient_unblendable_ctx()
-    aa_in.extra_data = {"vocal_activity": [0.9] * 1800}
+    aa_in.vocal_activity = [0.9] * 1800
     return build_transition_context(aa_out, aa_in, 45.0, logging.getLogger("test"))
 
 

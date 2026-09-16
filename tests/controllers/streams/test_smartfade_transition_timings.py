@@ -131,7 +131,7 @@ def _with_vocal_activity(
     for start, end in windows:
         for index in range(int(start / frame_duration), int(end / frame_duration)):
             probabilities[index] = 0.9
-    analysis.extra_data = {"vocal_activity": probabilities}
+    analysis.vocal_activity = probabilities
     return analysis
 
 

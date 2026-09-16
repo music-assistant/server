@@ -1,12 +1,11 @@
 """
 Smart Fades - vocal-activity contract and vocal-collision math.
 
-Parses the optional 1800-bin ``vocal_activity`` list stored in
-``AudioAnalysisData.extra_data``, turns it into hysteresis-gated vocal windows,
-and scores how much two tracks' vocals would collide inside a candidate
-crossfade. Every function here works over plain floats and lists - no NumPy -
-so a missing or malformed timeline never pulls it onto a path that would
-otherwise stay numpy-free.
+Parses the optional 1800-bin ``AudioAnalysisData.vocal_activity`` list, turns
+it into hysteresis-gated vocal windows, and scores how much two tracks'
+vocals would collide inside a candidate crossfade. Every function here works
+over plain floats and lists - no NumPy - so a missing or malformed timeline
+never pulls it onto a path that would otherwise stay numpy-free.
 """
 
 from __future__ import annotations
@@ -124,8 +123,8 @@ def parse_vocal_probabilities(analysis: AudioAnalysisData) -> VocalTimeline | No
     """
     Validate and return the stored 1800-bin vocal-activity timeline.
 
-    Returns ``None`` when ``extra_data["vocal_activity"]`` is absent or fails
-    any part of the contract: it is not a list of exactly 1800 finite numeric
+    Returns ``None`` when ``vocal_activity`` is absent or fails any part of
+    the contract: it is not a list of exactly 1800 finite numeric
     probabilities in the inclusive range 0..1, or the analysis has no finite
     positive duration. Callers must treat that as "vocal-aware logic is
     unavailable for this track".
@@ -140,7 +139,7 @@ def parse_vocal_probabilities(analysis: AudioAnalysisData) -> VocalTimeline | No
         or duration <= 0.0
     ):
         return None
-    vocal_activity = (analysis.extra_data or {}).get("vocal_activity")
+    vocal_activity = analysis.vocal_activity
     if not isinstance(vocal_activity, list) or len(vocal_activity) != VOCAL_ACTIVITY_BINS:
         return None
     values: list[float] = []

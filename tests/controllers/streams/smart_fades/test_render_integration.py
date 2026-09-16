@@ -50,14 +50,10 @@ def _with_bands(
     analysis: AudioAnalysisData, low: float, low_mid: float, mid: float, high: float
 ) -> AudioAnalysisData:
     """Attach flat ``band_rms`` envelopes at the given amplitudes."""
-    analysis.extra_data = {
-        "band_rms": {
-            "low": np.full(1800, low, dtype=np.float32).tolist(),
-            "low_mid": np.full(1800, low_mid, dtype=np.float32).tolist(),
-            "mid": np.full(1800, mid, dtype=np.float32).tolist(),
-            "high": np.full(1800, high, dtype=np.float32).tolist(),
-        }
-    }
+    analysis.band_rms_low = np.full(1800, low, dtype=np.float32).tolist()
+    analysis.band_rms_low_mid = np.full(1800, low_mid, dtype=np.float32).tolist()
+    analysis.band_rms_mid = np.full(1800, mid, dtype=np.float32).tolist()
+    analysis.band_rms_high = np.full(1800, high, dtype=np.float32).tolist()
     return analysis
 
 

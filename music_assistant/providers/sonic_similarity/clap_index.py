@@ -15,7 +15,7 @@ Storage lives under mass.storage_path as two sibling files:
   sonic_similarity_clap.usearch        — HNSW graph + f16 vectors
   sonic_similarity_clap_keys.json      — label → [provider, item_id]
 
-The source of truth is SQLite (audio_analysis.extra_data["clap_embedding"]
+The source of truth is SQLite (audio_analysis.clap_embedding
 populated by sonic_analysis); this index is a derived cache rebuilt
 incrementally. Saves are debounced: at least SAVE_MIN_ADDS adds AND at
 least SAVE_MIN_INTERVAL_SECONDS since the last save, plus an

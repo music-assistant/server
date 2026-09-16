@@ -72,9 +72,7 @@ def _with_vocal_activity(
 ) -> AudioAnalysisData:
     """Attach a valid vocal_activity list, active only inside ``active_windows``."""
     assert analysis.duration is not None
-    analysis.extra_data = {
-        "vocal_activity": _vocal_probabilities(analysis.duration, active_windows)
-    }
+    analysis.vocal_activity = _vocal_probabilities(analysis.duration, active_windows)
     return analysis
 
 

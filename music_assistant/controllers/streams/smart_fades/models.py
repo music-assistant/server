@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from music_assistant.models.audio_analysis import AudioAnalysisData
 
 
-# Band edges (Hz) of the smart_fades ``extra_data["band_rms"]`` envelopes; None = up to Nyquist.
+# Band edges (Hz) of the smart_fades ``band_rms_*`` envelopes; None = up to Nyquist.
 # Stored rows keep whatever bands their analysis_version wrote — read historical rows by shape.
 BAND_RMS_BANDS: dict[str, tuple[float, float | None]] = {
     "low": (20.0, 120.0),
