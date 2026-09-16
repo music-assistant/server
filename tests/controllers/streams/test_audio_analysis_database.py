@@ -25,6 +25,7 @@ from music_assistant.controllers.streams.audio_analysis import (
     AA_DB_SCHEMA,
     AA_DB_SCHEMA_VERSION,
     AA_TABLE_ANALYSIS,
+    AA_TABLE_ANALYSIS_V1,
     AA_TABLE_FAILURES,
     AA_TABLE_SETTINGS,
     PROVIDER_LOUDNESS_DOMAIN,
@@ -297,7 +298,9 @@ async def test_newer_schema_version_refuses_to_start(
     with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError):
         await ctrl.setup_database()
     assert any(
-        record.levelno == logging.ERROR and "newer than this build supports" in record.getMessage()
+        record.levelno == logging.ERROR
+        and "newer than this build supports" in record.getMessage()
+        and "move audio_analysis.db aside" in record.getMessage()
         for record in caplog.records
     )
 
@@ -835,7 +838,7 @@ async def test_migration_resumes_after_partial_run(
     # exists and holds the first row
     await library_db.execute(f"ALTER TABLE {AA_TABLE_ANALYSIS} RENAME TO {V1_TABLE_NAME}")
     await library_db.commit()
-    await ctrl._attach_and_create(str(tmp_path / AA_DB_FILENAME))
+    await ctrl._prepare_analysis_table()
     header, payload = encode(AudioAnalysisData(bpm=100.0))
     await library_db.insert(
         AA_TABLE_ANALYSIS,
@@ -912,27 +915,41 @@ async def test_migration_failure_keeps_v1_table(
 
 
 @pytest.mark.asyncio
-async def test_migration_keeps_source_when_packing_raises(
+async def test_unencodable_rows_are_counted_and_dropped(
     library_db: DatabaseConnection,
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A decode/encode error is caught like a database one: source kept, version unchanged."""
+    """One row that cannot be packed is dropped like an unreadable one; the rest convert."""
     ctrl = _make_controller(library_db, tmp_path)
-    await _seed_v1_table(library_db, ctrl, [("t0", '{"bpm": 100.0}')])
+    await _seed_v1_table(
+        library_db,
+        ctrl,
+        [("t0", '{"bpm": 100.0}'), ("bad", '{"bpm": 105.0}'), ("t1", '{"bpm": 110.0}')],
+    )
 
-    def exploding_encode(_analysis: AudioAnalysisData) -> tuple[str, bytes]:
-        raise TypeError("boom")
+    def failing_encode(analysis: AudioAnalysisData) -> tuple[str, bytes]:
+        if analysis.bpm == 105.0:
+            raise TypeError("boom")
+        return encode(analysis)
 
-    monkeypatch.setattr(audio_analysis_mod, "encode", exploding_encode)
-    with caplog.at_level(logging.ERROR):
+    monkeypatch.setattr(audio_analysis_mod, "encode", failing_encode)
+    with caplog.at_level(logging.WARNING):
         await ctrl.setup_database()
 
-    assert V1_TABLE_NAME in await _table_names(library_db, AA_DB_SCHEMA)
-    assert await _stored_version(library_db) == 1
+    rows = await library_db.get_rows(AA_TABLE_ANALYSIS, limit=0)
+    assert {r["item_id"] for r in rows} == {"t0", "t1"}
+    assert V1_TABLE_NAME not in await _table_names(library_db, AA_DB_SCHEMA)
+    assert await _stored_version(library_db) == AA_DB_SCHEMA_VERSION
+    assert not ctrl._conversion_pending
     assert any(
-        record.levelno == logging.ERROR and "TypeError" in record.getMessage()
+        record.levelno == logging.WARNING and "unpackable" in record.getMessage()
+        for record in caplog.records
+    )
+    assert any(
+        record.levelno == logging.WARNING
+        and "1 unreadable audio analysis rows" in record.getMessage()
         for record in caplog.records
     )
 
@@ -971,6 +988,97 @@ async def test_incomplete_conversion_keeps_source_table(
 
 
 @pytest.mark.asyncio
+async def test_failed_conversion_gates_the_background_scan(
+    library_db: DatabaseConnection,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """While rows wait to be converted the analysis table is empty; no scan may run on it."""
+    ctrl = _make_controller(library_db, tmp_path)
+    await _seed_v1_table(library_db, ctrl, [("t0", '{"bpm": 100.0}')])
+    real_execute = library_db.execute
+
+    async def failing_execute(query: str, values: dict[str, Any] | None = None) -> Any:
+        if query.lstrip().upper().startswith("INSERT OR IGNORE INTO AA.AUDIO_ANALYSIS "):
+            raise sqlite3.OperationalError("disk I/O error")
+        return await real_execute(query, values)
+
+    monkeypatch.setattr(library_db, "execute", failing_execute)
+    await ctrl.setup_database()
+    assert ctrl._conversion_pending
+
+    find_candidates = AsyncMock(return_value=[])
+    monkeypatch.setattr(ctrl, "_find_candidates_missing_analysis", find_candidates)
+    with caplog.at_level(logging.WARNING):
+        await ctrl._run_background_scan()
+
+    find_candidates.assert_not_awaited()
+    assert any(
+        record.levelno == logging.WARNING and "conversion is pending" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_conversion_pending_is_false_after_a_successful_start(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """A fresh install and a completed conversion both leave the scan gate open."""
+    ctrl = _make_controller(library_db, tmp_path)
+    await ctrl.setup_database()
+    assert not ctrl._conversion_pending
+
+    await _seed_v1_table(library_db, ctrl, [("t0", '{"bpm": 100.0}')])
+    await ctrl.setup_database()
+    assert not ctrl._conversion_pending
+
+
+@pytest.mark.asyncio
+async def test_schema_preparation_failure_does_not_quarantine_the_file(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A locked or unhappy v1 rename propagates; the file is not moved aside."""
+    ctrl = _make_controller(library_db, tmp_path)
+    await _seed_v1_table(library_db, ctrl, [("t0", '{"bpm": 100.0}')])
+    real_execute = library_db.execute
+
+    async def failing_execute(query: str, values: dict[str, Any] | None = None) -> Any:
+        if query.lstrip().upper().startswith("ALTER TABLE"):
+            raise sqlite3.OperationalError("database table is locked")
+        return await real_execute(query, values)
+
+    monkeypatch.setattr(library_db, "execute", failing_execute)
+    with pytest.raises(sqlite3.OperationalError):
+        await ctrl.setup_database()
+
+    assert not (tmp_path / f"{AA_DB_FILENAME}.corrupt").exists()
+    # the rename never happened, so the JSON-shaped table is still the live one
+    columns = await library_db.get_rows_from_query(
+        f"PRAGMA {AA_DB_SCHEMA}.table_info({DB_TABLE_AUDIO_ANALYSIS})", limit=0
+    )
+    assert "analysis_data" in {c["name"] for c in columns}
+
+
+@pytest.mark.asyncio
+async def test_setup_database_on_file_without_settings_table(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """A pre-existing empty analysis file is treated as version 0 and set up from scratch."""
+    empty = DatabaseConnection(str(tmp_path / AA_DB_FILENAME))
+    await empty.setup()
+    await empty.close()
+    ctrl = _make_controller(library_db, tmp_path)
+
+    await ctrl.setup_database()
+
+    tables = await _table_names(library_db, AA_DB_SCHEMA)
+    assert {DB_TABLE_AUDIO_ANALYSIS, DB_TABLE_AUDIO_ANALYSIS_FAILURES, DB_TABLE_SETTINGS} <= tables
+    assert await _stored_version(library_db) == AA_DB_SCHEMA_VERSION
+    assert not (tmp_path / f"{AA_DB_FILENAME}.corrupt").exists()
+
+
+@pytest.mark.asyncio
 async def test_analysis_db_is_compacted_after_conversion(
     library_db: DatabaseConnection, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1005,13 +1113,13 @@ async def test_progress_is_logged_every_2000_rows(
         await ctrl.setup_database()
 
     progress = [
-        record
+        record.getMessage()
         for record in caplog.records
-        if record.levelno == logging.INFO and "Converted 2/5" in record.getMessage()
+        if record.levelno == logging.INFO
+        and record.getMessage().startswith("Converted ")
+        and "/5 audio analysis rows" in record.getMessage()
     ]
-    progress += [
-        record
-        for record in caplog.records
-        if record.levelno == logging.INFO and "Converted 4/5" in record.getMessage()
+    assert progress == [
+        f"Converted 2/5 audio analysis rows from {AA_TABLE_ANALYSIS_V1}",
+        f"Converted 4/5 audio analysis rows from {AA_TABLE_ANALYSIS_V1}",
     ]
-    assert len(progress) == 2
