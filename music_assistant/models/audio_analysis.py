@@ -15,9 +15,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 from datetime import datetime
-from typing import Any
+from typing import Any, Final
 
 from mashumaro import DataClassDictMixin
+
+# extra_data keys that earlier versions used for arrays that are typed fields now; __post_init__
+# lifts them so rows written before the fields existed decode into the same shape.
+_LEGACY_EXTRA_DATA_FIELDS: Final[dict[str, str]] = {
+    "clap_embedding": "clap_embedding",
+    "vocal_activity": "vocal_activity",
+}
+_LEGACY_BAND_RMS_FIELDS: Final[dict[str, str]] = {
+    "low": "band_rms_low",
+    "low_mid": "band_rms_low_mid",
+    "mid": "band_rms_mid",
+    "high": "band_rms_high",
+}
 
 
 class AudioAnalysisError(Exception):
@@ -83,6 +96,19 @@ class AudioAnalysisData(DataClassDictMixin):
     # Spectral centroid in Hz. Fixed 1800 bins. Convert to a numpy array for array math.
     spectral_centroid: list[float] | None = None
 
+    # Envelopes and embeddings (arrays produced by specific providers)
+
+    # Vocal presence per bin, 0.0-1.0. Fixed 1800 bins. Convert to a numpy array for array math.
+    vocal_activity: list[float] | None = None
+    # Per-band RMS envelopes, normalized 0.0-1.0 against the track peak. Fixed 1800 bins each.
+    # Band edges (Hz): low 20-120, low_mid 120-400, mid 400-4000, high 4000-Nyquist.
+    band_rms_low: list[float] | None = None
+    band_rms_low_mid: list[float] | None = None
+    band_rms_mid: list[float] | None = None
+    band_rms_high: list[float] | None = None
+    # CLAP audio embedding, 1024 floats, L2-normalized. Convert to a numpy array for array math.
+    clap_embedding: list[float] | None = None
+
     # High-Level Descriptors (all normalized 0.0-1.0)
 
     # Overall perceived energy: 0.0 = very low, 1.0 = very high.
@@ -114,6 +140,25 @@ class AudioAnalysisData(DataClassDictMixin):
 
     # Catch-all dict for provider-specific data
     extra_data: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        """Lift arrays that older rows stored under extra_data into their typed fields."""
+        if not self.extra_data:
+            if self.extra_data is not None:
+                self.extra_data = None
+            return
+        extra = dict(self.extra_data)
+        for key, field_name in _LEGACY_EXTRA_DATA_FIELDS.items():
+            value = extra.pop(key, None)
+            if isinstance(value, list) and getattr(self, field_name) is None:
+                setattr(self, field_name, value)
+        band_rms = extra.pop("band_rms", None)
+        if isinstance(band_rms, dict):
+            for band, field_name in _LEGACY_BAND_RMS_FIELDS.items():
+                value = band_rms.get(band)
+                if isinstance(value, list) and getattr(self, field_name) is None:
+                    setattr(self, field_name, value)
+        self.extra_data = extra or None
 
     def update(self, new_values: AudioAnalysisData) -> AudioAnalysisData:
         """Merge new analysis data (in-place). Latest-write-wins for non-None fields."""
