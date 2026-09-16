@@ -52,7 +52,7 @@ from music_assistant.providers.filesystem_local.setup_flow import (
     run_setup as filesystem_local_run_setup,
 )
 from music_assistant.providers.qobuz.setup_flow import run_setup as qobuz_run_setup
-from tests.common import SELF_SERVICE_ROLE, MockPlayer, MockProvider, set_music_source_access
+from tests.common import MockPlayer, MockProvider, set_music_source_access
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -965,16 +965,10 @@ async def _credentials_flow(session: SetupSession) -> None:
     await session.finish(values)
 
 
-async def test_a_member_owns_the_flow_it_starts(
-    flow_mass: MusicAssistant, self_service_role: str
-) -> None:
-    """
-    A setup flow a member starts is its own; only that member and an admin may use it.
-
-    :param self_service_role: Role id granted the self-service scope.
-    """
-    member = User(user_id="member", username="member", role=self_service_role)
-    other = User(user_id="other", username="other", role=self_service_role)
+async def test_a_member_owns_the_flow_it_starts(flow_mass: MusicAssistant) -> None:
+    """A setup flow a member starts is its own; only that member and an admin may use it."""
+    member = User(user_id="member", username="member", role=UserRole.USER)
+    other = User(user_id="other", username="other", role=UserRole.USER)
     admin = User(user_id="admin", username="admin", role=UserRole.ADMIN)
     _use_multi_account_manifest(flow_mass)
     set_current_user(member)
@@ -989,19 +983,13 @@ async def test_a_member_owns_the_flow_it_starts(
     assert access.allows(admin)
     assert not access.allows(other)
     assert not access.allows(User(user_id="guest", username="guest", role=UserRole.GUEST))
-    assert not access.allows(User(user_id="plain", username="plain", role=UserRole.USER))
+    assert not access.allows(User(user_id="service", username="service", role=UserRole.SERVICE))
 
 
-async def test_another_member_can_not_continue_a_members_flow(
-    flow_mass: MusicAssistant, self_service_role: str
-) -> None:
-    """
-    Only the member that started a setup flow (and an admin) may drive it.
-
-    :param self_service_role: Role id granted the self-service scope.
-    """
-    member = User(user_id="member", username="member", role=self_service_role)
-    other = User(user_id="other", username="other", role=self_service_role)
+async def test_another_member_can_not_continue_a_members_flow(flow_mass: MusicAssistant) -> None:
+    """Only the member that started a setup flow (and an admin) may drive it."""
+    member = User(user_id="member", username="member", role=UserRole.USER)
+    other = User(user_id="other", username="other", role=UserRole.USER)
     admin = User(user_id="admin", username="admin", role=UserRole.ADMIN)
     _use_multi_account_manifest(flow_mass)
     set_current_user(member)
@@ -1040,14 +1028,8 @@ async def test_another_member_can_not_continue_a_members_flow(
     )
 
 
-async def test_a_server_started_flow_has_no_owner(
-    flow_mass: MusicAssistant, self_service_role: str
-) -> None:
-    """
-    A flow the server itself starts belongs to nobody, so every member may pick it up.
-
-    :param self_service_role: Role id granted the self-service scope.
-    """
+async def test_a_server_started_flow_has_no_owner(flow_mass: MusicAssistant) -> None:
+    """A flow the server itself starts belongs to nobody, so every member may pick it up."""
     set_current_user(None)
 
     with _use_flow(flow_mass, _credentials_flow):
@@ -1055,7 +1037,7 @@ async def test_a_server_started_flow_has_no_owner(
         access = flow_mass.config.get_setup_flow_access(step.flow_id)
         assert access is not None
         assert access.owner_user_id is None
-        set_current_user(User(user_id="member", username="member", role=self_service_role))
+        set_current_user(User(user_id="member", username="member", role=UserRole.USER))
         assert (await flow_mass.config.get_setup_flow(step.flow_id)).flow_id == step.flow_id
 
 
@@ -1065,22 +1047,22 @@ async def test_a_server_started_flow_has_no_owner(
         {},
         {"builtin": True, "multi_instance": True},
         {"type": ProviderType.PLAYER, "multi_instance": True},
+        {"multi_instance": True, "self_service": False},
     ],
-    ids=["single_account", "builtin", "player"],
+    ids=["single_account", "builtin", "player", "no_self_service"],
 )
 async def test_a_member_may_not_add_a_provider_it_can_not_own(
-    flow_mass: MusicAssistant, self_service_role: str, manifest_changes: dict[str, Any]
+    flow_mass: MusicAssistant, manifest_changes: dict[str, Any]
 ) -> None:
     """
-    A member only adds a music service that allows more than one account.
+    A member only adds a music service that allows more than one account and self-service.
 
-    :param self_service_role: Role id granted the self-service scope.
     :param manifest_changes: The manifest attributes that put the provider off limits.
     """
     flow_mass._provider_manifests[GATE_DOMAIN] = replace(
         flow_mass._provider_manifests[FAKE_DOMAIN], domain=GATE_DOMAIN, **manifest_changes
     )
-    set_current_user(User(user_id="member", username="member", role=self_service_role))
+    set_current_user(User(user_id="member", username="member", role=UserRole.USER))
 
     try:
         with (
@@ -1096,10 +1078,9 @@ async def test_a_member_may_not_add_a_provider_it_can_not_own(
     assert flow_mass.config.get(f"{CONF_PROVIDERS}/{GATE_DOMAIN}") is None
 
 
-@pytest.mark.usefixtures("self_service_role")
 @pytest.mark.parametrize(
     ("role", "multi_instance"),
-    [(SELF_SERVICE_ROLE, True), (UserRole.ADMIN, False)],
+    [(UserRole.USER, True), (UserRole.ADMIN, False)],
     ids=["member_adds_a_multi_account_service", "admin_adds_a_single_account_service"],
 )
 async def test_the_provider_setup_flow_starts_for_a_permitted_caller(
@@ -1122,15 +1103,11 @@ async def test_the_provider_setup_flow_starts_for_a_permitted_caller(
 
 
 async def test_members_add_their_own_account_of_a_service_side_by_side(
-    flow_mass: MusicAssistant, self_service_role: str
+    flow_mass: MusicAssistant,
 ) -> None:
-    """
-    A member's add flow for a multi-account service leaves another member's flow running.
-
-    :param self_service_role: Role id granted the self-service scope.
-    """
-    member = User(user_id="member", username="member", role=self_service_role)
-    other = User(user_id="other", username="other", role=self_service_role)
+    """A member's add flow for a multi-account service leaves another member's flow running."""
+    member = User(user_id="member", username="member", role=UserRole.USER)
+    other = User(user_id="other", username="other", role=UserRole.USER)
     _use_multi_account_manifest(flow_mass)
 
     with _use_flow(flow_mass, _credentials_flow):
@@ -1146,16 +1123,10 @@ async def test_members_add_their_own_account_of_a_service_side_by_side(
     assert set(flow_mass.config._setup_flows) == {restarted_step.flow_id, other_step.flow_id}
 
 
-async def test_a_member_may_only_reconfigure_the_source_it_owns(
-    flow_mass: MusicAssistant, self_service_role: str
-) -> None:
-    """
-    Reconfiguring a music source (reauth included) is up to its owner and an admin.
-
-    :param self_service_role: Role id granted the self-service scope.
-    """
-    member = User(user_id="member", username="member", role=self_service_role)
-    other = User(user_id="other", username="other", role=self_service_role)
+async def test_a_member_may_only_reconfigure_the_source_it_owns(flow_mass: MusicAssistant) -> None:
+    """Reconfiguring a music source (reauth included) is up to its owner and an admin."""
+    member = User(user_id="member", username="member", role=UserRole.USER)
+    other = User(user_id="other", username="other", role=UserRole.USER)
     admin = User(user_id="admin", username="admin", role=UserRole.ADMIN)
     own_instance = f"{FAKE_DOMAIN}--own"
     other_instance = f"{FAKE_DOMAIN}--other"
@@ -1188,6 +1159,36 @@ async def test_a_member_may_only_reconfigure_the_source_it_owns(
         for instance_id in (own_instance, other_instance, household_instance):
             admin_step = await flow_mass.config.reconfigure_provider(instance_id)
             assert admin_step.type == FlowStepType.FORM
+
+
+async def test_only_an_admin_sets_up_or_reconfigures_a_provider_without_self_service(
+    flow_mass: MusicAssistant,
+) -> None:
+    """Only an admin picks what such a provider reads, also for a source a member owns."""
+    member = User(user_id="member", username="member", role=UserRole.USER)
+    admin = User(user_id="admin", username="admin", role=UserRole.ADMIN)
+    manifest = flow_mass._provider_manifests[FAKE_DOMAIN]
+    flow_mass._provider_manifests[FAKE_DOMAIN] = replace(
+        manifest, multi_instance=True, self_service=False
+    )
+    own_instance = f"{FAKE_DOMAIN}--own"
+    set_music_source_access(
+        flow_mass,
+        {own_instance: ProviderAccess(owner=member.user_id, sharing=ProviderSharing.PRIVATE)},
+    )
+
+    with _use_flow(flow_mass, _credentials_flow):
+        set_current_user(member)
+        with pytest.raises(InsufficientPermissions, match="is required to add"):
+            await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        with pytest.raises(InsufficientPermissions, match="is required to add"):
+            await flow_mass.config.reconfigure_provider(own_instance)
+        assert not flow_mass.config._setup_flows
+
+        set_current_user(admin)
+        setup_step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        reconfigure_step = await flow_mass.config.reconfigure_provider(own_instance)
+        assert setup_step.type == reconfigure_step.type == FlowStepType.FORM
 
 
 async def test_one_flow_per_target_replaces(

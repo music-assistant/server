@@ -1114,7 +1114,7 @@ def generate_commands_json(command_handlers: dict[str, APICommandHandler]) -> li
         ],
         "return_type": str,  # Return type
         "authenticated": bool,  # Whether authentication is required
-        "required_scope": str | None,  # Required scope (if any)
+        "required_scope": str | None,  # Required scope, any-of scopes joined with " or "
     }
     """
     commands_data = []
@@ -1183,7 +1183,7 @@ def generate_commands_json(command_handlers: dict[str, APICommandHandler]) -> li
                 "parameters": parameters,
                 "return_type": return_type_str,
                 "authenticated": handler.authenticated,
-                "required_scope": str(handler.required_scope) if handler.required_scope else None,
+                "required_scope": handler.required_scope_label,
             }
         )
 

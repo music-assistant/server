@@ -3509,5 +3509,10 @@
   "provider.overcast.setup_flow.scan_qr.progress_text": "Wir warten auf deine Genehmigung in der Overcast-App...",
   "provider.overcast.setup_flow.scan_qr.title": "Scannen zum Verbinden",
   "provider.overcast.setup_flow.user.description": "Wähle aus, wie du dich in dein Overcast-Konto einloggen möchtest.",
-  "provider.overcast.setup_flow.user.title": "Mit Overcast verbinden"
+  "provider.overcast.setup_flow.user.title": "Mit Overcast verbinden",
+  "common.errors.media_not_available_for_user": "Dies ist bei keiner deiner Musikquellen verfügbar.",
+  "common.errors.guest_owns_music_sources": "Ein Gast kann keine Musikquelle besitzen. Weise diesem Benutzer zuerst die Musikquellen neu zu oder entferne sie.",
+  "common.errors.playlist_follows_source": "Diese Wiedergabeliste richtet sich nach der Freigabe ihrer Musikquelle.",
+  "common.errors.playlist_not_owned": "Nur der Eigentümer dieser Wiedergabeliste darf Änderungen daran vornehmen.",
+  "provider.amplipi.errors.already_configured": "Dieser AmpliPi-Controller ist bereits im Music Assistant eingerichtet. Jeder Controller kann nur einmal hinzugefügt werden – gib die Adresse eines anderen Controllers ein oder konfiguriere stattdessen den vorhandenen neu."
 }

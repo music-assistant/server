@@ -524,7 +524,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         if config is None:
             return False
         try:
-            device = await pyatv.connect(config, self.mass.loop)
+            device = await self._pyatv_connect(config)
         except pyatv_exceptions.AuthenticationError, pyatv_exceptions.InvalidCredentialsError:
             self.logger.warning(
                 "Stored Companion credentials are no longer valid for %s",
@@ -573,7 +573,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
             settings = await storage.get_settings(config)
             settings.protocols.airplay.mrp_tunnel = MrpTunnel.Force
         try:
-            device = await pyatv.connect(config, self.mass.loop, storage=storage)
+            device = await self._pyatv_connect(config, storage)
         except (
             pyatv_exceptions.AuthenticationError,
             pyatv_exceptions.InvalidCredentialsError,
@@ -611,6 +611,24 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self.logger.debug("Connected MRP playback monitoring for %s", self.display_name)
         self.update_state()
         return False
+
+    async def _pyatv_connect(
+        self, config: AppleTVConfig, storage: MemoryStorage | None = None
+    ) -> AppleTV:
+        """
+        Connect to a device with pyatv, without leaking resources on cancellation.
+
+        :param config: pyatv configuration of the device to connect to.
+        :param storage: Optional pyatv settings storage for this connection.
+        """
+        task = asyncio.ensure_future(
+            pyatv.connect(config, self.mass.loop, session=self.mass.http_session, storage=storage)
+        )
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            task.add_done_callback(_close_abandoned_device)
+            raise
 
     async def _disconnect_control_services(self) -> None:
         """Close all active pyatv connections."""
@@ -952,7 +970,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         pairing: PairingHandler | None = None
         started = False
         try:
-            pairing = await pyatv.pair(config, protocol, self.mass.loop, name="Music Assistant")
+            pairing = await self._pyatv_pair(config, protocol)
             await pairing.begin()
             started = True
         except Exception as err:
@@ -966,6 +984,28 @@ class AirPlayControlPlayer(AirPlayPlayer):
                 await pairing.close()
         assert pairing is not None  # reached only when started, i.e. a live session
         return pairing
+
+    async def _pyatv_pair(self, config: AppleTVConfig, protocol: Protocol) -> PairingHandler:
+        """
+        Start a pyatv pairing session, without leaking resources on cancellation.
+
+        :param config: pyatv configuration of the device to pair.
+        :param protocol: The pyatv protocol to pair.
+        """
+        task = asyncio.ensure_future(
+            pyatv.pair(
+                config,
+                protocol,
+                self.mass.loop,
+                session=self.mass.http_session,
+                name="Music Assistant",
+            )
+        )
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            self.mass.create_task(_close_abandoned_pairing(task))
+            raise
 
     async def _finish_pyatv_pairing(self, pairing: PairingHandler, pin: str) -> str:
         """
@@ -1322,3 +1362,19 @@ class _AirPlayPushListener(PushListener):
     def playstatus_error(self, updater: object, exception: Exception) -> None:
         """Handle an MRP push update failure."""
         self._player._handle_push_error(self._device, exception)
+
+
+def _close_abandoned_device(task: asyncio.Task[AppleTV]) -> None:
+    """Close a device that finished connecting after its caller was cancelled."""
+    if task.cancelled() or task.exception() is not None:
+        return
+    task.result().close()
+
+
+async def _close_abandoned_pairing(task: asyncio.Task[PairingHandler]) -> None:
+    """Close a pairing session that started after its caller was cancelled."""
+    try:
+        pairing = await task
+    except Exception:
+        return
+    await pairing.close()

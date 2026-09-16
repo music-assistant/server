@@ -8,5 +8,6 @@
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/local-files/",
   "multi_instance": true,
+  "self_service": false,
   "icon": "harddisk"
 }

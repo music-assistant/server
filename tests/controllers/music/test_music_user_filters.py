@@ -248,10 +248,30 @@ def _controller_with_sources(
     access: dict[str, ProviderAccess | None], providers: list[Mock] | None = None
 ) -> MusicController:
     """Create a bare controller whose server has the given music sources."""
+    loaded = providers or []
     controller = MusicController.__new__(MusicController)
-    controller.mass = Mock(providers=providers or [])
+    controller.mass = Mock(
+        providers=loaded,
+        get_provider=Mock(
+            side_effect=lambda instance_id, **_kwargs: next(
+                (prov for prov in loaded if prov.instance_id == instance_id), None
+            )
+        ),
+        get_provider_instances=Mock(
+            side_effect=lambda domain, **_kwargs: [prov for prov in loaded if prov.domain == domain]
+        ),
+    )
     set_music_source_access(controller.mass, access)
     return controller
+
+
+def _music_source_prov(instance_id: str, available: bool = True, is_streaming: bool = True) -> Mock:
+    """Create a loaded instance of the music service named in the given instance id."""
+    prov = _make_prov(instance_id, ProviderType.MUSIC)
+    prov.domain = instance_id.split("--", maxsplit=1)[0]
+    prov.available = available
+    prov.is_streaming_provider = is_streaming
+    return prov
 
 
 def _library_track(*provider_instances: str) -> Track:
@@ -317,6 +337,91 @@ def test_check_item_playable_rejects_a_provider_item_on_a_hidden_source() -> Non
         controller.check_item_playable_for_user(item, _user(USER_A))
 
 
+def test_check_item_playable_accepts_a_shared_account_of_an_own_service() -> None:
+    """An item browsed on another member's account plays through the user's own account."""
+    controller = _controller_with_sources(
+        {
+            "spotify--mine": _private(USER_A),
+            "spotify--theirs": ProviderAccess(owner=USER_B, sharing=ProviderSharing.EVERYONE),
+        },
+        providers=[_music_source_prov("spotify--mine"), _music_source_prov("spotify--theirs")],
+    )
+    item = Track(item_id="42", provider="spotify--theirs", name="Track", provider_mappings=set())
+
+    controller.check_item_playable_for_user(item, _user(USER_A))
+
+
+def test_check_item_playable_accepts_a_library_item_mapped_to_a_shared_account_of_an_own_service() -> (
+    None
+):
+    """A library item mapped only to another member's account plays through the user's own."""
+    controller = _controller_with_sources(
+        {
+            "spotify--mine": _private(USER_A),
+            "spotify--theirs": ProviderAccess(owner=USER_B, sharing=ProviderSharing.EVERYONE),
+        },
+        providers=[_music_source_prov("spotify--mine"), _music_source_prov("spotify--theirs")],
+    )
+
+    controller.check_item_playable_for_user(_library_track("spotify--theirs"), _user(USER_A))
+
+
+def test_check_item_playable_rejects_a_private_account_of_an_own_service() -> None:
+    """Another member's private account stays out of reach, own account of that service or not."""
+    controller = _controller_with_sources(
+        {"spotify--mine": _private(USER_A), "spotify--theirs": _private(USER_B)},
+        providers=[_music_source_prov("spotify--mine"), _music_source_prov("spotify--theirs")],
+    )
+    item = Track(item_id="42", provider="spotify--theirs", name="Track", provider_mappings=set())
+
+    with pytest.raises(MediaNotFoundError):
+        controller.check_item_playable_for_user(item, _user(USER_A))
+
+
+def test_check_item_playable_rejects_a_shared_account_without_a_playable_own_account() -> None:
+    """A shared account is out of reach while the user's own account of it can not play."""
+    controller = _controller_with_sources(
+        {
+            "spotify--mine": _private(USER_A),
+            "spotify--theirs": ProviderAccess(owner=USER_B, sharing=ProviderSharing.EVERYONE),
+        },
+        providers=[_music_source_prov("spotify--theirs")],
+    )
+    item = Track(item_id="42", provider="spotify--theirs", name="Track", provider_mappings=set())
+
+    with pytest.raises(MediaNotFoundError):
+        controller.check_item_playable_for_user(item, _user(USER_A))
+
+
+def test_check_item_playable_rejects_an_account_of_a_service_the_user_has_none_of() -> None:
+    """Without an account of the service, another member's private one stays out of reach."""
+    controller = _controller_with_sources(
+        {"deezer--mine": _private(USER_A), "spotify--theirs": _private(USER_B)},
+        providers=[_music_source_prov("deezer--mine"), _music_source_prov("spotify--theirs")],
+    )
+    item = Track(item_id="42", provider="spotify--theirs", name="Track", provider_mappings=set())
+
+    with pytest.raises(MediaNotFoundError):
+        controller.check_item_playable_for_user(item, _user(USER_A))
+
+
+def test_check_item_playable_rejects_another_library_of_a_local_source() -> None:
+    """Instances of a local source are libraries of their own, so neither stands in."""
+    controller = _controller_with_sources(
+        {"filesystem_local--mine": _private(USER_A), "filesystem_local--theirs": _private(USER_B)},
+        providers=[
+            _music_source_prov("filesystem_local--mine", is_streaming=False),
+            _music_source_prov("filesystem_local--theirs", is_streaming=False),
+        ],
+    )
+    item = Track(
+        item_id="42", provider="filesystem_local--theirs", name="Track", provider_mappings=set()
+    )
+
+    with pytest.raises(MediaNotFoundError):
+        controller.check_item_playable_for_user(item, _user(USER_A))
+
+
 def test_check_item_playable_keeps_plugin_items_reachable() -> None:
     """Plugin providers carry no access record, so their items stay playable."""
     plugin = _make_prov("smart_playlist", ProviderType.PLUGIN)
@@ -342,13 +447,43 @@ def test_check_item_playable_for_anonymous_playback() -> None:
         controller.check_item_playable_for_user(_library_track(PROV_B), None)
 
 
-def _streaming_prov(instance_id: str, available: bool) -> Mock:
-    """Create a loaded instance of one and the same streaming music provider."""
-    prov = _make_prov(instance_id, ProviderType.MUSIC)
-    prov.domain = "tidal"
-    prov.available = available
-    prov.is_streaming_provider = True
-    return prov
+async def test_a_play_report_moves_to_the_own_account_of_an_own_service() -> None:
+    """A play served through the user's own account of a service is reported there too."""
+    own_instance = "tidal--mine"
+    other_instance = "tidal--theirs"
+    own = _music_source_prov(own_instance, available=True)
+    housemate = _music_source_prov(other_instance, available=True)
+    controller = _controller_with_sources(
+        {
+            own_instance: _private(USER_A),
+            other_instance: ProviderAccess(owner=USER_B, sharing=ProviderSharing.EVERYONE),
+        },
+        providers=[own, housemate],
+    )
+    mass: Any = controller.mass
+    mass.get_provider = Mock(
+        side_effect=lambda instance_id, **_kwargs: {
+            own_instance: own,
+            other_instance: housemate,
+        }.get(instance_id)
+    )
+    mass.get_provider_instances = Mock(return_value=[own, housemate])
+    mass.webserver.auth.get_user = AsyncMock(return_value=_user(USER_A))
+    track = Track(
+        item_id="1",
+        provider="library",
+        name="Track",
+        provider_mappings={
+            ProviderMapping(item_id="t1", provider_domain="tidal", provider_instance=other_instance)
+        },
+    )
+    controller._resolve_playlog_item = AsyncMock(return_value=track)  # type: ignore[method-assign]
+
+    await controller.mark_item_played(track, is_playing=True, userid=USER_A)
+
+    own.on_played.assert_called_once()
+    assert own.on_played.call_args.kwargs["prov_item_id"] == "t1"
+    housemate.on_played.assert_not_called()
 
 
 async def test_a_play_report_never_reaches_another_members_account() -> None:
@@ -360,8 +495,8 @@ async def test_a_play_report_never_reaches_another_members_account() -> None:
     """
     own_instance = "tidal--mine"
     other_instance = "tidal--theirs"
-    own = _streaming_prov(own_instance, available=False)
-    housemate = _streaming_prov(other_instance, available=True)
+    own = _music_source_prov(own_instance, available=False)
+    housemate = _music_source_prov(other_instance, available=True)
     controller = _controller_with_sources(
         {own_instance: _private(USER_A), other_instance: _private(USER_B)},
         providers=[own, housemate],

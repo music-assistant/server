@@ -213,7 +213,7 @@ class MyDemoMusicprovider(MusicProvider):
         # OPTIONAL - the default (derived from the LIBRARY_* features) is usually correct.
         return super().supported_media_types
 
-    async def search(  # type: ignore[empty-body]
+    async def search(
         self,
         search_query: str,
         media_types: list[MediaType],
@@ -232,6 +232,7 @@ class MyDemoMusicprovider(MusicProvider):
         # See the model for SearchResults for more information on what to return, but
         # in general you should return a list of MediaItems for each media type.
         # For radio, a simple search of the available channel names is acceptable
+        return SearchResults()
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""

@@ -626,6 +626,38 @@ class PlaylistController(MediaControllerBase[Playlist]):
             priority=True,
         )
 
+    async def update_playlist(
+        self, item_id: str | int, update: Playlist, overwrite: bool = False
+    ) -> Playlist:
+        """
+        Update a library playlist.
+
+        A caller with the library.manage scope may change any playlist. Any other user may only
+        change the name and image of an editable Music Assistant playlist that it owns or that
+        has no owner.
+
+        :param item_id: Library id of the playlist.
+        :param update: The playlist holding the new details.
+        :param overwrite: Replace the stored details with the given ones; otherwise they are
+            merged in and the name is kept.
+        :raises MediaNotFoundError: The playlist does not exist, or the caller may not see it.
+        :raises InsufficientPermissions: The caller may not change this playlist.
+        """
+        user = get_current_user()
+        if user is not None and not has_scope(user, Scope.LIBRARY_MANAGE):
+            playlist = await self.get_library_item(item_id)
+            self._check_may_manage(playlist)
+            if not self._is_builtin_playlist(playlist) or not playlist.is_editable:
+                raise InsufficientPermissions(
+                    f"The {Scope.LIBRARY_MANAGE.value} scope is required to change this playlist"
+                )
+            # everything but the name and image stays as stored
+            playlist.name = update.name
+            playlist.sort_name = update.sort_name
+            playlist.metadata.images = update.metadata.images
+            update = playlist
+        return await self.update_item_in_library(item_id, update, overwrite)
+
     async def set_access(
         self,
         item_id: str | int,
@@ -643,7 +675,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         :param item_id: Library id of the playlist.
         :param sharing: Who, besides its owner, may see and play the playlist.
-        :param owner: User id of the member owning the playlist, None for a household playlist.
+        :param owner: User id of the member owning the playlist, None for a playlist of the whole home.
         :param shared_users: The user ids the playlist is shared with, SELECTED sharing only.
         :param collaborative: Whether everyone the playlist is shared with may also edit it.
         """
@@ -694,7 +726,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """
         Release the playlists of a user that no longer exists.
 
-        The playlists it owned become household playlists, and it is dropped from the share
+        The playlists it owned become playlists of the whole home, and it is dropped from the share
         list of every other playlist.
 
         :param user_id: Id of the removed user.
@@ -735,10 +767,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         :param item: The library playlist about to be removed.
         """
-        if self._may_manage(item):
-            return
-        self._check_visible(item)
-        raise self._not_owned_error(item)
+        self._check_may_manage(item)
 
     def visible_to_caller(self, playlist: Playlist) -> bool:
         """
@@ -750,6 +779,15 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if playlist.access is None or (user := get_current_user()) is None:
             return True
         return access_allows(playlist.access, user)
+
+    def _register_update_command(self) -> None:
+        """Register the API command that updates a library playlist."""
+        # update_playlist refuses a caller that may not manage the playlist
+        self.mass.register_api_command(
+            f"music/{self.api_base}/update",
+            self.update_playlist,
+            required_scope=Scope.LIBRARY_WRITE,
+        )
 
     async def _handle_migrate_playlist(
         self,
@@ -1883,8 +1921,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     def _check_may_manage(self, playlist: Playlist) -> None:
         """Raise when the calling user may not manage the given playlist."""
-        if not self._may_manage(playlist):
-            raise self._not_owned_error(playlist)
+        if self._may_manage(playlist):
+            return
+        # a playlist the caller may not see is not even confirmed to exist
+        self._check_visible(playlist)
+        raise self._not_owned_error(playlist)
 
     def _may_manage(self, playlist: Playlist) -> bool:
         """Return whether the calling user owns the playlist or manages the whole library."""
@@ -1917,7 +1958,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         return user
 
     def _new_playlist_access(self, user: User | None) -> PlaylistAccess | None:
-        """Return the access record for a playlist the given user creates, None for household."""
+        """Return the access record for a playlist the given user creates, None for the whole home."""
         if user is None or user.username == HOMEASSISTANT_SYSTEM_USER:
             return None
         return PlaylistAccess(owner=user.user_id)
@@ -1935,13 +1976,18 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """
         user = await self.mass.webserver.auth.get_user(user_id)
         if user is None and not on_record:
-            raise InvalidDataError(f"Unknown or disabled user: {user_id}")
+            raise InvalidDataError(
+                f"Unknown or disabled user: {user_id}",
+                translation_key="unknown_or_disabled_user",
+                translation_args=[user_id],
+            )
         if not owner or user is None:
             return
-        if user.role == UserRole.GUEST:
-            raise InvalidDataError("A guest can not own a playlist")
-        if user.username == HOMEASSISTANT_SYSTEM_USER:
-            raise InvalidDataError("The Home Assistant system user can not own a playlist")
+        if user.role == UserRole.GUEST or user.username == HOMEASSISTANT_SYSTEM_USER:
+            raise InvalidDataError(
+                "Only a member can own a playlist",
+                translation_key="playlist_owner_must_be_member",
+            )
 
     async def _store_access(self, item_id: str | int, access: PlaylistAccess | None) -> Playlist:
         """Store the access record of a library playlist and announce the change."""

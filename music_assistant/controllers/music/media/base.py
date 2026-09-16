@@ -149,7 +149,8 @@ SORT_KEYS = {
     "track_artist_name": "artists.search_name ASC, search_name ASC",
     "track_artist_name_desc": "artists.search_name DESC, search_name ASC",
     "random": "RANDOM()",
-    "random_play_count": "RANDOM(), play_count ASC",
+    # least played first, shuffled within equal play counts
+    "random_play_count": "COALESCE(play_count, 0), RANDOM()",
 }
 
 
@@ -230,11 +231,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             required_scope=Scope.LIBRARY_READ,
             alias=True,
         )
-        self.mass.register_api_command(
-            f"music/{api_base}/update",
-            self.update_item_in_library,
-            required_scope=Scope.LIBRARY_MANAGE,
-        )
+        self._register_update_command()
         self.mass.register_api_command(
             f"music/{api_base}/remove",
             self.remove_item_from_library,
@@ -1032,6 +1029,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         elif provider_item_id:
             subquery_parts.append("provider_mappings.provider_item_id = :item_id")
             query_params["item_id"] = provider_item_id
+        # Library item IDs are only unique within each media type.
+        subquery_parts.append("provider_mappings.media_type = :media_type")
+        query_params["media_type"] = self.media_type.value
         subquery = f"SELECT item_id FROM provider_mappings WHERE {' AND '.join(subquery_parts)}"
         query = f"WHERE {self.db_table}.item_id IN ({subquery})"
         return await self.get_library_items_by_query(
@@ -1629,6 +1629,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 limit=limit,
                 in_library_only=in_library_only,
                 reachable_via=reachable_via,
+                order_by=order_by,
             )
         else:
             # apply filters
@@ -1696,6 +1697,19 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             cast("ItemCls", self.item_cls.from_dict(self._parse_db_row(db_row)))
             for db_row in db_rows
         ]
+
+    def _register_update_command(self) -> None:
+        """
+        Register the API command that updates a library item.
+
+        Only a library manager may use it; a controller that checks the caller itself may
+        override this to register its own handler.
+        """
+        self.mass.register_api_command(
+            f"music/{self.api_base}/update",
+            self.update_item_in_library,
+            required_scope=Scope.LIBRARY_MANAGE,
+        )
 
     @final
     async def _get_library_item_by_match(self, item: ItemCls | ItemMapping) -> int | None:
@@ -1931,12 +1945,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         search: str | None,
         genre_ids: list[int] | None,
         provider_filter: list[str] | None,
+        order_by: str | None,
         played_only: bool = False,
         limit: int = 500,
         in_library_only: bool = False,
         reachable_via: list[str] | None = None,
     ) -> None:
-        """Build a fast random subquery with all filters applied."""
+        """Build a fast random subquery honoring the random sort key with all filters applied."""
         sub_query_parts = query_parts.copy()
         sub_join_parts = join_parts.copy()
 
@@ -1962,7 +1977,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if sub_query_parts:
             sub_query += " WHERE " + " AND ".join(self._clean_query_parts(sub_query_parts))
 
-        sub_query += f" ORDER BY RANDOM() LIMIT {limit}"
+        sub_query += f" ORDER BY {SORT_KEYS.get(order_by or 'random', 'RANDOM()')} LIMIT {limit}"
 
         # The query now only consists of the random subquery, which applies all filters
         # within itself

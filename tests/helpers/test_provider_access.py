@@ -14,6 +14,7 @@ from music_assistant.helpers.provider_access import (
     access_allows,
     derived_provider_filter,
     own_music_sources,
+    playback_instance_for,
     playback_sources,
     source_access,
     source_owner,
@@ -31,11 +32,32 @@ def _user(user_id: str, role: str = UserRole.USER) -> User:
     return User(user_id=user_id, username=user_id, role=role)
 
 
-def _mass() -> MagicMock:
-    """Return a mocked server without any music source configured."""
+def _mass(providers: list[MagicMock] | None = None) -> MagicMock:
+    """
+    Return a mocked server without any music source configured.
+
+    :param providers: The loaded provider instances; a service without one of them is
+        never narrowed for playback.
+    """
     mass = MagicMock()
+    loaded = providers or []
+    mass.get_provider.side_effect = lambda instance_id, **_kwargs: next(
+        (prov for prov in loaded if prov.instance_id == instance_id), None
+    )
+    mass.get_provider_instances.side_effect = lambda domain, **_kwargs: [
+        prov for prov in loaded if prov.domain == domain
+    ]
     set_music_source_access(mass, {})
     return mass
+
+
+def _provider(instance_id: str, is_streaming: bool) -> MagicMock:
+    """Return a loaded music provider instance of the service in the given instance id."""
+    provider = MagicMock()
+    provider.instance_id = instance_id
+    provider.domain = instance_id.split("--", maxsplit=1)[0]
+    provider.is_streaming_provider = is_streaming
+    return provider
 
 
 @pytest.mark.parametrize(
@@ -148,6 +170,187 @@ def test_visible_playback_sources_for_anonymous_playback() -> None:
     assert visible_playback_sources(mass, None) == ["builtin", "spotify--aaaa"]
 
 
+def test_visible_playback_sources_drops_another_account_of_an_own_service() -> None:
+    """Owning a source of a service keeps playback off the other accounts of it."""
+    mass = _mass([_provider("spotify--mine", is_streaming=True)])
+    set_music_source_access(
+        mass,
+        {
+            "builtin": None,
+            "spotify--mine": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE),
+            "spotify--theirs": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.EVERYONE),
+            "tidal--theirs": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.EVERYONE),
+            "qobuz--theirs": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.PRIVATE),
+        },
+    )
+
+    # browsing still reaches the shared account of the service the user has
+    assert visible_music_sources(mass, _user(OWNER)) == [
+        "builtin",
+        "spotify--mine",
+        "spotify--theirs",
+        "tidal--theirs",
+    ]
+    assert visible_playback_sources(mass, _user(OWNER)) == [
+        "builtin",
+        "spotify--mine",
+        "tidal--theirs",
+    ]
+
+
+def test_visible_playback_sources_narrows_a_streaming_service_only() -> None:
+    """Accounts of a streaming service share one catalog, local sources are separate libraries."""
+    mass = _mass(
+        [
+            _provider("filesystem_local--mine", is_streaming=False),
+            _provider("filesystem_local--household", is_streaming=False),
+            _provider("spotify--mine", is_streaming=True),
+            _provider("spotify--theirs", is_streaming=True),
+        ]
+    )
+    set_music_source_access(
+        mass,
+        {
+            "filesystem_local--mine": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE),
+            "filesystem_local--household": None,
+            "spotify--mine": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE),
+            "spotify--theirs": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.EVERYONE),
+        },
+    )
+
+    assert visible_playback_sources(mass, _user(OWNER)) == [
+        "filesystem_local--mine",
+        "filesystem_local--household",
+        "spotify--mine",
+    ]
+
+
+def test_visible_playback_sources_leaves_a_service_without_an_instance_alone() -> None:
+    """With no instance of a service loaded, nothing of it can play, so nothing is narrowed."""
+    mass = _mass()
+    set_music_source_access(
+        mass,
+        {
+            "spotify--mine": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE),
+            "spotify--theirs": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.EVERYONE),
+        },
+    )
+
+    assert visible_playback_sources(mass, _user(OWNER)) is None
+
+
+def test_visible_playback_sources_ignores_a_disabled_own_service() -> None:
+    """A disabled source of a service leaves the shared account of it playable."""
+    mass = _mass([_provider("spotify--theirs", is_streaming=True)])
+    set_music_source_access(
+        mass,
+        {
+            "spotify--mine": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE),
+            "spotify--theirs": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.EVERYONE),
+        },
+    )
+    mass.config.get(CONF_PROVIDERS, {})["spotify--mine"]["enabled"] = False
+
+    assert visible_playback_sources(mass, _user(OWNER)) is None
+
+
+def test_visible_playback_sources_narrows_a_user_that_sees_everything() -> None:
+    """A user without any hidden source still gets an explicit set once one is dropped."""
+    mass = _mass([_provider("spotify--mine", is_streaming=True)])
+    set_music_source_access(
+        mass,
+        {
+            "builtin": None,
+            "spotify--mine": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE),
+            "spotify--theirs": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.EVERYONE),
+        },
+    )
+
+    assert visible_music_sources(mass, _user(OWNER)) is None
+    assert visible_playback_sources(mass, _user(OWNER)) == ["builtin", "spotify--mine"]
+
+
+def test_visible_playback_sources_leaves_anonymous_playback_alone() -> None:
+    """Anonymous playback owns nothing, so every open account of a service stays usable."""
+    mass = _mass()
+    set_music_source_access(
+        mass,
+        {
+            "spotify--mine": ProviderAccess(owner=OWNER, sharing=ProviderSharing.EVERYONE),
+            "spotify--theirs": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.EVERYONE),
+        },
+    )
+
+    assert visible_playback_sources(mass, None) is None
+
+
+def test_playback_instance_for_keeps_a_source_the_user_may_use() -> None:
+    """A source within the playback set serves its own items."""
+    mass = _mass([_provider("spotify--mine", is_streaming=True)])
+    set_music_source_access(
+        mass, {"spotify--mine": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE)}
+    )
+
+    assert playback_instance_for(mass, "spotify--mine", ["spotify--mine"]) == "spotify--mine"
+    assert playback_instance_for(mass, "spotify--theirs", None) == "spotify--theirs"
+
+
+def test_playback_instance_for_swaps_in_the_own_account_of_a_service() -> None:
+    """An account left out of the playback set is served by the user's own account of it."""
+    mass = _mass(
+        [
+            _provider("spotify--mine", is_streaming=True),
+            _provider("spotify--theirs", is_streaming=True),
+        ]
+    )
+    set_music_source_access(
+        mass,
+        {
+            "spotify--mine": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE),
+            "spotify--theirs": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.EVERYONE),
+        },
+    )
+
+    assert playback_instance_for(mass, "spotify--theirs", ["spotify--mine"]) == "spotify--mine"
+
+
+def test_playback_instance_for_skips_an_account_that_can_not_play() -> None:
+    """An account without a loaded provider plays nothing, so it never stands in."""
+    mass = _mass([_provider("spotify--theirs", is_streaming=True)])
+    set_music_source_access(
+        mass,
+        {
+            "spotify--mine": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE),
+            "spotify--theirs": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.EVERYONE),
+        },
+    )
+
+    assert playback_instance_for(mass, "spotify--theirs", ["spotify--mine"]) is None
+
+
+def test_playback_instance_for_never_swaps_a_local_source() -> None:
+    """Instances of a local source are libraries of their own, so neither stands in."""
+    mass = _mass(
+        [
+            _provider("filesystem_local--mine", is_streaming=False),
+            _provider("filesystem_local--theirs", is_streaming=False),
+        ]
+    )
+    set_music_source_access(
+        mass,
+        {
+            "filesystem_local--mine": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE),
+            "filesystem_local--theirs": ProviderAccess(
+                owner=MEMBER, sharing=ProviderSharing.EVERYONE
+            ),
+        },
+    )
+
+    assert (
+        playback_instance_for(mass, "filesystem_local--theirs", ["filesystem_local--mine"]) is None
+    )
+
+
 def test_own_music_sources_and_source_owner() -> None:
     """Ownership is read straight off the access record."""
     mass = _mass()
@@ -211,4 +414,44 @@ async def test_playback_sources_of_an_anonymous_queue() -> None:
     allowed, preferred = await playback_sources(mass, "queue-1")
 
     assert allowed == ["builtin"]
+    assert preferred == []
+
+
+async def test_playback_sources_prefers_the_users_own_account_of_a_service() -> None:
+    """The queue plays through the user's own account, never the shared one beside it."""
+    mass = _mass([_provider("spotify--mine", is_streaming=True)])
+    set_music_source_access(
+        mass,
+        {
+            "builtin": None,
+            "spotify--mine": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE),
+            "spotify--theirs": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.EVERYONE),
+        },
+    )
+    mass.player_queues.queue_data_or_none = MagicMock(return_value=MagicMock(userid=OWNER))
+    mass.webserver.auth.get_user = AsyncMock(return_value=_user(OWNER))
+
+    allowed, preferred = await playback_sources(mass, "queue-1")
+
+    assert allowed == ["builtin", "spotify--mine"]
+    assert preferred == ["spotify--mine"]
+
+
+async def test_playback_sources_skips_a_disabled_own_source() -> None:
+    """A disabled source of the user is no playback target to steer to."""
+    mass = _mass([_provider("spotify--theirs", is_streaming=True)])
+    set_music_source_access(
+        mass,
+        {
+            "spotify--mine": ProviderAccess(owner=OWNER, sharing=ProviderSharing.PRIVATE),
+            "spotify--theirs": ProviderAccess(owner=MEMBER, sharing=ProviderSharing.EVERYONE),
+        },
+    )
+    mass.config.get(CONF_PROVIDERS, {})["spotify--mine"]["enabled"] = False
+    mass.player_queues.queue_data_or_none = MagicMock(return_value=MagicMock(userid=OWNER))
+    mass.webserver.auth.get_user = AsyncMock(return_value=_user(OWNER))
+
+    allowed, preferred = await playback_sources(mass, "queue-1")
+
+    assert allowed is None
     assert preferred == []

@@ -3,20 +3,27 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from music_assistant_models.access import PlaylistAccess
-from music_assistant_models.auth import User, UserRole
-from music_assistant_models.enums import MediaType, ProviderFeature, ProviderSharing
+from music_assistant_models.auth import Scope, User, UserRole
+from music_assistant_models.enums import ImageType, MediaType, ProviderFeature, ProviderSharing
 from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidDataError,
     MediaNotFoundError,
 )
-from music_assistant_models.media_items import Genre, Playlist, ProviderMapping
+from music_assistant_models.media_items import (
+    Genre,
+    MediaItemImage,
+    Playlist,
+    ProviderMapping,
+    UniqueList,
+)
 
 from music_assistant.constants import (
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
@@ -428,18 +435,24 @@ async def test_set_access_validates_the_users_on_the_record(
     """Unknown users are refused; a guest and the Home Assistant system user can not own one."""
     added = await _add(playlists, _playlist("Validated"))
 
-    with _as_user(ADMIN), pytest.raises(InvalidDataError):
+    with _as_user(ADMIN), pytest.raises(InvalidDataError) as err:
         await playlists.set_access(added.item_id, ProviderSharing.PRIVATE, owner="nobody")
-    with _as_user(ADMIN), pytest.raises(InvalidDataError):
+    assert err.value.translation_key == "unknown_or_disabled_user"
+    assert err.value.translation_args == ["nobody"]
+    with _as_user(ADMIN), pytest.raises(InvalidDataError) as err:
         await playlists.set_access(added.item_id, ProviderSharing.PRIVATE, owner=GUEST.user_id)
-    with _as_user(ADMIN), pytest.raises(InvalidDataError):
+    assert err.value.translation_key == "playlist_owner_must_be_member"
+    with _as_user(ADMIN), pytest.raises(InvalidDataError) as err:
         await playlists.set_access(
             added.item_id, ProviderSharing.SELECTED, owner=OWNER.user_id, shared_users=["nobody"]
         )
-    with _as_user(ADMIN), pytest.raises(InvalidDataError):
+    assert err.value.translation_key == "unknown_or_disabled_user"
+    assert err.value.translation_args == ["nobody"]
+    with _as_user(ADMIN), pytest.raises(InvalidDataError) as err:
         await playlists.set_access(added.item_id, ProviderSharing.PRIVATE, owner=HA_SYSTEM.user_id)
+    assert err.value.translation_key == "playlist_owner_must_be_member"
     with _as_user(MEMBER), pytest.raises(InsufficientPermissions):
-        # a household playlist is only handed out by an admin
+        # a playlist of the whole home is only handed out by an admin
         await playlists.set_access(added.item_id, ProviderSharing.PRIVATE, owner=MEMBER.user_id)
 
 
@@ -538,6 +551,137 @@ async def test_editing_the_items_needs_the_owner_unless_collaborative(
             run_task.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("access", "provider_domain", "user", "expected_error"),
+    [
+        pytest.param(None, "builtin", MEMBER, None, id="ownerless-member"),
+        pytest.param(
+            PlaylistAccess(owner=OWNER.user_id), "builtin", OWNER, None, id="private-owner"
+        ),
+        pytest.param(
+            PlaylistAccess(owner=OWNER.user_id),
+            "builtin",
+            MEMBER,
+            MediaNotFoundError,
+            id="private-member",
+        ),
+        pytest.param(
+            PlaylistAccess(owner=OWNER.user_id), "builtin", ADMIN, None, id="private-admin"
+        ),
+        pytest.param(
+            PlaylistAccess(
+                owner=OWNER.user_id, sharing=ProviderSharing.MEMBERS, collaborative=True
+            ),
+            "builtin",
+            MEMBER,
+            InsufficientPermissions,
+            id="collaborative-member",
+        ),
+        pytest.param(None, "spotify", MEMBER, InsufficientPermissions, id="service-member"),
+        pytest.param(None, "spotify", ADMIN, None, id="service-admin"),
+    ],
+)
+async def test_update_needs_the_owner_unless_there_is_none(
+    playlists: PlaylistController,
+    access: PlaylistAccess | None,
+    provider_domain: str,
+    user: User,
+    expected_error: type[Exception] | None,
+) -> None:
+    """A member updates its own Music Assistant playlist or one without an owner, an admin any."""
+    added = await _add(playlists, _playlist("Before", access, provider_domain))
+    update = deepcopy(added)
+    update.name = "After"
+    # who a playlist serves is only set through set_access
+    update.access = PlaylistAccess(owner=MEMBER.user_id, sharing=ProviderSharing.EVERYONE)
+
+    with _as_user(user):
+        if expected_error is None:
+            await playlists.update_playlist(added.item_id, update, overwrite=True)
+        else:
+            with pytest.raises(expected_error):
+                await playlists.update_playlist(added.item_id, update, overwrite=True)
+
+    stored = await playlists.get_library_item(added.item_id)
+    assert stored.name == ("Before" if expected_error else "After")
+    assert stored.access == added.access
+
+
+async def test_update_refuses_a_member_a_playlist_that_is_not_editable(
+    playlists: PlaylistController,
+) -> None:
+    """A playlist the app does not offer for editing, such as the favorites, stays with an admin."""
+    playlist = _playlist("Not editable")
+    playlist.is_editable = False
+    added = await _add(playlists, playlist)
+    hidden = _playlist("Hidden and not editable", PlaylistAccess(owner=OWNER.user_id))
+    hidden.is_editable = False
+    hidden_added = await _add(playlists, hidden)
+    update = deepcopy(added)
+    update.name = "Renamed"
+
+    with _as_user(MEMBER), pytest.raises(InsufficientPermissions):
+        await playlists.update_playlist(added.item_id, update, overwrite=True)
+    with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
+        # a playlist the member may not see is not even confirmed to exist
+        await playlists.update_playlist(hidden_added.item_id, hidden_added, overwrite=True)
+    with _as_user(ADMIN):
+        await playlists.update_playlist(added.item_id, update, overwrite=True)
+
+    assert (await playlists.get_library_item(added.item_id)).name == "Renamed"
+
+
+async def test_update_by_a_member_only_changes_the_name_and_image(
+    playlists: PlaylistController,
+) -> None:
+    """Whatever else a member sends along, only the name and image of the playlist change."""
+    added = await _add(playlists, _playlist("Mine", PlaylistAccess(owner=OWNER.user_id)))
+    update = deepcopy(added)
+    update.name = "Renamed"
+    update.sort_name = "renamed playlist"
+    update.metadata.images = UniqueList(
+        [
+            MediaItemImage(
+                type=ImageType.THUMB, path="https://example.com/cover.jpg", provider="builtin"
+            )
+        ]
+    )
+    update.provider_mappings = {
+        ProviderMapping(item_id="taken", provider_domain="spotify", provider_instance="spotify")
+    }
+    update.is_editable = False
+    update.is_dynamic = True
+
+    with _as_user(OWNER):
+        await playlists.update_playlist(added.item_id, update, overwrite=True)
+
+    stored = await playlists.get_library_item(added.item_id)
+    assert stored.name == "Renamed"
+    assert stored.sort_name == "renamed playlist"
+    assert stored.image is not None
+    assert stored.image.path == "https://example.com/cover.jpg"
+    assert {(x.provider_instance, x.item_id) for x in stored.provider_mappings} == {
+        (x.provider_instance, x.item_id) for x in added.provider_mappings
+    }
+    assert stored.is_editable
+    assert not stored.is_dynamic
+
+
+async def test_only_the_playlist_update_command_is_open_to_members(
+    music_mass_module: MusicAssistant,
+) -> None:
+    """The playlist update command checks the caller itself, the others need library.manage."""
+    scopes = {
+        command: handler.required_scope
+        for command, handler in music_mass_module.command_handlers.items()
+        if command.startswith("music/") and command.endswith("/update")
+    }
+
+    assert scopes.pop("music/playlists/update") == Scope.LIBRARY_WRITE
+    assert "music/tracks/update" in scopes
+    assert set(scopes.values()) == {Scope.LIBRARY_MANAGE}
+
+
 async def test_removal_needs_the_owner_even_when_collaborative(
     playlists: PlaylistController,
 ) -> None:
@@ -564,6 +708,24 @@ async def test_removal_needs_the_owner_even_when_collaborative(
         playlists.check_removal_allowed(added)
     with _as_user(ADMIN):
         playlists.check_removal_allowed(added)
+
+
+async def test_library_remove_command_checks_the_owner(
+    playlists: PlaylistController, music_mass_module: MusicAssistant
+) -> None:
+    """The library remove command asks the controller before it deletes the playlist."""
+    access = PlaylistAccess(owner=OWNER.user_id, sharing=ProviderSharing.MEMBERS)
+    added = await _add(playlists, _playlist("Removed by command", access))
+
+    with _as_user(MEMBER), pytest.raises(InsufficientPermissions):
+        await music_mass_module.music.remove_item_from_library(MediaType.PLAYLIST, added.item_id)
+    with _as_user(None):
+        assert (await playlists.get_library_item(added.item_id)).access == access
+
+    with _as_user(OWNER):
+        await music_mass_module.music.remove_item_from_library(MediaType.PLAYLIST, added.item_id)
+    with _as_user(None), pytest.raises(MediaNotFoundError):
+        await playlists.get_library_item(added.item_id)
 
 
 async def test_adding_a_hidden_playlist_as_source_is_refused_inside_the_task(
@@ -607,14 +769,58 @@ async def test_library_add_command_ignores_a_supplied_record(
 ) -> None:
     """Adding a playlist through the generic library command never sets its owner or sharing."""
     monkeypatch.setattr(music_mass_module.metadata, "update_metadata", AsyncMock())
-
-    with _as_user(MEMBER):
-        added = await music_mass_module.music.add_item_to_library(
-            _playlist("Crafted", PlaylistAccess(owner=OWNER.user_id))
+    crafted = _playlist("Crafted", PlaylistAccess(owner=OWNER.user_id))
+    provider = MagicMock()
+    provider.domain = provider.instance_id = "builtin"
+    provider.available = True
+    provider.library_add = AsyncMock()
+    # the playlist is read from the builtin provider, not taken from the caller
+    provider.get_playlist = AsyncMock(
+        return_value=_playlist(
+            "Stored",
+            PlaylistAccess(owner=OWNER.user_id, sharing=ProviderSharing.EVERYONE),
+            item_id=crafted.item_id,
         )
+    )
+
+    with _as_user(MEMBER), patch.object(music_mass_module, "get_provider", return_value=provider):
+        added = await music_mass_module.music.add_item_to_library(crafted)
 
     assert isinstance(added, Playlist)
+    assert added.name == "Stored"
     assert added.access is None
+
+
+async def test_library_add_command_fetches_a_playlist_instead_of_trusting_it(
+    playlists: PlaylistController,
+    music_mass_module: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crafted playlist can neither move another playlist's mapping nor reach a hidden one."""
+    monkeypatch.setattr(music_mass_module.metadata, "update_metadata", AsyncMock())
+    private = await _add(
+        playlists, _playlist("Private target", PlaylistAccess(owner=OWNER.user_id))
+    )
+    own = await _add(playlists, _playlist("Own target", PlaylistAccess(owner=MEMBER.user_id)))
+    service = await _add(playlists, _playlist("Service target", provider_domain="spotify"))
+
+    def crafted(target: Playlist) -> Playlist:
+        playlist = _playlist("Crafted", item_id=next(iter(target.provider_mappings)).item_id)
+        playlist.provider_mappings |= service.provider_mappings
+        playlist.is_editable = False
+        return playlist
+
+    with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
+        await music_mass_module.music.add_item_to_library(crafted(private), overwrite_existing=True)
+    with _as_user(MEMBER):
+        await music_mass_module.music.add_item_to_library(crafted(own), overwrite_existing=True)
+
+    for playlist in (private, own, service):
+        stored = await playlists.get_library_item(playlist.item_id)
+        assert stored.provider_mappings == playlist.provider_mappings
+    stored_own = await playlists.get_library_item(own.item_id)
+    assert stored_own.name == "Own target"
+    assert stored_own.is_editable
 
 
 async def test_library_add_of_a_matching_item_needs_the_right_to_edit(

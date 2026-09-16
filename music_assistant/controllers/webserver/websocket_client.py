@@ -79,6 +79,8 @@ class WebsocketClientHandler:
         self._locale: str | None = None  # UI locale declared by the client (auth arg / set_locale)
         self._is_ingress = is_request_from_ingress(request)
         self._events_unsub_callback: Any = None  # Will be set after authentication
+        # uris of the personal playlists this client was told are gone
+        self._hidden_playlists: set[str] = set()
         # Track WebRTC session ID if this is a WebRTC gateway connection
         self._webrtc_session_id: str | None = request.query.get("webrtc_session_id")
         # try to dynamically detect the base_url of a client if proxied or behind Ingress
@@ -285,7 +287,7 @@ class WebsocketClientHandler:
                     ErrorResultMessage(
                         msg.message_id,
                         InsufficientPermissions.error_code,
-                        f"This command requires the {handler.required_scope} scope",
+                        f"This command requires the {handler.required_scope_label} scope",
                         translation_key="insufficient_permissions",
                     )
                 )
@@ -613,12 +615,9 @@ class WebsocketClientHandler:
                 elif not access.allows(user):
                     return
 
-            if (
-                isinstance(event.data, Playlist)
-                and event.data.access is not None
-                and not access_allows(event.data.access, self._authenticated_user)
+            if isinstance(event.data, Playlist) and not self._forward_playlist_event(
+                event, event.data
             ):
-                # a personal playlist is only announced to the users who may see it
                 return
 
             if event.event == EventType.TASKS_UPDATED:
@@ -653,3 +652,28 @@ class WebsocketClientHandler:
 
         self._events_unsub_callback = self.mass.subscribe(handle_event)
         self._logger.debug("Subscribed to events")
+
+    def _forward_playlist_event(self, event: MassEvent, playlist: Playlist) -> bool:
+        """
+        Return whether an event about a playlist may reach this client as it was signalled.
+
+        A personal playlist is only announced to the users who may see it. A client whose
+        user may no longer see it is instead told once that the playlist is gone, so it
+        drops the row it may still hold.
+
+        :param event: The event about the playlist.
+        :param playlist: The playlist the event carries.
+        """
+        uri = event.object_id
+        if playlist.access is None or access_allows(playlist.access, self._authenticated_user):
+            if uri:
+                self._hidden_playlists.discard(uri)
+            return True
+        if not uri or uri in self._hidden_playlists:
+            return False
+        self._hidden_playlists.add(uri)
+        # only an update can take a playlist away from a client that still holds it; one
+        # created or removed out of sight was never held, nor is anything held before login
+        if event.event == EventType.MEDIA_ITEM_UPDATED and self._authenticated_user:
+            self._send_message_sync(MassEvent(event=EventType.MEDIA_ITEM_DELETED, object_id=uri))
+        return False
