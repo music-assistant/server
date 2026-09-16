@@ -218,6 +218,12 @@ def test_ffmpeg_http_headers() -> None:
         "Authorization": "Bearer x",
         "X-Empty": "",
     }
+    # like ffmpeg, a User-Agent in -headers wins over -user_agent in either order
+    for args in (
+        ["-user_agent", "Option/1.0", "-headers", "user-agent: Header/1.0\r\n"],
+        ["-headers", "User-Agent: Header/1.0\r\n", "-user_agent", "Option/1.0"],
+    ):
+        assert ffmpeg_http_headers(args) == {"User-Agent": "Header/1.0"}
     # valueless flags in between do not shift which value belongs to which option
     assert ffmpeg_http_headers(["-re", "-user_agent", "Test/1.0", "-y", "-headers", "A: b"]) == {
         "User-Agent": "Test/1.0",

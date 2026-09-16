@@ -18,6 +18,7 @@ from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 import music_assistant.controllers.streams.audio as audio_mod
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
+from music_assistant.helpers.audio import HTTP_HEADERS
 from music_assistant.helpers.mp3 import NO_SEEK_HINTS, Mp3SeekHints
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
@@ -988,6 +989,32 @@ async def test_get_media_stream_speeds_up_remote_mp3_seek(
     ]
     assert mp3_probe.calls == [
         ("http://test.invalid/episode-1.mp3", {"User-Agent": _PROVIDER_INPUT_ARGS[1]})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_sends_probed_user_agent_to_ffmpeg(
+    patch_ffmpeg: type[_FakeFFMpeg],
+    mp3_probe: _FakeProbe,
+) -> None:
+    """Without a provider User-Agent, ffmpeg gets the one the probe used, not its own default."""
+    mp3_probe.result = Mp3SeekHints(True, 31911863)
+    streamdetails = _seekable_streamdetails()
+    streamdetails.extra_input_args = []
+    audio = _make_audio_controller()
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=5400))
+
+    user_agent = HTTP_HEADERS["User-Agent"]
+    assert mp3_probe.calls == [("http://test.invalid/episode-1.mp3", {"User-Agent": user_agent})]
+    assert patch_ffmpeg.last_instance is not None
+    assert patch_ffmpeg.last_instance.extra_input_args == [
+        "-user_agent",
+        user_agent,
+        *_SKIP_ARGS,
+        *_FASTSEEK_ARGS,
+        "-ss",
+        "5400",
     ]
 
 

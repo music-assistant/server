@@ -98,17 +98,29 @@ def ffmpeg_http_headers(extra_input_args: Sequence[str]) -> dict[str, str]:
     """
     Return the HTTP headers ffmpeg sends for the given input arguments.
 
+    Without a User-Agent in the arguments, ffmpeg only sends the returned one when it is
+    passed along as `-user_agent`.
+
     :param extra_input_args: The ffmpeg input arguments of the stream.
     """
     headers = dict(HTTP_HEADERS)
+    header_user_agent: str | None = None
     for option, value in pairwise(extra_input_args):
         if option == "-user_agent":
             headers["User-Agent"] = value
         elif option == "-headers":
             for line in value.splitlines():
                 name, sep, header_value = line.partition(":")
-                if sep and name.strip():
-                    headers[name.strip()] = header_value.strip()
+                name = name.strip()
+                if not sep or not name:
+                    continue
+                if name.lower() == "user-agent":
+                    header_user_agent = header_value.strip()
+                else:
+                    headers[name] = header_value.strip()
+    # ffmpeg prefers a User-Agent from -headers over -user_agent, whatever their order
+    if header_user_agent is not None:
+        headers["User-Agent"] = header_user_agent
     return headers
 
 

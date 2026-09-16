@@ -4975,6 +4975,9 @@ class StreamsAudio:
             hints.skip_bytes,
         )
         args: list[str] = []
+        # ffmpeg's own default differs, and the skip must describe the response ffmpeg gets
+        if "-user_agent" not in extra_input_args:
+            args += ["-user_agent", headers["User-Agent"]]
         if hints.skip_bytes:
             args += ["-skip_initial_bytes", str(hints.skip_bytes)]
         # seeks by bitrate or the Xing TOC instead of decoding up to the position: exact for
