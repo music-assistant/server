@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant.controllers.streams.smart_fades.models import BandProfile
+from music_assistant.controllers.streams.smart_fades.models import BAND_RMS_BANDS, BandProfile
 from music_assistant.controllers.streams.smart_fades.structure import point_in_mask
 
 if TYPE_CHECKING:
@@ -38,12 +38,7 @@ def build_band_profile(analysis: AudioAnalysisData) -> BandProfile | None:
     # numpy is imported here to keep it off the server startup path
     import numpy as np  # noqa: PLC0415
 
-    band_rms = {
-        "low": analysis.band_rms_low,
-        "low_mid": analysis.band_rms_low_mid,
-        "mid": analysis.band_rms_mid,
-        "high": analysis.band_rms_high,
-    }
+    band_rms = {name: getattr(analysis, f"band_rms_{name}") for name in BAND_RMS_BANDS}
     if (
         any(v is None or len(v) != 1800 for v in band_rms.values())
         or analysis.downbeats is None

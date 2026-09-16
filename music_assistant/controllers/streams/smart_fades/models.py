@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 
 # Band edges (Hz) of the smart_fades ``band_rms_*`` envelopes; None = up to Nyquist.
-# Stored rows keep whatever bands their analysis_version wrote — read historical rows by shape.
+# AudioAnalysisData stores exactly these four bands, each as a ``band_rms_<name>`` field.
 BAND_RMS_BANDS: dict[str, tuple[float, float | None]] = {
     "low": (20.0, 120.0),
     "low_mid": (120.0, 400.0),
