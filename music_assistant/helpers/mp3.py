@@ -194,13 +194,12 @@ async def _fetch_range(
     """
     Fetch a byte range, or return None when the server does not serve it as a range.
 
-    :raises ClientResponseError: When the server answers with an error status.
-
     :param http_session: The HTTP session to fetch with.
     :param url: URL of the file.
     :param headers: HTTP headers to send along.
     :param start: Offset of the first byte.
     :param length: Number of bytes to fetch.
+    :raises ClientResponseError: When the server answers with an error status.
     """
     range_headers = {**headers, "Range": f"bytes={start}-{start + length - 1}"}
     async with http_session.get(url, headers=range_headers) as resp:
