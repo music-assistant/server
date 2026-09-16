@@ -580,23 +580,19 @@ class AlbumsController(MediaControllerBase[Album]):
 
     def album_from_item_mapping(self, item: ItemMapping) -> Album:
         """Create an Album object from an ItemMapping object."""
-        domain, instance_id = None, None
+        # a library item mapping references an item already in the library, which has no
+        # mapping to itself, so only a resolvable provider yields a real provider mapping
+        provider_mappings: list[dict[str, Any]] = []
         if prov := self.mass.get_provider(item.provider):
-            domain = prov.domain
-            instance_id = prov.instance_id
-        return Album.from_dict(
-            {
-                **item.to_dict(),
-                "provider_mappings": [
-                    {
-                        "item_id": item.item_id,
-                        "provider_domain": domain,
-                        "provider_instance": instance_id,
-                        "available": item.available,
-                    }
-                ],
-            }
-        )
+            provider_mappings.append(
+                {
+                    "item_id": item.item_id,
+                    "provider_domain": prov.domain,
+                    "provider_instance": prov.instance_id,
+                    "available": item.available,
+                }
+            )
+        return Album.from_dict({**item.to_dict(), "provider_mappings": provider_mappings})
 
     async def _add_library_item(self, item: Album, overwrite_existing: bool = False) -> int:
         """Add a new record to the database."""
