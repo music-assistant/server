@@ -2,16 +2,20 @@
 
 import logging
 import time
-from collections.abc import Callable
 from typing import TYPE_CHECKING, ClassVar, Final
 
 import aiohttp
 from libopensonic.errors import SonicError
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
-from music_assistant_models.enums import EventType, MediaType
+from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.media_items import Audiobook, PodcastEpisode, Track
 
+from music_assistant.helpers.provider_access import (
+    exact_provider,
+    own_music_sources,
+    visible_playback_sources,
+)
 from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.mass import MusicAssistant
@@ -22,9 +26,11 @@ from music_assistant.providers.opensubsonic.sonic_provider import OpenSonicProvi
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.media_items import ProviderMapping
     from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
     from music_assistant_models.provider import ProviderManifest
 
+SUPPORTED_FEATURES: Final[set[ProviderFeature]] = {ProviderFeature.SCROBBLE}
 SUPPORTED_SCROBBLE_MEDIA_TYPES: Final[frozenset[MediaType]] = frozenset(
     {
         MediaType.TRACK,
@@ -42,18 +48,13 @@ async def setup(
     if not sonic_prov or not isinstance(sonic_prov, OpenSonicProvider):
         raise SetupFailedError("A Open Subsonic Music provider must be configured first.")
 
-    return SubsonicScrobbleProvider(mass, manifest, config)
+    return SubsonicScrobbleProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 class SubsonicScrobbleProvider(PluginProvider):
     """Plugin provider to support Subsonic scrobbling."""
 
-    def __init__(
-        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
-    ) -> None:
-        """Initialize MusicProvider."""
-        super().__init__(mass, manifest, config)
-        self._on_unload: list[Callable[[], None]] = []
+    _handler: SubsonicScrobbleEventHandler | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -63,25 +64,16 @@ class SubsonicScrobbleProvider(PluginProvider):
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
 
-        handler = SubsonicScrobbleEventHandler(self.mass, self.logger, self.config)
+        self._handler = SubsonicScrobbleEventHandler(self.mass, self.logger, self.config)
 
-        # subscribe to media_item_played event
-        self._on_unload.append(
-            self.mass.subscribe(handler._on_mass_media_item_played, EventType.MEDIA_ITEM_PLAYED)
-        )
-
-    async def unload(self, is_removed: bool = False) -> None:
-        """
-        Handle unload/close of the provider.
-
-        Called when provider is deregistered (e.g. MA exiting or config reloading).
-        """
-        for unload_cb in self._on_unload:
-            unload_cb()
+    async def on_media_item_played(self, report: MediaItemPlaybackProgressReport) -> None:
+        """Forward a playback progress report to the Subsonic server of the playing user."""
+        if self._handler is not None:
+            await self._handler.on_media_item_played(report)
 
 
 class SubsonicScrobbleEventHandler(ScrobblerHelper):
-    """Handles the scrobbling event handling."""
+    """Submit now-playing updates and scrobbles to the Subsonic server of the playing user."""
 
     # SonicError covers Subsonic API failures; aiohttp.ClientError and TimeoutError
     # cover the underlying transport the libopensonic connection uses.
@@ -116,7 +108,7 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
         :param provider_instance_id_or_domain: Provider part of the played item's uri.
         :param item_id: Item id part of the played item's uri.
         :param user_id: MA user that initiated playback. When the item maps to more than one
-            Subsonic provider instance, the instance in that user's provider filter is used.
+            Subsonic provider instance, the one that user owns is used.
         """
         if provider_instance_id_or_domain == "library":
             # unwrap library item to check if we have a subsonic mapping...
@@ -136,22 +128,14 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
                 return None, item_id
             # One library item can map to several instances of the same Subsonic server (one
             # instance per account of that server). provider_mappings is a set, so without a
-            # preference the account that receives the scrobble is arbitrary; the instance in
-            # the playing user's provider filter goes first, the others keep their order.
-            preferred = await self._get_user_provider_filter(user_id)
-            if any(instance_id.startswith("opensubsonic") for instance_id in preferred):
-                # A filter that names a Subsonic instance is an allowlist, the same way the music
-                # controller treats it for playback: only the user's own instance(s) may receive
-                # the report. Falling back to another account's instance, because the preferred
-                # one is unloaded or does not hold this item, would disclose and credit the
-                # user's listening to that other account, so in that case nothing is reported.
-                # A filter that names no Subsonic instance at all (built-in providers only)
-                # expresses no preference between accounts and keeps the previous behaviour.
-                sonic_mappings = [
-                    mapping for mapping in sonic_mappings if mapping.provider_instance in preferred
-                ]
+            # preference the account that receives the scrobble is arbitrary; the instance the
+            # playing user owns goes first, then the ones shared with them.
+            # Reporting to a Subsonic account the user may not use would disclose and credit
+            # their listening to that other member, so those instances are dropped entirely
+            # and nothing is reported when none is left.
+            sonic_mappings = await self._preferred_mappings(sonic_mappings, user_id)
             for mapping in sonic_mappings:
-                prov = self.mass.get_provider(mapping.provider_instance)
+                prov = exact_provider(self.mass, mapping.provider_instance)
                 if not isinstance(prov, OpenSonicProvider):
                     continue
                 # Because there is no way to retrieve a single podcast episode in vanilla
@@ -165,9 +149,11 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
             # mappings exist, but none of the allowed instances is loaded: nothing to report to
             return None, item_id
         if provider_instance_id_or_domain.startswith("opensubsonic"):
-            # found a subsonic mapping, proceed...
-            prov = self.mass.get_provider(provider_instance_id_or_domain)
-            assert isinstance(prov, OpenSonicProvider)
+            # the item was played from this exact account, so only that one may be reported
+            # to; an unavailable account is never stood in for by another member's
+            prov = exact_provider(self.mass, provider_instance_id_or_domain)
+            if not isinstance(prov, OpenSonicProvider):
+                return None, item_id
             if media_type == MediaType.PODCAST_EPISODE and EP_CHAN_SEP in item_id:
                 _, ret_id = item_id.split(EP_CHAN_SEP)
                 return prov, ret_id
@@ -175,18 +161,22 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
         # not an item from subsonic provider, ignore...
         return None, item_id
 
-    async def _get_user_provider_filter(self, user_id: str | None) -> set[str]:
+    async def _preferred_mappings(
+        self, mappings: list[ProviderMapping], user_id: str | None
+    ) -> list[ProviderMapping]:
         """
-        Return the provider instance ids the given MA user is restricted to.
+        Return the mappings the given MA user may scrobble to, the ones they own first.
 
+        :param mappings: The played item's Subsonic provider mappings.
         :param user_id: MA user id, or None when playback was not initiated by a user.
         """
-        if not user_id:
-            return set()
-        user = await self.mass.webserver.auth.get_user(user_id)
-        if user is None or not user.provider_filter:
-            return set()
-        return set(user.provider_filter)
+        user = await self.mass.webserver.auth.get_user(user_id) if user_id else None
+        allowed = visible_playback_sources(self.mass, user)
+        owned = set(own_music_sources(self.mass, user))
+        return sorted(
+            (m for m in mappings if allowed is None or m.provider_instance in allowed),
+            key=lambda m: m.provider_instance not in owned,
+        )
 
     async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
         media_type, provider_instance_id_or_domain, item_id = await parse_uri(report.uri)

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, Mock, patch
 
+from music_assistant_models.auth import User, UserRole
+
+from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 
 
@@ -203,3 +206,18 @@ async def test_on_player_disabled_noop_when_no_server(
 async def test_on_player_enabled_noop(provider: MSXBridgeProvider) -> None:
     """on_player_enabled should complete without error (player stays registered)."""
     provider.on_player_enabled("msx_test")  # should not raise
+
+
+async def test_get_owner_username_skips_the_system_user(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """Plays on the TV go to the first enabled user, never to the Home Assistant system user."""
+    mass_mock.webserver.auth.list_users = AsyncMock(
+        return_value=[
+            User(user_id="ha", username=HOMEASSISTANT_SYSTEM_USER, role=UserRole.SERVICE),
+            User(user_id="off", username="disabled", role=UserRole.USER, enabled=False),
+            User(user_id="admin", username="admin", role=UserRole.ADMIN),
+        ]
+    )
+
+    assert await provider.get_owner_username() == "admin"

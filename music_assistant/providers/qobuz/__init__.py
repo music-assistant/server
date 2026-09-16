@@ -93,6 +93,8 @@ SUPPORTED_FEATURES = {
 }
 
 VARIOUS_ARTISTS_ID = "145383"
+# Bump when the shape of parsed artists, albums or tracks changes, so cached items are re-parsed
+PARSED_ITEM_CACHE_CHECKSUM = "instance_id_provider_v1"
 
 CONF_QUALITY = "quality"
 
@@ -140,7 +142,7 @@ class QobuzProvider(MusicProvider):
             msg = f"Login failed for user {self.get_setup_value(CONF_USERNAME)}"
             raise LoginFailed(msg)
 
-    @use_cache(3600 * 24 * 14)  # Cache for 14 days
+    @use_cache(3600 * 24 * 14, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)  # Cache for 14 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
@@ -225,7 +227,7 @@ class QobuzProvider(MusicProvider):
             if item and item["id"]:
                 yield self._parse_playlist(item)
 
-    @use_cache(3600 * 24 * 30)  # Cache for 30 days
+    @use_cache(3600 * 24 * 30, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)  # Cache for 30 days
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         params: dict[str, Any] = {"artist_id": prov_artist_id}
@@ -235,7 +237,7 @@ class QobuzProvider(MusicProvider):
         msg = f"Item {prov_artist_id} not found"
         raise MediaNotFoundError(msg)
 
-    @use_cache(3600 * 24 * 30)  # Cache for 30 days
+    @use_cache(3600 * 24 * 30, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)  # Cache for 30 days
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         params: dict[str, Any] = {"album_id": prov_album_id}
@@ -245,7 +247,7 @@ class QobuzProvider(MusicProvider):
         msg = f"Item {prov_album_id} not found"
         raise MediaNotFoundError(msg)
 
-    @use_cache(3600 * 24 * 30)  # Cache for 30 days
+    @use_cache(3600 * 24 * 30, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)  # Cache for 30 days
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         params: dict[str, Any] = {"track_id": prov_track_id}
@@ -284,7 +286,9 @@ class QobuzProvider(MusicProvider):
             )
         return self._parse_playlist(playlist_obj)
 
-    @use_cache(3600 * 24 * 30, allow_expired_cache=True)  # Cache for 30 days
+    @use_cache(
+        3600 * 24 * 30, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True
+    )  # Cache for 30 days
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
         params = {"album_id": prov_album_id}
@@ -299,7 +303,9 @@ class QobuzProvider(MusicProvider):
                 await asyncio.sleep(0)
         return result
 
-    @use_cache(3600 * 3, allow_expired_cache=True)  # Cache for 3 hours
+    @use_cache(
+        3600 * 3, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True
+    )  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
@@ -326,7 +332,9 @@ class QobuzProvider(MusicProvider):
                 await asyncio.sleep(0)
         return result
 
-    @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
+    @use_cache(
+        3600 * 24 * 14, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True
+    )  # Cache for 14 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of albums for the given artist."""
         result = await self._get_data(
@@ -349,7 +357,9 @@ class QobuzProvider(MusicProvider):
             )
         ]
 
-    @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
+    @use_cache(
+        3600 * 24 * 14, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True
+    )  # Cache for 14 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of most popular tracks for the given artist."""
         result = await self._get_data(
@@ -549,7 +559,7 @@ class QobuzProvider(MusicProvider):
         """Parse qobuz artist object to generic layout."""
         artist = Artist(
             item_id=str(artist_obj["id"]),
-            provider=self.domain,
+            provider=self.instance_id,
             name=artist_obj["name"],
             provider_mappings={
                 ProviderMapping(
@@ -589,7 +599,7 @@ class QobuzProvider(MusicProvider):
         name, version = parse_title_and_version(album_obj["title"], album_obj.get("version"))
         album = Album(
             item_id=str(album_obj["id"]),
-            provider=self.domain,
+            provider=self.instance_id,
             name=name,
             version=version,
             provider_mappings={
@@ -662,7 +672,7 @@ class QobuzProvider(MusicProvider):
         name, version = parse_title_and_version(track_obj["title"], track_obj.get("version"))
         track = Track(
             item_id=str(track_obj["id"]),
-            provider=self.domain,
+            provider=self.instance_id,
             name=name,
             version=version,
             duration=track_obj["duration"],
@@ -711,7 +721,7 @@ class QobuzProvider(MusicProvider):
                 if "artist" in role.lower():
                     artist = Artist(
                         item_id=name,
-                        provider=self.domain,
+                        provider=self.instance_id,
                         name=name,
                         provider_mappings={
                             ProviderMapping(

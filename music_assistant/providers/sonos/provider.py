@@ -47,8 +47,8 @@ def _requested_max(requested: str | None) -> int:
     """
     Return the ceiling a speaker put on one side of the window.
 
-    The sizes are maxima: we serve fewer by design, but never more. An absent or unreadable
-    size puts no ceiling on it.
+    The sizes are maxima: we may serve fewer, never more. An absent or unreadable size puts
+    no ceiling on it.
     """
     try:
         return max(0, int(requested)) if requested is not None else _NO_CEILING
@@ -310,13 +310,24 @@ class SonosPlayerProvider(PlayerProvider):
         # window, and a load landing in between would label old items with new-load ids
         queue_version = player.cloud_queue_version
         wire_generation = player.cloud_queue_item_generation
+        wire_center = request.query.get("itemId")
+        self.logger.debug(
+            "Cloud queue itemWindow for %s: reason=%s itemId=%s previous=%s upcoming=%s "
+            "queueVersion=%s -> %s",
+            player.player_id,
+            request.query.get("reason"),
+            wire_center,
+            request.query.get("previousWindowSize"),
+            request.query.get("upcomingWindowSize"),
+            request.query.get("queueVersion"),
+            queue_version,
+        )
         # built from the queue as it is right now: the speaker fetches on its own schedule and
         # plays out of what it cached, so only a live answer keeps a track added mid-playback
         # from being played over. The beginning/end flags must be honest - signalling
         # end-of-queue is what makes Sonos drop items it cached past our window, so a queue
         # rewrite (replace_next) does not resurrect stale tracks.
         try:
-            wire_center = request.query.get("itemId")
             window = await player.build_cloud_queue_window(
                 player.bare_item_id(wire_center) if wire_center else None,
                 max_previous=_requested_max(request.query.get("previousWindowSize")),
@@ -351,6 +362,12 @@ class SonosPlayerProvider(PlayerProvider):
         https://docs.sonos.com/reference/version
         """
         context_version = request.query.get("contextVersion") or "1"
+        self.logger.debug(
+            "Cloud queue version poll from %s: queueVersion=%s -> %s",
+            player.player_id,
+            request.query.get("queueVersion"),
+            player.cloud_queue_version,
+        )
         # keep sub-second resolution: the queue can change several times within the same
         # second and Sonos treats an unchanged queueVersion as "nothing changed" (stale window).
         result = {
@@ -394,7 +411,7 @@ class SonosPlayerProvider(PlayerProvider):
                 # seek needs to be disabled because we dont properly support range requests
                 "canSeek": False,
                 "canRepeat": False,  # handled by MA queue controller
-                "canRepeatOne": False,  # synced from MA queue controller
+                "canRepeatOne": False,  # handled by MA queue controller
                 "canCrossfade": False,  # handled by MA queue controller
                 "canShuffle": False,  # handled by MA queue controller
             },
@@ -469,6 +486,16 @@ class SonosPlayerProvider(PlayerProvider):
         :param item: The reported queue item the failure belongs to.
         :param error: The error object the speaker attached to it.
         """
+        if error.get("type") == "http" and str(error.get("status")) == "404":
+            # our own stream server refused the item: a track the queue moved past or no
+            # longer holds, or one it failed to stream and logged there. The speaker tries
+            # each track it cached before reading the queue again, so these come in bursts
+            self.logger.debug(
+                "Speaker %s was refused %s by the stream server",
+                player.display_name,
+                item.get("id"),
+            )
+            return
         report_id = item.get("reportId")
         if report_id:
             if report_id in player.reported_playback_errors:

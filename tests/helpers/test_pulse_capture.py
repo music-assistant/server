@@ -81,7 +81,7 @@ class FakeVolumeController:
 
     instances: ClassVar[list[FakeVolumeController]] = []
 
-    def __init__(self, server: str | None = None) -> None:
+    def __init__(self, server: str) -> None:
         """Record the server address used to connect."""
         self.server = server
         self.load_module_calls: list[tuple[str, str]] = []

@@ -19,7 +19,10 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.controllers.players.constants import PlayerLockPurpose
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    get_sendspin_player_id,
+)
 
 if TYPE_CHECKING:
     import logging
@@ -40,6 +43,20 @@ class AnnounceData(TypedDict):
     # player that fetches the announcement stream when it is not the
     # visible player itself (e.g. a linked protocol player)
     announce_player_id: str | None
+
+
+def is_own_client_player(player: Player | None) -> bool:
+    """
+    Return whether the given player is the private client player the caller connected on.
+
+    A private client player (browser session, desktop or mobile app) is bound to the
+    connection that announced it, so its owner may always use it regardless of their
+    player filter. Only private players qualify, so a shared speaker cannot be claimed
+    by announcing its id.
+
+    :param player: The player to check, or None.
+    """
+    return player is not None and player.private and player.player_id == get_sendspin_player_id()
 
 
 @overload
@@ -120,6 +137,8 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
                 current_user
                 and current_user.player_filter
                 and player.player_id not in current_user.player_filter
+                # a user may always control the private client player they connected on
+                and not is_own_client_player(player)
             ):
                 msg = (
                     f"{current_user.username} does not have access to player {player.display_name}"

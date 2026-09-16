@@ -32,10 +32,12 @@ from .gw_client import (
     GWClient,
 )
 from .media import DeezerMediaManager
+from .rest_client import DeezerRESTClient
 from .streaming import DeezerStreamingManager
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
+    from music_assistant_models.enums import ExternalID
     from music_assistant_models.media_items import (
         Album,
         Artist,
@@ -55,6 +57,8 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
 SUPPORTED_FEATURES = {
+    ProviderFeature.TRACK_BY_EXTERNAL_ID,
+    ProviderFeature.ALBUM_BY_EXTERNAL_ID,
     ProviderFeature.LIBRARY_ARTISTS,
     ProviderFeature.LIBRARY_ALBUMS,
     ProviderFeature.LIBRARY_TRACKS,
@@ -95,6 +99,7 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
 
     gql_client: DeezerGQLClient
     gw_client: GWClient
+    rest_client: DeezerRESTClient
     media_manager: DeezerMediaManager
     browse_manager: DeezerBrowseManager
     streaming_manager: DeezerStreamingManager
@@ -151,6 +156,7 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
             self.logger.warning(DECRYPT_KEY_ERROR)
 
         self.media_manager = DeezerMediaManager(self)
+        self.rest_client = DeezerRESTClient(self.mass)
         self.browse_manager = DeezerBrowseManager(self)
         self.streaming_manager = DeezerStreamingManager(self)
 
@@ -211,6 +217,18 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         return await self.media_manager.get_track(prov_track_id)
+
+    async def get_track_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Track | None:
+        """Retrieve a track by ISRC."""
+        return await self.media_manager.get_track_by_external_id(external_id, external_id_type)
+
+    async def get_album_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Album | None:
+        """Retrieve an album by barcode (UPC/EAN)."""
+        return await self.media_manager.get_album_by_external_id(external_id, external_id_type)
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
