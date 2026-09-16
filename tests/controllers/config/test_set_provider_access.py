@@ -193,7 +193,7 @@ async def test_the_system_user_can_not_own_a_source(access_mass: MusicAssistant)
         await access_mass.config.set_provider_access(
             MUSIC_INSTANCE, sharing=ProviderSharing.PRIVATE, owner=system_user.user_id
         )
-    assert excinfo.value.translation_key == "source_owner_must_be_member"
+    assert excinfo.value.translation_key == "role_can_not_own_music_sources"
     assert _stored_access(access_mass, MUSIC_INSTANCE) is None
 
 
@@ -227,7 +227,26 @@ async def test_a_guest_can_not_own_a_source(access_mass: MusicAssistant) -> None
         await access_mass.config.set_provider_access(
             MUSIC_INSTANCE, sharing=ProviderSharing.PRIVATE, owner=guest.user_id
         )
-    assert excinfo.value.translation_key == "source_owner_must_be_member"
+    assert excinfo.value.translation_key == "role_can_not_own_music_sources"
+
+
+async def test_a_role_without_the_own_scope_can_not_own_a_source(
+    access_mass: MusicAssistant,
+) -> None:
+    """A custom role lacking config.providers.own can not manage a source, so it can not own one."""
+    admin = await _create_user(access_mass, "admin", UserRole.ADMIN)
+    listeners = await access_mass.webserver.auth.create_role("Listeners", [])
+    listener = await access_mass.webserver.auth.create_user(
+        username="listener", role=listeners.role_id
+    )
+    set_current_user(admin)
+
+    with pytest.raises(InvalidDataError) as excinfo:
+        await access_mass.config.set_provider_access(
+            MUSIC_INSTANCE, sharing=ProviderSharing.PRIVATE, owner=listener.user_id
+        )
+    assert excinfo.value.translation_key == "role_can_not_own_music_sources"
+    assert _stored_access(access_mass, MUSIC_INSTANCE) is None
 
 
 async def test_an_unknown_user_is_refused(access_mass: MusicAssistant) -> None:
@@ -286,7 +305,7 @@ async def test_a_guest_owning_a_source_is_refused_even_when_unchanged(
         await access_mass.config.set_provider_access(
             MUSIC_INSTANCE, owner=guest.user_id, sharing=ProviderSharing.MEMBERS
         )
-    assert excinfo.value.translation_key == "source_owner_must_be_member"
+    assert excinfo.value.translation_key == "role_can_not_own_music_sources"
 
 
 async def test_a_disabled_member_keeps_its_place_on_the_share_list(

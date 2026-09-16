@@ -686,9 +686,9 @@ async def test_a_source_owner_can_not_be_made_a_guest(auth_manager: Authenticati
         },
     )
 
-    with pytest.raises(InvalidDataError, match="Reassign or remove") as excinfo:
+    with pytest.raises(InvalidDataError, match="can not own a music source") as excinfo:
         await auth_manager.update_user_role(owner.user_id, UserRole.GUEST, admin)
-    assert excinfo.value.translation_key == "guest_owns_music_sources"
+    assert excinfo.value.translation_key == "role_can_not_own_music_sources"
 
     # a place on a share list is no obstacle, a guest may be given one
     assert await auth_manager.update_user_role(member.user_id, UserRole.GUEST, admin) is True

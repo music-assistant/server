@@ -866,8 +866,8 @@ class AuthenticationManager:
         :param new_role: The id of the (builtin or custom) role to assign.
         :param admin_user: The user performing the action.
         :raises InvalidDataError: If the role does not exist, if the user is the last enabled
-            administrator, or if the user owns music sources and the new role is guest, as a
-            guest can not own a music source.
+            administrator, or if the user owns music sources and the new role can not own a
+            music source (it lacks the config.providers.own scope).
         """
         if not has_scope(admin_user, Scope.USERS_MANAGE):
             return False
@@ -880,13 +880,16 @@ class AuthenticationManager:
         old_role = user_row["role"]
         if new_role == old_role:
             return True
-        if new_role == UserRole.GUEST and own_music_sources(
-            self.mass, User(user_id=user_id, username=user_row["username"], role=old_role)
+        # config.providers.own is the scope a member needs to manage the sources it owns. A user
+        # that owns one is not given a role without it, or it would keep the source with no way
+        # left to manage it.
+        user_with_new_role = User(user_id=user_id, username=user_row["username"], role=new_role)
+        if not has_scope(user_with_new_role, Scope.CONFIG_PROVIDERS_OWN) and own_music_sources(
+            self.mass, user_with_new_role
         ):
             raise InvalidDataError(
-                "A guest can not own a music source. "
-                "Reassign or remove the music sources of this user first.",
-                translation_key="guest_owns_music_sources",
+                "This role can not own a music source.",
+                translation_key="role_can_not_own_music_sources",
             )
         await self._ensure_not_last_admin(user_row)
         await self.database.update(
