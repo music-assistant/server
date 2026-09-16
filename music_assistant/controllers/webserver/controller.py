@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import html
 import inspect
+import json
 import os
 import secrets
 import socket
@@ -1002,7 +1003,21 @@ class WebserverController(CoreController):
             if not request.can_read_body:
                 return web.Response(status=400, text="Body required")
 
-            body = await request.json()
+            try:
+                body = await request.json()
+            except json.JSONDecodeError, UnicodeDecodeError, LookupError:
+                body = None
+            # an undecodable or non-object body is a client error, not a server fault
+            if not isinstance(body, dict):
+                return web.Response(
+                    status=400,
+                    text="Invalid request body",
+                    headers={
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Methods": "POST, OPTIONS",
+                        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+                    },
+                )
             provider_id = body.get("provider_id", "builtin")  # Default to built-in provider
             credentials = body.get("credentials", {})
             return_url = body.get("return_url")  # Optional return URL for redirect after login
