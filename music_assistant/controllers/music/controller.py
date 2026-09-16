@@ -345,15 +345,15 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self.config = config
         # setup library database
         await self._setup_database()
+
+    async def post_setup(self) -> None:
+        """Handle logic after all core controllers have been set up."""
         # make sure to finish any removal jobs
         for removed_provider in cast(
             "list[str]",
             self.mass.config.get_raw_core_config_value(self.domain, CONF_DELETED_PROVIDERS, []),
         ):
             await self.cleanup_provider(removed_provider)
-
-    async def post_setup(self) -> None:
-        """Handle logic after all core controllers have been set up."""
         self._register_database_cleanup_task()
         self._register_provider_mapping_correction_task()
         self._restore_track_reconciliation_state()
