@@ -21,9 +21,25 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.mp3")
 
 ID3V2_HEADER_SIZE: Final[int] = 10
-# enough to find the first frame header behind the tag, past a little padding
-FIRST_FRAME_WINDOW: Final[int] = 512
+# room for two of the largest frames (2880 bytes at MPEG 2.5 layer II), past a little padding
+FIRST_FRAME_WINDOW: Final[int] = 4096
 PROBE_TIMEOUT: Final[float] = 3.0
+
+# kbps per bitrate index 1-14, keyed by (is_mpeg1, layer bits)
+_BITRATES: Final[dict[tuple[bool, int], tuple[int, ...]]] = {
+    (True, 0b11): (32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448),
+    (True, 0b10): (32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384),
+    (True, 0b01): (32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320),
+    (False, 0b11): (32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256),
+    (False, 0b10): (8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160),
+    (False, 0b01): (8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160),
+}
+# Hz per sample rate index 0-2, keyed by version bits (MPEG 2.5, MPEG 2, MPEG 1)
+_SAMPLE_RATES: Final[dict[int, tuple[int, int, int]]] = {
+    0b00: (11025, 12000, 8000),
+    0b10: (22050, 24000, 16000),
+    0b11: (44100, 48000, 32000),
+}
 
 
 class Mp3SeekHints(NamedTuple):
@@ -120,30 +136,52 @@ def parse_id3v2_tag_size(data: bytes) -> int:
 
 def has_mp3_frame(data: bytes) -> bool:
     """
-    Return whether the data holds a valid MPEG audio frame header.
+    Return whether the data holds MPEG audio: a valid frame directly followed by a matching one.
 
     :param data: Bytes starting where the audio is expected to begin.
     """
-    return any(_is_frame_header(data[offset : offset + 4]) for offset in range(len(data) - 3))
+    for offset in range(len(data) - 3):
+        if (frame := _parse_frame_header(data[offset : offset + 4])) is None:
+            continue
+        length, stream_format = frame
+        next_offset = offset + length
+        if (
+            next_frame := _parse_frame_header(data[next_offset : next_offset + 4])
+        ) is not None and next_frame[1] == stream_format:
+            return True
+    return False
 
 
-def _is_frame_header(header: bytes) -> bool:
+def _parse_frame_header(header: bytes) -> tuple[int, tuple[int, int]] | None:
     """
-    Return whether the bytes are a valid 4-byte MPEG audio frame header.
+    Parse a 4-byte MPEG audio frame header.
+
+    Returns the frame length in bytes plus a key for the stream format (version, layer and
+    sample rate), or None when the bytes are not a valid header.
 
     :param header: The four candidate header bytes.
     """
-    if header[0] != 0xFF or header[1] & 0xE0 != 0xE0:
-        return False
+    if len(header) < 4 or header[0] != 0xFF or header[1] & 0xE0 != 0xE0:
+        return None
     version = (header[1] >> 3) & 0x03
     layer = (header[1] >> 1) & 0x03
     bitrate_index = header[2] >> 4
     sample_rate_index = (header[2] >> 2) & 0x03
     # reserved values, and free-format bitrate which nothing we care about uses;
     # the reserved layer also rules out AAC ADTS, which shares the sync word
-    return not (
-        version == 0b01 or layer == 0b00 or bitrate_index in (0, 0x0F) or sample_rate_index == 3
-    )
+    if version == 0b01 or layer == 0b00 or bitrate_index in (0, 0x0F) or sample_rate_index == 3:
+        return None
+    is_mpeg1 = version == 0b11
+    bitrate = _BITRATES[(is_mpeg1, layer)][bitrate_index - 1] * 1000
+    sample_rate = _SAMPLE_RATES[version][sample_rate_index]
+    padding = (header[2] >> 1) & 0x01
+    if layer == 0b11:
+        length = (12 * bitrate // sample_rate + padding) * 4
+    else:
+        # layer III outside MPEG 1 carries half the samples per frame
+        slots = 72 if layer == 0b01 and not is_mpeg1 else 144
+        length = slots * bitrate // sample_rate + padding
+    return length, (version << 2 | layer, sample_rate_index)
 
 
 async def _fetch_range(
@@ -156,6 +194,8 @@ async def _fetch_range(
     """
     Fetch a byte range, or return None when the server does not serve it as a range.
 
+    :raises ClientResponseError: When the server answers with an error status.
+
     :param http_session: The HTTP session to fetch with.
     :param url: URL of the file.
     :param headers: HTTP headers to send along.
@@ -167,6 +207,8 @@ async def _fetch_range(
         if resp.status != 206:
             # a server ignoring the range would send the whole file, drop the connection
             resp.close()
+            # an error status may be temporary, so it fails the probe instead of answering it
+            resp.raise_for_status()
             return None
         data = b""
         while len(data) < length and (chunk := await resp.content.read(length - len(data))):

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any, cast
+from unittest.mock import MagicMock
 
 import pytest
-from aiohttp import ClientConnectionError, ClientSession
+from aiohttp import ClientConnectionError, ClientResponseError, ClientSession
 
 from music_assistant.helpers.audio import HTTP_HEADERS
 from music_assistant.helpers.mp3 import (
@@ -27,10 +28,14 @@ _STEREO = 0x00
 _MONO = 0xC0
 
 
+# frame length for bitrate index 9 at the first sample rate of each version
+_FRAME_LENGTHS = {_MPEG1: 417, _MPEG2: 261, _MPEG25: 522, _MPEG1_LAYER2: 522}
+
+
 def _frame(version: int = _MPEG1, mode: int = _STEREO, tag: bytes = b"") -> bytes:
-    """Build a 128 kbps frame, with an optional Info/Xing tag where MPEG1 stereo keeps it."""
+    """Build a full-length frame, with an optional Info/Xing tag where MPEG1 stereo keeps it."""
     header = bytes([0xFF, version, 0x90, mode])
-    body = bytearray(400)
+    body = bytearray(_FRAME_LENGTHS[version] - 4)
     body[32 : 32 + len(tag)] = tag
     return header + bytes(body)
 
@@ -64,13 +69,20 @@ class _FakeResponse:
     def close(self) -> None:
         self.closed = True
 
+    def raise_for_status(self) -> None:
+        if self.status >= 400:
+            raise ClientResponseError(MagicMock(), (), status=self.status)
+
 
 class _FakeSession:
     """HTTP session double serving a byte blob, with switches for misbehaving servers."""
 
-    def __init__(self, blob: bytes, *, honour_range: bool = True, delay: float = 0) -> None:
+    def __init__(
+        self, blob: bytes, *, honour_range: bool = True, delay: float = 0, status: int = 206
+    ) -> None:
         self.blob = blob
         self.honour_range = honour_range
+        self.status = status
         self.delay = delay
         self.requests: list[dict[str, str]] = []
         self.responses: list[_FakeResponse] = []
@@ -86,7 +98,9 @@ class _FakeSession:
             async def __aenter__(self) -> _FakeResponse:
                 if session.delay:
                     await asyncio.sleep(session.delay)
-                if not session.honour_range:
+                if session.status != 206:
+                    resp = _FakeResponse(session.status, b"")
+                elif not session.honour_range:
                     resp = _FakeResponse(200, session.blob)
                 else:
                     start, end = headers["Range"].removeprefix("bytes=").split("-")
@@ -140,14 +154,21 @@ def test_parse_id3v2_tag_size(data: bytes, expected: int) -> None:
 @pytest.mark.parametrize(
     ("data", "expected"),
     [
-        (_frame(_MPEG1, _STEREO), True),
-        (_frame(_MPEG1, _MONO), True),
-        (_frame(_MPEG2, _STEREO), True),
-        (_frame(_MPEG25, _MONO), True),
-        (_frame(_MPEG1_LAYER2, _STEREO), True),
-        (_frame(tag=b"Xing"), True),
-        # leading junk before the frame is scanned past
-        (b"\x00\x00\x00" + _frame(), True),
+        (_frame(_MPEG1, _STEREO) * 2, True),
+        (_frame(_MPEG1, _MONO) * 2, True),
+        (_frame(_MPEG2, _STEREO) * 2, True),
+        (_frame(_MPEG25, _MONO) * 2, True),
+        (_frame(_MPEG1_LAYER2, _STEREO) * 2, True),
+        (_frame(tag=b"Xing") + _frame(), True),
+        # a padded frame is one byte longer
+        (b"\xff\xfb\x92\x00" + bytes(414) + _frame(), True),
+        # leading junk before the frames is scanned past
+        (b"\x00\x00\x00" + _frame() * 2, True),
+        # a lone header proves nothing: it has to be followed by a matching frame
+        (_frame() + bytes(500), False),
+        (_frame(), False),
+        (_frame() + b"\x00" + _frame(), False),
+        (_frame(_MPEG1) + _frame(_MPEG2), False),
         # AAC ADTS shares the sync word but uses the reserved layer
         (b"\xff\xf1\x50\x80" + bytes(400), False),
         (b"\xff\xfb\xf0\x00" + bytes(400), False),
@@ -165,7 +186,12 @@ def test_parse_id3v2_tag_size(data: bytes, expected: int) -> None:
         "mpeg25-mono",
         "layer2",
         "vbr-header",
+        "padded",
         "leading-junk",
+        "lone-header",
+        "single-frame",
+        "misaligned",
+        "format-change",
         "adts",
         "bad-bitrate",
         "free-format",
@@ -177,7 +203,7 @@ def test_parse_id3v2_tag_size(data: bytes, expected: int) -> None:
     ],
 )
 def test_has_mp3_frame(data: bytes, *, expected: bool) -> None:
-    """Only a valid MPEG audio frame header counts, wherever it sits in the window."""
+    """Only a valid frame followed by a matching one counts, wherever it sits in the window."""
     assert has_mp3_frame(data) is expected
 
 
@@ -192,6 +218,11 @@ def test_ffmpeg_http_headers() -> None:
         "Authorization": "Bearer x",
         "X-Empty": "",
     }
+    # valueless flags in between do not shift which value belongs to which option
+    assert ffmpeg_http_headers(["-re", "-user_agent", "Test/1.0", "-y", "-headers", "A: b"]) == {
+        "User-Agent": "Test/1.0",
+        "A": "b",
+    }
 
 
 @pytest.mark.asyncio
@@ -199,10 +230,14 @@ def test_ffmpeg_http_headers() -> None:
     ("blob", "expected"),
     [
         (_id3_tag(2000) + _frame(tag=b"Info") * 3, Mp3SeekHints(True, 2010)),
-        (_id3_tag(2000, version=4, flags=0x10) + _frame(tag=b"Xing"), Mp3SeekHints(True, 2020)),
+        (
+            _id3_tag(2000, version=4, flags=0x10) + _frame(tag=b"Xing") * 2,
+            Mp3SeekHints(True, 2020),
+        ),
         (_frame(tag=b"Info") * 3, Mp3SeekHints(True, 0)),
         (_frame() * 3, Mp3SeekHints(True, 0)),
-        (_id3_tag(2000) + _id3_tag(2000) + _frame(tag=b"Info"), NO_SEEK_HINTS),
+        (_id3_tag(2000) + _id3_tag(8000) + _frame(tag=b"Info") * 3, NO_SEEK_HINTS),
+        (_frame(tag=b"Info") + bytes(5000), NO_SEEK_HINTS),
         (b"fLaC" + bytes(2000), NO_SEEK_HINTS),
         (bytes(range(256)) * 8, NO_SEEK_HINTS),
         (_id3_tag(2000), NO_SEEK_HINTS),
@@ -213,6 +248,7 @@ def test_ffmpeg_http_headers() -> None:
         "cbr-no-tag",
         "no-header-no-tag",
         "stacked",
+        "lone-frame",
         "flac",
         "junk",
         "eof",
@@ -235,6 +271,15 @@ async def test_probe_mp3_seek_hints_range_ignored() -> None:
     assert await probe_mp3_seek_hints(_session(session), "http://x/a.mp3", {}) == NO_SEEK_HINTS
     assert len(session.responses) == 1
     assert session.responses[0].closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [404, 429, 503])
+async def test_probe_mp3_seek_hints_error_status(status: int) -> None:
+    """An error status may pass, so it fails the probe rather than ruling the file out."""
+    session = _FakeSession(_frame() * 3, status=status)
+
+    assert await probe_mp3_seek_hints(_session(session), "http://x/a.mp3", {}) is None
 
 
 @pytest.mark.asyncio
