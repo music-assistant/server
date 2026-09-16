@@ -61,6 +61,13 @@ class RaumfeldPlayer(Player):
         self._attr_poll_interval = FAST_POLL_INTERVAL
         # timestamp of the last play/resume command, used to poll fast during startup
         self._play_started_at = 0.0
+        # the next queue item MA handed us; the device has no SetNextAVTransportURI so we
+        # play it ourselves when the current track ends (see poll())
+        self._next_media: PlayerMedia | None = None
+        # whether a track is playing that should auto-advance when it finishes, and the
+        # playing-state seen on the previous poll (used to detect a track ending)
+        self._advance_armed = False
+        self._prev_playing = False
         self._attr_device_info = DeviceInfo(model="Raumfeld", manufacturer="Teufel")
         # Expose the room's media-renderer UUID and IP so Music Assistant links this
         # native player to the same device's DLNA/Chromecast/Sendspin representations
@@ -112,6 +119,7 @@ class RaumfeldPlayer(Player):
 
     async def stop(self) -> None:
         """Send STOP command."""
+        self._advance_armed = False
         await self.raumfeld.host.async_zone_stop(self._current_zone())
         self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
@@ -120,8 +128,13 @@ class RaumfeldPlayer(Player):
         """Handle PLAY MEDIA: point the room's zone at the MA stream URL."""
         zone = self._current_zone()
         self._mark_play_started()
+        self._next_media = None
+        self._advance_armed = True
         url = await self.mass.streams.resolve_stream_url(self.player_id, media)
         didl_metadata = create_didl_metadata(media, url)
+        # stop first so the renderer cleanly loads the new URI (a seek/next re-streams a
+        # different URL); without this it may keep playing the previous stream
+        await self.raumfeld.host.async_zone_stop(zone)
         await self.raumfeld.host.async_set_av_transport_uri(zone, url, didl_metadata)
         await self.raumfeld.host.async_zone_play(zone)
         # optimistic state update; poll() will reconcile with the device
@@ -131,10 +144,9 @@ class RaumfeldPlayer(Player):
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item."""
-        # Raumfeld zone renderers have no SetNextAVTransportURI, so the next item can't be
-        # pre-buffered for gapless playback. ENQUEUE is only declared to keep MA out of
-        # (non-resumable) flow mode; the queue controller then plays each item on its own.
-        self.logger.debug("enqueue_next_media not supported natively for %s", self.room)
+        # Raumfeld zone renderers have no SetNextAVTransportURI, so we can't hand the next
+        # item to the device; keep it and play it ourselves when the current track ends.
+        self._next_media = media
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command (Raumfeld volume is 0-100, same as MA)."""
@@ -198,12 +210,14 @@ class RaumfeldPlayer(Player):
 
         # Playback state (per zone). GetTransportInfo -> CurrentTransportState.
         playing = False
+        transport_ok = False
         try:
             transport = await host.async_get_transport_info(zone)
             self._attr_playback_state = _map_transport_state(
                 (transport or {}).get("CurrentTransportState")
             )
             playing = self._attr_playback_state == PlaybackState.PLAYING
+            transport_ok = True
         except HOST_ERRORS as err:
             self.logger.debug("Failed to read transport info for zone %s: %r", zone, err)
 
@@ -263,7 +277,23 @@ class RaumfeldPlayer(Player):
         recently_started = (time.time() - self._play_started_at) < STARTUP_POLL_WINDOW
         self._attr_poll_interval = FAST_POLL_INTERVAL if (playing or recently_started) else 15
 
+        # the renderer can't pre-enqueue the next track, so advance the queue ourselves
+        if transport_ok:
+            self._maybe_advance(playing, recently_started)
+
         self.update_state()
+
+    def _maybe_advance(self, playing: bool, recently_started: bool) -> None:
+        """Play the next queue item when the current track has finished."""
+        # a track that was playing and is now stopped - outside the startup transition and
+        # not a user stop (which disarms) - has ended on its own
+        if self._advance_armed and self._prev_playing and not playing and not recently_started:
+            if self._next_media is not None:
+                next_media, self._next_media = self._next_media, None
+                self.mass.create_task(self.play_media(next_media))
+            else:
+                self._advance_armed = False
+        self._prev_playing = playing
 
     def _mark_play_started(self) -> None:
         """Record a play/resume command and switch to fast polling."""
