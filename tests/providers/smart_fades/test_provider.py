@@ -330,18 +330,24 @@ async def test_extended_analysis_fields(
     assert analysis.bpm is not None
     assert 115 < analysis.bpm < 125
 
-    # v2: per-band RMS envelopes in extra_data, normalized by the full-band peak
-    assert analysis.extra_data is not None
-    band_rms = analysis.extra_data["band_rms"]
-    assert set(band_rms) == {"low", "low_mid", "mid", "high"}
+    # v2: per-band RMS envelopes in typed fields, normalized by the full-band peak
+    assert analysis.extra_data is None
+    band_rms = {
+        "low": analysis.band_rms_low,
+        "low_mid": analysis.band_rms_low_mid,
+        "mid": analysis.band_rms_mid,
+        "high": analysis.band_rms_high,
+    }
     for band in band_rms.values():
+        assert band is not None
         assert len(band) == 1800
         assert all(v >= 0.0 for v in band)
     # music with drums has real low-band content; bands are lists (JSON-safe)
     assert isinstance(band_rms["low"], list)
     assert max(band_rms["low"]) > 0.05
 
-    vocal_probabilities = analysis.extra_data["vocal_activity"]
+    vocal_probabilities = analysis.vocal_activity
+    assert vocal_probabilities is not None
     assert len(vocal_probabilities) == 1800
     assert all(math.isfinite(value) and 0.0 <= value <= 1.0 for value in vocal_probabilities)
 
