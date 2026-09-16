@@ -188,13 +188,14 @@ async def _seed_legacy(db: DatabaseConnection, n_analysis: int, n_failures: int)
 async def test_relocates_legacy_rows_and_drops_legacy_tables(
     library_db: DatabaseConnection, tmp_path: pathlib.Path
 ) -> None:
-    """Legacy rows are copied over with ids/timestamps preserved, then the source table drops."""
+    """Legacy rows are copied over with fresh ids, timestamps preserved, source table dropped."""
     await _seed_legacy(library_db, n_analysis=4, n_failures=2)
     ctrl = _make_controller(library_db, tmp_path)
     await ctrl.setup_database()
 
-    moved = await library_db.get_rows(AA_TABLE_ANALYSIS, order_by="id", limit=0)
-    assert [r["id"] for r in moved] == [1, 4, 7, 10]
+    moved = await library_db.get_rows(AA_TABLE_ANALYSIS, order_by="timestamp_created", limit=0)
+    assert [r["id"] for r in moved] == [1, 2, 3, 4]  # fresh aa-assigned ids, not the legacy ones
+    assert [r["item_id"] for r in moved] == ["t0", "t1", "t2", "t3"]
     assert [r["timestamp_created"] for r in moved] == [1000, 1001, 1002, 1003]
     assert moved[2]["analysis_data"] == '{"loudness_integrated": -2}'
     assert moved[2]["analysis_version"] == 2
@@ -252,11 +253,56 @@ async def test_relocation_is_resumable_after_partial_copy(
     ctrl = _make_controller(library_db, tmp_path)
     await ctrl.setup_database()  # attaches and creates empty aa tables
     await _seed_legacy(library_db, n_analysis=3, n_failures=0)
+    # seed the partial copy by natural key: t0 already relocated (with a fresh aa id),
+    # matching what a real partial run leaves behind
     await library_db.execute(
-        f"INSERT INTO {AA_TABLE_ANALYSIS} SELECT * FROM main.{DB_TABLE_AUDIO_ANALYSIS} WHERE id = 1"
+        f"INSERT INTO {AA_TABLE_ANALYSIS}"
+        "(media_type, item_id, provider, aa_provider_domain, analysis_data, "
+        " analysis_version, timestamp_created) "
+        f"SELECT media_type, item_id, provider, aa_provider_domain, analysis_data, "
+        f"analysis_version, timestamp_created FROM main.{DB_TABLE_AUDIO_ANALYSIS} "
+        "WHERE item_id = 't0'"
     )
     await library_db.commit()
     await ctrl.setup_database()
-    moved = await library_db.get_rows(AA_TABLE_ANALYSIS, order_by="id", limit=0)
-    assert [r["id"] for r in moved] == [1, 4, 7]
+    moved = await library_db.get_rows(AA_TABLE_ANALYSIS, limit=0)
+    assert {r["item_id"] for r in moved} == {"t0", "t1", "t2"}
+    assert DB_TABLE_AUDIO_ANALYSIS not in await _table_names(library_db, "main")
+
+
+@pytest.mark.asyncio
+async def test_relocation_survives_live_writes_after_failed_attempt(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live write claiming aa's next id after a failed attempt must not mask missing rows."""
+    await _seed_legacy(library_db, n_analysis=3, n_failures=0)
+    ctrl = _make_controller(library_db, tmp_path)
+    real_execute = library_db.execute
+
+    async def failing_execute(query: str, values: dict[str, Any] | None = None) -> Any:
+        if query.lstrip().upper().startswith("INSERT OR IGNORE INTO AA."):
+            raise sqlite3.OperationalError("disk I/O error")
+        return await real_execute(query, values)
+
+    monkeypatch.setattr(library_db, "execute", failing_execute)
+    await ctrl.setup_database()
+    assert DB_TABLE_AUDIO_ANALYSIS in await _table_names(library_db, "main")
+
+    monkeypatch.setattr(library_db, "execute", real_execute)
+    # a live analysis write lands in aa in the meantime, consuming aa's own AUTOINCREMENT id
+    await library_db.insert_or_replace(
+        AA_TABLE_ANALYSIS,
+        {
+            "media_type": "track",
+            "item_id": "live1",
+            "provider": "fs--a",
+            "aa_provider_domain": "loudness_analysis",
+            "analysis_data": "{}",
+            "analysis_version": 1,
+        },
+    )
+
+    await ctrl.setup_database()
+    moved = await library_db.get_rows(AA_TABLE_ANALYSIS, limit=0)
+    assert {r["item_id"] for r in moved} == {"t0", "t1", "t2", "live1"}
     assert DB_TABLE_AUDIO_ANALYSIS not in await _table_names(library_db, "main")
