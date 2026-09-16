@@ -4962,6 +4962,9 @@ class StreamsAudio:
             self._mp3_seek_hints.move_to_end(cache_key)
         else:
             hints = await probe_mp3_seek_hints(self.mass.http_session, audio_source, headers)
+            if hints is None:
+                self.logger.debug("Could not probe %s for seek hints", streamdetails.uri)
+                return []
             self._mp3_seek_hints[cache_key] = hints
             while len(self._mp3_seek_hints) > MP3_SEEK_HINTS_CACHE_SIZE:
                 self._mp3_seek_hints.popitem(last=False)

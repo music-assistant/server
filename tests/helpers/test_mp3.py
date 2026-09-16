@@ -244,12 +244,12 @@ async def test_probe_mp3_seek_hints_timeout() -> None:
 
     hints = await probe_mp3_seek_hints(_session(session), "http://x/a.mp3", {}, timeout=0.01)
 
-    assert hints == NO_SEEK_HINTS
+    assert hints is None
 
 
 @pytest.mark.asyncio
 async def test_probe_mp3_seek_hints_http_error() -> None:
-    """A failing request gives no hints and does not raise."""
+    """A failing request reports that the file could not be probed, without raising."""
 
     class _BrokenSession:
         def get(self, *_args: object, **_kwargs: object) -> Any:
@@ -257,4 +257,4 @@ async def test_probe_mp3_seek_hints_http_error() -> None:
 
     hints = await probe_mp3_seek_hints(_session(_BrokenSession()), "http://x/a.mp3", {})
 
-    assert hints == NO_SEEK_HINTS
+    assert hints is None

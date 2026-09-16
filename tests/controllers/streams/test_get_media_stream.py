@@ -83,12 +83,12 @@ class _FakeProbe:
     """Stand-in for the remote MP3 probe that records the URLs and headers it is asked for."""
 
     def __init__(self) -> None:
-        self.result = NO_SEEK_HINTS
+        self.result: Mp3SeekHints | None = NO_SEEK_HINTS
         self.calls: list[tuple[str, dict[str, str]]] = []
 
     async def __call__(
         self, _http_session: object, url: str, headers: dict[str, str]
-    ) -> Mp3SeekHints:
+    ) -> Mp3SeekHints | None:
         self.calls.append((url, headers))
         return self.result
 
@@ -964,13 +964,14 @@ _FASTSEEK_ARGS = ["-fflags", "+fastseek"]
         (Mp3SeekHints(0, True), _FASTSEEK_ARGS),
         (Mp3SeekHints(0, False), []),
         (NO_SEEK_HINTS, []),
+        (None, []),
     ],
-    ids=["cbr-tag", "vbr-tag", "cbr-no-tag", "vbr-no-tag", "probe-failed"],
+    ids=["cbr-tag", "vbr-tag", "cbr-no-tag", "vbr-no-tag", "no-shortcut", "probe-failed"],
 )
 async def test_get_media_stream_speeds_up_remote_mp3_seek(
     patch_ffmpeg: type[_FakeFFMpeg],
     mp3_probe: _FakeProbe,
-    hints: Mp3SeekHints,
+    hints: Mp3SeekHints | None,
     expected_args: list[str],
 ) -> None:
     """A remote MP3 seek skips the ID3 tag, and seeks by bitrate only for CBR."""
@@ -997,7 +998,7 @@ async def test_get_media_stream_probes_remote_mp3_once_per_url(
     patch_ffmpeg: type[_FakeFFMpeg],
     mp3_probe: _FakeProbe,
 ) -> None:
-    """Further seeks in the same episode reuse the probe, including a failed one."""
+    """Further seeks in the same episode reuse the probe, also when it found no shortcut."""
     audio = _make_audio_controller()
 
     for hints in (Mp3SeekHints(100, True), NO_SEEK_HINTS):
@@ -1016,12 +1017,23 @@ async def test_get_media_stream_probes_remote_mp3_once_per_url(
     assert patch_ffmpeg.last_instance is not None
     assert patch_ffmpeg.last_instance.extra_input_args == [*_PROVIDER_INPUT_ARGS, "-ss", "1200"]
 
+    # a probe that could not reach the server is retried on the next seek
+    mp3_probe.result = None
+    mp3_probe.calls.clear()
+    streamdetails.path = "http://test.invalid/unreachable.mp3"
+    for seek_position in (600, 1200):
+        await _drain(
+            audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=seek_position)
+        )
+    assert len(mp3_probe.calls) == 2
+
     # another user agent may get another answer from the server
     streamdetails = _seekable_streamdetails()
     streamdetails.path = "http://test.invalid/100.mp3"
     streamdetails.extra_input_args = ["-user_agent", "Other/2.0"]
+    mp3_probe.calls.clear()
     await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=600))
-    assert len(mp3_probe.calls) == 2
+    assert len(mp3_probe.calls) == 1
 
 
 @pytest.mark.asyncio

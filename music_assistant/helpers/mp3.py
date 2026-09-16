@@ -7,6 +7,8 @@ import logging
 from itertools import pairwise
 from typing import TYPE_CHECKING, Final, NamedTuple
 
+from aiohttp import ClientError
+
 from music_assistant.constants import MASS_LOGGER_NAME
 
 from .audio import HTTP_HEADERS
@@ -49,11 +51,12 @@ async def probe_mp3_seek_hints(
     url: str,
     headers: dict[str, str],
     timeout: float = PROBE_TIMEOUT,
-) -> Mp3SeekHints:
+) -> Mp3SeekHints | None:
     """
     Read the head of a remote MP3 to find out how ffmpeg can seek in it quickly.
 
-    Never raises: anything unexpected returns NO_SEEK_HINTS, which leaves the seek as it was.
+    Returns NO_SEEK_HINTS when the file offers no shortcut, and None when it could not be
+    read (timeout or network error), in which case asking again later may still succeed.
 
     :param http_session: The HTTP session to fetch the byte ranges with.
     :param url: URL of the MP3 file.
@@ -78,9 +81,10 @@ async def probe_mp3_seek_hints(
             if is_cbr is None:
                 return NO_SEEK_HINTS
             return Mp3SeekHints(skip_bytes, is_cbr)
-    except Exception as err:
-        LOGGER.debug("Unable to probe %s for seek hints: %s", url, err)
-        return NO_SEEK_HINTS
+    except (ClientError, OSError, TimeoutError) as err:
+        # the url may carry credentials, so it stays out of the log
+        LOGGER.debug("Unable to probe MP3 for seek hints: %s", err.__class__.__name__)
+        return None
 
 
 def ffmpeg_http_headers(extra_input_args: Sequence[str]) -> dict[str, str]:
