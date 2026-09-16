@@ -66,7 +66,6 @@ AA_TABLE_SETTINGS: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_SETTINGS}"
 # Legacy rows are copied out of library.db in id ranges of this size, one transaction each.
 RELOCATE_BATCH_SIZE: Final[int] = 5000
 _ANALYSIS_COLUMNS: Final[tuple[str, ...]] = (
-    "id",
     "media_type",
     "item_id",
     "provider",
@@ -76,7 +75,6 @@ _ANALYSIS_COLUMNS: Final[tuple[str, ...]] = (
     "timestamp_created",
 )
 _FAILURE_COLUMNS: Final[tuple[str, ...]] = (
-    "id",
     "media_type",
     "item_id",
     "provider",
@@ -1090,7 +1088,19 @@ class AudioAnalysisController:
         return count
 
     async def _relocate_legacy_table(self, table: str, columns: tuple[str, ...]) -> None:
-        """Copy a legacy main.<table> into the attached db in id batches, then drop it."""
+        """
+        Copy a legacy main.<table> into the attached db in id batches, then drop it.
+
+        Rows are copied without their legacy id: the attached db assigns fresh ids via its
+        own AUTOINCREMENT, and INSERT OR IGNORE resumes on the natural (item_id, provider,
+        aa_provider_domain, media_type) key instead, so a row already present — from an
+        earlier partial run, or from a live write made since — is skipped rather than
+        duplicated or colliding with an unrelated legacy id. Completion is verified by that
+        same natural key before the legacy table is dropped, not by comparing row counts.
+
+        :param table: Name of the legacy table in library.db (main schema) to relocate.
+        :param columns: Column names (excluding id) shared by main.<table> and aa.<table>.
+        """
         db = self.mass.music.database
         exists = await db.get_rows_from_query(
             "SELECT 1 FROM main.sqlite_master WHERE type = 'table' AND name = :name",
@@ -1125,13 +1135,20 @@ class AudioAnalysisController:
                 copied += cursor.rowcount
                 last_id += RELOCATE_BATCH_SIZE
                 self.logger.debug("Moved %s/%s rows of %s", min(copied, total), total, table)
-            moved_total = await db.get_count_from_query(f"SELECT id FROM {AA_DB_SCHEMA}.{table}")
-            if moved_total < total:
+            # verify by natural key, not row count: a live write can consume aa's own
+            # AUTOINCREMENT sequence, so aa's count alone can't prove every legacy row landed
+            missing = await db.get_count_from_query(
+                f"SELECT m.id FROM main.{table} m WHERE NOT EXISTS ("
+                f"SELECT 1 FROM {AA_DB_SCHEMA}.{table} a "
+                f"WHERE a.item_id = m.item_id AND a.provider = m.provider "
+                f"AND a.aa_provider_domain = m.aa_provider_domain AND a.media_type = m.media_type)"
+            )
+            if missing:
                 self.logger.error(
-                    "Relocation of %s incomplete (%s of %s rows present in %s); "
+                    "Relocation of %s incomplete (%s of %s rows still unmigrated in %s); "
                     "keeping the library.db copy and retrying on next start",
                     table,
-                    moved_total,
+                    missing,
                     total,
                     AA_DB_FILENAME,
                 )
