@@ -63,7 +63,7 @@ def _instrumental_vs_vocal_ctx() -> TransitionContext:
         rms_energy=[0.8] * 1800,
         key="C",
         mode="minor",
-        extra_data={"vocal_activity": [0.0] * 1800},
+        vocal_activity=[0.0] * 1800,
     )
     aa_in = AudioAnalysisData(
         duration=180.0,
@@ -74,7 +74,7 @@ def _instrumental_vs_vocal_ctx() -> TransitionContext:
         rms_energy=[0.8] * 1800,
         key="C",
         mode="minor",
-        extra_data={"vocal_activity": [0.9] * 1800},
+        vocal_activity=[0.9] * 1800,
     )
     return build_transition_context(aa_out, aa_in, 45.0, logging.getLogger("test"))
 
@@ -307,7 +307,7 @@ def _ambient_unblendable_ctx() -> tuple[AudioAnalysisData, AudioAnalysisData]:
         rms_energy=rms_energy,
         key="C",
         mode="minor",
-        extra_data={"vocal_activity": [0.0] * 1800},
+        vocal_activity=[0.0] * 1800,
     )
     full_beats = [i * 60 / 128 for i in range(int(45 * 128 / 60))]
     aa_in = AudioAnalysisData(
@@ -319,7 +319,7 @@ def _ambient_unblendable_ctx() -> tuple[AudioAnalysisData, AudioAnalysisData]:
         rms_energy=[0.8] * 1800,
         key="C",
         mode="minor",
-        extra_data={"vocal_activity": [0.0] * 1800},
+        vocal_activity=[0.0] * 1800,
     )
     return aa_out, aa_in
 
@@ -399,7 +399,7 @@ def _lazy_gate_outgoing() -> AudioAnalysisData:
         rms_energy=rms_energy,
         key="A",
         mode="minor",
-        extra_data={"vocal_activity": [0.0] * 1800},
+        vocal_activity=[0.0] * 1800,
     )
 
 
@@ -421,7 +421,7 @@ def _lazy_gate_incoming(vocal_run: tuple[float, float]) -> AudioAnalysisData:
         rms_energy=[0.8] * 1800,
         key="A",
         mode="minor",
-        extra_data={"vocal_activity": vocal_activity},
+        vocal_activity=vocal_activity,
     )
 
 
