@@ -31,6 +31,11 @@ RECONNECT_INTERVAL = 30
 # Player id prefix so ids are namespaced and stable-ish per room.
 PLAYER_ID_PREFIX = "raumfeld"
 
+# Domain of MA's built-in DLNA player provider. The Raumfeld host exposes a UPnP
+# MediaRenderer per room and per (dynamic) zone on its own IP; the DLNA provider
+# discovers those as duplicate players, which we suppress (see the provider).
+DLNA_DOMAIN = "dlna"
+
 # Raumfeld renderers are hi-res capable up to 24-bit/192kHz. Declaring the supported
 # (sample_rate, bit_depth) pairs lets MA output each source at its native rate (so 24-bit
 # lossless passes through) without the user having to enable rates by hand.

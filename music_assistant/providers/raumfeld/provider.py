@@ -23,12 +23,14 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import urlparse
 
 import hassfeld
+from music_assistant_models.enums import IdentifierType
 
-from music_assistant.constants import CONF_IP_ADDRESS, CONF_PORT
+from music_assistant.constants import ATTR_ENABLED, CONF_IP_ADDRESS, CONF_PORT
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
     DEFAULT_PORT,
+    DLNA_DOMAIN,
     HOST_ERRORS,
     INITIAL_UPDATE_TIMEOUT,
     RECONNECT_INTERVAL,
@@ -119,8 +121,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
                     # host still healthy: re-sync so a room that (re)appeared or vanished
                     # (e.g. a speaker returning from deep standby) is registered / marked
                     # available again without needing a full reconnect
-                    await self._sync_rooms()
-                    self._sync_groups()
+                    await self._resync()
             except asyncio.CancelledError:
                 raise
             except HOST_ERRORS as err:
@@ -152,11 +153,10 @@ class RaumfeldPlayerProvider(PlayerProvider):
             )
             await self._disconnect("initial update timed out")
             return
-        await self._sync_rooms()
-        # reflect any existing Raumfeld zones into MA's group state so a group that
-        # survived a restart is shown (and controllable) instead of appearing as solo
-        # players that still play together
-        self._sync_groups()
+        # register rooms, reflect any existing Raumfeld zones into MA's group state (so a
+        # group that survived a restart stays controllable) and suppress the host's shadow
+        # DLNA renderers
+        await self._resync()
         self._connected = True
         self.logger.info("Connected to Raumfeld host %s", self._host_address)
 
@@ -171,6 +171,45 @@ class RaumfeldPlayerProvider(PlayerProvider):
         for player in self.players:
             if isinstance(player, RaumfeldPlayer):
                 player.set_available(False)
+
+    async def _resync(self) -> None:
+        """Re-register rooms, mirror zones into group state and suppress shadow renderers."""
+        await self._sync_rooms()
+        self._sync_groups()
+        await self._suppress_host_shadow_renderers()
+
+    async def _suppress_host_shadow_renderers(self) -> None:
+        """Disable DLNA players that merely shadow this host's own virtual renderers."""
+        host_ip = self._host_address
+        if not host_ip:
+            return
+        # The physical room renderers are real speakers we keep. Everything else the host
+        # exposes on its own IP is a virtual room/zone renderer that duplicates a native
+        # player; the host reassigns those UUIDs over time, so match on the stable trait
+        # (a DLNA renderer on the host IP that is not a physical room renderer) instead.
+        physical = {
+            uuid.lower()
+            for room in self.host.get_rooms()
+            if (uuid := self.resolve_room_renderer(room)[0])
+        }
+        for player in self.mass.players.iter_players(
+            return_disabled=False, return_protocol_players=True
+        ):
+            if player.provider.domain != DLNA_DOMAIN:
+                continue
+            identifiers = player.device_info.identifiers
+            uuid = (identifiers.get(IdentifierType.UUID) or "").lower()
+            if (
+                identifiers.get(IdentifierType.IP_ADDRESS) == host_ip
+                and uuid
+                and uuid not in physical
+            ):
+                self.logger.info(
+                    "Disabling redundant Raumfeld host DLNA renderer '%s' (%s)",
+                    player.display_name,
+                    player.player_id,
+                )
+                await self.mass.config.save_player_config(player.player_id, {ATTR_ENABLED: False})
 
     async def _sync_rooms(self) -> None:
         """Register (or re-activate) a Music Assistant player for every Raumfeld room."""
