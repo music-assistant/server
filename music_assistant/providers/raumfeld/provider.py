@@ -50,6 +50,11 @@ class RaumfeldPlayerProvider(PlayerProvider):
     _update_task: asyncio.Task[None] | None = None
     _connected: bool = False
 
+    @property
+    def host_address(self) -> str:
+        """Return the configured Raumfeld host IP address."""
+        return self._host_address
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider (setup input is in setup_flow)."""
         return ()
@@ -110,6 +115,12 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 elif not await self.host.async_host_is_valid():
                     # stop the update loop so hassfeld's long-polling cannot flood the log
                     await self._disconnect("host became unreachable")
+                else:
+                    # host still healthy: re-sync so a room that (re)appeared or vanished
+                    # (e.g. a speaker returning from deep standby) is registered / marked
+                    # available again without needing a full reconnect
+                    await self._sync_rooms()
+                    self._sync_groups()
             except asyncio.CancelledError:
                 raise
             except HOST_ERRORS as err:
@@ -163,8 +174,9 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
     async def _sync_rooms(self) -> None:
         """Register (or re-activate) a Music Assistant player for every Raumfeld room."""
-        # ``get_rooms`` returns the list of room names known to the host.
-        for room in self.host.get_rooms():
+        # ``get_rooms`` returns the list of room names currently known to the host.
+        rooms = self.host.get_rooms()
+        for room in rooms:
             player_id = room_to_player_id(room)
             if (existing := self.mass.players.get_player(player_id)) is not None:
                 # already registered (e.g. after a reconnect) - just mark it available
@@ -174,6 +186,12 @@ class RaumfeldPlayerProvider(PlayerProvider):
             player = RaumfeldPlayer(provider=self, player_id=player_id, room=room)
             await self.mass.players.register(player)
             self.logger.debug("Registered Raumfeld room '%s' as player %s", room, player_id)
+        # a room the host no longer lists (e.g. a speaker that dropped to deep standby or
+        # left the network) is gone until it returns; show it as unavailable meanwhile
+        present = set(rooms)
+        for known in self.players:
+            if isinstance(known, RaumfeldPlayer) and known.room not in present:
+                known.set_available(False)
 
     def _sync_groups(self) -> None:
         """Mirror the current Raumfeld zones into the players' sync-group state."""

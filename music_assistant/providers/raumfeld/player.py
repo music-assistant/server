@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import DeviceInfo
 
 from music_assistant.helpers.upnp import create_didl_metadata
@@ -29,6 +31,11 @@ STARTUP_POLL_WINDOW = 20
 # expected (extrapolated) position by more than this many seconds. Keeps the progress
 # bar smooth despite the device's 1-second position granularity.
 POSITION_DRIFT_THRESHOLD = 3.0
+# When a room has no addressable zone (e.g. it just detached during a group leadership
+# handover), how many times to (re)create a single-room zone and how long to wait between
+# attempts for the host to actually publish it before giving up.
+ZONE_CREATE_ATTEMPTS = 4
+ZONE_CREATE_RETRY_DELAY = 0.75
 
 
 def _map_transport_state(state: str | None) -> PlaybackState:
@@ -72,13 +79,18 @@ class RaumfeldPlayer(Player):
         # Raumfeld renderers are hi-res capable; declaring the rates lets MA output each
         # source at its native quality (up to 24-bit/192kHz) without manual configuration
         self._attr_supported_sample_rates = SUPPORTED_SAMPLE_RATES
-        # Expose the room's media-renderer UUID and IP so Music Assistant links this
-        # native player to the same device's DLNA/Chromecast/Sendspin representations
+        # Expose the room's media-renderer UUID (and IP) so Music Assistant links this
+        # native player to the same renderer's DLNA/Chromecast/Sendspin representation
         # instead of showing them as duplicate players.
         renderer_uuid, renderer_ip = provider.resolve_room_renderer(room)
         if renderer_uuid:
             self._attr_device_info.add_identifier(IdentifierType.UUID, renderer_uuid)
-        if renderer_ip:
+        # Only add the IP identifier when the renderer lives on its own device. The
+        # Raumfeld host hosts several virtual UPnP renderers on a single IP, so adding
+        # that shared IP would make MA's IP-fallback matching link all of them to the one
+        # room whose renderer runs on the host (the TV room here) - cluttering it with
+        # unrelated DLNA outputs. There the unique renderer UUID is the only safe link.
+        if renderer_ip and renderer_ip != provider.host_address:
             self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, renderer_ip)
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
@@ -127,28 +139,40 @@ class RaumfeldPlayer(Player):
     async def play(self) -> None:
         """Send PLAY/resume command."""
         self._mark_play_started()
-        await self.raumfeld.host.async_zone_play(self._current_zone())
+        try:
+            await self.raumfeld.host.async_zone_play(await self._ensure_playable_zone())
+        except HOST_ERRORS as err:
+            raise PlayerCommandFailed(f"Failed to resume {self.room}: {err!r}") from err
 
     async def stop(self) -> None:
         """Send STOP command."""
         self._advance_armed = False
-        await self.raumfeld.host.async_zone_stop(self._current_zone())
+        # only a room that is part of an active zone has something to stop; a
+        # standby/unassigned room has no zone the host can address
+        if (zone := self._active_zone()) is not None:
+            try:
+                await self.raumfeld.host.async_zone_stop(zone)
+            except HOST_ERRORS as err:
+                self.logger.debug("Failed to stop %s: %r", self.room, err)
         self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA: point the room's zone at the MA stream URL."""
-        zone = self._current_zone()
         self._mark_play_started()
         self._next_media = None
         self._advance_armed = True
         url = await self.mass.streams.resolve_stream_url(self.player_id, media)
         didl_metadata = create_didl_metadata(media, url)
-        # stop first so the renderer cleanly loads the new URI (a seek/next re-streams a
-        # different URL); without this it may keep playing the previous stream
-        await self.raumfeld.host.async_zone_stop(zone)
-        await self.raumfeld.host.async_set_av_transport_uri(zone, url, didl_metadata)
-        await self.raumfeld.host.async_zone_play(zone)
+        try:
+            zone = await self._ensure_playable_zone()
+            # stop first so the renderer cleanly loads the new URI (a seek/next re-streams
+            # a different URL); without this it may keep playing the previous stream
+            await self.raumfeld.host.async_zone_stop(zone)
+            await self.raumfeld.host.async_set_av_transport_uri(zone, url, didl_metadata)
+            await self.raumfeld.host.async_zone_play(zone)
+        except HOST_ERRORS as err:
+            raise PlayerCommandFailed(f"Failed to start playback on {self.room}: {err!r}") from err
         # optimistic state update; poll() will reconcile with the device
         self.set_current_media(uri=url, clear_all=True)
         self._attr_playback_state = PlaybackState.PLAYING
@@ -168,7 +192,9 @@ class RaumfeldPlayer(Player):
 
     async def volume_mute(self, muted: bool) -> None:
         """Send VOLUME_MUTE command for this room's zone."""
-        await self.raumfeld.host.async_set_zone_mute(self._current_zone(), muted)
+        # muting is a zone operation; skip it while the room is not in an active zone
+        if (zone := self._active_zone()) is not None:
+            await self.raumfeld.host.async_set_zone_mute(zone, muted)
         self._attr_volume_muted = muted
         self.update_state()
 
@@ -183,12 +209,21 @@ class RaumfeldPlayer(Player):
         host = self.raumfeld.host
 
         # this player is the group leader and owns the zone: add/drop each member's room
-        for pid in player_ids_to_add or []:
-            if (room := self._player_id_to_room(pid)) is not None:
-                await host.async_add_room_to_zone(room, self._current_zone())
-        for pid in player_ids_to_remove or []:
-            if (room := self._player_id_to_room(pid)) is not None:
-                await host.async_drop_room_from_zone(room, self._current_zone())
+        try:
+            if player_ids_to_add:
+                add_rooms = [
+                    room
+                    for pid in player_ids_to_add
+                    if (room := self._player_id_to_room(pid)) is not None
+                ]
+                await self._add_rooms_to_zone(add_rooms)
+            for pid in player_ids_to_remove or []:
+                if (room := self._player_id_to_room(pid)) is not None:
+                    await host.async_drop_room_from_zone(room, self._active_zone() or [self.room])
+        except HOST_ERRORS as err:
+            raise PlayerCommandFailed(
+                f"Failed to change Raumfeld group for {self.room}: {err!r}"
+            ) from err
 
         # MA side: maintain the leader's member list (source of truth for MA).
         members = dict.fromkeys(self._attr_group_members)
@@ -202,6 +237,21 @@ class RaumfeldPlayer(Player):
         for pid in [*(player_ids_to_add or []), *(player_ids_to_remove or [])]:
             if (member := self.mass.players.get_player(pid)) is not None:
                 member.update_state()
+
+        # a room added to an already-playing Raumfeld zone does not get pulled into the
+        # running stream, so re-push playback to bring the new member into sync. Resume
+        # (rather than a fresh play) keeps the position, and running it deferred avoids
+        # re-entering the player lock held by this command; debounced per leader so
+        # adding several rooms at once only re-syncs once.
+        if player_ids_to_add:
+            queue = self.mass.player_queues.get_active_queue(self.player_id)
+            if queue is not None and queue.state == PlaybackState.PLAYING:
+                self.mass.call_later(
+                    1,
+                    self.mass.player_queues.resume,
+                    queue.queue_id,
+                    task_id=f"raumfeld_resync_{self.player_id}",
+                )
 
     async def poll(self) -> None:
         """Poll the Raumfeld host for this room's current state."""
@@ -321,6 +371,60 @@ class RaumfeldPlayer(Player):
         """Return the room-list of the zone this room currently controls."""
         # a room not in an active multi-room zone is treated as its own single-room zone
         return self.raumfeld.get_zone_for_room(self.room) or [self.room]
+
+    def _active_zone(self) -> list[str] | None:
+        """Return this room's zone if the host can address it, else ``None``."""
+        # get_zone_for_room only lists active zones; double-check the host can still
+        # resolve it to a zone UDN, so callers never hand hassfeld an unknown zone
+        zone = self.raumfeld.get_zone_for_room(self.room)
+        if zone and self.raumfeld.host.roomlst_to_zoneudn(zone) is not None:
+            return zone
+        return None
+
+    async def _ensure_playable_zone(self) -> list[str]:
+        """
+        Return a Raumfeld zone for this room the host can address, creating one if needed.
+
+        A room that is idle/standby (e.g. just left a group) is not part of any active
+        zone, so the host cannot resolve it to a renderer. Create a single-room zone for
+        it first so playback/grouping commands have a target.
+        """
+        if (zone := self._active_zone()) is not None:
+            return zone
+        host = self.raumfeld.host
+        # During a group leadership handover the room is still detaching from its old
+        # zone while we already need it playable, and hassfeld's create-and-wait gives up
+        # silently on a timeout. So (re)create the single-room zone and confirm the host
+        # can actually resolve it before returning, retrying while the state settles.
+        for attempt in range(ZONE_CREATE_ATTEMPTS):
+            await host.async_create_zone([self.room])
+            if (zone := self._active_zone()) is not None:
+                return zone
+            if host.roomlst_to_zoneudn([self.room]) is not None:
+                return [self.room]
+            if attempt < ZONE_CREATE_ATTEMPTS - 1:
+                await asyncio.sleep(ZONE_CREATE_RETRY_DELAY)
+        # let the caller surface a clear failure rather than silently doing nothing
+        return [self.room]
+
+    async def _add_rooms_to_zone(self, rooms: list[str]) -> None:
+        """
+        Add the given rooms to this leader's zone, waiting until they actually joined.
+
+        hassfeld's add-room call does not wait, so during rapid regrouping (a room moving
+        straight from one group to another) it can race and leave the room unassigned.
+        Verify the room really landed in the zone and retry while the state settles.
+        """
+        host = self.raumfeld.host
+        for attempt in range(ZONE_CREATE_ATTEMPTS):
+            zone = await self._ensure_playable_zone()
+            missing = [room for room in rooms if room not in zone]
+            if not missing:
+                return
+            for room in missing:
+                await host.async_add_room_to_zone(room, zone)
+            if attempt < ZONE_CREATE_ATTEMPTS - 1:
+                await asyncio.sleep(ZONE_CREATE_RETRY_DELAY)
 
     def _player_id_to_room(self, player_id: str) -> str | None:
         """Resolve a MA player_id of this provider back to its Raumfeld room name."""
