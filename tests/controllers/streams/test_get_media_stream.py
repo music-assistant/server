@@ -18,6 +18,7 @@ from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 import music_assistant.controllers.streams.audio as audio_mod
 from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
+from music_assistant.helpers.mp3 import NO_SEEK_HINTS, Mp3SeekHints
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 # input args a provider may attach to its StreamDetails (podcastfeed does exactly this).
@@ -76,6 +77,28 @@ class _FakeFFMpeg:
     async def kill(self) -> None:
         self.torn_down_via = "kill"
         self.returncode = -9
+
+
+class _FakeProbe:
+    """Stand-in for the remote MP3 probe that records the URLs and headers it is asked for."""
+
+    def __init__(self) -> None:
+        self.result = NO_SEEK_HINTS
+        self.calls: list[tuple[str, dict[str, str]]] = []
+
+    async def __call__(
+        self, _http_session: object, url: str, headers: dict[str, str]
+    ) -> Mp3SeekHints:
+        self.calls.append((url, headers))
+        return self.result
+
+
+@pytest.fixture(autouse=True)
+def mp3_probe(monkeypatch: pytest.MonkeyPatch) -> _FakeProbe:
+    """Keep every test off the network: the probe finds nothing unless a test says so."""
+    probe = _FakeProbe()
+    monkeypatch.setattr(audio_mod, "probe_mp3_seek_hints", probe)
+    return probe
 
 
 @pytest.fixture
@@ -926,3 +949,172 @@ async def test_get_media_stream_respects_provider_pacing_args(
 
     assert patch_ffmpeg.last_instance is not None
     assert patch_ffmpeg.last_instance.extra_input_args == provider_pacing_args
+
+
+_SKIP_ARGS = ["-skip_initial_bytes", "31911863"]
+_FASTSEEK_ARGS = ["-fflags", "+fastseek"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("hints", "expected_args"),
+    [
+        (Mp3SeekHints(31911863, True), [*_SKIP_ARGS, *_FASTSEEK_ARGS]),
+        (Mp3SeekHints(31911863, False), _SKIP_ARGS),
+        (Mp3SeekHints(0, True), _FASTSEEK_ARGS),
+        (Mp3SeekHints(0, False), []),
+        (NO_SEEK_HINTS, []),
+    ],
+    ids=["cbr-tag", "vbr-tag", "cbr-no-tag", "vbr-no-tag", "probe-failed"],
+)
+async def test_get_media_stream_speeds_up_remote_mp3_seek(
+    patch_ffmpeg: type[_FakeFFMpeg],
+    mp3_probe: _FakeProbe,
+    hints: Mp3SeekHints,
+    expected_args: list[str],
+) -> None:
+    """A remote MP3 seek skips the ID3 tag, and seeks by bitrate only for CBR."""
+    mp3_probe.result = hints
+    streamdetails = _seekable_streamdetails()
+    audio = _make_audio_controller()
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=5400))
+
+    assert patch_ffmpeg.last_instance is not None
+    assert patch_ffmpeg.last_instance.extra_input_args == [
+        *_PROVIDER_INPUT_ARGS,
+        *expected_args,
+        "-ss",
+        "5400",
+    ]
+    assert mp3_probe.calls == [
+        ("http://test.invalid/episode-1.mp3", {"User-Agent": _PROVIDER_INPUT_ARGS[1]})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_probes_remote_mp3_once_per_url(
+    patch_ffmpeg: type[_FakeFFMpeg],
+    mp3_probe: _FakeProbe,
+) -> None:
+    """Further seeks in the same episode reuse the probe, including a failed one."""
+    audio = _make_audio_controller()
+
+    for hints in (Mp3SeekHints(100, True), NO_SEEK_HINTS):
+        mp3_probe.result = hints
+        mp3_probe.calls.clear()
+        streamdetails = _seekable_streamdetails()
+        streamdetails.path = f"http://test.invalid/{hints.skip_bytes}.mp3"
+        for seek_position in (600, 1200):
+            await _drain(
+                audio.get_media_stream(
+                    streamdetails, _make_pcm_format(), seek_position=seek_position
+                )
+            )
+        assert len(mp3_probe.calls) == 1
+
+    assert patch_ffmpeg.last_instance is not None
+    assert patch_ffmpeg.last_instance.extra_input_args == [*_PROVIDER_INPUT_ARGS, "-ss", "1200"]
+
+    # another user agent may get another answer from the server
+    streamdetails = _seekable_streamdetails()
+    streamdetails.path = "http://test.invalid/100.mp3"
+    streamdetails.extra_input_args = ["-user_agent", "Other/2.0"]
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=600))
+    assert len(mp3_probe.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_probes_unknown_remote_format(
+    patch_ffmpeg: type[_FakeFFMpeg],
+    mp3_probe: _FakeProbe,
+) -> None:
+    """A feed URL without a known extension is probed, and the probe decides."""
+    mp3_probe.result = Mp3SeekHints(100, True)
+    streamdetails = _seekable_streamdetails()
+    streamdetails.audio_format = AudioFormat(content_type=ContentType.UNKNOWN)
+    audio = _make_audio_controller()
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=90))
+
+    assert len(mp3_probe.calls) == 1
+    assert patch_ffmpeg.last_instance is not None
+    assert "-skip_initial_bytes" in (patch_ffmpeg.last_instance.extra_input_args or [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "no-seek",
+        "flac",
+        "unknown-probed-as-aac",
+        "local-file",
+        "encrypted",
+        "hls",
+        "multi-part",
+        "custom",
+        "post-data",
+        "provider-input-format",
+    ],
+)
+async def test_get_media_stream_leaves_other_seeks_alone(
+    monkeypatch: pytest.MonkeyPatch,
+    patch_ffmpeg: type[_FakeFFMpeg],
+    mp3_probe: _FakeProbe,
+    variant: str,
+) -> None:
+    """Only a seek in a plain remote MP3 is probed; everything else keeps its args."""
+    mp3_probe.result = Mp3SeekHints(100, True)
+    audio = _make_audio_controller()
+    streamdetails = _seekable_streamdetails()
+    seek_position = 600
+    match variant:
+        case "no-seek":
+            seek_position = 0
+        case "flac":
+            streamdetails.audio_format = AudioFormat(content_type=ContentType.FLAC)
+        case "unknown-probed-as-aac":
+            streamdetails.audio_format = AudioFormat(
+                content_type=ContentType.UNKNOWN, codec_type=ContentType.AAC
+            )
+        case "local-file":
+            streamdetails.stream_type = StreamType.LOCAL_FILE
+            streamdetails.path = "/media/episode-1.mp3"
+        case "encrypted":
+            streamdetails.stream_type = StreamType.ENCRYPTED_HTTP
+            streamdetails.decryption_key = "00"
+        case "hls":
+            streamdetails.stream_type = StreamType.HLS
+
+            async def _get_hls_substream(_url: str) -> SimpleNamespace:
+                return SimpleNamespace(path="http://test.invalid/media.mp3")
+
+            monkeypatch.setattr(audio, "get_hls_substream", _get_hls_substream)
+        case "multi-part":
+            streamdetails = _multi_part_streamdetails()
+            fake_stream, _ = _recording_multi_file_stream()
+            monkeypatch.setattr(audio, "get_multi_file_stream", fake_stream)
+        case "custom":
+            streamdetails.stream_type = StreamType.CUSTOM
+            streamdetails.can_seek = False
+            provider = MagicMock(spec=MusicProvider)
+            provider.available = True
+            cast("MagicMock", audio.mass).get_provider.return_value = provider
+        case "post-data":
+            streamdetails.extra_input_args = ["-post_data", "x"]
+        case "provider-input-format":
+            streamdetails.extra_input_args = ["-f", "mp3", "-i", "http://test.invalid/a.mp3"]
+    input_args = list(streamdetails.extra_input_args or [])
+
+    with suppress(ProviderUnavailableError):
+        await _drain(
+            audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=seek_position)
+        )
+
+    assert mp3_probe.calls == []
+    assert patch_ffmpeg.last_instance is not None
+    args = patch_ffmpeg.last_instance.extra_input_args or []
+    assert "-skip_initial_bytes" not in args
+    assert "-fflags" not in args
+    assert args[: len(input_args)] == input_args

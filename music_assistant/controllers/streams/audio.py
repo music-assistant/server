@@ -13,7 +13,7 @@ import logging
 import os
 import re
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import AsyncGenerator, Callable, Iterable
 from contextlib import aclosing, asynccontextmanager, nullcontext, suppress
 from dataclasses import dataclass
@@ -141,6 +141,12 @@ from music_assistant.helpers.ffmpeg import (
     get_ffmpeg_overlay_stream,
     get_ffmpeg_stream,
 )
+from music_assistant.helpers.mp3 import (
+    NO_SEEK_HINTS,
+    Mp3SeekHints,
+    ffmpeg_http_headers,
+    probe_mp3_seek_hints,
+)
 from music_assistant.helpers.named_pipe import read_named_pipe
 from music_assistant.helpers.playlists import (
     HLS_CONTENT_TYPES,
@@ -204,6 +210,8 @@ REALTIME_FADE_SOURCE_WAIT = 5.0
 # Chunk size for the realtime AudioSource path; small enough to keep ffmpeg→consumer
 # latency below ~50 ms while still amortising per-chunk overhead.
 AUDIO_SOURCE_CHUNK_SECONDS = 0.02
+
+MP3_SEEK_HINTS_CACHE_SIZE = 64
 
 # Terminal errors get_icy_radio_stream raises once a single mirror is exhausted; the
 # multi-mirror reader treats these as the signal to fail over to the next URL.
@@ -574,6 +582,10 @@ class StreamsAudio:
         # the single source (and the single capacity reselection) instead of racing
         self._audio_buffer_locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
             WeakValueDictionary()
+        )
+        # seeks within the same episode reuse the probe instead of fetching it again
+        self._mp3_seek_hints: OrderedDict[tuple[str, frozenset[tuple[str, str]]], Mp3SeekHints] = (
+            OrderedDict()
         )
 
     def setup(self) -> None:
@@ -3850,6 +3862,9 @@ class StreamsAudio:
 
         # handle seek support
         if seek_position and streamdetails.duration and streamdetails.allow_seek:
+            extra_input_args += await self._get_remote_mp3_seek_args(
+                streamdetails, audio_source, extra_input_args
+            )
             extra_input_args += ["-ss", str(int(seek_position))]
 
         bytes_sent = 0
@@ -4908,3 +4923,60 @@ class StreamsAudio:
             )
             return None
         return streamdetails.path
+
+    async def _get_remote_mp3_seek_args(
+        self,
+        streamdetails: StreamDetails,
+        audio_source: str | AsyncGenerator[bytes],
+        extra_input_args: list[str],
+    ) -> list[str]:
+        """
+        Return the ffmpeg input args that speed up a seek in a remote MP3.
+
+        Returns an empty list for anything that is not a plain remote MP3.
+
+        :param streamdetails: Details of the stream being seeked.
+        :param audio_source: The resolved ffmpeg input.
+        :param extra_input_args: The ffmpeg input args collected so far.
+        """
+        if (
+            streamdetails.stream_type != StreamType.HTTP
+            or not isinstance(audio_source, str)
+            or not audio_source.startswith("http")
+            # a provider-set input format brings its own -i, or the input is fetched by POST
+            or "-f" in extra_input_args
+            or "-post_data" in extra_input_args
+        ):
+            return []
+        audio_format = arriving_audio_format(streamdetails)
+        is_mp3 = audio_format.content_type == ContentType.MP3 or (
+            # the probe itself rejects an unknown format that turns out not to be MPEG audio
+            audio_format.content_type == ContentType.UNKNOWN
+            and audio_format.codec_type in (ContentType.MP3, ContentType.UNKNOWN)
+        )
+        if not is_mp3:
+            return []
+        headers = ffmpeg_http_headers(extra_input_args)
+        cache_key = (audio_source, frozenset(headers.items()))
+        if (hints := self._mp3_seek_hints.get(cache_key)) is not None:
+            self._mp3_seek_hints.move_to_end(cache_key)
+        else:
+            hints = await probe_mp3_seek_hints(self.mass.http_session, audio_source, headers)
+            self._mp3_seek_hints[cache_key] = hints
+            while len(self._mp3_seek_hints) > MP3_SEEK_HINTS_CACHE_SIZE:
+                self._mp3_seek_hints.popitem(last=False)
+        if hints == NO_SEEK_HINTS:
+            return []
+        self.logger.debug(
+            "Seeking %s with %s bytes of ID3 tag skipped (CBR: %s)",
+            streamdetails.uri,
+            hints.skip_bytes,
+            hints.is_cbr,
+        )
+        args: list[str] = []
+        if hints.skip_bytes:
+            args += ["-skip_initial_bytes", str(hints.skip_bytes)]
+        # a VBR file would seek by its coarse TOC and could land seconds off
+        if hints.is_cbr and "-fflags" not in extra_input_args:
+            args += ["-fflags", "+fastseek"]
+        return args
