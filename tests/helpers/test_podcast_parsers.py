@@ -789,6 +789,44 @@ async def test_transcript_falls_back_to_untimed_text() -> None:
     assert cues is None
 
 
+async def test_json_transcript_yields_cues_rather_than_raw_json() -> None:
+    """A Podcasting 2.0 JSON transcript is parsed into cues and never shown as raw JSON."""
+    body = b'{"segments": [{"startTime": 0.5, "endTime": 1.0, "speaker": "Jane", "body": "Hi."}]}'
+    session = _FakeFeedSession(body=body)
+    text, cues = await get_episode_transcript(
+        mass=_fake_mass(session),
+        provider_instance_id="podcastfeed--test",
+        transcripts=[{"url": "https://example.com/ep1.json", "type": "application/json"}],
+    )
+    assert text == "Jane: Hi."
+    assert cues is not None and cues[0].start == 0.5
+
+
+async def test_json_transcript_without_segments_yields_nothing() -> None:
+    """A JSON document carrying no segments is not passed off as readable text."""
+    session = _FakeFeedSession(body=b'{"version": "1.0.0"}')
+    assert await get_episode_transcript(
+        mass=_fake_mass(session),
+        provider_instance_id="podcastfeed--test",
+        transcripts=[{"url": "https://example.com/ep1.json", "type": "application/json"}],
+    ) == (None, None)
+
+
+async def test_transcript_prefers_vtt_over_json() -> None:
+    """A cue-level WebVTT document wins over a JSON one, which is often word by word."""
+    session = _FakeFeedSession(body=TRANSCRIPT_VTT)
+    text, _ = await get_episode_transcript(
+        mass=_fake_mass(session),
+        provider_instance_id="podcastfeed--test",
+        transcripts=[
+            {"url": "https://example.com/ep1.json", "type": "application/json"},
+            {"url": TRANSCRIPT_URL, "type": "text/vtt"},
+        ],
+    )
+    assert text == "Jane Doe: Welcome to the show."
+    assert session.urls == [TRANSCRIPT_URL]
+
+
 async def test_no_transcripts_on_offer_does_not_fetch() -> None:
     """An episode with no transcript on offer costs no request."""
     session = _FakeFeedSession(body=TRANSCRIPT_VTT)

@@ -169,9 +169,53 @@ def test_keeps_a_short_repeat() -> None:
     assert cues[1].text == "ping ping pin pin and he has the phomo."
 
 
+SPEAKER_CHANGE = """WEBVTT
+
+00:10.000 --> 00:15.000
+<v Jane Doe>the radius of the Earth is not a rounding error. It's so big.
+
+00:15.000 --> 00:20.000
+<v John Smith>the radius of the Earth is not a rounding error. It's so big. Really, it is.
+"""
+
+REPEAT_AFTER_A_PAUSE = """WEBVTT
+
+00:10.000 --> 00:15.000
+the radius of the Earth is not a rounding error. It's so big.
+
+00:30.000 --> 00:35.000
+the radius of the Earth is not a rounding error. It's so big. Really, it is.
+"""
+
+
+def test_keeps_a_phrase_another_speaker_repeats() -> None:
+    """Test that a phrase repeated by a different speaker is a real repeat, not an overlap."""
+    cues = parse_transcript_cues(SPEAKER_CHANGE)
+    assert (
+        cues[1].text
+        == "the radius of the Earth is not a rounding error. It's so big. Really, it is."
+    )
+
+
+def test_keeps_a_phrase_repeated_after_a_pause() -> None:
+    """Test that a phrase repeated after a real pause is a quotation, not an overlap."""
+    cues = parse_transcript_cues(REPEAT_AFTER_A_PAUSE)
+    assert (
+        cues[1].text
+        == "the radius of the Earth is not a rounding error. It's so big. Really, it is."
+    )
+
+
 def test_trimming_never_empties_a_cue() -> None:
     """Test that trimming always leaves text behind."""
-    for document in (ROLLING_WINDOW, REPEATED_CUE, SHORT_REPEAT, UNSPOKEN_REPEAT):
+    for document in (
+        ROLLING_WINDOW,
+        REPEATED_CUE,
+        SHORT_REPEAT,
+        UNSPOKEN_REPEAT,
+        SPEAKER_CHANGE,
+        REPEAT_AFTER_A_PAUSE,
+    ):
         assert all(cue.text.strip() for cue in parse_transcript_cues(document))
 
 
@@ -185,3 +229,61 @@ def test_malformed_voice_tag_does_not_stall() -> None:
     """Test that an unterminated voice span is rejected quickly rather than backtracking."""
     document = "WEBVTT\n\n00:00.000 --> 00:02.000\n<v" + ".!" * 40 + "\n"
     assert parse_transcript_cues(document)[0].speaker is None
+
+
+# a Podcasting 2.0 JSON transcript, word by word as most transcribers write it
+JSON_TRANSCRIPT = """{
+  "version": "1.0.0",
+  "segments": [
+    {"speaker": "Darth Vader", "startTime": 0.5, "endTime": 0.75, "body": "I"},
+    {"speaker": "Darth Vader", "startTime": 1, "endTime": 1.25, "body": "am"},
+    {"speaker": "Darth Vader", "startTime": 1.5, "endTime": 2.0, "body": "your"},
+    {"speaker": "Darth Vader", "startTime": 2.25, "endTime": 2.5, "body": "father."},
+    {"speaker": "Luke", "startTime": 3.0, "endTime": 3.5, "body": "That&#39;s not true!"},
+    {"speaker": "Luke", "startTime": 4.0, "endTime": 4.5, "body": "No."}
+  ]
+}"""
+
+
+def test_parses_json_segments_into_sentences() -> None:
+    """Test that word-level JSON segments are joined into one cue per sentence."""
+    cues = parse_transcript_cues(JSON_TRANSCRIPT)
+    assert [(cue.speaker, cue.text) for cue in cues] == [
+        ("Darth Vader", "I am your father."),
+        ("Luke", "That's not true!"),
+        ("Luke", "No."),
+    ]
+    assert cues[0].start == 0.5
+    assert cues[0].end == 2.5
+    assert cues[1].start == 3.0
+
+
+def test_json_segments_split_on_a_speaker_change() -> None:
+    """Test that a new speaker always starts a new cue, even mid sentence."""
+    document = (
+        '{"segments": [{"speaker": "A", "startTime": 0, "body": "Well I"},'
+        ' {"speaker": "B", "startTime": 1, "body": "disagree."}]}'
+    )
+    assert [cue.text for cue in parse_transcript_cues(document)] == ["Well I", "disagree."]
+
+
+def test_json_segments_without_timings_or_text_are_skipped() -> None:
+    """Test that unusable segments are dropped rather than failing the document."""
+    document = (
+        '{"segments": [{"body": "no timing"}, {"startTime": "x", "body": "bad timing"},'
+        ' {"startTime": 1, "body": "  "}, "junk", {"startTime": 2, "body": "Kept."}]}'
+    )
+    assert [cue.text for cue in parse_transcript_cues(document)] == ["Kept."]
+
+
+def test_json_without_segments_yields_neither_cues_nor_prose() -> None:
+    """Test that a JSON document is never rendered as readable text."""
+    document = '{"version": "1.0.0"}'
+    assert parse_transcript_cues(document) == []
+    assert document_to_text(document) == ""
+    assert document_to_text(JSON_TRANSCRIPT) == ""
+
+
+def test_text_starting_with_a_brace_is_still_prose() -> None:
+    """Test that a plain text document is not mistaken for JSON."""
+    assert document_to_text("{not json} and more") == "{not json} and more"
