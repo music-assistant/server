@@ -636,10 +636,12 @@ class _FakeFeedSession:
         self.calls = 0
         self.released = 0
         self.headers: list[dict[str, str]] = []
+        self.urls: list[str] = []
 
     def get(self, url: str, headers: dict[str, str], **kwargs: Any) -> _FakeFeedGetContext:
         self.calls += 1
         self.headers.append(headers)
+        self.urls.append(url)
         return _FakeFeedGetContext(self)
 
 

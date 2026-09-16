@@ -47,7 +47,13 @@ _BROWSER_UA_HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 # transcript formats carrying timings, most preferred first. Anything else is still
 # usable, but only as untimed text.
-_TIMED_TRANSCRIPT_TYPES = ("text/vtt", "application/x-subrip", "application/srt", "text/srt")
+_TIMED_TRANSCRIPT_TYPES = (
+    "text/vtt",
+    "application/x-subrip",
+    "application/srt",
+    "text/srt",
+    "application/json",
+)
 
 # defaults for the parsed-feed cache shared by the podcast providers
 CACHE_CATEGORY_PODCAST_FEED = 0

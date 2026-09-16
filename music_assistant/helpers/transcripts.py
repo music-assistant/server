@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 from dataclasses import replace
+from typing import Any
 
 from music_assistant_models.media_items import MediaItemTranscriptCue
 
@@ -25,9 +27,16 @@ _HTML_LINE_BREAK = re.compile(r"<br\s*/?>|</(?:p|div|h[1-6]|li|tr)\s*>", re.IGNO
 _BLOCK_SEPARATOR = re.compile(r"\n[ \t]*\n")
 # WebVTT blocks that never contain dialogue
 _NON_CUE_BLOCKS = ("WEBVTT", "NOTE", "STYLE", "REGION")
+# a Podcasting 2.0 JSON transcript is often word by word, so runs of segments are joined
+# until a sentence ends, capped so a stretch without punctuation still breaks into lines
+_SENTENCE_END = (".", "!", "?", "\u2026")
+_MAX_JOINED_SEGMENT_CHARS = 200
 # speech recognition working on a rolling window repeats the tail of one cue at the start
 # of the next. Short repeats are left alone because they are usually really said twice.
 _MIN_REPEATED_PREFIX = 15
+# such a repeat can only run into the cue that directly follows, in the same voice. A
+# repeat after a real pause or by another speaker is someone genuinely saying it again.
+_MAX_REPEAT_GAP = 1.0
 # words a cue could not have been spoken in its own time span did not come from the audio.
 # Fast speech runs to roughly 25 characters a second, so 40 leaves headroom for real speech.
 _MAX_SPOKEN_CHARS_PER_SECOND = 40
@@ -35,14 +44,17 @@ _MAX_SPOKEN_CHARS_PER_SECOND = 40
 
 def parse_transcript_cues(raw: str) -> list[MediaItemTranscriptCue]:
     """
-    Parse a WebVTT or SubRip document into timed cues, in document order.
+    Parse a WebVTT, SubRip or Podcasting 2.0 JSON document into timed cues, in document order.
 
     Returns an empty list when the document carries no recognisable cues.
 
     :param raw: The transcript document.
     """
+    document = _normalize_newlines(raw)
+    if (segments := _json_segments(document)) is not None:
+        return _without_repeated_text(_cues_from_json_segments(segments))
     cues: list[MediaItemTranscriptCue] = []
-    for block in _BLOCK_SEPARATOR.split(_normalize_newlines(raw)):
+    for block in _BLOCK_SEPARATOR.split(document):
         lines = block.strip().splitlines()
         if not lines or lines[0].split(maxsplit=1)[0] in _NON_CUE_BLOCKS:
             continue
@@ -75,9 +87,14 @@ def document_to_text(raw: str) -> str:
     """
     Render an untimed transcript document (plain text or HTML) as readable text.
 
+    A JSON document is never prose, so it yields an empty string.
+
     :param raw: The transcript document.
     """
-    lines = _HTML_LINE_BREAK.sub("\n", _normalize_newlines(raw))
+    document = _normalize_newlines(raw)
+    if _json_segments(document) is not None:
+        return ""
+    lines = _HTML_LINE_BREAK.sub("\n", document)
     stripped = html.unescape(_MARKUP_TAG.sub("", lines))
     return "\n".join(line for raw_line in stripped.split("\n") if (line := _collapse(raw_line)))
 
@@ -88,7 +105,7 @@ def _without_repeated_text(
     """Drop the text a cue repeats from the end of the one before it."""
     result: list[MediaItemTranscriptCue] = []
     for cue in cues:
-        repeated = _repeated_prefix_length(result[-1].text, cue.text) if result else 0
+        repeated = _repeated_prefix_length(result[-1], cue) if result else 0
         if repeated == len(cue.text):
             # a cue that repeats and adds nothing is kept, since the words may really be
             # said twice, unless it is too short for them to have been spoken at all
@@ -99,12 +116,23 @@ def _without_repeated_text(
     return result
 
 
-def _repeated_prefix_length(previous: str, current: str) -> int:
-    """Return how much of the current text repeats the end of the previous one."""
-    for length in range(min(len(previous), len(current)), _MIN_REPEATED_PREFIX - 1, -1):
-        if previous[-length:] == current[:length]:
+def _repeated_prefix_length(
+    previous: MediaItemTranscriptCue, current: MediaItemTranscriptCue
+) -> int:
+    """Return how much of a cue's text repeats the end of the one before it."""
+    if not _follows_directly(previous, current):
+        return 0
+    for length in range(min(len(previous.text), len(current.text)), _MIN_REPEATED_PREFIX - 1, -1):
+        if previous.text[-length:] == current.text[:length]:
             return length
     return 0
+
+
+def _follows_directly(previous: MediaItemTranscriptCue, current: MediaItemTranscriptCue) -> bool:
+    """Whether a cue carries straight on from the one before it, in the same voice."""
+    if previous.speaker != current.speaker or previous.end is None:
+        return False
+    return current.start - previous.end <= _MAX_REPEAT_GAP
 
 
 def _is_unspoken(cue: MediaItemTranscriptCue) -> bool:
@@ -128,6 +156,61 @@ def _build_cue(timings: re.Match[str], text_lines: list[str]) -> MediaItemTransc
         text=text,
         speaker=speaker,
     )
+
+
+def _json_segments(document: str) -> list[Any] | None:
+    """Return the segments of a JSON transcript, or None when the document is not JSON."""
+    if not document.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(document)
+    except ValueError:
+        return None
+    segments = parsed.get("segments") if isinstance(parsed, dict) else None
+    return segments if isinstance(segments, list) else []
+
+
+def _cues_from_json_segments(segments: list[Any]) -> list[MediaItemTranscriptCue]:
+    """Build cues from Podcasting 2.0 JSON segments, joining word-level ones into sentences."""
+    cues: list[MediaItemTranscriptCue] = []
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        if (start := _as_seconds(segment.get("startTime"))) is None:
+            continue
+        if not (text := _collapse(html.unescape(str(segment.get("body") or "")))):
+            continue
+        end = _as_seconds(segment.get("endTime"))
+        speaker = _collapse(html.unescape(str(segment.get("speaker") or ""))) or None
+        if cues and _continues_sentence(cues[-1], speaker, text):
+            previous = cues[-1]
+            cues[-1] = replace(
+                previous,
+                end=previous.end if end is None else end,
+                text=f"{previous.text} {text}",
+            )
+            continue
+        cues.append(MediaItemTranscriptCue(start=start, end=end, text=text, speaker=speaker))
+    return cues
+
+
+def _continues_sentence(previous: MediaItemTranscriptCue, speaker: str | None, text: str) -> bool:
+    """Whether a segment belongs to the sentence the previous cue left unfinished."""
+    return (
+        previous.speaker == speaker
+        and not previous.text.endswith(_SENTENCE_END)
+        and len(previous.text) + len(text) < _MAX_JOINED_SEGMENT_CHARS
+    )
+
+
+def _as_seconds(value: Any) -> float | None:
+    """Read a JSON timing as seconds, or None when it is missing or unreadable."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return float(value)
+    except TypeError, ValueError:
+        return None
 
 
 def _normalize_newlines(raw: str) -> str:
