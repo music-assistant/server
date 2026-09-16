@@ -316,8 +316,13 @@ class AudioAnalysisController:
             # a second failure means the storage path itself is unusable: let it propagate
             await self._attach_and_create(db_path)
         # one-time relocation of rows written by earlier versions into library.db
-        await self._relocate_legacy_table(DB_TABLE_AUDIO_ANALYSIS, _ANALYSIS_COLUMNS)
-        await self._relocate_legacy_table(DB_TABLE_AUDIO_ANALYSIS_FAILURES, _FAILURE_COLUMNS)
+        moved = await self._relocate_legacy_table(DB_TABLE_AUDIO_ANALYSIS, _ANALYSIS_COLUMNS)
+        moved += await self._relocate_legacy_table(
+            DB_TABLE_AUDIO_ANALYSIS_FAILURES, _FAILURE_COLUMNS
+        )
+        if moved > 0:
+            self.logger.info("Compacting library.db after moving %s audio analysis rows", moved)
+            await self.mass.music.database.vacuum()
 
     async def close(self) -> None:
         """Drain in-flight sessions and chunk workers on shutdown."""
@@ -1130,7 +1135,7 @@ class AudioAnalysisController:
                 # overwrites an older quarantine; we only ever keep the most recent one
                 await asyncio.to_thread(os.replace, source, f"{source}.corrupt")
 
-    async def _relocate_legacy_table(self, table: str, columns: tuple[str, ...]) -> None:
+    async def _relocate_legacy_table(self, table: str, columns: tuple[str, ...]) -> int:
         """
         Copy a legacy main.<table> into the attached db in id batches, then drop it.
 
@@ -1143,6 +1148,8 @@ class AudioAnalysisController:
 
         :param table: Name of the legacy table in library.db (main schema) to relocate.
         :param columns: Column names (excluding id) shared by main.<table> and aa.<table>.
+        :returns: Number of rows copied when the legacy table was dropped; 0 when the table
+            did not exist, the copy was incomplete, or a sqlite3.Error occurred.
         """
         db = self.mass.music.database
         exists = await db.get_rows_from_query(
@@ -1151,7 +1158,7 @@ class AudioAnalysisController:
             limit=1,
         )
         if not exists:
-            return
+            return 0
         total = await db.get_count_from_query(f"SELECT id FROM main.{table}")
         max_id = 0
         if total:
@@ -1195,7 +1202,7 @@ class AudioAnalysisController:
                     total,
                     AA_DB_FILENAME,
                 )
-                return
+                return 0
             await db.execute(f"DROP TABLE main.{table}")
             await db.commit()
         except sqlite3.Error as err:
@@ -1206,8 +1213,9 @@ class AudioAnalysisController:
                 copied,
                 err,
             )
-            return
+            return 0
         self.logger.info("Moved %s of %s rows of %s into %s", copied, total, table, AA_DB_FILENAME)
+        return copied
 
     async def _run_background_scan(self) -> None:
         """Run the scan as decode-once-fan-out streaming over candidate tracks."""

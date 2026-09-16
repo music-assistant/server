@@ -6,7 +6,7 @@ import logging
 import pathlib
 import sqlite3
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
@@ -94,6 +94,18 @@ async def test_setup_database_is_idempotent(
     await ctrl.setup_database()
     rows = await library_db.get_rows(f"{AA_DB_SCHEMA}.{DB_TABLE_SETTINGS}", {"key": "version"})
     assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_no_vacuum_when_nothing_to_relocate(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No legacy tables to relocate means no vacuum is run."""
+    ctrl = _make_controller(library_db, tmp_path)
+    mock_vacuum = AsyncMock()
+    monkeypatch.setattr(library_db, "vacuum", mock_vacuum)
+    await ctrl.setup_database()
+    mock_vacuum.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -247,6 +259,10 @@ async def test_relocates_legacy_rows_and_drops_legacy_tables(
     main_tables = await _table_names(library_db, "main")
     assert DB_TABLE_AUDIO_ANALYSIS not in main_tables
     assert DB_TABLE_AUDIO_ANALYSIS_FAILURES not in main_tables
+    # dropping the populated legacy tables must be compacted away immediately, not left
+    # for the next restart's compaction gate
+    freelist = await library_db.get_rows_from_query("PRAGMA main.freelist_count", limit=0)
+    assert freelist[0]["freelist_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -285,6 +301,32 @@ async def test_relocation_failure_keeps_legacy_table(
 
     assert DB_TABLE_AUDIO_ANALYSIS in await _table_names(library_db, "main")
     assert "disk I/O error" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_relocation_failure_skips_vacuum(
+    library_db: DatabaseConnection,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A mid-copy failure that keeps the legacy table must not trigger a vacuum either."""
+    await _seed_legacy(library_db, n_analysis=2, n_failures=0)
+    ctrl = _make_controller(library_db, tmp_path)
+    real_execute = library_db.execute
+
+    async def failing_execute(query: str, values: dict[str, Any] | None = None) -> Any:
+        if query.lstrip().upper().startswith("INSERT OR IGNORE INTO AA."):
+            raise sqlite3.OperationalError("disk I/O error")
+        return await real_execute(query, values)
+
+    monkeypatch.setattr(library_db, "execute", failing_execute)
+    mock_vacuum = AsyncMock()
+    monkeypatch.setattr(library_db, "vacuum", mock_vacuum)
+    with caplog.at_level(logging.ERROR):
+        await ctrl.setup_database()
+
+    mock_vacuum.assert_not_awaited()
 
 
 @pytest.mark.asyncio
