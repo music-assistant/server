@@ -123,6 +123,8 @@ def _session(fake: object) -> ClientSession:
     [
         (_id3_header(257), 267),
         (_id3_header(31911853), 31911863),
+        # v2.2 frames have 6-byte headers, but the tag header is the same 10 bytes
+        (_id3_header(100, version=2), 110),
         (_id3_header(100, version=4), 110),
         (_id3_header(100, version=4, flags=0x10), 120),
         # the footer flag means nothing before v2.4
@@ -136,6 +138,7 @@ def _session(fake: object) -> ClientSession:
     ids=[
         "v2.3",
         "v2.3-large",
+        "v2.2",
         "v2.4",
         "v2.4-footer",
         "v2.3-ignores-footer-flag",
