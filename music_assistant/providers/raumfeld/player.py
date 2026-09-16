@@ -103,6 +103,15 @@ class RaumfeldPlayer(Player):
         """Return the player-specific config entries (sample-rate / bit-depth options)."""
         return [*PLAYER_CONFIG_ENTRIES]
 
+    def set_available(self, available: bool) -> None:
+        """
+        Set the availability of this player.
+
+        :param available: Whether the player is currently reachable/usable.
+        """
+        self._attr_available = available
+        self.update_state()
+
     async def play(self) -> None:
         """Send PLAY/resume command."""
         self._mark_play_started()

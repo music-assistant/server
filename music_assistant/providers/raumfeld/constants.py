@@ -22,8 +22,12 @@ CONF_PORT = "port"
 DEFAULT_PORT = 47365
 
 # How long (seconds) to wait for hassfeld to complete its initial discovery
-# of rooms/zones before we give up during setup.
+# of rooms/zones before giving up on a single connection attempt.
 INITIAL_UPDATE_TIMEOUT = 30
+
+# How often (seconds) the connection supervisor retries a connect while the host is
+# unreachable, and health-checks the host while connected.
+RECONNECT_INTERVAL = 30
 
 # Player id prefix so ids are namespaced and stable-ish per room.
 PLAYER_ID_PREFIX = "raumfeld"
