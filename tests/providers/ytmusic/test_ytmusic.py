@@ -150,3 +150,17 @@ async def test_search_is_not_translated(provider: YoutubeMusicProvider) -> None:
         await search(provider, "test", [MediaType.TRACK])
 
     assert mock_ytmusic.call_args.kwargs["language"] == "en"
+
+
+async def test_get_stream_details_is_realtime(provider: YoutubeMusicProvider) -> None:
+    """YouTube throttles delivery to ~playback rate, so streamdetails are flagged realtime."""
+    stream_format = {
+        "format": "140",
+        "url": "https://example.com/videoplayback?mime=audio/mp4",
+        "audio_ext": "m4a",
+        "audio_channels": 2,
+        "asr": 44100,
+    }
+    with patch.object(provider, "_get_stream_format", AsyncMock(return_value=stream_format)):
+        details = await provider.get_stream_details("dummy_id", MediaType.TRACK)
+    assert details.is_realtime is True
