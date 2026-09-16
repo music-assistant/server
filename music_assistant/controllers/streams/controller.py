@@ -216,13 +216,20 @@ class AbortFlowStream(Exception):
     """Raised to end a flow response whose session rotated during its setup."""
 
 
+# the probe route answers any origin: a browser on the local network calls it cross-origin
+_INFO_CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Max-Age": "86400",
+}
+
+
 @dataclass
 class StreamServerInfo(DataClassDictMixin):
     """The address players are handed to fetch audio from, as it is in use right now."""
 
     base_url: str
-    publish_ip: str
-    port: int
 
 
 class StreamsController(CoreController):
@@ -300,11 +307,7 @@ class StreamsController(CoreController):
     @api_command("streams/info", required_scope=Scope.CONFIG_CORE_READ)
     def get_streamserver_info(self) -> StreamServerInfo:
         """Return the address the streamserver is currently reachable on for players."""
-        return StreamServerInfo(
-            base_url=self.base_url,
-            publish_ip=self.publish_ip,
-            port=cast("int", self.publish_port),
-        )
+        return StreamServerInfo(base_url=self.base_url)
 
     async def get_source_ip(self, target_ip: str | None = None) -> str | None:
         """
@@ -568,6 +571,7 @@ class StreamsController(CoreController):
                     self.live_announcements.serve_stream,
                 ),
                 ("GET", "/info", self._handle_info_request),
+                ("OPTIONS", "/info", self._handle_info_preflight),
             ],
         )
         # adopt what the server actually bound to: a configured port of 0 is only resolved
@@ -2367,13 +2371,14 @@ class StreamsController(CoreController):
         self._base_url = f"http://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
 
     async def _handle_info_request(self, request: web.Request) -> web.Response:
-        """Answer a reachability probe from any origin with this server's id."""
+        """Answer a reachability probe with this server's id."""
         # a browser on the local network checks whether the published address leads to
         # this server; the id is public already, the webserver's /info reports it too
-        return web.json_response(
-            {"server_id": self.mass.server_id},
-            headers={"Access-Control-Allow-Origin": "*"},
-        )
+        return web.json_response({"server_id": self.mass.server_id}, headers=_INFO_CORS_HEADERS)
+
+    async def _handle_info_preflight(self, request: web.Request) -> web.Response:
+        """Answer the CORS preflight a browser may send ahead of a probe."""
+        return web.Response(status=204, headers=_INFO_CORS_HEADERS)
 
 
 def _same_ip_family(ip: str, other_ip: str) -> bool:
