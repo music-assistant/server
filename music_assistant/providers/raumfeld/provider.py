@@ -153,10 +153,13 @@ class RaumfeldPlayerProvider(PlayerProvider):
             )
             await self._disconnect("initial update timed out")
             return
-        # register rooms, reflect any existing Raumfeld zones into MA's group state (so a
-        # group that survived a restart stays controllable) and suppress the host's shadow
-        # DLNA renderers
         await self._resync()
+        # restore any existing Raumfeld zones into MA's group state ONCE on connect (e.g. a
+        # group that survived a restart). We deliberately do NOT re-mirror zones on the
+        # periodic resync: that fights MA's own live group state and can build a circular
+        # leader/member relationship when the Raumfeld zone coordinator differs from the
+        # leader MA picked, which then recurses infinitely while streaming.
+        self._sync_groups()
         self._connected = True
         self.logger.info("Connected to Raumfeld host %s", self._host_address)
 
@@ -173,9 +176,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 player.set_available(False)
 
     async def _resync(self) -> None:
-        """Re-register rooms, mirror zones into group state and suppress shadow renderers."""
+        """Periodic re-sync: register (re)appeared rooms and suppress shadow renderers."""
         await self._sync_rooms()
-        self._sync_groups()
         await self._suppress_host_shadow_renderers()
 
     async def _suppress_host_shadow_renderers(self) -> None:
