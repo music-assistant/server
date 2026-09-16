@@ -1011,6 +1011,17 @@ async def migrate_database(  # noqa: PLR0915
             if "duplicate column" not in str(err):
                 raise
 
+    if prev_version <= 60:
+        # add is_endless column to radio table: cleared, the station is finite and the
+        # queue plays it out and ends instead of refilling or streaming forever
+        try:
+            await database.execute(
+                f"ALTER TABLE {DB_TABLE_RADIOS} ADD COLUMN is_endless BOOLEAN DEFAULT 1 NOT NULL"
+            )
+        except Exception as err:
+            if "duplicate column" not in str(err):
+                raise
+
     if prev_version <= 59:
         # a library item mapping has no provider of its own, but was briefly stored as a
         # self-referential mapping with the literal string "None" as domain and instance.

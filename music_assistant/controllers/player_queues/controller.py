@@ -46,6 +46,7 @@ from music_assistant_models.media_items import (
     PlayableMediaItemType,
     Playlist,
     PodcastEpisode,
+    Radio,
     SoundEffect,
     Track,
 )
@@ -1801,7 +1802,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         seen: set[str] = set()
         sources: list[ItemMapping] = []
         for item in items:
-            if item.media_type not in _WIRE_SOURCE_MEDIA_TYPES and not is_dynamic_source(item):
+            # a finite radio is a container too, unlike a live stream (dynamic stations
+            # pass is_dynamic_source); its uri is also how the AI Radio DJ finds its show
+            finite_radio = isinstance(item, Radio) and not item.is_endless
+            if (
+                item.media_type not in _WIRE_SOURCE_MEDIA_TYPES
+                and not is_dynamic_source(item)
+                and not finite_radio
+            ):
                 continue
             mapping = ItemMapping.from_item(item)
             if mapping.uri and mapping.uri in seen:

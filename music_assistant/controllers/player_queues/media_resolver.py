@@ -89,13 +89,20 @@ class MediaResolver:
         """
         Return the playable tracks for a media item, honoring the user's selection preferences.
 
-        Resolves an umbrella media item (artist, album, genre, playlist) to the tracks that
-        playing it would enqueue; a track resolves to itself, other types to an empty list.
+        Resolves an umbrella media item (artist, album, genre, playlist, finite radio) to the
+        tracks that playing it would enqueue; a track resolves to itself, other types to an
+        empty list.
 
         :param media_item: The media item to resolve to playable tracks.
         """
         if media_item.media_type == MediaType.TRACK:
             return [cast("Track", media_item)]
+        if media_item.media_type == MediaType.RADIO:
+            radio = cast("Radio", media_item)
+            if not radio.is_endless and not radio.is_dynamic:
+                radio_tracks = await self.mass.music.radio.tracks(radio)
+                return [track for track in radio_tracks if track.available]
+            return []
         if media_item.media_type == MediaType.ALBUM:
             return await self.get_album_tracks(cast("Album", media_item), None)
         if media_item.media_type == MediaType.ARTIST:
@@ -670,7 +677,7 @@ class MediaResolver:
             )
         return tracks
 
-    async def _resolve_media_items(
+    async def _resolve_media_items(  # noqa: PLR0915
         self,
         media_item: MediaItemType | ItemMapping | BrowseFolder,
         start_item: str | None = None,
@@ -784,7 +791,19 @@ class MediaResolver:
         if media_item.media_type == MediaType.FOLDER:
             media_item = cast("BrowseFolder", media_item)
             return list(await self._get_folder_tracks(media_item))
-        # all other: single track or radio item
+        if (
+            media_item.media_type == MediaType.RADIO
+            and not (radio := cast("Radio", media_item)).is_endless
+            and not radio.is_dynamic
+        ):
+            # resolved up front like a playlist instead of played as a live stream;
+            # unavailable tracks are dropped before the play is recorded, like a playlist's
+            radio_tracks = [
+                track for track in await self.mass.music.radio.tracks(radio) if track.available
+            ]
+            self._mark_container_played(radio, radio_tracks, userid, queue_id)
+            return list(radio_tracks)
+        # all other: a single track, or a live/dynamic radio item played as itself
         return [cast("MediaItemType", media_item)]
 
     async def _get_folder_tracks(self, folder: BrowseFolder) -> list[Track]:
