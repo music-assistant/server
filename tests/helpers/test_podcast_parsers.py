@@ -799,7 +799,8 @@ async def test_json_transcript_yields_cues_rather_than_raw_json() -> None:
         transcripts=[{"url": "https://example.com/ep1.json", "type": "application/json"}],
     )
     assert text == "Jane: Hi."
-    assert cues is not None and cues[0].start == 0.5
+    assert cues is not None
+    assert cues[0].start == 0.5
 
 
 async def test_json_transcript_without_segments_yields_nothing() -> None:
