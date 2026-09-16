@@ -322,7 +322,10 @@ class AudioAnalysisController:
         )
         if moved > 0:
             self.logger.info("Compacting library.db after moving %s audio analysis rows", moved)
-            await self.mass.music.database.vacuum()
+            try:
+                await self.mass.music.database.vacuum()
+            except sqlite3.Error as err:
+                self.logger.warning("Compacting library.db failed: %s", err)
 
     async def close(self) -> None:
         """Drain in-flight sessions and chunk workers on shutdown."""

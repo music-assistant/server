@@ -266,6 +266,31 @@ async def test_relocates_legacy_rows_and_drops_legacy_tables(
 
 
 @pytest.mark.asyncio
+async def test_vacuum_failure_after_relocation_is_logged_not_raised(
+    library_db: DatabaseConnection,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A vacuum failure after a successful relocation is logged, not raised."""
+    await _seed_legacy(library_db, n_analysis=2, n_failures=0)
+    ctrl = _make_controller(library_db, tmp_path)
+    monkeypatch.setattr(
+        library_db, "vacuum", AsyncMock(side_effect=sqlite3.OperationalError("disk I/O error"))
+    )
+    with caplog.at_level(logging.WARNING):
+        await ctrl.setup_database()
+
+    moved = await library_db.get_rows(AA_TABLE_ANALYSIS, limit=0)
+    assert {r["item_id"] for r in moved} == {"t0", "t1"}
+    assert DB_TABLE_AUDIO_ANALYSIS not in await _table_names(library_db, "main")
+    assert any(
+        record.levelno == logging.WARNING and "disk I/O error" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
 async def test_relocation_walks_id_ranges_in_batches(
     library_db: DatabaseConnection, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
