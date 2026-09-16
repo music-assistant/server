@@ -150,10 +150,6 @@ async def radio_mass_fixture(
     mass._providers[FAKE_INSTANCE] = provider
     # a full metadata scan is irrelevant here and would reach out to the network
     mass.metadata.update_metadata = AsyncMock()  # type: ignore[method-assign]
-    # the boot sequence does not yet attach the audio analysis database (that lands with
-    # the AudioAnalysisController startup wiring); do it here so the deletes that
-    # remove_item_from_library routes through it don't hit a missing schema
-    await mass.streams.audio_analysis.setup_database()
     try:
         yield mass
     finally:
