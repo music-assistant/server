@@ -41,9 +41,10 @@ from music_assistant_models.media_items import (
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
-from music_assistant.helpers.json import json_loads
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.controllers.streams.audio_analysis import (
+    SMART_FADES_ANALYSIS_DOMAIN,
+    _parse_row,
+)
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.sonic_similarity.clap_index import ClapIndex
 from music_assistant.providers.sonic_similarity.constants import (
@@ -1620,9 +1621,8 @@ class SonicSimilarityPlugin(PluginProvider):
                 seen.add(key)
                 if self._clap_index.contains(row["provider"], row["item_id"]):
                     continue
-                try:
-                    analysis = AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
-                except ValueError, TypeError, KeyError:
+                analysis = _parse_row(row)
+                if analysis is None:
                     continue
                 emb = _parse_clap_embedding(analysis.clap_embedding)
                 if emb is None:

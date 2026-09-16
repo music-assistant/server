@@ -86,3 +86,20 @@ def test_non_dict_extra_data_is_left_alone() -> None:
     assert data.clap_embedding is None
     assert data.vocal_activity is None
     assert data.band_rms_low is None
+
+
+def test_lift_keeps_non_list_legacy_values() -> None:
+    """A non-list legacy value (the old wrapped vocal contract) is kept in extra_data."""
+    wrapped = {"model": "some_other_model", "probabilities": [0.9] * 1800}
+    data = AudioAnalysisData.from_dict({"extra_data": {"vocal_activity": wrapped}})
+    assert data.vocal_activity is None
+    assert data.extra_data == {"vocal_activity": wrapped}
+
+
+def test_lift_keeps_unknown_band_rms_entries() -> None:
+    """A band_rms dict with an unrecognized band name keeps that band in extra_data."""
+    data = AudioAnalysisData.from_dict(
+        {"extra_data": {"band_rms": {"low": [0.1] * 1800, "sub": [0.2] * 1800}}}
+    )
+    assert data.band_rms_low == [0.1] * 1800
+    assert data.extra_data == {"band_rms": {"sub": [0.2] * 1800}}

@@ -101,7 +101,7 @@ class AudioAnalysisData(DataClassDictMixin):
     # Vocal presence per bin, 0.0-1.0. Fixed 1800 bins. Convert to a numpy array for array math.
     vocal_activity: list[float] | None = None
     # Per-band RMS envelopes, normalized 0.0-1.0 against the track peak. Fixed 1800 bins each.
-    # Band edges (Hz): low 20-120, low_mid 120-400, mid 400-4000, high 4000-Nyquist.
+    # Band edges are defined by BAND_RMS_BANDS in the smart fades controller.
     band_rms_low: list[float] | None = None
     band_rms_low_mid: list[float] | None = None
     band_rms_mid: list[float] | None = None
@@ -142,7 +142,16 @@ class AudioAnalysisData(DataClassDictMixin):
     extra_data: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
-        """Lift arrays that older rows stored under extra_data into their typed fields."""
+        """
+        Lift arrays that older rows stored under extra_data into their typed fields.
+
+        Only values actually lifted (or already superseded by a typed field of the
+        same name) are removed from extra_data; anything else under a legacy key
+        (e.g. a non-list value, or an unrecognized band_rms entry) is left in place
+        so it is not silently discarded on the next write. The non-dict guard below
+        is defensive for direct construction only; from_dict validates the field
+        type before this hook runs.
+        """
         if self.extra_data is not None and not isinstance(self.extra_data, dict):
             return  # type: ignore[unreachable]
         if not self.extra_data:
@@ -151,15 +160,24 @@ class AudioAnalysisData(DataClassDictMixin):
             return
         extra = dict(self.extra_data)
         for key, field_name in _LEGACY_EXTRA_DATA_FIELDS.items():
-            value = extra.pop(key, None)
-            if isinstance(value, list) and getattr(self, field_name) is None:
-                setattr(self, field_name, value)
-        band_rms = extra.pop("band_rms", None)
+            value = extra.get(key)
+            if isinstance(value, list):
+                if getattr(self, field_name) is None:
+                    setattr(self, field_name, value)
+                del extra[key]
+        band_rms = extra.get("band_rms")
         if isinstance(band_rms, dict):
+            remaining_band_rms = dict(band_rms)
             for band, field_name in _LEGACY_BAND_RMS_FIELDS.items():
                 value = band_rms.get(band)
-                if isinstance(value, list) and getattr(self, field_name) is None:
-                    setattr(self, field_name, value)
+                if isinstance(value, list):
+                    if getattr(self, field_name) is None:
+                        setattr(self, field_name, value)
+                    del remaining_band_rms[band]
+            if remaining_band_rms:
+                extra["band_rms"] = remaining_band_rms
+            else:
+                del extra["band_rms"]
         self.extra_data = extra or None
 
     def update(self, new_values: AudioAnalysisData) -> AudioAnalysisData:
