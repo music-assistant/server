@@ -142,6 +142,10 @@ class RaumfeldPlayerProvider(PlayerProvider):
             await self._disconnect("initial update timed out")
             return
         await self._sync_rooms()
+        # reflect any existing Raumfeld zones into MA's group state so a group that
+        # survived a restart is shown (and controllable) instead of appearing as solo
+        # players that still play together
+        self._sync_groups()
         self._connected = True
         self.logger.info("Connected to Raumfeld host %s", self._host_address)
 
@@ -170,3 +174,39 @@ class RaumfeldPlayerProvider(PlayerProvider):
             player = RaumfeldPlayer(provider=self, player_id=player_id, room=room)
             await self.mass.players.register(player)
             self.logger.debug("Registered Raumfeld room '%s' as player %s", room, player_id)
+
+    def _sync_groups(self) -> None:
+        """Mirror the current Raumfeld zones into the players' sync-group state."""
+        grouped: set[str] = set()
+        for zone_rooms in self.host.get_zones():
+            # order the rooms with the zone coordinator first so the group leader matches
+            # the room the group was originally created from (get_zones sorts the rooms)
+            member_ids = [
+                pid
+                for room in self._zone_rooms_leader_first(zone_rooms)
+                if self.mass.players.get_player(pid := room_to_player_id(room)) is not None
+            ]
+            if len(member_ids) < 2:
+                continue
+            leader = self.mass.players.get_player(member_ids[0])
+            if isinstance(leader, RaumfeldPlayer):
+                leader.set_group_members(member_ids)
+            grouped.update(member_ids)
+        # any player no longer part of a multi-room zone must be marked solo
+        for player in self.players:
+            if isinstance(player, RaumfeldPlayer) and player.player_id not in grouped:
+                player.set_group_members([])
+
+    def _zone_rooms_leader_first(self, zone_rooms: list[str]) -> list[str]:
+        """Return the zone's rooms ordered with the coordinator (leader) first."""
+        try:
+            resolve = self.host.resolve
+            zone_udn = self.host.roomlst_to_zoneudn(zone_rooms)
+            udn_order = resolve["zoneudn_to_roomudnlst"].get(zone_udn) or []
+            udn_to_room = {udn: room for room, udn in resolve["room_to_udn"].items()}
+        except KeyError, AttributeError:
+            return list(zone_rooms)
+        ordered = [udn_to_room[udn] for udn in udn_order if udn in udn_to_room]
+        # keep any room the coordinator list didn't cover
+        ordered += [room for room in zone_rooms if room not in ordered]
+        return ordered or list(zone_rooms)

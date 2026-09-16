@@ -112,6 +112,15 @@ class RaumfeldPlayer(Player):
         self._attr_available = available
         self.update_state()
 
+    def set_group_members(self, member_ids: list[str]) -> None:
+        """
+        Set this player's sync-group members (leader first), or ``[]`` when solo.
+
+        :param member_ids: Player ids in the group, with this player (the leader) first.
+        """
+        self._attr_group_members = member_ids
+        self.update_state()
+
     async def play(self) -> None:
         """Send PLAY/resume command."""
         self._mark_play_started()
