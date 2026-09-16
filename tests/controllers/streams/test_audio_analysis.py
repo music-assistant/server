@@ -651,8 +651,8 @@ async def test_find_candidates_query_gates_on_current_version(
     await controller._find_candidates_missing_analysis({"sonic_analysis": 3}, 0)
 
     sql = captured["query"]
-    assert "aa.analysis_version IS NOT NULL" in sql
-    assert "aa.analysis_version >= possible.current_version" in sql
+    assert "an.analysis_version IS NOT NULL" in sql
+    assert "an.analysis_version >= possible.current_version" in sql
     assert captured["params"]["ver_0"] == 3
     assert captured["params"]["aa_0"] == "sonic_analysis"
 
@@ -1611,15 +1611,15 @@ async def test_count_candidates_missing_analysis_queries_with_available_filesyst
     db.get_count_from_query.assert_awaited_once()
     sql, params = db.get_count_from_query.await_args.args
     assert "NOT EXISTS" in sql
-    assert "aa.analysis_version IS NOT NULL" in sql
-    assert "aa.analysis_version >= :current_version" in sql
+    assert "an.analysis_version IS NOT NULL" in sql
+    assert "an.analysis_version >= :current_version" in sql
     assert f"'{domain}'" in sql
     assert params["media_type"] == MediaType.TRACK.value
     assert params["aa_domain"] == "sonic_analysis"
     assert params["current_version"] == 2
     assert "now" in params
-    assert "aa.analysis_version IS NOT NULL" in sql
-    assert "aa.analysis_version >= :current_version" in sql
+    assert "an.analysis_version IS NOT NULL" in sql
+    assert "an.analysis_version >= :current_version" in sql
 
 
 def test_controller_has_no_provider_specific_extra_data_keys() -> None:
