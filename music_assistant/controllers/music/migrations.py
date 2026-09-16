@@ -51,6 +51,27 @@ if TYPE_CHECKING:
     from music_assistant.helpers.database import DatabaseConnection
 
 
+async def ensure_legacy_audio_analysis_table(database: DatabaseConnection) -> None:
+    """
+    Create the pre-2.9 audio_analysis table in library.db if it is missing.
+
+    Only the v38 loudness migration writes to it; the AudioAnalysisController relocates the
+    rows into audio_analysis.db right after the music database has been set up.
+    """
+    await database.execute(
+        f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIO_ANALYSIS}(
+                [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                [media_type] TEXT NOT NULL,
+                [item_id] TEXT NOT NULL,
+                [provider] TEXT NOT NULL,
+                [aa_provider_domain] TEXT NOT NULL,
+                [analysis_data] json NOT NULL,
+                [analysis_version] INTEGER DEFAULT 1,
+                [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+                UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
+    )
+
+
 async def migrate_database(  # noqa: PLR0915
     mass: MusicAssistant,
     database: DatabaseConnection,
@@ -593,6 +614,7 @@ async def migrate_database(  # noqa: PLR0915
         # migrate loudness measurements to the unified audio_analysis table
         # under the new builtin loudness_analysis provider, then drop the
         # legacy table. album loudness rides along when present.
+        await ensure_legacy_audio_analysis_table(database)
         await database.execute(
             f"INSERT OR IGNORE INTO {DB_TABLE_AUDIO_ANALYSIS} "
             f"(media_type, item_id, provider, aa_provider_domain, "

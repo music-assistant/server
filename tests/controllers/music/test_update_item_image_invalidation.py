@@ -46,6 +46,8 @@ def _controller_returning(item: Track) -> tuple[TracksController, AsyncMock]:
     invalidate_mock = AsyncMock()
     mass.metadata.invalidate_image_cache = invalidate_mock
     mass.get_provider.return_value = None
+    # remove_item_from_library routes audio analysis cleanup through the AA controller
+    mass.streams.audio_analysis.delete_audio_analysis = AsyncMock()
     controller = TracksController(mass)
     controller.get_library_item = AsyncMock(return_value=item)  # type: ignore[method-assign]
     controller._update_library_item = AsyncMock()  # type: ignore[method-assign]

@@ -25,8 +25,6 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
-    DB_TABLE_AUDIO_ANALYSIS,
-    DB_TABLE_AUDIO_ANALYSIS_FAILURES,
     DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
@@ -258,6 +256,8 @@ class MusicDatabaseSetupMixin:
         db_path = os.path.join(self.mass.storage_path, "library.db")
         await asyncio.to_thread(os.remove, db_path)
         await self._setup_database()
+        # the reset replaced the connection, so the analysis database must be attached again
+        await self.mass.streams.audio_analysis.setup_database()
         # initiate full sync
         await self.start_sync()
 
@@ -532,33 +532,6 @@ class MusicDatabaseSetupMixin:
             FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id]),
             UNIQUE(audiobook_id, artist_id)
             );"""
-        )
-
-        await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIO_ANALYSIS}(
-                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                    [media_type] TEXT NOT NULL,
-                    [item_id] TEXT NOT NULL,
-                    [provider] TEXT NOT NULL,
-                    [aa_provider_domain] TEXT NOT NULL,
-                    [analysis_data] json NOT NULL,
-                    [analysis_version] INTEGER DEFAULT 1,
-                    [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-                    UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
-        )
-
-        await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIO_ANALYSIS_FAILURES}(
-                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                    [media_type] TEXT NOT NULL,
-                    [item_id] TEXT NOT NULL,
-                    [provider] TEXT NOT NULL,
-                    [aa_provider_domain] TEXT NOT NULL,
-                    [reason] TEXT NOT NULL,
-                    [analysis_version] INTEGER NOT NULL DEFAULT 1,
-                    [next_retry] INTEGER,
-                    [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-                    UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
         )
 
         # full-text search tables (trigram tokenizer for substring matching on search_name)
