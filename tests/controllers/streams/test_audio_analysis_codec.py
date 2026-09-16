@@ -23,7 +23,7 @@ def _full_record() -> AudioAnalysisData:
     return AudioAnalysisData(
         duration=231.5,
         bpm=124.9,
-        beats=np.cumsum(np.full(480, 0.48, dtype=np.float32)).tolist(),
+        beats=[0.1234567891 * i for i in range(480)],
         downbeats=np.cumsum(np.full(120, 1.92, dtype=np.float32)).tolist(),
         beats_per_bar=4,
         key="F#",
@@ -59,14 +59,17 @@ def test_array_fields_match_the_model() -> None:
 
 
 def test_round_trip_preserves_scalars_and_float32_arrays_exactly() -> None:
-    """Scalars and beat/downbeat timestamps survive encode/decode exactly."""
+    """Scalars survive exactly; beat timestamps survive to float32 precision."""
     original = _full_record()
     header, payload = encode(original)
     restored = decode(header, payload)
     assert restored.bpm == original.bpm
     assert restored.key == "F#"
     assert restored.extra_data == {"acoustid": "abc"}
-    assert restored.beats == original.beats
+    assert restored.beats is not None
+    assert original.beats is not None
+    # the model's lists are plain python floats (float64); float32 storage is lossy for them
+    assert np.max(np.abs(np.asarray(restored.beats) - np.asarray(original.beats))) < 1e-4
     assert restored.downbeats == original.downbeats
     assert isinstance(restored.rms_energy, list)
 
@@ -114,6 +117,25 @@ def test_decode_skips_unknown_array_with_warning(caplog: pytest.LogCaptureFixtur
         restored = decode(json_dumps(doc), payload)
     assert restored.beats == [1.0, 2.0]
     assert "no_such_field" in caplog.text
+
+
+def test_float16_overflow_falls_back_to_float32() -> None:
+    """An envelope value beyond float16's range is stored at full precision instead."""
+    header, payload = encode(AudioAnalysisData(spectral_centroid=[70000.0, 1000.0]))
+    doc = json_loads(header)
+    assert doc["arrays"][0][0] == "spectral_centroid"
+    assert doc["arrays"][0][1] == "f32"
+    restored = decode(header, payload)
+    assert restored.spectral_centroid == [70000.0, 1000.0]
+
+
+def test_empty_array_round_trips() -> None:
+    """An array field holding no values keeps its empty-list identity."""
+    header, payload = encode(AudioAnalysisData(beats=[]))
+    doc = json_loads(header)
+    assert doc["arrays"] == [["beats", "f32", 0, 0]]
+    assert payload == b""
+    assert decode(header, payload).beats == []
 
 
 def test_decode_rejects_truncated_payload() -> None:
