@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
@@ -150,9 +151,16 @@ class TestRebuildClapIndexFromDatabase:
 
     @pytest.mark.asyncio
     async def test_skips_row_with_invalid_utf8_bytes(
-        self, make_plugin: Callable[..., Any], mock_mass: MagicMock
+        self,
+        make_plugin: Callable[..., Any],
+        mock_mass: MagicMock,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A row whose analysis_data is undecodable bytes is skipped, not raised."""
+        """
+        A row whose analysis_data is undecodable bytes is skipped and logged, not raised.
+
+        :param caplog: Pytest log capture fixture.
+        """
         corrupt_row = {
             "item_id": "x",
             "provider": "spotify",
@@ -164,12 +172,16 @@ class TestRebuildClapIndexFromDatabase:
             make_analysis_row(item_id="y", provider="spotify", clap_embedding=[0.1] * 1024),
         ]
         plugin = make_plugin(clap_enabled=True)
-        await plugin._rebuild_clap_index_from_database()
+        with caplog.at_level(logging.WARNING):
+            await plugin._rebuild_clap_index_from_database()
         plugin._clap_index.add.assert_awaited_once()
         call_args = plugin._clap_index.add.await_args.args
         assert call_args[0] == "spotify"
         assert call_args[1] == "y"
         plugin._clap_index.save.assert_awaited_once()
+        assert any(
+            "Skipping unparsable audio_analysis row" in record.message for record in caplog.records
+        )
 
     @pytest.mark.asyncio
     async def test_skips_rows_missing_clap_embedding(

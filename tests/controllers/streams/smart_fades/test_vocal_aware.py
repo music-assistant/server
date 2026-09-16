@@ -549,14 +549,18 @@ class TestMissingOrInvalidVocalDataFallsBackToEnergyOnly:
         assert plan == baseline
 
     def test_old_wrapped_contract_matches_the_energy_only_plan(self) -> None:
-        """A row using the old wrapped contract disables vocal logic."""
+        """A real old-wrapped row (kept in extra_data, field None) yields the energy-only plan."""
         baseline = _plan(_analysis(120.0, duration=240.0), _analysis(120.0, duration=240.0))
-        out = _analysis(120.0, duration=240.0)
-        out.vocal_activity = {  # type: ignore[assignment]
-            "model": "some_other_model",
-            "frame_duration": 0.1,
-            "probabilities": [0.9] * 2400,
+        out_data = _analysis(120.0, duration=240.0).to_dict()
+        out_data["extra_data"] = {
+            "vocal_activity": {
+                "model": "some_other_model",
+                "frame_duration": 0.1,
+                "probabilities": [0.9] * 2400,
+            }
         }
+        out = AudioAnalysisData.from_dict(out_data)
+        assert out.vocal_activity is None
         plan = _plan(out, _analysis(120.0, duration=240.0))
         assert plan == baseline
 
