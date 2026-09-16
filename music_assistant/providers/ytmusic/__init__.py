@@ -698,6 +698,10 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             can_seek=True,
             allow_seek=True,
             expiration=expiration,
+            # YouTube throttles delivery to ~playback rate (~1.3x realtime), so treat
+            # it as a live-paced source: this keeps enough audio buffered ahead for
+            # crossfade tails and engages the realtime prepare/fade paths.
+            is_realtime=True,
         )
         if (audio_channels := stream_format.get("audio_channels")) and str(
             audio_channels
