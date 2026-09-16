@@ -56,8 +56,6 @@ BLOCK_SECONDS: int = 10
 ANALYSIS_SAMPLE_RATE: int = 22050
 OVERLAP_SAMPLES: int = 2048
 
-EXTRA_DATA_CLAP_EMBEDDING: str = "clap_embedding"
-
 # CLAP's HTSAT audio encoder takes a fixed 7-second input at 44.1 kHz.
 CLAP_WINDOW_SECONDS: int = 7
 CLAP_SKIP_SECONDS: int = 45
@@ -172,9 +170,7 @@ def compute_clap_target_starts(
 
 def _store_clap_embedding(analysis: AudioAnalysisData, embedding: np.ndarray) -> None:
     """Store the CLAP audio embedding on the analysis object for downstream consumers."""
-    if analysis.extra_data is None:
-        analysis.extra_data = {}
-    analysis.extra_data[EXTRA_DATA_CLAP_EMBEDDING] = embedding.tolist()
+    analysis.clap_embedding = embedding.tolist()
 
 
 def _dispatch_clap_chunk(
