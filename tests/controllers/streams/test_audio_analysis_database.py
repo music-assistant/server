@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import pathlib
+import sqlite3
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
 
+import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
 from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_AUDIO_ANALYSIS_FAILURES,
@@ -19,12 +22,14 @@ from music_assistant.controllers.streams.audio_analysis import (
     AA_DB_SCHEMA,
     AA_DB_SCHEMA_VERSION,
     AA_TABLE_ANALYSIS,
+    AA_TABLE_FAILURES,
     AudioAnalysisController,
 )
 from music_assistant.helpers.database import DatabaseConnection
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+    from typing import Any
 
 
 @pytest.fixture
@@ -49,6 +54,8 @@ def _make_controller(
     streams.mass = mass
     mass.music.database = library_db
     mass.storage_path = str(tmp_path)
+    # a real logger, so self.logger (mass.logger.getChild(...)) propagates to caplog
+    mass.logger = logging.getLogger("test_audio_analysis_database")
     return AudioAnalysisController(streams)
 
 
@@ -130,3 +137,126 @@ async def test_delete_audio_analysis_removes_only_that_provider_key(
     assert [(r["provider"], r["aa_provider_domain"]) for r in rows] == [
         ("fs--b", "loudness_analysis")
     ]
+
+
+LEGACY_ANALYSIS_DDL = (
+    f"CREATE TABLE {DB_TABLE_AUDIO_ANALYSIS}("
+    "id INTEGER PRIMARY KEY AUTOINCREMENT, media_type TEXT NOT NULL, item_id TEXT NOT NULL, "
+    "provider TEXT NOT NULL, aa_provider_domain TEXT NOT NULL, analysis_data json NOT NULL, "
+    "analysis_version INTEGER DEFAULT 1, "
+    "timestamp_created INTEGER DEFAULT (cast(strftime('%s','now') as int)), "
+    "UNIQUE(item_id,provider,aa_provider_domain,media_type))"
+)
+LEGACY_FAILURES_DDL = (
+    f"CREATE TABLE {DB_TABLE_AUDIO_ANALYSIS_FAILURES}("
+    "id INTEGER PRIMARY KEY AUTOINCREMENT, media_type TEXT NOT NULL, item_id TEXT NOT NULL, "
+    "provider TEXT NOT NULL, aa_provider_domain TEXT NOT NULL, reason TEXT NOT NULL, "
+    "analysis_version INTEGER NOT NULL DEFAULT 1, next_retry INTEGER, "
+    "timestamp_created INTEGER DEFAULT (cast(strftime('%s','now') as int)), "
+    "UNIQUE(item_id,provider,aa_provider_domain,media_type))"
+)
+
+
+async def _seed_legacy(db: DatabaseConnection, n_analysis: int, n_failures: int) -> None:
+    await db.execute(LEGACY_ANALYSIS_DDL)
+    await db.execute(LEGACY_FAILURES_DDL)
+    for i in range(n_analysis):
+        # explicit ids with a gap, and explicit timestamps, so preservation is observable
+        await db.execute(
+            f"INSERT INTO {DB_TABLE_AUDIO_ANALYSIS}"
+            "(id, media_type, item_id, provider, aa_provider_domain, analysis_data, "
+            " analysis_version, timestamp_created) VALUES "
+            "(:id, 'track', :item, 'fs--a', 'loudness_analysis', :data, 2, :ts)",
+            {
+                "id": i * 3 + 1,
+                "item": f"t{i}",
+                "data": f'{{"loudness_integrated": {-i}}}',
+                "ts": 1000 + i,
+            },
+        )
+    for i in range(n_failures):
+        await db.execute(
+            f"INSERT INTO {DB_TABLE_AUDIO_ANALYSIS_FAILURES}"
+            "(media_type, item_id, provider, aa_provider_domain, reason, analysis_version, next_retry)"
+            " VALUES ('track', :item, 'fs--a', 'sonic_analysis', 'boom', 1, NULL)",
+            {"item": f"f{i}"},
+        )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_relocates_legacy_rows_and_drops_legacy_tables(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """Legacy rows are copied over with ids/timestamps preserved, then the source table drops."""
+    await _seed_legacy(library_db, n_analysis=4, n_failures=2)
+    ctrl = _make_controller(library_db, tmp_path)
+    await ctrl.setup_database()
+
+    moved = await library_db.get_rows(AA_TABLE_ANALYSIS, order_by="id", limit=0)
+    assert [r["id"] for r in moved] == [1, 4, 7, 10]
+    assert [r["timestamp_created"] for r in moved] == [1000, 1001, 1002, 1003]
+    assert moved[2]["analysis_data"] == '{"loudness_integrated": -2}'
+    assert moved[2]["analysis_version"] == 2
+    failures = await library_db.get_rows(AA_TABLE_FAILURES, limit=0)
+    assert {r["item_id"] for r in failures} == {"f0", "f1"}
+    assert failures[0]["next_retry"] is None
+    main_tables = await _table_names(library_db, "main")
+    assert DB_TABLE_AUDIO_ANALYSIS not in main_tables
+    assert DB_TABLE_AUDIO_ANALYSIS_FAILURES not in main_tables
+
+
+@pytest.mark.asyncio
+async def test_relocation_walks_id_ranges_in_batches(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Relocation completes across multiple id-range batches, not just the first one."""
+    monkeypatch.setattr(audio_analysis_mod, "RELOCATE_BATCH_SIZE", 4)
+    await _seed_legacy(library_db, n_analysis=7, n_failures=0)  # ids 1..19 span 5 batches
+    ctrl = _make_controller(library_db, tmp_path)
+    await ctrl.setup_database()
+    moved = await library_db.get_rows(AA_TABLE_ANALYSIS, limit=0)
+    assert len(moved) == 7
+
+
+@pytest.mark.asyncio
+async def test_relocation_failure_keeps_legacy_table(
+    library_db: DatabaseConnection,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A mid-copy failure logs at ERROR and leaves the legacy table for the next start."""
+    await _seed_legacy(library_db, n_analysis=2, n_failures=0)
+    ctrl = _make_controller(library_db, tmp_path)
+    real_execute = library_db.execute
+
+    async def failing_execute(query: str, values: dict[str, Any] | None = None) -> Any:
+        if query.lstrip().upper().startswith("INSERT OR IGNORE INTO AA."):
+            raise sqlite3.OperationalError("disk I/O error")
+        return await real_execute(query, values)
+
+    monkeypatch.setattr(library_db, "execute", failing_execute)
+    with caplog.at_level(logging.ERROR):
+        await ctrl.setup_database()
+
+    assert DB_TABLE_AUDIO_ANALYSIS in await _table_names(library_db, "main")
+    assert "disk I/O error" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_relocation_is_resumable_after_partial_copy(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """A retry after a crash mid-copy finishes the job instead of re-copying from scratch."""
+    ctrl = _make_controller(library_db, tmp_path)
+    await ctrl.setup_database()  # attaches and creates empty aa tables
+    await _seed_legacy(library_db, n_analysis=3, n_failures=0)
+    await library_db.execute(
+        f"INSERT INTO {AA_TABLE_ANALYSIS} SELECT * FROM main.{DB_TABLE_AUDIO_ANALYSIS} WHERE id = 1"
+    )
+    await library_db.commit()
+    await ctrl.setup_database()
+    moved = await library_db.get_rows(AA_TABLE_ANALYSIS, order_by="id", limit=0)
+    assert [r["id"] for r in moved] == [1, 4, 7]
+    assert DB_TABLE_AUDIO_ANALYSIS not in await _table_names(library_db, "main")
