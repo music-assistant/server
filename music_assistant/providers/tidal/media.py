@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp.client_exceptions import ClientError
@@ -42,11 +43,12 @@ from .parsers_v2 import (
 from .parsers_v2 import (
     parse_track as parse_track_v2,
 )
-from .quality_variants import album_variant_key, collapse_quality_variants, track_variant_key
+from .quality_variants import Variant, album_variant_key, group_quality_variants, track_variant_key
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Album, Artist, Playlist, Track
 
+    from .jsonapi import JsonApiDocument
     from .provider import TidalProvider
 
 
@@ -235,8 +237,7 @@ class TidalMediaManager:
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get artist albums."""
-        # Tidal lists the same album once per audio quality tier; collapse those
-        # per-quality duplicates across all pages before parsing.
+        # Tidal lists an album once per quality tier; keep one per album.
         pages = [
             doc
             async for doc in self.api.paginate_jsonapi(
@@ -246,15 +247,13 @@ class TidalMediaManager:
             )
         ]
         albums: list[Album] = []
-        for doc, resource in collapse_quality_variants(pages, album_variant_key):
-            if (album := _parse_or_skip(parse_album_v2, self.provider, doc, resource)) is not None:
+        for group in group_quality_variants(pages, album_variant_key):
+            if (album := _parse_first_variant(parse_album_v2, self.provider, group)) is not None:
                 albums.append(album)
         return albums
 
     async def get_artist_tracks(self, prov_artist_id: str) -> list[Track]:
         """Get all artist tracks."""
-        # Tidal lists the same recording once per audio quality tier; collapse those
-        # per-quality duplicates across all pages before parsing.
         pages = [
             doc
             async for doc in self.api.paginate_jsonapi(
@@ -265,8 +264,8 @@ class TidalMediaManager:
             )
         ]
         tracks: list[Track] = []
-        for doc, resource in collapse_quality_variants(pages, track_variant_key):
-            if (track := _parse_or_skip(parse_track_v2, self.provider, doc, resource)) is not None:
+        for group in group_quality_variants(pages, track_variant_key):
+            if (track := _parse_first_variant(parse_track_v2, self.provider, group)) is not None:
                 tracks.append(track)
         return tracks
 
@@ -280,10 +279,8 @@ class TidalMediaManager:
             replace_media="tracks",
         )
         tracks: list[Track] = []
-        for page_doc, resource in collapse_quality_variants([doc], track_variant_key):
-            if (
-                track := _parse_or_skip(parse_track_v2, self.provider, page_doc, resource)
-            ) is not None:
+        for group in group_quality_variants([doc], track_variant_key):
+            if (track := _parse_first_variant(parse_track_v2, self.provider, group)) is not None:
                 tracks.append(track)
         return tracks
 
@@ -445,3 +442,15 @@ class TidalMediaManager:
                 if key in module:
                     return cast("dict[str, Any]", module)
         return None
+
+
+def _parse_first_variant[ItemT](
+    parser: Callable[[TidalProvider, JsonApiDocument, dict[str, Any]], ItemT],
+    provider: TidalProvider,
+    group: list[Variant],
+) -> ItemT | None:
+    """Return the first candidate of a variant group that parses, or None."""
+    for doc, resource in group:
+        if (item := _parse_or_skip(parser, provider, doc, resource)) is not None:
+            return item
+    return None

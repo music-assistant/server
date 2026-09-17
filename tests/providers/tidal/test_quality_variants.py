@@ -7,7 +7,7 @@ from typing import Any
 from music_assistant.providers.tidal.jsonapi import JsonApiDocument
 from music_assistant.providers.tidal.quality_variants import (
     album_variant_key,
-    collapse_quality_variants,
+    group_quality_variants,
     track_variant_key,
 )
 
@@ -47,11 +47,11 @@ def test_cheat_code_collapses_to_highest_ranked_tie_winner() -> None:
     """Test the four "Cheat Code" quality variants collapse to the first HIRES_LOSSLESS one."""
     doc = _load_doc("artist_albums.json")
 
-    result = collapse_quality_variants([doc], album_variant_key)
-    cheat_code = [r for _, r in result if r["attributes"]["title"] == "Cheat Code"]
+    result = group_quality_variants([doc], album_variant_key)
+    cheat_code = [group for group in result if group[0][1]["attributes"]["title"] == "Cheat Code"]
 
     assert len(cheat_code) == 1
-    assert cheat_code[0]["id"] == "355219323"
+    assert cheat_code[0][0][1]["id"] == "355219323"
 
 
 def test_atmos_only_album_is_kept() -> None:
@@ -59,10 +59,10 @@ def test_atmos_only_album_is_kept() -> None:
     resource = _album_resource("900001", title="Atmos Only Album", media_tags=["DOLBY_ATMOS"])
     doc = _album_doc([resource])
 
-    result = collapse_quality_variants([doc], album_variant_key)
+    result = group_quality_variants([doc], album_variant_key)
 
     assert len(result) == 1
-    assert result[0][1]["id"] == "900001"
+    assert result[0][0][1]["id"] == "900001"
 
 
 def test_variants_split_across_pages_collapse_to_the_winning_page() -> None:
@@ -72,10 +72,12 @@ def test_variants_split_across_pages_collapse_to_the_winning_page() -> None:
     page1 = _album_doc([lossless])
     page2 = _album_doc([hi_res])
 
-    result = collapse_quality_variants([page1, page2], album_variant_key)
+    result = group_quality_variants([page1, page2], album_variant_key)
 
     assert len(result) == 1
-    winning_doc, winning_resource = result[0]
+    group = result[0]
+    assert len(group) == 2
+    winning_doc, winning_resource = group[0]
     assert winning_resource["id"] == "910002"
     assert winning_doc is page2
 
@@ -84,8 +86,8 @@ def test_artist_toptracks_isrc_collapse() -> None:
     """Test tracks collapse by isrc, keeping distinct-isrc same-title tracks apart."""
     doc = _load_doc("artist_toptracks.json")
 
-    result = collapse_quality_variants([doc], track_variant_key)
-    ids = {r["id"] for _, r in result}
+    result = group_quality_variants([doc], track_variant_key)
+    ids = {group[0][1]["id"] for group in result}
 
     assert len(result) == 19
     # Same isrc (same recording, two title variants): only the first-seen survives.
@@ -123,7 +125,34 @@ def test_track_without_isrc_falls_back_to_metadata_key() -> None:
         }
     )
 
-    result = collapse_quality_variants([doc], track_variant_key)
+    result = group_quality_variants([doc], track_variant_key)
 
     assert len(result) == 1
-    assert result[0][1]["id"] == "920002"
+    assert result[0][0][1]["id"] == "920002"
+
+
+def test_unkeyable_resource_forms_its_own_group() -> None:
+    """Test a resource whose attributes are null does not raise and is its own group."""
+    broken = _album_resource("900002", title="Broken Album")
+    broken["attributes"] = None
+    ok = _album_resource("900003", title="Fine Album")
+    doc = _album_doc([broken, ok])
+
+    result = group_quality_variants([doc], album_variant_key)
+
+    groups_by_id = {group[0][1]["id"]: group for group in result}
+    assert len(groups_by_id) == 2
+    assert groups_by_id["900002"] == [(doc, broken)]
+
+
+def test_group_candidates_are_ordered_by_quality_rank_regardless_of_input_order() -> None:
+    """Test a group's candidates are sorted hi-res, lossless, atmos regardless of input order."""
+    atmos = _album_resource("930001", title="Ranked Album", media_tags=["DOLBY_ATMOS"])
+    hi_res = _album_resource("930002", title="Ranked Album", media_tags=["HIRES_LOSSLESS"])
+    lossless = _album_resource("930003", title="Ranked Album", media_tags=["LOSSLESS"])
+    doc = _album_doc([atmos, hi_res, lossless])
+
+    result = group_quality_variants([doc], album_variant_key)
+
+    assert len(result) == 1
+    assert [resource["id"] for _, resource in result[0]] == ["930002", "930003", "930001"]
