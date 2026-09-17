@@ -10,7 +10,7 @@ Two similarity engines in one plugin, both backed by usearch HNSW:
 * **Character (1024-dim CLAP cosine)** (opt-in via the ``enable_clap_index`` config
   entry): builds a second usearch index over the CLAP audio embeddings
   already stored by sonic_analysis under
-  ``audio_analysis.clap_embedding``. Track-to-track
+  ``AudioAnalysisData.clap_embedding``. Track-to-track
   semantic-audio similarity, with no additional dependencies beyond
   usearch itself.
 """
