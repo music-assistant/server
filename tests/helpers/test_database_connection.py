@@ -116,11 +116,21 @@ async def test_vacuum_compacts_an_attached_schema(
     db_connection: DatabaseConnection, tmp_path: pathlib.Path
 ) -> None:
     """Test that a schema argument compacts that attached database instead of main."""
-    await db_connection.execute(
-        "ATTACH DATABASE :path AS aa", {"path": str(tmp_path / "attached.db")}
-    )
-    await db_connection.execute("CREATE TABLE aa.t(x INTEGER)")
+    attached_path = tmp_path / "attached.db"
+    await db_connection.execute("ATTACH DATABASE :path AS aa", {"path": str(attached_path)})
+    await db_connection.execute("PRAGMA aa.journal_mode=WAL;")
+    await db_connection.execute("CREATE TABLE aa.t(x TEXT)")
     await db_connection.commit()
+
+    blob = "x" * 1024
+    async with db_connection.deferred_commit():
+        for _ in range(3000):
+            await db_connection.insert("aa.t", {"x": blob})
+    await db_connection.delete("aa.t")
+
+    wal_path = attached_path.with_name(attached_path.name + "-wal")
+    size_before = attached_path.stat().st_size
+
     executed: list[str] = []
     original_execute = db_connection._db.execute
 
@@ -135,6 +145,26 @@ async def test_vacuum_compacts_an_attached_schema(
     assert "VACUUM aa" in executed
     assert "VACUUM" not in executed
     assert await _get_temp_store(db_connection) == TEMP_STORE_MEMORY
+    assert not wal_path.exists() or wal_path.stat().st_size < 64 * 1024
+    assert attached_path.stat().st_size < size_before
+
+
+async def test_vacuum_truncates_the_wal(db_with_table: DatabaseConnection) -> None:
+    """Test that vacuum() checkpoints and truncates the WAL so compaction frees disk."""
+    blob = "x" * 1024
+    await db_with_table.upsert_many(
+        "items", [{"name": f"item{i}", "url": blob} for i in range(3000)]
+    )
+    await db_with_table.delete("items")
+
+    db_path = pathlib.Path(db_with_table.db_path)
+    wal_path = db_path.with_name(db_path.name + "-wal")
+    size_before = db_path.stat().st_size
+
+    await db_with_table.vacuum()
+
+    assert not wal_path.exists() or wal_path.stat().st_size < 64 * 1024
+    assert db_path.stat().st_size < size_before
 
 
 async def test_vacuum_restores_temp_store_on_failure(
