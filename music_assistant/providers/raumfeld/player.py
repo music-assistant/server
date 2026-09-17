@@ -22,12 +22,15 @@ from .constants import (
 from .helpers import parse_didl_metadata, parse_duration
 
 if TYPE_CHECKING:
+    import hassfeld
     from music_assistant_models.config_entries import ConfigEntry
 
     from .provider import RaumfeldPlayerProvider
 
-# Poll interval (seconds) while playing / just after a play command.
-FAST_POLL_INTERVAL = 2
+# Poll interval (seconds) while playing / just after a play command. Kept short so a
+# finished track (and the next one starting) is picked up quickly; the per-poll reads run
+# concurrently to keep the added host traffic modest.
+FAST_POLL_INTERVAL = 1
 # How long (seconds) after a play/resume command to keep polling fast, so MA catches
 # the device actually starting playback (Raumfeld renderers buffer before they start).
 STARTUP_POLL_WINDOW = 20
@@ -318,83 +321,27 @@ class RaumfeldPlayer(Player):
 
     async def poll(self) -> None:
         """Poll the Raumfeld host for this room's current state."""
-        # only the async_* getters are used here; hassfeld's sync getters wrap
-        # asyncio.run() and can't be called from within MA's event loop
         host = self.raumfeld.host
         zone = self._current_zone()
+        # read volume (per room), transport and position (per zone) concurrently so a poll
+        # cycle costs one round-trip of wall time instead of three, keeping state snappy
+        volume, transport, position = await asyncio.gather(
+            self._read_volume(host),
+            self._read_transport(host, zone),
+            self._read_position(host, zone),
+        )
 
-        # Volume (per room). GetVolume returns the CurrentVolume int (0-100).
-        try:
-            volume = await host.async_get_room_volume(self.room)
-            if isinstance(volume, dict):
-                volume = volume.get("CurrentVolume")
-            if volume is not None:
-                self._attr_volume_level = int(volume)
-        except HOST_ERRORS as err:
-            self.logger.debug("Failed to read volume for %s: %r", self.room, err)
+        if volume is not None:
+            self._attr_volume_level = volume
 
-        # Playback state (per zone). GetTransportInfo -> CurrentTransportState.
         playing = False
-        transport_ok = False
-        try:
-            transport = await host.async_get_transport_info(zone)
-            self._attr_playback_state = _map_transport_state(
-                (transport or {}).get("CurrentTransportState")
-            )
+        transport_ok = transport is not None
+        if transport is not None:
+            self._attr_playback_state = _map_transport_state(transport.get("CurrentTransportState"))
             playing = self._attr_playback_state == PlaybackState.PLAYING
-            transport_ok = True
-        except HOST_ERRORS as err:
-            self.logger.debug("Failed to read transport info for zone %s: %r", zone, err)
 
-        # Current media + position (per zone). GetPositionInfo -> TrackURI, RelTime, DIDL.
-        try:
-            pos = await host.async_get_position_info(zone) or {}
-            device_uri = pos.get("TrackURI", "") or ""
-            # Only take over current_media for EXTERNAL sources. When the device is
-            # playing one of our own MA streams, the queue controller owns current_media
-            # (including the queue_item_id it needs to track progress); overwriting it
-            # here would clear that link and break elapsed-time / resume tracking.
-            if playing and device_uri and not device_uri.startswith(self.mass.streams.base_url):
-                meta = parse_didl_metadata(pos.get("TrackMetaData"))
-                self.set_current_media(
-                    uri=device_uri,
-                    clear_all=True,
-                    title=meta["title"],
-                    artist=meta["artist"],
-                    album=meta["album"],
-                    image_url=meta["image_url"],
-                    duration=parse_duration(pos.get("TrackDuration")),
-                )
-            # Report the current position so MA can track progress and, since we treat
-            # pause as stop, resume the track from where it was paused.
-            #
-            # Only update the position while actually PLAYING. A stopped/paused Raumfeld
-            # renderer reports an unreliable RelTime, so re-anchoring then would make the
-            # paused progress bar wobble; leaving it frozen keeps it on the pause point.
-            #
-            # While playing, the device reports RelTime at 1-second granularity, so
-            # overwriting our anchor every poll would make MA's (smooth, extrapolated)
-            # clock jump by up to a second each time. Instead re-anchor only when the
-            # device position really diverges from what MA expects - a seek, track change
-            # or buffer stall - and otherwise let MA's clock run smoothly.
-            elapsed = parse_duration(pos.get("RelTime"))
-            if elapsed is not None and playing:
-                now = time.time()
-                if (
-                    self._attr_elapsed_time is not None
-                    and self._attr_elapsed_time_last_updated is not None
-                ):
-                    expected = self._attr_elapsed_time + (
-                        now - self._attr_elapsed_time_last_updated
-                    )
-                    diverged = abs(elapsed - expected) > POSITION_DRIFT_THRESHOLD
-                else:
-                    diverged = True
-                if diverged:
-                    self._attr_elapsed_time = float(elapsed)
-                    self._attr_elapsed_time_last_updated = now
-        except HOST_ERRORS as err:
-            self.logger.debug("Failed to read position info for zone %s: %r", zone, err)
+        if position is not None:
+            self._apply_position(position, playing)
 
         # Poll fast while playing - and for a short window right after a play/resume
         # command, so MA locks onto the device's real position quickly instead of
@@ -404,15 +351,85 @@ class RaumfeldPlayer(Player):
 
         # the renderer can't pre-enqueue the next track, so advance the queue ourselves
         if transport_ok:
-            self._maybe_advance(playing, recently_started)
+            self._maybe_advance(playing)
 
         self.update_state()
 
-    def _maybe_advance(self, playing: bool, recently_started: bool) -> None:
+    def _apply_position(self, pos: dict[str, str], playing: bool) -> None:
+        """Reflect the device's TrackURI / RelTime from a GetPositionInfo response."""
+        device_uri = pos.get("TrackURI", "") or ""
+        # Only take over current_media for EXTERNAL sources. When the device is playing one
+        # of our own MA streams, the queue controller owns current_media (including the
+        # queue_item_id it needs to track progress); overwriting it here would clear that
+        # link and break elapsed-time / resume tracking.
+        if playing and device_uri and not device_uri.startswith(self.mass.streams.base_url):
+            meta = parse_didl_metadata(pos.get("TrackMetaData"))
+            self.set_current_media(
+                uri=device_uri,
+                clear_all=True,
+                title=meta["title"],
+                artist=meta["artist"],
+                album=meta["album"],
+                image_url=meta["image_url"],
+                duration=parse_duration(pos.get("TrackDuration")),
+            )
+        # Report the current position so MA can track progress and, since we treat pause as
+        # stop, resume the track from where it was paused. Only update while actually
+        # PLAYING (a stopped renderer reports an unreliable RelTime). The device reports
+        # RelTime at 1-second granularity, so re-anchor only when it really diverges from
+        # what MA expects (a seek, track change or buffer stall) and otherwise let MA's
+        # smooth extrapolated clock run.
+        elapsed = parse_duration(pos.get("RelTime"))
+        if elapsed is None or not playing:
+            return
+        now = time.time()
+        if self._attr_elapsed_time is not None and self._attr_elapsed_time_last_updated is not None:
+            expected = self._attr_elapsed_time + (now - self._attr_elapsed_time_last_updated)
+            diverged = abs(elapsed - expected) > POSITION_DRIFT_THRESHOLD
+        else:
+            diverged = True
+        if diverged:
+            self._attr_elapsed_time = float(elapsed)
+            self._attr_elapsed_time_last_updated = now
+
+    async def _read_volume(self, host: hassfeld.RaumfeldHost) -> int | None:
+        """Read this room's volume (0-100), or ``None`` on a host error."""
+        try:
+            volume = await host.async_get_room_volume(self.room)
+        except HOST_ERRORS as err:
+            self.logger.debug("Failed to read volume for %s: %r", self.room, err)
+            return None
+        if isinstance(volume, dict):
+            volume = volume.get("CurrentVolume")
+        return int(volume) if volume is not None else None
+
+    async def _read_transport(
+        self, host: hassfeld.RaumfeldHost, zone: list[str]
+    ) -> dict[str, str] | None:
+        """Read the zone's GetTransportInfo response, or ``None`` on a host error."""
+        try:
+            return await host.async_get_transport_info(zone) or {}
+        except HOST_ERRORS as err:
+            self.logger.debug("Failed to read transport info for zone %s: %r", zone, err)
+            return None
+
+    async def _read_position(
+        self, host: hassfeld.RaumfeldHost, zone: list[str]
+    ) -> dict[str, str] | None:
+        """Read the zone's GetPositionInfo response, or ``None`` on a host error."""
+        try:
+            return await host.async_get_position_info(zone) or {}
+        except HOST_ERRORS as err:
+            self.logger.debug("Failed to read position info for zone %s: %r", zone, err)
+            return None
+
+    def _maybe_advance(self, playing: bool) -> None:
         """Play the next queue item when the current track has finished."""
-        # a track that was playing and is now stopped - outside the startup transition and
-        # not a user stop (which disarms) - has ended on its own
-        if self._advance_armed and self._prev_playing and not playing and not recently_started:
+        # a track that was playing and is now stopped - and not a user stop (which
+        # disarms) - has ended on its own. _mark_play_started resets _prev_playing to
+        # False, so the not-yet-playing gap right after a play command can't look like an
+        # ended track (that gap starts from prev_playing=False).
+        if self._advance_armed and self._prev_playing and not playing:
             if self._next_media is not None:
                 next_media, self._next_media = self._next_media, None
                 self.mass.create_task(self.play_media(next_media))
@@ -431,6 +448,9 @@ class RaumfeldPlayer(Player):
         """Record a play/resume command and switch to fast polling."""
         self._play_started_at = time.time()
         self._attr_poll_interval = FAST_POLL_INTERVAL
+        # a fresh play/resume: the not-yet-playing startup gap must not look like the
+        # previous track ending, so restart end-detection from "was not playing"
+        self._prev_playing = False
         # reset the position: on resume MA adds a seek offset, so a stale pre-pause
         # position here would be double-counted until the device reports the new stream's
         # 0-based time (the next poll re-anchors to the real position)
