@@ -172,6 +172,10 @@ class RaumfeldPlayer(Player):
     async def stop(self) -> None:
         """Send STOP command."""
         self._advance_armed = False
+        # we treat pause as stop; freeze the extrapolated position into the anchor so the
+        # paused progress bar stays where playback was, instead of snapping back to the
+        # last (behind) poll anchor
+        self._freeze_elapsed()
         # a Raumfeld line-in keeps playing through a normal transport stop, so when we are
         # leaving the line-in hard-stop the room(s) by putting them into (manual) standby
         hard_stop = self._attr_active_source == SOURCE_LINE_IN
@@ -414,6 +418,13 @@ class RaumfeldPlayer(Player):
             else:
                 self._advance_armed = False
         self._prev_playing = playing
+
+    def _freeze_elapsed(self) -> None:
+        """Advance the elapsed-time anchor to now so a pause keeps the shown position."""
+        if self._attr_elapsed_time is not None and self._attr_elapsed_time_last_updated is not None:
+            now = time.time()
+            self._attr_elapsed_time += now - self._attr_elapsed_time_last_updated
+            self._attr_elapsed_time_last_updated = now
 
     def _mark_play_started(self) -> None:
         """Record a play/resume command and switch to fast polling."""
