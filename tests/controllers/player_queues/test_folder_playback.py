@@ -47,7 +47,7 @@ async def test_folder_plays_every_playable_item(mass: MusicAssistant) -> None:
     track = Track(
         item_id="track-1", provider=PROVIDER, name="Track", provider_mappings=_provider_mapping()
     )
-    subfolder = BrowseFolder(item_id="sub", provider=PROVIDER, name="Sub")
+    subfolder = BrowseFolder(item_id="sub", provider=PROVIDER, name="Sub", is_playable=False)
     await mass.music.mark_item_played(
         episode,
         fully_played=False,
