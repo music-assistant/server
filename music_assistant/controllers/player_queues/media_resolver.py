@@ -808,10 +808,7 @@ class MediaResolver:
         for item in folder_items:
             if not item.is_playable:
                 continue
-            if is_dynamic_source(item):
-                # a dynamic station supplies its tracks on demand through the managed pool;
-                # queued as a plain item it cannot be streamed, so leave it out here
-                continue
+            if isinstance(item, Radio) and item.is_dynamic:
             try:
                 # recursively resolve every child, so a folder of podcast episodes or
                 # radio stations plays just like a folder of tracks
