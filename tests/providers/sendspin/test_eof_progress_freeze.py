@@ -9,7 +9,10 @@ for a superseded stream would flash a paused position between tracks.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, PropertyMock, patch
+
+from aiosendspin.server.roles.metadata.group import MetadataGroupRole
+from aiosendspin.server.roles.metadata.state import Metadata
 
 from music_assistant.providers.sendspin.playback import SendspinPlaybackSession
 
@@ -63,3 +66,24 @@ def test_already_stopped_stream_is_not_snapshotted() -> None:
     SendspinPlaybackSession._stop_push_stream(session, snapshot_progress=True)
 
     assert calls == []
+
+
+def test_group_stop_reports_the_position_as_zero() -> None:
+    """
+    The group stop MA emits after the freeze rewinds the reported position.
+
+    aiosendspin #442 made `SendspinGroup.stop()` reset the position instead of leaving
+    the frozen one, matching `SendspinPlayer.stop()` zeroing its own elapsed time. The
+    freeze above it only carries a position if that stop raises.
+    """
+    role = object.__new__(MetadataGroupRole)
+    playing = Metadata(track_progress=61000, playback_speed=1000)
+    with (
+        patch.object(MetadataGroupRole, "metadata", new=PropertyMock(return_value=playing)),
+        patch.object(MetadataGroupRole, "cancel_scheduled"),
+        patch.object(MetadataGroupRole, "_apply_metadata") as apply,
+    ):
+        role.reset_progress()
+
+    applied = apply.call_args.args[0]
+    assert (applied.track_progress, applied.playback_speed) == (0, 0)

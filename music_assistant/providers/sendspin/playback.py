@@ -971,7 +971,9 @@ class SendspinPlaybackSession:
                     producer_stopped_cleanly = False
             with suppress(Exception):
                 # Same condition as the group.stop() below, so we snapshot on exactly the
-                # paths where a group STOP - and therefore a freeze - is already emitted.
+                # paths where a group STOP is already emitted. That stop resets the reported
+                # position to 0 (spec: stop rewinds), so the snapshot only carries the
+                # position if the stop below raises.
                 self._stop_push_stream(
                     snapshot_progress=producer_stopped_cleanly and not self._cancel_requested,
                 )

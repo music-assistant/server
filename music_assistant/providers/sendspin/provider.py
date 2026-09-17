@@ -1069,11 +1069,7 @@ class SendspinProvider(PlayerProvider):
                 )
                 continue
             self.logger.debug("Connecting to manually configured Sendspin client at %s", url)
-            self.server_api.connect_to_client(
-                url,
-                retry_initial_connection=True,
-                retry_indefinitely=True,
-            )
+            self.server_api.connect_to_client(url, retry_initial_connection=True)
 
     async def unload(self, is_removed: bool = False) -> None:
         """
