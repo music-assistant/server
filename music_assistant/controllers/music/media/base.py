@@ -354,7 +354,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         db_id = int(item_id)  # ensure integer
         library_item = await self.get_library_item(db_id)
         assert library_item, f"Item does not exist: {db_id}"
-        await self._delete_removed_mapping_analysis(library_item.provider_mappings, set())
+        await self._delete_removed_mapping_analysis(db_id, library_item.provider_mappings, set())
         # delete item
         await self.mass.music.database.delete(
             self.db_table,
@@ -1331,7 +1331,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             return
 
         await self._delete_removed_mapping_analysis(
-            library_item.provider_mappings, remaining_mappings
+            db_id, library_item.provider_mappings, remaining_mappings
         )
         # update provider_mappings table
         await self.mass.music.database.delete(
@@ -1401,7 +1401,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             return
 
         await self._delete_removed_mapping_analysis(
-            library_item.provider_mappings, remaining_mappings
+            db_id, library_item.provider_mappings, remaining_mappings
         )
         # update provider_mappings table
         await self.mass.music.database.delete(
@@ -2314,6 +2314,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
     async def _delete_removed_mapping_analysis(
         self,
+        library_item_id: int,
         provider_mappings: set[ProviderMapping],
         remaining_mappings: set[ProviderMapping],
     ) -> None:
@@ -2328,7 +2329,26 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             for mapping in remaining_mappings
             for key in (mapping.provider_domain, mapping.provider_instance)
         }
+        provider_domains = {mapping.provider_domain for mapping in provider_mappings}
         for item_id, provider_key in previous_keys - remaining_keys:
+            # Same-item references are covered above; another library item can share
+            # the domain key through a different provider instance.
+            if (
+                provider_key in provider_domains
+                and await self.mass.music.database.get_rows_from_query(
+                    f"SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+                    "WHERE media_type = :media_type AND provider_domain = :provider_domain "
+                    "AND provider_item_id = :provider_item_id AND item_id != :library_item_id",
+                    {
+                        "media_type": self.media_type.value,
+                        "provider_domain": provider_key,
+                        "provider_item_id": item_id,
+                        "library_item_id": library_item_id,
+                    },
+                    limit=1,
+                )
+            ):
+                continue
             await self.mass.streams.audio_analysis.delete_audio_analysis(
                 item_id, provider_key, self.media_type
             )

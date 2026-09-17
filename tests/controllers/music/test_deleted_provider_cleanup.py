@@ -183,6 +183,45 @@ async def test_shared_domain_analysis_survives_other_account_removal(
             assert bool(await mass.music.database.get_rows(table, match)) == (index == 0)
 
 
+@pytest.mark.parametrize("removal", ["item", "single", "all"])
+async def test_shared_analysis_survives_removal_from_another_library_item(
+    mass: MusicAssistant, removal: str
+) -> None:
+    """Domain analysis remains while another library item references it through another account."""
+    instances = ("spotify--first", "spotify--second")
+    library_ids = []
+    for index, instance in enumerate(instances):
+        db_id = await _add_track(mass, f"fs-shared-{index}", f"Shared Track {index}")
+        library_ids.append(db_id)
+        await mass.music.tracks.add_provider_mapping(
+            db_id,
+            ProviderMapping(
+                item_id="sp-shared", provider_domain="spotify", provider_instance=instance
+            ),
+        )
+    assert library_ids[0] != library_ids[1]
+    for provider_key in ("spotify", *instances):
+        await _add_analysis_row(mass, "sp-shared", provider_key)
+        await _add_failure_row(mass, "sp-shared", provider_key)
+
+    for index, (db_id, instance) in enumerate(zip(library_ids, instances, strict=True)):
+        if removal == "item":
+            await mass.music.tracks.remove_item_from_library(db_id)
+        elif removal == "single":
+            await mass.music.tracks.remove_provider_mapping(db_id, instance, "sp-shared")
+        else:
+            await mass.music.tracks.remove_provider_mappings(db_id, instance)
+        for table in (AA_TABLE_ANALYSIS, AA_TABLE_FAILURES):
+            assert not await mass.music.database.get_rows(
+                table, {"item_id": "sp-shared", "provider": instance}
+            )
+            assert bool(
+                await mass.music.database.get_rows(
+                    table, {"item_id": "sp-shared", "provider": "spotify"}
+                )
+            ) == (index == 0)
+
+
 @pytest.mark.parametrize("queued", [False, True])
 async def test_cleanup_waits_for_analysis_database(
     mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, queued: bool
