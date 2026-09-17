@@ -117,7 +117,9 @@ def mock_stream_details() -> MagicMock:
 @pytest.fixture
 def controller(mock_streams: MagicMock) -> AudioAnalysisController:
     """Return an AudioAnalysisController wired to mock_streams."""
-    return AudioAnalysisController(mock_streams)
+    controller = AudioAnalysisController(mock_streams)
+    controller._database_ready = True
+    return controller
 
 
 @pytest.fixture

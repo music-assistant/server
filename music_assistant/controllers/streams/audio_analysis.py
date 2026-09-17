@@ -261,6 +261,7 @@ class AudioAnalysisController:
         self.streams = streams
         self.mass = streams.mass
         self.logger = self.mass.logger.getChild("audio_analysis")
+        self._database_ready = False
         self._active_sessions: dict[str, set[str]] = {}
         self._workers: dict[str, asyncio.Task[None]] = {}
         # Realtime session key -> queue id, insertion-ordered, so the session cap is applied
@@ -303,23 +304,41 @@ class AudioAnalysisController:
         (it is attached onto that connection) and before any analysis query.
         """
         db_path = os.path.join(self.mass.storage_path, AA_DB_FILENAME)
+        self._database_ready = False
         try:
-            await self._attach_and_create(db_path)
-        except sqlite3.DatabaseError as err:
-            # ATTACH only opens the file lazily, so an unreadable one first shows up here
+            try:
+                await self._attach_and_create(db_path)
+            except sqlite3.DatabaseError as err:
+                # Extended result codes retain the primary SQLite code in the low byte.
+                if getattr(err, "sqlite_errorcode", 0) & 0xFF not in (
+                    sqlite3.SQLITE_CORRUPT,
+                    sqlite3.SQLITE_NOTADB,
+                ):
+                    raise
+                self.logger.error(
+                    "Audio analysis database %s is unusable (%s); moving it aside and starting over",
+                    db_path,
+                    err,
+                )
+                await self._quarantine_database(db_path)
+                await self._attach_and_create(db_path)
+            # Both tables must migrate before analysis can read or write the destination.
+            moved = await self._relocate_legacy_table(DB_TABLE_AUDIO_ANALYSIS, _ANALYSIS_COLUMNS)
+            failures_moved = await self._relocate_legacy_table(
+                DB_TABLE_AUDIO_ANALYSIS_FAILURES, _FAILURE_COLUMNS
+            )
+            if moved is None or failures_moved is None:
+                raise ProviderUnavailableError("Legacy audio analysis relocation is incomplete")
+            moved += failures_moved
+        except (sqlite3.Error, OSError, ValueError, ProviderUnavailableError) as err:
             self.logger.error(
-                "Audio analysis database %s is unusable (%s); moving it aside and starting over",
+                "Audio analysis unavailable: %s (%s). Playback remains available; "
+                "check storage and database compatibility, then restart to retry",
                 db_path,
                 err,
             )
-            await self._quarantine_database(db_path)
-            # a second failure means the storage path itself is unusable: let it propagate
-            await self._attach_and_create(db_path)
-        # one-time relocation of rows written by earlier versions into library.db
-        moved = await self._relocate_legacy_table(DB_TABLE_AUDIO_ANALYSIS, _ANALYSIS_COLUMNS)
-        moved += await self._relocate_legacy_table(
-            DB_TABLE_AUDIO_ANALYSIS_FAILURES, _FAILURE_COLUMNS
-        )
+            return
+        self._database_ready = True
         if moved > 0:
             self.logger.info("Compacting library.db after moving %s audio analysis rows", moved)
             try:
@@ -405,6 +424,8 @@ class AudioAnalysisController:
     @property
     def providers(self) -> list[AudioAnalysisProvider]:
         """Return all available audio analysis providers."""
+        if not self._database_ready:
+            return []
         return [
             prov
             for prov in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS)
@@ -494,6 +515,7 @@ class AudioAnalysisController:
         :param media_type: The media type of the item being analyzed.
         :raises ValueError: When a float field of the analysis holds a non-finite value.
         """
+        self._require_database()
         # non-finite floats serialize to JSON null, which corrupts the stored row;
         # refuse them here so a bad payload can never poison the database
         if (field_name := _first_non_finite_field(analysis)) is not None:
@@ -547,6 +569,7 @@ class AudioAnalysisController:
         :param analysis_version: The AA provider's algorithm version at failure time.
         :param media_type: The media type of the item.
         """
+        self._require_database()
         provider = self.mass.get_provider(provider_instance_id_or_domain)
         if not isinstance(provider, MusicProvider):
             self.logger.debug(
@@ -585,6 +608,7 @@ class AudioAnalysisController:
         :param aa_provider_domain: Domain of the AA provider whose failure to clear.
         :param media_type: The media type of the item.
         """
+        self._require_database()
         provider = self.mass.get_provider(provider_instance_id_or_domain)
         if not isinstance(provider, MusicProvider):
             self.logger.debug(
@@ -616,6 +640,8 @@ class AudioAnalysisController:
         :param provider_key: Stored music-provider key (domain or instance_id).
         :param media_type: The media type of the item.
         """
+        if not self._database_ready:
+            return
         await self.mass.music.database.delete(
             AA_TABLE_ANALYSIS,
             {"media_type": media_type.value, "item_id": item_id, "provider": provider_key},
@@ -645,6 +671,8 @@ class AudioAnalysisController:
             (e.g. loudness_integrated) is written by several providers with different
             semantics, so the authoritative source is selected.
         """
+        if not self._database_ready:
+            return None
         provider = self.mass.get_provider(provider_instance_id_or_domain)
         if not isinstance(provider, MusicProvider):
             return None
@@ -745,6 +773,8 @@ class AudioAnalysisController:
         :param loudness_album: Optional album-level integrated loudness in LUFS.
         :param media_type: The media type of the item.
         """
+        if not self._database_ready:
+            return
         if loudness is None or not isfinite(loudness) or loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
             return
         if (
@@ -778,6 +808,8 @@ class AudioAnalysisController:
         :param provider_instance_id_or_domain: Music provider instance ID or domain.
         :param aa_provider_domain: Domain of the AA provider whose rows to fetch.
         """
+        if not self._database_ready:
+            return []
         if not track_item_ids:
             return []
         provider = self.mass.get_provider(
@@ -832,6 +864,7 @@ class AudioAnalysisController:
         :param aa_provider_domain: Domain of the AA provider.
         :param media_type: The media type of the item.
         """
+        self._require_database()
         provider = self.mass.get_provider(provider_instance_id_or_domain)
         if not isinstance(provider, MusicProvider):
             return None
@@ -860,6 +893,7 @@ class AudioAnalysisController:
         :param aa_provider_domain: Domain of the AA provider whose rows to count.
         :param media_type: The media type to count rows for.
         """
+        self._require_database()
         return await self.mass.music.database.get_count_from_query(
             f"SELECT id FROM {AA_TABLE_ANALYSIS} "
             f"WHERE aa_provider_domain = :aa_provider_domain AND media_type = :media_type",
@@ -880,6 +914,7 @@ class AudioAnalysisController:
         :param aa_provider_domain: Domain of the AA provider whose rows to yield.
         :param media_type: The media type to filter rows by.
         """
+        self._require_database()
         # fetch as blob: the sqlite driver raises OperationalError on corrupt
         # non-UTF-8 TEXT; raw bytes defer decoding to the consumer
         query = (
@@ -924,6 +959,7 @@ class AudioAnalysisController:
             wins per-field conflicts (see get_audio_analysis). When None, all available
             providers are merged latest-write-wins.
         """
+        self._require_database()
         available_aa_domains = self._available_aa_domains()
         if primary_aa_domain not in available_aa_domains:
             LOGGER.warning(
@@ -980,6 +1016,7 @@ class AudioAnalysisController:
             streaming-provider tracks are never considered for background analysis
             and are excluded.
         """
+        self._require_database()
         provider = self.mass.get_provider(
             aa_domain,
             provider_type=AudioAnalysisProvider,  # type: ignore[type-abstract]
@@ -1021,6 +1058,7 @@ class AudioAnalysisController:
 
         :param aa_domain: When given, only failures for this AA provider domain are returned.
         """
+        self._require_database()
         match = {"aa_provider_domain": aa_domain} if aa_domain is not None else None
         rows = await self.mass.music.database.get_rows(AA_TABLE_FAILURES, match, limit=0)
         return [
@@ -1051,6 +1089,7 @@ class AudioAnalysisController:
         :param provider: Stored music-provider key (domain or instance_id) to clear.
         :param aa_domain: AA provider domain to clear.
         """
+        self._require_database()
         match: dict[str, Any] = {}
         if item_id is not None:
             match["item_id"] = item_id
@@ -1065,6 +1104,13 @@ class AudioAnalysisController:
         if count:
             await self.mass.music.database.delete(AA_TABLE_FAILURES, match)
         return count
+
+    def _require_database(self) -> None:
+        """Reject analysis operations until the database and its migrations are ready."""
+        if not self._database_ready:
+            raise ProviderUnavailableError(
+                "Audio analysis database is unavailable; check the server log and restart to retry"
+            )
 
     async def _attach_and_create(self, db_path: str) -> None:
         """
@@ -1091,6 +1137,12 @@ class AudioAnalysisController:
                     [type] TEXT
                 );"""
         )
+        version_row = await db.get_row(AA_TABLE_SETTINGS, {"key": "version"})
+        if version_row is not None and int(version_row["value"]) > AA_DB_SCHEMA_VERSION:
+            raise ProviderUnavailableError(
+                f"{AA_DB_FILENAME} schema version {version_row['value']} is newer than "
+                f"this build supports ({AA_DB_SCHEMA_VERSION}); upgrade Music Assistant"
+            )
         await db.execute(
             f"""CREATE TABLE IF NOT EXISTS {AA_TABLE_ANALYSIS}(
                     [id] INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1138,7 +1190,7 @@ class AudioAnalysisController:
                 # overwrites an older quarantine; we only ever keep the most recent one
                 await asyncio.to_thread(os.replace, source, f"{source}.corrupt")
 
-    async def _relocate_legacy_table(self, table: str, columns: tuple[str, ...]) -> int:
+    async def _relocate_legacy_table(self, table: str, columns: tuple[str, ...]) -> int | None:
         """
         Copy a legacy main.<table> into the attached db in id batches, then drop it.
 
@@ -1151,8 +1203,7 @@ class AudioAnalysisController:
 
         :param table: Name of the legacy table in library.db (main schema) to relocate.
         :param columns: Column names (excluding id) shared by main.<table> and aa.<table>.
-        :returns: Number of rows copied when the legacy table was dropped; 0 when the table
-            did not exist, the copy was incomplete, or a sqlite3.Error occurred.
+        :returns: Number of rows copied (0 if absent), or None when relocation failed.
         """
         db = self.mass.music.database
         exists = await db.get_rows_from_query(
@@ -1205,7 +1256,7 @@ class AudioAnalysisController:
                     total,
                     AA_DB_FILENAME,
                 )
-                return 0
+                return None
             await db.execute(f"DROP TABLE main.{table}")
             await db.commit()
         except sqlite3.Error as err:
@@ -1216,7 +1267,7 @@ class AudioAnalysisController:
                 copied,
                 err,
             )
-            return 0
+            return None
         self.logger.info("Moved %s of %s rows of %s into %s", copied, total, table, AA_DB_FILENAME)
         return copied
 

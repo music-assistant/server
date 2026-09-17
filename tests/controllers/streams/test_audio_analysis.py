@@ -490,7 +490,9 @@ def _make_controller() -> AudioAnalysisController:
     streams = MagicMock()
     streams.mass = MagicMock()
     streams.mass.logger.getChild.return_value = MagicMock()
-    return AudioAnalysisController(streams)
+    controller = AudioAnalysisController(streams)
+    controller._database_ready = True
+    return controller
 
 
 def _make_aa_provider(
@@ -867,6 +869,7 @@ def _stub_controller(
 ) -> tuple[AudioAnalysisController, MagicMock]:
     """Build a bare AudioAnalysisController whose database is mocked."""
     c = AudioAnalysisController.__new__(AudioAnalysisController)
+    c._database_ready = True
     c.logger = MagicMock()
     db = MagicMock()
     db.get_count_from_query = AsyncMock(return_value=count_result)
@@ -1307,6 +1310,7 @@ async def test_iter_merged_audio_analysis_rows_skips_row_with_invalid_utf8_bytes
     controller = AudioAnalysisController(streams)
 
     with caplog.at_level("WARNING", logger=audio_analysis_mod.LOGGER.name):
+        controller._database_ready = True
         result = [
             x async for x in controller.iter_merged_audio_analysis_rows(SONIC_ANALYSIS_DOMAIN)
         ]
@@ -1352,6 +1356,7 @@ async def test_iter_audio_analysis_rows_yields_corrupt_row_as_undecodable_bytes(
     streams.mass.music.database = real_audio_analysis_db
     controller = AudioAnalysisController(streams)
 
+    controller._database_ready = True
     rows = [row async for row in controller.iter_audio_analysis_rows(SONIC_ANALYSIS_DOMAIN)]
 
     assert {row["item_id"] for row in rows} == {"t1", "t2"}
