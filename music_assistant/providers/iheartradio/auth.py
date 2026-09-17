@@ -103,7 +103,8 @@ class IHeartRadioAuthManager:
                 return
             username = self._username()
             password = str(self.provider.get_setup_value(CONF_PASSWORD) or "")
-            self.session = None
+            # the old session stays until the new one replaces it, so a request made
+            # meanwhile is rejected against it and its relogin coalesces on the check above
             if username:
                 payload = await self._account_login(username, password)
             else:
