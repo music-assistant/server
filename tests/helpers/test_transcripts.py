@@ -100,6 +100,14 @@ def test_document_to_text_strips_markup() -> None:
     )
 
 
+def test_document_to_text_separates_compact_podcasting_html() -> None:
+    """Test that speaker, time and text written on one line do not run together."""
+    document = (
+        "<cite>Kevin:</cite><time>0:00</time><p>Hello there.</p><cite>Alban:</cite><p>Hi.</p>"
+    )
+    assert document_to_text(document) == "Kevin:\n0:00\nHello there.\nAlban:\nHi."
+
+
 def test_document_to_text_drops_blank_lines() -> None:
     """Test that blank and whitespace only lines are dropped."""
     assert document_to_text("first\n\n   \nsecond") == "first\nsecond"

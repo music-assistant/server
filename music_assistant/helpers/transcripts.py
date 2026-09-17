@@ -23,7 +23,7 @@ _CUE_TIMINGS = re.compile(
 _VOICE_TAG = re.compile(r"<v(?:\.[^\s.>]+)*\s+([^>]+)>")
 _MARKUP_TAG = re.compile(r"</?[^>]*>")
 # html block boundaries, which read as a line break where a cue timing is not available
-_HTML_LINE_BREAK = re.compile(r"<br\s*/?>|</(?:p|div|h[1-6]|li|tr)\s*>", re.IGNORECASE)
+_HTML_LINE_BREAK = re.compile(r"<br\s*/?>|</(?:p|div|h[1-6]|li|tr|cite|time)\s*>", re.IGNORECASE)
 _BLOCK_SEPARATOR = re.compile(r"\n[ \t]*\n")
 # WebVTT blocks that never contain dialogue
 _NON_CUE_BLOCKS = ("WEBVTT", "NOTE", "STYLE", "REGION")
