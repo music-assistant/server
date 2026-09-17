@@ -57,7 +57,7 @@ from aiosendspin.server.roles import (
 )
 from aiosendspin.server.roles.color.state import Color
 from aiosendspin.server.roles.metadata.state import Metadata
-from aiosendspin.server.roles.player.events import StaticDelayChangedEvent
+from aiosendspin.server.roles.player.events import OutputDelayChangedEvent
 from aiosendspin.server.roles.player.types import PlayerRoleProtocol
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
@@ -139,6 +139,9 @@ SUPPORTED_GROUP_COMMANDS = [
     MediaCommand.SEEK,
     MediaCommand.SEEK_RELATIVE,
 ]
+
+# A player that accepts either command takes the configured delay.
+_OUTPUT_DELAY_COMMANDS = frozenset({PlayerCommand.SET_OUTPUT_DELAY, PlayerCommand.SET_STATIC_DELAY})
 
 # Config constants for Sendspin audio format
 CONF_PREFERRED_SENDSPIN_FORMAT = "preferred_sendspin_format"
@@ -1335,8 +1338,8 @@ class SendspinPlayer(SendspinBasePlayer):
                 self._attr_volume_level = volume
                 self._attr_volume_muted = muted
                 self.update_state()
-            case StaticDelayChangedEvent(static_delay_ms=delay_ms):
-                self.logger.debug("Static delay changed to %d ms", delay_ms)
+            case OutputDelayChangedEvent(output_delay_ms=delay_ms):
+                self.logger.debug("Output delay changed to %d ms", delay_ms)
                 current = self.config.get_value(
                     CONF_SENDSPIN_STATIC_DELAY, self.static_delay_default_ms
                 )
@@ -1698,9 +1701,8 @@ class SendspinPlayer(SendspinBasePlayer):
                     )
                 )
 
-        if (
-            player_role is not None
-            and PlayerCommand.SET_STATIC_DELAY in player_role.state_supported_commands
+        if player_role is not None and not _OUTPUT_DELAY_COMMANDS.isdisjoint(
+            player_role.state_supported_commands
         ):
             entries.append(
                 ConfigEntry(
@@ -1933,7 +1935,7 @@ class SendspinPlayer(SendspinBasePlayer):
             )
 
     async def _apply_static_delay(self) -> None:
-        """Read config and send set_static_delay command if supported."""
+        """Read config and send the output delay command if supported."""
         player_role = self._player_role
         if player_role is None:
             return
@@ -1942,7 +1944,7 @@ class SendspinPlayer(SendspinBasePlayer):
             "int",
             self.config.get_value(CONF_SENDSPIN_STATIC_DELAY, self.static_delay_default_ms),
         )
-        player_role.set_static_delay(config_value)
+        player_role.set_output_delay(config_value)
 
     async def _send_album_artwork(self, current_media: PlayerMedia) -> str | None:
         """
