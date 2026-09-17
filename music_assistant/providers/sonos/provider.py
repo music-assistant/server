@@ -160,8 +160,11 @@ class SonosPlayerProvider(PlayerProvider):
             # picked up before the unload can still arrive after it
             return
         if state_change == ServiceStateChange.Removed:
-            # we don't listen for removed players here.
-            # instead we just wait for the player connection to fail
+            # a portable withdraws its announcement as it goes to sleep, long before the
+            # websocket heartbeat notices
+            sonos_player = self.mass.players.get_player(name.split("@", 1)[0])
+            if isinstance(sonos_player, SonosPlayer):
+                self.mass.create_task(sonos_player.on_mdns_goodbye())
             return
         assert info is not None  # for type checking
         if "uuid" not in info.decoded_properties:
