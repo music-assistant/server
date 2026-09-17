@@ -42,6 +42,7 @@ from .parsers_v2 import (
 from .parsers_v2 import (
     parse_track as parse_track_v2,
 )
+from .quality_variants import album_variant_key, collapse_quality_variants, track_variant_key
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Album, Artist, Playlist, Track
@@ -234,25 +235,39 @@ class TidalMediaManager:
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get artist albums."""
+        # Tidal lists the same album once per audio quality tier; collapse those
+        # per-quality duplicates across all pages before parsing.
+        pages = [
+            doc
+            async for doc in self.api.paginate_jsonapi(
+                f"artists/{prov_artist_id}/relationships/albums",
+                include=["albums.artists", "albums.coverArt"],
+                replace_media="albums",
+            )
+        ]
         albums: list[Album] = []
-        async for doc in self.api.paginate_jsonapi(
-            f"artists/{prov_artist_id}/relationships/albums",
-            include=["albums.artists", "albums.coverArt"],
-            replace_media="albums",
-        ):
-            albums.extend(_parse_items(parse_album_v2, self.provider, doc))
+        for doc, resource in collapse_quality_variants(pages, album_variant_key):
+            if (album := _parse_or_skip(parse_album_v2, self.provider, doc, resource)) is not None:
+                albums.append(album)
         return albums
 
     async def get_artist_tracks(self, prov_artist_id: str) -> list[Track]:
         """Get all artist tracks."""
+        # Tidal lists the same recording once per audio quality tier; collapse those
+        # per-quality duplicates across all pages before parsing.
+        pages = [
+            doc
+            async for doc in self.api.paginate_jsonapi(
+                f"artists/{prov_artist_id}/relationships/tracks",
+                params={"collapseBy": "FINGERPRINT"},
+                include=["tracks.artists", "tracks.albums.coverArt"],
+                replace_media="tracks",
+            )
+        ]
         tracks: list[Track] = []
-        async for doc in self.api.paginate_jsonapi(
-            f"artists/{prov_artist_id}/relationships/tracks",
-            params={"collapseBy": "FINGERPRINT"},
-            include=["tracks.artists", "tracks.albums.coverArt"],
-            replace_media="tracks",
-        ):
-            tracks.extend(_parse_items(parse_track_v2, self.provider, doc))
+        for doc, resource in collapse_quality_variants(pages, track_variant_key):
+            if (track := _parse_or_skip(parse_track_v2, self.provider, doc, resource)) is not None:
+                tracks.append(track)
         return tracks
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
@@ -264,7 +279,13 @@ class TidalMediaManager:
             include=["tracks.artists", "tracks.albums.coverArt"],
             replace_media="tracks",
         )
-        return _parse_items(parse_track_v2, self.provider, doc)
+        tracks: list[Track] = []
+        for page_doc, resource in collapse_quality_variants([doc], track_variant_key):
+            if (
+                track := _parse_or_skip(parse_track_v2, self.provider, page_doc, resource)
+            ) is not None:
+                tracks.append(track)
+        return tracks
 
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Get similar tracks."""
