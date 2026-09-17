@@ -84,6 +84,7 @@ async def make_provider(
         provider.music_directory = str(music_dir)
         provider.beets_directory = beets_directory
         provider.sync_running = False
+        provider._merged_track_lock = asyncio.Lock()
         provider._ctx = ParseContext(
             instance_id=instance_id,
             domain="beets",

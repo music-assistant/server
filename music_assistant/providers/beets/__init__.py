@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from pathlib import PurePosixPath
@@ -54,7 +55,7 @@ from .parsers import (
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
-    from music_assistant_models.media_items import Album, Artist, Track
+    from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -92,6 +93,7 @@ class BeetsProvider(MusicProvider):
             str(self.get_setup_value(CONF_BEETS_DIRECTORY) or "") or None
         )
         self.sync_running = False
+        self._merged_track_lock = asyncio.Lock()
         self._ctx = ParseContext(
             instance_id=self.instance_id,
             domain=self.domain,
@@ -329,9 +331,12 @@ class BeetsProvider(MusicProvider):
         """Add or update one beets item in the Music Assistant library."""
         try:
             track = parse_track(item, album, self._ctx, checksum)
-            library_item = await self.mass.music.tracks.add_item_to_library(
-                track, overwrite_existing=overwrite
-            )
+            if overwrite:
+                library_item = await self._overwrite_library_track(track)
+            else:
+                library_item = await self.mass.music.tracks.add_item_to_library(
+                    track, overwrite_existing=False
+                )
             if track.favorite and not library_item.favorite:
                 await self.mass.music.tracks.set_favorite(library_item.item_id, True)
             if (loudness := loudness_from_gains(item.fields, "track")) is not None:
@@ -352,6 +357,21 @@ class BeetsProvider(MusicProvider):
                 exc_info=err if unexpected and self.logger.isEnabledFor(logging.DEBUG) else None,
             )
             report_current_task_failure(f"Failed to import beets item {item.id}: {err}")
+
+    async def _overwrite_library_track(self, track: Track) -> Track:
+        """Replace a library track with a changed beets item, keeping other items merged into it."""
+        tracks = self.mass.music.tracks
+        current = await tracks.get_library_item_by_prov_id(track.item_id, self.instance_id)
+        if current is None or not _other_instance_mappings(current, track):
+            return await tracks.add_item_to_library(track, overwrite_existing=True)
+        # an overwrite replaces every mapping of this instance on the library track, so the
+        # other beets items' mappings are passed along; the lock keeps two merged items that
+        # changed together from writing back each other's previous mapping
+        async with self._merged_track_lock:
+            current = await tracks.get_library_item_by_prov_id(track.item_id, self.instance_id)
+            if current is not None:
+                track.provider_mappings.update(_other_instance_mappings(current, track))
+            return await tracks.add_item_to_library(track, overwrite_existing=True)
 
     async def _get_previous_checksums(self) -> dict[str, str]:
         """Return the checksum stored for every beets item this instance imported before."""
@@ -433,6 +453,20 @@ class BeetsProvider(MusicProvider):
             artist_query, params, limit=0
         ):
             await self.mass.music.artists.remove_item_from_library(row["item_id"])
+
+
+def _other_instance_mappings(library_track: Track, track: Track) -> set[ProviderMapping]:
+    """
+    Return the mappings a library track holds for this instance's other beets items.
+
+    :param library_track: The library track.
+    :param track: The provider track of one beets item.
+    """
+    return {
+        mapping
+        for mapping in library_track.provider_mappings
+        if mapping.provider_instance == track.provider and mapping.item_id != track.item_id
+    }
 
 
 def _parse_id(prov_item_id: str, prefix: str) -> int:

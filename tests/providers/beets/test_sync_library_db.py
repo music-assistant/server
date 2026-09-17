@@ -275,6 +275,66 @@ class TestReimportedItem:
         } == {track_prov_id(new_id)}
 
 
+class TestMergedItems:
+    """Two beets items of the same recording on different albums share one library track."""
+
+    async def test_editing_one_item_keeps_the_other_items_mapping(
+        self, library_mass: MusicAssistant, make_provider: MakeProvider, beets_db: BeetsDb
+    ) -> None:
+        """After an edit to one item, the library track still maps both beets items."""
+        recording = {"mb_trackid": str(uuid4()), "acoustid_id": str(uuid4()), "track": 1}
+        first_album = _add_album(beets_db, "First Album")
+        second_album = _add_album(beets_db, "Second Album")
+        edited = _add_item(beets_db, first_album, "Song", **recording)
+        other = _add_item(beets_db, second_album, "Song", length=215.9, **recording)
+        provider = await _attach(make_provider, library_mass)
+        await _sync(provider)
+        library_track = await _library_track(library_mass, edited)
+        assert library_track is not None
+        both = {(INSTANCE_ID, track_prov_id(edited)), (INSTANCE_ID, track_prov_id(other))}
+        assert _mappings(library_track) == both
+
+        beets_db.update_item(edited, comments="Edited")
+        await _sync(provider)
+
+        edited_track = await _library_track(library_mass, edited)
+        assert edited_track is not None
+        assert edited_track.item_id == library_track.item_id
+        assert _mappings(edited_track) == both
+        assert edited_track.metadata.description == "Edited"
+
+
+class TestMergedItemsChangedTogether:
+    """Two merged beets items that change in the same sync both keep their current mapping."""
+
+    async def test_both_mappings_hold_their_new_checksums(
+        self, library_mass: MusicAssistant, make_provider: MakeProvider, beets_db: BeetsDb
+    ) -> None:
+        """The library track maps both items afterwards, and a further sync imports nothing."""
+        recording = {"mb_trackid": str(uuid4()), "acoustid_id": str(uuid4()), "track": 1}
+        first_album = _add_album(beets_db, "First Album")
+        second_album = _add_album(beets_db, "Second Album")
+        first = _add_item(beets_db, first_album, "Song", **recording)
+        second = _add_item(beets_db, second_album, "Song", length=215.9, **recording)
+        beets_db.set_item_flex(first, "rating", "0.9")
+        beets_db.set_item_flex(second, "rating", "0.9")
+        await _sync(await _attach(make_provider, library_mass))
+
+        provider = await _attach(make_provider, library_mass, favorite_rating_threshold=0.8)
+        await _sync(provider)
+
+        library_track = await _library_track(library_mass, first)
+        assert library_track is not None
+        assert _mappings(library_track) == {
+            (INSTANCE_ID, track_prov_id(first)),
+            (INSTANCE_ID, track_prov_id(second)),
+        }
+        tracks = library_mass.music.tracks
+        with patch.object(tracks, "add_item_to_library", wraps=tracks.add_item_to_library) as add:
+            await _sync(provider)
+        add.assert_not_awaited()
+
+
 class TestDeletedItem:
     """An item deleted from beets without a replacement leaves the library."""
 
