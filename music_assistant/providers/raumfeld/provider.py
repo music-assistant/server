@@ -33,9 +33,10 @@ from .constants import (
     DLNA_DOMAIN,
     HOST_ERRORS,
     INITIAL_UPDATE_TIMEOUT,
+    LINE_IN_OBJECT_ID,
     RECONNECT_INTERVAL,
 )
-from .helpers import room_to_player_id
+from .helpers import parse_line_in, room_to_player_id
 from .player import RaumfeldPlayer
 
 if TYPE_CHECKING:
@@ -51,11 +52,19 @@ class RaumfeldPlayerProvider(PlayerProvider):
     _supervisor_task: asyncio.Task[None] | None = None
     _update_task: asyncio.Task[None] | None = None
     _connected: bool = False
+    # renderer UUID -> (Line-In stream url, title) for rooms that expose an analog input
+    _line_in: dict[str, tuple[str, str]]
 
     @property
     def host_address(self) -> str:
         """Return the configured Raumfeld host IP address."""
         return self._host_address
+
+    def line_in(self, renderer_uuid: str | None) -> tuple[str, str] | None:
+        """Return the ``(stream url, title)`` of a room's Line-In input, or ``None``."""
+        if not renderer_uuid:
+            return None
+        return self._line_in.get(renderer_uuid.lower())
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider (setup input is in setup_flow)."""
@@ -65,6 +74,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
         """Handle async initialization of the provider."""
         self._host_address = str(self.get_setup_value(CONF_IP_ADDRESS) or "")
         self._host_port = cast("int", self.get_setup_value(CONF_PORT) or DEFAULT_PORT)
+        self._line_in = {}
         # a background supervisor owns the connection so a missing or (temporarily)
         # unreachable host never leaves the provider permanently unavailable
         self._supervisor_task = self.mass.create_task(self._supervise())
@@ -150,6 +160,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
             )
             await self._disconnect("initial update timed out")
             return
+        # load Line-In inputs before registering players so each room can expose its own
+        await self._load_line_in()
         await self._resync()
         # restore any existing Raumfeld zones into MA's group state ONCE on connect (e.g. a
         # group that survived a restart). We deliberately do NOT re-mirror zones on the
@@ -176,6 +188,17 @@ class RaumfeldPlayerProvider(PlayerProvider):
         """Periodic re-sync: register (re)appeared rooms and suppress shadow renderers."""
         await self._sync_rooms()
         await self._suppress_host_shadow_renderers()
+
+    async def _load_line_in(self) -> None:
+        """Fetch the host's Line-In inputs, keyed by renderer UUID."""
+        try:
+            didl = await self.host.async_browse_media_server(
+                LINE_IN_OBJECT_ID, "BrowseDirectChildren"
+            )
+        except HOST_ERRORS as err:
+            self.logger.debug("Failed to browse Raumfeld Line-In inputs: %r", err)
+            return
+        self._line_in = parse_line_in(didl)
 
     async def _suppress_host_shadow_renderers(self) -> None:
         """Disable DLNA players that merely shadow this host's own virtual renderers."""

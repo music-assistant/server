@@ -8,17 +8,21 @@ from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed
-from music_assistant_models.player import DeviceInfo
+from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import Player
 
-from .constants import HOST_ERRORS, PLAYER_CONFIG_ENTRIES, SUPPORTED_SAMPLE_RATES
+from .constants import (
+    HOST_ERRORS,
+    PLAYER_CONFIG_ENTRIES,
+    SOURCE_LINE_IN,
+    SUPPORTED_SAMPLE_RATES,
+)
 from .helpers import parse_didl_metadata, parse_duration
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
-    from music_assistant_models.player import PlayerMedia
 
     from .provider import RaumfeldPlayerProvider
 
@@ -87,6 +91,8 @@ class RaumfeldPlayer(Player):
         # native player to the same renderer's DLNA/Chromecast/Sendspin representation
         # instead of showing them as duplicate players.
         renderer_uuid, renderer_ip = provider.resolve_room_renderer(room)
+        # (stream url, title) of this room's analog Line-In input, if it has one
+        self._line_in: tuple[str, str] | None = provider.line_in(renderer_uuid)
         if renderer_uuid:
             self._attr_device_info.add_identifier(IdentifierType.UUID, renderer_uuid)
         # Only add the IP identifier when the renderer lives on its own device. The
@@ -112,6 +118,19 @@ class RaumfeldPlayer(Player):
         }
         # Raumfeld rooms can be (sync-)grouped with any other room of this provider.
         self._attr_can_group_with = {provider.instance_id}
+        # expose the room's analog input as a selectable source when it has one
+        if self._line_in is not None:
+            self._attr_supported_features.add(PlayerFeature.SELECT_SOURCE)
+            self._attr_source_list = [
+                PlayerSource(
+                    id=SOURCE_LINE_IN,
+                    name="Line-in",
+                    passive=False,
+                    can_play_pause=False,
+                    can_next_previous=False,
+                    can_seek=False,
+                )
+            ]
 
     @property
     def raumfeld(self) -> RaumfeldPlayerProvider:
@@ -153,13 +172,20 @@ class RaumfeldPlayer(Player):
     async def stop(self) -> None:
         """Send STOP command."""
         self._advance_armed = False
+        # a Raumfeld line-in keeps playing through a normal transport stop, so when we are
+        # leaving the line-in hard-stop the room(s) by putting them into (manual) standby
+        hard_stop = self._attr_active_source == SOURCE_LINE_IN
         # only a room that is part of an active zone has something to stop; a
         # standby/unassigned room has no zone the host can address
         if (zone := self._active_zone()) is not None:
             try:
                 await self.raumfeld.host.async_zone_stop(zone)
+                if hard_stop:
+                    for room in zone:
+                        await self.raumfeld.host.async_enter_manual_standby(room)
             except HOST_ERRORS as err:
                 self.logger.debug("Failed to stop %s: %r", self.room, err)
+        self._attr_active_source = None
         self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
 
@@ -184,6 +210,29 @@ class RaumfeldPlayer(Player):
             raise PlayerCommandFailed(f"Failed to start playback on {self.room}: {err!r}") from err
         # optimistic state update; poll() will reconcile with the device
         self.set_current_media(uri=url, clear_all=True)
+        self._attr_active_source = self.player_id
+        self._attr_playback_state = PlaybackState.PLAYING
+        self.update_state()
+
+    async def select_source(self, source: str) -> None:
+        """Handle SELECT_SOURCE: play the room's analog Line-In input."""
+        if source != SOURCE_LINE_IN or self._line_in is None:
+            raise PlayerCommandFailed(f"Unknown source '{source}' for {self.room}")
+        url, _title = self._line_in
+        self._mark_play_started()
+        self._next_media = None
+        self._advance_armed = False  # a live input never ends, so never auto-advance
+        didl_metadata = create_didl_metadata(PlayerMedia(uri=url, title="Line-in"), url)
+        try:
+            zone = await self._ensure_playable_zone()
+            await self._wake_rooms(zone)
+            await self.raumfeld.host.async_zone_stop(zone)
+            await self.raumfeld.host.async_set_av_transport_uri(zone, url, didl_metadata)
+            await self.raumfeld.host.async_zone_play(zone)
+        except HOST_ERRORS as err:
+            raise PlayerCommandFailed(f"Failed to select Line-In on {self.room}: {err!r}") from err
+        self._attr_active_source = SOURCE_LINE_IN
+        self.set_current_media(uri=url, clear_all=True, title="Line-in")
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
 
@@ -300,7 +349,7 @@ class RaumfeldPlayer(Player):
             # playing one of our own MA streams, the queue controller owns current_media
             # (including the queue_item_id it needs to track progress); overwriting it
             # here would clear that link and break elapsed-time / resume tracking.
-            if device_uri and not device_uri.startswith(self.mass.streams.base_url):
+            if playing and device_uri and not device_uri.startswith(self.mass.streams.base_url):
                 meta = parse_didl_metadata(pos.get("TrackMetaData"))
                 self.set_current_media(
                     uri=device_uri,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import unquote
 
 import defusedxml.ElementTree as DefusedET
 
@@ -13,6 +14,7 @@ _slug_re = re.compile(r"[^a-z0-9]+")
 # DIDL-Lite / metadata XML namespaces used in UPnP TrackMetaData.
 _DC = "{http://purl.org/dc/elements/1.1/}"
 _UPNP = "{urn:schemas-upnp-org:metadata-1-0/upnp/}"
+_DIDL = "{urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/}"
 
 
 def room_to_player_id(room: str) -> str:
@@ -80,3 +82,30 @@ def parse_duration(value: str | None) -> int | None:
     for num in nums:
         seconds = seconds * 60 + num
     return int(seconds)
+
+
+def parse_line_in(didl_xml: str | None) -> dict[str, tuple[str, str]]:
+    """
+    Parse a Line-In DIDL-Lite listing into ``{renderer_uuid: (stream_url, title)}``.
+
+    :param didl_xml: The DIDL-Lite XML returned by browsing the Line-In container.
+    """
+    result: dict[str, tuple[str, str]] = {}
+    if not didl_xml or not didl_xml.strip():
+        return result
+    try:
+        root = DefusedET.fromstring(didl_xml)
+    except DefusedET.ParseError, ValueError:
+        return result
+    for item in root.findall(f".//{_DIDL}item"):
+        res = item.find(f"{_DIDL}res")
+        # the item id is like "0/Line In/uuid%3A<renderer-uuid>"; the renderer uuid is
+        # the same one the player exposes as its UUID identifier
+        item_id = unquote(item.get("id", ""))
+        if "uuid:" not in item_id or res is None or not (res.text or "").strip():
+            continue
+        uuid = item_id.split("uuid:", 1)[1].strip().lower()
+        title = item.find(f"{_DC}title")
+        name = title.text if title is not None and title.text else "Line-in"
+        result[uuid] = (res.text.strip(), name)
+    return result

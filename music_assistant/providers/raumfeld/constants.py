@@ -36,6 +36,11 @@ PLAYER_ID_PREFIX = "raumfeld"
 # discovers those as duplicate players, which we suppress (see the provider).
 DLNA_DOMAIN = "dlna"
 
+# Media-server container listing each device's analog Line-In input, and the MA
+# source id used to expose a room's Line-In via PlayerFeature.SELECT_SOURCE.
+LINE_IN_OBJECT_ID = "0/Line In"
+SOURCE_LINE_IN = "line_in"
+
 # Raumfeld renderers are hi-res capable up to 24-bit/192kHz. Declaring the supported
 # (sample_rate, bit_depth) pairs lets MA output each source at its native rate (so 24-bit
 # lossless passes through) without the user having to enable rates by hand.
