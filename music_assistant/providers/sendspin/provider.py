@@ -29,6 +29,7 @@ from aiosendspin.models.types import (
 )
 from aiosendspin.noise.driver import HandshakeAbortedError
 from aiosendspin.noise.pairing import (
+    InvalidPairingCodeError,
     LocalPairingAbortError,
     PairingAbortError,
     PairingAttempt,
@@ -158,6 +159,7 @@ class PinPairingSession:
     task: asyncio.Task[None] | None = None
     pin_request_event: asyncio.Event = field(default_factory=asyncio.Event)
     gesture_event: asyncio.Event = field(default_factory=asyncio.Event)
+    pin_rejected_event: asyncio.Event = field(default_factory=asyncio.Event)
     error: Exception | None = None
     retryable: bool = False
     opened_management: bool = False
@@ -190,6 +192,11 @@ class PinPairingSession:
         """Whether the attempt is waiting for the operator to submit a PIN."""
         return self.attempt_running and not self.pin_future.done()
 
+    @property
+    def pin_rejected(self) -> bool:
+        """Whether the device rejected the submitted PIN and the attempt asks for it again."""
+        return self.attempt_running and self.pin_rejected_event.is_set()
+
     async def wait_first_message(self) -> None:
         """Resolve once the client asks for a gesture or the PIN, or the attempt ends."""
         await self._wait_events(self.gesture_event, self.pin_request_event)
@@ -197,6 +204,10 @@ class PinPairingSession:
     async def wait_pin_request(self) -> None:
         """Resolve once the client asks for the PIN, or the attempt ends."""
         await self._wait_events(self.pin_request_event)
+
+    async def wait_pin_outcome(self) -> None:
+        """Resolve once the attempt ends, or the device rejects the submitted PIN."""
+        await self._wait_events(self.pin_rejected_event)
 
     @property
     def can_retry(self) -> bool:
@@ -801,6 +812,7 @@ class SendspinProvider(PlayerProvider):
         if session is None or session.task is None:
             raise SecurityActionError("pairing_error_no_pin_session")
         if not session.pin_future.done():
+            session.pin_rejected_event.clear()
             session.pin_future.set_result(pin.strip())
 
     async def cancel_pin_pairing(self, client_id: str) -> None:
@@ -1292,6 +1304,7 @@ class SendspinProvider(PlayerProvider):
         session.retryable = False
         session.pin_request_event.clear()
         session.gesture_event.clear()
+        session.pin_rejected_event.clear()
         if session.pin_future.done():
             session.pin_future = self.mass.loop.create_future()
         session.task = self.mass.create_task(self._run_pin_pairing(session))
@@ -1310,7 +1323,11 @@ class SendspinProvider(PlayerProvider):
         """Run one PIN pairing attempt, classifying the outcome for the UI."""
 
         def pin_provider() -> asyncio.Future[str]:
-            # Invoked only once the client's pair-init has arrived (post-gesture).
+            # Invoked once the client's pair-init has arrived (post-gesture), then again for
+            # every dynamic PIN round the device starts after rejecting the submitted PIN.
+            if session.pin_request_event.is_set():
+                session.pin_future = self.mass.loop.create_future()
+                session.pin_rejected_event.set()
             session.pin_request_event.set()
             return session.pin_future
 
@@ -1330,11 +1347,12 @@ class SendspinProvider(PlayerProvider):
                     on_pair_pending=on_pair_pending,
                 ),
             )
-        except PairingTimeoutError as err:
-            # The device never answered; aiosendspin cancelled the attempt in band and left
-            # pairing, so the connection is still usable and a retry can start afresh.
+        except (PairingTimeoutError, InvalidPairingCodeError) as err:
+            # The device never answered or the PIN was malformed; aiosendspin cancelled the
+            # attempt in band and left pairing, so the connection is still usable and a retry
+            # can start afresh.
             session.error = err
-            self.logger.debug("PIN pairing with %s timed out: %s", session.client_id, err)
+            self.logger.debug("PIN pairing with %s did not complete: %s", session.client_id, err)
             session.retryable = True
             self._arm_pin_idle_timeout(session)
         except PairingAbortError as err:

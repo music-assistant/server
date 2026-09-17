@@ -23,6 +23,7 @@ from aiosendspin.noise.driver import HandshakeAbortedError
 from aiosendspin.noise.pairing import (
     SERVER_FIRST_MESSAGE_TIMEOUT_S,
     SERVER_GESTURE_TIMEOUT_S,
+    InvalidPairingCodeError,
     PairingError,
 )
 from aiosendspin.noise.pairing_code import DYNAMIC_DIGITS, STATIC_DIGITS
@@ -77,7 +78,7 @@ from PIL import Image
 
 from music_assistant.constants import HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
-from music_assistant.helpers.util import is_valid_mac_address, join_task
+from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.models.setup_flow import FINISH_STEP_SILENT, AbortFlow, StepExpiredError
 
@@ -253,6 +254,8 @@ def _pin_error_slug(error: Exception | None) -> str:
     """Return the strings.json errors slug for a retryable PIN failure (re-rendered form)."""
     if error is None:
         return "pairing_error_generic"
+    if isinstance(error, InvalidPairingCodeError):
+        return "invalid_value"
     return error_alert(error).key
 
 
@@ -1080,14 +1083,18 @@ class SendspinBasePlayer(Player):
                     continue
                 task = pin_session.task
                 if task is not None and not task.done():
-                    # Join the pairing task: the step deadline must not cancel it.
+                    # Wait on the pairing task: the step deadline must not cancel it.
                     with suppress(StepExpiredError):
                         await session.progress_until(
-                            join_task(task),
+                            pin_session.wait_pin_outcome(),
                             step_id="confirming",
                             text="confirming",
                             expires_in=PAIR_CONFIRM_TIMEOUT,
                         )
+                if pin_session.pin_rejected:
+                    # the device runs another round against the same PIN it shows
+                    errors = {"base": "pairing_error_pin_mismatch"}
+                    continue
                 if await self._pairing_succeeded(provider, pin_session):
                     succeeded = True
                     return

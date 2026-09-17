@@ -24,6 +24,7 @@ from aiosendspin.models.types import (
 )
 from aiosendspin.noise.driver import HandshakeAbortedError
 from aiosendspin.noise.pairing import (
+    InvalidPairingCodeError,
     LocalPairingAbortError,
     PairingError,
     PairingTimeoutError,
@@ -167,6 +168,7 @@ class _FakeServerApi:
         gesture: asyncio.Event | None = None,
         management_capable: bool = False,
         connected: bool = True,
+        rejected_rounds: int = 0,
     ) -> None:
         self.calls: list[str] = []
         self.connection = _FakeConnection(self.calls)
@@ -181,6 +183,8 @@ class _FakeServerApi:
         self._await_pin = await_pin
         self._gesture = gesture
         self._connected = connected
+        self._rejected_rounds = rejected_rounds
+        self.entered_pins: list[str] = []
         self.management_capable = management_capable
         self._active_cancel: asyncio.Event | None = None
         self._cancel_requested = False
@@ -215,12 +219,17 @@ class _FakeServerApi:
                 cancel = asyncio.Event()
                 self._active_cancel = cancel
                 cancel_task = asyncio.ensure_future(cancel.wait())
-                pin_task = asyncio.ensure_future(attempt.pairing_code_provider())
                 try:
-                    await asyncio.wait(
-                        {pin_task, cancel_task},
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
+                    # One round per provider call; a rejected round asks for the PIN again.
+                    for _round in range(self._rejected_rounds + 1):
+                        pin_task = asyncio.ensure_future(attempt.pairing_code_provider())
+                        await asyncio.wait(
+                            {pin_task, cancel_task},
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        if not pin_task.done():
+                            break
+                        self.entered_pins.append(pin_task.result())
                 finally:
                     cancel_task.cancel()
                     self._active_cancel = None
@@ -531,6 +540,38 @@ async def test_pairing_timeout_is_retryable(monkeypatch: pytest.MonkeyPatch) -> 
     assert isinstance(session.error, PairingTimeoutError)
     assert _pin_idle_task_id("c") in _timers(provider)
     # aiosendspin already left pairing in band, so the provider must not force it.
+    assert api.end_pairing_calls == 0
+
+
+async def test_rejected_pin_is_asked_again_within_the_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dynamic-PIN round the device rejects keeps the attempt and asks for a new PIN."""
+    api = _FakeServerApi(_offer(PairMethod.DYNAMIC_PAIRING_CODE), rejected_rounds=1)
+    provider, refreshed = _make_provider(api, monkeypatch)
+    session = await provider.start_pin_pairing("c")
+    provider.submit_pin("c", "111111")
+    await asyncio.wait_for(session.wait_pin_outcome(), 1)
+    assert session.pin_rejected
+    assert session.awaiting_pin
+
+    await _submit_and_settle(provider, "123456")
+    assert api.entered_pins == ["111111", "123456"]
+    assert api.initiate_calls == 1
+    assert session.finished
+    assert refreshed == ["c"]
+
+
+async def test_malformed_pin_leaves_a_retryable_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A malformed PIN ends pairing but keeps the connection, so the session retries in place."""
+    api = _FakeServerApi(_offer(PairMethod.DYNAMIC_PAIRING_CODE))
+    api.outcomes.append(InvalidPairingCodeError("dynamic pairing code must be exactly 6 digits"))
+    provider, _refreshed = _make_provider(api, monkeypatch)
+    session = await provider.start_pin_pairing("c")
+    await _submit_and_settle(provider, "12345")
+    assert session.can_retry
+    assert isinstance(session.error, InvalidPairingCodeError)
+    assert _pin_idle_task_id("c") in _timers(provider)
     assert api.end_pairing_calls == 0
 
 

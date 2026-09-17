@@ -16,10 +16,15 @@ from aiosendspin.models.core import (
     SupportedPairMethods,
 )
 from aiosendspin.models.types import PairAbortReason, PairMethod
-from aiosendspin.noise.pairing import RemotePairingAbortError
+from aiosendspin.noise.pairing import (
+    InvalidPairingCodeError,
+    PairingError,
+    RemotePairingAbortError,
+)
 from aiosendspin.noise.trust_store import PskCategory
 from music_assistant_models.enums import ConfigEntryType, FlowStepType
 
+from music_assistant.helpers.util import join_task
 from music_assistant.models.setup_flow import (
     FINISH_STEP_SILENT,
     AbortFlow,
@@ -102,6 +107,7 @@ class _FakePinSession:
         self.can_retry = False
         self.verify = verify
         self.method = method
+        self.pin_rejected = False
         # None so the flow's post-submit "confirming" wait is skipped in tests.
         self.task: asyncio.Task[None] | None = None
 
@@ -118,6 +124,10 @@ class _FakePinSession:
 
     async def wait_pin_request(self) -> None:
         await self.pin_request_event.wait()
+
+    async def wait_pin_outcome(self) -> None:
+        if self.task is not None:
+            await join_task(self.task)
 
 
 class _FakeApi:
@@ -202,6 +212,9 @@ class _FakeProvider:
         self.start_calls += 1
         self.static = static
         self.verify = verify
+        if self.session is not None and self.session.pin_rejected:
+            # The attempt is still running, asking for the PIN again.
+            return self.session
         if self.session is not None and self.session.can_retry:
             # A retryable session resumes in place, past the gesture, awaiting a PIN again.
             self.session.can_retry = False
@@ -226,6 +239,7 @@ class _FakeProvider:
         assert self.session is not None
         self.submitted_pins.append(pin)
         outcome = self._submit_outcomes.popleft() if self._submit_outcomes else "success"
+        self.session.pin_rejected = False
         if outcome == "success":
             self.session.finished = True
             self.session.error = None
@@ -234,6 +248,8 @@ class _FakeProvider:
         elif outcome == "retry":
             self.session.can_retry = True
             self.session.error = RemotePairingAbortError(PairAbortReason.PAIRING_CODE_MISMATCH)
+        elif outcome == "rejected":
+            self.session.pin_rejected = True
         elif outcome == "session_lost":
             self.session = None
             raise SecurityActionError("pairing_error_no_pin_session")
@@ -426,6 +442,38 @@ async def test_pin_mismatch_retries_in_place_then_succeeds() -> None:
     assert provider.submitted_pins == ["000000", "123456"]
     assert provider.start_calls == 2
     assert provider.cancel_calls == 0
+
+
+async def test_rejected_pin_round_asks_again_in_the_same_attempt() -> None:
+    """A round the device rejects re-renders the PIN form without restarting the attempt."""
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)])
+    provider = _FakeProvider(api, submit_outcomes=["rejected", "success"])
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider)
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
+    first_session = provider.session
+    session.handle_submit({CONF_PAIRING_PIN: "000000"})
+
+    error_step = await _wait_step(
+        session, step_type=FlowStepType.FORM, step_id="enter_pin", with_errors=True
+    )
+    assert error_step.errors == {"base": "pairing_error_pin_mismatch"}
+    assert provider.session is first_session
+    session.handle_submit({CONF_PAIRING_PIN: "123456"})
+
+    await _wait_for(lambda: session.finished)
+    await task
+    assert provider.submitted_pins == ["000000", "123456"]
+    assert provider.cancel_calls == 0
+
+
+def test_malformed_pin_asks_for_the_complete_code() -> None:
+    """A PIN aiosendspin rejects as malformed re-renders with the incomplete-code error."""
+    error = InvalidPairingCodeError("dynamic pairing code must be exactly 6 digits")
+    assert player_module._pin_error_slug(error) == "invalid_value"
+    assert player_module._pin_error_slug(PairingError("boom")) == "pairing_error_failed"
 
 
 async def test_trusted_unpaired_pin_mismatch_still_retries() -> None:
