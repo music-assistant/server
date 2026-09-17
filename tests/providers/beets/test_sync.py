@@ -326,11 +326,15 @@ async def test_process_deletions_removes_tracks_and_emptied_parents(
     music.albums.get_library_item = AsyncMock(  # type: ignore[method-assign]
         return_value=MagicMock(artists=[MagicMock(item_id=31)])
     )
-    music.albums.tracks = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    music.albums.get_library_album_tracks = AsyncMock(  # type: ignore[method-assign]
+        return_value=[]
+    )
     music.albums.remove_item_from_library = AsyncMock()  # type: ignore[method-assign]
-    music.artists.albums = AsyncMock(return_value=[])  # type: ignore[method-assign]
-    music.artists.tracks = AsyncMock(  # type: ignore[method-assign]
-        side_effect=lambda artist_id, _provider: [] if artist_id == 30 else [MagicMock()]
+    music.artists.get_library_artist_albums = AsyncMock(  # type: ignore[method-assign]
+        return_value=[]
+    )
+    music.artists.get_library_artist_tracks = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda artist_id: [] if artist_id == 30 else [MagicMock()]
     )
     music.artists.remove_item_from_library = AsyncMock()  # type: ignore[method-assign]
 
@@ -370,10 +374,16 @@ async def test_process_deletions_continues_past_album_already_gone(
         return MagicMock(artists=[MagicMock(item_id=31)])
 
     music.albums.get_library_item = AsyncMock(side_effect=_get_album)  # type: ignore[method-assign]
-    music.albums.tracks = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    music.albums.get_library_album_tracks = AsyncMock(  # type: ignore[method-assign]
+        return_value=[]
+    )
     music.albums.remove_item_from_library = AsyncMock()  # type: ignore[method-assign]
-    music.artists.albums = AsyncMock(return_value=[])  # type: ignore[method-assign]
-    music.artists.tracks = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    music.artists.get_library_artist_albums = AsyncMock(  # type: ignore[method-assign]
+        return_value=[]
+    )
+    music.artists.get_library_artist_tracks = AsyncMock(  # type: ignore[method-assign]
+        return_value=[]
+    )
     music.artists.remove_item_from_library = AsyncMock()  # type: ignore[method-assign]
 
     await provider._process_deletions({track_prov_id(5), track_prov_id(6)})
@@ -387,6 +397,57 @@ async def test_process_deletions_continues_past_album_already_gone(
     assert sorted(
         call.args[0] for call in music.artists.remove_item_from_library.await_args_list
     ) == [30, 31]
+
+
+async def test_process_deletions_continues_past_failing_album_and_artist_cleanup(
+    make_provider: MakeProvider,
+) -> None:
+    """An album or artist that cannot be cleaned up does not stop the others."""
+    provider = await make_provider()
+    music = provider.mass.music
+    library_tracks = {
+        track_prov_id(5): MagicMock(
+            item_id=10, album=MagicMock(item_id=20), artists=[MagicMock(item_id=30)]
+        ),
+        track_prov_id(6): MagicMock(
+            item_id=11, album=MagicMock(item_id=21), artists=[MagicMock(item_id=31)]
+        ),
+    }
+    music.tracks.get_library_item_by_prov_id = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda item_id, _instance: library_tracks[item_id]
+    )
+    music.albums.get_library_item = AsyncMock(  # type: ignore[method-assign]
+        return_value=MagicMock(artists=[])
+    )
+
+    async def _album_tracks(album_id: int) -> list[MagicMock]:
+        if album_id == 20:
+            msg = f"Album {album_id} not found"
+            raise MediaNotFoundError(msg)
+        return []
+
+    async def _artist_tracks(artist_id: int) -> list[MagicMock]:
+        if artist_id == 30:
+            msg = f"Artist {artist_id} not found"
+            raise MediaNotFoundError(msg)
+        return []
+
+    music.albums.get_library_album_tracks = AsyncMock(  # type: ignore[method-assign]
+        side_effect=_album_tracks
+    )
+    music.albums.remove_item_from_library = AsyncMock()  # type: ignore[method-assign]
+    music.artists.get_library_artist_albums = AsyncMock(  # type: ignore[method-assign]
+        return_value=[]
+    )
+    music.artists.get_library_artist_tracks = AsyncMock(  # type: ignore[method-assign]
+        side_effect=_artist_tracks
+    )
+    music.artists.remove_item_from_library = AsyncMock()  # type: ignore[method-assign]
+
+    await provider._process_deletions({track_prov_id(5), track_prov_id(6)})
+
+    music.albums.remove_item_from_library.assert_awaited_once_with(21)
+    music.artists.remove_item_from_library.assert_awaited_once_with(31)
 
 
 async def test_orphaned_albums_and_artists_are_removed(make_provider: MakeProvider) -> None:

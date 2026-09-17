@@ -392,15 +392,23 @@ class BeetsProvider(MusicProvider):
             await self.mass.music.tracks.remove_provider_mapping(
                 library_item.item_id, self.instance_id, item_id
             )
+        # emptiness is read from the library alone: the albums and artists still carry this
+        # instance's mappings, and beets may no longer have them
         for album_id in album_ids:
-            if not await self.mass.music.albums.tracks(album_id, "library"):
-                await self.mass.music.albums.remove_item_from_library(album_id)
+            try:
+                if not await self.mass.music.albums.get_library_album_tracks(album_id):
+                    await self.mass.music.albums.remove_item_from_library(album_id)
+            except (MediaNotFoundError, InvalidDataError) as err:
+                self.logger.warning("Unable to clean up library album %s: %s", album_id, err)
         for artist_id in artist_ids:
-            if not (
-                await self.mass.music.artists.albums(artist_id, "library")
-                or await self.mass.music.artists.tracks(artist_id, "library")
-            ):
-                await self.mass.music.artists.remove_item_from_library(artist_id)
+            try:
+                if not (
+                    await self.mass.music.artists.get_library_artist_albums(artist_id)
+                    or await self.mass.music.artists.get_library_artist_tracks(artist_id)
+                ):
+                    await self.mass.music.artists.remove_item_from_library(artist_id)
+            except (MediaNotFoundError, InvalidDataError) as err:
+                self.logger.warning("Unable to clean up library artist %s: %s", artist_id, err)
 
     async def _process_orphaned_albums_and_artists(self) -> None:
         """Remove albums and artists of this instance that no longer have any tracks."""

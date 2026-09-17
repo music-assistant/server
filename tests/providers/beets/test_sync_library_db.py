@@ -299,6 +299,48 @@ class TestDeletedItem:
         assert await _library_track(library_mass, kept) is not None
 
 
+class TestDeletedAlbum:
+    """An album removed from beets with all its items leaves the library with its artist."""
+
+    async def test_deleted_album_removes_album_and_emptied_artist(
+        self, library_mass: MusicAssistant, make_provider: MakeProvider, beets_db: BeetsDb
+    ) -> None:
+        """The album, its tracks and its now-empty artist go, and the other album stays."""
+        gone_artist = _artist_fields("Gone Artist", str(uuid4()))
+        kept_artist = _artist_fields("Kept Artist", str(uuid4()))
+        gone_album = _add_album(
+            beets_db,
+            "Gone Album",
+            **_artist_fields("Gone Artist", gone_artist["mb_artistid"], "album"),
+        )
+        kept_album = _add_album(
+            beets_db,
+            "Kept Album",
+            **_artist_fields("Kept Artist", kept_artist["mb_artistid"], "album"),
+        )
+        gone_items = [
+            _add_item(beets_db, gone_album, f"Gone {track}", track=track, **gone_artist)
+            for track in (1, 2)
+        ]
+        kept = _add_item(beets_db, kept_album, "Kept", track=1, **kept_artist)
+        provider = await _attach(make_provider, library_mass)
+        await _sync(provider)
+        assert set(await _library_albums(library_mass)) == {"Gone Album", "Kept Album"}
+
+        beets_db.delete_album(gone_album)
+        with patch("music_assistant.providers.beets.report_current_task_failure") as report_failure:
+            await _sync(provider)
+
+        report_failure.assert_not_called()
+        provider.logger.warning.assert_not_called()  # type: ignore[attr-defined]
+        for item_id in gone_items:
+            assert await _library_track(library_mass, item_id) is None
+        assert set(await _library_albums(library_mass)) == {"Kept Album"}
+        artists = await library_mass.music.artists.get_library_items_by_query()
+        assert {artist.name for artist in artists} == {"Kept Artist"}
+        assert await _library_track(library_mass, kept) is not None
+
+
 class TestItemAndAlbumWithTheSameBeetsId:
     """A beets item and a beets album with the same number stay apart in the library."""
 

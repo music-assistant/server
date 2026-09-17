@@ -201,6 +201,11 @@ class BeetsDb:
         """Delete an item row."""
         self._execute("DELETE FROM items WHERE id = ?", (item_id,))
 
+    def delete_album(self, album_id: int) -> None:
+        """Delete an album row together with its items, the way `beet remove -a` does."""
+        self._execute("DELETE FROM items WHERE album_id = ?", (album_id,))
+        self._execute("DELETE FROM albums WHERE id = ?", (album_id,))
+
     def set_item_flex(self, item_id: int, key: str, value: Any) -> None:
         """Set a flexible attribute on an item."""
         self._execute(
