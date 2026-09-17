@@ -471,10 +471,6 @@ class SendspinProvider(PlayerProvider):
             allow_noncompliant_clients=allow_legacy_clients,
             languages=self._spoken_pin_languages(),
         )
-        # Pitch (YINFFT) is the heaviest visualizer DSP and result quality is
-        # still very mixed, needs more testing. Disable it globally for now to
-        # spare low-power hosts.
-        self.server_api.set_visualizer_pitch_enabled(enabled=False)
         self.unregister_cbs = [
             self.server_api.add_event_listener(self.event_cb),
             self.mass.subscribe(self._on_providers_updated, EventType.PROVIDERS_UPDATED),
