@@ -995,7 +995,7 @@ def test_merged_from_rows_regression_sonic_does_not_clobber_loudness() -> None:
 async def test_get_audio_analysis_priority_threads_through_to_merge() -> None:
     """get_audio_analysis forwards priority so the loudness call gets the EBU R128 value."""
     c, db = _stub_controller()
-    db.get_rows = AsyncMock(
+    db.get_rows_from_query = AsyncMock(
         return_value=[
             _aa_row(LOUDNESS_ANALYSIS_DOMAIN, 1, loudness_integrated=-7.5),
             _aa_row(SONIC_ANALYSIS_DOMAIN, 2, loudness_integrated=-12.0),
@@ -1045,7 +1045,7 @@ async def test_set_track_loudness_persists_under_provider_loudness_domain() -> N
 async def test_get_audio_analysis_merges_provider_loudness_without_aa_providers() -> None:
     """A provider_loudness row merges even when no AA providers are loaded."""
     c, db = _stub_controller()
-    db.get_rows = AsyncMock(
+    db.get_rows_from_query = AsyncMock(
         return_value=[_aa_row(PROVIDER_LOUDNESS_DOMAIN, 1, loudness_integrated=-9.0)]
     )
     music_prov = MagicMock(spec=MusicProvider)
@@ -1330,6 +1330,41 @@ async def _insert_corrupt_header_row(db: DatabaseConnection, item_id: str) -> No
             "aa_provider_domain": SONIC_ANALYSIS_DOMAIN,
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_get_audio_analysis_deletes_invalid_utf8_header(
+    real_audio_analysis_db: DatabaseConnection,
+) -> None:
+    """Point reads decode corrupt TEXT as bytes and keep valid analysis from other providers."""
+    await _insert_corrupt_header_row(real_audio_analysis_db, "t1")
+    await real_audio_analysis_db.update(
+        AA_TABLE_ANALYSIS,
+        {"item_id": "t1"},
+        {"aa_provider_domain": SMART_FADES_ANALYSIS_DOMAIN},
+    )
+    header, payload = encode(AudioAnalysisData(bpm=120.0))
+    await _insert_packed_row(real_audio_analysis_db, "t1", header, payload)
+    music_provider = MagicMock(spec=MusicProvider)
+    music_provider.is_streaming_provider = False
+    music_provider.instance_id = "filesystem_local"
+    streams = MagicMock()
+    streams.mass.music.database = real_audio_analysis_db
+    streams.mass.get_provider.return_value = music_provider
+    streams.mass.get_providers.return_value = [
+        _aa_provider_stub(SONIC_ANALYSIS_DOMAIN),
+        _aa_provider_stub(SMART_FADES_ANALYSIS_DOMAIN),
+    ]
+    controller = AudioAnalysisController(streams)
+    controller._database_ready = True
+
+    result = await controller.get_audio_analysis("t1", "filesystem_local")
+
+    assert result is not None
+    assert result.bpm == 120.0
+    remaining = await real_audio_analysis_db.get_rows(AA_TABLE_ANALYSIS)
+    assert len(remaining) == 1
+    assert remaining[0]["aa_provider_domain"] == SONIC_ANALYSIS_DOMAIN
 
 
 @pytest.mark.asyncio
@@ -1672,7 +1707,7 @@ def _analysis_controller_with_rows(
 ) -> AudioAnalysisController:
     """Build a stub controller whose DB returns the given analysis rows for any track."""
     c, db = _stub_controller()
-    db.get_rows = AsyncMock(return_value=rows)
+    db.get_rows_from_query = AsyncMock(return_value=rows)
     music_prov = MagicMock(spec=MusicProvider)
     music_prov.is_streaming_provider = True
     music_prov.domain = "test-provider"

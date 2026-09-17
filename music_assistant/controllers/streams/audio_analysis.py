@@ -766,14 +766,16 @@ class AudioAnalysisController:
         if not isinstance(provider, MusicProvider):
             return None
         prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
-        rows = await self.mass.music.database.get_rows(
-            AA_TABLE_ANALYSIS,
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT id, aa_provider_domain, CAST(header AS BLOB) AS header, payload "
+            f"FROM {AA_TABLE_ANALYSIS} "
+            "WHERE item_id = :item_id AND provider = :provider AND media_type = :media_type "
+            "ORDER BY timestamp_created ASC",
             {
                 "item_id": item_id,
                 "provider": prov_key,
                 "media_type": media_type.value,
             },
-            order_by="timestamp_created ASC",
         )
         if not rows:
             return None
