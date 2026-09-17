@@ -171,7 +171,7 @@ async def test_setup_database_after_quarantine_is_idempotent(
 async def test_delete_audio_analysis_removes_only_that_provider_key(
     library_db: DatabaseConnection, tmp_path: pathlib.Path
 ) -> None:
-    """delete_audio_analysis removes only the rows matching the given item/provider key."""
+    """Deletion removes successes and failures for only the given item/provider key."""
     ctrl = _make_controller(library_db, tmp_path)
     await ctrl.setup_database()
     for provider, domain in (
@@ -190,11 +190,23 @@ async def test_delete_audio_analysis_removes_only_that_provider_key(
                 "analysis_version": 1,
             },
         )
+        await library_db.insert(
+            AA_TABLE_FAILURES,
+            {
+                "media_type": "track",
+                "item_id": "t1",
+                "provider": provider,
+                "aa_provider_domain": domain,
+                "reason": "never retry",
+                "next_retry": None,
+            },
+        )
     await ctrl.delete_audio_analysis("t1", "fs--a", MediaType.TRACK)
-    rows = await library_db.get_rows(AA_TABLE_ANALYSIS, limit=0)
-    assert [(r["provider"], r["aa_provider_domain"]) for r in rows] == [
-        ("fs--b", "loudness_analysis")
-    ]
+    for table in (AA_TABLE_ANALYSIS, AA_TABLE_FAILURES):
+        rows = await library_db.get_rows(table, limit=0)
+        assert [(r["provider"], r["aa_provider_domain"]) for r in rows] == [
+            ("fs--b", "loudness_analysis")
+        ]
 
 
 LEGACY_ANALYSIS_DDL = (

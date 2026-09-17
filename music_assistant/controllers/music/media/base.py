@@ -387,11 +387,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     "provider": prov_mapping.provider_instance,
                 },
             )
-            # cleanup audio analysis rows for this provider mapping
-            for prov_key in (prov_mapping.provider_domain, prov_mapping.provider_instance):
-                await self.mass.streams.audio_analysis.delete_audio_analysis(
-                    prov_mapping.item_id, prov_key, self.media_type
-                )
+        await self._delete_removed_mapping_analysis(library_item.provider_mappings, set())
         # delete genre exclusions for this media item
         await self.mass.music.database.delete(
             DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
@@ -1344,6 +1340,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "provider_item_id": provider_item_id,
             },
         )
+        await self._delete_removed_mapping_analysis(
+            library_item.provider_mappings, remaining_mappings
+        )
         # cleanup playlog table
         await self.mass.music.database.delete(
             DB_TABLE_PLAYLOG,
@@ -1409,6 +1408,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "item_id": db_id,
                 "provider_instance": provider_instance_id,
             },
+        )
+        await self._delete_removed_mapping_analysis(
+            library_item.provider_mappings, remaining_mappings
         )
         library_item.provider_mappings = remaining_mappings
         # the item is kept (it still has other providers), but it may carry artwork
@@ -2307,6 +2309,27 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # every mapping is on a music source this user may not use
         msg = f"{library_item.name} is not available on any music source of this user"
         raise MediaNotFoundError(msg, translation_key="media_not_available_for_user")
+
+    async def _delete_removed_mapping_analysis(
+        self,
+        provider_mappings: set[ProviderMapping],
+        remaining_mappings: set[ProviderMapping],
+    ) -> None:
+        """Delete analysis only for provider item keys no remaining mapping references."""
+        previous_keys = {
+            (mapping.item_id, key)
+            for mapping in provider_mappings
+            for key in (mapping.provider_domain, mapping.provider_instance)
+        }
+        remaining_keys = {
+            (mapping.item_id, key)
+            for mapping in remaining_mappings
+            for key in (mapping.provider_domain, mapping.provider_instance)
+        }
+        for item_id, provider_key in previous_keys - remaining_keys:
+            await self.mass.streams.audio_analysis.delete_audio_analysis(
+                item_id, provider_key, self.media_type
+            )
 
     async def _remove_provider_images(self, db_id: int, provider_instance_id: str) -> bool:
         """

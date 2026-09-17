@@ -9,7 +9,7 @@ from music_assistant_models.media_items import Artist, ProviderMapping, Track, U
 
 from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.controllers.music.constants import CONF_DELETED_PROVIDERS
-from music_assistant.controllers.streams.audio_analysis import AA_TABLE_ANALYSIS
+from music_assistant.controllers.streams.audio_analysis import AA_TABLE_ANALYSIS, AA_TABLE_FAILURES
 from music_assistant.mass import MusicAssistant
 
 FS_DOMAIN = "filesystem_local"
@@ -48,17 +48,34 @@ async def _add_track(mass: MusicAssistant, item_id: str, name: str) -> int:
     return int(db_track.item_id)
 
 
-async def _add_analysis_row(mass: MusicAssistant, item_id: str) -> None:
+async def _add_analysis_row(
+    mass: MusicAssistant, item_id: str, provider_key: str = FS_INSTANCE
+) -> None:
     """Insert an analysis row for the given provider item id."""
     await mass.music.database.insert(
         AA_TABLE_ANALYSIS,
         {
             "media_type": MediaType.TRACK.value,
             "item_id": item_id,
-            "provider": FS_INSTANCE,
+            "provider": provider_key,
             "aa_provider_domain": "loudness_analysis",
             "analysis_data": "{}",
             "analysis_version": 1,
+        },
+    )
+
+
+async def _add_failure_row(mass: MusicAssistant, item_id: str, provider_key: str) -> None:
+    """Insert a never-retry failure for the given provider item key."""
+    await mass.music.database.insert(
+        AA_TABLE_FAILURES,
+        {
+            "media_type": MediaType.TRACK.value,
+            "item_id": item_id,
+            "provider": provider_key,
+            "aa_provider_domain": "loudness_analysis",
+            "reason": "never retry",
+            "next_retry": None,
         },
     )
 
@@ -86,10 +103,81 @@ async def test_remove_item_from_library_deletes_analysis(mass: MusicAssistant) -
     """Removing a library item through the public API also drops its analysis rows."""
     db_id = await _add_track(mass, "fs-removed", "Removed Track")
     await _add_analysis_row(mass, "fs-removed")
+    await _add_failure_row(mass, "fs-removed", FS_INSTANCE)
 
     await mass.music.remove_item_from_library(MediaType.TRACK, str(db_id))
 
     assert not await mass.music.database.get_rows(AA_TABLE_ANALYSIS, {"item_id": "fs-removed"})
+    assert not await mass.music.database.get_rows(AA_TABLE_FAILURES, {"item_id": "fs-removed"})
+
+
+@pytest.mark.parametrize("removal", ["single", "all", "provider"])
+async def test_mapping_removal_cleans_analysis_for_kept_track(
+    mass: MusicAssistant, removal: str
+) -> None:
+    """Removing one source clears its analysis and failures without removing the kept track."""
+    db_id = await _add_track(mass, "fs-kept", "Kept Track")
+    spotify_instance = "spotify--EfGh"
+    await mass.music.tracks.add_provider_mapping(
+        db_id,
+        ProviderMapping(
+            item_id="sp-kept", provider_domain="spotify", provider_instance=spotify_instance
+        ),
+    )
+    track = await mass.music.tracks.get_library_item(db_id)
+    await mass.music.artists.add_provider_mapping(
+        track.artists[0].item_id,
+        ProviderMapping(
+            item_id="sp-artist", provider_domain="spotify", provider_instance=spotify_instance
+        ),
+    )
+    for item_id, provider_key in (("fs-kept", FS_INSTANCE), ("sp-kept", "spotify")):
+        await _add_analysis_row(mass, item_id, provider_key)
+        await _add_failure_row(mass, item_id, provider_key)
+
+    if removal == "single":
+        await mass.music.tracks.remove_provider_mapping(db_id, FS_INSTANCE, "fs-kept")
+    elif removal == "all":
+        await mass.music.tracks.remove_provider_mappings(db_id, FS_INSTANCE)
+    else:
+        await mass.music.cleanup_provider(FS_INSTANCE)
+
+    updated = await mass.music.tracks.get_library_item(db_id)
+    assert {mapping.provider_instance for mapping in updated.provider_mappings} == {
+        spotify_instance
+    }
+    for table in (AA_TABLE_ANALYSIS, AA_TABLE_FAILURES):
+        assert not await mass.music.database.get_rows(table, {"provider": FS_INSTANCE})
+        assert await mass.music.database.get_rows(
+            table, {"item_id": "sp-kept", "provider": "spotify"}
+        )
+
+
+@pytest.mark.parametrize("removal", ["single", "all"])
+async def test_shared_domain_analysis_survives_other_account_removal(
+    mass: MusicAssistant, removal: str
+) -> None:
+    """Domain-keyed analysis is kept until the last account mapping to that item is removed."""
+    db_id = await _add_track(mass, "fs-shared", "Shared Track")
+    instances = ("spotify--first", "spotify--second")
+    await mass.music.tracks.add_provider_mappings(
+        db_id,
+        {
+            ProviderMapping(item_id="sp-shared", provider_domain="spotify", provider_instance=inst)
+            for inst in instances
+        },
+    )
+    await _add_analysis_row(mass, "sp-shared", "spotify")
+    await _add_failure_row(mass, "sp-shared", "spotify")
+    match = {"item_id": "sp-shared", "provider": "spotify"}
+
+    for index, instance in enumerate(instances):
+        if removal == "single":
+            await mass.music.tracks.remove_provider_mapping(db_id, instance, "sp-shared")
+        else:
+            await mass.music.tracks.remove_provider_mappings(db_id, instance)
+        for table in (AA_TABLE_ANALYSIS, AA_TABLE_FAILURES):
+            assert bool(await mass.music.database.get_rows(table, match)) == (index == 0)
 
 
 @pytest.mark.parametrize("queued", [False, True])

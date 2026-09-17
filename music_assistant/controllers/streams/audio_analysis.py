@@ -639,7 +639,7 @@ class AudioAnalysisController:
         media_type: MediaType = MediaType.TRACK,
     ) -> None:
         """
-        Delete every AA provider's analysis rows for one provider mapping.
+        Delete every AA provider's analysis and failure rows for one provider mapping.
 
         :param item_id: Provider-native item ID.
         :param provider_key: Stored music-provider key (domain or instance_id).
@@ -647,10 +647,11 @@ class AudioAnalysisController:
         """
         if not self._database_ready:
             return
-        await self.mass.music.database.delete(
-            AA_TABLE_ANALYSIS,
-            {"media_type": media_type.value, "item_id": item_id, "provider": provider_key},
-        )
+        for table in (AA_TABLE_ANALYSIS, AA_TABLE_FAILURES):
+            await self.mass.music.database.delete(
+                table,
+                {"media_type": media_type.value, "item_id": item_id, "provider": provider_key},
+            )
 
     async def get_audio_analysis(
         self,
