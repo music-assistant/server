@@ -129,6 +129,22 @@ def test_float16_overflow_falls_back_to_float32() -> None:
     assert restored.spectral_centroid == [70000.0, 1000.0]
 
 
+@pytest.mark.parametrize("field_name", ["clap_embedding", "beats"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf"), 1e300])
+def test_encode_rejects_non_finite_packed_arrays(field_name: str, value: float) -> None:
+    """Neither float32 arrays nor the float16 fallback may persist non-finite values."""
+    analysis = AudioAnalysisData.from_dict({field_name: [value]})
+    with pytest.raises(ValueError, match=f"array {field_name} contains non-finite"):
+        encode(analysis)
+
+
+def test_encode_rejects_null_in_promoted_legacy_array() -> None:
+    """A legacy null promoted without float validation must not become a packed NaN."""
+    analysis = AudioAnalysisData.from_dict({"extra_data": {"clap_embedding": [None, 0.5]}})
+    with pytest.raises(ValueError, match="array clap_embedding contains non-finite"):
+        encode(analysis)
+
+
 def test_empty_array_round_trips() -> None:
     """An array field holding no values keeps its empty-list identity."""
     header, payload = encode(AudioAnalysisData(beats=[]))
