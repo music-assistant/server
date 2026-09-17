@@ -27,7 +27,7 @@ from aiohttp.web import Request, Response
 from music_assistant_models.config_entries import UI_ONLY, ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, EventType, FlowStepType
 from music_assistant_models.errors import ActionUnavailable
-from music_assistant_models.setup_flow import SetupFlowStep
+from music_assistant_models.setup_flow import SetupFlowStep, TranslationRef
 
 from music_assistant.helpers.json import json_loads
 
@@ -216,10 +216,11 @@ class SetupSession:
         )
         for key, error in (errors or {}).items():
             if isinstance(error, SetupFlowError) and error.translation_key:
-                step.error_translation_keys[key] = error.translation_key
-                step.error_translation_args[key] = list(error.translation_args)
-                if error.translation_owner:
-                    step.error_translation_owners[key] = error.translation_owner
+                step.error_translations[key] = TranslationRef(
+                    key=error.translation_key,
+                    args=list(error.translation_args),
+                    owner=error.translation_owner,
+                )
         self._input_future = asyncio.get_running_loop().create_future()
         self._publish_step(step)
         try:
@@ -443,9 +444,7 @@ class SetupSession:
                 # secure values are only handed to the flow coroutine; they are never
                 # kept on (or echoed back with) the stored step
                 entry.value = None
-        step.error_translation_keys.clear()
-        step.error_translation_args.clear()
-        step.error_translation_owners.clear()
+        step.error_translations.clear()
         if errors:
             step.errors = errors
             self._publish_step(step)
@@ -519,9 +518,11 @@ class SetupSession:
         """
         step = self._build_step(FlowStepType.ABORT, "abort", reason=str(reason) or "internal_error")
         if isinstance(reason, SetupFlowError) and reason.translation_key:
-            step.reason_translation_key = reason.translation_key
-            step.reason_translation_args = list(reason.translation_args)
-            step.reason_translation_owner = reason.translation_owner
+            step.reason_translation = TranslationRef(
+                key=reason.translation_key,
+                args=list(reason.translation_args),
+                owner=reason.translation_owner,
+            )
         self._publish_step(step)
 
     def close(self) -> None:

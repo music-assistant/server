@@ -589,7 +589,7 @@ async def test_uncaught_finish_error_localizes_abort(flow_mass: MusicAssistant) 
         finally:
             TRANSLATION_RESOLVER.reset(token)
         assert serialized["reason"] == template.format(address)
-        assert "reason_translation_args" not in serialized
+        assert "reason_translation" not in serialized
         assert abort_step.reason == str(error)
 
 
@@ -1956,7 +1956,7 @@ async def test_real_provider_flow_retry_on_error(flow_mass: MusicAssistant) -> N
         )
         assert retry_step.type == FlowStepType.FORM
         assert retry_step.errors == {"base": "bad creds"}
-        assert retry_step.error_translation_keys == {"base": "login_failed"}
+        assert retry_step.error_translations["base"].key == "login_failed"
         finish_step = await flow_mass.config.submit_setup_flow(
             step.flow_id, {"username": "marcel", "password": "right"}
         )
@@ -2000,13 +2000,11 @@ async def test_opensubsonic_error_with_translation_args_is_formatted(
             finally:
                 TRANSLATION_RESOLVER.reset(token)
             assert serialized["errors"] == {"base": template.format(address)}
-            assert "error_translation_args" not in serialized
+            assert "error_translations" not in serialized
             assert retry_step.errors == {"base": str(error)}
         invalid_step = await flow_mass.config.submit_setup_flow(step.flow_id, {CONF_BASE_URL: None})
         assert invalid_step.errors == {CONF_BASE_URL: "required"}
-        assert not invalid_step.error_translation_keys
-        assert not invalid_step.error_translation_args
-        assert not invalid_step.error_translation_owners
+        assert not invalid_step.error_translations
         finish_step = await flow_mass.config.submit_setup_flow(
             step.flow_id, {CONF_BASE_URL: address}
         )
