@@ -36,6 +36,10 @@ POSITION_DRIFT_THRESHOLD = 3.0
 # attempts for the host to actually publish it before giving up.
 ZONE_CREATE_ATTEMPTS = 4
 ZONE_CREATE_RETRY_DELAY = 0.75
+# After leaving standby, how long (seconds) to wait for a room to report awake before
+# playing, so the first play command is not dropped while the renderer powers on.
+WAKE_TIMEOUT = 5.0
+WAKE_POLL_INTERVAL = 0.3
 
 
 def _map_transport_state(state: str | None) -> PlaybackState:
@@ -140,7 +144,9 @@ class RaumfeldPlayer(Player):
         """Send PLAY/resume command."""
         self._mark_play_started()
         try:
-            await self.raumfeld.host.async_zone_play(await self._ensure_playable_zone())
+            zone = await self._ensure_playable_zone()
+            await self._wake_rooms(zone)
+            await self.raumfeld.host.async_zone_play(zone)
         except HOST_ERRORS as err:
             raise PlayerCommandFailed(f"Failed to resume {self.room}: {err!r}") from err
 
@@ -166,6 +172,9 @@ class RaumfeldPlayer(Player):
         didl_metadata = create_didl_metadata(media, url)
         try:
             zone = await self._ensure_playable_zone()
+            # wake any room in (manual) standby first: a manually-standby renderer does not
+            # auto-power-on for playback and the host answers "Please turn on a device"
+            await self._wake_rooms(zone)
             # stop first so the renderer cleanly loads the new URI (a seek/next re-streams
             # a different URL); without this it may keep playing the previous stream
             await self.raumfeld.host.async_zone_stop(zone)
@@ -366,6 +375,35 @@ class RaumfeldPlayer(Player):
         # 0-based time (the next poll re-anchors to the real position)
         self._attr_elapsed_time = 0.0
         self._attr_elapsed_time_last_updated = time.time()
+
+    async def _wake_rooms(self, zone: list[str]) -> None:
+        """
+        Bring the zone's rooms out of standby and wait until they report awake.
+
+        Rooms in MANUAL_STANDBY do not auto-power-on for playback (unlike
+        AUTOMATIC_STANDBY). A renderer that just left standby also drops the first play
+        command while it powers on, so wait for it to report awake before playing.
+        """
+        host = self.raumfeld.host
+        woke = False
+        for room in zone:
+            try:
+                if "STANDBY" in (host.get_room_power_state(room) or ""):
+                    await host.async_leave_standby(room)
+                    woke = True
+            except HOST_ERRORS as err:
+                self.logger.debug("Failed to wake room %s: %r", room, err)
+        if not woke:
+            return
+        # wait (bounded) for the woken rooms to actually leave standby before playing
+        deadline = time.time() + WAKE_TIMEOUT
+        while time.time() < deadline:
+            try:
+                if all("STANDBY" not in (host.get_room_power_state(r) or "") for r in zone):
+                    return
+            except HOST_ERRORS as err:
+                self.logger.debug("Failed to read power state while waking: %r", err)
+            await asyncio.sleep(WAKE_POLL_INTERVAL)
 
     def _current_zone(self) -> list[str]:
         """Return the room-list of the zone this room currently controls."""
