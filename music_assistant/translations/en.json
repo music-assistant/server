@@ -2026,6 +2026,8 @@
   "provider.plex.config_entries.stream_quality.options.320": "320 kbps",
   "provider.plex.config_entries.stream_quality.options.96": "96 kbps",
   "provider.plex.config_entries.stream_quality.options.original": "Original",
+  "provider.plex.config_entries.sync_on_library_change.description": "Start a sync as soon as Plex finishes scanning new or changed music into this library, instead of waiting for the next scheduled sync.",
+  "provider.plex.config_entries.sync_on_library_change.label": "Sync when the Plex library changes",
   "provider.plex.errors.no_libraries": "No compatible libraries were found on this Plex server.",
   "provider.plex.manifest.description": "Stream your personal music, podcasts, and radio via your Plex media server.",
   "provider.plex.setup_flow.abort.myplex_auth_failed": "Could not complete sign-in with your Plex account. Please try again.",
