@@ -792,6 +792,97 @@ async def _stored_version(db: DatabaseConnection) -> int:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("source_table", [f"main.{DB_TABLE_AUDIO_ANALYSIS}", AA_TABLE_ANALYSIS_V1])
+@pytest.mark.parametrize("source_timestamp", [900, 1000, 1100])
+async def test_json_migration_keeps_newest_same_key_record(
+    library_db: DatabaseConnection,
+    tmp_path: pathlib.Path,
+    source_table: str,
+    source_timestamp: int,
+) -> None:
+    """Both JSON sources keep the newest content and preserve the packed destination id."""
+    ctrl = _make_controller(library_db, tmp_path)
+    source_analysis = AudioAnalysisData(bpm=120.0, beats=[0.5, 1.0], clap_embedding=[0.25, 0.5])
+    source_json = json_dumps(source_analysis.to_dict())
+    if source_table == AA_TABLE_ANALYSIS_V1:
+        await _seed_v1_table(library_db, ctrl, [("t0", source_json)])
+        await library_db.execute(f"ALTER TABLE {AA_TABLE_ANALYSIS} RENAME TO {V1_TABLE_NAME}")
+        await library_db.commit()
+        await ctrl._prepare_analysis_table()
+    else:
+        await ctrl.setup_database()
+        await _seed_legacy(library_db, n_analysis=1, n_failures=0)
+    await library_db.execute(
+        f"UPDATE {source_table} SET analysis_data = :data, timestamp_created = :timestamp",
+        {"data": source_json, "timestamp": source_timestamp},
+    )
+    source = dict((await library_db.get_rows(source_table))[0])
+    source.pop("analysis_data")
+    source_header, source_payload = encode(source_analysis)
+    source.update(header=source_header, payload=source_payload)
+    header, payload = encode(AudioAnalysisData(bpm=90.0, beats=[2.0], clap_embedding=[0.75]))
+    destination = {
+        **source,
+        "id": 42,
+        "timestamp_created": 1000,
+        "analysis_version": 9,
+        "header": header,
+        "payload": payload,
+    }
+    await library_db.insert(AA_TABLE_ANALYSIS, destination)
+
+    await ctrl.setup_database()
+
+    expected = source if source_timestamp > 1000 else destination
+    result = dict((await library_db.get_rows(AA_TABLE_ANALYSIS))[0])
+    assert result == {**expected, "id": 42}
+    schema, _, table = source_table.partition(".")
+    assert table not in await _table_names(library_db, schema)
+    assert ctrl._database_ready
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_table", [f"main.{DB_TABLE_AUDIO_ANALYSIS}", AA_TABLE_ANALYSIS_V1])
+async def test_legacy_null_embedding_is_skipped_during_migration(
+    library_db: DatabaseConnection,
+    tmp_path: pathlib.Path,
+    caplog: pytest.LogCaptureFixture,
+    source_table: str,
+) -> None:
+    """A null in a legacy embedding is logged and skipped without losing a valid row."""
+    ctrl = _make_controller(library_db, tmp_path)
+    bad_json = json_dumps({"extra_data": {"clap_embedding": [0.25, None, 0.5]}})
+    if source_table == AA_TABLE_ANALYSIS_V1:
+        await _seed_v1_table(
+            library_db, ctrl, [("t0", bad_json), ("t1", '{"loudness_integrated": -1}')]
+        )
+    else:
+        await _seed_legacy(library_db, n_analysis=2, n_failures=0)
+        await library_db.execute(
+            f"UPDATE {source_table} SET analysis_data = :data WHERE item_id = 't0'",
+            {"data": bad_json},
+        )
+    with caplog.at_level(logging.WARNING):
+        await ctrl.setup_database()
+
+    rows = await library_db.get_rows(AA_TABLE_ANALYSIS, limit=0)
+    assert [row["item_id"] for row in rows] == ["t1"]
+    assert decode(rows[0]["header"], rows[0]["payload"]).loudness_integrated == -1
+    schema, _, table = source_table.partition(".")
+    assert table not in await _table_names(library_db, schema)
+    assert ctrl._database_ready
+    assert any(
+        record.levelno == logging.WARNING and "Skipping unpackable" in record.getMessage()
+        for record in caplog.records
+    )
+    assert any(
+        record.levelno == logging.WARNING
+        and "1 unreadable audio analysis rows" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
 async def test_v1_table_is_converted_to_packed_rows(
     library_db: DatabaseConnection, tmp_path: pathlib.Path
 ) -> None:
@@ -902,7 +993,7 @@ async def test_migration_failure_keeps_v1_table(
     real_execute = library_db.execute
 
     async def failing_execute(query: str, values: dict[str, Any] | None = None) -> Any:
-        if query.lstrip().upper().startswith("INSERT OR IGNORE INTO AA.AUDIO_ANALYSIS "):
+        if query.lstrip().upper().startswith("INSERT INTO AA.AUDIO_ANALYSIS "):
             raise sqlite3.OperationalError("disk I/O error")
         return await real_execute(query, values)
 
@@ -969,7 +1060,7 @@ async def test_incomplete_conversion_keeps_source_table(
 
     async def dropping_execute(query: str, values: dict[str, Any] | None = None) -> Any:
         if (
-            query.lstrip().upper().startswith("INSERT OR IGNORE INTO AA.AUDIO_ANALYSIS ")
+            query.lstrip().upper().startswith("INSERT INTO AA.AUDIO_ANALYSIS ")
             and values is not None
             and values["item_id"] == "t1"
         ):
@@ -1009,7 +1100,7 @@ async def test_failed_conversion_disables_analysis_until_restart(
     real_execute = library_db.execute
 
     async def failing_execute(query: str, values: dict[str, Any] | None = None) -> Any:
-        if query.lstrip().upper().startswith("INSERT OR IGNORE INTO AA.AUDIO_ANALYSIS "):
+        if query.lstrip().upper().startswith("INSERT INTO AA.AUDIO_ANALYSIS "):
             raise sqlite3.OperationalError("disk I/O error")
         return await real_execute(query, values)
 

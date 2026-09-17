@@ -53,11 +53,13 @@ def encode(analysis: AudioAnalysisData) -> tuple[str, bytes]:
         tag = "f16" if name in F16_FIELDS else "f32"
         with np.errstate(over="ignore"):  # an overflow to inf is detected and handled below
             arr = np.asarray(values, dtype=_DTYPES[tag])
-        if tag == "f16" and not np.isfinite(arr).all():
-            # a value beyond float16's ~65504 range overflows to inf; keep the whole array
-            # at full precision instead. The per-array dtype in the index makes decode follow
-            tag = "f32"
-            arr = np.asarray(values, dtype=_DTYPES[tag])
+            if tag == "f16" and not np.isfinite(arr).all():
+                # a value beyond float16's ~65504 range overflows to inf; keep the whole array
+                # at full precision instead. The per-array dtype in the index makes decode follow
+                tag = "f32"
+                arr = np.asarray(values, dtype=_DTYPES[tag])
+        if not np.isfinite(arr).all():
+            raise ValueError(f"audio analysis array {name} contains non-finite values")
         raw = arr.tobytes()
         index.append([name, tag, offset, len(raw)])
         parts.append(raw)

@@ -1326,11 +1326,17 @@ class AudioAnalysisController:
                 unreadable += bad
                 for values in packed:
                     await db.execute(
-                        f"INSERT OR IGNORE INTO {AA_TABLE_ANALYSIS} (media_type, item_id, "
+                        f"INSERT INTO {AA_TABLE_ANALYSIS} (media_type, item_id, "
                         "provider, aa_provider_domain, analysis_version, timestamp_created, "
                         "header, payload) VALUES (:media_type, :item_id, :provider, "
                         ":aa_provider_domain, :analysis_version, :timestamp_created, "
-                        ":header, :payload)",
+                        ":header, :payload) "
+                        "ON CONFLICT(item_id, provider, aa_provider_domain, media_type) "
+                        "DO UPDATE SET analysis_version = excluded.analysis_version, "
+                        "timestamp_created = excluded.timestamp_created, header = excluded.header, "
+                        "payload = excluded.payload "
+                        "WHERE excluded.timestamp_created > "
+                        f"{DB_TABLE_AUDIO_ANALYSIS}.timestamp_created",
                         values,
                     )
                 await db.commit()
