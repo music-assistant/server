@@ -154,6 +154,13 @@ def test_empty_array_round_trips() -> None:
     assert decode(header, payload).beats == []
 
 
+@pytest.mark.parametrize("header", ['"bad"', "null", "42", "false", "[]"])
+def test_decode_rejects_non_object_header(header: str) -> None:
+    """Valid JSON of the wrong shape must use the same rejection path as a corrupt record."""
+    with pytest.raises(TypeError, match="header must be an object"):
+        decode(header, b"")
+
+
 def test_decode_rejects_truncated_payload() -> None:
     """A payload shorter than the header's array index raises ValueError."""
     header, payload = encode(AudioAnalysisData(beats=[1.0, 2.0, 3.0]))
