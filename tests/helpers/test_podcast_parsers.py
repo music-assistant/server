@@ -8,6 +8,7 @@ from aiohttp.client import ClientError
 from music_assistant_models.enums import LinkType
 
 from music_assistant.helpers.podcast_parsers import (
+    _MAX_TRANSCRIPT_BYTES,
     enrich_episode_chapters,
     find_episode_stream_url,
     get_cached_podcast,
@@ -600,11 +601,23 @@ FEED_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
-class _FakeFeedResponse:
-    """Minimal stand-in for an aiohttp response yielding raw feed bytes."""
+class _FakeStreamReader:
+    """Stand-in for an aiohttp body stream, honouring the byte limit it is read with."""
 
     def __init__(self, body: bytes) -> None:
         self._body = body
+
+    async def read(self, n: int = -1) -> bytes:
+        return self._body if n < 0 else self._body[:n]
+
+
+class _FakeFeedResponse:
+    """Minimal stand-in for an aiohttp response yielding raw feed bytes."""
+
+    def __init__(self, body: bytes, content_length: int | None) -> None:
+        self._body = body
+        self.content_length = content_length
+        self.content = _FakeStreamReader(body)
 
     async def read(self) -> bytes:
         return self._body
@@ -620,7 +633,7 @@ class _FakeFeedGetContext:
         error = self._session.errors.pop(0) if self._session.errors else None
         if error is not None:
             raise error
-        return _FakeFeedResponse(self._session.body)
+        return _FakeFeedResponse(self._session.body, self._session.content_length)
 
     async def __aexit__(self, *exc_info: object) -> bool:
         self._session.released += 1
@@ -630,9 +643,17 @@ class _FakeFeedGetContext:
 class _FakeFeedSession:
     """Session stand-in serving a fixed feed body, optionally failing the first attempts."""
 
-    def __init__(self, *, body: bytes = FEED_XML, errors: list[Exception] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        body: bytes = FEED_XML,
+        errors: list[Exception] | None = None,
+        content_length: int | None = None,
+    ) -> None:
         self.body = body
         self.errors = errors or []
+        # None mimics a host that streams the body without announcing its size
+        self.content_length = content_length
         self.calls = 0
         self.released = 0
         self.headers: list[dict[str, str]] = []
@@ -826,6 +847,30 @@ async def test_transcript_prefers_vtt_over_json() -> None:
     )
     assert text == "Jane Doe: Welcome to the show."
     assert session.urls == [TRANSCRIPT_URL]
+
+
+async def test_transcript_announced_as_too_large_is_not_read() -> None:
+    """A response whose announced size is over the cap is skipped and never cached."""
+    session = _FakeFeedSession(body=TRANSCRIPT_VTT, content_length=_MAX_TRANSCRIPT_BYTES + 1)
+    mass = _fake_mass(session)
+    assert await get_episode_transcript(
+        mass=mass,
+        provider_instance_id="podcastfeed--test",
+        transcripts=[{"url": TRANSCRIPT_URL, "type": "text/vtt"}],
+    ) == (None, None)
+    assert cast("_FakeMass", mass).cache.sets == 0
+
+
+async def test_transcript_streamed_past_the_cap_is_dropped() -> None:
+    """A body that grows past the cap without an announced size is dropped, not cached."""
+    session = _FakeFeedSession(body=b"x" * (_MAX_TRANSCRIPT_BYTES + 1))
+    mass = _fake_mass(session)
+    assert await get_episode_transcript(
+        mass=mass,
+        provider_instance_id="podcastfeed--test",
+        transcripts=[{"url": TRANSCRIPT_URL, "type": "text/vtt"}],
+    ) == (None, None)
+    assert cast("_FakeMass", mass).cache.sets == 0
 
 
 async def test_no_transcripts_on_offer_does_not_fetch() -> None:
