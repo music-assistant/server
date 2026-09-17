@@ -14,6 +14,7 @@ from music_assistant.providers.sendspin.player import SendspinBasePlayer
 
 if TYPE_CHECKING:
     from aiosendspin.models.management import ManagementResultData
+    from aiosendspin.server.client import SendspinClient
 
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
@@ -47,14 +48,30 @@ class _FakeProvider:
         self.exit_calls += 1
 
 
-def _player() -> SendspinBasePlayer:
+def _player(*, legacy_wire: bool = True) -> SendspinBasePlayer:
     player = SendspinBasePlayer.__new__(SendspinBasePlayer)
     player._player_id = "client-1"
+    player.api = cast(
+        "SendspinClient",
+        SimpleNamespace(
+            info_or_none=SimpleNamespace(
+                legacy_support_keys_used=["player_support"] if legacy_wire else None,
+                legacy_pair_methods_list_used=None,
+            )
+        ),
+    )
     return player
 
 
-async def _paired(provider: _FakeProvider, snapshot: ManagementResultData | None) -> set[str]:
-    entries = await _player()._paired_entries(cast("SendspinProvider", provider), snapshot)
+async def _paired(
+    provider: _FakeProvider,
+    snapshot: ManagementResultData | None,
+    *,
+    legacy_wire: bool = True,
+) -> set[str]:
+    entries = await _player(legacy_wire=legacy_wire)._paired_entries(
+        cast("SendspinProvider", provider), snapshot
+    )
     return {entry.key for entry in entries}
 
 
@@ -82,3 +99,11 @@ async def test_fetch_failure_exits_and_offers_enter() -> None:
     assert provider.exit_calls == 1
     assert CONF_ACTION_MANAGEMENT_ENTER in keys
     assert CONF_ACTION_MANAGEMENT_EXIT not in keys
+
+
+async def test_compliant_device_is_offered_no_management() -> None:
+    """A 1.0 device never implements the deprecated activity, so the section stays hidden."""
+    provider = _FakeProvider(session=None, config=_empty_config())
+    keys = await _paired(provider, None, legacy_wire=False)
+    assert CONF_ACTION_MANAGEMENT_ENTER not in keys
+    assert provider.fetch_calls == 0

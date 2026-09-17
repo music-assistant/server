@@ -102,6 +102,7 @@ from music_assistant.providers.sendspin.helpers import (
     SecurityActionError,
     effective_pair_methods,
     error_alert,
+    speaks_legacy_wire,
 )
 from music_assistant.providers.sendspin.player import (
     SendspinBasePlayer,
@@ -1285,7 +1286,13 @@ class SendspinProvider(PlayerProvider):
         Only works before the attempt starts: the pairing activate takes management off the
         connection's activities. Returns whether a management session was opened here,
         for the caller to close once the pairing session ends.
+
+        Skipped for a device on the 1.0 wire, which would leave the request unanswered
+        until the timeout drops the connection: the operator makes the gesture instead.
         """
+        client = self.server_api.get_client(client_id)
+        if not speaks_legacy_wire(client.info_or_none if client is not None else None):
+            return False
         opened = self.get_management_session(client_id) is None
         keep = False
         try:

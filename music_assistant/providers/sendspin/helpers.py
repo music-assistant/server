@@ -140,6 +140,23 @@ def effective_unpaired_access(
     return info is not None and info.unpaired_access.enabled
 
 
+# DEPRECATED(spec-pr-183): drop with the management activity itself.
+def speaks_legacy_wire(info: ClientHelloPayload | None) -> bool:
+    """
+    Whether the device's hello arrived on the pre-1.0 wire.
+
+    The management activity is deprecated and no 1.0 device implements it. Asking one
+    anyway costs the operator a request that never answers, and aiosendspin drops the
+    connection to resync the reply channel; a device that does answer is flagged
+    non-compliant, which a strict server turns into a rejection. Both hello shapes below
+    are themselves flagged, so a device that carries one only connects at all while
+    legacy clients are allowed.
+    """
+    if info is None:
+        return False
+    return bool(info.legacy_support_keys_used) or bool(info.legacy_pair_methods_list_used)
+
+
 def bridge_client_id_from_mac(mac: str) -> str:
     """Generate a Sendspin bridge client ID from a MAC address."""
     return f"{BRIDGE_PREFIX}{mac.replace(':', '').lower()}"

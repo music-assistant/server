@@ -121,6 +121,7 @@ from .helpers import (
     error_alert,
     mac_from_bridge_client_id,
     pin_code_format,
+    speaks_legacy_wire,
 )
 from .playback import SendspinPlaybackSession
 
@@ -903,7 +904,8 @@ class SendspinBasePlayer(Player):
             if management_config is not None:
                 entries.extend(self._management_section_entries(management_config))
                 return entries
-        entries.append(action_entry(CONF_ACTION_MANAGEMENT_ENTER))
+        if speaks_legacy_wire(self.api.info_or_none):
+            entries.append(action_entry(CONF_ACTION_MANAGEMENT_ENTER))
         entries.append(action_entry(CONF_ACTION_UNPAIR, advanced=True))
         return entries
 

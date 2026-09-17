@@ -167,6 +167,7 @@ class _FakeServerApi:
         await_pin: bool = True,
         gesture: asyncio.Event | None = None,
         management_capable: bool = False,
+        legacy_wire: bool = False,
         connected: bool = True,
         rejected_rounds: int = 0,
     ) -> None:
@@ -175,7 +176,12 @@ class _FakeServerApi:
         self._client = cast(
             "SendspinClient",
             SimpleNamespace(
-                info_or_none=SimpleNamespace(supported_pair_methods=methods),
+                info_or_none=SimpleNamespace(
+                    supported_pair_methods=methods,
+                    # a pre-1.0 hello is what still admits the management activity
+                    legacy_support_keys_used=["player_support"] if legacy_wire else None,
+                    legacy_pair_methods_list_used=None,
+                ),
                 connection=self.connection,
                 is_connected=connected,
             ),
@@ -660,6 +666,7 @@ async def test_disconnected_device_is_refused_before_management(
         _offer(PairMethod.STATIC_PAIRING_CODE),
         await_pin=False,
         management_capable=True,
+        legacy_wire=True,
         connected=False,
     )
     provider, _refreshed = _make_provider(api, monkeypatch)
@@ -669,12 +676,36 @@ async def test_disconnected_device_is_refused_before_management(
     assert api.calls == []
 
 
+async def test_compliant_device_is_never_asked_for_a_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A 1.0 device gets the gesture, not a management request.
+
+    It would never answer one, and the request timeout drops the connection to resync
+    the reply channel - so asking would cost the operator the device mid-pairing.
+    """
+    api = _FakeServerApi(
+        _offer(PairMethod.STATIC_PAIRING_CODE),
+        await_pin=False,
+        management_capable=True,
+    )
+    provider, _refreshed = _make_provider(api, monkeypatch)
+    session = await provider.start_pin_pairing("c", static=True)
+    assert api.connection.window_calls == 0
+    assert api.calls == ["pair"]
+    assert not session.opened_management
+
+
 async def test_paired_device_opens_the_window_before_the_attempt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A paired device's window is requested over management before pairing starts."""
     api = _FakeServerApi(
-        _offer(PairMethod.STATIC_PAIRING_CODE), await_pin=False, management_capable=True
+        _offer(PairMethod.STATIC_PAIRING_CODE),
+        await_pin=False,
+        management_capable=True,
+        legacy_wire=True,
     )
     provider, _refreshed = _make_provider(api, monkeypatch)
     session = await provider.start_pin_pairing("c", static=True)
@@ -693,7 +724,9 @@ async def test_cancel_closes_a_management_session_we_opened(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Cancelling the pairing session also gives back the management session it opened."""
-    api = _FakeServerApi(_offer(PairMethod.STATIC_PAIRING_CODE), management_capable=True)
+    api = _FakeServerApi(
+        _offer(PairMethod.STATIC_PAIRING_CODE), management_capable=True, legacy_wire=True
+    )
     provider, _refreshed = _make_provider(api, monkeypatch)
     session = await provider.start_pin_pairing("c", static=True)
     assert session.opened_management
@@ -706,7 +739,10 @@ async def test_cancelled_window_request_closes_the_management_session(
 ) -> None:
     """Abandoning the flow mid-request still gives back the management session it opened."""
     api = _FakeServerApi(
-        _offer(PairMethod.STATIC_PAIRING_CODE), await_pin=False, management_capable=True
+        _offer(PairMethod.STATIC_PAIRING_CODE),
+        await_pin=False,
+        management_capable=True,
+        legacy_wire=True,
     )
     api.connection.window_error = asyncio.CancelledError()
     provider, _refreshed = _make_provider(api, monkeypatch)
@@ -721,7 +757,10 @@ async def test_existing_management_session_is_reused_and_kept(
 ) -> None:
     """A session the operator already opened is used for the window and left running."""
     api = _FakeServerApi(
-        _offer(PairMethod.STATIC_PAIRING_CODE), await_pin=False, management_capable=True
+        _offer(PairMethod.STATIC_PAIRING_CODE),
+        await_pin=False,
+        management_capable=True,
+        legacy_wire=True,
     )
     provider, _refreshed = _make_provider(api, monkeypatch)
     provider.enter_management("c")
@@ -739,7 +778,10 @@ async def test_rejected_window_falls_back_to_the_gesture(
 ) -> None:
     """A refused window request drops the management session and leaves the gesture wait."""
     api = _FakeServerApi(
-        _offer(PairMethod.STATIC_PAIRING_CODE), await_pin=False, management_capable=True
+        _offer(PairMethod.STATIC_PAIRING_CODE),
+        await_pin=False,
+        management_capable=True,
+        legacy_wire=True,
     )
     api.connection.window_result = ManagementResult.INVALID
     provider, _refreshed = _make_provider(api, monkeypatch)
