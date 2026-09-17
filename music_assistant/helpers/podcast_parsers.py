@@ -42,6 +42,7 @@ _TRANSCRIPT_FETCH_TIMEOUT = ClientTimeout(total=15)
 # a publisher's transcript link is untrusted and may point at the audio itself, so the
 # document is read up to a cap that still leaves ample room for the longest real transcript
 _MAX_TRANSCRIPT_BYTES = 5 * 1024 * 1024
+_TRANSCRIPT_READ_CHUNK = 64 * 1024
 
 # some podcast hosts and CDNs reject anything that does not look like a browser, so these
 # fetches override the Music Assistant user agent that the session sends by default
@@ -635,11 +636,14 @@ async def _fetch_transcript(*, session: aiohttp.ClientSession, url: str) -> str 
             if (response.content_length or 0) > _MAX_TRANSCRIPT_BYTES:
                 LOGGER.warning("Skipping podcast transcript from %s: it is too large", url)
                 return None
-            # read one byte past the cap so a body without a content length is caught too
-            raw = await response.content.read(_MAX_TRANSCRIPT_BYTES + 1)
-            if len(raw) > _MAX_TRANSCRIPT_BYTES:
-                LOGGER.warning("Skipping podcast transcript from %s: it is too large", url)
-                return None
+            # a single read may return less than asked before the end of the body, so read
+            # to the end in chunks and stop as soon as the cap is passed
+            raw = bytearray()
+            while chunk := await response.content.read(_TRANSCRIPT_READ_CHUNK):
+                raw.extend(chunk)
+                if len(raw) > _MAX_TRANSCRIPT_BYTES:
+                    LOGGER.warning("Skipping podcast transcript from %s: it is too large", url)
+                    return None
             # hosts commonly serve these without a charset (or as octet-stream), so decode
             # explicitly rather than letting aiohttp guess at the encoding
             return raw.decode("utf-8", errors="replace")

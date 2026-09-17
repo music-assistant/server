@@ -602,22 +602,32 @@ FEED_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
 
 
 class _FakeStreamReader:
-    """Stand-in for an aiohttp body stream, honouring the byte limit it is read with."""
+    """Stand-in for an aiohttp body stream that hands out the body in pieces until the end."""
 
-    def __init__(self, body: bytes) -> None:
+    def __init__(self, body: bytes, chunk_size: int | None) -> None:
         self._body = body
+        self._chunk_size = chunk_size
+        self._position = 0
 
     async def read(self, n: int = -1) -> bytes:
-        return self._body if n < 0 else self._body[:n]
+        # like aiohttp, a read may return less than asked, and returns nothing at the end
+        size = len(self._body) - self._position if n < 0 else n
+        if self._chunk_size is not None:
+            size = min(size, self._chunk_size)
+        chunk = self._body[self._position : self._position + size]
+        self._position += len(chunk)
+        return chunk
 
 
 class _FakeFeedResponse:
     """Minimal stand-in for an aiohttp response yielding raw feed bytes."""
 
-    def __init__(self, body: bytes, content_length: int | None) -> None:
+    def __init__(
+        self, body: bytes, content_length: int | None, chunk_size: int | None = None
+    ) -> None:
         self._body = body
         self.content_length = content_length
-        self.content = _FakeStreamReader(body)
+        self.content = _FakeStreamReader(body, chunk_size)
 
     async def read(self) -> bytes:
         return self._body
@@ -633,7 +643,9 @@ class _FakeFeedGetContext:
         error = self._session.errors.pop(0) if self._session.errors else None
         if error is not None:
             raise error
-        return _FakeFeedResponse(self._session.body, self._session.content_length)
+        return _FakeFeedResponse(
+            self._session.body, self._session.content_length, self._session.chunk_size
+        )
 
     async def __aexit__(self, *exc_info: object) -> bool:
         self._session.released += 1
@@ -649,11 +661,14 @@ class _FakeFeedSession:
         body: bytes = FEED_XML,
         errors: list[Exception] | None = None,
         content_length: int | None = None,
+        chunk_size: int | None = None,
     ) -> None:
         self.body = body
         self.errors = errors or []
         # None mimics a host that streams the body without announcing its size
         self.content_length = content_length
+        # a small chunk size mimics a host that streams the body in many pieces
+        self.chunk_size = chunk_size
         self.calls = 0
         self.released = 0
         self.headers: list[dict[str, str]] = []
@@ -859,6 +874,18 @@ async def test_transcript_announced_as_too_large_is_not_read() -> None:
         transcripts=[{"url": TRANSCRIPT_URL, "type": "text/vtt"}],
     ) == (None, None)
     assert cast("_FakeMass", mass).cache.sets == 0
+
+
+async def test_transcript_served_in_pieces_is_read_to_the_end() -> None:
+    """A body that arrives in many small pieces is assembled in full, not cut short."""
+    session = _FakeFeedSession(body=TRANSCRIPT_VTT, chunk_size=7)
+    text, cues = await get_episode_transcript(
+        mass=_fake_mass(session),
+        provider_instance_id="podcastfeed--test",
+        transcripts=[{"url": TRANSCRIPT_URL, "type": "text/vtt"}],
+    )
+    assert text == "Jane Doe: Welcome to the show."
+    assert cues is not None
 
 
 async def test_transcript_streamed_past_the_cap_is_dropped() -> None:
