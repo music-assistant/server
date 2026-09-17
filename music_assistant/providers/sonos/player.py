@@ -1023,7 +1023,9 @@ class SonosPlayer(Player):
         if self.mass.closing:
             return
         async with self._connect_lock:
-            if self._listen_task and not self._listen_task.done():
+            # a cancelled listener can linger for a cycle, so a live task alone is not
+            # proof of a connection
+            if self.connected and self._listen_task and not self._listen_task.done():
                 self.logger.debug("Already connected to Sonos player: %s", self.player_id)
                 return
             try:
@@ -1071,11 +1073,19 @@ class SonosPlayer(Player):
             listen_task = self._listen_task
         # wait for the initial state fetch outside the lock: a listener that dies mid-init
         # never sets init_ready, and the reconnect it schedules needs the lock again
+        await self._wait_for_listener_init(init_ready, listen_task, retry_on_fail)
+
+    async def _wait_for_listener_init(
+        self, init_ready: asyncio.Event, listen_task: asyncio.Task[None], retry_on_fail: int
+    ) -> None:
+        """Wait for the listener's initial state fetch, raising when the listener dies first."""
         init_ready_wait = self.mass.create_task(init_ready.wait())
-        await asyncio.wait({init_ready_wait, listen_task}, return_when=asyncio.FIRST_COMPLETED)
+        try:
+            await asyncio.wait({init_ready_wait, listen_task}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            init_ready_wait.cancel()
         if init_ready.is_set():
             return
-        init_ready_wait.cancel()
         if retry_on_fail and self.mass.players.get_player(self.player_id):
             # the listener's own cleanup schedules the retry
             return
@@ -1239,6 +1249,9 @@ class SonosPlayer(Player):
                 # a connect to a still-dark radio hangs on the stale ARP entry, so probe first
                 while not await self._is_reachable():
                     await asyncio.sleep(1)
+                # the same budget bounds the connect, so a stalled handshake cannot
+                # hang the power command past the promised timeout
+                await self._connect()
         except TimeoutError:
             msg = f"{self.display_name} did not respond to wake-on-LAN"
             raise PlayerUnavailableError(
@@ -1247,7 +1260,6 @@ class SonosPlayer(Player):
                 translation_owner=self.translation_owner,
                 translation_args=[self.display_name],
             ) from None
-        await self._connect()
 
     async def _is_reachable(self) -> bool:
         """Return whether the player API port answers a TCP connect."""
