@@ -57,7 +57,7 @@ async def run_setup(session: SetupSession) -> None:
     :param session: The setup session driving the flow.
     """
     network_default = str(session.context.setup_data.get(CONF_PROVIDER, _NetworkType.LASTFM.value))
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         values = await session.form(
             [
@@ -112,4 +112,4 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(finish_values)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}

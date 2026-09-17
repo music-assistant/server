@@ -6,6 +6,7 @@ import asyncio
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import replace
+from functools import partial
 from types import MethodType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -39,10 +40,12 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.player import OutputProtocol
 from music_assistant_models.provider import ProviderManifest
+from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, ENCRYPT_SUFFIX
 from music_assistant.controllers.config.flows import SetupFlowAccess
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.translations import TranslationController
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
@@ -51,6 +54,8 @@ from music_assistant.models.setup_flow import AbortFlow, SetupSession, StepExpir
 from music_assistant.providers.filesystem_local.setup_flow import (
     run_setup as filesystem_local_run_setup,
 )
+from music_assistant.providers.opensubsonic.setup_flow import run_setup as opensubsonic_run_setup
+from music_assistant.providers.opensubsonic.sonic_provider import CONF_BASE_URL
 from music_assistant.providers.qobuz.setup_flow import run_setup as qobuz_run_setup
 from tests.common import MockPlayer, MockProvider, set_music_source_access
 
@@ -549,6 +554,43 @@ async def test_finish_failure_rolls_back_provider_config(flow_mass: MusicAssista
     # the config created during finish was removed again
     assert flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}") is None
     assert step.flow_id not in flow_mass.config._setup_flows
+
+
+async def test_uncaught_finish_error_localizes_abort(flow_mass: MusicAssistant) -> None:
+    """An uncaught provider error is localized per client without losing its arguments."""
+
+    async def run_setup(session: SetupSession) -> None:
+        values = await session.form([USERNAME_ENTRY])
+        await session.finish(values)
+
+    address = "https://navidrome.example"
+    error = LoginFailed(
+        f"Failed to connect to {address}",
+        translation_key="connect_failed",
+        translation_args=[address],
+        translation_owner="provider.opensubsonic",
+    )
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock(side_effect=error)),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        abort_step = await flow_mass.config.submit_setup_flow(step.flow_id, {"username": "x"})
+    assert abort_step.type == FlowStepType.ABORT
+    translations = TranslationController(flow_mass)
+    for locale, template in (
+        ("de", "Verbindung zu {0} fehlgeschlagen."),
+        ("nl", "Verbinding met {0} mislukt."),
+    ):
+        translations._locales[locale] = {"provider.opensubsonic.errors.connect_failed": template}
+        token = TRANSLATION_RESOLVER.set(partial(translations.get_translation, locale=locale))
+        try:
+            serialized = abort_step.to_dict()
+        finally:
+            TRANSLATION_RESOLVER.reset(token)
+        assert serialized["reason"] == template.format(address)
+        assert "reason_translation_args" not in serialized
+        assert abort_step.reason == str(error)
 
 
 async def test_finish_failure_author_retry_loop(flow_mass: MusicAssistant) -> None:
@@ -1913,14 +1955,62 @@ async def test_real_provider_flow_retry_on_error(flow_mass: MusicAssistant) -> N
             step.flow_id, {"username": "marcel", "password": "wrong"}
         )
         assert retry_step.type == FlowStepType.FORM
-        # the error slug (LoginFailed.translation_key) is used so it localizes
-        # at serialization; the raw message is the fallback for keyless errors
-        assert retry_step.errors == {"base": "login_failed"}
+        assert retry_step.errors == {"base": "bad creds"}
+        assert retry_step.error_translation_keys == {"base": "login_failed"}
         finish_step = await flow_mass.config.submit_setup_flow(
             step.flow_id, {"username": "marcel", "password": "right"}
         )
     assert finish_step.type == FlowStepType.FINISH
     assert flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}") is not None
+
+
+async def test_opensubsonic_error_with_translation_args_is_formatted(
+    flow_mass: MusicAssistant,
+) -> None:
+    """An OpenSubsonic setup error shows its URL instead of a literal translation placeholder."""
+    translations = TranslationController(flow_mass)
+    address = "https://navidrome.example"
+    error = LoginFailed(
+        f"Failed to connect to {address}, check your settings.",
+        translation_key="connect_failed",
+        translation_owner="provider.opensubsonic",
+        translation_args=[address],
+    )
+    load_mock = AsyncMock(side_effect=[error, None])
+    with (
+        _use_flow(flow_mass, opensubsonic_run_setup),
+        patch.object(flow_mass, "load_provider_config", load_mock),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        retry_step = await flow_mass.config.submit_setup_flow(
+            step.flow_id, {CONF_BASE_URL: address}
+        )
+        assert retry_step.type == FlowStepType.FORM
+        assert retry_step.errors == {"base": str(error)}
+        for locale, template in (
+            ("de", "Verbindung zu {0} fehlgeschlagen."),
+            ("nl", "Verbinding met {0} mislukt."),
+        ):
+            translations._locales[locale] = {
+                "provider.opensubsonic.errors.connect_failed": template
+            }
+            token = TRANSLATION_RESOLVER.set(partial(translations.get_translation, locale=locale))
+            try:
+                serialized = retry_step.to_dict()
+            finally:
+                TRANSLATION_RESOLVER.reset(token)
+            assert serialized["errors"] == {"base": template.format(address)}
+            assert "error_translation_args" not in serialized
+            assert retry_step.errors == {"base": str(error)}
+        invalid_step = await flow_mass.config.submit_setup_flow(step.flow_id, {CONF_BASE_URL: None})
+        assert invalid_step.errors == {CONF_BASE_URL: "required"}
+        assert not invalid_step.error_translation_keys
+        assert not invalid_step.error_translation_args
+        assert not invalid_step.error_translation_owners
+        finish_step = await flow_mass.config.submit_setup_flow(
+            step.flow_id, {CONF_BASE_URL: address}
+        )
+    assert finish_step.type == FlowStepType.FINISH
 
 
 async def test_audible_flow_login_link_and_redirect_form(

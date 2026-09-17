@@ -32,7 +32,7 @@ async def run_setup(session: SetupSession) -> None:
     """Run the setup flow: pick a service, collect its details and create the provider."""
     setup_data = dict(session.context.setup_data)
     service = await _select_service(session, setup_data)
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         submitted = await session.form(
             _connection_entries(setup_data, service),
@@ -56,7 +56,7 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(setup_data)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 async def _select_service(session: SetupSession, setup_data: dict[str, ConfigValueType]) -> str:
