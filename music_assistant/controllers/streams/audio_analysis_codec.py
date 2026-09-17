@@ -3,8 +3,8 @@ Packed on-disk codec for AudioAnalysisData.
 
 A record is stored as a small JSON header (every scalar field, ``extra_data`` and an
 index of the arrays) plus one binary payload holding the arrays back to back, so a
-fully analysed track costs tens of kilobytes instead of hundreds and a read is one
-page fetch plus zero-copy slicing. Only this module knows the layout.
+fully analysed track costs tens of kilobytes instead of hundreds.
+Only this module knows the layout.
 """
 
 from __future__ import annotations

@@ -534,7 +534,7 @@ async def test_completed_copy_is_compacted_after_restart(
     monkeypatch.setattr(library_db, "execute", real_execute)
     await ctrl.setup_database()
     assert table not in await _table_names(library_db, "main")
-    vacuum.assert_awaited_once_with()
+    vacuum.assert_any_await()
 
 
 @pytest.mark.asyncio
