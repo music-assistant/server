@@ -896,7 +896,7 @@ async def test_migration_failure_keeps_v1_table(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A failing insert leaves the v1 table and the old version row for the next start."""
+    """A failing insert preserves the source while keeping older readers out."""
     ctrl = _make_controller(library_db, tmp_path)
     await _seed_v1_table(library_db, ctrl, [("t0", '{"bpm": 100.0}')])
     real_execute = library_db.execute
@@ -911,7 +911,7 @@ async def test_migration_failure_keeps_v1_table(
         await ctrl.setup_database()
 
     assert V1_TABLE_NAME in await _table_names(library_db, AA_DB_SCHEMA)
-    assert await _stored_version(library_db) == 1
+    assert await _stored_version(library_db) == AA_DB_SCHEMA_VERSION
     assert "disk I/O error" in caplog.text
 
 
@@ -981,7 +981,16 @@ async def test_incomplete_conversion_keeps_source_table(
         await ctrl.setup_database()
 
     assert V1_TABLE_NAME in await _table_names(library_db, AA_DB_SCHEMA)
-    assert await _stored_version(library_db) == 1
+    assert await _stored_version(library_db) == AA_DB_SCHEMA_VERSION
+    packed_rows = await library_db.get_rows(AA_TABLE_ANALYSIS)
+    assert len(packed_rows) == 1
+    with monkeypatch.context() as downgrade:
+        downgrade.setattr(audio_analysis_mod, "AA_DB_SCHEMA_VERSION", 1)
+        older = _make_controller(library_db, tmp_path)
+        await older.setup_database()
+        await _assert_analysis_unavailable(older)
+    assert await _stored_version(library_db) == AA_DB_SCHEMA_VERSION
+    assert await library_db.get_rows(AA_TABLE_ANALYSIS) == packed_rows
     assert any(
         record.levelno == logging.ERROR and "incomplete" in record.getMessage()
         for record in caplog.records
@@ -1008,7 +1017,7 @@ async def test_failed_conversion_disables_analysis_until_restart(
     await ctrl.setup_database()
     await _assert_analysis_unavailable(ctrl)
     assert V1_TABLE_NAME in await _table_names(library_db, AA_DB_SCHEMA)
-    assert await _stored_version(library_db) == 1
+    assert await _stored_version(library_db) == AA_DB_SCHEMA_VERSION
     find_candidates = AsyncMock(return_value=[])
     monkeypatch.setattr(ctrl, "_find_candidates_missing_analysis", find_candidates)
     await ctrl._run_background_scan()
@@ -1059,6 +1068,34 @@ async def test_schema_preparation_failure_does_not_quarantine_the_file(
         f"PRAGMA {AA_DB_SCHEMA}.table_info({DB_TABLE_AUDIO_ANALYSIS})", limit=0
     )
     assert "analysis_data" in {c["name"] for c in columns}
+    with sqlite3.connect(tmp_path / AA_DB_FILENAME) as db:
+        version = db.execute("SELECT value FROM settings WHERE key = 'version'").fetchone()
+        assert int(version[0]) == AA_DB_SCHEMA_VERSION
+    monkeypatch.setattr(library_db, "execute", real_execute)
+    restarted = _make_controller(library_db, tmp_path)
+    await restarted.setup_database()
+    assert restarted._database_ready
+    assert await restarted.get_audio_analysis_count("sonic_analysis") == 1
+
+
+@pytest.mark.asyncio
+async def test_schema_marker_failure_keeps_json_table(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No packed schema may be created before its compatibility marker is durable."""
+    ctrl = _make_controller(library_db, tmp_path)
+    await _seed_v1_table(library_db, ctrl, [("t0", '{"bpm": 100.0}')])
+    monkeypatch.setattr(
+        library_db,
+        "insert_or_replace",
+        AsyncMock(side_effect=sqlite3.OperationalError("disk full")),
+    )
+    await ctrl.setup_database()
+    await _assert_analysis_unavailable(ctrl)
+    assert await _stored_version(library_db) == 1
+    rows = await library_db.get_rows(AA_TABLE_ANALYSIS)
+    assert rows[0]["analysis_data"] == '{"bpm": 100.0}'
+    assert V1_TABLE_NAME not in await _table_names(library_db, AA_DB_SCHEMA)
 
 
 @pytest.mark.asyncio
