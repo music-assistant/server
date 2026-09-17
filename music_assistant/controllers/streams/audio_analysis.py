@@ -372,8 +372,8 @@ class AudioAnalysisController:
 
         Rows left in the JSON format of an earlier version — in this file, or older still
         in library.db — are converted to the packed format on the way. A conversion that
-        cannot be verified keeps its source table and is retried on the next start, so the
-        schema version is only raised once nothing is left to convert.
+        cannot be verified keeps its source table and is retried on the next start.
+        The schema version guards reader compatibility, not conversion completion.
 
         Safe to call more than once. Must run after the music database connection exists
         (it is attached onto that connection) and before any analysis query.
@@ -408,11 +408,6 @@ class AudioAnalysisController:
                 or await self._table_exists("main", DB_TABLE_AUDIO_ANALYSIS)
             ):
                 raise ProviderUnavailableError("Legacy audio analysis relocation is incomplete")
-            await db.insert_or_replace(
-                AA_TABLE_SETTINGS,
-                {"key": "version", "value": str(AA_DB_SCHEMA_VERSION), "type": "str"},
-            )
-            await db.commit()
         except (sqlite3.Error, OSError, ValueError, ProviderUnavailableError) as err:
             self.logger.error(
                 "Audio analysis unavailable: %s (%s). Playback remains available; "
@@ -1267,6 +1262,13 @@ class AudioAnalysisController:
     async def _prepare_analysis_table(self) -> None:
         """Rename a v1 table aside and create the packed table."""
         db = self.mass.music.database
+        # Older readers must refuse this file even if conversion stops after creating
+        # the packed table; source-table presence separately controls migration retries.
+        await db.insert_or_replace(
+            AA_TABLE_SETTINGS,
+            {"key": "version", "value": str(AA_DB_SCHEMA_VERSION), "type": "str"},
+        )
+        await db.commit()
         columns = await db.get_rows_from_query(
             f"PRAGMA {AA_DB_SCHEMA}.table_info({DB_TABLE_AUDIO_ANALYSIS})", limit=0
         )
