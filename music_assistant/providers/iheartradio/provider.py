@@ -221,10 +221,12 @@ class IHeartRadioProvider(MusicProvider):
         """
         if (album := await self.api.get_catalog_album(prov_album_id)) is None:
             raise MediaNotFoundError(f"Album {prov_album_id} not found")
-        # the album's own tracks carry no artwork or album reference of their own
+        # the album's own tracks carry no artist, artwork or album reference of their own
         shared = {
             "albumId": album.get("albumId"),
             "albumName": album.get("title"),
+            "artistId": album.get("artistId"),
+            "artistName": album.get("artistName"),
             "imageUrl": album.get("image"),
         }
         # on-demand playback of an album needs iHeartRadio's All Access tier, which this
