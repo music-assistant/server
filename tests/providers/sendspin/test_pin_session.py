@@ -212,7 +212,7 @@ class _FakeServerApi:
         self.attempts.append(attempt)
         if self._gesture is not None:
             if attempt.on_pair_pending is not None:
-                attempt.on_pair_pending()
+                attempt.on_pair_pending("Hold the pairing button")
             await self._gesture.wait()
         if self._await_pin and attempt.pairing_code_provider is not None:
             if not self._cancel_requested:
@@ -878,6 +878,23 @@ async def test_pair_with_token_success_refreshes(monkeypatch: pytest.MonkeyPatch
     await provider.pair_with_token("c", "tok")
     assert api.end_pairing_calls == 0
     assert refreshed == ["c"]
+
+
+async def test_token_attempt_is_bound_to_the_token_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pairing PSK is offered only to the client the token names."""
+    api = _FakeServerApi(_offer(), await_pin=False)
+    provider, _refreshed = _make_provider(api, monkeypatch)
+    monkeypatch.setattr(
+        provider_module,
+        "decode_psk_token",
+        lambda _value: SimpleNamespace(client_id="c", pairing_psk=b"\x01" * 32),
+    )
+    await provider.pair_with_token("c", "tok", owner="user:1")
+    attempt = api.attempts[0]
+    assert attempt.method is PairMethod.PAIRING_PSK
+    assert attempt.client_id == "c"
+    assert attempt.pairing_psk == b"\x01" * 32
+    assert attempt.owner == "user:1"
 
 
 async def test_idle_timeout_restores_connection(monkeypatch: pytest.MonkeyPatch) -> None:
