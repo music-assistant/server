@@ -140,6 +140,12 @@ SUPPORTED_GROUP_COMMANDS = [
     MediaCommand.SEEK_RELATIVE,
 ]
 
+# Player features each accepted volume/mute command exposes.
+_CONTROL_FEATURES = {
+    PlayerCommand.VOLUME: PlayerFeature.VOLUME_SET,
+    PlayerCommand.MUTE: PlayerFeature.VOLUME_MUTE,
+}
+
 # A player that accepts either command takes the configured delay.
 _OUTPUT_DELAY_COMMANDS = frozenset({PlayerCommand.SET_OUTPUT_DELAY, PlayerCommand.SET_STATIC_DELAY})
 
@@ -1218,6 +1224,8 @@ class SendspinPlayer(SendspinBasePlayer):
     static_delay_default_ms: int = DEFAULT_SENDSPIN_STATIC_DELAY
     # HA media_player entity announcements are relayed to (ESPHome-backed devices)
     _hass_announce_entity_id: str | None = None
+    # Volume/mute features fixed by a hello command list instead of following client/state
+    control_features_pinned: bool = False
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -1240,13 +1248,15 @@ class SendspinPlayer(SendspinBasePlayer):
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.MULTI_DEVICE_DSP,
         }
-        # Keep volume/mute features of the first registration as a workaround for Cast.
         if hello_payload.player_support:
             _supported_commands = hello_payload.player_support.supported_commands
-            if PlayerCommand.VOLUME in _supported_commands:
-                self._attr_supported_features.add(PlayerFeature.VOLUME_SET)
-            if PlayerCommand.MUTE in _supported_commands:
-                self._attr_supported_features.add(PlayerFeature.VOLUME_MUTE)
+            # Only bridge and older clients list the commands in the hello; the others
+            # declare them in client/state, which the volume events follow.
+            if _supported_commands is not None:
+                self.control_features_pinned = True
+                self._sync_control_features(_supported_commands)
+            elif (player_role := self._player_role) is not None:
+                self._sync_control_features(player_role.state_supported_commands)
 
     @property
     def supported_sample_rates(self) -> list[tuple[int, int]] | None:
@@ -1262,6 +1272,9 @@ class SendspinPlayer(SendspinBasePlayer):
 
     def preserve_control_features_from(self, other: SendspinPlayer) -> None:
         """Keep the first registration's volume/mute features as a workaround for Cast."""
+        if not other.control_features_pinned:
+            return
+        self.control_features_pinned = True
         for feature in (PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE):
             if feature in other.supported_features:
                 self._attr_supported_features.add(feature)
@@ -1337,6 +1350,8 @@ class SendspinPlayer(SendspinBasePlayer):
             case VolumeChangedEvent(volume=volume, muted=muted):
                 self._attr_volume_level = volume
                 self._attr_volume_muted = muted
+                if not self.control_features_pinned and (role := self._player_role) is not None:
+                    self._sync_control_features(role.state_supported_commands)
                 self.update_state()
             case OutputDelayChangedEvent(output_delay_ms=delay_ms):
                 self.logger.debug("Output delay changed to %d ms", delay_ms)
@@ -1945,6 +1960,15 @@ class SendspinPlayer(SendspinBasePlayer):
             self.config.get_value(CONF_SENDSPIN_STATIC_DELAY, self.static_delay_default_ms),
         )
         player_role.set_output_delay(config_value)
+
+    def _sync_control_features(self, commands: Iterable[PlayerCommand]) -> None:
+        """Expose volume/mute control exactly for the commands the player accepts."""
+        accepted = set(commands)
+        for command, feature in _CONTROL_FEATURES.items():
+            if command in accepted:
+                self._attr_supported_features.add(feature)
+            else:
+                self._attr_supported_features.discard(feature)
 
     async def _send_album_artwork(self, current_media: PlayerMedia) -> str | None:
         """

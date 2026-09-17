@@ -625,7 +625,8 @@ class SendspinProvider(PlayerProvider):
             player._attr_underlying_player_id = underlying_player_id
         bridge_supported_commands: list[PlayerCommand] = []
         if bridge_hello.player_support:
-            bridge_supported_commands = list(bridge_hello.player_support.supported_commands)
+            bridge_supported_commands = list(bridge_hello.player_support.supported_commands or [])
+        player.control_features_pinned = True
         if PlayerCommand.VOLUME in bridge_supported_commands:
             player._attr_supported_features.add(PlayerFeature.VOLUME_SET)
         else:
