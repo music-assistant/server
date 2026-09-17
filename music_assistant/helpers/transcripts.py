@@ -34,6 +34,9 @@ _MAX_JOINED_SEGMENT_CHARS = 200
 # speech recognition working on a rolling window repeats the tail of one cue at the start
 # of the next. Short repeats are left alone because they are usually really said twice.
 _MIN_REPEATED_PREFIX = 15
+# a rolling window never echoes more than a sentence or so, and bounding the search keeps
+# one enormous cue in a broken document from tying up the event loop
+_MAX_REPEATED_PREFIX = 300
 # such a repeat can only run into the cue that directly follows, in the same voice. A
 # repeat after a real pause or by another speaker is someone genuinely saying it again.
 _MAX_REPEAT_GAP = 1.0
@@ -122,9 +125,18 @@ def _repeated_prefix_length(
     """Return how much of a cue's text repeats the end of the one before it."""
     if not _follows_directly(previous, current):
         return 0
-    for length in range(min(len(previous.text), len(current.text)), _MIN_REPEATED_PREFIX - 1, -1):
-        if previous.text[-length:] == current.text[:length]:
-            return length
+    tail = previous.text[-_MAX_REPEATED_PREFIX:]
+    head = current.text[:_MAX_REPEATED_PREFIX]
+    probe = head[:_MIN_REPEATED_PREFIX]
+    if len(probe) < _MIN_REPEATED_PREFIX:
+        return 0
+    # every overlap starts with the probe, so only its occurrences in the tail need checking,
+    # earliest first so the longest overlap wins
+    position = tail.find(probe)
+    while position != -1:
+        if head.startswith(tail[position:]):
+            return len(tail) - position
+        position = tail.find(probe, position + 1)
     return 0
 
 

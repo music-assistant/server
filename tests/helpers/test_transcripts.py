@@ -206,6 +206,25 @@ def test_keeps_a_phrase_repeated_after_a_pause() -> None:
     )
 
 
+def test_repeat_search_copes_with_an_enormous_cue() -> None:
+    """Test that two huge adjacent cues are handled quickly rather than compared at length."""
+    first = "a" * 200_000
+    second = "b" * 200_000
+    document = f"WEBVTT\n\n00:00.000 --> 00:05.000\n{first}\n\n00:05.000 --> 00:10.000\n{second}\n"
+    assert [cue.text for cue in parse_transcript_cues(document)] == [first, second]
+
+
+def test_trims_the_longest_overlap_when_the_probe_recurs() -> None:
+    """Test that a lead-in whose opening words also appear earlier is trimmed at full length."""
+    document = (
+        "WEBVTT\n\n00:00.000 --> 00:05.000\n"
+        "we said the radius, and then we said the radius of the Earth is big.\n\n"
+        "00:05.000 --> 00:10.000\n"
+        "we said the radius of the Earth is big. Really big.\n"
+    )
+    assert parse_transcript_cues(document)[1].text == "Really big."
+
+
 def test_trimming_never_empties_a_cue() -> None:
     """Test that trimming always leaves text behind."""
     for document in (
