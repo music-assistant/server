@@ -304,6 +304,49 @@ class TestMergedItems:
         assert edited_track.metadata.description == "Edited"
 
 
+class TestMergedItemRetaggedAsAnotherRecording:
+    """A merged beets item retagged as a different recording splits off its own library track."""
+
+    async def test_retagged_item_and_other_item_end_on_separate_tracks(
+        self, library_mass: MusicAssistant, make_provider: MakeProvider, beets_db: BeetsDb
+    ) -> None:
+        """Each beets item ends on its own library track with its own title."""
+        recording = {"mb_trackid": str(uuid4()), "acoustid_id": str(uuid4()), "track": 1}
+        first_album = _add_album(beets_db, "First Album")
+        second_album = _add_album(beets_db, "Second Album")
+        retagged = _add_item(beets_db, first_album, "Song", **recording)
+        other = _add_item(beets_db, second_album, "Song", length=215.9, **recording)
+        provider = await _attach(make_provider, library_mass)
+        await _sync(provider)
+        merged = await _library_track(library_mass, retagged)
+        assert merged is not None
+        assert _mappings(merged) == {
+            (INSTANCE_ID, track_prov_id(retagged)),
+            (INSTANCE_ID, track_prov_id(other)),
+        }
+
+        beets_db.update_item(
+            retagged,
+            title="Totally Different",
+            mb_trackid=str(uuid4()),
+            acoustid_id=str(uuid4()),
+            isrc="TESTRETAG0001",
+        )
+        # the first sync splits the retagged item off, the second re-imports the other item
+        await _sync(provider)
+        await _sync(provider)
+
+        retagged_track = await _library_track(library_mass, retagged)
+        other_track = await _library_track(library_mass, other)
+        assert retagged_track is not None
+        assert other_track is not None
+        assert retagged_track.item_id != other_track.item_id
+        assert retagged_track.name == "Totally Different"
+        assert other_track.name == "Song"
+        assert _mappings(retagged_track) == {(INSTANCE_ID, track_prov_id(retagged))}
+        assert _mappings(other_track) == {(INSTANCE_ID, track_prov_id(other))}
+
+
 class TestMergedItemsChangedTogether:
     """Two merged beets items that change in the same sync both keep their current mapping."""
 

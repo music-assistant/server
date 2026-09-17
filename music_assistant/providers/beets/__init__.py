@@ -362,7 +362,7 @@ class BeetsProvider(MusicProvider):
         """Replace a library track with a changed beets item, keeping other items merged into it."""
         tracks = self.mass.music.tracks
         current = await tracks.get_library_item_by_prov_id(track.item_id, self.instance_id)
-        if current is None or not _other_instance_mappings(current, track):
+        if current is None or not _mappings_to_carry(current, track):
             return await tracks.add_item_to_library(track, overwrite_existing=True)
         # an overwrite replaces every mapping of this instance on the library track, so the
         # other beets items' mappings are passed along; the lock keeps two merged items that
@@ -370,7 +370,7 @@ class BeetsProvider(MusicProvider):
         async with self._merged_track_lock:
             current = await tracks.get_library_item_by_prov_id(track.item_id, self.instance_id)
             if current is not None:
-                track.provider_mappings.update(_other_instance_mappings(current, track))
+                track.provider_mappings.update(_mappings_to_carry(current, track))
             return await tracks.add_item_to_library(track, overwrite_existing=True)
 
     async def _get_previous_checksums(self) -> dict[str, str]:
@@ -455,13 +455,18 @@ class BeetsProvider(MusicProvider):
             await self.mass.music.artists.remove_item_from_library(row["item_id"])
 
 
-def _other_instance_mappings(library_track: Track, track: Track) -> set[ProviderMapping]:
+def _mappings_to_carry(library_track: Track, track: Track) -> set[ProviderMapping]:
     """
-    Return the mappings a library track holds for this instance's other beets items.
+    Return the mappings of this instance's other beets items to keep on an overwrite.
 
-    :param library_track: The library track.
-    :param track: The provider track of one beets item.
+    None are kept when the changed item no longer shares an external id with the library
+    track, since it was retagged as another recording and the other items must split off.
+
+    :param library_track: The library track the changed beets item is mapped to.
+    :param track: The provider track of the changed beets item.
     """
+    if not track.external_ids & library_track.external_ids:
+        return set()
     return {
         mapping
         for mapping in library_track.provider_mappings
