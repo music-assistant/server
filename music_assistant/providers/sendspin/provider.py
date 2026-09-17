@@ -41,6 +41,7 @@ from aiosendspin.noise.trust_store import FileServerPairingStore, PskCategory
 from aiosendspin.server import (
     ClientAddedEvent,
     ClientConnectedEvent,
+    ClientCredentialMismatchEvent,
     ClientDisconnectedEvent,
     ClientRemovedEvent,
     ClientUpdatedEvent,
@@ -502,6 +503,10 @@ class SendspinProvider(PlayerProvider):
             case ClientUpdatedEvent(client_id):
                 event_version = self._begin_client_event(client_id)
                 self.mass.create_task(self._handle_client_updated(client_id, event_version))
+            case ClientCredentialMismatchEvent(client_id):
+                # The device lost its half of the pairing; it plays again once re-paired.
+                self.logger.info("Client %s can no longer use its pairing", client_id)
+                self.mass.create_task(self._refresh_player(client_id))
             # Transport lifecycle events, implemented in another PR.
             case ClientConnectedEvent():
                 pass

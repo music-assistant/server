@@ -1006,17 +1006,24 @@ class SendspinBasePlayer(Player):
         return "no_pair_methods"
 
     async def _pairing_succeeded(
-        self, provider: SendspinProvider, pin_session: PinPairingSession
+        self,
+        provider: SendspinProvider,
+        pin_session: PinPairingSession,
+        previous_record: ServerPairingRecord | None,
     ) -> bool:
-        """Whether the attempt finished cleanly (or a long-term pairing record now exists)."""
+        """
+        Whether the attempt finished cleanly, or a new long-term pairing record now exists.
+
+        :param previous_record: The record held before the flow started, which a client that
+            can no longer use it still leaves in place.
+        """
         if pin_session.finished and pin_session.error is None:
             return True
-        if pin_session.verify:
+        if pin_session.verify or pin_session.can_retry:
             return False
-        # a confirm wait that outlived its deadline: the record is the proof of success
-        return (
-            await provider.server_api.pairing_store.record_by_client_id(self.player_id) is not None
-        )
+        # a confirm wait that outlived its deadline: a new record is the proof of success
+        record = await provider.server_api.pairing_store.record_by_client_id(self.player_id)
+        return record is not None and record != previous_record
 
     async def _run_verify_presence_flow(
         self, session: SetupSession, provider: SendspinProvider, record: ServerPairingRecord
@@ -1053,6 +1060,9 @@ class SendspinBasePlayer(Player):
         """
         succeeded = False
         errors: dict[str, str] | None = None
+        previous_record = await provider.server_api.pairing_store.record_by_client_id(
+            self.player_id
+        )
         try:
             while True:
                 try:
@@ -1064,7 +1074,7 @@ class SendspinBasePlayer(Player):
                 await self._await_pin_request(session, pin_session)
                 if not pin_session.awaiting_pin:
                     # The attempt ended before a PIN could be entered.
-                    if await self._pairing_succeeded(provider, pin_session):
+                    if await self._pairing_succeeded(provider, pin_session, previous_record):
                         succeeded = True
                         return
                     if pin_session.can_retry:
@@ -1104,7 +1114,7 @@ class SendspinBasePlayer(Player):
                     # the device runs another round against the same PIN it shows
                     errors = {"base": "pairing_error_pin_mismatch"}
                     continue
-                if await self._pairing_succeeded(provider, pin_session):
+                if await self._pairing_succeeded(provider, pin_session, previous_record):
                     succeeded = True
                     return
                 if pin_session.can_retry:

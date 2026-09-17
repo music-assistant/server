@@ -505,6 +505,28 @@ async def test_trusted_unpaired_pin_mismatch_still_retries() -> None:
     assert provider.trust_calls == []
 
 
+async def test_mismatch_with_an_unusable_record_still_retries() -> None:
+    """A record the client can no longer use is not mistaken for a successful re-pairing."""
+    api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)])
+    provider = _FakeProvider(api, submit_outcomes=["retry", "success"], record=object())
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider)
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
+    session.handle_submit({CONF_PAIRING_PIN: "000000"})
+
+    error_step = await _wait_step(
+        session, step_type=FlowStepType.FORM, step_id="enter_pin", with_errors=True
+    )
+    assert error_step.errors == {"base": "pairing_error_pin_mismatch"}
+    session.handle_submit({CONF_PAIRING_PIN: "123456"})
+
+    await _wait_for(lambda: session.finished)
+    await task
+    assert provider.submitted_pins == ["000000", "123456"]
+
+
 async def test_consent_step_grants_trust() -> None:
     """Submitting the consent step without opting into pairing allows unpaired playback."""
     api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE)], unpaired_access=True)
