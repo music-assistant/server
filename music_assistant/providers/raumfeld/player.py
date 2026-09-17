@@ -209,9 +209,12 @@ class RaumfeldPlayer(Player):
             # wake any room in (manual) standby first: a manually-standby renderer does not
             # auto-power-on for playback and the host answers "Please turn on a device"
             await self._wake_rooms(zone)
-            # stop first so the renderer cleanly loads the new URI (a seek/next re-streams
-            # a different URL); without this it may keep playing the previous stream
-            await self.raumfeld.host.async_zone_stop(zone)
+            # only stop first when replacing a currently-playing stream (a seek or a user
+            # track switch): re-pointing a playing renderer needs a clean stop. At track
+            # end the renderer is already stopped, so skipping the redundant stop avoids
+            # tearing the transport down and clipping the start of the next track.
+            if self._attr_playback_state == PlaybackState.PLAYING:
+                await self.raumfeld.host.async_zone_stop(zone)
             await self.raumfeld.host.async_set_av_transport_uri(zone, url, didl_metadata)
             await self.raumfeld.host.async_zone_play(zone)
         except HOST_ERRORS as err:
