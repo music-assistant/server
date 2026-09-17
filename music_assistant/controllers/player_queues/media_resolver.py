@@ -808,8 +808,9 @@ class MediaResolver:
         for item in folder_items:
             if not item.is_playable:
                 continue
-            if isinstance(item, Radio) and item.is_dynamic:
-            try:
+            if isinstance(item, Radio) and is_dynamic_source(item):
+                continue
+            try
                 # recursively resolve every child, so a folder of podcast episodes or
                 # radio stations plays just like a folder of tracks
                 items += await self._resolve_media_items(
