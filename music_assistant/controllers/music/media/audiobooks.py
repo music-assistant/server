@@ -372,11 +372,10 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
         """Delete item from the library(database)."""
         db_id = int(item_id)  # ensure integer
+        # remove the item before its relations so failed analysis cleanup leaves it intact
+        await super().remove_item_from_library(item_id)
         # delete entry(s) from album artists table
         await self.mass.music.database.delete(DB_TABLE_AUDIOBOOK_ARTISTS, {"audiobook_id": db_id})
-        # delete the album itself from db
-        # this will raise if the item still has references and recursive is false
-        await super().remove_item_from_library(item_id)
 
     async def _add_library_item(self, item: Audiobook, overwrite_existing: bool = False) -> int:
         """Add a new record to the database."""

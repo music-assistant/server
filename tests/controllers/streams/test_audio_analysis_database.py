@@ -518,9 +518,9 @@ async def _assert_analysis_unavailable(ctrl: AudioAnalysisController) -> None:
     track = Track(item_id="t0", provider="fs--a", name="Test", provider_mappings=set())
     assert await ctrl.get_track_audio_metadata(track) is None
     await ctrl.set_track_loudness("t0", "fs--a", -12.0)
-    await ctrl.delete_audio_analysis("t0", "fs--a")
     assert await ctrl.get_extra_data_for_album_tracks(["t0"], "fs--a", "sonic_analysis") == []
     for operation in (
+        ctrl.delete_audio_analysis("t0", "fs--a"),
         ctrl.get_audio_analysis_count("sonic_analysis"),
         ctrl.get_audio_analysis_version("t0", "fs--a", "sonic_analysis"),
         ctrl.get_coverage("sonic_analysis"),
@@ -566,6 +566,26 @@ async def test_operational_errors_preserve_database(
     monkeypatch.setattr(ctrl, "_attach_and_create", real_attach)
     await ctrl.setup_database()
     assert ctrl._database_ready
+
+
+@pytest.mark.asyncio
+async def test_null_schema_version_disables_analysis_without_blocking_playback(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """Malformed version metadata stays untouched and uses the normal unavailable state."""
+    ctrl = _make_controller(library_db, tmp_path)
+    await ctrl.setup_database()
+    await library_db.insert_or_replace(
+        f"{AA_DB_SCHEMA}.{DB_TABLE_SETTINGS}", {"key": "version", "value": None, "type": "str"}
+    )
+
+    await ctrl.setup_database()
+
+    await _assert_analysis_unavailable(ctrl)
+    version = await library_db.get_row(f"{AA_DB_SCHEMA}.{DB_TABLE_SETTINGS}", {"key": "version"})
+    assert version is not None
+    assert version["value"] is None
+    assert not (tmp_path / f"{AA_DB_FILENAME}.corrupt").exists()
 
 
 @pytest.mark.asyncio

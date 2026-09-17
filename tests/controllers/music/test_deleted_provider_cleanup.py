@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import sqlite3
+from typing import Any
+
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import Artist, ProviderMapping, Track, UniqueList
 
 from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
@@ -217,3 +220,81 @@ async def test_cleanup_waits_for_analysis_database(
     assert (
         mass.config.get_raw_core_config_value(mass.music.domain, CONF_DELETED_PROVIDERS, []) == []
     )
+
+
+@pytest.mark.parametrize("removal", ["item", "single", "all"])
+@pytest.mark.parametrize("failure", ["unavailable", "storage"])
+async def test_failed_analysis_cleanup_preserves_removal_keys(
+    mass: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    removal: str,
+    failure: str,
+) -> None:
+    """An unavailable database or failed cleanup leaves the item and mapping keys retryable."""
+    db_id = await _add_track(mass, "fs-retry", "Retry Removal Track")
+    await _add_analysis_row(mass, "fs-retry")
+    await _add_failure_row(mass, "fs-retry", FS_INSTANCE)
+    if removal != "item":
+        await mass.music.tracks.add_provider_mapping(
+            db_id,
+            ProviderMapping(
+                item_id="sp-retry", provider_domain="spotify", provider_instance="spotify--EfGh"
+            ),
+        )
+    original = await mass.music.tracks.get_library_item(db_id)
+    real_delete = mass.music.database.delete
+
+    async def failing_delete(
+        table: str, match: dict[str, Any] | None = None, query: str | None = None
+    ) -> None:
+        if table == AA_TABLE_FAILURES:
+            raise sqlite3.OperationalError("analysis storage unavailable")
+        await real_delete(table, match, query)
+
+    async def remove() -> None:
+        if removal == "item":
+            await mass.music.tracks.remove_item_from_library(db_id)
+        elif removal == "single":
+            await mass.music.tracks.remove_provider_mapping(db_id, FS_INSTANCE, "fs-retry")
+        else:
+            await mass.music.tracks.remove_provider_mappings(db_id, FS_INSTANCE)
+
+    with monkeypatch.context() as failing:
+        if failure == "unavailable":
+            failing.setattr(mass.streams.audio_analysis, "_database_ready", False)
+        else:
+            failing.setattr(mass.music.database, "delete", failing_delete)
+        expected_error = (
+            ProviderUnavailableError if failure == "unavailable" else sqlite3.OperationalError
+        )
+        with pytest.raises(expected_error, match="unavailable"):
+            await remove()
+        retained = await mass.music.tracks.get_library_item(db_id)
+        assert retained.provider_mappings == original.provider_mappings
+        assert retained.artists == original.artists
+        assert await mass.music.database.get_rows(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": MediaType.TRACK.value,
+                "item_id": db_id,
+                "provider_instance": FS_INSTANCE,
+            },
+        )
+        assert await mass.music.database.get_rows(
+            AA_TABLE_FAILURES, {"item_id": "fs-retry", "provider": FS_INSTANCE}
+        )
+
+    await remove()
+
+    assert not await mass.music.database.get_rows(
+        DB_TABLE_PROVIDER_MAPPINGS,
+        {
+            "media_type": MediaType.TRACK.value,
+            "item_id": db_id,
+            "provider_instance": FS_INSTANCE,
+        },
+    )
+    for table in (AA_TABLE_ANALYSIS, AA_TABLE_FAILURES):
+        assert not await mass.music.database.get_rows(
+            table, {"item_id": "fs-retry", "provider": FS_INSTANCE}
+        )
