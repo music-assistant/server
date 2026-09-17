@@ -19,7 +19,7 @@ from music_assistant.controllers.streams.constants import (
     STREAMDETAILS_INBAND_TITLE_KEY,
 )
 
-from .constants import DATA_STATION_IMAGE, REPORT_STATUS_START, STREAM_METADATA_UPDATE_INTERVAL
+from .constants import DATA_STATION_IMAGE, STREAM_METADATA_UPDATE_INTERVAL
 from .parsers import (
     parse_now_playing,
     pick_stream_url,
@@ -166,7 +166,7 @@ class IHeartRadioStreamingManager:
             raise MediaNotFoundError(f"Track {item_id} expired while playback was stopped")
         content = item.get("content") or {}
         duration = int(content.get("duration") or 0)
-        streamdetails = StreamDetails(
+        return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
             audio_format=AudioFormat(content_type=ContentType.AAC),
@@ -178,11 +178,6 @@ class IHeartRadioStreamingManager:
             can_seek=duration > 0,
             expiration=batch.seconds_left(now),
         )
-        if batch.mark_started(item_id):
-            self.provider.mass.create_task(
-                self.provider.stations.report_play(item_id, REPORT_STATUS_START, 0)
-            )
-        return streamdetails
 
     def _station_metadata(
         self, streamdetails: StreamDetails, now_playing: Mapping[str, Any] | None

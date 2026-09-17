@@ -10,19 +10,15 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import SearchResults
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER, CONF_USERNAME
-from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.models.music_provider import MusicProvider
 
-from .api import IHeartRadioApiClient, json_items, query_flag
+from .api import IHeartRadioApiClient, json_items
 from .auth import IHeartRadioAuthManager
 from .browse import IHeartRadioBrowseManager
 from .constants import (
-    CACHE_CATEGORY_SEARCH,
-    CACHE_TTL_SEARCH,
     CONF_COUNTRY,
     DEFAULT_COUNTRY,
-    PATH_SEARCH,
     REPORT_STATUS_DONE,
     REPORT_STATUS_SKIP,
 )
@@ -291,7 +287,6 @@ class IHeartRadioProvider(MusicProvider):
             raise MediaNotFoundError(f"Episode {episode_id} not found")
         return mass_episode
 
-    @use_cache(CACHE_TTL_SEARCH, category=CACHE_CATEGORY_SEARCH)
     async def search(
         self,
         search_query: str,
@@ -310,22 +305,7 @@ class IHeartRadioProvider(MusicProvider):
         want_podcasts = MediaType.PODCAST in media_types
         if not (want_radio or want_podcasts) or not (keywords := search_query.strip()):
             return SearchResults()
-        payload = await self.api.get_json(
-            PATH_SEARCH,
-            {
-                "keywords": keywords,
-                "maxRows": limit,
-                "bundle": "false",
-                "station": query_flag(want_radio),
-                "podcast": query_flag(want_podcasts),
-                # an artist hit is offered as its artist radio
-                "artist": query_flag(want_radio),
-                "track": query_flag(False),
-                "album": query_flag(False),
-                "playlist": query_flag(False),
-            },
-        )
-        results = payload.get("results") or {} if isinstance(payload, dict) else {}
+        results = await self.api.search(keywords, want_radio, want_podcasts, limit)
         radio: list[Radio] = []
         podcasts: list[Podcast] = []
         if want_radio:
@@ -379,7 +359,7 @@ class IHeartRadioProvider(MusicProvider):
         is_playing: bool = False,
     ) -> None:
         """
-        Report a finished or skipped artist radio track to iHeartRadio.
+        Report a started, finished or skipped artist radio track to iHeartRadio.
 
         :param media_type: The media type of the played item.
         :param prov_item_id: The provider item id.
@@ -388,7 +368,12 @@ class IHeartRadioProvider(MusicProvider):
         :param media_item: The played item.
         :param is_playing: Whether the item is still playing.
         """
-        if media_type != MediaType.TRACK or is_playing:
+        if media_type != MediaType.TRACK:
+            return
+        if is_playing:
+            # the queue resolves stream details ahead of playback to preload the next
+            # track, so the start is only reported once the track is actually heard
+            await self.stations.report_start(prov_item_id)
             return
         if not fully_played and position == 0:
             # the user marked the item as unplayed; nothing was heard
