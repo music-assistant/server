@@ -23,6 +23,7 @@ from music_assistant.providers.beets.setup_flow import run_setup
 from tests.providers.beets.beets_db import (
     ARTIST_MBID,
     GUEST_MBID,
+    MULTI_VALUE_DELIMITER,
     BeetsDb,
     album_fields,
     item_fields,
@@ -127,6 +128,31 @@ async def test_get_artist_finds_featured_artist(
     beets_db.add_item(**item_fields())
     provider = await make_provider()
     assert (await provider.get_artist("Guest")).mbid == GUEST_MBID
+
+
+async def test_get_artist_finds_featured_artist_after_many_substring_matches(
+    make_provider: MakeProvider, beets_db: BeetsDb
+) -> None:
+    """A featured artist whose name is a substring of many earlier rows still resolves."""
+    for index in range(25):
+        beets_db.add_item(
+            **item_fields(
+                title=f"Decoy {index}",
+                artist="Moby",
+                artist_sort="Moby",
+                artists=f"Moby{MULTI_VALUE_DELIMITER}Lemon Demon",
+                artists_sort=f"Moby{MULTI_VALUE_DELIMITER}Lemon Demon",
+            )
+        )
+    beets_db.add_item(
+        **item_fields(
+            artist="Artist feat. Mo",
+            artists=f"Artist{MULTI_VALUE_DELIMITER}Mo",
+            artists_sort=f"Artist{MULTI_VALUE_DELIMITER}Mo",
+        )
+    )
+    provider = await make_provider()
+    assert (await provider.get_artist("Mo")).mbid == GUEST_MBID
 
 
 @pytest.mark.parametrize(

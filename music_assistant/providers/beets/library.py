@@ -27,8 +27,6 @@ _LIST_ARTIST_LOOKUPS = (
     ("albums", "albumartists", "albumartists_sort", "mb_albumartistids"),
     ("items", "artists", "artists_sort", "mb_artistids"),
 )
-# a small prefilter cap: the exact match below still runs over every candidate row
-_ARTIST_LIST_LOOKUP_LIMIT = 20
 _LIKE_ESCAPE_CHAR = "\\"
 
 
@@ -211,18 +209,22 @@ class BeetsLibrary:
                 continue
             sort_expr = sort_column if sort_column in columns else "NULL"
             mbid_expr = mbid_column if mbid_column in columns else "NULL"
-            rows = await self._fetch_all(
-                f"SELECT {list_column} AS names, {sort_expr} AS sort_names, "
+            # LIKE only prefilters substrings, so page through every candidate in id order
+            # until one holds the name as an exact list element
+            last_id = 0
+            while rows := await self._fetch_all(
+                f"SELECT id, {list_column} AS names, {sort_expr} AS sort_names, "
                 f"{mbid_expr} AS mbids FROM {table} WHERE {list_column} LIKE ? "
-                f"ESCAPE '{_LIKE_ESCAPE_CHAR}' LIMIT ?",
-                (_like_pattern(name), _ARTIST_LIST_LOOKUP_LIMIT),
-            )
-            for row in rows:
-                if (index := _index_of(split_multi_value(row["names"]), name)) is None:
-                    continue
-                sort_name = value_at(split_multi_value(row["sort_names"]), index)
-                mbid = value_at(split_multi_value(row["mbids"]), index)
-                return (sort_name, mbid)
+                f"ESCAPE '{_LIKE_ESCAPE_CHAR}' AND id > ? ORDER BY id LIMIT ?",
+                (_like_pattern(name), last_id, ITEM_BATCH_SIZE),
+            ):
+                for row in rows:
+                    if (index := _index_of(split_multi_value(row["names"]), name)) is None:
+                        continue
+                    sort_name = value_at(split_multi_value(row["sort_names"]), index)
+                    mbid = value_at(split_multi_value(row["mbids"]), index)
+                    return (sort_name, mbid)
+                last_id = int(rows[-1]["id"])
         return None
 
     def _require_open(self) -> aiosqlite.Connection:

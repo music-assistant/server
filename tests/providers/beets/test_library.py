@@ -12,6 +12,7 @@ from music_assistant.providers.beets.library import BeetsLibrary, BeetsLibraryEr
 from tests.providers.beets.beets_db import (
     ARTIST_MBID,
     GUEST_MBID,
+    MULTI_VALUE_DELIMITER,
     BeetsDb,
     album_fields,
     item_fields,
@@ -135,6 +136,76 @@ async def test_get_artist_details_requires_an_exact_element_match(beets_db: Beet
         assert await library.get_artist_details("Gu_st") is None
         assert await library.get_artist_details("%") is None
         assert await library.get_artist_details("_") is None
+    finally:
+        await library.close()
+
+
+def _add_substring_decoys(beets_db: BeetsDb, count: int) -> None:
+    """
+    Add items whose artists lists contain "Mo" only as a substring of other names.
+
+    :param beets_db: The beets test database.
+    :param count: How many decoy items to add.
+    """
+    for index in range(count):
+        beets_db.add_item(
+            **item_fields(
+                title=f"Decoy {index}",
+                artist="Moby feat. Lemon Demon",
+                artist_sort="Moby feat. Lemon Demon",
+                artists=f"Moby{MULTI_VALUE_DELIMITER}Lemon Demon",
+                artists_sort=f"Moby{MULTI_VALUE_DELIMITER}Lemon Demon",
+                mb_artistids=f"{ARTIST_MBID}{MULTI_VALUE_DELIMITER}{ARTIST_MBID}",
+            )
+        )
+
+
+def _add_featuring_mo(beets_db: BeetsDb, mbid: str, sort_name: str) -> int:
+    """
+    Add an item that features exactly "Mo" in its artists list.
+
+    :param beets_db: The beets test database.
+    :param mbid: The MusicBrainz id given to "Mo".
+    :param sort_name: The sort name given to "Mo".
+    """
+    return beets_db.add_item(
+        **item_fields(
+            title="Featuring Mo",
+            artist="Headliner feat. Mo",
+            artist_sort="Headliner feat. Mo",
+            artists=f"Headliner{MULTI_VALUE_DELIMITER}Mo",
+            artists_sort=f"Headliner{MULTI_VALUE_DELIMITER}{sort_name}",
+            mb_artistids=f"{ARTIST_MBID}{MULTI_VALUE_DELIMITER}{mbid}",
+        )
+    )
+
+
+async def test_get_artist_details_finds_featured_artist_after_many_substring_matches(
+    beets_db: BeetsDb,
+) -> None:
+    """A featured artist whose name is a substring of many earlier rows is still found."""
+    _add_substring_decoys(beets_db, 25)
+    _add_featuring_mo(beets_db, GUEST_MBID, "Mo, The")
+    library = BeetsLibrary(str(beets_db.path))
+    await library.open()
+    try:
+        assert await library.get_artist_details("Mo") == ("Mo, The", GUEST_MBID)
+    finally:
+        await library.close()
+
+
+async def test_get_artist_details_pages_through_candidates_and_picks_the_first_by_id(
+    beets_db: BeetsDb,
+) -> None:
+    """Candidates spanning several pages are all checked, and the lowest-id match wins."""
+    _add_substring_decoys(beets_db, 25)
+    _add_featuring_mo(beets_db, GUEST_MBID, "Mo, The")
+    _add_featuring_mo(beets_db, ARTIST_MBID, "Mo, Other")
+    library = BeetsLibrary(str(beets_db.path))
+    await library.open()
+    try:
+        with patch("music_assistant.providers.beets.library.ITEM_BATCH_SIZE", 10):
+            assert await library.get_artist_details("Mo") == ("Mo, The", GUEST_MBID)
     finally:
         await library.close()
 
