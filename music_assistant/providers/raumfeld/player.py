@@ -377,16 +377,12 @@ class RaumfeldPlayer(Player):
         self._attr_elapsed_time_last_updated = time.time()
 
     async def _wake_rooms(self, zone: list[str]) -> None:
-        """
-        Bring the zone's rooms out of standby and wait until they report awake.
-
-        Rooms in MANUAL_STANDBY do not auto-power-on for playback (unlike
-        AUTOMATIC_STANDBY). A renderer that just left standby also drops the first play
-        command while it powers on, so wait for it to report awake before playing.
-        """
+        """Bring the zone's rooms out of standby and wait until they report awake."""
         host = self.raumfeld.host
         woke = False
         for room in zone:
+            # rooms in MANUAL_STANDBY do not auto-power-on for playback (unlike
+            # AUTOMATIC_STANDBY); leaving standby is a no-op for an already-awake room
             try:
                 if "STANDBY" in (host.get_room_power_state(room) or ""):
                     await host.async_leave_standby(room)
@@ -395,7 +391,8 @@ class RaumfeldPlayer(Player):
                 self.logger.debug("Failed to wake room %s: %r", room, err)
         if not woke:
             return
-        # wait (bounded) for the woken rooms to actually leave standby before playing
+        # a renderer that just left standby drops the first play command while it powers
+        # on, so wait (bounded) for the woken rooms to report awake before playing
         deadline = time.time() + WAKE_TIMEOUT
         while time.time() < deadline:
             try:
@@ -420,20 +417,14 @@ class RaumfeldPlayer(Player):
         return None
 
     async def _ensure_playable_zone(self) -> list[str]:
-        """
-        Return a Raumfeld zone for this room the host can address, creating one if needed.
-
-        A room that is idle/standby (e.g. just left a group) is not part of any active
-        zone, so the host cannot resolve it to a renderer. Create a single-room zone for
-        it first so playback/grouping commands have a target.
-        """
+        """Return an addressable Raumfeld zone for this room, creating one if needed."""
         if (zone := self._active_zone()) is not None:
             return zone
         host = self.raumfeld.host
-        # During a group leadership handover the room is still detaching from its old
-        # zone while we already need it playable, and hassfeld's create-and-wait gives up
-        # silently on a timeout. So (re)create the single-room zone and confirm the host
-        # can actually resolve it before returning, retrying while the state settles.
+        # a room that is idle/standby (e.g. just left a group) is in no active zone, so
+        # create a single-room zone. During a group handover the room is still detaching
+        # and hassfeld's create-and-wait gives up silently on timeout, so confirm the host
+        # can resolve the new zone before returning and retry while the state settles.
         for attempt in range(ZONE_CREATE_ATTEMPTS):
             await host.async_create_zone([self.room])
             if (zone := self._active_zone()) is not None:
@@ -446,14 +437,11 @@ class RaumfeldPlayer(Player):
         return [self.room]
 
     async def _add_rooms_to_zone(self, rooms: list[str]) -> None:
-        """
-        Add the given rooms to this leader's zone, waiting until they actually joined.
-
-        hassfeld's add-room call does not wait, so during rapid regrouping (a room moving
-        straight from one group to another) it can race and leave the room unassigned.
-        Verify the room really landed in the zone and retry while the state settles.
-        """
+        """Add the given rooms to this leader's zone, waiting until they have joined."""
         host = self.raumfeld.host
+        # hassfeld's add-room call does not wait, so during rapid regrouping (a room moving
+        # straight from one group to another) it can race and leave the room unassigned;
+        # verify the room really landed in the zone and retry while the state settles
         for attempt in range(ZONE_CREATE_ATTEMPTS):
             zone = await self._ensure_playable_zone()
             missing = [room for room in rooms if room not in zone]

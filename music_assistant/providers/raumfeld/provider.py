@@ -79,10 +79,7 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
     def get_zone_for_room(self, room: str) -> list[str] | None:
         """
-        Return the current Raumfeld zone (sorted room list) that ``room`` is part of.
-
-        ``get_zones`` returns a list of sorted room-lists, one per active zone. A room
-        that is not part of any active zone (idle/standby) returns ``None``.
+        Return the sorted room list of the zone ``room`` belongs to, or ``None`` if idle.
 
         :param room: The Raumfeld room name to look up.
         """
