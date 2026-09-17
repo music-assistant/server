@@ -90,3 +90,42 @@ async def test_remove_item_from_library_deletes_analysis(mass: MusicAssistant) -
     await mass.music.remove_item_from_library(MediaType.TRACK, str(db_id))
 
     assert not await mass.music.database.get_rows(AA_TABLE_ANALYSIS, {"item_id": "fs-removed"})
+
+
+@pytest.mark.parametrize("queued", [False, True])
+async def test_cleanup_waits_for_analysis_database(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, queued: bool
+) -> None:
+    """Startup and runtime removal preserve the existing retry queue and provider mappings."""
+    db_id = await _add_track(mass, "fs-deferred", "Deferred Removal Track")
+    await _add_analysis_row(mass, "fs-deferred")
+    monkeypatch.setattr(mass.streams.audio_analysis, "_database_ready", False)
+    if queued:
+        mass.config.set_raw_core_config_value(
+            mass.music.domain, CONF_DELETED_PROVIDERS, [FS_INSTANCE]
+        )
+        await mass.music.post_setup()
+    else:
+        await mass.music.cleanup_provider(FS_INSTANCE)
+
+    assert await mass.music.tracks.get_library_item(db_id)
+    assert await mass.music.database.get_rows(
+        DB_TABLE_PROVIDER_MAPPINGS, {"provider_instance": FS_INSTANCE}
+    )
+    assert await mass.music.database.get_rows(AA_TABLE_ANALYSIS, {"item_id": "fs-deferred"})
+    assert mass.config.get_raw_core_config_value(mass.music.domain, CONF_DELETED_PROVIDERS, []) == [
+        FS_INSTANCE
+    ]
+
+    await mass.streams.audio_analysis.setup_database()
+    await mass.music.post_setup()
+
+    with pytest.raises(MediaNotFoundError):
+        await mass.music.tracks.get_library_item(db_id)
+    assert not await mass.music.database.get_rows(
+        DB_TABLE_PROVIDER_MAPPINGS, {"provider_instance": FS_INSTANCE}
+    )
+    assert not await mass.music.database.get_rows(AA_TABLE_ANALYSIS, {"item_id": "fs-deferred"})
+    assert (
+        mass.config.get_raw_core_config_value(mass.music.domain, CONF_DELETED_PROVIDERS, []) == []
+    )

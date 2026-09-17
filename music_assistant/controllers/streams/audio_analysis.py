@@ -422,6 +422,11 @@ class AudioAnalysisController:
         self._inference_runtime_configured = True
 
     @property
+    def database_ready(self) -> bool:
+        """Return whether the analysis database and its migrations are ready."""
+        return self._database_ready
+
+    @property
     def providers(self) -> list[AudioAnalysisProvider]:
         """Return all available audio analysis providers."""
         if not self._database_ready:
@@ -1203,7 +1208,7 @@ class AudioAnalysisController:
 
         :param table: Name of the legacy table in library.db (main schema) to relocate.
         :param columns: Column names (excluding id) shared by main.<table> and aa.<table>.
-        :returns: Number of rows copied (0 if absent), or None when relocation failed.
+        :returns: Number of rows in the dropped source (0 if absent), or None on failure.
         """
         db = self.mass.music.database
         exists = await db.get_rows_from_query(
@@ -1269,7 +1274,7 @@ class AudioAnalysisController:
             )
             return None
         self.logger.info("Moved %s of %s rows of %s into %s", copied, total, table, AA_DB_FILENAME)
-        return copied
+        return total
 
     async def _run_background_scan(self) -> None:
         """Run the scan as decode-once-fan-out streaming over candidate tracks."""
