@@ -909,6 +909,19 @@ def _aa_row(domain: str, row_id: int, **fields: Any) -> dict[str, Any]:
     }
 
 
+@pytest.mark.parametrize("header", ['"bad"', "null", "42", "false", "[]"])
+def test_merged_from_rows_skips_non_object_headers(header: str) -> None:
+    """A malformed packed header must not prevent reading other providers' valid analysis."""
+    invalid = _aa_row(SONIC_ANALYSIS_DOMAIN, 1, bpm=60)
+    invalid["header"] = header
+    valid = _aa_row(SMART_FADES_ANALYSIS_DOMAIN, 2, bpm=120)
+
+    merged = _merged_from_rows([invalid, valid], _ALL_AA_DOMAINS)
+
+    assert merged is not None
+    assert merged.bpm == 120
+
+
 def test_merged_from_rows_priority_none_is_last_write_wins() -> None:
     """Without priority, the newest (last) row wins each non-None field (legacy behaviour)."""
     rows = [

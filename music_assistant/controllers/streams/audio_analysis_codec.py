@@ -74,12 +74,15 @@ def decode(header: str | bytes, payload: bytes) -> AudioAnalysisData:
 
     :param header: JSON header as written by :func:`encode`.
     :param payload: Binary payload as written by :func:`encode`.
+    :raises TypeError: When the decoded header is not an object.
     :raises ValueError: When an array slice in the header is truncated in the payload.
     """
     # numpy is imported here to keep it off the server startup path
     import numpy as np  # noqa: PLC0415
 
     doc = json_loads(header)
+    if not isinstance(doc, dict):
+        raise TypeError("packed audio analysis header must be an object")
     view = memoryview(payload)
     for name, tag, offset, nbytes in doc.pop("arrays", []):
         if name not in _ARRAY_FIELD_SET:
