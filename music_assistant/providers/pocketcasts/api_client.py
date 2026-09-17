@@ -125,7 +125,7 @@ class PocketCastsClient:
                 details["description"] = description
             if image := episode.get("image"):
                 details["image"] = image
-            if transcripts := episode.get("transcripts") or episode.get("pocket_casts_transcripts"):
+            if transcripts := episode.get("transcripts"):
                 details["transcripts"] = transcripts
             if details:
                 show_notes[uuid] = details
