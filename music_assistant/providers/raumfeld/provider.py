@@ -23,20 +23,18 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import urlparse
 
 import hassfeld
-from music_assistant_models.enums import IdentifierType
 
-from music_assistant.constants import ATTR_ENABLED, CONF_IP_ADDRESS, CONF_PORT
+from music_assistant.constants import CONF_IP_ADDRESS, CONF_PORT
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
     DEFAULT_PORT,
-    DLNA_DOMAIN,
     HOST_ERRORS,
     INITIAL_UPDATE_TIMEOUT,
     LINE_IN_OBJECT_ID,
     RECONNECT_INTERVAL,
 )
-from .helpers import parse_line_in, room_to_player_id
+from .helpers import parse_line_in, room_udn_to_player_id
 from .player import RaumfeldPlayer
 
 if TYPE_CHECKING:
@@ -121,9 +119,15 @@ class RaumfeldPlayerProvider(PlayerProvider):
             try:
                 if not self._connected:
                     await self._try_connect()
-                elif not await self.host.async_host_is_valid():
-                    # stop the update loop so hassfeld's long-polling cannot flood the log
-                    await self._disconnect("host became unreachable")
+                elif (
+                    self._update_task is None
+                    or self._update_task.done()
+                    or not await self.host.async_host_is_valid()
+                ):
+                    # the host is gone, or hassfeld's update loop exited (it swallows a
+                    # disconnect and returns, freezing state) - drop so the next cycle
+                    # reconnects and recreates the update task
+                    await self._disconnect("host connection lost")
                 else:
                     # host still healthy: re-sync so a room that (re)appeared or vanished
                     # (e.g. a speaker returning from deep standby) is registered / marked
@@ -185,9 +189,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 player.set_available(False)
 
     async def _resync(self) -> None:
-        """Periodic re-sync: register (re)appeared rooms and suppress shadow renderers."""
+        """Periodic re-sync: register rooms that (re)appeared and mark vanished ones gone."""
         await self._sync_rooms()
-        await self._suppress_host_shadow_renderers()
 
     async def _load_line_in(self) -> None:
         """Fetch the host's Line-In inputs, keyed by renderer UUID."""
@@ -200,45 +203,13 @@ class RaumfeldPlayerProvider(PlayerProvider):
             return
         self._line_in = parse_line_in(didl)
 
-    async def _suppress_host_shadow_renderers(self) -> None:
-        """Disable DLNA players that merely shadow this host's own virtual renderers."""
-        host_ip = self._host_address
-        if not host_ip:
-            return
-        # The physical room renderers are real speakers we keep. Everything else the host
-        # exposes on its own IP is a virtual room/zone renderer that duplicates a native
-        # player; the host reassigns those UUIDs over time, so match on the stable trait
-        # (a DLNA renderer on the host IP that is not a physical room renderer) instead.
-        physical = {
-            uuid.lower()
-            for room in self.host.get_rooms()
-            if (uuid := self.resolve_room_renderer(room)[0])
-        }
-        for player in self.mass.players.iter_players(
-            return_disabled=False, return_protocol_players=True
-        ):
-            if player.provider.domain != DLNA_DOMAIN:
-                continue
-            identifiers = player.device_info.identifiers
-            uuid = (identifiers.get(IdentifierType.UUID) or "").lower()
-            if (
-                identifiers.get(IdentifierType.IP_ADDRESS) == host_ip
-                and uuid
-                and uuid not in physical
-            ):
-                self.logger.info(
-                    "Disabling redundant Raumfeld host DLNA renderer '%s' (%s)",
-                    player.display_name,
-                    player.player_id,
-                )
-                await self.mass.config.save_player_config(player.player_id, {ATTR_ENABLED: False})
-
     async def _sync_rooms(self) -> None:
         """Register (or re-activate) a Music Assistant player for every Raumfeld room."""
         # ``get_rooms`` returns the list of room names currently known to the host.
         rooms = self.host.get_rooms()
         for room in rooms:
-            player_id = room_to_player_id(room)
+            if (player_id := self._room_player_id(room)) is None:
+                continue
             if (existing := self.mass.players.get_player(player_id)) is not None:
                 # already registered (e.g. after a reconnect) - just mark it available
                 if isinstance(existing, RaumfeldPlayer):
@@ -256,25 +227,36 @@ class RaumfeldPlayerProvider(PlayerProvider):
 
     def _sync_groups(self) -> None:
         """Mirror the current Raumfeld zones into the players' sync-group state."""
-        grouped: set[str] = set()
+        leaders: set[str] = set()
         for zone_rooms in self.host.get_zones():
             # order the rooms with the zone coordinator first so the group leader matches
             # the room the group was originally created from (get_zones sorts the rooms)
             member_ids = [
                 pid
                 for room in self._zone_rooms_leader_first(zone_rooms)
-                if self.mass.players.get_player(pid := room_to_player_id(room)) is not None
+                if (pid := self._room_player_id(room))
+                and self.mass.players.get_player(pid) is not None
             ]
             if len(member_ids) < 2:
                 continue
             leader = self.mass.players.get_player(member_ids[0])
             if isinstance(leader, RaumfeldPlayer):
                 leader.set_group_members(member_ids)
-            grouped.update(member_ids)
-        # any player no longer part of a multi-room zone must be marked solo
+                leaders.add(member_ids[0])
+        # only a current leader may carry a member list; clearing every other player (both
+        # solo rooms and followers) avoids a former leader that became a follower keeping a
+        # stale list and forming a circular group with the new leader
         for player in self.players:
-            if isinstance(player, RaumfeldPlayer) and player.player_id not in grouped:
+            if isinstance(player, RaumfeldPlayer) and player.player_id not in leaders:
                 player.set_group_members([])
+
+    def _room_player_id(self, room: str) -> str | None:
+        """Return the stable player_id for a room (from its immutable UDN), or ``None``."""
+        try:
+            room_udn = self.host.resolve["room_to_udn"].get(room)
+        except KeyError, AttributeError:
+            return None
+        return room_udn_to_player_id(room_udn) if room_udn else None
 
     def _zone_rooms_leader_first(self, zone_rooms: list[str]) -> list[str]:
         """Return the zone's rooms ordered with the coordinator (leader) first."""

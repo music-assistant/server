@@ -188,7 +188,8 @@ class RaumfeldPlayer(Player):
                     for room in zone:
                         await self.raumfeld.host.async_enter_manual_standby(room)
             except HOST_ERRORS as err:
-                self.logger.debug("Failed to stop %s: %r", self.room, err)
+                # do not report IDLE while the renderer may still be playing
+                raise PlayerCommandFailed(f"Failed to stop {self.room}: {err!r}") from err
         self._attr_active_source = None
         self._attr_playback_state = PlaybackState.IDLE
         self.update_state()

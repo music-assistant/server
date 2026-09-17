@@ -48,6 +48,9 @@ async def run_setup(session: SetupSession) -> None:
         setup_data.update(submitted)
         host = str(setup_data.get(CONF_IP_ADDRESS) or "").strip()
         port = int(setup_data.get(CONF_PORT) or DEFAULT_PORT)
+        # persist the normalized values so finish() stores exactly what we validated
+        setup_data[CONF_IP_ADDRESS] = host
+        setup_data[CONF_PORT] = port
         if not await _host_reachable(session, host, port):
             errors = {CONF_IP_ADDRESS: f"No Raumfeld host found at {host}:{port}"}
             continue

@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import re
 from urllib.parse import unquote
 
 import defusedxml.ElementTree as DefusedET
 
-from .constants import PLAYER_ID_PREFIX
+from music_assistant.helpers.util import try_parse_duration
 
-_slug_re = re.compile(r"[^a-z0-9]+")
+from .constants import PLAYER_ID_PREFIX
 
 # DIDL-Lite / metadata XML namespaces used in UPnP TrackMetaData.
 _DC = "{http://purl.org/dc/elements/1.1/}"
@@ -17,16 +16,13 @@ _UPNP = "{urn:schemas-upnp-org:metadata-1-0/upnp/}"
 _DIDL = "{urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/}"
 
 
-def room_to_player_id(room: str) -> str:
+def room_udn_to_player_id(room_udn: str) -> str:
     """
-    Derive a stable Music Assistant player_id from a Raumfeld room name.
+    Derive a stable Music Assistant player_id from a Raumfeld room UDN.
 
-    :param room: The Raumfeld room name.
+    :param room_udn: The immutable room UDN (e.g. ``uuid:1234...``).
     """
-    # hassfeld is keyed by room name (kept on the player for commands); only the
-    # player_id is slugified, so renaming a room in the app creates a new player
-    slug = _slug_re.sub("_", room.strip().lower()).strip("_")
-    return f"{PLAYER_ID_PREFIX}_{slug}"
+    return f"{PLAYER_ID_PREFIX}_{room_udn.removeprefix('uuid:')}"
 
 
 def parse_didl_metadata(didl_xml: str | None) -> dict[str, str | None]:
@@ -73,15 +69,11 @@ def parse_duration(value: str | None) -> int | None:
     """
     if not value or value.strip().upper() in ("", "NOT_IMPLEMENTED"):
         return None
-    parts = value.split(":")
+    # tolerant wrapper around the shared parser (which raises on non-numeric input)
     try:
-        nums = [float(p) for p in parts]
-    except ValueError:
+        return int(try_parse_duration(value.strip()))
+    except ValueError, TypeError:
         return None
-    seconds = 0.0
-    for num in nums:
-        seconds = seconds * 60 + num
-    return int(seconds)
 
 
 def parse_line_in(didl_xml: str | None) -> dict[str, tuple[str, str]]:

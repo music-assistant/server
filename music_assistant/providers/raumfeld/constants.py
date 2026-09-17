@@ -31,11 +31,6 @@ RECONNECT_INTERVAL = 30
 # Player id prefix so ids are namespaced and stable-ish per room.
 PLAYER_ID_PREFIX = "raumfeld"
 
-# Domain of MA's built-in DLNA player provider. The Raumfeld host exposes a UPnP
-# MediaRenderer per room and per (dynamic) zone on its own IP; the DLNA provider
-# discovers those as duplicate players, which we suppress (see the provider).
-DLNA_DOMAIN = "dlna"
-
 # Media-server container listing each device's analog Line-In input, and the MA
 # source id used to expose a room's Line-In via PlayerFeature.SELECT_SOURCE.
 LINE_IN_OBJECT_ID = "0/Line In"
