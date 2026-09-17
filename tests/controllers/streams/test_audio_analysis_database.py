@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import ProviderUnavailableError
+from music_assistant_models.media_items import Track
 
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
 from music_assistant.constants import (
@@ -26,6 +28,8 @@ from music_assistant.controllers.streams.audio_analysis import (
     AudioAnalysisController,
 )
 from music_assistant.helpers.database import DatabaseConnection
+from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -415,3 +419,125 @@ async def test_relocation_survives_live_writes_after_failed_attempt(
     moved = await library_db.get_rows(AA_TABLE_ANALYSIS, limit=0)
     assert {r["item_id"] for r in moved} == {"t0", "t1", "t2", "live1"}
     assert DB_TABLE_AUDIO_ANALYSIS not in await _table_names(library_db, "main")
+
+
+async def _assert_analysis_unavailable(ctrl: AudioAnalysisController) -> None:
+    """Playback degrades without touching the database, while management reports failure."""
+    provider = MagicMock(spec=AudioAnalysisProvider)
+    provider.available = True
+    provider.start_analysis = AsyncMock()
+    ctrl.mass.get_providers = MagicMock(return_value=[provider])  # type: ignore[method-assign]
+    assert not ctrl._database_ready
+    await ctrl.start_analysis(MagicMock(), MagicMock())
+    await ctrl._run_background_scan()
+    provider.start_analysis.assert_not_awaited()
+    assert await ctrl.get_audio_analysis("t0", "fs--a") is None
+    assert await ctrl.get_wave_form("t0", "fs--a") is None
+    track = Track(item_id="t0", provider="fs--a", name="Test", provider_mappings=set())
+    assert await ctrl.get_track_audio_metadata(track) is None
+    await ctrl.set_track_loudness("t0", "fs--a", -12.0)
+    await ctrl.delete_audio_analysis("t0", "fs--a")
+    assert await ctrl.get_extra_data_for_album_tracks(["t0"], "fs--a", "sonic_analysis") == []
+    for operation in (
+        ctrl.get_audio_analysis_count("sonic_analysis"),
+        ctrl.get_audio_analysis_version("t0", "fs--a", "sonic_analysis"),
+        ctrl.get_coverage("sonic_analysis"),
+        ctrl.get_failures(),
+        ctrl.clear_failures(provider="fs--a"),
+        ctrl.set_audio_analysis("t0", "fs--a", "sonic_analysis", AudioAnalysisData()),
+        ctrl.record_analysis_failure("t0", "fs--a", "sonic_analysis", "failure"),
+        ctrl.clear_analysis_failure("t0", "fs--a", "sonic_analysis"),
+    ):
+        with pytest.raises(ProviderUnavailableError, match="unavailable"):
+            await operation
+    with pytest.raises(ProviderUnavailableError, match="unavailable"):
+        await anext(ctrl.iter_audio_analysis_rows("sonic_analysis"))
+    with pytest.raises(ProviderUnavailableError, match="unavailable"):
+        await anext(ctrl.iter_merged_audio_analysis_rows("sonic_analysis"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error_code",
+    [sqlite3.SQLITE_FULL, sqlite3.SQLITE_READONLY, sqlite3.SQLITE_BUSY, sqlite3.SQLITE_IOERR],
+)
+async def test_operational_errors_preserve_database(
+    library_db: DatabaseConnection,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_code: int,
+) -> None:
+    """A readable but unavailable database must never be quarantined or block playback."""
+    ctrl = _make_controller(library_db, tmp_path)
+    await ctrl.setup_database()
+    real_attach = ctrl._attach_and_create
+    err = sqlite3.OperationalError("storage unavailable")
+    err.sqlite_errorcode = error_code
+    monkeypatch.setattr(ctrl, "_attach_and_create", AsyncMock(side_effect=err))
+    quarantine = AsyncMock()
+    monkeypatch.setattr(ctrl, "_quarantine_database", quarantine)
+    await ctrl.setup_database()
+    quarantine.assert_not_awaited()
+    assert (tmp_path / AA_DB_FILENAME).exists()
+    assert not (tmp_path / f"{AA_DB_FILENAME}.corrupt").exists()
+    await _assert_analysis_unavailable(ctrl)
+    monkeypatch.setattr(ctrl, "_attach_and_create", real_attach)
+    await ctrl.setup_database()
+    assert ctrl._database_ready
+
+
+@pytest.mark.asyncio
+async def test_newer_schema_preserves_version_and_packed_rows(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """A downgrade leaves newer analysis rows and their schema version untouched."""
+    with sqlite3.connect(tmp_path / AA_DB_FILENAME) as db:
+        db.execute("CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT, type TEXT)")
+        db.execute(
+            "INSERT INTO settings VALUES ('version', ?, 'str')",
+            (str(AA_DB_SCHEMA_VERSION + 1),),
+        )
+        db.execute("CREATE TABLE audio_analysis(id INTEGER PRIMARY KEY, header BLOB, payload BLOB)")
+        db.execute("INSERT INTO audio_analysis VALUES (1, ?, ?)", (b"header", b"payload"))
+    ctrl = _make_controller(library_db, tmp_path)
+    await ctrl.setup_database()
+    await _assert_analysis_unavailable(ctrl)
+    version = await library_db.get_row(f"{AA_DB_SCHEMA}.settings", {"key": "version"})
+    assert version is not None
+    assert int(version["value"]) == AA_DB_SCHEMA_VERSION + 1
+    rows = await library_db.get_rows(AA_TABLE_ANALYSIS)
+    assert [(row["header"], row["payload"]) for row in rows] == [(b"header", b"payload")]
+    assert not (tmp_path / f"{AA_DB_FILENAME}.corrupt").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failed_table", [DB_TABLE_AUDIO_ANALYSIS, DB_TABLE_AUDIO_ANALYSIS_FAILURES]
+)
+async def test_failed_relocation_disables_analysis_until_restart(
+    library_db: DatabaseConnection,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_table: str,
+) -> None:
+    """Either incomplete migration keeps its source and blocks all analysis until retried."""
+    await _seed_legacy(library_db, n_analysis=2, n_failures=2)
+    ctrl = _make_controller(library_db, tmp_path)
+    real_execute = library_db.execute
+
+    async def failing_execute(query: str, values: dict[str, Any] | None = None) -> Any:
+        if query.startswith(f"INSERT OR IGNORE INTO aa.{failed_table} "):
+            raise sqlite3.OperationalError("disk full")
+        return await real_execute(query, values)
+
+    monkeypatch.setattr(library_db, "execute", failing_execute)
+    await ctrl.setup_database()
+    await _assert_analysis_unavailable(ctrl)
+    assert len(await library_db.get_rows(f"main.{failed_table}")) == 2
+    monkeypatch.setattr(library_db, "execute", real_execute)
+    restarted = _make_controller(library_db, tmp_path)
+    await restarted.setup_database()
+    assert restarted._database_ready
+    assert len(await library_db.get_rows(AA_TABLE_ANALYSIS)) == 2
+    assert len(await restarted.get_failures()) == 2
+    assert failed_table not in await _table_names(library_db, "main")
