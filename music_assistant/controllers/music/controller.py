@@ -2144,6 +2144,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
             self.mass.config.save(True)
 
+        if not self.mass.streams.audio_analysis.database_ready:
+            self.logger.warning(
+                "Deferring removal of provider %s until the audio analysis database is ready; "
+                "cleanup will retry on restart",
+                provider_instance,
+            )
+            return
+
         # always clear cache when a provider is removed
         await self.mass.cache.clear()
 

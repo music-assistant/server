@@ -359,6 +359,42 @@ async def test_relocation_failure_skips_vacuum(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("table", [DB_TABLE_AUDIO_ANALYSIS, DB_TABLE_AUDIO_ANALYSIS_FAILURES])
+async def test_completed_copy_is_compacted_after_restart(
+    library_db: DatabaseConnection,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    table: str,
+) -> None:
+    """Dropping a populated source still compacts the library when every row was already copied."""
+    ctrl = _make_controller(library_db, tmp_path)
+    await ctrl.setup_database()
+    await _seed_legacy(
+        library_db,
+        n_analysis=2 if table == DB_TABLE_AUDIO_ANALYSIS else 0,
+        n_failures=2 if table == DB_TABLE_AUDIO_ANALYSIS_FAILURES else 0,
+    )
+    real_execute = library_db.execute
+
+    async def failing_execute(query: str, values: dict[str, Any] | None = None) -> Any:
+        if query == f"DROP TABLE main.{table}":
+            raise sqlite3.OperationalError("database table is locked")
+        return await real_execute(query, values)
+
+    monkeypatch.setattr(library_db, "execute", failing_execute)
+    vacuum = AsyncMock()
+    monkeypatch.setattr(library_db, "vacuum", vacuum)
+    await ctrl.setup_database()
+    assert len(await library_db.get_rows(f"aa.{table}")) == 2
+    vacuum.assert_not_awaited()
+
+    monkeypatch.setattr(library_db, "execute", real_execute)
+    await ctrl.setup_database()
+    assert table not in await _table_names(library_db, "main")
+    vacuum.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
 async def test_relocation_is_resumable_after_partial_copy(
     library_db: DatabaseConnection, tmp_path: pathlib.Path
 ) -> None:
