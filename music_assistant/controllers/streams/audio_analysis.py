@@ -1201,11 +1201,11 @@ class AudioAnalysisController:
         Copy a legacy main.<table> into the attached db in id batches, then drop it.
 
         Rows are copied without their legacy id: the attached db assigns fresh ids via its
-        own AUTOINCREMENT, and INSERT OR IGNORE resumes on the natural (item_id, provider,
-        aa_provider_domain, media_type) key instead, so a row already present — from an
-        earlier partial run, or from a live write made since — is skipped rather than
-        duplicated or colliding with an unrelated legacy id. Completion is verified by that
-        same natural key before the legacy table is dropped, not by comparing row counts.
+        own AUTOINCREMENT. Conflicts on the natural (item_id, provider, aa_provider_domain,
+        media_type) key keep the row with the newer timestamp, preserving newer legacy writes
+        after a rollback as well as newer destination writes on a retry. Equal timestamps
+        keep the destination row. Completion is verified by natural key before the legacy
+        table is dropped, not by comparing row counts.
 
         :param table: Name of the legacy table in library.db (main schema) to relocate.
         :param columns: Column names (excluding id) shared by main.<table> and aa.<table>.
@@ -1230,15 +1230,18 @@ class AudioAnalysisController:
             "Moving %s rows from library.db table %s to %s", total, table, AA_DB_FILENAME
         )
         cols = ", ".join(columns)
+        updates = ", ".join(f"{column} = excluded.{column}" for column in columns)
         copied = 0
         last_id = 0
         try:
             while last_id < max_id:
-                # INSERT OR IGNORE makes a retry after a crash skip rows already copied
                 cursor = await db.execute(
-                    f"INSERT OR IGNORE INTO {AA_DB_SCHEMA}.{table} ({cols}) "
+                    f"INSERT INTO {AA_DB_SCHEMA}.{table} ({cols}) "
                     f"SELECT {cols} FROM main.{table} "
-                    f"WHERE id > :last_id AND id <= :upper ORDER BY id",
+                    f"WHERE id > :last_id AND id <= :upper ORDER BY id "
+                    "ON CONFLICT(item_id, provider, aa_provider_domain, media_type) "
+                    f"DO UPDATE SET {updates} "
+                    f"WHERE excluded.timestamp_created > {table}.timestamp_created",
                     {"last_id": last_id, "upper": last_id + RELOCATE_BATCH_SIZE},
                 )
                 await db.commit()

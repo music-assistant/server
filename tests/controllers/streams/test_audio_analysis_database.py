@@ -332,7 +332,7 @@ async def test_relocation_failure_keeps_legacy_table(
     real_execute = library_db.execute
 
     async def failing_execute(query: str, values: dict[str, Any] | None = None) -> Any:
-        if query.lstrip().upper().startswith("INSERT OR IGNORE INTO AA."):
+        if query.lstrip().upper().startswith("INSERT INTO AA."):
             raise sqlite3.OperationalError("disk I/O error")
         return await real_execute(query, values)
 
@@ -357,7 +357,7 @@ async def test_relocation_failure_skips_vacuum(
     real_execute = library_db.execute
 
     async def failing_execute(query: str, values: dict[str, Any] | None = None) -> Any:
-        if query.lstrip().upper().startswith("INSERT OR IGNORE INTO AA."):
+        if query.lstrip().upper().startswith("INSERT INTO AA."):
             raise sqlite3.OperationalError("disk I/O error")
         return await real_execute(query, values)
 
@@ -432,6 +432,40 @@ async def test_relocation_is_resumable_after_partial_copy(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("table", [DB_TABLE_AUDIO_ANALYSIS, DB_TABLE_AUDIO_ANALYSIS_FAILURES])
+@pytest.mark.parametrize("source_timestamp", [900, 1000, 1100])
+async def test_relocation_keeps_newest_same_key_record(
+    library_db: DatabaseConnection,
+    tmp_path: pathlib.Path,
+    table: str,
+    source_timestamp: int,
+) -> None:
+    """Newer legacy writes win after rollback, while equal or newer destination rows survive."""
+    ctrl = _make_controller(library_db, tmp_path)
+    await ctrl.setup_database()
+    await _seed_legacy(library_db, n_analysis=1, n_failures=1)
+    await library_db.execute(
+        f"UPDATE main.{table} SET timestamp_created = :timestamp",
+        {"timestamp": source_timestamp},
+    )
+    source = dict((await library_db.get_rows(f"main.{table}"))[0])
+    destination = {**source, "id": 42, "timestamp_created": 1000, "analysis_version": 9}
+    if table == DB_TABLE_AUDIO_ANALYSIS:
+        destination["analysis_data"] = '{"loudness_integrated": -15.0}'
+    else:
+        destination["reason"] = "destination failure"
+        destination["next_retry"] = 2000
+    await library_db.insert(f"aa.{table}", destination)
+
+    await ctrl.setup_database()
+
+    expected = source if source_timestamp > 1000 else destination
+    result = dict((await library_db.get_rows(f"aa.{table}"))[0])
+    assert result == {**expected, "id": 42}
+    assert table not in await _table_names(library_db, "main")
+
+
+@pytest.mark.asyncio
 async def test_relocation_survives_live_writes_after_failed_attempt(
     library_db: DatabaseConnection, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -441,7 +475,7 @@ async def test_relocation_survives_live_writes_after_failed_attempt(
     real_execute = library_db.execute
 
     async def failing_execute(query: str, values: dict[str, Any] | None = None) -> Any:
-        if query.lstrip().upper().startswith("INSERT OR IGNORE INTO AA."):
+        if query.lstrip().upper().startswith("INSERT INTO AA."):
             raise sqlite3.OperationalError("disk I/O error")
         return await real_execute(query, values)
 
@@ -574,7 +608,7 @@ async def test_failed_relocation_disables_analysis_until_restart(
     real_execute = library_db.execute
 
     async def failing_execute(query: str, values: dict[str, Any] | None = None) -> Any:
-        if query.startswith(f"INSERT OR IGNORE INTO aa.{failed_table} "):
+        if query.startswith(f"INSERT INTO aa.{failed_table} "):
             raise sqlite3.OperationalError("disk full")
         return await real_execute(query, values)
 
