@@ -1051,9 +1051,6 @@ class AudioAnalysisController:
             processed += 1
 
         async def _worker() -> None:
-            # Pull from the shared iterator instead of pre-creating a task per candidate:
-            # a large library would otherwise park tens of thousands of tasks for the whole
-            # run. next() has no await point, so no two workers can take the same candidate.
             while time.monotonic() < run_deadline:
                 candidate = next(pending, None)
                 if candidate is None:
