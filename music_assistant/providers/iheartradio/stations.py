@@ -23,6 +23,7 @@ from .constants import (
     PATH_PLAYBACK_REPORTING,
     PATH_PLAYBACK_STREAMS,
     PLAYED_FROM,
+    REPORT_STATUS_START,
     STATION_OUT_OF_SONGS_CODE,
     STATION_TYPE_RADIO,
 )
@@ -140,6 +141,19 @@ class IHeartRadioStationManager:
                 )
             )
         ]
+
+    async def report_start(self, track_id: str) -> None:
+        """
+        Report to iHeartRadio that an artist radio track started playing, once per batch.
+
+        Does nothing for a track that is no longer retained.
+
+        :param track_id: The iHeartRadio track id.
+        """
+        if (found := self.find(track_id)) is None:
+            return
+        if found[0].mark_started(track_id):
+            await self.report_play(track_id, REPORT_STATUS_START, 0)
 
     async def report_play(self, track_id: str, status: str, seconds_played: int) -> None:
         """

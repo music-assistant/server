@@ -29,10 +29,12 @@ from .constants import (
     API_TIMEOUT,
     CACHE_CATEGORY_CATALOG,
     CACHE_CATEGORY_PODCASTS,
+    CACHE_CATEGORY_SEARCH,
     CACHE_CATEGORY_STATIONS,
     CACHE_TTL_CATALOG,
     CACHE_TTL_EPISODES,
     CACHE_TTL_PODCAST,
+    CACHE_TTL_SEARCH,
     CACHE_TTL_STATION,
     EPISODE_PAGE_LIMIT,
     HEADER_HOST_NAME,
@@ -52,6 +54,7 @@ from .constants import (
     PATH_PODCAST_CATEGORY,
     PATH_PODCAST_EPISODE,
     PATH_PODCAST_EPISODES,
+    PATH_SEARCH,
     SESSION_EXPIRED_CODES,
     STATION_PAGE_LIMIT,
 )
@@ -351,6 +354,35 @@ class IHeartRadioApiClient:
         # deliberately not cached, this is the live signal driving the player's metadata
         payload = await self.get_json(PATH_NOW_PLAYING.format(station_id=station_id))
         return payload if isinstance(payload, dict) and payload else None
+
+    @use_cache(CACHE_TTL_SEARCH, category=CACHE_CATEGORY_SEARCH)
+    async def search(
+        self, keywords: str, want_radio: bool, want_podcasts: bool, limit: int
+    ) -> dict[str, Any]:
+        """
+        Return the raw search results of the configured country for a query.
+
+        :param keywords: The words to search for.
+        :param want_radio: Whether to ask for live stations and artists.
+        :param want_podcasts: Whether to ask for podcasts.
+        :param limit: The maximum number of hits per kind.
+        """
+        payload = await self.get_json(
+            PATH_SEARCH,
+            {
+                "keywords": keywords,
+                "maxRows": limit,
+                "bundle": "false",
+                "station": query_flag(want_radio),
+                "podcast": query_flag(want_podcasts),
+                # an artist hit is offered as its artist radio
+                "artist": query_flag(want_radio),
+                "track": query_flag(False),
+                "album": query_flag(False),
+                "playlist": query_flag(False),
+            },
+        )
+        return payload.get("results") or {} if isinstance(payload, dict) else {}
 
     def _handle_response(self, url: str, response: aiohttp.ClientResponse, body: bytes) -> Any:
         """

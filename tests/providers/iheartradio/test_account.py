@@ -228,6 +228,11 @@ async def test_artist_radio_batches_and_track_stream(
     assert details.path == RADIO_ITEM["streamUrl"]
     assert details.duration == 176
     assert 0 < details.expiration <= BATCH_URL_TTL
+    # resolving the stream is not a play: the queue preloads the next track's details
+    assert await _reports(api) == []
+    # the start is reported once the track is heard, and only once per batch
+    await provider.on_played(MediaType.TRACK, TRACK_ID, False, 5, tracks[0], is_playing=True)
+    await provider.on_played(MediaType.TRACK, TRACK_ID, False, 35, tracks[0], is_playing=True)
     reports = await _reports(api)
     assert [(report["status"], report["secondsPlayed"]) for report in reports] == [("START", 0)]
     assert reports[0]["reportPayload"] == "opaque-report-token"
@@ -270,13 +275,14 @@ async def test_on_played_reports_done_or_skip(provider: IHeartRadioProvider, api
     track = Mock()
     await provider.on_played(MediaType.TRACK, TRACK_ID, True, 176, track)
     await provider.on_played(MediaType.TRACK, TRACK_ID, False, 40, track)
-    # still playing and "mark as unplayed" are not plays
+    # still playing reports the start, "mark as unplayed" is not a play
     await provider.on_played(MediaType.TRACK, TRACK_ID, False, 40, track, is_playing=True)
     await provider.on_played(MediaType.TRACK, TRACK_ID, False, 0, track)
     reports = await _reports(api)
     assert [(report["status"], report["secondsPlayed"]) for report in reports] == [
         ("DONE", 176),
         ("SKIP", 40),
+        ("START", 0),
     ]
 
 
