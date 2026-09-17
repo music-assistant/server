@@ -178,3 +178,19 @@ async def test_a_reset_queued_behind_a_stop_does_not_restart_the_device(
     await stopping
     assert device._task is None
     assert device._client is None
+
+
+async def test_the_display_channel_shows_the_grouped_pairing_code(
+    tmp_path: Path, session: ClientSession
+) -> None:
+    """The display takes the presentation form aiosendspin hands it, and clears on end."""
+    scenario = SCENARIOS_BY_ID["dynamic_pin"]
+    device = FakeSendspinDevice(scenario, tmp_path, "ws://127.0.0.1:1/sendspin", session)
+    display = device._pairing_support().pairing_code_display
+    assert display is not None
+
+    await display("123456", grouped="123-456")
+    assert device.dynamic_pin == "123-456"
+
+    await display(None, grouped=None)
+    assert device.dynamic_pin is None

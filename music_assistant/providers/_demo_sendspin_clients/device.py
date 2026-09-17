@@ -246,11 +246,12 @@ class FakeSendspinDevice:
         if waiting:
             LOGGER.info("%s is waiting for its pairing button", self.scenario.name)
 
-    async def _on_pin_display(self, pin: str | None) -> None:
+    async def _on_pin_display(self, pairing_code: str | None, *, grouped: str | None) -> None:
         """Show (or clear) the derived dynamic PIN on the device's display."""
-        self.dynamic_pin = pin
-        if pin is not None:
-            LOGGER.info("%s displays PIN %s", self.scenario.name, pin)
+        # a real display shows the grouped form; keep it for the operator hint too
+        self.dynamic_pin = grouped or pairing_code
+        if pairing_code is not None:
+            LOGGER.info("%s displays PIN %s", self.scenario.name, self.dynamic_pin)
 
     async def _on_pin_speaker(
         self, pairing_code: str | None, *, languages: tuple[str, ...]
