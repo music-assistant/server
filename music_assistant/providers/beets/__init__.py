@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from copy import copy
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -25,6 +26,7 @@ from music_assistant.controllers.tasks.context import (
     report_current_task_failure,
     update_current_task_progress_from_index,
 )
+from music_assistant.helpers.compare import compare_track
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.music_provider import MusicProvider
 
@@ -459,19 +461,24 @@ def _mappings_to_carry(library_track: Track, track: Track) -> set[ProviderMappin
     """
     Return the mappings of this instance's other beets items to keep on an overwrite.
 
-    None are kept when the changed item no longer shares an external id with the library
-    track, since it was retagged as another recording and the other items must split off.
+    None are kept when the changed item no longer matches the library track as the same
+    recording, since it was retagged as another one and the other items must split off.
 
     :param library_track: The library track the changed beets item is mapped to.
     :param track: The provider track of the changed beets item.
     """
-    if not track.external_ids & library_track.external_ids:
-        return set()
-    return {
+    other_mappings = {
         mapping
         for mapping in library_track.provider_mappings
         if mapping.provider_instance == track.provider and mapping.item_id != track.item_id
     }
+    if not other_mappings:
+        return set()
+    # without its mappings the library track cannot match the changed item on its own
+    # mapping, so the comparison decides on the metadata alone
+    reference = copy(library_track)
+    reference.provider_mappings = set()
+    return other_mappings if compare_track(reference, track, strict=True) else set()
 
 
 def _parse_id(prov_item_id: str, prefix: str) -> int:
