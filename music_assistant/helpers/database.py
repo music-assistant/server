@@ -542,7 +542,7 @@ class DatabaseConnection:
 
     async def vacuum(self, schema: str | None = None) -> None:
         """
-        Run vacuum command on database.
+        Run vacuum command on database and checkpoint the WAL so the freed space is reclaimed.
 
         :param schema: Attached schema to compact instead of the main database.
         """
@@ -553,6 +553,13 @@ class DatabaseConnection:
         try:
             await self._db.execute(f"VACUUM {schema}" if schema else "VACUUM")
             await self._db.commit()
+            # in WAL mode VACUUM writes the rebuilt database into the WAL file instead of
+            # freeing disk space immediately, so checkpoint and truncate it right away
+            await self._db.execute(
+                f"PRAGMA {schema}.wal_checkpoint(TRUNCATE);"
+                if schema
+                else "PRAGMA wal_checkpoint(TRUNCATE);"
+            )
         finally:
             await self._db.execute("PRAGMA temp_store=memory;")
 
