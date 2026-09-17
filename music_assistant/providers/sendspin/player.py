@@ -1650,8 +1650,6 @@ class SendspinPlayer(SendspinBasePlayer):
             track_duration=track_duration * 1000 if track_duration is not None else None,
             track_progress=track_progress,
             playback_speed=1000 if is_playing else 0,
-            repeat=repeat,
-            shuffle=shuffle,
         )
 
         # Send metadata to the group
@@ -2054,12 +2052,7 @@ class SendspinPlayer(SendspinBasePlayer):
         self._last_beat_anchor_us = None
 
     def _publish_repeat_shuffle(self, repeat: SendspinRepeatMode, *, shuffle: bool) -> None:
-        """
-        Push repeat/shuffle to controller state for current-spec clients.
-
-        Clients implementing the older spec version still read the copy mirrored
-        onto metadata state, for now.
-        """
+        """Push repeat/shuffle to the controller state."""
         if (controller_role := self._controller_role) is not None:
             controller_role.set_repeat(repeat)
             controller_role.set_shuffle(shuffle=shuffle)
