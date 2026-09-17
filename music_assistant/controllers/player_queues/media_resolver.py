@@ -40,7 +40,7 @@ from music_assistant.controllers.player_queues.constants import (
     ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
     ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
 )
-from music_assistant.controllers.player_queues.helpers import sort_tracks
+from music_assistant.controllers.player_queues.helpers import is_dynamic_source, sort_tracks
 from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
 from music_assistant.helpers.collections import (
     get_collection_item_id,
@@ -807,6 +807,10 @@ class MediaResolver:
         items: list[MediaItemType] = []
         for item in folder_items:
             if not item.is_playable:
+                continue
+            if is_dynamic_source(item):
+                # a dynamic station supplies its tracks on demand through the managed pool;
+                # queued as a plain item it cannot be streamed, so leave it out here
                 continue
             try:
                 # recursively resolve every child, so a folder of podcast episodes or

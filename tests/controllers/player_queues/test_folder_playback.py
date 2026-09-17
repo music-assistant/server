@@ -28,7 +28,11 @@ def _provider_mapping() -> set[ProviderMapping]:
 
 
 async def test_folder_plays_every_playable_item(mass: MusicAssistant) -> None:
-    """Episodes and radios in a folder are queued alongside tracks, with resume applied."""
+    """
+    Episodes and radios in a folder are queued alongside tracks, with resume applied.
+
+    Subfolders and dynamic stations are left out.
+    """
     user = await mass.webserver.auth.create_user("folderplayback")
     podcast = Podcast(
         item_id="show-1", provider=PROVIDER, name="Show", provider_mappings=_provider_mapping()
@@ -48,6 +52,13 @@ async def test_folder_plays_every_playable_item(mass: MusicAssistant) -> None:
         item_id="track-1", provider=PROVIDER, name="Track", provider_mappings=_provider_mapping()
     )
     subfolder = BrowseFolder(item_id="sub", provider=PROVIDER, name="Sub", is_playable=False)
+    station = Radio(
+        item_id="station-1",
+        provider=PROVIDER,
+        name="Station",
+        provider_mappings=_provider_mapping(),
+        is_dynamic=True,
+    )
     await mass.music.mark_item_played(
         episode,
         fully_played=False,
@@ -58,7 +69,7 @@ async def test_folder_plays_every_playable_item(mass: MusicAssistant) -> None:
     folder = BrowseFolder(item_id="up_next", provider=PROVIDER, name="Up Next")
 
     with patch.object(
-        mass.music, "browse", AsyncMock(return_value=[subfolder, episode, radio, track])
+        mass.music, "browse", AsyncMock(return_value=[subfolder, station, episode, radio, track])
     ):
         items = await mass.player_queues._media_resolver._resolve_media_items(
             folder, userid=user.user_id
