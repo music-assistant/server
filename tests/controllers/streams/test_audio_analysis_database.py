@@ -286,7 +286,7 @@ async def test_delete_audio_analysis_removes_only_that_provider_key(
 
 
 @pytest.mark.asyncio
-async def test_newer_schema_version_refuses_to_start(
+async def test_newer_schema_version_disables_analysis(
     library_db: DatabaseConnection, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A file written by a newer build is refused instead of being used or rewritten."""
@@ -295,12 +295,13 @@ async def test_newer_schema_version_refuses_to_start(
     await library_db.insert_or_replace(
         f"{AA_DB_SCHEMA}.{DB_TABLE_SETTINGS}", {"key": "version", "value": "99", "type": "str"}
     )
-    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError):
+    with caplog.at_level(logging.ERROR):
         await ctrl.setup_database()
+    await _assert_analysis_unavailable(ctrl)
     assert any(
         record.levelno == logging.ERROR
         and "newer than this build supports" in record.getMessage()
-        and "move audio_analysis.db aside" in record.getMessage()
+        and "upgrade Music Assistant" in record.getMessage()
         for record in caplog.records
     )
 
@@ -942,7 +943,7 @@ async def test_unencodable_rows_are_counted_and_dropped(
     assert {r["item_id"] for r in rows} == {"t0", "t1"}
     assert V1_TABLE_NAME not in await _table_names(library_db, AA_DB_SCHEMA)
     assert await _stored_version(library_db) == AA_DB_SCHEMA_VERSION
-    assert not ctrl._conversion_pending
+    assert ctrl._database_ready
     assert any(
         record.levelno == logging.WARNING and "unpackable" in record.getMessage()
         for record in caplog.records
@@ -988,13 +989,12 @@ async def test_incomplete_conversion_keeps_source_table(
 
 
 @pytest.mark.asyncio
-async def test_failed_conversion_gates_the_background_scan(
+async def test_failed_conversion_disables_analysis_until_restart(
     library_db: DatabaseConnection,
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """While rows wait to be converted the analysis table is empty; no scan may run on it."""
+    """Incomplete packed conversion blocks all analysis but leaves playback available."""
     ctrl = _make_controller(library_db, tmp_path)
     await _seed_v1_table(library_db, ctrl, [("t0", '{"bpm": 100.0}')])
     real_execute = library_db.execute
@@ -1006,39 +1006,40 @@ async def test_failed_conversion_gates_the_background_scan(
 
     monkeypatch.setattr(library_db, "execute", failing_execute)
     await ctrl.setup_database()
-    assert ctrl._conversion_pending
-
+    await _assert_analysis_unavailable(ctrl)
+    assert V1_TABLE_NAME in await _table_names(library_db, AA_DB_SCHEMA)
+    assert await _stored_version(library_db) == 1
     find_candidates = AsyncMock(return_value=[])
     monkeypatch.setattr(ctrl, "_find_candidates_missing_analysis", find_candidates)
-    with caplog.at_level(logging.WARNING):
-        await ctrl._run_background_scan()
-
+    await ctrl._run_background_scan()
     find_candidates.assert_not_awaited()
-    assert any(
-        record.levelno == logging.WARNING and "conversion is pending" in record.getMessage()
-        for record in caplog.records
-    )
+    monkeypatch.setattr(library_db, "execute", real_execute)
+    restarted = _make_controller(library_db, tmp_path)
+    await restarted.setup_database()
+    assert restarted._database_ready
+    assert await restarted.get_audio_analysis_count("sonic_analysis") == 1
+    assert V1_TABLE_NAME not in await _table_names(library_db, AA_DB_SCHEMA)
 
 
 @pytest.mark.asyncio
-async def test_conversion_pending_is_false_after_a_successful_start(
+async def test_database_is_ready_after_a_successful_start(
     library_db: DatabaseConnection, tmp_path: pathlib.Path
 ) -> None:
     """A fresh install and a completed conversion both leave the scan gate open."""
     ctrl = _make_controller(library_db, tmp_path)
     await ctrl.setup_database()
-    assert not ctrl._conversion_pending
+    assert ctrl._database_ready
 
     await _seed_v1_table(library_db, ctrl, [("t0", '{"bpm": 100.0}')])
     await ctrl.setup_database()
-    assert not ctrl._conversion_pending
+    assert ctrl._database_ready
 
 
 @pytest.mark.asyncio
 async def test_schema_preparation_failure_does_not_quarantine_the_file(
     library_db: DatabaseConnection, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A locked or unhappy v1 rename propagates; the file is not moved aside."""
+    """A locked v1 rename disables analysis without moving the file aside."""
     ctrl = _make_controller(library_db, tmp_path)
     await _seed_v1_table(library_db, ctrl, [("t0", '{"bpm": 100.0}')])
     real_execute = library_db.execute
@@ -1049,8 +1050,8 @@ async def test_schema_preparation_failure_does_not_quarantine_the_file(
         return await real_execute(query, values)
 
     monkeypatch.setattr(library_db, "execute", failing_execute)
-    with pytest.raises(sqlite3.OperationalError):
-        await ctrl.setup_database()
+    await ctrl.setup_database()
+    await _assert_analysis_unavailable(ctrl)
 
     assert not (tmp_path / f"{AA_DB_FILENAME}.corrupt").exists()
     # the rename never happened, so the JSON-shaped table is still the live one

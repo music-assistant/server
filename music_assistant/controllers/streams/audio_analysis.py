@@ -353,9 +353,6 @@ class AudioAnalysisController:
         self._idle_unload_task: asyncio.Task[None] | None = None
         # In-flight provider finalizes: their session is already gone, but the models are not.
         self._finalize_tasks: set[asyncio.Task[None]] = set()
-        # True while rows still wait to be converted to the packed format: the analysis
-        # table is live but incomplete, so nothing may treat "no row" as "never analysed".
-        self._conversion_pending: bool = False
 
     def setup(self) -> None:
         """Register the nightly background scan task."""
@@ -380,7 +377,6 @@ class AudioAnalysisController:
 
         Safe to call more than once. Must run after the music database connection exists
         (it is attached onto that connection) and before any analysis query.
-
         """
         db = self.mass.music.database
         db_path = os.path.join(self.mass.storage_path, AA_DB_FILENAME)
@@ -1221,8 +1217,8 @@ class AudioAnalysisController:
 
         Creating the settings table is also the probe that the file is readable at all:
         ATTACH opens it lazily, so a corrupt file first fails here and the caller can move
-        it aside. The analysis table itself is created by :meth:`_prepare_analysis_table`,
-        which must first read the version and rename a v1 table out of the way.
+        it aside. Check the version before :meth:`_prepare_analysis_table` creates the
+        analysis table or renames a v1 table out of the way.
 
         :param db_path: Path of the analysis database file to attach.
         """
@@ -1269,27 +1265,8 @@ class AudioAnalysisController:
         await db.commit()
 
     async def _prepare_analysis_table(self) -> None:
-        """
-        Check the stored schema version, rename a v1 table aside and create the packed table.
-
-        :raises RuntimeError: When the file was written by a newer schema version.
-        """
+        """Rename a v1 table aside and create the packed table."""
         db = self.mass.music.database
-        stored_version = await self._stored_schema_version()
-        if stored_version > AA_DB_SCHEMA_VERSION:
-            self.logger.error(
-                "%s schema version %s is newer than this build supports (%s); upgrade Music "
-                "Assistant, or move %s aside to start with an empty analysis database",
-                AA_DB_FILENAME,
-                stored_version,
-                AA_DB_SCHEMA_VERSION,
-                AA_DB_FILENAME,
-            )
-            raise RuntimeError(
-                f"{AA_DB_FILENAME} schema version {stored_version} is newer than this build "
-                f"supports ({AA_DB_SCHEMA_VERSION}); upgrade Music Assistant, or move "
-                f"{AA_DB_FILENAME} aside to start with an empty analysis database"
-            )
         columns = await db.get_rows_from_query(
             f"PRAGMA {AA_DB_SCHEMA}.table_info({DB_TABLE_AUDIO_ANALYSIS})", limit=0
         )
@@ -1432,26 +1409,6 @@ class AudioAnalysisController:
         )
         return bool(rows)
 
-    async def _stored_schema_version(self) -> int:
-        """Return the schema version recorded in the analysis db, 0 when it has none."""
-        db = self.mass.music.database
-        exists = await db.get_rows_from_query(
-            f"SELECT 1 FROM {AA_DB_SCHEMA}.sqlite_master WHERE type = 'table' AND name = :name",
-            {"name": DB_TABLE_SETTINGS},
-            limit=1,
-        )
-        if not exists:
-            return 0
-        rows = await db.get_rows_from_query(
-            f"SELECT value FROM {AA_TABLE_SETTINGS} WHERE key = 'version'", limit=1
-        )
-        if not rows:
-            return 0
-        try:
-            return int(rows[0]["value"])
-        except TypeError, ValueError:
-            return 0
-
     async def _quarantine_database(self, db_path: str) -> None:
         """
         Detach an unusable analysis database and move it (and its sidecars) out of the way.
@@ -1549,14 +1506,6 @@ class AudioAnalysisController:
 
     async def _run_background_scan(self) -> None:
         """Run the scan as decode-once-fan-out streaming over candidate tracks."""
-        if self._conversion_pending:
-            # candidates are found by "no analysis row exists", which every track satisfies
-            # while the converted rows are still sitting in the source table
-            self.logger.warning(
-                "Skipping the background analysis scan: audio analysis conversion is "
-                "pending; it will retry on next start"
-            )
-            return
         providers = self.providers
         if not providers:
             return

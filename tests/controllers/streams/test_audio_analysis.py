@@ -1335,6 +1335,7 @@ async def test_iter_merged_audio_analysis_rows_skips_row_with_invalid_utf8_bytes
     streams.mass.music.database = real_audio_analysis_db
     streams.mass.get_providers = MagicMock(return_value=[_aa_provider_stub(SONIC_ANALYSIS_DOMAIN)])
     controller = AudioAnalysisController(streams)
+    controller._database_ready = True
 
     with caplog.at_level("WARNING", logger=audio_analysis_mod.LOGGER.name):
         result = [
@@ -1358,6 +1359,7 @@ async def test_iter_audio_analysis_rows_yields_corrupt_row_as_undecodable_bytes(
     streams.mass = MagicMock()
     streams.mass.music.database = real_audio_analysis_db
     controller = AudioAnalysisController(streams)
+    controller._database_ready = True
 
     rows = [row async for row in controller.iter_audio_analysis_rows(SONIC_ANALYSIS_DOMAIN)]
 
