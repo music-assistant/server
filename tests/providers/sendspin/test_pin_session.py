@@ -82,7 +82,6 @@ class _FakeMass:
         self.loop = loop
         self.timers: dict[str, asyncio.TimerHandle] = {}
         self.tasks: dict[str, asyncio.Task[Any]] = {}
-        self.metadata = SimpleNamespace(locale="nl_NL")
 
     def create_task(
         self, coro: Any, *, task_id: str | None = None, abort_existing: bool = False
@@ -535,28 +534,22 @@ async def test_pairing_timeout_is_retryable(monkeypatch: pytest.MonkeyPatch) -> 
     assert api.end_pairing_calls == 0
 
 
-async def test_dynamic_pin_attempt_requests_digits_and_languages(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A dynamic-PIN attempt asks for the digits format and hints the operator's languages."""
+async def test_dynamic_pin_attempt_requests_digits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A dynamic-PIN attempt asks for the digits format the operator can type."""
     api = _FakeServerApi(_offer(PairMethod.DYNAMIC_PAIRING_CODE))
     provider, _refreshed = _make_provider(api, monkeypatch)
     await provider.start_pin_pairing("c")
     assert api.attempts[0].pairing_format is PairingCodeFormat.DIGITS
-    assert api.attempts[0].languages == ("nl-NL", "nl")
     assert api.attempts[0].on_pair_pending is not None
     await _submit_and_settle(provider, "123456")
 
 
-async def test_static_pin_attempt_carries_no_format_or_languages(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The emission format and spoken-PIN hint are dynamic-PIN only."""
+async def test_static_pin_attempt_carries_no_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The emission format is dynamic-PIN only."""
     api = _FakeServerApi(_offer(PairMethod.STATIC_PAIRING_CODE))
     provider, _refreshed = _make_provider(api, monkeypatch)
     await provider.start_pin_pairing("c", static=True)
     assert api.attempts[0].pairing_format is None
-    assert api.attempts[0].languages == ()
     await _submit_and_settle(provider, "12345678")
 
 

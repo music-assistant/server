@@ -457,6 +457,7 @@ class SendspinProvider(PlayerProvider):
             pairing_store=pairing_store,
             allow_unencrypted=allow_legacy_clients,
             allow_noncompliant_clients=allow_legacy_clients,
+            languages=self._spoken_pin_languages(),
         )
         # Pitch (YINFFT) is the heaviest visualizer DSP and result quality is
         # still very mixed, needs more testing. Disable it globally for now to
@@ -1327,9 +1328,6 @@ class SendspinProvider(PlayerProvider):
                     else None,
                     verify=session.verify,
                     on_pair_pending=on_pair_pending,
-                    languages=self._spoken_pin_languages()
-                    if session.method is PairMethod.DYNAMIC_PAIRING_CODE
-                    else (),
                 ),
             )
         except PairingTimeoutError as err:
