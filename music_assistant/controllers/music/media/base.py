@@ -354,6 +354,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         db_id = int(item_id)  # ensure integer
         library_item = await self.get_library_item(db_id)
         assert library_item, f"Item does not exist: {db_id}"
+        await self._delete_removed_mapping_analysis(library_item.provider_mappings, set())
         # delete item
         await self.mass.music.database.delete(
             self.db_table,
@@ -387,7 +388,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     "provider": prov_mapping.provider_instance,
                 },
             )
-        await self._delete_removed_mapping_analysis(library_item.provider_mappings, set())
         # delete genre exclusions for this media item
         await self.mass.music.database.delete(
             DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
@@ -1330,6 +1330,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 await self.remove_item_from_library(db_id)
             return
 
+        await self._delete_removed_mapping_analysis(
+            library_item.provider_mappings, remaining_mappings
+        )
         # update provider_mappings table
         await self.mass.music.database.delete(
             DB_TABLE_PROVIDER_MAPPINGS,
@@ -1339,9 +1342,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "provider_instance": provider_instance_id,
                 "provider_item_id": provider_item_id,
             },
-        )
-        await self._delete_removed_mapping_analysis(
-            library_item.provider_mappings, remaining_mappings
         )
         # cleanup playlog table
         await self.mass.music.database.delete(
@@ -1400,6 +1400,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 await self.remove_item_from_library(db_id)
             return
 
+        await self._delete_removed_mapping_analysis(
+            library_item.provider_mappings, remaining_mappings
+        )
         # update provider_mappings table
         await self.mass.music.database.delete(
             DB_TABLE_PROVIDER_MAPPINGS,
@@ -1408,9 +1411,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "item_id": db_id,
                 "provider_instance": provider_instance_id,
             },
-        )
-        await self._delete_removed_mapping_analysis(
-            library_item.provider_mappings, remaining_mappings
         )
         library_item.provider_mappings = remaining_mappings
         # the item is kept (it still has other providers), but it may carry artwork

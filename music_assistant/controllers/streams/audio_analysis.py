@@ -645,8 +645,7 @@ class AudioAnalysisController:
         :param provider_key: Stored music-provider key (domain or instance_id).
         :param media_type: The media type of the item.
         """
-        if not self._database_ready:
-            return
+        self._require_database()
         for table in (AA_TABLE_ANALYSIS, AA_TABLE_FAILURES):
             await self.mass.music.database.delete(
                 table,
@@ -1144,6 +1143,8 @@ class AudioAnalysisController:
                 );"""
         )
         version_row = await db.get_row(AA_TABLE_SETTINGS, {"key": "version"})
+        if version_row is not None and version_row["value"] is None:
+            raise ProviderUnavailableError(f"{AA_DB_FILENAME} has an invalid schema version")
         if version_row is not None and int(version_row["value"]) > AA_DB_SCHEMA_VERSION:
             raise ProviderUnavailableError(
                 f"{AA_DB_FILENAME} schema version {version_row['value']} is newer than "
