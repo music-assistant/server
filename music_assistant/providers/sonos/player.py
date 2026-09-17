@@ -1068,12 +1068,30 @@ class SonosPlayer(Player):
                         self.reconnect(5)
 
             self._listen_task = self.mass.create_task(_listener())
-            await init_ready.wait()
+            listen_task = self._listen_task
+        # wait for the initial state fetch outside the lock: a listener that dies mid-init
+        # never sets init_ready, and the reconnect it schedules needs the lock again
+        init_ready_wait = self.mass.create_task(init_ready.wait())
+        await asyncio.wait({init_ready_wait, listen_task}, return_when=asyncio.FIRST_COMPLETED)
+        if init_ready.is_set():
+            return
+        init_ready_wait.cancel()
+        if retry_on_fail and self.mass.players.get_player(self.player_id):
+            # the listener's own cleanup schedules the retry
+            return
+        msg = f"Sonos player {self.player_id} disconnected during initialization"
+        raise ConnectionFailed(ConnectionError(msg))
 
     async def _disconnect(self) -> None:
         """Disconnect the client and cleanup."""
         self.connected = False
-        if self._listen_task and not self._listen_task.done():
+        if (
+            self._listen_task
+            and not self._listen_task.done()
+            # the listener calls this from its own cleanup; a self-cancel would abort
+            # that cleanup at its next await, before the reconnect is scheduled
+            and self._listen_task is not asyncio.current_task()
+        ):
             self._listen_task.cancel()
         if self.client:
             await self.client.disconnect()
