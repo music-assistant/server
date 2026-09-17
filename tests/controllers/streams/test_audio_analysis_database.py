@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import pathlib
 import sqlite3
 from typing import TYPE_CHECKING
@@ -149,6 +150,74 @@ async def test_unreadable_database_is_quarantined_and_recreated(
         record.levelno == logging.ERROR and "unusable" in record.getMessage()
         for record in caplog.records
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["commit", "detach"])
+async def test_quarantine_failure_preserves_attached_database(
+    library_db: DatabaseConnection,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    """Failure to commit or detach must abort quarantine before any file is renamed."""
+    ctrl = _make_controller(library_db, tmp_path)
+    await ctrl.setup_database()
+    corruption = sqlite3.DatabaseError("database disk image is malformed")
+    corruption.sqlite_errorcode = sqlite3.SQLITE_CORRUPT
+    attach = AsyncMock(side_effect=corruption)
+    monkeypatch.setattr(ctrl, "_attach_and_create", attach)
+    replace = MagicMock()
+    monkeypatch.setattr(os, "replace", replace)
+
+    with monkeypatch.context() as failing:
+        if failure == "commit":
+            failing.setattr(
+                library_db,
+                "commit",
+                AsyncMock(side_effect=sqlite3.OperationalError("disk I/O error")),
+            )
+        else:
+            real_execute = library_db.execute
+
+            async def failing_execute(query: str, values: dict[str, Any] | None = None) -> Any:
+                if query == f"DETACH DATABASE {AA_DB_SCHEMA}":
+                    raise sqlite3.OperationalError("database aa is locked")
+                return await real_execute(query, values)
+
+            failing.setattr(library_db, "execute", failing_execute)
+        await ctrl.setup_database()
+
+    replace.assert_not_called()
+    attach.assert_awaited_once()
+    assert (tmp_path / AA_DB_FILENAME).exists()
+    assert not (tmp_path / f"{AA_DB_FILENAME}.corrupt").exists()
+    attached = await library_db.get_rows_from_query("PRAGMA database_list", limit=0)
+    assert AA_DB_SCHEMA in {row["name"] for row in attached}
+    await _assert_analysis_unavailable(ctrl)
+
+
+@pytest.mark.asyncio
+async def test_quarantine_detaches_before_replacing_database(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """An attached file is detached and replaced rather than reused under its old schema name."""
+    ctrl = _make_controller(library_db, tmp_path)
+    await ctrl.setup_database()
+    settings = f"{AA_DB_SCHEMA}.{DB_TABLE_SETTINGS}"
+    await library_db.insert_or_replace(
+        settings, {"key": "sentinel", "value": "original", "type": "str"}
+    )
+
+    await ctrl._quarantine_database(str(tmp_path / AA_DB_FILENAME))
+
+    attached = await library_db.get_rows_from_query("PRAGMA database_list", limit=0)
+    assert AA_DB_SCHEMA not in {row["name"] for row in attached}
+    assert not (tmp_path / AA_DB_FILENAME).exists()
+    assert (tmp_path / f"{AA_DB_FILENAME}.corrupt").exists()
+    await ctrl.setup_database()
+    assert ctrl.database_ready
+    assert await library_db.get_row(settings, {"key": "sentinel"}) is None
 
 
 @pytest.mark.asyncio

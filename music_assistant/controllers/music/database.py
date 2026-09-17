@@ -18,7 +18,7 @@ import shutil
 import sqlite3
 from typing import TYPE_CHECKING, Final
 
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import MusicAssistantError, ProviderUnavailableError
 
 from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
@@ -252,6 +252,11 @@ class MusicDatabaseSetupMixin:
 
     async def _reset_database(self) -> None:
         """Reset the database."""
+        if not self.mass.streams.audio_analysis.database_ready:
+            raise ProviderUnavailableError(
+                "Cannot reset the library while audio analysis storage is unavailable; "
+                "resolve the storage or migration error first"
+            )
         await self.close()
         db_path = os.path.join(self.mass.storage_path, "library.db")
         await asyncio.to_thread(os.remove, db_path)

@@ -1188,7 +1188,8 @@ class AudioAnalysisController:
         :param db_path: Path of the analysis database file to move aside.
         """
         db = self.mass.music.database
-        with contextlib.suppress(sqlite3.Error):
+        attached = await db.get_rows_from_query("PRAGMA database_list", limit=0)
+        if any(row["name"] == AA_DB_SCHEMA for row in attached):
             await db.commit()
             await db.execute(f"DETACH DATABASE {AA_DB_SCHEMA}")
         for suffix in ("", "-wal", "-shm"):
