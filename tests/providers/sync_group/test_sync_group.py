@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_PLAYERS, PROTOCOL_PRIORITY
@@ -23,6 +24,23 @@ from tests.common import MockPlayer, MockProvider
 def _player_lookup(players: dict[str, MagicMock]) -> MagicMock:
     """Create a get_player side_effect from a player dict."""
     return MagicMock(side_effect=lambda pid: players.get(pid))
+
+
+def _faithful_create_task(coro: Any, **kwargs: Any) -> asyncio.Task[Any]:
+    """
+    Stand in for MusicAssistant.create_task, matching its real defaults.
+
+    ``MusicAssistant.create_task`` defaults to ``eager_start=True`` (mass.py), whereas
+    ``asyncio.create_task`` defaults to False. Using the latter directly would make
+    every scheduled runner lazy in tests and hide the eager-start race entirely.
+
+    :param coro: The coroutine to run as a task.
+    """
+    return asyncio.Task(
+        coro,
+        loop=asyncio.get_running_loop(),
+        eager_start=kwargs.get("eager_start", True),
+    )
 
 
 def _make_mock_mass() -> MagicMock:
@@ -202,7 +220,7 @@ def static_reconnect_setup() -> Any:
         sgp._attr_group_members = ["leader", "display"]
         sgp.sync_leader = leader
         mass.players.get_player = _player_lookup({"leader": leader, "display": display})
-        mass.create_task = MagicMock(side_effect=asyncio.create_task)
+        mass.create_task = MagicMock(side_effect=_faithful_create_task)
         return mass, sgp, leader, display
 
     return _setup
@@ -1658,7 +1676,7 @@ class TestStaticMemberReconnect:
         sgp._attr_static_group_members = ["leader", "display"]
         sgp._attr_group_members = ["leader", "display"]
         sgp.sync_leader = leader
-        mass.create_task = MagicMock(side_effect=asyncio.create_task)
+        mass.create_task = MagicMock(side_effect=_faithful_create_task)
         mass.players.iter_players = MagicMock(return_value=iter([sgp, *players]))
 
         with patch.object(type(sgp), "is_dynamic", new_callable=PropertyMock, return_value=False):
@@ -1732,7 +1750,9 @@ class TestStaticMemberReconnect:
     ) -> None:
         """Repeated add failures exhaust the reconnect budget without a hot loop."""
         mass, sgp, _leader, display = static_reconnect_setup()
-        mass.players._handle_set_members = AsyncMock(side_effect=RuntimeError("permanent failure"))
+        mass.players._handle_set_members = AsyncMock(
+            side_effect=PlayerCommandFailed("permanent failure")
+        )
         with patch("music_assistant.providers.sync_group.player.RECONNECT_RETRY_DELAY", 0):
             sgp.on_group_member_updated(display, {"available": (False, True)})
             task = sgp._reconnect_task
@@ -1777,7 +1797,7 @@ class TestStaticMemberReconnect:
             nonlocal calls
             calls += 1
             if calls == 1:
-                raise RuntimeError("temporary provider failure")
+                raise PlayerCommandFailed("temporary provider failure")
 
         mass.players._handle_set_members = AsyncMock(side_effect=_add)
         with patch("music_assistant.providers.sync_group.player.RECONNECT_RETRY_DELAY", 0):
@@ -1841,6 +1861,143 @@ class TestStaticMemberReconnect:
         mass.players._handle_set_members.assert_awaited_once_with(
             leader, player_ids_to_add=["display"]
         )
+
+    @pytest.mark.asyncio
+    async def test_static_member_reconnect_on_gained_protocol_compatibility(
+        self, static_reconnect_setup: Any
+    ) -> None:
+        """A transport-only reconnect surfaces as gained compatibility and is recovered."""
+        mass, sgp, leader, _display = static_reconnect_setup()
+        # the member's visible parent never left available/enabled: only its linked
+        # output protocol dropped and came back, which shows up as can_group_with
+        leader.state.group_members = ["leader"]
+        mass.players._handle_set_members = AsyncMock()
+
+        sgp.on_group_member_updated(
+            leader,
+            {"can_group_with": (frozenset(), frozenset({"display"}))},
+        )
+        task = sgp._reconnect_task
+        assert task is not None
+        await task
+
+        mass.players._handle_set_members.assert_awaited_once_with(
+            leader, player_ids_to_add=["display"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_static_member_reconnect_ignores_lost_compatibility(
+        self, static_reconnect_setup: Any
+    ) -> None:
+        """Losing a grouping candidate is not a reconnect trigger."""
+        mass, sgp, leader, _display = static_reconnect_setup()
+        mass.players._handle_set_members = AsyncMock()
+
+        sgp.on_group_member_updated(
+            leader,
+            {"can_group_with": (frozenset({"display"}), frozenset())},
+        )
+
+        assert sgp._reconnect_task is None
+        mass.players._handle_set_members.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reconnect_task_is_not_started_eagerly(self, static_reconnect_setup: Any) -> None:
+        """The runner must not complete before it is stored in the task field."""
+        mass, sgp, _leader, display = static_reconnect_setup()
+        mass.players._handle_set_members = AsyncMock()
+
+        # the harness stands in for mass.create_task faithfully, including its
+        # eager_start=True default: an eagerly started runner would drive itself to
+        # completion here, before _reconnect_task could ever be assigned.
+        sgp.on_group_member_updated(display, {"available": (False, True)})
+        task = sgp._reconnect_task
+        assert task is not None
+        assert not task.done()
+
+        await task
+        assert sgp._reconnect_task is None
+
+    @pytest.mark.asyncio
+    async def test_unexpected_error_does_not_strand_other_pending_members(
+        self, static_reconnect_three_member_setup: Any
+    ) -> None:
+        """One member's unexpected error must not abort recovery of the others."""
+        mass, sgp, leader, _display, _lamp = static_reconnect_three_member_setup()
+        attempted: list[str] = []
+
+        async def _add(_leader: Any, player_ids_to_add: list[str]) -> None:
+            attempted.append(player_ids_to_add[0])
+            if player_ids_to_add[0] == "display":
+                raise RuntimeError("defect")
+
+        mass.players._handle_set_members = AsyncMock(side_effect=_add)
+        sgp.on_group_member_updated(leader, {"can_group_with": (frozenset(), frozenset({"x"}))})
+        task = sgp._reconnect_task
+        assert task is not None
+
+        with patch("music_assistant.providers.sync_group.player.RECONNECT_RETRY_DELAY", 0):
+            # the defect must not escape the runner and kill the whole episode
+            await task
+
+        # both members were attempted despite one raising, and nothing is stranded
+        assert sorted(attempted) == ["display", "lamp"]
+        assert not sgp._reconnect_pending_ids
+        assert sgp._reconnect_task is None
+
+    def test_reconnect_relevant_change_classification(self) -> None:
+        """The reconnect gate classifies changes without inventing or missing events."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        assert sgp._reconnect_relevant_change({"available": (False, True)}) is True
+        assert sgp._reconnect_relevant_change({"enabled": (False, True)}) is True
+        assert sgp._reconnect_relevant_change({"available": (True, False)}) is False
+        assert sgp._reconnect_relevant_change({"can_group_with": ({"a"}, {"a", "b"})}) is True
+        assert sgp._reconnect_relevant_change({"can_group_with": ({"a", "b"}, {"a"})}) is False
+        # a gain and a loss of the same size still counts as a gain
+        assert sgp._reconnect_relevant_change({"can_group_with": ({"a"}, {"b"})}) is True
+        assert sgp._reconnect_relevant_change({"can_group_with": ({"a"}, {"a"})}) is False
+        assert sgp._reconnect_relevant_change({"can_group_with": (None, {"a"})}) is False
+        assert sgp._reconnect_relevant_change({"can_group_with": ({"a"}, None)}) is False
+        assert sgp._reconnect_relevant_change({"volume_level": (1, 2)}) is False
+
+    @pytest.mark.asyncio
+    async def test_reconnect_task_field_clears_when_runner_completes(
+        self, static_reconnect_setup: Any
+    ) -> None:
+        """The completed runner detaches itself instead of leaving a stale task."""
+        mass, sgp, _leader, display = static_reconnect_setup()
+        mass.players._handle_set_members = AsyncMock()
+
+        sgp.on_group_member_updated(display, {"available": (False, True)})
+        task = sgp._reconnect_task
+        assert task is not None
+        await task
+
+        assert sgp._reconnect_task is None
+
+    @pytest.mark.asyncio
+    async def test_reconnect_unexpected_error_is_not_retried(
+        self, static_reconnect_setup: Any
+    ) -> None:
+        """A programming error is reported once, not retried away as a transient failure."""
+        mass, sgp, _leader, display = static_reconnect_setup()
+        mass.players._handle_set_members = AsyncMock(side_effect=RuntimeError("defect"))
+
+        sgp.on_group_member_updated(display, {"available": (False, True)})
+        task = sgp._reconnect_task
+        assert task is not None
+        # contained by the runner: it must not escape and strand the episode
+        await task
+
+        # a defect must not consume the retry budget like a transient failure would
+        assert mass.players._handle_set_members.await_count == 1
+        assert not sgp._reconnect_pending_ids
+        # surfaced as an error naming the member, not swallowed by the retry budget
+        message, member_id, *_rest = sgp.logger.error.call_args.args
+        assert "Unexpected error reconnecting static member" in message
+        assert member_id == "display"
 
     @pytest.mark.asyncio
     async def test_static_reconnect_skips_member_leading_native_group(

@@ -319,7 +319,7 @@ class SonosPlayer(Player):
         """Handle SET_MEMBERS command on the player."""
         if self.synced_to:
             # this should not happen, but guard anyways
-            raise RuntimeError("Player is synced, cannot set members")
+            raise PlayerCommandFailed("Player is synced, cannot set members")
         if not player_ids_to_add and not player_ids_to_remove:
             return
         player_ids_to_add = player_ids_to_add or []

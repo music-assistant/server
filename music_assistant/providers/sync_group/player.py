@@ -17,6 +17,7 @@ from propcache import under_cached_property as cached_property
 from music_assistant.constants import (
     APPLICATION_NAME,
     ATTR_AVAILABLE,
+    ATTR_CAN_GROUP_WITH,
     ATTR_ENABLED,
     CONF_DYNAMIC_GROUP_MEMBERS,
     CONF_GROUP_MEMBERS,
@@ -34,6 +35,7 @@ from .constants import (
     PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH,
     RECONNECT_MAX_ATTEMPTS,
     RECONNECT_RETRY_DELAY,
+    RECONNECT_RETRYABLE_ERRORS,
     REFORM_DEBOUNCE_SECONDS,
 )
 
@@ -613,29 +615,25 @@ class SyncGroupPlayer(Player):
         """Handle callback when a group member of the group player is updated."""
         self._update_attributes()
         super().on_group_member_updated(member_player, changed_values)
-        availability_returned = any(
-            changed_values.get(key, (None, None))[1] is True
-            for key in (ATTR_AVAILABLE, ATTR_ENABLED)
-        )
         if (
-            not self.is_dynamic
-            and self.is_active_session
-            and self.sync_leader is not None
-            and member_player.state.available
-            and member_player.state.enabled
-            and availability_returned
+            self.is_dynamic
+            or not self.is_active_session
+            or self.sync_leader is None
+            or not member_player.state.available
+            or not member_player.state.enabled
+            or not self._reconnect_relevant_change(changed_values)
         ):
-            leader_returned = member_player is self.sync_leader
-            if leader_returned:
-                for member_id in self._attr_static_group_members:
-                    if member_id != member_player.player_id:
-                        self._schedule_reconnect(member_id)
-            elif member_player.player_id in self._attr_static_group_members and (
-                member_player.player_id
-                not in self._translate_to_parent_ids(self.sync_leader.state.group_members)
-                or member_player.player_id in self._reconnect_pending_ids
-            ):
-                self._schedule_reconnect(member_player.player_id)
+            return
+        if member_player is self.sync_leader:
+            for member_id in self._attr_static_group_members:
+                if member_id != member_player.player_id:
+                    self._schedule_reconnect(member_id)
+        elif member_player.player_id in self._attr_static_group_members and (
+            member_player.player_id
+            not in self._translate_to_parent_ids(self.sync_leader.state.group_members)
+            or member_player.player_id in self._reconnect_pending_ids
+        ):
+            self._schedule_reconnect(member_player.player_id)
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
@@ -1419,6 +1417,24 @@ class SyncGroupPlayer(Player):
         if task is not asyncio.current_task() and not task.done():
             task.cancel()
 
+    def _reconnect_relevant_change(self, changed_values: dict[str, tuple[Any, Any]]) -> bool:
+        """
+        Return whether a member update can mean a static member is reachable again.
+
+        :param changed_values: The changed fields of the member's state update.
+        """
+        if any(
+            changed_values.get(key, (None, None))[1] is True
+            for key in (ATTR_AVAILABLE, ATTR_ENABLED)
+        ):
+            return True
+        # A linked output can reconnect while its parent stays available and enabled.
+        # Regained group compatibility may be the only reconnect signal.
+        previous, current = changed_values.get(ATTR_CAN_GROUP_WITH, (None, None))
+        if previous is None or current is None:
+            return False
+        return bool(set(current) - set(previous))
+
     def _schedule_reconnect(self, member_id: str) -> None:
         """Schedule an idempotent add for a static member that has reconnected."""
         self._reconnect_pending_ids.add(member_id)
@@ -1429,7 +1445,10 @@ class SyncGroupPlayer(Player):
             member_id,
             self.display_name,
         )
-        self._reconnect_task = self.mass.create_task(self._reconnect_runner())
+        # eager_start would let the runner complete before the assignment below,
+        # leaving its finally unable to clear the field, so a finished task would
+        # stay stored as if still pending.
+        self._reconnect_task = self.mass.create_task(self._reconnect_runner(), eager_start=False)
 
     def _cancel_reconnect_task(self) -> None:
         """Cancel any pending static-member reconnect task."""
@@ -1454,9 +1473,24 @@ class SyncGroupPlayer(Player):
                     if self.is_dynamic or not self.is_active_session or self.sync_leader is None:
                         self._reconnect_pending_ids.clear()
                         return
-                    if not await self._reconnect_member_locked(
-                        member_id, self.sync_leader.player_id, attempts
-                    ):
+                    try:
+                        keep_going = await self._reconnect_member_locked(
+                            member_id, self.sync_leader.player_id, attempts
+                        )
+                    except Exception as err:
+                        # A defect in our own state handling, not a transient provider
+                        # failure: report it and drop this member rather than letting
+                        # the retry budget hide it or one member strand the others.
+                        self._reconnect_pending_ids.discard(member_id)
+                        self.logger.error(
+                            "Unexpected error reconnecting static member %s to syncgroup %s: %s",
+                            member_id,
+                            self.display_name,
+                            err,
+                            exc_info=err,
+                        )
+                        continue
+                    if not keep_going:
                         return
                 if self._reconnect_pending_ids:
                     await asyncio.sleep(RECONNECT_RETRY_DELAY)
@@ -1510,7 +1544,7 @@ class SyncGroupPlayer(Player):
                 await self.mass.players._handle_set_members(leader, player_ids_to_add=[member_id])
             except asyncio.CancelledError:
                 raise
-            except Exception as err:
+            except RECONNECT_RETRYABLE_ERRORS as err:
                 attempt = self._record_reconnect_attempt(member_id, attempts)
                 self.logger.warning(
                     "Could not reconnect static member %s to syncgroup %s (attempt %s/%s): %s",

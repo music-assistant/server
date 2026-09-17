@@ -593,6 +593,38 @@ class TestStateForwarding:
 
         callback.assert_called_once_with(member, changed_values)
 
+    def test_group_member_notified_for_gained_protocol_compatibility(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A can_group_with change reaches the group like availability does."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        group_player = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
+        member = MockPlayer(provider, "member", "Member")
+        controller._players = {"group": group_player, "member": member}
+        mock_mass.players = controller
+        group_player._attr_group_members = ["member"]
+        group_player._attr_static_group_members = ["member"]
+        for player in (group_player, member):
+            player.initialized.set()
+            player.update_state(signal_event=False)
+
+        with (
+            patch.object(
+                type(group_player),
+                "is_active_session",
+                new_callable=PropertyMock,
+                return_value=True,
+            ),
+            patch.object(group_player, "on_group_member_updated") as callback,
+        ):
+            changed_values: dict[str, tuple[Any, Any]] = {
+                "can_group_with": (frozenset(), frozenset({"member"}))
+            }
+            controller._forward_state_update(member, changed_values)
+
+        callback.assert_called_once_with(member, changed_values)
+
     def test_sync_leader_updates_also_reach_its_group_player(self, mock_mass: MagicMock) -> None:
         """A sync leader must notify its group player as well as its own sync children."""
         controller = PlayerController(mock_mass)
