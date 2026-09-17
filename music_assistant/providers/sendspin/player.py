@@ -2074,7 +2074,7 @@ class SendspinPlayer(SendspinBasePlayer):
         # Stop any in-flight beat-analysis polling task
         self._cancel_beat_retry()
         if (metadata_role := self._metadata_role) is not None:
-            metadata_role.set_metadata(Metadata())
+            metadata_role.clear()
         if (visualizer_role := self._visualizer_role) is not None:
             visualizer_role.clear_beat_schedule()
             # Reset to PENDING so beats are re-deferred until the next track's analysis lands.
