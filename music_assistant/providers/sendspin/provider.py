@@ -22,6 +22,7 @@ from aiosendspin.models.types import (
     AudioCodec,
     ManagementResult,
     PairAbortReason,
+    PairingCodeFormat,
     PairMethod,
     PlayerCommand,
     role_family,
@@ -34,7 +35,7 @@ from aiosendspin.noise.pairing import (
     PairingError,
     PairingTimeoutError,
 )
-from aiosendspin.noise.pairing_token import decode_token
+from aiosendspin.noise.pairing_token import decode_psk_token
 from aiosendspin.noise.trust_store import FileServerPairingStore, PskCategory
 from aiosendspin.server import (
     ClientAddedEvent,
@@ -91,18 +92,14 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 from music_assistant.providers.sendspin.constants import (
     CONF_ALLOW_LEGACY_CLIENTS,
-    CONF_MIN_PIN_LENGTH,
     CONF_SENDSPIN_STATIC_DELAY,
     CONF_VIRTUAL_PLAYER_OWNER,
-    DEFAULT_MIN_PIN_LENGTH,
     VIRTUAL_PLAYER_ID_PREFIX,
 )
 from music_assistant.providers.sendspin.helpers import (
     SecurityActionError,
     effective_pair_methods,
     error_alert,
-    negotiated_pin_length,
-    pair_method_descriptor,
 )
 from music_assistant.providers.sendspin.player import (
     SendspinBasePlayer,
@@ -116,9 +113,8 @@ from music_assistant.providers.sendspin.security import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Sequence
+    from collections.abc import Awaitable, Collection, Sequence
 
-    from aiosendspin.models.core import PairMethodDescriptor
     from aiosendspin.models.management import (
         ManagementResultData,
         ManagementSetPairingConfigPayload,
@@ -159,7 +155,6 @@ class PinPairingSession:
     pin_future: asyncio.Future[str]
     verify: bool = False
     static: bool = False
-    pin_length: int | None = None
     task: asyncio.Task[None] | None = None
     pin_request_event: asyncio.Event = field(default_factory=asyncio.Event)
     gesture_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -408,12 +403,6 @@ class SendspinProvider(PlayerProvider):
                 default_value=True,
                 hidden=True,
             ),
-            ConfigEntry(
-                key=CONF_MIN_PIN_LENGTH,
-                type=ConfigEntryType.INTEGER,
-                range=(4, 12),
-                default_value=DEFAULT_MIN_PIN_LENGTH,
-            ),
         )
 
     async def handle_async_init(self) -> None:
@@ -468,9 +457,6 @@ class SendspinProvider(PlayerProvider):
             pairing_store=pairing_store,
             allow_unencrypted=allow_legacy_clients,
             allow_noncompliant_clients=allow_legacy_clients,
-            min_pin_length=cast(
-                "int", self.config.get_value(CONF_MIN_PIN_LENGTH, DEFAULT_MIN_PIN_LENGTH)
-            ),
         )
         # Pitch (YINFFT) is the heaviest visualizer DSP and result quality is
         # still very mixed, needs more testing. Disable it globally for now to
@@ -795,23 +781,12 @@ class SendspinProvider(PlayerProvider):
             raise SecurityActionError("pairing_error_not_connected")
         offered = effective_pair_methods(info, self.pairing_config_snapshot(client_id))
         method = self._pick_pin_method(offered, verify=verify, static=static)
-        pin_length = (
-            # From the hello advertisement, not the live config: that is what the server's own
-            # negotiation reads, so the predicted length matches the PIN the device derives.
-            negotiated_pin_length(
-                pair_method_descriptor(info.supported_pair_methods or (), PairMethod.DYNAMIC_PIN),
-                self.server_api.min_pin_length,
-            )
-            if method is PairMethod.DYNAMIC_PIN
-            else None
-        )
         session = PinPairingSession(
             client_id=client_id,
             method=method,
             pin_future=self.mass.loop.create_future(),
             verify=verify,
             static=static,
-            pin_length=pin_length,
             opened_management=await self._open_pairing_window(client_id),
         )
         self._pin_sessions[client_id] = session
@@ -856,7 +831,7 @@ class SendspinProvider(PlayerProvider):
         if session is not None and session.attempt_running:
             raise SecurityActionError("pairing_error_concurrent")
         try:
-            token = decode_token(token_value)
+            token = decode_psk_token(token_value)
         except ValueError as err:
             raise SecurityActionError("pairing_error_token_invalid") from err
         if token.client_id != client_id:
@@ -900,7 +875,7 @@ class SendspinProvider(PlayerProvider):
         # The token names the client it belongs to, so this works on every transport,
         # including Ingress where the session carries no client id at all.
         try:
-            client_id = decode_token(pairing_token).client_id
+            client_id = decode_psk_token(pairing_token).client_id
         except ValueError as err:
             raise InvalidCommand(
                 "The pairing token is not valid",
@@ -1267,7 +1242,7 @@ class SendspinProvider(PlayerProvider):
 
     @staticmethod
     def _pick_pin_method(
-        offered: list[PairMethodDescriptor], *, verify: bool = False, static: bool = False
+        offered: Collection[PairMethod], *, verify: bool = False, static: bool = False
     ) -> PairMethod:
         """
         Select the preferred usable PIN method from the client's offer.
@@ -1277,14 +1252,13 @@ class SendspinProvider(PlayerProvider):
         """
         wanted: tuple[PairMethod, ...]
         if verify:
-            wanted = (PairMethod.DYNAMIC_PIN,)
+            wanted = (PairMethod.DYNAMIC_PAIRING_CODE,)
         elif static:
-            wanted = (PairMethod.STATIC_PIN,)
+            wanted = (PairMethod.STATIC_PAIRING_CODE,)
         else:
-            wanted = (PairMethod.DYNAMIC_PIN, PairMethod.STATIC_PIN)
-        offered_methods = {descriptor.method for descriptor in offered}
+            wanted = (PairMethod.DYNAMIC_PAIRING_CODE, PairMethod.STATIC_PAIRING_CODE)
         for method in wanted:
-            if method in offered_methods:
+            if method in offered:
                 return method
         raise SecurityActionError("pairing_error_no_pin_method")
 
@@ -1347,11 +1321,14 @@ class SendspinProvider(PlayerProvider):
                 session.client_id,
                 PairingAttempt(
                     session.method,
-                    pin_provider=pin_provider,
+                    pairing_code_provider=pin_provider,
+                    pairing_format=PairingCodeFormat.DIGITS
+                    if session.method is PairMethod.DYNAMIC_PAIRING_CODE
+                    else None,
                     verify=session.verify,
                     on_pair_pending=on_pair_pending,
                     languages=self._spoken_pin_languages()
-                    if session.method is PairMethod.DYNAMIC_PIN
+                    if session.method is PairMethod.DYNAMIC_PAIRING_CODE
                     else (),
                 ),
             )

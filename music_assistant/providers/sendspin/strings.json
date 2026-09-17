@@ -18,10 +18,6 @@
       "label": "Allow legacy clients",
       "description": "Accept legacy Sendspin clients that don't implement the current specification, including clients that connect without encryption, so their traffic can be intercepted on the local network. \nDisable this to accept only spec-compliant clients and to stop holding back newer protocol behavior. \nThis option is temporary and will be removed in a future release."
     },
-    "min_pin_length": {
-      "label": "Minimum pairing code length",
-      "description": "Minimum number of digits for dynamic pairing codes."
-    },
     "security_status_disconnected": {
       "label": "The device disconnected and will reappear once it reconnects."
     },
@@ -233,7 +229,6 @@
     "pairing_error_timeout": "The pairing attempt timed out.",
     "pairing_error_concurrent": "Another pairing attempt is already in progress.",
     "pairing_error_pin_mismatch": "The pairing code did not match. Please try again.",
-    "pairing_error_pin_length": "The device rejected the pairing code length.",
     "pairing_error_cancelled": "Pairing was cancelled on the device.",
     "pairing_error_method_unsupported": "The device does not support this pairing method.",
     "pairing_error_aborted": "The device aborted the pairing attempt.",

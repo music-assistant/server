@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 def _empty_config() -> ManagementResultData:
     return cast(
         "ManagementResultData",
-        SimpleNamespace(unpaired_access=None, static_pin=None, dynamic_pin=None),
+        SimpleNamespace(unpaired_access=None, static_pairing_code=None, dynamic_pairing_code=None),
     )
 
 

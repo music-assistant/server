@@ -10,10 +10,11 @@ from io import BytesIO
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from aiosendspin.models import AudioCodec, MediaCommand
+from aiosendspin.models.core import DynamicPairMethodDescriptor
 from aiosendspin.models.management import (
     ManagementSetPairingConfigPayload,
-    SetDynamicPinConfig,
-    SetStaticPinConfig,
+    SetDynamicPairingCodeConfig,
+    SetStaticPairingCodeConfig,
 )
 from aiosendspin.models.types import PairMethod, PlaybackStateType, PlayerCommand, role_family
 from aiosendspin.models.types import RepeatMode as SendspinRepeatMode
@@ -24,6 +25,7 @@ from aiosendspin.noise.pairing import (
     SERVER_GESTURE_TIMEOUT_S,
     PairingError,
 )
+from aiosendspin.noise.pairing_code import DYNAMIC_DIGITS, STATIC_DIGITS
 from aiosendspin.noise.trust_store import PskCategory
 from aiosendspin.server import ClientEvent, GroupEvent, SendspinGroup, VolumeChangedEvent
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
@@ -117,7 +119,6 @@ from .helpers import (
     effective_unpaired_access,
     error_alert,
     mac_from_bridge_client_id,
-    pair_method_descriptor,
     pin_code_format,
 )
 from .playback import SendspinPlaybackSession
@@ -195,16 +196,16 @@ def format_to_display_string(fmt: SupportedAudioFormat) -> str:
 
 _MANAGEMENT_ACTIONS = {
     CONF_ACTION_MANAGEMENT_STATIC_PIN_ENABLE: ManagementSetPairingConfigPayload(
-        static_pin=SetStaticPinConfig(enabled=True)
+        static_pairing_code=SetStaticPairingCodeConfig(enabled=True)
     ),
     CONF_ACTION_MANAGEMENT_STATIC_PIN_DISABLE: ManagementSetPairingConfigPayload(
-        static_pin=SetStaticPinConfig(enabled=False)
+        static_pairing_code=SetStaticPairingCodeConfig(enabled=False)
     ),
     CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_ENABLE: ManagementSetPairingConfigPayload(
-        dynamic_pin=SetDynamicPinConfig(enabled=True)
+        dynamic_pairing_code=SetDynamicPairingCodeConfig(enabled=True)
     ),
     CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_DISABLE: ManagementSetPairingConfigPayload(
-        dynamic_pin=SetDynamicPinConfig(enabled=False)
+        dynamic_pairing_code=SetDynamicPairingCodeConfig(enabled=False)
     ),
 }
 
@@ -232,12 +233,12 @@ _PAIRING_ABORT_REASONS = {
 # configured secret is found, or which channel conveys a per-session PIN. Values outside these
 # maps render nothing.
 _SECRET_HINT_LABELS = {
-    PairMethod.STATIC_PIN: {
+    PairMethod.STATIC_PAIRING_CODE: {
         "device": "static_pin_location_device",
         "leaflet": "static_pin_location_leaflet",
         "operator": "static_pin_location_operator",
     },
-    PairMethod.DYNAMIC_PIN: {
+    PairMethod.DYNAMIC_PAIRING_CODE: {
         "display": "dynamic_pin_channel_display",
         "speaker": "dynamic_pin_channel_speaker",
     },
@@ -902,14 +903,14 @@ class SendspinBasePlayer(Player):
         ]
         entries.extend(
             SendspinBasePlayer._management_pin_method_entries(
-                config.static_pin,
+                config.static_pairing_code,
                 CONF_ACTION_MANAGEMENT_STATIC_PIN_ENABLE,
                 CONF_ACTION_MANAGEMENT_STATIC_PIN_DISABLE,
             )
         )
         entries.extend(
             SendspinBasePlayer._management_pin_method_entries(
-                config.dynamic_pin,
+                config.dynamic_pairing_code,
                 CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_ENABLE,
                 CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_DISABLE,
             )
@@ -965,22 +966,19 @@ class SendspinBasePlayer(Player):
         info = self.api.info_or_none
         pairing_config = provider.pairing_config_snapshot(self.player_id)
         pair_methods = effective_pair_methods(info, pairing_config)
-        usable_pin_methods = {
-            descriptor.method
-            for descriptor in pair_methods
-            if descriptor.method in (PairMethod.DYNAMIC_PIN, PairMethod.STATIC_PIN)
+        usable_pin_methods = pair_methods.keys() & {
+            PairMethod.DYNAMIC_PAIRING_CODE,
+            PairMethod.STATIC_PAIRING_CODE,
         }
         options: list[str] = []
         if usable_pin_methods:
             # Static PIN is only a distinct, meaningful choice when both PIN methods are usable;
             # opposite it the other option names the dynamic PIN rather than PINs in general.
-            both_pin_methods = usable_pin_methods >= {PairMethod.DYNAMIC_PIN, PairMethod.STATIC_PIN}
+            both_pin_methods = len(usable_pin_methods) == 2
             options.append(PAIR_METHOD_DYNAMIC_PIN if both_pin_methods else PAIR_METHOD_PIN)
             if both_pin_methods:
                 options.append(PAIR_METHOD_STATIC_PIN)
-        if not options and any(
-            descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods
-        ):
+        if not options and PairMethod.PAIRING_PSK in pair_methods:
             # Token pairing is machine-to-machine only and must never be user facing
             # when a proper pairing method (PIN) is available.
             options.append(PAIR_METHOD_TOKEN)
@@ -991,7 +989,7 @@ class SendspinBasePlayer(Player):
         pair_methods = effective_pair_methods(
             self.api.info_or_none, provider.pairing_config_snapshot(self.player_id)
         )
-        if any(descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods):
+        if PairMethod.PAIRING_PSK in pair_methods:
             return "token_pairing_only"
         return "no_pair_methods"
 
@@ -1014,12 +1012,11 @@ class SendspinBasePlayer(Player):
         """Confirm a paired device's physical presence via its dynamic PIN."""
         info = self.api.info_or_none
         pairing_config = provider.pairing_config_snapshot(self.player_id)
-        offers_dynamic_pin = any(
-            descriptor.method is PairMethod.DYNAMIC_PIN
-            for descriptor in effective_pair_methods(info, pairing_config)
+        offers_dynamic_pin = PairMethod.DYNAMIC_PAIRING_CODE in effective_pair_methods(
+            info, pairing_config
         )
         # presence proven by a dynamic-PIN pairing itself needs no re-verification
-        if not offers_dynamic_pin or PairMethod.DYNAMIC_PIN in record.pair_methods:
+        if not offers_dynamic_pin or PairMethod.DYNAMIC_PAIRING_CODE in record.pair_methods:
             raise AbortFlow("already_paired")
         await self._run_pin_pairing_flow(session, provider, static=False, verify=True)
 
@@ -1155,9 +1152,11 @@ class SendspinBasePlayer(Player):
         self, provider: SendspinProvider, pin_session: PinPairingSession
     ) -> list[ConfigEntry]:
         """Return the PIN form fields, labelled with how the operator gets the PIN."""
-        # only a dynamic PIN carries a negotiated length; a static PIN is always
-        # exactly 8 digits (enforced by aiosendspin)
-        pin_length = pin_session.pin_length if pin_session.pin_length is not None else 8
+        pin_length = (
+            DYNAMIC_DIGITS
+            if pin_session.method is PairMethod.DYNAMIC_PAIRING_CODE
+            else STATIC_DIGITS
+        )
         return [
             ConfigEntry(
                 key=CONF_PAIRING_PIN,
@@ -1175,20 +1174,18 @@ class SendspinBasePlayer(Player):
         None when the device gave no usable hint, which leaves the field on its own
         generic label.
         """
-        descriptor = pair_method_descriptor(
-            effective_pair_methods(
-                self.api.info_or_none, provider.pairing_config_snapshot(self.player_id)
-            ),
-            method,
-        )
-        if descriptor is None:
+        descriptor = effective_pair_methods(
+            self.api.info_or_none, provider.pairing_config_snapshot(self.player_id)
+        ).get(method)
+        if isinstance(descriptor, DynamicPairMethodDescriptor):
+            hints: list[str] | None = descriptor.out_channels
+        elif descriptor is not None:
+            hints = descriptor.locations
+        else:
             return None
-        hints = (
-            descriptor.out_channels if method is PairMethod.DYNAMIC_PIN else descriptor.locations
-        )
         labels = _SECRET_HINT_LABELS[method]
         known = [hint for hint in hints or [] if hint in labels]
-        if method is PairMethod.DYNAMIC_PIN and set(known) >= {"display", "speaker"}:
+        if method is PairMethod.DYNAMIC_PAIRING_CODE and set(known) >= {"display", "speaker"}:
             return _BOTH_PIN_CHANNELS
         return labels[known[0]] if known else None
 
