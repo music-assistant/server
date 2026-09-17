@@ -34,10 +34,9 @@ unpaired-access records for it, so a scenario can be run again from scratch.
 
 ## Gesture gating
 
-A static-PIN pairing always waits for the device's pairing button. A dynamic PIN waits only when
-the negotiated length is under six digits, or after repeated PIN failures. The negotiated length
-is `max(device minimum, server minimum)`, so a device asking for four digits only gets four when
-the Sendspin provider's own minimum is four as well.
+A static-PIN pairing always waits for the device's pairing button. A dynamic PIN is always six
+digits and waits only once the device has seen too many wrong entries. A device offering both
+advertises only the dynamic PIN.
 
 Once a device is paired, the server opens the pairing window itself over a management session, so
 the button is only needed for a first pairing.
@@ -50,10 +49,7 @@ the button is only needed for a first pairing.
 | Guest Speaker | Guest access with pairing offered as the optional secure alternative |
 | PIN Speaker | Six-digit dynamic PIN on a display |
 | Spoken PIN Speaker | Dynamic PIN spoken instead of displayed |
-| Long PIN Speaker | Eight-digit PIN, rendered as two groups of four |
-| Short PIN Speaker | Four-digit PIN, which is gesture-gated |
 | Static PIN Speaker | Fixed eight-digit PIN, always gesture-gated |
-| Dual PIN Speaker | Both PIN methods, so setup first asks which to use |
 | Token Speaker | No PIN support, so setup falls back to the token printed on the device |
 | Managed Speaker | No PIN support, with its token handed out by an administrator |
 | Locked Speaker | Nothing on offer, so setup can only abort |

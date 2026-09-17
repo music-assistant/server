@@ -5,8 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from aiosendspin.noise.pin import DEFAULT_MIN_PIN_DIGITS
-
 
 class PinChannel(StrEnum):
     """Out-channel a device uses to convey a derived dynamic PIN to the operator."""
@@ -39,12 +37,11 @@ class Scenario:
     :param description: What this device is meant to demonstrate, shown in the settings.
     :param pairing_psk: Offer the token method, as every real speaker does. Setup only
         surfaces it for a device with no PIN method of its own.
-    :param static_pin: Offer the fixed PIN. Always gesture-gated by the spec.
-    :param dynamic_pin: Offer a per-attempt derived PIN.
+    :param static_pin: Offer the fixed PIN. Always gesture-gated by the spec. A device that
+        also offers the dynamic PIN advertises only the dynamic one.
+    :param dynamic_pin: Offer a per-attempt derived six-digit PIN.
     :param unpaired_access: Admit a server without pairing. The device is then approved on
         connect and needs no setup at all, unless it also has an audio input.
-    :param min_pin_length: Shortest dynamic PIN the device accepts. The server negotiates
-        ``max(this, its own minimum)``, and anything under 6 digits is gesture-gated.
     :param pin_channel: How the derived dynamic PIN reaches the operator.
     :param secret_locations: Where the operator finds a static secret ("device", "leaflet"
         or "operator"), which picks the instruction text shown during setup.
@@ -59,7 +56,6 @@ class Scenario:
     static_pin: bool = False
     dynamic_pin: bool = False
     unpaired_access: bool = False
-    min_pin_length: int = DEFAULT_MIN_PIN_DIGITS
     pin_channel: PinChannel = PinChannel.NONE
     secret_locations: tuple[str, ...] = ()
     source_role: bool = False
@@ -72,7 +68,7 @@ class Scenario:
     @property
     def gesture_gated(self) -> bool:
         """Whether a first pairing needs the device's pairing button pressed."""
-        return self.static_pin or (self.dynamic_pin and self.min_pin_length < 6)
+        return self.static_pin and not self.dynamic_pin
 
 
 SCENARIOS: tuple[Scenario, ...] = (
@@ -112,43 +108,12 @@ SCENARIOS: tuple[Scenario, ...] = (
         pairing_psk=True,
     ),
     Scenario(
-        scenario_id="dynamic_pin_long",
-        name="Demo Long PIN Speaker",
-        product_name="Long PIN Speaker",
-        description="Dynamic PIN of eight digits, which the entry field renders as two groups of four.",
-        dynamic_pin=True,
-        pin_channel=PinChannel.DISPLAY,
-        min_pin_length=8,
-        pairing_psk=True,
-    ),
-    Scenario(
-        scenario_id="dynamic_pin_short",
-        name="Demo Short PIN Speaker",
-        product_name="Short PIN Speaker",
-        description="Four-digit dynamic PIN. Short PINs are gesture-gated, so press the button first.",
-        dynamic_pin=True,
-        pin_channel=PinChannel.DISPLAY,
-        min_pin_length=4,
-        pairing_psk=True,
-    ),
-    Scenario(
         scenario_id="static_pin",
         name="Demo Static PIN Speaker",
         product_name="Static PIN Speaker",
         description="Fixed eight-digit PIN printed on the device. Always needs the button pressed first.",
         static_pin=True,
         secret_locations=("device",),
-        pairing_psk=True,
-    ),
-    Scenario(
-        scenario_id="both_pins",
-        name="Demo Dual PIN Speaker",
-        product_name="Dual PIN Speaker",
-        description="Static and dynamic PIN both offered, so setup first asks which one to use.",
-        static_pin=True,
-        dynamic_pin=True,
-        pin_channel=PinChannel.DISPLAY,
-        secret_locations=("leaflet",),
         pairing_psk=True,
     ),
     Scenario(

@@ -89,20 +89,20 @@ async def test_device_advertises_its_scenario(
 
         implemented = client.implemented_pair_methods
         assert (PairMethod.PAIRING_PSK in implemented) is True
-        assert (PairMethod.STATIC_PIN in implemented) is scenario.static_pin
-        assert (PairMethod.DYNAMIC_PIN in implemented) is scenario.dynamic_pin
+        assert (PairMethod.STATIC_PAIRING_CODE in implemented) is scenario.static_pin
+        assert (PairMethod.DYNAMIC_PAIRING_CODE in implemented) is scenario.dynamic_pin
         assert client.secret_locations == scenario.secret_locations
-        assert ("display" in client.pin_out_channels) is scenario.pin_channel.has_display
-        assert ("speaker" in client.pin_out_channels) is scenario.pin_channel.has_speaker
+        channels = client.pairing_code_out_channels
+        assert ("display" in channels) is scenario.pin_channel.has_display
+        assert ("speaker" in channels) is scenario.pin_channel.has_speaker
 
         store = await FileClientPairingStore.open(tmp_path / f"{scenario.scenario_id}.json")
         config = await store.get_pairing_config()
         assert config.pairing_psk_enabled is scenario.pairing_psk
-        assert config.static_pin_enabled is scenario.static_pin
-        assert config.dynamic_pin_enabled is scenario.dynamic_pin
+        assert config.static_pairing_code_enabled is scenario.static_pin
+        assert config.dynamic_pairing_code_enabled is scenario.dynamic_pin
         assert config.unpaired_access_enabled is scenario.unpaired_access
-        assert config.dynamic_pin_min_length == scenario.min_pin_length
-        assert (await store.static_pin() == STATIC_PIN) is scenario.static_pin
+        assert (await store.static_pairing_code() == STATIC_PIN) is scenario.static_pin
         assert (await store.pairing_psk() is not None) is scenario.pairing_psk
         assert (device.pairing_token is not None) is scenario.pairing_psk
     finally:
@@ -111,8 +111,8 @@ async def test_device_advertises_its_scenario(
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda s: s.scenario_id)
 def test_gesture_gating_matches_the_spec(scenario: Scenario) -> None:
-    """A device needs its button pressed for a static PIN, or a dynamic PIN under six digits."""
-    expected = scenario.static_pin or (scenario.dynamic_pin and scenario.min_pin_length < 6)
+    """A device needs its button pressed only when the static PIN is the one it offers."""
+    expected = scenario.static_pin and not scenario.dynamic_pin
     assert scenario.gesture_gated is expected
 
 
