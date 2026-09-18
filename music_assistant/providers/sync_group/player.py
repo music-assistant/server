@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, cast
 
@@ -15,6 +16,9 @@ from propcache import under_cached_property as cached_property
 
 from music_assistant.constants import (
     APPLICATION_NAME,
+    ATTR_AVAILABLE,
+    ATTR_CAN_GROUP_WITH,
+    ATTR_ENABLED,
     CONF_DYNAMIC_GROUP_MEMBERS,
     CONF_GROUP_MEMBERS,
     CONF_POWER_CONTROL,
@@ -29,11 +33,14 @@ from .constants import (
     IDLE_GRACE_SECONDS,
     PLAYBACK_START_TIMEOUT,
     PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH,
+    RECONNECT_MAX_ATTEMPTS,
+    RECONNECT_RETRY_DELAY,
+    RECONNECT_RETRYABLE_ERRORS,
     REFORM_DEBOUNCE_SECONDS,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Collection
+    from collections.abc import Collection
 
     from music_assistant_models.player import PlayerSource
 
@@ -69,6 +76,9 @@ class SyncGroupPlayer(Player):
         self._idle_grace_task: asyncio.Task[None] | None = None
         # task that re-forms the group (debounced) after the sync leader was removed
         self._reform_task: asyncio.Task[None] | None = None
+        # task that retries adding configured static members after they reconnect
+        self._reconnect_task: asyncio.Task[None] | None = None
+        self._reconnect_pending_ids: set[str] = set()
         # protocol hint for the debounced re-form, snapshotted before the old
         # leader was cleared so the new leader keeps protocol continuity
         self._reform_protocol_domain: str | None = None
@@ -262,10 +272,14 @@ class SyncGroupPlayer(Player):
 
     @property
     def group_members(self) -> list[str]:
-        """Return the list of parent player id's that are part of this sync group."""
-        if (sync_leader := self.sync_leader) and sync_leader.state.group_members:
-            # use state.group_members here so protocol specific id's get correctly translated
-            return sync_leader.state.group_members
+        """Return the live or configured members of this sync group."""
+        if sync_leader := self.sync_leader:
+            # Use state.group_members here so protocol-specific ids get correctly
+            # translated. An active leader with no live children is still the sole
+            # member; configured members must not be presented as live in that state.
+            return sync_leader.state.group_members or [sync_leader.player_id]
+        # While dormant, retain the configured list so saved groups remain visible
+        # and can be formed again on the next playback start.
         return self._attr_group_members
 
     async def get_config_entries(self) -> list[ConfigEntry]:
@@ -334,9 +348,9 @@ class SyncGroupPlayer(Player):
 
         :param powered: True to power on (form/capture), False to power off (dissolve).
         """
-        # always cancel any pending idle-grace timer on explicit power transitions
+        # always cancel pending lifecycle tasks on explicit power transitions
         self._cancel_idle_grace_timer()
-
+        self._cancel_reconnect_task()
         if not powered and self.playback_state in (
             PlaybackState.PLAYING,
             PlaybackState.PAUSED,
@@ -354,7 +368,6 @@ class SyncGroupPlayer(Player):
                 *preset_members,
                 *[x for x in self._attr_group_members if x not in preset_members],
             ]
-            # form syncgroup when powering on
             await self._form_syncgroup()
         else:
             # dissolve syncgroup when powering off
@@ -377,9 +390,10 @@ class SyncGroupPlayer(Player):
         to pin the group as 'active'.
         """
         self._cancel_idle_grace_timer()
-        # an explicit stop also voids any pending debounced re-form and the
+        # an explicit stop also voids any pending re-form/reconnect and the
         # startup marker — the user asked for silence
         self._cancel_reform_timer()
+        self._cancel_reconnect_task()
         self._playback_start_at = float("-inf")
         self._attr_current_media = None
         if sync_leader := self.sync_leader:
@@ -601,11 +615,36 @@ class SyncGroupPlayer(Player):
         """Handle callback when a group member of the group player is updated."""
         self._update_attributes()
         super().on_group_member_updated(member_player, changed_values)
+        if (
+            self.is_dynamic
+            or not self.is_active_session
+            or self.sync_leader is None
+            or not member_player.state.available
+            or not member_player.state.enabled
+            or not self._reconnect_relevant_change(changed_values)
+        ):
+            return
+        # a rediscovered player is a new instance for the same device: read the registry's
+        # instance for its member list, but leave self.sync_leader untouched — writing it
+        # here would trip _form_syncgroup's identity-based stale-form guards mid-form
+        leader = self.sync_leader
+        if (current_leader := self.mass.players.get_player(leader.player_id)) is not None:
+            leader = current_leader
+        if member_player.player_id == leader.player_id:
+            for member_id in self._attr_static_group_members:
+                if member_id != member_player.player_id:
+                    self._schedule_reconnect(member_id)
+        elif member_player.player_id in self._attr_static_group_members and (
+            member_player.player_id not in self._translate_to_parent_ids(leader.state.group_members)
+            or member_player.player_id in self._reconnect_pending_ids
+        ):
+            self._schedule_reconnect(member_player.player_id)
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         self._cancel_idle_grace_timer()
         self._cancel_reform_timer()
+        self._cancel_reconnect_task()
         await super().on_unload()
         # the player is going away; make sure we don't leave the protocol-level
         # sync group standing with a now-nonexistent leader behind it.
@@ -774,11 +813,12 @@ class SyncGroupPlayer(Player):
 
     async def _dissolve_syncgroup(self) -> None:
         """Dissolve the current syncgroup by ungrouping all members."""
-        # a dissolve is happening now — any pending grace or re-form timer is no
-        # longer needed (_dissolve_and_reform re-arms the re-form right after)
+        # a dissolve is happening now — any pending grace, re-form, or reconnect
+        # timer is no longer needed (_dissolve_and_reform re-arms the re-form right after)
         # and the session whose start the marker tracked is gone
         self._cancel_idle_grace_timer()
         self._cancel_reform_timer()
+        self._cancel_reconnect_task()
         self._playback_start_at = float("-inf")
         if sync_leader := self.sync_leader:
             # dissolve the temporary syncgroup from the player that holds the members:
@@ -1381,6 +1421,200 @@ class SyncGroupPlayer(Player):
         # never cancel ourselves: the runner ends up here via play() -> _form_syncgroup
         if task is not asyncio.current_task() and not task.done():
             task.cancel()
+
+    def _reconnect_relevant_change(self, changed_values: dict[str, tuple[Any, Any]]) -> bool:
+        """
+        Return whether a member update can mean a static member is reachable again.
+
+        :param changed_values: The changed fields of the member's state update.
+        """
+        if any(
+            changed_values.get(key, (None, None))[1] is True
+            for key in (ATTR_AVAILABLE, ATTR_ENABLED)
+        ):
+            return True
+        # a member released by the other group that owned it becomes recoverable, and
+        # that release is the only signal we get for it
+        if any(
+            changed_values.get(key, (None, None))[0] is not None and changed_values[key][1] is None
+            for key in ("active_group", "synced_to")
+        ):
+            return True
+        # A linked output can reconnect while its parent stays available and enabled.
+        # Regained group compatibility may be the only reconnect signal.
+        previous, current = changed_values.get(ATTR_CAN_GROUP_WITH, (None, None))
+        if previous is None or current is None:
+            return False
+        return bool(set(current) - set(previous))
+
+    def _schedule_reconnect(self, member_id: str) -> None:
+        """Schedule an idempotent add for a static member that has reconnected."""
+        self._reconnect_pending_ids.add(member_id)
+        if self._reconnect_task is not None and not self._reconnect_task.done():
+            return
+        self.logger.debug(
+            "Scheduling reconnect of static member %s to syncgroup %s",
+            member_id,
+            self.display_name,
+        )
+        # eager_start would let the runner complete before the assignment below,
+        # leaving its finally unable to clear the field, so a finished task would
+        # stay stored as if still pending.
+        self._reconnect_task = self.mass.create_task(self._reconnect_runner(), eager_start=False)
+
+    def _cancel_reconnect_task(self) -> None:
+        """Cancel any pending static-member reconnect task."""
+        self._reconnect_pending_ids.clear()
+        if (task := self._reconnect_task) is None:
+            return
+        self._reconnect_task = None
+        if task is not asyncio.current_task() and not task.done():
+            task.cancel()
+
+    async def _reconnect_runner(self) -> None:
+        """Add reconnected static members without altering the playback session."""
+        attempts: dict[str, int] = {}
+        unexpected: list[Exception] = []
+        try:
+            while self._reconnect_pending_ids:
+                member_id = next(iter(self._reconnect_pending_ids))
+                async with self.mass.players.get_player_lock(
+                    self.player_id, PlayerLockPurpose.PLAYBACK
+                ):
+                    # These are concrete reasons to abandon the whole episode and can
+                    # be checked before waiting for the leader lock.
+                    if self.is_dynamic or not self.is_active_session or self.sync_leader is None:
+                        self._reconnect_pending_ids.clear()
+                        break
+                    try:
+                        keep_going = await self._reconnect_member_locked(
+                            member_id, self.sync_leader.player_id, attempts
+                        )
+                    except Exception as err:
+                        # A defect in our own state handling, not a transient provider
+                        # failure: drop this member so it cannot strand the others, and
+                        # carry the error out to the task once the episode is drained.
+                        self._reconnect_pending_ids.discard(member_id)
+                        self.logger.error(
+                            "Unexpected error reconnecting static member %s to syncgroup %s: %s",
+                            member_id,
+                            self.display_name,
+                            err,
+                            exc_info=err,
+                        )
+                        unexpected.append(err)
+                        continue
+                    if not keep_going:
+                        break
+                if self._reconnect_pending_ids:
+                    await asyncio.sleep(RECONNECT_RETRY_DELAY)
+        finally:
+            if self._reconnect_task is asyncio.current_task():
+                self._reconnect_task = None
+        if unexpected:
+            raise ExceptionGroup("Unexpected errors reconnecting static members", unexpected)
+
+    def _record_reconnect_attempt(self, member_id: str, attempts: dict[str, int]) -> int:
+        """Record a failed reconnect attempt and retain it while retries remain."""
+        attempt = attempts[member_id] = attempts.get(member_id, 0) + 1
+        if attempt < RECONNECT_MAX_ATTEMPTS:
+            self._reconnect_pending_ids.add(member_id)
+        else:
+            self._reconnect_pending_ids.discard(member_id)
+            self.logger.debug(
+                "Reconnect of static member %s to syncgroup %s exhausted after %s attempts",
+                member_id,
+                self.display_name,
+                attempt,
+            )
+        return attempt
+
+    async def _reconnect_member_locked(
+        self, member_id: str, leader_id: str, attempts: dict[str, int]
+    ) -> bool:
+        """Add one eligible reconnecting member while holding the group lock."""
+        async with self.mass.players.get_player_lock(leader_id, PlayerLockPurpose.PLAYBACK):
+            if self.sync_leader is None or self.sync_leader.player_id != leader_id:
+                self._reconnect_pending_ids.clear()
+                return False
+            leader = self.mass.players.get_player(leader_id)
+            member = self.mass.players.get_player(member_id)
+            if leader is None or not leader.state.available or not leader.state.enabled:
+                self._record_reconnect_attempt(member_id, attempts)
+                return True
+            if not self._reconnect_member_eligible(member_id, leader, member):
+                self._reconnect_pending_ids.discard(member_id)
+                return True
+            self._reconnect_pending_ids.discard(member_id)
+            try:
+                for linked in leader.linked_output_protocols:
+                    if protocol_player := self.mass.players.get_player(linked.output_protocol_id):
+                        protocol_player.refresh_state(signal_event=False)
+                leader.refresh_state(signal_event=False)
+                # A returning player can become available before its protocol reports
+                # compatibility. Keep the reconnect pending so the next bounded pass
+                # can use the refreshed capability instead of silently dropping it.
+                if member_id not in leader.state.can_group_with:
+                    self._record_reconnect_attempt(member_id, attempts)
+                    return True
+                await self.mass.players._handle_set_members(leader, player_ids_to_add=[member_id])
+            except asyncio.CancelledError:
+                raise
+            except RECONNECT_RETRYABLE_ERRORS as err:
+                attempt = self._record_reconnect_attempt(member_id, attempts)
+                self.logger.warning(
+                    "Could not reconnect static member %s to syncgroup %s (attempt %s/%s): %s",
+                    member_id,
+                    self.display_name,
+                    attempt,
+                    RECONNECT_MAX_ATTEMPTS,
+                    err,
+                )
+            return True
+
+    def _reconnect_member_eligible(
+        self, member_id: str, leader: Player, member: Player | None
+    ) -> bool:
+        """Return whether a live static member may join the current leader."""
+        if member is None or member_id not in self._attr_static_group_members:
+            return False
+        if not member.state.available or not member.state.enabled:
+            return False
+        if member_id in self._translate_to_parent_ids(leader.state.group_members):
+            return False
+        if member.native_grouping_requires_own_stream and any(
+            child_id != member_id for child_id in member.state.group_members
+        ):
+            self.logger.debug("Skipping reconnect of %s: it leads its own native group", member_id)
+            return False
+        return not self._reconnect_member_has_owner(member, member_id, leader.player_id)
+
+    def _reconnect_member_has_owner(self, member: Player, member_id: str, leader_id: str) -> bool:
+        """Return whether another active group owns a reconnecting member."""
+        owner_ids = {
+            owner_id
+            for owner_id in (member.state.active_group, member.state.synced_to)
+            if owner_id not in (None, self.player_id, leader_id)
+        }
+        conflicting_group = next(
+            (
+                group
+                for group in self.mass.players.iter_players(
+                    return_unavailable=False, return_disabled=False
+                )
+                if (
+                    group.player_id != self.player_id
+                    and group.type == PlayerType.GROUP
+                    and group.is_active_session
+                    and member_id in group.state.group_members
+                )
+            ),
+            None,
+        )
+        if owner_ids or conflicting_group is not None:
+            self.logger.debug("Skipping reconnect of %s: another group owns it", member_id)
+            return True
+        return False
 
     async def _reform_runner(self) -> None:
         """Wait the debounce window, then re-form the group and resume playback."""
