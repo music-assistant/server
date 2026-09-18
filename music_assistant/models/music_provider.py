@@ -1987,9 +1987,7 @@ class MusicProvider(Provider):
             # provider mapping doesn't match the library item
             return True
         if not isinstance(library_item, MediaItem) and library_item.details_changed(prov_item):
-            # a lightweight sync snapshot compares whatever its media type carries beyond
-            # the fields above - for an audiobook that is its authors and narrators, which
-            # change on the provider without touching a mapping or the date_added
+            # whatever else the media type tracks, e.g. an audiobook's authors/narrators
             return True
         # the item's date_added changed on the provider
         return bool(prov_item.date_added and library_item.date_added != prov_item.date_added)
