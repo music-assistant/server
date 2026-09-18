@@ -119,11 +119,12 @@ async def test_run_setup_qr_refresh_and_finish() -> None:
 async def test_run_setup_retries_form_on_finish_error() -> None:
     """A finish failure re-renders the user form with the error, then succeeds on retry."""
     attempts = {"count": 0}
+    finish_error = SetupFlowError("bad backend", translation_key="login_failed")
 
     async def finish_handler(_session: SetupSession, _values: dict[str, Any]) -> dict[str, str]:
         attempts["count"] += 1
         if attempts["count"] == 1:
-            raise SetupFlowError("bad backend", translation_key="login_failed")
+            raise finish_error
         return {"instance_id": "neteasecloudmusic--test"}
 
     session, _mass = _make_session(finish_handler)
@@ -147,7 +148,7 @@ async def test_run_setup_retries_form_on_finish_error() -> None:
                 else None
             )
         )
-        assert error_form.errors == {"base": "login_failed"}
+        assert error_form.errors == {"base": "bad backend"}
         session.handle_submit({CONF_API_BASE_URL: "http://127.0.0.1:3000"})
         await _wait_for(lambda: session.finished)
         await task

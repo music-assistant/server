@@ -23,7 +23,7 @@ async def run_setup(session: SetupSession) -> None:
     if not session.mass.players.all_players(False, False):
         raise AbortFlow("no_players")
     setup_data = dict(session.context.setup_data)
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         prefill: dict[str, Any] = {**session.context.values, **setup_data}
         values = await session.form(
@@ -44,4 +44,4 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(setup_data)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}

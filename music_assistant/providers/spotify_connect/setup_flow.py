@@ -48,7 +48,7 @@ async def run_setup(session: SetupSession) -> None:
         setup_data.get(CONF_BACKEND) or session.context.values.get(CONF_BACKEND) or ""
     )
     selected = stored_backend or BACKEND_SOLOIST
-    choice_errors: dict[str, str] | None = None
+    choice_errors: dict[str, str | SetupFlowError] | None = None
     while True:
         selected = await _choose_backend(session, selected, choice_errors)
         choice_errors = None
@@ -71,11 +71,11 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(collected)
             return
         except SetupFlowError as err:
-            choice_errors = {"base": err.translation_key or str(err)}
+            choice_errors = {"base": err}
 
 
 async def _choose_backend(
-    session: SetupSession, preselect: str, errors: dict[str, str] | None
+    session: SetupSession, preselect: str, errors: dict[str, str | SetupFlowError] | None
 ) -> str:
     """
     Show the backend choice step until a usable backend is selected.

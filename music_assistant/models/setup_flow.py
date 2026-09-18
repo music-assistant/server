@@ -27,12 +27,12 @@ from aiohttp.web import Request, Response
 from music_assistant_models.config_entries import UI_ONLY, ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, EventType, FlowStepType
 from music_assistant_models.errors import ActionUnavailable
-from music_assistant_models.setup_flow import SetupFlowStep
+from music_assistant_models.setup_flow import SetupFlowStep, TranslationRef
 
 from music_assistant.helpers.json import json_loads
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Mapping
 
     from music_assistant.mass import MusicAssistant
 
@@ -63,16 +63,27 @@ class SetupFlowError(Exception):
     or let it propagate so the engine aborts the flow with the failure message.
     """
 
-    def __init__(self, message: str, translation_key: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        translation_key: str | None = None,
+        translation_args: list[Any] | None = None,
+        translation_owner: str | None = None,
+    ) -> None:
         """
         Initialize the error.
 
         :param message: Human readable (English) description of the failure.
         :param translation_key: Optional (bare) translation slug of the underlying error,
             usable by flow authors as a localizable form error.
+        :param translation_args: Optional positional arguments for placeholders in the translated
+            error message.
+        :param translation_owner: Optional namespace owning the translated error message.
         """
         super().__init__(message)
         self.translation_key = translation_key
+        self.translation_args = translation_args or []
+        self.translation_owner = translation_owner
 
 
 class StepExpiredError(Exception):
@@ -177,7 +188,7 @@ class SetupSession:
         self,
         entries: list[ConfigEntry],
         step_id: str = "user",
-        errors: dict[str, str] | None = None,
+        errors: Mapping[str, str | SetupFlowError] | None = None,
         last_step: bool | None = None,
         expires_in: float | None = None,
         translation_params: list[str] | None = None,
@@ -187,7 +198,8 @@ class SetupSession:
 
         :param entries: The config entries that make up the form fields.
         :param step_id: Stable slug identifying this step (also the i18n key segment).
-        :param errors: Optional field-key (or "base") -> error slug to display.
+        :param errors: Optional field-key (or "base") -> error slug, message, or setup error.
+            Setup errors retain translation metadata for localization in each client's language.
         :param last_step: Optional hint that this is the flow's final form.
         :param expires_in: Optional deadline in seconds; when it passes,
             StepExpiredError is raised here (and the client countdown runs out).
@@ -197,11 +209,18 @@ class SetupSession:
             FlowStepType.FORM,
             step_id,
             entries=self._prepare_entries(entries),
-            errors=dict(errors) if errors else {},
+            errors={key: str(error) for key, error in (errors or {}).items()},
             last_step=last_step,
             translation_params=translation_params,
             expires_in=expires_in,
         )
+        for key, error in (errors or {}).items():
+            if isinstance(error, SetupFlowError) and error.translation_key:
+                step.error_translations[key] = TranslationRef(
+                    key=error.translation_key,
+                    args=list(error.translation_args),
+                    owner=error.translation_owner,
+                )
         self._input_future = asyncio.get_running_loop().create_future()
         self._publish_step(step)
         try:
@@ -425,6 +444,7 @@ class SetupSession:
                 # secure values are only handed to the flow coroutine; they are never
                 # kept on (or echoed back with) the stored step
                 entry.value = None
+        step.error_translations.clear()
         if errors:
             step.errors = errors
             self._publish_step(step)
@@ -489,14 +509,20 @@ class SetupSession:
         except TimeoutError:
             return
 
-    def publish_abort(self, reason: str) -> None:
+    def publish_abort(self, reason: str | SetupFlowError) -> None:
         """
         Publish the terminal ABORT step for this flow.
 
-        :param reason: Slug describing why the flow was aborted; resolved from the
-            translations (setup_flow.abort.<reason>) when the step is served.
+        :param reason: Abort slug or setup error, localized when the step is served.
+            Slugs resolve under setup_flow.abort; setup errors use their error metadata.
         """
-        step = self._build_step(FlowStepType.ABORT, "abort", reason=reason)
+        step = self._build_step(FlowStepType.ABORT, "abort", reason=str(reason) or "internal_error")
+        if isinstance(reason, SetupFlowError) and reason.translation_key:
+            step.reason_translation = TranslationRef(
+                key=reason.translation_key,
+                args=list(reason.translation_args),
+                owner=reason.translation_owner,
+            )
         self._publish_step(step)
 
     def close(self) -> None:

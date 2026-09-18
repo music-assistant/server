@@ -457,7 +457,7 @@ class SetupFlowMixin:
             session.publish_abort("timed_out")
         except SetupFlowError as err:
             # the author did not catch a finish failure: end with the failure message
-            session.publish_abort(str(err) or "internal_error")
+            session.publish_abort(err)
         except asyncio.CancelledError:
             # abort/replace/shutdown: the author's cleanup (finally blocks) has run;
             # the canceller publishes the ABORT step. Never swallow the cancellation.
@@ -520,6 +520,8 @@ class SetupFlowMixin:
             raise SetupFlowError(
                 str(err) or err.__class__.__name__,
                 translation_key=getattr(err, "translation_key", None),
+                translation_args=getattr(err, "translation_args", None),
+                translation_owner=getattr(err, "translation_owner", None),
             ) from err
         session.finish_step_id = self._provider_finish_step_id(config.instance_id)
         return {"instance_id": config.instance_id}
@@ -548,6 +550,8 @@ class SetupFlowMixin:
             raise SetupFlowError(
                 str(err) or err.__class__.__name__,
                 translation_key=getattr(err, "translation_key", None),
+                translation_args=getattr(err, "translation_args", None),
+                translation_owner=getattr(err, "translation_owner", None),
             ) from err
         self.update_provider_last_error(instance_id, None)
         return {"instance_id": instance_id}
@@ -577,6 +581,8 @@ class SetupFlowMixin:
             raise SetupFlowError(
                 str(err) or err.__class__.__name__,
                 translation_key=getattr(err, "translation_key", None),
+                translation_args=getattr(err, "translation_args", None),
+                translation_owner=getattr(err, "translation_owner", None),
             ) from err
         self.mass.signal_event(EventType.PLAYER_CONFIG_UPDATED, object_id=player_id, data=config)
         return {"player_id": player_id}

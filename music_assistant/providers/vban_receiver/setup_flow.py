@@ -36,7 +36,7 @@ async def run_setup(session: SetupSession) -> None:
     :param session: The setup session driving the flow.
     """
     setup_data = dict(session.context.setup_data)
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         prefill: dict[str, Any] = {**session.context.values, **setup_data}
         values = await session.form(
@@ -116,7 +116,7 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(setup_data)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 def _get_vban_sample_rates() -> list[int]:

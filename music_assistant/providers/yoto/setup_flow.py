@@ -44,7 +44,7 @@ async def run_setup(session: SetupSession) -> None:
     """
     setup_data = dict(session.context.setup_data)
     client_id_default = str(setup_data.get(CONF_CLIENT_ID) or "")
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
 
     while True:
         submitted = await session.form(
@@ -71,7 +71,7 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(setup_data)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 async def _pkce_authenticate(session: SetupSession, client_id: str) -> str:
