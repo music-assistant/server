@@ -628,9 +628,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
 
     def _sync_details_query_parts(self) -> tuple[str, str, dict[str, Any]]:
         """Return extra (columns, joins, params) for the audiobooks sync-details query."""
-        # the sync loop needs the stored authors/narrators - both their names and whether
-        # they are plain strings or linked Artist records - plus the user-scoped resume
-        # state, to detect changes on the provider side
+        # the sync loop needs the (str vs Artist) type of the stored authors/narrators
+        # plus the user-scoped resume state to detect changes on the provider side
         params: dict[str, Any] = {}
         # mirror base_query: scope the playlog lookup to the session user (if any) and
         # pick at most one row (the most recent) so the join can never fan out
@@ -679,8 +678,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             favorite=bool(db_row["favorite"]),
             date_added=datetime.fromtimestamp(db_row["timestamp_added"], tz=UTC),
             provider_mappings=self._parse_sync_details_mappings(db_row),
-            # prefer the linked artist records over the plain strings on the audiobook
-            # row itself, the same way the full item hydrates them
+            # prefer the linked artist records, the same way the full item hydrates them
             authors=author_artists or self._sync_details_names(db_row["stored_authors"]),
             narrators=narrator_artists or self._sync_details_names(db_row["stored_narrators"]),
             author_is_str=not author_artists and db_row["first_author_type"] == "text",
@@ -691,7 +689,11 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
 
     @staticmethod
     def _sync_details_names(raw_json: str | None) -> tuple[str, ...]:
-        """Return the names in a stored JSON array, sorted for order-insensitive compares."""
+        """
+        Return the sorted names held in a stored JSON array.
+
+        :param raw_json: The raw JSON array as stored in the database.
+        """
         if not raw_json:
             return ()
         return tuple(sorted(str(name) for name in json_loads(raw_json)))

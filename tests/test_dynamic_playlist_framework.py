@@ -167,8 +167,7 @@ def _build_sync_fixture(
     """Build a MusicProvider + mocked playlists controller wired for one sync pass."""
     mapping = _provider_mapping()
 
-    # spec'd as the real thing: the sync tells a library media item apart from the
-    # lightweight sync snapshot by its type
+    # the sync tells a media item from a sync snapshot by its type
     library_item = Mock(spec=Playlist)
     library_item.item_id = "1"
     library_item.is_editable = library_is_editable
