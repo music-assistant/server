@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiosonos.exceptions import FailedCommand
-from music_assistant_models.enums import MediaType, RepeatMode
+from music_assistant_models.enums import MediaType, PlaybackState, RepeatMode
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
@@ -16,6 +16,7 @@ from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.providers.sonos.const import PLAYBACK_STATE_MAP
 from music_assistant.providers.sonos.player import SonosPlayer, SonosQueueWindow
 from music_assistant.providers.sonos.provider import (
     SonosPlayerProvider,
@@ -97,6 +98,7 @@ def _make_player(items: list[QueueItem], current_index: int = 0) -> tuple[SonosP
     player.cloud_queue_version = 1.0
     player.cloud_queue_item_generation = 0
     player._announcement_media = None
+    player._woken_from_sleep = False
     return player, queues
 
 
@@ -928,3 +930,40 @@ async def test_another_http_error_is_still_reported(caplog: pytest.LogCaptureFix
         await provider._handle_sonos_queue_time_played(player, request)
 
     assert "reported 500 (http)" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("woken", "playing", "expect_nudge"),
+    [(True, False, True), (True, True, False), (False, False, False)],
+)
+async def test_a_load_after_a_wake_nudges_a_speaker_that_stays_paused(
+    woken: bool, playing: bool, expect_nudge: bool
+) -> None:
+    """A woken speaker restores its session paused and needs play() when the load does not start it."""
+    player, _ = _make_player([_make_queue_item("track0")])
+    client = MagicMock()
+    client.player.is_passive = False
+    client.player.group.play_cloud_queue = AsyncMock()
+    client.player.group.play = AsyncMock()
+    reported = PlaybackState.PLAYING if playing else PlaybackState.PAUSED
+    client.player.group.playback_state = next(
+        state for state, mapped in PLAYBACK_STATE_MAP.items() if mapped == reported
+    )
+    player.client = client
+    player._woken_from_sleep = woken
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(SonosPlayer, "flow_mode", property(lambda _self: False))
+        patch.setattr("music_assistant.providers.sonos.player.WAKE_PLAY_KICK_TIMEOUT", 0.05)
+        await player.play_media(
+            PlayerMedia(
+                uri="library://track/1",
+                media_type=MediaType.TRACK,
+                source_id=QUEUE_ID,
+                queue_item_id="track0",
+                queue_session_id="session-2",
+            )
+        )
+
+    assert client.player.group.play.await_count == (1 if expect_nudge else 0)
+    assert player._woken_from_sleep is False

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 from urllib.parse import urlencode
 from uuid import uuid4
 
+import aiohttp
 import plexapi.exceptions
 import plexapi.utils
 import requests
@@ -26,6 +27,7 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
+    EventType,
     ImageType,
     MediaType,
     ProviderFeature,
@@ -93,6 +95,7 @@ from music_assistant.providers.plex.constants import (
     CONF_PLEX_LIKE_RATING,
     CONF_PLEX_UNLIKE_RATING,
     CONF_STREAM_QUALITY,
+    CONF_SYNC_ON_LIBRARY_CHANGE,
     ERR_ARTIST_INVALID_ID,
     ERR_ARTIST_NOT_FOUND,
     ERR_AUTH_FAILED,
@@ -105,6 +108,7 @@ from music_assistant.providers.plex.constants import (
     METADATA_BATCH_SIZE,
     MIX_CACHE_EXPIRATION,
     MIX_ITEM_PREFIX,
+    NOTIFICATION_RECONNECT_DELAY,
     RECOMMENDATIONS_HUB_PARAMS,
     STREAM_QUALITY_96,
     STREAM_QUALITY_128,
@@ -126,6 +130,7 @@ from music_assistant.providers.plex.helpers import (
     get_favorite_from_rating,
     get_musicbrainz_id,
     get_thumbnail_images,
+    is_library_scan_finished,
     parse_plex_lyrics_payload,
 )
 
@@ -141,6 +146,7 @@ __all__ = [
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Coroutine
 
+    from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
     from plexapi.library import LibraryMediaTag as PlexCollection
     from plexapi.library import MusicSection as PlexMusicSection
@@ -189,6 +195,10 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
     _plex_library: PlexMusicSection = None
     _myplex_account: MyPlexAccount = None
     _baseurl: str
+    _notification_task: asyncio.Task[None] | None = None
+    _unsubscribe_sync_completed: Callable[[], None] | None = None
+    _content_changed_at: str | None = None
+    _recheck_after_sync: bool = False
 
     @property
     def instance_name_postfix(self) -> str | None:
@@ -273,6 +283,16 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                 type=ConfigEntryType.FLOAT,
                 default_value=0.0,
                 range=(0, 10),
+                category="sync_options",
+            )
+        )
+
+        # library sync configuration
+        entries.append(
+            ConfigEntry(
+                key=CONF_SYNC_ON_LIBRARY_CHANGE,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
                 category="sync_options",
             )
         )
@@ -372,6 +392,24 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         # arrives via a full reload rather than update_config; clean up any mappings left
         # behind by a previous type on load (idempotent - a no-op once nothing is stale)
         await self._cleanup_stale_library_mappings()
+
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        await super().loaded_in_mass()
+        if self.config.get_value(CONF_SYNC_ON_LIBRARY_CHANGE):
+            self._content_changed_at = await self._get_content_changed_at()
+            self._notification_task = self.mass.create_task(self._watch_library_changes())
+            self._unsubscribe_sync_completed = self.mass.subscribe(
+                self._on_music_sync_completed, EventType.MUSIC_SYNC_COMPLETED
+            )
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        if self._notification_task:
+            self._notification_task.cancel()
+        if self._unsubscribe_sync_completed:
+            self._unsubscribe_sync_completed()
+        await super().unload(is_removed)
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -1202,6 +1240,66 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             if best is None or plex_track.ratingCount > best.ratingCount:
                 best_per_title[title] = plex_track
         return sorted(best_per_title.values(), key=lambda track: track.ratingCount, reverse=True)
+
+    async def _watch_library_changes(self) -> None:
+        """Start a sync whenever Plex reports that the content of this library changed."""
+        url = f"{self._baseurl.replace('http', 'ws', 1)}/:/websockets/notifications"
+        while True:
+            try:
+                async with self.mass.http_session.ws_connect(
+                    url,
+                    headers=self._plex_server._headers(),
+                    ssl=bool(self.get_setup_value(CONF_LOCAL_SERVER_VERIFY_CERT)),
+                    heartbeat=30,
+                ) as socket:
+                    async for message in socket:
+                        if message.type == aiohttp.WSMsgType.TEXT and is_library_scan_finished(
+                            message.json()
+                        ):
+                            await self._sync_if_library_changed()
+            except (aiohttp.ClientError, OSError, TimeoutError, ValueError) as err:
+                self.logger.debug(
+                    "Plex notifications unavailable: %s. Reconnecting in %ss",
+                    err,
+                    NOTIFICATION_RECONNECT_DELAY,
+                )
+            await asyncio.sleep(NOTIFICATION_RECONNECT_DELAY)
+
+    async def _sync_if_library_changed(self) -> None:
+        """Start a sync if the content of this library changed since the last check."""
+        # the notification does not say which library was scanned, and every scan bumps
+        # scannedAt even when it finds nothing, so compare contentChangedAt instead
+        changed_at = await self._get_content_changed_at()
+        if changed_at is not None and changed_at == self._content_changed_at:
+            return
+        if any(
+            task.metadata.get("provider_instance") == self.instance_id
+            for task in self.mass.music.active_sync_tasks
+        ):
+            # a sync that is already queued or running ignores the request and may have read
+            # this library before the scan finished, so check again once it is done
+            self._recheck_after_sync = True
+            return
+        self._content_changed_at = changed_at
+        await self.mass.music.start_sync(providers=[self.instance_id])
+
+    async def _on_music_sync_completed(self, _event: MassEvent) -> None:
+        """Check the library again if it changed while it was being synced."""
+        if self._recheck_after_sync:
+            self._recheck_after_sync = False
+            await self._sync_if_library_changed()
+
+    async def _get_content_changed_at(self) -> str | None:
+        """Return when Plex last saw the content of this library change, if available."""
+        try:
+            sections = await self._run_async(self._plex_server.query, "/library/sections")
+        except (plexapi.exceptions.PlexApiException, requests.RequestException) as err:
+            self.logger.debug("Could not read the Plex library content version: %s", err)
+            return None
+        for directory in sections.findall("Directory"):
+            if directory.get("key") == str(self._plex_library.key):
+                return cast("str | None", directory.get("contentChangedAt"))
+        return None
 
     async def _run_async(
         self, call: Callable[Param, RetType], *args: Param.args, **kwargs: Param.kwargs
