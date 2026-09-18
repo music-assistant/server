@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from contextlib import suppress
 from sqlite3 import OperationalError
 from typing import TYPE_CHECKING, Any
@@ -26,6 +27,10 @@ if TYPE_CHECKING:
 # a live route, even when the old ffmpeg process has been dead for
 # minutes before the new one starts fetching.
 _DASH_ROUTE_IDLE_BUFFER: int = 300
+
+# manifestMimeType values Tidal's playbackinfopostpaywall endpoint returns.
+_MANIFEST_DASH = "application/dash+xml"
+_MANIFEST_BTS = "application/vnd.tidal.bts"
 
 
 class TidalStreamingManager:
@@ -66,7 +71,7 @@ class TidalStreamingManager:
 
         # 4. Parse stream URL
         manifest_type = stream_data.get("manifestMimeType", "")
-        if "dash+xml" in manifest_type and "manifest" in stream_data:
+        if manifest_type == _MANIFEST_DASH and "manifest" in stream_data:
             # Tidal returns a DASH manifest (MPD) as a base64 data: URI.
             # ffmpeg re-fetches the MPD during playback to read the
             # segment timeline, but a data: URI can only be read
@@ -99,7 +104,7 @@ class TidalStreamingManager:
                 _schedule_cleanup()
                 return web.Response(
                     body=manifest_bytes,
-                    content_type="application/dash+xml",
+                    content_type=_MANIFEST_DASH,
                     headers={"Cache-Control": "no-cache"},
                 )
 
@@ -115,17 +120,15 @@ class TidalStreamingManager:
             _schedule_cleanup()
 
             url = f"{self.mass.streams.base_url}{route_path}"
+            bts_codec = None
         else:
-            urls = stream_data.get("urls", [])
-            if not urls:
-                raise MediaNotFoundError("No stream URL found")
-            url = urls[0]
+            url, bts_codec = self._get_direct_url(stream_data)
 
         # 5. Determine format
         audio_quality = stream_data.get("audioQuality")
         if audio_quality in ("HIRES_LOSSLESS", "HI_RES_LOSSLESS", "LOSSLESS"):
             content_type = ContentType.FLAC
-        elif codec := stream_data.get("codec"):
+        elif codec := (bts_codec or stream_data.get("codec")):
             content_type = ContentType.try_parse(codec)
         else:
             content_type = ContentType.MP4
@@ -166,14 +169,24 @@ class TidalStreamingManager:
     async def _fetch_playback_info(self, track_id: str, quality: Any) -> dict[str, Any]:
         """Fetch the (unofficial) playback info for a track."""
         async with self.api.throttler.bypass():
-            return await self.api.get(
+            stream_data = await self.api.get(
                 f"tracks/{track_id}/playbackinfopostpaywall",
                 params={
                     "playbackmode": "STREAM",
                     "assetpresentation": "FULL",
                     "audioquality": quality,
+                    # MA has no surround pipeline, so never ask for the Atmos asset.
+                    "immersiveaudio": "false",
                 },
             )
+        self.provider.logger.debug(
+            "Playback info for track %s: audioQuality=%s, audioMode=%s, manifestMimeType=%s",
+            track_id,
+            stream_data.get("audioQuality"),
+            stream_data.get("audioMode"),
+            stream_data.get("manifestMimeType"),
+        )
+        return stream_data
 
     async def _async_update_provider_mapping_audio_format(
         self,
@@ -226,3 +239,21 @@ class TidalStreamingManager:
         """Remove a DASH manifest route from the stream server."""
         with suppress(RuntimeError):
             self.mass.streams.unregister_dynamic_route(route_path, method="GET")
+
+    def _get_direct_url(self, stream_data: dict[str, Any]) -> tuple[str, str | None]:
+        """
+        Return the direct stream URL and codec (if known) from non-DASH playback info.
+
+        :param stream_data: The playbackinfopostpaywall response.
+        """
+        codec: str | None = None
+        if stream_data.get("manifestMimeType") == _MANIFEST_BTS and "manifest" in stream_data:
+            # BTS manifests are base64-encoded JSON holding the plain file URL(s).
+            manifest = json.loads(base64.b64decode(stream_data["manifest"]))
+            urls = manifest.get("urls", [])
+            codec = manifest.get("codecs")
+        else:
+            urls = stream_data.get("urls", [])
+        if not urls:
+            raise MediaNotFoundError("No stream URL found")
+        return urls[0], codec

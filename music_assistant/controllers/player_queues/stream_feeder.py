@@ -71,6 +71,10 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     next_item.streamdetails = await self.mass.streams.audio.get_stream_details(
                         queue_item=next_item
                     )
+                    # the queue can be replaced while the details are fetched, and audio warmed
+                    # for an item that left it would sit on a buffer no cleanup reaches
+                    if self.get_item(queue_id, next_item.queue_item_id) is None:
+                        return
                 self.logger.debug(
                     "Preparing audio buffer for next track %s on queue %s",
                     next_item.name,
@@ -84,6 +88,14 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     # leave the cross-provider search to the actual playback start
                     allow_provider_match=False,
                 )
+                # removal paths that do not cancel this task (replace_next, delete) can take
+                # the item off the queue while the buffer fills; the stale-buffer sweep walks
+                # only current items, so a buffer left here would sit until its inactivity
+                # timeout. Detached before releasing, as everywhere a buffer is cleared.
+                if self.get_item(queue_id, next_item.queue_item_id) is None:
+                    if (details := next_item.streamdetails) and (orphan := details.buffer):
+                        details.buffer = None
+                        await orphan.clear()
             except (AudioError, MediaNotFoundError) as err:
                 self.logger.debug("Failed to prepare next audio buffer: %s", err)
             except asyncio.CancelledError:

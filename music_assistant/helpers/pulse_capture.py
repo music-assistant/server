@@ -17,8 +17,6 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import logging
-import math
-import os
 import shutil
 import threading
 import uuid
@@ -60,13 +58,14 @@ _READY_POLL_INTERVAL: Final = 0.1
 _RESTART_BACKOFF_INITIAL: Final = 1.0
 _RESTART_BACKOFF_MAX: Final = 30.0
 
-# set_sink_volume() is called frequently (on every volume/mute change, and
-# at bridge start for every player). A short timeout limits how long a
-# stuck/unresponsive PA call can occupy an executor thread — under normal
-# conditions PA responds in single-digit milliseconds, so 0.5s is generous
-# while bounding the worst case. load_module()/unload_module() (rare,
-# one-time during topology setup/teardown) keep a longer 2.0s timeout since
-# we'd rather wait than have sink creation/cleanup spuriously fail.
+# The Spotify Soloist backends call PipeSink.set_volume() each time they spawn
+# the engine (pinning the sink to 100) and, for Spotify Connect in sync_spotify
+# volume mode, on every volume change Spotify reports. A short timeout limits
+# how long a stuck/unresponsive PA call can occupy an executor thread. Under
+# normal conditions PA responds in single-digit milliseconds, so 0.5s is
+# generous while bounding the worst case. load_module()/unload_module() (once
+# per sink) keep a longer 2.0s timeout since we'd rather wait than have sink
+# creation/cleanup spuriously fail.
 _SET_VOLUME_TIMEOUT: Final = 0.5
 
 PA_CONTEXT_READY: Final = 4
@@ -79,75 +78,6 @@ _CONTEXT_SUCCESS_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int, ctyp
 _CONTEXT_INDEX_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p)
 
 PA_INVALID_INDEX: Final = 0xFFFFFFFF
-
-# --- Audio taper curve (dr-lex exponential, with linear roll-off) -----------
-#
-# y = a * e^(b*x) gives constant dB-per-slider-step ("audio taper" /
-# logarithmic potentiometer behavior), unlike a plain linear-amplitude
-# mapping (y = x) where the bottom of the slider is wildly more sensitive
-# than the top. See https://www.dr-lex.be/info-stuff/volumecontrols.html
-#
-# a = 10**(-range_dB/20) sets the amplitude floor; b = ln(1/a) ensures
-# y(1.0) = 1.0 (0dB) at full volume. Below _TAPER_ROLLOFF_X, a linear ramp
-# to (0, 0) is used so volume_pct=0 is true silence rather than asymptoting
-# toward the floor.
-#
-# Reference values for common dB ranges (pick one _TAPER_A and comment out
-# the rest; _TAPER_B recalculates automatically):
-#
-#   Range   _TAPER_A   _TAPER_B   MA 70% =    Notes
-#   40 dB   0.01       ~4.605     -12 dB      receiver / outdoor speakers (current)
-#   50 dB   0.003162   ~5.757     -15 dB      medium-range setups
-#   60 dB   0.001      ~6.908     -18 dB      consumer headphones / desktop speakers
-#   70 dB   0.000316   ~8.059     -21 dB      high-dynamic-range hi-fi systems
-#
-# Used for PA hardware volume (PAVolumeController.set_sink_volume), after a
-# cube-root step to counteract PA's own cubic volume curve.
-_TAPER_A: Final = 0.01  # 10**(-40/20) — 40dB range, suits receiver/outdoor setups
-# _TAPER_A: Final = 0.003162  # 10**(-50/20) — 50dB range
-# _TAPER_A: Final = 0.001     # 10**(-60/20) — 60dB range, suits headphones/desktop
-# _TAPER_A: Final = 0.000316  # 10**(-70/20) — 70dB range, hi-fi high dynamic range
-_TAPER_B: Final = math.log(1.0 / _TAPER_A)  # recalculates automatically from _TAPER_A
-_TAPER_ROLLOFF_X: Final = 0.10  # below 10% slider, linear ramp to true silence
-
-
-def volume_pct_to_amplitude(volume_pct: int) -> float:
-    """
-    Map a 0-100 volume percentage to a linear amplitude scale factor.
-
-    Uses the dr-lex exponential audio taper (y = a*e^(b*x)) for
-    volume_pct >= 10, giving constant dB change per slider step. Below 10%,
-    a linear ramp to (0, 0) ensures volume_pct=0 produces true silence.
-    """
-    x = max(0, min(volume_pct, 100)) / 100.0
-    if x <= 0:
-        return 0.0
-    if x < _TAPER_ROLLOFF_X:
-        y1 = _TAPER_A * math.exp(_TAPER_B * _TAPER_ROLLOFF_X)
-        return y1 * (x / _TAPER_ROLLOFF_X)
-    return _TAPER_A * math.exp(_TAPER_B * x)
-
-
-def get_default_pulse_server() -> str:
-    """
-    Detect the system's default PulseAudio server address.
-
-    Checked fresh on each call — the socket may not exist at import time but
-    appear later once the audio host/addon has fully started.
-
-    :returns: Server address (env value or "unix:<socket path>"), or an empty
-        string when nothing was found (libpulse then uses its own defaults).
-    """
-    if server := os.environ.get("PULSE_SERVER"):
-        return server
-    for path in (
-        "/run/audio/pulse.sock",
-        "/run/pulse/native",
-        "/var/run/pulse/native",
-    ):
-        if Path(path).exists():
-            return f"unix:{path}"
-    return ""
 
 
 def get_pulse_capture_server(mass: MusicAssistant) -> PulseCaptureServer:
@@ -578,12 +508,11 @@ class PAVolumeController:
     invoked via run_in_executor/to_thread from async code.
     """
 
-    def __init__(self, server: str | None = None) -> None:
+    def __init__(self, server: str) -> None:
         """
         Connect to PulseAudio and start the threaded mainloop.
 
         :param server: PA server address to connect to (e.g. "unix:<socket>").
-            Uses env/default socket discovery when omitted.
         """
         self._lib = _get_full_lib()
         self._lock = threading.Lock()
@@ -611,10 +540,9 @@ class PAVolumeController:
         self._state_cb = _CONTEXT_NOTIFY_CB(_state_cb_impl)  # keep reference alive — GC
         self._lib.pa_context_set_state_callback(self._context, self._state_cb, None)
 
-        pulse_server = server or get_default_pulse_server()
         ret = self._lib.pa_context_connect(
             self._context,
-            pulse_server.encode() if pulse_server else None,
+            server.encode(),
             PA_CONTEXT_NOAUTOSPAWN,
             None,
         )
@@ -628,25 +556,9 @@ class PAVolumeController:
             self.close()
             raise OSError("Timed out connecting to PulseAudio for volume control")
 
-    def set_sink_volume(self, sink_name: str, volume_pct: int, channels: int = 2) -> bool:
-        """
-        Set hardware volume on a named PA sink.
-
-        :param sink_name: PA sink name as returned by ``enumerate_pa_sinks()``.
-        :param volume_pct: Volume level 0-100, mapped through an exponential
-            audio taper curve before being sent to PA.
-        :param channels: Channel count for the PA volume structure. Should
-            match the sink's actual channel count.
-        :returns: True if PA reported success.
-        """
-        amplitude = volume_pct_to_amplitude(volume_pct)
-        # cube root counteracts PA's own cubic volume curve
-        pa_vol = round(PA_VOLUME_NORM * amplitude ** (1.0 / 3.0))
-        return self._apply_sink_volume(sink_name, pa_vol, channels)
-
     def set_sink_volume_raw(self, sink_name: str, volume_pct: float, channels: int = 2) -> bool:
         """
-        Set raw (linear) volume on a named PA sink, without the audio taper.
+        Set raw (linear) volume on a named PA sink.
 
         :param sink_name: PA sink name.
         :param volume_pct: Linear percentage where 100 maps exactly onto
@@ -661,12 +573,11 @@ class PAVolumeController:
 
     def load_module(self, module_name: str, argument: str) -> int | None:
         """
-        Load a PulseAudio module (e.g. module-remap-sink) via libpulse.
+        Load a PulseAudio module via libpulse.
 
-        :param module_name: PA module name, e.g. "module-remap-sink".
+        :param module_name: PA module name, e.g. "module-pipe-sink".
         :param argument: Module argument string, e.g.
-            "sink_name=Foo master=bar channels=2 master_channel_map=...
-            channel_map=front-left,front-right remix=no".
+            "sink_name=foo file=/path/to/foo.pcm format=s32le rate=44100 channels=2".
 
         Blocks (up to ~2s) for PA's response.
         :returns: The loaded module's index, or None on failure/timeout.

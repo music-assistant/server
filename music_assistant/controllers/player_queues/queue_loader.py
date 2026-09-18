@@ -66,6 +66,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.audio import get_probed_duration, store_probed_duration
 from music_assistant.helpers.compare import compare_item_ids
+from music_assistant.helpers.provider_access import playback_sources, resolve_playback_user
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.models.music_provider import MusicProvider
 
@@ -121,6 +122,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
 
         # handle replace: swap the queue's contents for the new items in one step
         if option == QueueOption.REPLACE:
+            # a prewarm still running for the old next track would otherwise resume after the
+            # swap and warm audio for an item that is no longer on the queue
+            self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
             # Release the audio the outgoing items hold while they are still on the queue: the
             # track being started needs their source slot, and once they are swapped out nothing
             # reaches them any more.
@@ -514,8 +518,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             # the delayed refill timer can fire after the queue was removed
             return
         queue = queue_data.queue
-        # restore the queue owner's user context so provider filters are respected during this
-        # background refill (dynamic-playlist generation honours the current user)
+        # restore the queue owner's user context so their music sources are respected during
+        # this background refill (dynamic-playlist generation honours the current user)
         playback_user = (
             await self.mass.webserver.auth.get_user(queue_data.userid)
             if queue_data.userid
@@ -559,7 +563,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         last_item = queue_data.items[-1]
         if last_item.media_type in AUTOPLAY_EXCLUDED_MEDIA_TYPES:
             return
-        # Restore the queue owner's user context so provider filters, library access and
+        # Restore the queue owner's user context so their music sources, library access and
         # resume positions are respected during this background refill, mirroring
         # _fill_dynamic_tracks.
         playback_user = (
@@ -570,6 +574,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         set_current_user(playback_user)
         if self._queue_data.get(queue_id) is not queue_data:
             # the queue was removed or re-registered while the user context was restored
+            return
+        if not queue_data.queue.autoplay_enabled:
             return
         if last_item.media_type in AUTOPLAY_SERIES_MEDIA_TYPES:
             await self._fill_autoplay_next_in_series(queue_id, last_item)
@@ -615,6 +621,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             return
         if self._queue_data.get(queue_id) is not queue_data:
             # the queue was removed or re-registered while the successor was fetched
+            return
+        if not queue_data.queue.autoplay_enabled:
             return
         await self.load(
             queue_id,
@@ -679,6 +687,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if self._queue_data.get(queue_id) is not queue_data:
             # the queue was removed or re-registered while tracks were fetched
             return
+        if not queue.autoplay_enabled:
+            return
         await self.load(
             queue_id,
             queue_items,
@@ -715,9 +725,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
 
-        # save the user requesting the playback (clear it for anonymous playback)
+        # the user requesting the playback; None for anonymous playback
         playback_user = get_current_user()
-        queue_data.userid = playback_user.user_id if playback_user else None
+        playback_userid = playback_user.user_id if playback_user else None
         if playback_user:
             self.logger.debug(
                 "User %s requested playback.", playback_user.display_name or playback_user.username
@@ -760,6 +770,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         play_next_items: list[MediaItemType] = []
         source_items: list[MediaItemType] = []
         shuffle_settled = False
+        # reported to the caller when none of the requested items made it through
+        last_item_error: MusicAssistantError | None = None
         # resolve all media items
         for item in media_list:
             try:
@@ -787,6 +799,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     if media_item.uri is None:
                         raise InvalidDataError("ItemMapping has no URI")
                     media_item = await self.mass.music.get_item_by_uri(media_item.uri)
+
+                # never enqueue what this user has no music source for; failing here keeps
+                # the caller from finding out only when the item is about to be streamed
+                self.mass.music.check_item_playable_for_user(media_item, playback_user)
 
                 # handle default enqueue option if needed
                 if option is None:
@@ -862,7 +878,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     self.mass.create_task(
                         self.mass.music.mark_item_played(
                             media_item,
-                            userid=queue_data.userid,
+                            userid=playback_userid,
                             queue_id=queue_id,
                             user_initiated=True,
                         )
@@ -896,7 +912,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     resolved_items = await self._media_resolver._resolve_media_items(
                         media_item,
                         start_item_uri,
-                        userid=queue_data.userid,
+                        userid=playback_userid,
                         queue_id=queue_id,
                         sort_by=sort_by,
                         start_from_beginning=start_from_beginning,
@@ -909,9 +925,11 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     if plays_next_track:
                         play_next_items += resolved_items
 
-            except MusicAssistantError as err:
-                # invalid MA uri or item not found error
-                self.logger.warning("Skipping %s: %s", item, str(err))
+            # a mapping stored with zero channels makes the quality sort divide by zero
+            except (MusicAssistantError, ZeroDivisionError) as err:
+                self.logger.warning("Skipping %s: %s", item, err)
+                if isinstance(err, MusicAssistantError):
+                    last_item_error = err
 
         if not shuffle_settled and option is not None:
             # nothing resolved, so no media type ever decided - but the sources are replaced
@@ -930,6 +948,14 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         queue.is_dynamic = has_dynamic_source(source_items)
         # a queue that just gained or lost its dynamic source resolves smart shuffle differently
         queue.smart_shuffle_active = self.is_smart_shuffle_active(queue)
+
+        if last_item_error is not None and not new_sources and not media_items:
+            # nothing the caller asked for survived; report why instead of staying silent,
+            # but only after the queue's sources and shuffle have been settled above
+            raise last_item_error
+
+        # something the caller asked for made it through, so the queue plays for them now
+        queue_data.userid = playback_userid
 
         if queue.is_dynamic:
             if replace_sources or new_sources:
@@ -991,8 +1017,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             # deliberately does). Zeroed before the truncation below so the pool is sized against
             # an empty queue and none of the discarded tracks are held back from it.
             insert_at = 0
-            # as on the linear path: release the outgoing audio while its items are still on the
-            # queue, and drop the stale position
+            # as on the linear path: end the prewarm of the old next track, release the outgoing
+            # audio while its items are still on the queue, and drop the stale position
+            self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
             await self._cleanup_queue_audio_data(queue_id)
             queue.index_in_buffer = None
             queue.ended = False
@@ -1069,14 +1096,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             ", ".join([x.name for x in source_items]),
         )
 
-        # Get user's preferred provider instances for steering provider selection
-        preferred_provider_instances: list[str] | None = None
-        if (
-            queue_data.userid
-            and (playback_user := await self.mass.webserver.auth.get_user(queue_data.userid))
-            and playback_user.provider_filter
-        ):
-            preferred_provider_instances = playback_user.provider_filter
+        # Steer provider selection to the playback user's own music sources
+        allowed, preferred = await playback_sources(self.mass, queue_id)
 
         # Some providers have very deterministic similar-track algorithms for a single track
         # seed. When continuing from a single track on a refill, seed from the play history
@@ -1101,11 +1122,16 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             seeds,
             include_base_tracks=is_initial,
             target_size=25,
-            preferred_provider_instances=preferred_provider_instances,
+            preferred_provider_instances=preferred or allowed,
         )
         # Drop anything already queued/played
         queued_set = set(queue_track_items)
-        return [track for track in dynamic_tracks if track not in queued_set]
+        tracks = [track for track in dynamic_tracks if track not in queued_set]
+        if allowed is None:
+            return tracks
+        # steering is only a preference, so drop what the user has no music source for
+        user = await resolve_playback_user(self.mass, queue_id)
+        return [track for track in tracks if self.mass.music.is_item_playable_for_user(track, user)]
 
     async def _abort_superseded_source_buffers(self, queue_item: QueueItem) -> None:
         """

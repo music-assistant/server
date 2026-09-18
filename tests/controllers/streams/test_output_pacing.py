@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from music_assistant.controllers.streams.constants import output_pacing_args
+from music_assistant.controllers.streams.constants import PacingProfile, output_pacing_args
 
 
 def _value(args: list[str], key: str) -> float:
@@ -16,26 +16,30 @@ def test_pacing_stays_ahead_of_playback() -> None:
     The ceiling may be lowered per player, but never to realtime or slower.
     """
     assert _value(output_pacing_args(), "-readrate") > 1.0
-    assert _value(output_pacing_args("gapless_burst"), "-readrate") > 1.0
-    assert _value(output_pacing_args("low_latency"), "-readrate") > 1.0
+    assert _value(output_pacing_args(PacingProfile.NEAR_REALTIME), "-readrate") > 1.0
+    assert _value(output_pacing_args(PacingProfile.LOW_LATENCY), "-readrate") > 1.0
 
 
-def test_the_default_burst_stays_small() -> None:
+def test_the_default_burst_covers_a_gapless_players_opening_chunk() -> None:
+    """A player that holds a whole opening chunk before it plays gapless must get one."""
+    assert _value(output_pacing_args(), "-readrate_initial_burst") >= 10
+
+
+def test_the_near_realtime_profile_leaves_room_for_a_source_to_bank_ahead() -> None:
     """
-    The default burst covers a track start and nothing more.
+    A just-in-time source delivers ~1.1x at best, and its bank is what a crossfade mixes.
 
-    A large burst flushes a realtime source's banked head start to the player,
-    leaving its end-of-track crossfade nothing to mix, and overruns players
-    with a small input buffer (Chromecast is the known case).
+    Drained at the default pace that bank never grows, so the profile has to stay
+    below it and leave real margin under what the source can deliver. The burst
+    comes out of that same bank, so it stays small too.
     """
-    assert 1 <= _value(output_pacing_args(), "-readrate_initial_burst") <= 10
-
-
-def test_the_burst_profile_covers_gapless_prefetch() -> None:
-    """A player on the burst profile holds a large opening chunk before it plays gapless."""
-    assert _value(output_pacing_args("gapless_burst"), "-readrate_initial_burst") >= 10
+    readrate = _value(output_pacing_args(PacingProfile.NEAR_REALTIME), "-readrate")
+    assert readrate < _value(output_pacing_args(), "-readrate")
+    # 1.1 is the fill rate, so anything close to it banks nothing
+    assert readrate <= 1.05
+    assert _value(output_pacing_args(PacingProfile.NEAR_REALTIME), "-readrate_initial_burst") <= 5
 
 
 def test_the_low_latency_burst_stays_under_a_second() -> None:
     """A live source's burst is listening delay: the player buffers it ahead of real time."""
-    assert _value(output_pacing_args("low_latency"), "-readrate_initial_burst") <= 1
+    assert _value(output_pacing_args(PacingProfile.LOW_LATENCY), "-readrate_initial_burst") <= 1

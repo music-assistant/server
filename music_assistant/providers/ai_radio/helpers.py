@@ -7,8 +7,9 @@ import random
 import re
 from typing import Any
 
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import InsufficientPermissions, MusicAssistantError
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.datetime import utc
 
 from .constants import EMPTY_SECTION_ID
@@ -157,3 +158,26 @@ def coerce_int(value: Any, default: int) -> int:
         return int(value)
     except TypeError, ValueError:
         return default
+
+
+def has_player_access(*player_ids: str | None) -> bool:
+    """
+    Return whether the calling user may use every given player or queue.
+
+    :param player_ids: The players or queues to check, None entries are skipped.
+    """
+    user = get_current_user()
+    if not user or not user.player_filter:
+        return True
+    return all(player_id in user.player_filter for player_id in player_ids if player_id is not None)
+
+
+def check_player_access(*player_ids: str | None) -> None:
+    """
+    Raise when the calling user may not use one of the given players or queues.
+
+    :param player_ids: The players or queues to check, None entries are skipped.
+    """
+    for player_id in player_ids:
+        if player_id is not None and not has_player_access(player_id):
+            raise InsufficientPermissions(f"No access to player {player_id}")

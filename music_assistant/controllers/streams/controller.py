@@ -12,14 +12,18 @@ import logging
 import os
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
+from dataclasses import dataclass
+from ipaddress import ip_address
 from math import ceil
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 from aiofiles.os import wrap
 from aiohttp import web
+from mashumaro import DataClassDictMixin
 from music_assistant_models.audio_processing import AudioQueueProcessing
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.auth import Scope
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -95,6 +99,7 @@ from music_assistant.controllers.streams.live_announcements import (
     LIVE_ANNOUNCEMENT_STREAM_PATH,
     LiveAnnouncementManager,
 )
+from music_assistant.helpers.api import api_command
 from music_assistant.helpers.audio import (
     calculate_content_length,
     create_streaming_wave_header,
@@ -211,6 +216,22 @@ class AbortFlowStream(Exception):
     """Raised to end a flow response whose session rotated during its setup."""
 
 
+# the probe route answers any origin: a browser on the local network calls it cross-origin
+_INFO_CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Max-Age": "86400",
+}
+
+
+@dataclass
+class StreamServerInfo(DataClassDictMixin):
+    """The address players are handed to fetch audio from, as it is in use right now."""
+
+    base_url: str
+
+
 class StreamsController(CoreController):
     """Controller to stream audio to players."""
 
@@ -282,6 +303,11 @@ class StreamsController(CoreController):
     def bind_ip(self) -> str:
         """Return the IP address this streamserver is bound to."""
         return self._bind_ip
+
+    @api_command("streams/info", required_scope=Scope.CONFIG_CORE_READ)
+    def get_streamserver_info(self) -> StreamServerInfo:
+        """Return the address the streamserver is currently reachable on for players."""
+        return StreamServerInfo(base_url=self.base_url)
 
     async def get_source_ip(self, target_ip: str | None = None) -> str | None:
         """
@@ -445,6 +471,7 @@ class StreamsController(CoreController):
                 category="generic",
                 advanced=True,
                 requires_reload=True,
+                validate=_is_valid_publish_ip,
             ),
             ConfigEntry(
                 key=CONF_BIND_PORT,
@@ -498,6 +525,18 @@ class StreamsController(CoreController):
         self._configured_publish_ip = (
             None if configured_publish_ip == CONF_VALUE_AUTO else configured_publish_ip
         )
+        raw_publish_ip = self.mass.config.get_raw_core_config_value(self.domain, CONF_PUBLISH_IP)
+        if not _is_valid_publish_ip(raw_publish_ip):
+            # config parsing already swapped the invalid stored value for auto; reset the
+            # stored value too, so the setting reads back as auto and this warns only once
+            self.logger.warning(
+                "Published IP address %r in the streams settings is not an IP address, "
+                "resetting it to auto",
+                raw_publish_ip,
+            )
+            self.mass.config.set_raw_core_config_value(
+                self.domain, CONF_PUBLISH_IP, CONF_VALUE_AUTO
+            )
         publish_candidates = await get_publish_ip_candidates(include_ipv6=True)
         bind_ip = str(config.get_value(CONF_BIND_IP))
         self._resolve_publish_state(bind_ip, publish_candidates)
@@ -531,6 +570,8 @@ class StreamsController(CoreController):
                     LIVE_ANNOUNCEMENT_STREAM_PATH,
                     self.live_announcements.serve_stream,
                 ),
+                ("GET", "/info", self._handle_info_request),
+                ("OPTIONS", "/info", self._handle_info_preflight),
             ],
         )
         # adopt what the server actually bound to: a configured port of 0 is only resolved
@@ -786,8 +827,11 @@ class StreamsController(CoreController):
                     self.logger.error(
                         "Failed to get streamdetails for QueueItem %s: %s", queue_item_id, e
                     )
-                    # a source capacity miss is transient, the item itself is fine
-                    if not isinstance(e, ProviderStreamLimitError):
+                    # a source capacity miss is transient, the item itself is fine.
+                    # neither is a HEAD probe a playback attempt: renderers probe
+                    # speculatively (Sonos at every track boundary), so one transient
+                    # error there must not condemn an item the following GET can play
+                    if request.method == "GET" and not isinstance(e, ProviderStreamLimitError):
                         queue_item.available = False
                     raise web.HTTPNotFound(
                         reason=f"No streamdetails for Queue item: {queue_item_id}"
@@ -945,12 +989,11 @@ class StreamsController(CoreController):
             else:
                 pacing: PacingProfile
                 if queue_item.media_type == MediaType.AUDIO_SOURCE:
-                    pacing = "low_latency"
-                elif player.provider.domain == "musiccast":
-                    # the one known exception; more belong in a per-player table, not here
-                    pacing = "gapless_burst"
+                    pacing = PacingProfile.LOW_LATENCY
+                elif queue_item.streamdetails.is_realtime:
+                    pacing = PacingProfile.NEAR_REALTIME
                 else:
-                    pacing = "default"
+                    pacing = PacingProfile.DEFAULT
                 audio_bytes = get_ffmpeg_stream(
                     audio_input=audio_input,
                     input_format=pcm_format,
@@ -1323,7 +1366,8 @@ class StreamsController(CoreController):
             # restarting (or completely failing) the audio stream by keeping the buffer short.
             # this is reported to be an issue especially with Chromecast players.
             # see for example: https://github.com/music-assistant/support/issues/3717
-            extra_input_args=output_pacing_args(),
+            # one continuous stream, so the player gains nothing from running far ahead
+            extra_input_args=output_pacing_args(PacingProfile.NEAR_REALTIME),
             chunk_size=icy_meta_interval if enable_icy else calculate_content_length(output_format),
         )
         client_disconnected = False
@@ -1941,7 +1985,7 @@ class StreamsController(CoreController):
             filter_params=filter_params,
             # keep the encode stage from reading further ahead than it needs to: a live
             # source's latency is whatever is buffered between it and the player
-            extra_input_args=output_pacing_args("low_latency"),
+            extra_input_args=output_pacing_args(PacingProfile.LOW_LATENCY),
         )
 
     async def _get_audio_source_session_stream(
@@ -2326,10 +2370,35 @@ class StreamsController(CoreController):
         self.publish_ip = self._publish_addresses[0]
         self._base_url = f"http://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
 
+    async def _handle_info_request(self, request: web.Request) -> web.Response:
+        """Answer a reachability probe with this server's id."""
+        # a browser on the local network checks whether the published address leads to
+        # this server; the id is public already, the webserver's /info reports it too
+        return web.json_response({"server_id": self.mass.server_id}, headers=_INFO_CORS_HEADERS)
+
+    async def _handle_info_preflight(self, request: web.Request) -> web.Response:
+        """Answer the CORS preflight a browser may send ahead of a probe."""
+        return web.Response(status=204, headers=_INFO_CORS_HEADERS)
+
 
 def _same_ip_family(ip: str, other_ip: str) -> bool:
     """Return whether two addresses belong to the same IP family."""
     return (":" in ip) == (":" in other_ip)
+
+
+def _is_valid_publish_ip(value: ConfigValueType) -> bool:
+    """Return whether a configured publish IP value is usable: auto, empty or an IP address."""
+    if not value or value == CONF_VALUE_AUTO:
+        return True
+    if not isinstance(value, str):
+        return False
+    # consumers hand the publish IP to APIs that only take IP literals (mDNS, AirPlay),
+    # so a hostname is rejected rather than resolved
+    try:
+        ip_address(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _root_cause(err: BaseException) -> BaseException:

@@ -27,6 +27,7 @@ from music_assistant_models.enums import (
     TaskStatus,
 )
 from music_assistant_models.errors import (
+    InsufficientPermissions,
     InvalidDataError,
     InvalidProviderID,
     InvalidProviderURI,
@@ -84,6 +85,7 @@ from music_assistant.controllers.music.constants import (
     SEARCH_PROVIDER_SOFT_TIMEOUT,
     TRACK_RECONCILIATION_BATCH_SIZE,
     TRACK_RECONCILIATION_MAX_DURATION_DELTA,
+    TRACK_RECONCILIATION_MAX_TITLE_ROWS,
     TRACK_RECONCILIATION_TASK_ID,
 )
 from music_assistant.controllers.music.database import (
@@ -131,6 +133,14 @@ from music_assistant.helpers.datetime import (
     utc_timestamp,
 )
 from music_assistant.helpers.json import json_loads, serialize_to_json
+from music_assistant.helpers.provider_access import (
+    access_allows,
+    exact_provider,
+    playback_instance_for,
+    source_owner,
+    visible_music_sources,
+    visible_playback_sources,
+)
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import parse_optional_bool, parse_title_and_version
@@ -194,14 +204,29 @@ def _album_title_match(base: str, other: str) -> str:
 # normalize to nothing (symbol-only album names) are excluded there, as they would match
 # every other such album. Rows that already share a provider are skipped, as a provider
 # listing the same recording twice is a separate (and far riskier) case.
+# Pairing the rows of a title is quadratic in their count, and the query runs on the single
+# library connection, where anything slow holds up every other library query. The self-join
+# is therefore confined to titles held by more than one provider, shared by a bounded number
+# of rows, excluding titles whose normalized value is empty.
 _DUPLICATE_TRACK_CANDIDATES_QUERY = f"""
+WITH candidate_titles AS (
+    SELECT t.search_name
+    FROM {DB_TABLE_TRACKS} t
+    LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} pm
+      ON pm.media_type = 'track' AND pm.item_id = t.item_id
+    WHERE t.search_name != ''
+    GROUP BY t.search_name
+    HAVING count(DISTINCT pm.provider_domain) > 1
+       AND count(DISTINCT t.item_id) <= :max_title_rows
+)
 SELECT t1.item_id AS item_id_1, t2.item_id AS item_id_2
 FROM {DB_TABLE_TRACKS} t1
 JOIN {DB_TABLE_TRACKS} t2
   ON t2.search_name = t1.search_name
  AND t2.item_id > t1.item_id
  AND abs(t2.duration - t1.duration) <= :max_duration_delta
-WHERE (t1.item_id > :cursor_item_id_1
+WHERE t1.search_name IN (SELECT search_name FROM candidate_titles)
+  AND (t1.item_id > :cursor_item_id_1
        OR (t1.item_id = :cursor_item_id_1 AND t2.item_id > :cursor_item_id_2))
   AND EXISTS (
     SELECT 1 FROM {DB_TABLE_TRACK_ARTISTS} ta1
@@ -364,7 +389,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """
         Return all loaded/running MusicProviders (instances).
 
-        Note that this applies user provider filters (for all user types).
+        Note that this only returns the music sources the current user may see.
         """
         return cast(
             "list[MusicProvider]",
@@ -486,10 +511,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 if (prov := self.mass.get_provider(instance_id))
                 and (prov.instance_id in requested_providers or prov.domain in requested_providers)
             ]
-        # use cache to avoid repeated searches
+        # use cache to avoid repeated searches; the library results are narrowed to what
+        # the calling user may see, so the entry is kept per user (and role)
+        user = get_current_user()
         cache_key = (
             f"{search_query}-{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}-"
-            f"{int(include_library)}-{','.join(search_providers)}"
+            f"{int(include_library)}-{','.join(search_providers)}-"
+            f"{f'{user.user_id}:{user.role}' if user else ''}"
         )
         if cache := await self.mass.cache.get(
             key=cache_key,
@@ -823,6 +851,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         prepend_items: list[BrowseFolder] = []
         provider_instance, sub_path = path.split("://", 1)
         browse_prov = self.mass.get_provider(provider_instance)
+        if browse_prov and not self._apply_user_provider_filter([browse_prov]):
+            raise InsufficientPermissions(f"{browse_prov.name} is not a music source of this user")
         # handle regular provider listing, always add back folder first
         if not browse_prov or not sub_path:
             prepend_items.append(
@@ -909,7 +939,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # a library row only needs resolving through its provider mappings when a filter
         # (explicit or user-scoped) is actually active; otherwise every library row is
         # kept, matching this method's unfiltered behavior.
-        if providers is not None or (user and user.provider_filter):
+        if providers is not None or (user and visible_music_sources(self.mass, user) is not None):
             requested_clause = ""
             direct_requested_clause = ""
             if providers is not None:
@@ -1067,8 +1097,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         )
         if not all_users and (user := get_current_user()):
             filter_for_str = available_providers_str
-            if user.provider_filter:
-                filter_for_str = "(" + ",".join(f'"{x}"' for x in user.provider_filter) + ")"
+            if (visible := visible_music_sources(self.mass, user)) is not None:
+                filter_for_str = "(" + ",".join(f'"{x}"' for x in visible) + ")"
             query += (
                 f"AND m.provider_instance IN {filter_for_str} "
                 f"AND m.provider_instance IN {available_providers_str}"
@@ -1274,10 +1304,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     ) -> MediaItemType | None:
         """Get the library item for the given provider item, if present."""
         ctrl = self.get_controller(media_type)
-        return await ctrl.get_library_item_by_prov_id(
+        item = await ctrl.get_library_item_by_prov_id(
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
         )
+        if isinstance(item, Playlist) and not self.playlists.visible_to_caller(item):
+            return None
+        return item
 
     @api_command("music/favorites/add_item", required_scope=Scope.LIBRARY_WRITE)
     async def add_item_to_favorites(
@@ -1343,6 +1376,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     ) -> None:
         """Remove (library) item from the favorites."""
         ctrl = self.get_controller(media_type)
+        if media_type == MediaType.PLAYLIST:
+            # a personal playlist is only touched by someone who may see it
+            await self.playlists.get(str(library_item_id), "library", allow_update_metadata=False)
         await ctrl.set_favorite(
             library_item_id,
             False,
@@ -1369,8 +1405,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         Destructive! Will remove the item and all dependants.
         """
         ctrl = self.get_controller(media_type)
-        # remove from provider(s) library
         full_item = await ctrl.get_library_item(library_item_id)
+        # ctrl is chosen by media_type, so it matches full_item's runtime type
+        cast("MediaControllerBase[MediaItemType]", ctrl).check_removal_allowed(full_item)
+        # remove from provider(s) library
         for prov_mapping in full_item.provider_mappings:
             if not prov_mapping.in_library:
                 continue
@@ -1410,10 +1448,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     f"{uri_media_type.value} items can not be library items"
                 )
             full_item = await self.get_item_by_uri(item)
-        # For builtin provider (manual URLs), use the provided item directly
-        # to preserve custom modifications (name, images, etc.)
-        # For other providers, fetch fresh to ensure data validity
-        elif item.provider == "builtin":
+        # A manual URL track or radio of the builtin provider is used as provided,
+        # to preserve custom modifications (name, images, etc.) that are not stored yet.
+        # Anything else is fetched fresh to ensure data validity
+        elif item.provider == "builtin" and item.media_type in (MediaType.TRACK, MediaType.RADIO):
             full_item = item
         else:
             full_item = await self.get_item(
@@ -1422,6 +1460,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 item.provider,
             )
         full_item = cast("MediaItemType", full_item)
+        if isinstance(full_item, Playlist):
+            # who a Music Assistant playlist serves is only set through its own commands
+            full_item.access = None
         if full_item.media_type in (MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT):
             # AudioSources and SoundEffects are live provider content (existence
             # depends on a loaded provider) and have no stable library identity,
@@ -1680,27 +1721,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 seconds_played = media_item.duration
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
-        for prov_mapping in media_item.provider_mappings:
-            if (
-                user
-                and user.provider_filter
-                and prov_mapping.provider_instance not in user.provider_filter
-            ):
-                continue
-            if music_prov := self.mass.get_provider(prov_mapping.provider_instance):
-                if music_prov.type != ProviderType.MUSIC:
-                    continue
-                music_prov = cast("MusicProvider", music_prov)
-                self.mass.create_task(
-                    music_prov.on_played(
-                        media_type=media_item.media_type,
-                        prov_item_id=prov_mapping.item_id,
-                        fully_played=fully_played,
-                        position=seconds_played,
-                        media_item=media_item,
-                        is_playing=is_playing,
-                    )
-                )
+        self._forward_play_report(
+            media_item,
+            user,
+            fully_played=fully_played,
+            position=seconds_played,
+            is_playing=is_playing,
+        )
 
         # also update playcount in library table (if fully played)
         if not fully_played or is_playing:
@@ -1796,26 +1823,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         )
 
         # forward to provider(s) to sync resume state (e.g. for audiobooks)
-        for prov_mapping in media_item.provider_mappings:
-            if (
-                user
-                and user.provider_filter
-                and prov_mapping.provider_instance not in user.provider_filter
-            ):
-                continue
-            if music_prov := self.mass.get_provider(prov_mapping.provider_instance):
-                if music_prov.type != ProviderType.MUSIC:
-                    continue
-                music_prov = cast("MusicProvider", music_prov)
-                self.mass.create_task(
-                    music_prov.on_played(
-                        media_type=media_item.media_type,
-                        prov_item_id=prov_mapping.item_id,
-                        fully_played=False,
-                        position=0,
-                        media_item=media_item,
-                    )
-                )
+        self._forward_play_report(media_item, user, fully_played=False, position=0)
         # also update playcount in library table
         ctrl = self.get_controller(media_item.media_type)
         db_item = await ctrl.get_library_item_by_prov_id(media_item.item_id, media_item.provider)
@@ -1935,10 +1943,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             user = provider_user
 
         provider_instances = {x.provider_instance for x in media_item.provider_mappings}
-        if user and user.provider_filter:
-            # only if the user has provider filters configured
+        allowed = visible_music_sources(self.mass, user) if user else None
+        if allowed is not None:
+            # only if the user is restricted to a subset of the music sources,
             # otherwise we allow all providers
-            preferred_provider_instances = provider_instances.intersection(user.provider_filter)
+            preferred_provider_instances = provider_instances.intersection(allowed)
         else:
             preferred_provider_instances = provider_instances
 
@@ -1950,11 +1959,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         # Try to get position from providers
         for prov_mapping in preferred_providers:
-            if not (
-                provider := self.mass.get_provider(
-                    prov_mapping.provider_instance, provider_type=MusicProvider
-                )
-            ):
+            provider = exact_provider(self.mass, prov_mapping.provider_instance)
+            if not isinstance(provider, MusicProvider):
                 continue
             with suppress(NotImplementedError):
                 (
@@ -2100,17 +2106,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         This will return a set of provider instance ids but will only return
         a single instance_id per streaming provider domain.
 
-        Applies user provider filters (for non-admin users).
+        Only includes the music sources the current user may see.
         """
         processed_domains: set[str] = set()
-        # Get user provider filter if set
-        user = get_current_user()
-        user_provider_filter = user.provider_filter if user and user.provider_filter else None
         result: list[str] = []
         for provider in self.providers:
             if provider.is_streaming_provider and provider.domain in processed_domains:
-                continue
-            if user_provider_filter and provider.instance_id not in user_provider_filter:
                 continue
             result.append(provider.instance_id)
             processed_domains.add(provider.domain)
@@ -2123,9 +2124,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         Unlike `get_unique_providers`, this keeps every instance of a streaming
         provider's domain instead of collapsing to one per domain, so a caller
         validating a specific requested provider instance id isn't shadowed by
-        another instance of the same domain. Applies the current user's provider
-        filter (via the `providers` property) and excludes providers that are
-        loaded but not currently available.
+        another instance of the same domain. Only includes the music sources the
+        current user may see (via the `providers` property) and excludes providers
+        that are loaded but not currently available.
         """
         return [provider.instance_id for provider in self.providers if provider.available]
 
@@ -2562,6 +2563,38 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         """
         return await self._handle_verify_item_uri(uri)
 
+    def is_item_playable_for_user(
+        self, item: MediaItemType | BrowseFolder, user: User | None
+    ) -> bool:
+        """
+        Return whether the item is reachable through a music source this user may use.
+
+        :param item: The already-resolved item to check.
+        :param user: The user the playback is for; None for anonymous playback.
+        """
+        if isinstance(item, Playlist) and item.access and not access_allows(item.access, user):
+            return False
+        return self._item_reachable_via(
+            item,
+            visible_playback_sources(self.mass, user),
+            visible_music_sources(self.mass, user),
+        )
+
+    def check_item_playable_for_user(
+        self, item: MediaItemType | BrowseFolder, user: User | None
+    ) -> None:
+        """
+        Raise when the item is not reachable through any music source this user may use.
+
+        :param item: The already-resolved item about to be enqueued.
+        :param user: The user the playback is for; None for anonymous playback.
+        :raises MediaNotFoundError: The item has no mapping on a source this user may use.
+        """
+        if self.is_item_playable_for_user(item, user):
+            return
+        msg = f"{item.name} is not available on any music source of this user"
+        raise MediaNotFoundError(msg, translation_key="media_not_available_for_user")
+
     async def _get_plugin_audio_sources(
         self, provider: PluginProvider, player_id: str | None
     ) -> list[AudioSource]:
@@ -2599,16 +2632,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self,
         providers: Iterable[ProviderInstanceType],
     ) -> list[ProviderInstanceType]:
-        """Filter providers by the current user's music provider filter."""
+        """Filter providers down to the music sources the current user may see."""
         user = get_current_user()
-        user_provider_filter = user.provider_filter if user else None
-        if not user_provider_filter:
+        if user is None or (allowed := visible_music_sources(self.mass, user)) is None:
             return list(providers)
-        return [
-            p
-            for p in providers
-            if p.type != ProviderType.MUSIC or p.instance_id in user_provider_filter
-        ]
+        return [p for p in providers if p.type != ProviderType.MUSIC or p.instance_id in allowed]
 
     async def _search_shareable_url(self, search_query: str) -> SearchResults | None:
         """
@@ -3021,6 +3049,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             _DUPLICATE_TRACK_CANDIDATES_QUERY,
             {
                 "max_duration_delta": TRACK_RECONCILIATION_MAX_DURATION_DELTA,
+                "max_title_rows": TRACK_RECONCILIATION_MAX_TITLE_ROWS,
                 "cursor_item_id_1": cursor[0],
                 "cursor_item_id_2": cursor[1],
             },
@@ -3208,17 +3237,16 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     async def _get_user_for_provider(
         self, provider_mappings_or_instance_id: Iterable[ProviderMapping] | str
     ) -> User | None:
-        """Try to get the MA User based on provider mappings and provider filter."""
-        all_users = await self.mass.webserver.auth.list_users()
-        for mapping_or_instance_id in provider_mappings_or_instance_id:
-            for user in all_users:
-                if not user.provider_filter:
-                    continue
-                if isinstance(mapping_or_instance_id, str):
-                    if provider_mappings_or_instance_id in user.provider_filter:
-                        return user
-                elif mapping_or_instance_id.provider_instance in user.provider_filter:
-                    return user
+        """Try to get the MA User that owns one of the given music sources."""
+        if isinstance(provider_mappings_or_instance_id, str):
+            instance_ids = [provider_mappings_or_instance_id]
+        else:
+            instance_ids = [x.provider_instance for x in provider_mappings_or_instance_id]
+        for instance_id in instance_ids:
+            if (owner_id := source_owner(self.mass, instance_id)) and (
+                owner := await self.mass.webserver.auth.get_user(owner_id)
+            ):
+                return owner
         return None
 
     async def _resolve_playlog_item(self, media_item: MediaItemType | ItemMapping) -> MediaItemType:
@@ -3239,6 +3267,48 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             msg = f"{media_item.uri} does not resolve to a media item"
             raise MediaNotFoundError(msg)
         return resolved
+
+    def _forward_play_report(
+        self,
+        media_item: MediaItemType,
+        user: User | None,
+        *,
+        fully_played: bool,
+        position: int,
+        is_playing: bool = False,
+    ) -> None:
+        """
+        Report the play to the music sources that may serve this user, once per account.
+
+        :param media_item: The played item, whose mappings name the accounts to report to.
+        :param user: The user the playback is for; None for anonymous playback.
+        :param fully_played: Whether the item was played to the end.
+        :param position: The last known position of the item in seconds.
+        :param is_playing: Whether the item is still playing.
+        """
+        allowed = visible_playback_sources(self.mass, user) if user else None
+        reported_to: set[str] = set()
+        for prov_mapping in media_item.provider_mappings:
+            # a mapping on another account of a service the user has their own of is
+            # reported on that own account, which is where the stream came from too
+            target = playback_instance_for(self.mass, prov_mapping.provider_instance, allowed)
+            if target is None or target in reported_to:
+                continue
+            if music_prov := exact_provider(self.mass, target):
+                if music_prov.type != ProviderType.MUSIC:
+                    continue
+                music_prov = cast("MusicProvider", music_prov)
+                reported_to.add(target)
+                self.mass.create_task(
+                    music_prov.on_played(
+                        media_type=media_item.media_type,
+                        prov_item_id=prov_mapping.item_id,
+                        fully_played=fully_played,
+                        position=position,
+                        media_item=media_item,
+                        is_playing=is_playing,
+                    )
+                )
 
     async def _upsert_playlog(self, entry: dict[str, Any]) -> None:
         """
@@ -3470,20 +3540,29 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
     async def _handle_verify_item_uri(self, uri: str) -> bool:
         user = get_current_user()
+        allowed = visible_music_sources(self.mass, user) if user else None
 
         try:
             media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
         except InvalidProviderURI, InvalidProviderID:
             return False
 
-        # fast return for a provider uri which is not part of a user with a provider filter
+        # fast return for a provider uri on a music source this user may not use
+        # MediaType.UNKNOWN is a plain url or local file resolved by the builtin provider,
+        # not catalog content of a music service, so it must bypass the filter entirely
         if (
             provider_instance_id_or_domain != "library"
-            and user
-            and user.provider_filter
-            and provider_instance_id_or_domain not in user.provider_filter
+            and media_type != MediaType.UNKNOWN
+            and allowed is not None
         ):
-            return False
+            allowed_instance = self._resolve_allowed_provider_instance(
+                provider_instance_id_or_domain, allowed
+            )
+            if allowed_instance is None:
+                return False
+            # bind the lookup to the allowed instance, so a same-domain instance outside
+            # the allowed set never serves the verification
+            provider_instance_id_or_domain = allowed_instance
 
         # verify that item itself exists
         try:
@@ -3497,18 +3576,67 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # NotImplementedError: the uri has a valid format, but specifies an unknown media type
             return False
 
-        # non library item handling for users with no filter, or no user at all
-        if (
-            provider_instance_id_or_domain != "library"
-            or not user
-            or (user and not user.provider_filter)
-            or isinstance(item, BrowseFolder)
-        ):
+        # non library item handling, or no restriction on the music sources at all
+        if provider_instance_id_or_domain != "library" or allowed is None:
             return True
 
-        # library item handling for users with provider filter
-        for provider_mapping in item.provider_mappings:
-            if provider_mapping.provider_instance in user.provider_filter:
-                return True
+        return self._item_reachable_via(item, allowed, allowed)
 
-        return False
+    def _resolve_allowed_provider_instance(
+        self, provider_instance_id_or_domain: str, allowed: list[str]
+    ) -> str | None:
+        """Resolve a uri's provider instance id or domain against the allowed music sources."""
+        if provider_instance_id_or_domain in allowed:
+            return provider_instance_id_or_domain
+        allowed_instances = [
+            prov
+            for prov in self.mass.providers
+            if prov.domain == provider_instance_id_or_domain and prov.instance_id in allowed
+        ]
+        for prov in allowed_instances:
+            if prov.available:
+                return prov.instance_id
+        return allowed_instances[0].instance_id if allowed_instances else None
+
+    def _item_reachable_via(
+        self,
+        item: MediaItemType | BrowseFolder,
+        allowed: list[str] | None,
+        visible: list[str] | None,
+    ) -> bool:
+        """
+        Return whether the item can be reached through one of the allowed music sources.
+
+        :param item: The item to check.
+        :param allowed: The music source instance ids that may serve playback, or None for
+            no restriction.
+        :param visible: The music source instance ids the user may browse, or None for no
+            restriction.
+        """
+        if allowed is None or isinstance(item, BrowseFolder):
+            return True
+        if item.media_type == MediaType.UNKNOWN:
+            # a plain url or local file resolved by the builtin provider, not catalog
+            # content of a music service, so it bypasses the music source restriction
+            return True
+        if item.provider == "library" and not item.provider_mappings:
+            # a genre has no source of its own: it expands to source-filtered tracks
+            return True
+        # plugin providers (such as smart_playlist and radio_playlist) carry no access
+        # record, so their items stay reachable for everyone
+        plugin_instances = {
+            prov.instance_id for prov in self.mass.providers if prov.type == ProviderType.PLUGIN
+        }
+        if item.provider != "library":
+            if item.provider in plugin_instances:
+                return True
+            if visible is not None and item.provider not in visible:
+                # an item addressed on another member's private account is out of reach,
+                # even when the user has an account of that same service
+                return False
+            return playback_instance_for(self.mass, item.provider, allowed) is not None
+        return any(
+            mapping.provider_instance in plugin_instances
+            or playback_instance_for(self.mass, mapping.provider_instance, allowed) is not None
+            for mapping in item.provider_mappings
+        )

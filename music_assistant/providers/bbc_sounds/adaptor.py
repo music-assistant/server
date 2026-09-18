@@ -292,7 +292,9 @@ class StationConverter(BaseConverter):
             return self._convert_live_station(source_obj)
         if isinstance(source_obj, StationSearchResult):
             return self._convert_station_search_result(source_obj)
-        self.logger.error(f"Failed to convert station {type(source_obj)}: {source_obj}")
+        self.logger.error(
+            "Failed to convert station with type: %s.\n%s", type(source_obj), source_obj
+        )
         raise ConversionError(f"Failed to convert station {type(source_obj)}: {source_obj}")
 
     def _convert_station(self, station: Station) -> Radio:
@@ -471,7 +473,9 @@ class PodcastConverter(BaseConverter):
             return await self._convert_radio_show(source_obj)
         if isinstance(source_obj, RadioClip) or self.context.force_type is Track:
             return await self._convert_radio_clip(source_obj)
-        self.logger.error(f"Failed to convert podcast object {type(source_obj)}: {source_obj}")
+        self.logger.error(
+            "Failed to convert podcast object with type: %s.\n%s", type(source_obj), source_obj
+        )
         raise ConversionError(f"Browse conversion failed: {source_obj}")
 
     async def _convert_podcast(self, podcast: Podcast | RadioSeries) -> MAPodcast:
@@ -535,11 +539,11 @@ class PodcastConverter(BaseConverter):
         """
         duration = self._get_attr(show, "duration.value")
         container = self._get_attr(show, "container")
-        if self.context.force_type == Track:
-            return True
+        if self.context.force_type:
+            return self.context.force_type is Track
         if duration and duration < _Constants.TRACK_DURATION_THRESHOLD:
             return True
-        return bool(not container)
+        return not container
 
     async def _convert_radio_show(self, show: RadioShow) -> MAPodcastEpisode | Track:
         duration = self._get_attr(show, "duration.value")
@@ -656,7 +660,9 @@ class BrowseConverter(BaseConverter):
             return self._convert_schedule(source_obj)
         if isinstance(source_obj, RecommendedMenuItem):
             return await self._convert_recommended_item(source_obj)
-        self.logger.error(f"Failed to convert browse object {type(source_obj)}: {source_obj}")
+        self.logger.error(
+            "Failed to convert browse object with type: %s.\n%s", type(source_obj), source_obj
+        )
         raise ConversionError(f"Browse conversion failed: {source_obj}")
 
     def _convert_menu_item(self, item: MenuItem) -> BrowseFolder | RecommendationFolder:
@@ -694,8 +700,9 @@ class BrowseConverter(BaseConverter):
         """Convert Category, Collection or Playlist to BrowseFolder."""
         if isinstance(item, Playlist):
             if not isinstance(self.context.path_parts, list):
-                raise ConversionError("Path not provided for Playlist item")
-            path = "/".join([*self.context.path_parts, item.item_id])
+                path = f"{self.context.provider_domain}://playlists/{item.item_id}"
+            else:
+                path = "/".join([*self.context.path_parts, item.item_id])
         else:
             path_prefix = "categories" if isinstance(item, Category) else "collections"
             path = f"{self.context.provider_domain}://{path_prefix}/{item.item_id}"
@@ -816,16 +823,17 @@ class Adaptor:
             if converter.can_convert(source_obj):
                 try:
                     stream_details = await converter.get_stream_details(source_obj)
-                except AttributeError as e:
-                    self.logger.error(f"Error converting object: {e!s}")
+                except AttributeError:
+                    self.logger.exception("Error converting object %s", source_obj)
                     return None
                 self.provider.logger.debug(
-                    f"Successfully converted {type(source_obj).__name__}"
-                    f" to {type(stream_details).__name__}"
+                    "Successfully converted %s to %s",
+                    type(source_obj).__name__,
+                    type(stream_details).__name__,
                 )
                 return stream_details
         self.provider.logger.warning(
-            f"No stream converter found for type {type(source_obj).__name__}"
+            "No stream converter found for type %s", type(source_obj).__name__
         )
         return None
 
@@ -879,13 +887,15 @@ class Adaptor:
         for converter in converters:
             self.logger.log(
                 VERBOSE_LOG_LEVEL,
-                f"Checking if converter {converter} can convert {type(source_obj)}",
+                "Checking if converter %s can convert %s",
+                converter,
+                type(source_obj),
             )
             if converter.can_convert(source_obj):
                 try:
                     result = await converter.convert(source_obj)
-                except AttributeError as e:
-                    self.logger.error(f"Error converting object: {e!s}")
+                except AttributeError:
+                    self.logger.exception("Error converting object %s", source_obj)
                     return None
                 if context.force_type and type(result) is not context.force_type:
                     msg = (
@@ -893,20 +903,21 @@ class Adaptor:
                         f"{type(result)} using {type(converter)}"
                     )
                     raise ConversionError(msg)
-                msg = (
-                    f"Successfully converted {type(source_obj).__name__} to {type(result).__name__}"
-                )
+                msg = "Successfully converted %s to %s"
+                args = [type(source_obj).__name__, type(result).__name__]
                 if hasattr(result, "item_id"):
-                    msg += f" item_id: {result.item_id}"
+                    msg += " item_id: %s"
+                    args.append(result.item_id)
                 if hasattr(result, "urn"):
-                    msg += f" urn: {result.urn}"
-                self.logger.debug(msg)
+                    msg += " urn: %s"
+                    args.append(result.urn)
+                self.logger.debug(msg, *args)
                 self.provider.logger.log(VERBOSE_LOG_LEVEL, result)
                 return result
             self.logger.log(
-                VERBOSE_LOG_LEVEL, f"Converter {converter} could not convert {type(source_obj)}"
+                VERBOSE_LOG_LEVEL, "Converter %s could not convert %s", converter, type(source_obj)
             )
 
-        self.logger.warning(f"No converter found for type {type(source_obj).__name__}")
-        self.logger.debug(str(source_obj))
+        self.logger.warning("No converter found for type %s", type(source_obj).__name__)
+        self.logger.debug(source_obj)
         return None

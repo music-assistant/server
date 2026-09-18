@@ -141,6 +141,31 @@ def get_total_system_memory() -> float:
     return min(host_gb, cgroup_gb)
 
 
+def get_self_cgroup_path(proc_cgroup: str, *, controller: str | None) -> str | None:
+    """
+    Return the process's cgroup path from /proc/self/cgroup, or None.
+
+    :param proc_cgroup: Path to the process cgroup file.
+    :param controller: For cgroup v1, the controller name (e.g. "memory") whose path
+        to return. None selects the cgroup v2 unified hierarchy line ("0::<path>").
+    """
+    try:
+        with open(proc_cgroup) as fh:
+            for line in fh:
+                parts = line.strip().split(":", 2)
+                if len(parts) != 3:
+                    continue
+                hierarchy_id, controllers, path = parts
+                if controller is None:
+                    if hierarchy_id == "0" and controllers == "":
+                        return path or "/"
+                elif controller in controllers.split(","):
+                    return path or "/"
+    except OSError:
+        return None
+    return None
+
+
 def _get_host_memory_gb() -> float:
     """Return host physical RAM in GB via sysconf, or 0.0 when unavailable."""
     try:
@@ -170,14 +195,14 @@ def _get_cgroup_memory_limit_gb(
 
 def _read_cgroup_v2_limit(cgroup_root: str, proc_cgroup: str) -> float | None:
     """Read the effective cgroup v2 memory limit in GB, or None."""
-    rel = _read_self_cgroup_path(proc_cgroup, controller=None)
+    rel = get_self_cgroup_path(proc_cgroup, controller=None)
     return _min_hierarchical_limit(cgroup_root, rel, "memory.max")
 
 
 def _read_cgroup_v1_limit(cgroup_root: str, proc_cgroup: str) -> float | None:
     """Read the effective cgroup v1 memory limit in GB, or None."""
     # On v1 the memory controller is conventionally mounted at <root>/memory.
-    rel = _read_self_cgroup_path(proc_cgroup, controller="memory")
+    rel = get_self_cgroup_path(proc_cgroup, controller="memory")
     return _min_hierarchical_limit(
         os.path.join(cgroup_root, "memory"), rel, "memory.limit_in_bytes"
     )
@@ -231,31 +256,6 @@ def _read_cgroup_limit_file(path: str) -> float | None:
     if limit_bytes <= 0 or limit_bytes >= _CGROUP_UNLIMITED_THRESHOLD:
         return None
     return limit_bytes / (1024**3)
-
-
-def _read_self_cgroup_path(proc_cgroup: str, *, controller: str | None) -> str | None:
-    """
-    Return the process's cgroup path from /proc/self/cgroup, or None.
-
-    :param proc_cgroup: Path to the process cgroup file.
-    :param controller: For cgroup v1, the controller name (e.g. "memory") whose path
-        to return. None selects the cgroup v2 unified hierarchy line ("0::<path>").
-    """
-    try:
-        with open(proc_cgroup) as fh:
-            for line in fh:
-                parts = line.strip().split(":", 2)
-                if len(parts) != 3:
-                    continue
-                hierarchy_id, controllers, path = parts
-                if controller is None:
-                    if hierarchy_id == "0" and controllers == "":
-                        return path or "/"
-                elif controller in controllers.split(","):
-                    return path or "/"
-    except OSError:
-        return None
-    return None
 
 
 # cgroup v1 writes a near-INT64_MAX value (PAGE_SIZE * LONG_MAX on most kernels) to

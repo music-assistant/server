@@ -182,7 +182,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         # schedule time. The best we can find out from the API is original release
         # date, so the stream title loses access to the air date
         """Get full podcast episode details by id."""
-        self.logger.debug(f"Getting podcast episode for {prov_episode_id}")
+        self.logger.debug("Getting podcast episode for %s", prov_episode_id)
         episode = await self.client.streaming.get_podcast_episode(prov_episode_id)
         ma_episode = await self.adaptor.new_object(episode, force_type=PodcastEpisode)
         if not ma_episode:
@@ -199,7 +199,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
     @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details by id."""
-        self.logger.debug(f"Getting podcast for {prov_podcast_id}")
+        self.logger.debug("Getting podcast for %s", prov_podcast_id)
         podcast = await self.client.streaming.get_podcast(pid=prov_podcast_id)
         ma_podcast = await self.adaptor.new_object(source_obj=podcast, force_type=Podcast)
 
@@ -225,7 +225,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
     @use_cache(expiration=_Constants.SHORT_EXPIRATION)
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
-        self.logger.debug(f"Getting radio for {prov_radio_id}")
+        self.logger.debug("Getting radio for %s", prov_radio_id)
         station = await self.client.stations.get_station(prov_radio_id, include_stream=True)
         if station:
             ma_radio = await self.adaptor.new_object(station, force_type=Radio)
@@ -234,7 +234,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         else:
             raise MediaNotFoundError(f"No station found: {prov_radio_id}")
 
-        self.logger.debug(f"{station} {ma_radio} {type(ma_radio)}")
+        self.logger.error("Failed to retrieve station with details: %s %s", station, ma_radio)
         raise MediaNotFoundError("No valid radio stream found")
 
     @property
@@ -266,11 +266,11 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
 
         :param path: The path to browse, (e.g. provider_id://artists).
         """
-        self.logger.debug(f"Browsing path: {path}")
+        self.logger.debug("Browsing path: %s", path)
         if not path.startswith(f"{self.domain}://"):
             raise MusicAssistantError(f"Invalid path for {self.domain} provider: {path}")
         path_parts = path.split("://", 1)[1].split("/")
-        self.logger.debug(f"Path parts: {path_parts}")
+        self.logger.debug("Path parts: %s", path_parts)
 
         path_parts = [
             f"{self.domain}:/",
@@ -280,13 +280,16 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
 
         if dispatch_menu == "listen_live":
             return await self._browse_live()
-        # Categories and collections aren't in the API menus
         if dispatch_menu == "categories":
             return await self._browse_categories(path_parts)
         if dispatch_menu == "collections":
             return await self._browse_collections(path_parts)
         if dispatch_menu == "stations":
             return await self._browse_stations(path_parts)
+        if dispatch_menu == "playlists":
+            if len(path_parts) < 3:
+                raise KeyError("Invalid subpath")
+            return await self._get_playlist(path_parts[2])
         if (
             dispatch_menu != ""
             and dispatch_menu not in ValidMenuIDs
@@ -346,9 +349,9 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                         success = await self.client.streaming.update_play_status(
                             pid=prov_item_id, elapsed_time=position, action=action
                         )
-                        self.logger.debug(f"Updated play status: {success}")
-                    except exceptions.APIResponseError as err:
-                        self.logger.error(f"Error updating play status: {err}")
+                        self.logger.debug("Updated play status: %s", success)
+                    except exceptions.APIResponseError:
+                        self.logger.exception("Error updating play status")
 
     @property
     def _menu_is_stale(self) -> bool:
@@ -460,7 +463,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             menu_valid_for_mins = int(
                 (_Constants.SHORT_EXPIRATION - (utc_timestamp - self.menu_last_fetched)) / 60
             )
-            self.logger.debug(f"Menu valid for {menu_valid_for_mins} more mins")
+            self.logger.debug("Menu valid for %s more mins", menu_valid_for_mins)
         return await self._convert_menu()
 
     def _get_provider_mapping(self, item_id: str) -> ProviderMapping:
@@ -469,6 +472,26 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             provider_domain=self.domain,
             provider_instance=self.instance_id,
         )
+
+    @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
+    async def _get_playlist(self, pid: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get a playlist from the API.
+
+        When browsing the main menu, or through the "Top Picks for You" section, we might
+        be presented with a Playlist. These don't usually contain their own contents,
+        so we need a helper function to populate them.
+        """
+        playlist_contents = await self.client.streaming.get_playlist_contents(pid=pid)
+        if playlist_contents and type(playlist_contents) is list:
+            return [
+                obj
+                for obj in [
+                    await self._render_browse_item(item) for item in playlist_contents if item
+                ]
+                if obj
+            ]
+        return []
 
     def _stream_error(self, item_id: str, media_type: MediaType) -> MusicAssistantError:
         return MusicAssistantError(f"Couldn't get stream details for {item_id} ({media_type})")
@@ -517,7 +540,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a track/radio."""
-        self.logger.debug(f"Getting stream details for {item_id} ({media_type})")
+        self.logger.debug("Getting stream details for %s (%s)", item_id, media_type)
         if media_type in [MediaType.PODCAST_EPISODE, MediaType.TRACK]:
             return await self._catch_up_stream_details(item_id, media_type)
         return await self._get_station_stream_details(item_id)
@@ -528,7 +551,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             provider=self.domain, key=f"programme_segments_{vpid}", default=False
         )
         if cached is False:
-            self.logger.debug(f"No cache for programme segments for {vpid}")
+            self.logger.debug("No cache for programme segments for %s", vpid)
             segments = await self.client.streaming.get_show_segments(vpid)
             if isinstance(segments, list):
                 await self.mass.cache.set(
@@ -539,7 +562,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                 return segments
             return None
         if isinstance(cached, list):
-            self.logger.debug(f"Cache hit for programme segments for {vpid}")
+            self.logger.debug("Cache hit for programme segments for %s", vpid)
             return [Segment(**item) for item in cached]
         return None
 
@@ -616,10 +639,12 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
 
         now_playing = await self.client.schedules.currently_playing_song(station_id)
         if now_playing:
-            self.logger.debug(f"Now playing for {station_id}: {now_playing}")
+            self.logger.debug("Now playing for %s: %s", station_id, now_playing)
             stream_details.stream_metadata = _segment_to_metadata(now_playing)
         else:
-            self.logger.debug(f"No song playing on {station_id}, displaying current programme info")
+            self.logger.debug(
+                "No song playing on %s, displaying current programme info", station_id
+            )
             programme = await self._station_current_programme(station_id)
             if metadata := _station_programme_display(programme):
                 stream_details.stream_metadata = metadata
@@ -631,13 +656,6 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         if isinstance(episode, (SoundsPodcastEpisode, RadioShow)) and episode.titles:
             return StreamMetadata(title=episode.titles.get("secondary", ""))
 
-        return None
-
-    @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
-    async def _station_programme_display(self, station: LiveStation) -> StreamMetadata | None:
-        if station and station.titles:
-            title = f"{station.titles.get('secondary')} • {station.titles.get('primary')}"
-            return StreamMetadata(title=title, artist=None, image_url=station.image_url)
         return None
 
     async def _station_list_as_folders(
@@ -776,7 +794,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                         ]
                         item_list += [item for item in rendered_items if item is not None]
         else:
-            self.logger.warning(f"Sub menu not a container: {sub_menu}")
+            self.logger.warning("Sub menu not a container: %s", sub_menu)
         return item_list
 
     async def _get_station_schedule_menu(
@@ -786,7 +804,7 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         date: str,
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Lookup a date schedule for a station."""
-        self.logger.debug(f"Getting schedule for {station_id} for {date}")
+        self.logger.debug("Getting schedule for %s for %s", station_id, date)
         schedule = await self.client.schedules.get_schedule(
             station_id=station_id,
             date=date,

@@ -659,6 +659,10 @@ class AudioTags:
         if audio_stream is None:
             msg = "No audio stream found"
             raise InvalidDataError(msg)
+        if not audio_stream.get("channels"):
+            # ffprobe reports zero channels when it cannot decode the file
+            msg = "No audio channels found, file is probably corrupt"
+            raise InvalidDataError(msg)
         has_cover_image = any(
             x for x in raw["streams"] if x.get("codec_name", "") in ("mjpeg", "png")
         )
@@ -679,7 +683,7 @@ class AudioTags:
         return AudioTags(
             raw=raw,
             sample_rate=int(audio_stream.get("sample_rate", 44100)),
-            channels=audio_stream.get("channels", 2),
+            channels=int(audio_stream["channels"]),
             bits_per_sample=int(
                 audio_stream.get("bits_per_raw_sample", audio_stream.get("bits_per_sample")) or 16
             ),
