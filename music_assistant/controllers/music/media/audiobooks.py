@@ -22,6 +22,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import (
+    DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_PLAYLOG,
@@ -415,28 +416,48 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
     ) -> None:
         # update artist mappings - the sync method in the provider model raises an exception
         # if not all entries are either of type str or Artist
+        await self._set_artist_mappings_of_type(db_id, item.authors, ArtistType.AUTHOR, overwrite)
+        await self._set_artist_mappings_of_type(
+            db_id, item.narrators, ArtistType.NARRATOR, overwrite
+        )
+
+    async def _set_artist_mappings_of_type(
+        self,
+        db_id: int,
+        values: Iterable[Artist | ItemMapping | str],
+        artist_type: ArtistType,
+        overwrite: bool,
+    ) -> None:
+        """
+        Store the authors, or the narrators, of an audiobook.
+
+        :param db_id: Database id of the audiobook the artists belong to.
+        :param values: The audiobook's authors or narrators as the provider supplied them.
+        :param artist_type: Which of the two ``values`` holds.
+        :param overwrite: Replace the stored links of this type instead of adding to them.
+        """
+        # only Artist entries become linked records; a provider without artist support
+        # supplies plain strings, which are stored on the audiobook row itself
+        artists = [artist for artist in values if isinstance(artist, Artist)]
+        for artist in artists:
+            # just to be sure
+            artist.artist_type = artist_type
+        if not artists:
+            # nothing was supplied for this type, which says nothing about what is stored,
+            # so an overwrite must not clear it either: dropping the links would take the
+            # book out of its author's (or narrator's) list of books
+            return
         if overwrite:
-            # on overwrite, clear the audiobook_artists table first
-            await self.mass.music.database.delete(
-                DB_TABLE_AUDIOBOOK_ARTISTS,
-                {
-                    "audiobook_id": db_id,
-                },
+            # replace the stored links instead of adding to them, so an author or narrator
+            # the provider no longer names does not stay attached to the book. Only this
+            # type is cleared, since the other one may not be part of this update at all
+            await self.mass.music.database.execute_write(
+                f"DELETE FROM {DB_TABLE_AUDIOBOOK_ARTISTS} "
+                "WHERE audiobook_id = :audiobook_id AND artist_id IN "
+                f"(SELECT item_id FROM {DB_TABLE_ARTISTS} WHERE artist_type = :artist_type)",
+                {"audiobook_id": db_id, "artist_type": artist_type.value},
             )
-        if item.authors and isinstance(item.authors[0], Artist):
-            # only for type checking
-            authors = [author for author in item.authors if isinstance(author, Artist)]
-            for author in authors:
-                # just to be sure
-                author.artist_type = ArtistType.AUTHOR
-            await self._set_audiobook_authors_narrators(db_id, authors)
-        if item.narrators and isinstance(item.narrators[0], Artist):
-            # only for type checking
-            narrators = [narrator for narrator in item.narrators if isinstance(narrator, Artist)]
-            for narrator in narrators:
-                # just to be sure
-                narrator.artist_type = ArtistType.NARRATOR
-            await self._set_audiobook_authors_narrators(db_id, narrators)
+        await self._set_audiobook_authors_narrators(db_id, artists)
 
     async def _set_audiobook_authors_narrators(
         self,
@@ -542,7 +563,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
         if set_playlog:
             await self._set_playlog(db_id, update)
-        await self._set_artist_mappings(update, db_id)
+        await self._set_artist_mappings(update, db_id, overwrite=overwrite)
 
     async def _update_library_item_for_merge(self, item_id: int, update: Audiobook) -> None:
         """Merge audiobook model state without applying a source resume position."""
