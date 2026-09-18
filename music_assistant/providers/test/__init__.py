@@ -24,6 +24,7 @@ from music_assistant_models.media_items import (
     AudioFormat,
     ItemMapping,
     MediaItemChapter,
+    MediaItemCollection,
     MediaItemImage,
     MediaItemMetadata,
     Podcast,
@@ -74,6 +75,11 @@ CONF_KEY_AUTHORS_NARRATORS_AS_ARTISTS = "authors_narrators_as_artists"
 # item_id prefixes that keep the authors and narrators apart from the music artists
 AUTHOR_ID_PREFIX = "author"
 NARRATOR_ID_PREFIX = "narrator"
+
+AUDIOBOOK_COLLECTIONS_TITLE = {
+    1: "Collection 1",
+    2: "Collection 2",
+}
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
@@ -139,7 +145,7 @@ class TestProvider(MusicProvider):
                 type=ConfigEntryType.INTEGER,
                 label="Number of (test) audiobooks",
                 description="Number of test audiobooks to generate",
-                default_value=5,
+                default_value=20,
                 required=False,
             ),
             ConfigEntry(
@@ -335,6 +341,7 @@ class TestProvider(MusicProvider):
                     MediaItemChapter(position=2, name="Chapter 3", start=40),
                 ],
                 genres={genre},
+                collections=self._get_audiobook_collections(prov_audiobook_id),
             ),
             provider_mappings={
                 ProviderMapping(
@@ -493,3 +500,17 @@ class TestProvider(MusicProvider):
         # each test audiobook has exactly one author and one narrator, carrying its own index
         _, audiobook_idx = prov_artist_id.split("_", 1)
         return await self.get_audiobook(audiobook_idx)
+
+    def _get_audiobook_collections(
+        self, prov_audiobook_id: str
+    ) -> UniqueList[MediaItemCollection] | None:
+        """Get the collection(s) the given audiobook is part of, if any."""
+        audiobook_idx = int(prov_audiobook_id)
+        num_collections = len(AUDIOBOOK_COLLECTIONS_TITLE)
+        collection_title = AUDIOBOOK_COLLECTIONS_TITLE.get(audiobook_idx % num_collections)
+        if collection_title is None:
+            return None
+        collection = MediaItemCollection(
+            title=collection_title, sequence=audiobook_idx // num_collections
+        )
+        return UniqueList([collection])
