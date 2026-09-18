@@ -436,21 +436,16 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         :param artist_type: Which of the two ``values`` holds.
         :param overwrite: Replace the stored links of this type instead of adding to them.
         """
-        # only Artist entries become linked records; a provider without artist support
-        # supplies plain strings, which are stored on the audiobook row itself
+        # plain strings live on the audiobook row itself, only Artists get linked
         artists = [artist for artist in values if isinstance(artist, Artist)]
         for artist in artists:
             # just to be sure
             artist.artist_type = artist_type
         if not artists:
-            # nothing was supplied for this type, which says nothing about what is stored,
-            # so an overwrite must not clear it either: dropping the links would take the
-            # book out of its author's (or narrator's) list of books
+            # nothing supplied says nothing about what is stored, so never clear it
             return
         if overwrite:
-            # replace the stored links instead of adding to them, so an author or narrator
-            # the provider no longer names does not stay attached to the book. Only this
-            # type is cleared, since the other one may not be part of this update at all
+            # only this type: the other one may not be part of this update at all
             await self.mass.music.database.execute_write(
                 f"DELETE FROM {DB_TABLE_AUDIOBOOK_ARTISTS} "
                 "WHERE audiobook_id = :audiobook_id AND artist_id IN "
