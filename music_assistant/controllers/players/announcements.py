@@ -242,17 +242,11 @@ class AnnouncementsMixin:
         try:
             # mark announcement_in_progress on player
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
-            # a group announcement is only handed to the individual members when they all
-            # announce natively AND line up their start with each other. Members that cannot
-            # would be heard out of step, so such a group plays the clip through its own
-            # (synchronized) stream instead.
-            if player.state.type == PlayerType.GROUP and (
-                all(
-                    PlayerFeature.PLAY_ANNOUNCEMENT in x.state.supported_features
-                    and x.coordinates_announcement_start
-                    for x in self.iter_group_members(player)
-                )
-            ):
+            # a group announcement is only handed to the individual members when the output
+            # that would announce for each member can line up its start with the others.
+            # Members that cannot would be heard out of step, so such a group plays the clip
+            # through its own (synchronized) stream instead.
+            if player.state.type == PlayerType.GROUP and self._members_announce_in_step(player):
                 # forward the request to each individual player
                 async with TaskManager(self.mass) as tg:
                     for group_member in player.state.group_members:
@@ -925,3 +919,15 @@ class AnnouncementsMixin:
         if mute_control == PLAYER_CONTROL_NONE:
             return
         await self._handle_cmd_volume_mute(player, mute_control, muted)
+
+    def _members_announce_in_step(self, group_player: Player) -> bool:
+        """
+        Return True if every member of a group announces natively and in step with the others.
+
+        :param group_player: The group player the announcement is played on.
+        """
+        for member in self.iter_group_members(group_player):
+            announce_player = self._resolve_announce_player(member)
+            if announce_player is None or not announce_player.coordinates_announcement_start:
+                return False
+        return True

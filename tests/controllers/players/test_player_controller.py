@@ -5184,18 +5184,10 @@ class TestPlayAnnouncementMessage:
         player.play_announcement = announce  # type: ignore[method-assign]
         return controller, announce
 
-    def _add_group(
-        self,
-        mock_mass: MagicMock,
-        controller: PlayerController,
-        *,
-        supports_announce: bool = True,
-    ) -> MockPlayer:
+    def _add_group(self, mock_mass: MagicMock, controller: PlayerController) -> MockPlayer:
         """Register a group player that holds the controller's player as its only member."""
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         group = MockPlayer(provider, "group_1", "Group 1", player_type=PlayerType.GROUP)
-        if supports_announce:
-            group._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
         group._attr_group_members = ["player_1"]
         group._cache.clear()
         controller._players["group_1"] = group
@@ -5487,7 +5479,7 @@ class TestPlayAnnouncementMessage:
         announcements: dict[str, object] = {}
         use_real_create_task(mock_mass)
         controller, announce = self._make_player(mock_mass, announcements)
-        group = self._add_group(mock_mass, controller, supports_announce=False)
+        group = self._add_group(mock_mass, controller)
         fallback = AsyncMock()
         controller._play_announcement = fallback  # type: ignore[method-assign]
 
@@ -5657,6 +5649,40 @@ class TestNativeAnnouncementRouting:
 
         native_path.assert_awaited_once()
         assert native_path.call_args.args[1] is player
+
+    async def test_group_member_announcing_through_its_output_is_handed_the_announcement(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        A member announcing through its rendering output is fanned out.
+
+        The output that would announce for the member lines up the start, so the group
+        hands the clip to its members instead of playing it through its own stream.
+        """
+        use_real_create_task(mock_mass)
+        controller, _player, proto, native_path, generic_path = self._make_player_with_linked_child(
+            mock_mass,
+            PlaybackState.PLAYING,
+            active_protocol="proto_1",
+        )
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        group = MockPlayer(provider, "group_1", "Group 1", player_type=PlayerType.GROUP)
+        group._attr_group_members = ["player_1"]
+        group._cache.clear()
+        controller._players["group_1"] = group
+        group.update_state(signal_event=False)
+
+        # only the protocol child lines up its start, the member itself does not
+        with patch.object(
+            MockPlayer,
+            "coordinates_announcement_start",
+            property(lambda self: self.player_id == "proto_1"),
+        ):
+            await controller.play_announcement("group_1", "http://test/announcement.mp3")
+
+        native_path.assert_awaited_once()
+        assert native_path.call_args.args[1] is proto
+        generic_path.assert_not_awaited()
 
 
 @pytest.mark.usefixtures("running_background_tasks")
