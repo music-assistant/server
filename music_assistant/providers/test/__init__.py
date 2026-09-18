@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
+    ArtistType,
     ConfigEntryType,
     ContentType,
     ImageType,
@@ -68,6 +69,11 @@ CONF_KEY_NUM_ALBUMS = "num_albums"
 CONF_KEY_NUM_TRACKS = "num_tracks"
 CONF_KEY_NUM_PODCASTS = "num_podcasts"
 CONF_KEY_NUM_AUDIOBOOKS = "num_audiobooks"
+CONF_KEY_AUTHORS_NARRATORS_AS_ARTISTS = "authors_narrators_as_artists"
+
+# item_id prefixes that keep the authors and narrators apart from the music artists
+AUTHOR_ID_PREFIX = "author"
+NARRATOR_ID_PREFIX = "narrator"
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
@@ -84,7 +90,10 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return TestProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    features = set(SUPPORTED_FEATURES)
+    if config.get_value(CONF_KEY_AUTHORS_NARRATORS_AS_ARTISTS):
+        features.update((ProviderFeature.AUTHOR_AUDIOBOOKS, ProviderFeature.NARRATOR_AUDIOBOOKS))
+    return TestProvider(mass, manifest, config, features)
 
 
 class TestProvider(MusicProvider):
@@ -133,12 +142,27 @@ class TestProvider(MusicProvider):
                 default_value=5,
                 required=False,
             ),
+            ConfigEntry(
+                key=CONF_KEY_AUTHORS_NARRATORS_AS_ARTISTS,
+                type=ConfigEntryType.BOOLEAN,
+                label="Expose authors and narrators as artists",
+                description="Expose authors and narrators of the audiobooks as full artist items.",
+                default_value=False,
+                required=False,
+            ),
         )
 
     @property
     def is_streaming_provider(self) -> bool:
         """Return True if the provider is a streaming provider."""
         return False
+
+    @property
+    def supported_artist_types(self) -> set[ArtistType]:
+        """Supported artist types."""
+        if self.config.get_value(CONF_KEY_AUTHORS_NARRATORS_AS_ARTISTS):
+            return {ArtistType.SINGER, ArtistType.AUTHOR, ArtistType.NARRATOR}
+        return {ArtistType.SINGER}
 
     async def get_library_genres(self) -> AsyncGenerator[str]:
         """Retrieve library genres from the provider."""
@@ -148,6 +172,8 @@ class TestProvider(MusicProvider):
     async def get_item_genre_names(self, media_type: MediaType, item_id: str) -> set[str]:
         """Return genre names for a single item."""
         if media_type == MediaType.ARTIST:
+            if item_id.startswith((f"{AUTHOR_ID_PREFIX}_", f"{NARRATOR_ID_PREFIX}_")):
+                return set()
             seed = item_id
         elif media_type == MediaType.ALBUM:
             seed = item_id.split("_", 2)[0]
@@ -214,6 +240,8 @@ class TestProvider(MusicProvider):
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
+        if prov_artist_id.startswith((f"{AUTHOR_ID_PREFIX}_", f"{NARRATOR_ID_PREFIX}_")):
+            return self._get_audiobook_artist(prov_artist_id)
         genre = random.Random(prov_artist_id).choice(DEFAULT_GENRES)
         return Artist(
             item_id=prov_artist_id,
@@ -282,6 +310,18 @@ class TestProvider(MusicProvider):
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get full audiobook details by id."""
         genre = random.Random(prov_audiobook_id).choice(DEFAULT_GENRES)
+        authors: UniqueList[Artist | ItemMapping | str]
+        narrators: UniqueList[Artist | ItemMapping | str]
+        if self.config.get_value(CONF_KEY_AUTHORS_NARRATORS_AS_ARTISTS):
+            authors = UniqueList(
+                [self._get_audiobook_artist(f"{AUTHOR_ID_PREFIX}_{prov_audiobook_id}")]
+            )
+            narrators = UniqueList(
+                [self._get_audiobook_artist(f"{NARRATOR_ID_PREFIX}_{prov_audiobook_id}")]
+            )
+        else:
+            authors = UniqueList(["AudioBook Author"])
+            narrators = UniqueList(["AudioBook Narrator"])
         return Audiobook(
             item_id=prov_audiobook_id,
             provider=self.instance_id,
@@ -304,8 +344,8 @@ class TestProvider(MusicProvider):
                 )
             },
             publisher="Test Publisher",
-            authors=UniqueList(["AudioBook Author"]),
-            narrators=UniqueList(["AudioBook Narrator"]),
+            authors=authors,
+            narrators=narrators,
             duration=60,
         )
 
@@ -315,6 +355,14 @@ class TestProvider(MusicProvider):
         assert isinstance(num_artists, int)
         for artist_idx in range(num_artists):
             yield await self.get_artist(str(artist_idx))
+        if not self.config.get_value(CONF_KEY_AUTHORS_NARRATORS_AS_ARTISTS):
+            return
+        num_audiobooks = self.config.get_value(CONF_KEY_NUM_AUDIOBOOKS)
+        if TYPE_CHECKING:
+            assert isinstance(num_audiobooks, int)
+        for audiobook_idx in range(num_audiobooks):
+            yield self._get_audiobook_artist(f"{AUTHOR_ID_PREFIX}_{audiobook_idx}")
+            yield self._get_audiobook_artist(f"{NARRATOR_ID_PREFIX}_{audiobook_idx}")
 
     async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from the provider."""
@@ -395,6 +443,14 @@ class TestProvider(MusicProvider):
             position=int(episode_idx),
         )
 
+    async def get_author_audiobooks(self, prov_artist_id: str) -> list[Audiobook]:
+        """Get a list of all audiobooks for the given author."""
+        return [await self._get_audiobook_for_artist(prov_artist_id)]
+
+    async def get_narrator_audiobooks(self, prov_artist_id: str) -> list[Audiobook]:
+        """Get a list of all audiobooks for the given narrator."""
+        return [await self._get_audiobook_for_artist(prov_artist_id)]
+
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a track/radio."""
         return StreamDetails(
@@ -412,3 +468,28 @@ class TestProvider(MusicProvider):
             can_seek=True,
             allow_seek=True,
         )
+
+    def _get_audiobook_artist(self, prov_artist_id: str) -> Artist:
+        """Build the author or narrator artist for the given prefixed item id."""
+        prefix, audiobook_idx = prov_artist_id.split("_", 1)
+        artist_type = ArtistType.AUTHOR if prefix == AUTHOR_ID_PREFIX else ArtistType.NARRATOR
+        return Artist(
+            item_id=prov_artist_id,
+            provider=self.instance_id,
+            name=f"Test {prefix.capitalize()} {audiobook_idx}",
+            artist_type=artist_type,
+            metadata=MediaItemMetadata(images=UniqueList([DEFAULT_THUMB])),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=prov_artist_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
+
+    async def _get_audiobook_for_artist(self, prov_artist_id: str) -> Audiobook:
+        """Get the audiobook that the given author/narrator item id belongs to."""
+        # each test audiobook has exactly one author and one narrator, carrying its own index
+        _, audiobook_idx = prov_artist_id.split("_", 1)
+        return await self.get_audiobook(audiobook_idx)
