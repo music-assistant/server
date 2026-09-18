@@ -29,6 +29,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.helpers import create_safe_string, get_global_cache_value
 from music_assistant_models.media_items import (
+    Audiobook,
     AudioFormat,
     ItemMapping,
     ItemMappingSummary,
@@ -168,6 +169,18 @@ class LibraryItemSyncDetails:
     date_added: datetime
     provider_mappings: set[ProviderMapping]
 
+    def details_changed(self, prov_item: MediaItemType) -> bool:
+        """
+        Return True when state this snapshot carries beyond the common fields changed.
+
+        The library sync compares the provider mappings and the date_added itself; this
+        is the hook for whatever else a media type has to watch. The common snapshot
+        carries nothing of its own, so it never asks for an update.
+
+        :param prov_item: The item as the provider currently reports it.
+        """
+        return False
+
 
 @dataclass(slots=True)
 class TrackSyncDetails(LibraryItemSyncDetails):
@@ -181,10 +194,44 @@ class TrackSyncDetails(LibraryItemSyncDetails):
 class AudiobookSyncDetails(LibraryItemSyncDetails):
     """Lightweight sync snapshot of a library audiobook."""
 
+    # the stored author/narrator names, sorted: the linked artist records have no order
+    # of their own, so the comparison against the provider has to be order-insensitive
+    authors: tuple[str, ...]
+    narrators: tuple[str, ...]
     author_is_str: bool
     narrator_is_str: bool
     fully_played: bool | None
     resume_position_ms: int | None
+
+    def details_changed(self, prov_item: MediaItemType) -> bool:
+        """
+        Return True when the provider's authors/narrators differ from the stored ones.
+
+        Nothing else the sync compares notices this: an author or narrator corrected on
+        the provider changes neither a provider mapping nor the item's date_added.
+
+        :param prov_item: The audiobook as the provider currently reports it.
+        """
+        if not isinstance(prov_item, Audiobook):
+            return False
+        for stored_names, stored_is_str, prov_values in (
+            (self.authors, self.author_is_str, prov_item.authors),
+            (self.narrators, self.narrator_is_str, prov_item.narrators),
+        ):
+            if not prov_values:
+                # a provider naming nobody is not the same as one stating there is nobody,
+                # so this tells us nothing about what is stored and must not force a rewrite
+                continue
+            if stored_is_str != all(isinstance(value, str) for value in prov_values):
+                # the provider switched between plain names and full Artist items, which
+                # moves where they are stored even when the names themselves are the same
+                return True
+            prov_names = tuple(
+                sorted(value if isinstance(value, str) else value.name for value in prov_values)
+            )
+            if stored_names != prov_names:
+                return True
+        return False
 
 
 class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
