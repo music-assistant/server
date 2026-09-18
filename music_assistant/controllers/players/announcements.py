@@ -75,7 +75,7 @@ class AnnouncementsMixin:
 
     Handles:
     - Resolving the pre-announce chime and announcement volume from configuration
-    - Forwarding a group announcement to its individual members
+    - Forwarding a group announcement to its individual members, when they can start it together
     - Native announcement support (on the player itself or a linked protocol)
     - The fallback implementation for players without native support
 
@@ -242,11 +242,14 @@ class AnnouncementsMixin:
         try:
             # mark announcement_in_progress on player
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
-            # if player type is group with all members supporting announcements,
-            # we forward the request to each individual player
+            # a group announcement is only handed to the individual members when they all
+            # announce natively AND line up their start with each other. Members that cannot
+            # would be heard out of step, so such a group plays the clip through its own
+            # (synchronized) stream instead.
             if player.state.type == PlayerType.GROUP and (
                 all(
                     PlayerFeature.PLAY_ANNOUNCEMENT in x.state.supported_features
+                    and x.coordinates_announcement_start
                     for x in self.iter_group_members(player)
                 )
             ):
