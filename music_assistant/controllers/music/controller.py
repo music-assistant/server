@@ -136,6 +136,7 @@ from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.provider_access import (
     access_allows,
     exact_provider,
+    own_music_sources,
     playback_instance_for,
     source_owner,
     visible_music_sources,
@@ -1357,12 +1358,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             full_item.item_id,
             True,
         )
-        # forward to provider(s) if needed
-        for prov_mapping in full_item.provider_mappings:
-            provider = self.mass.get_provider(
-                prov_mapping.provider_instance, provider_type=MusicProvider
-            )
-            if not provider or not self.library_favorites_edit_supported(
+        # forward to the music sources this user may write to, never to somebody else's
+        for prov_mapping in self._write_target_mappings(full_item.provider_mappings):
+            provider = exact_provider(self.mass, prov_mapping.provider_instance)
+            if not isinstance(provider, MusicProvider) or not self.library_favorites_edit_supported(
                 provider, full_item.media_type
             ):
                 continue
@@ -1383,13 +1382,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             library_item_id,
             False,
         )
-        # forward to provider(s) if needed
+        # forward to the music sources this user may write to, never to somebody else's
         full_item = await ctrl.get_library_item(library_item_id)
-        for prov_mapping in full_item.provider_mappings:
-            provider = self.mass.get_provider(
-                prov_mapping.provider_instance, provider_type=MusicProvider
-            )
-            if not provider or not self.library_favorites_edit_supported(
+        for prov_mapping in self._write_target_mappings(full_item.provider_mappings):
+            provider = exact_provider(self.mass, prov_mapping.provider_instance)
+            if not isinstance(provider, MusicProvider) or not self.library_favorites_edit_supported(
                 provider, full_item.media_type
             ):
                 continue
@@ -1408,14 +1405,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         full_item = await ctrl.get_library_item(library_item_id)
         # ctrl is chosen by media_type, so it matches full_item's runtime type
         cast("MediaControllerBase[MediaItemType]", ctrl).check_removal_allowed(full_item)
-        # remove from provider(s) library
-        for prov_mapping in full_item.provider_mappings:
+        # remove from the music sources this user may write to, never from somebody else's
+        for prov_mapping in self._write_target_mappings(full_item.provider_mappings):
             if not prov_mapping.in_library:
                 continue
-            provider = self.mass.get_provider(
-                prov_mapping.provider_instance, provider_type=MusicProvider
-            )
-            if not provider or not self.library_edit_supported(provider, full_item.media_type):
+            provider = exact_provider(self.mass, prov_mapping.provider_instance)
+            if not isinstance(provider, MusicProvider) or not self.library_edit_supported(
+                provider, full_item.media_type
+            ):
                 continue
             if not self.library_sync_back_enabled(provider, full_item.media_type):
                 continue
@@ -1471,15 +1468,22 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 f"{full_item.media_type.value} items can not be library items"
             )
         # add to provider(s) library first
+        write_targets = {
+            mapping.provider_instance
+            for mapping in self._write_target_mappings(full_item.provider_mappings)
+        }
         for prov_mapping in full_item.provider_mappings:
             # we optimistically set in library to True to prevent items
             # from disappearing when the provider doesn't support library edit
             # or 2-way sync is disabled.
             prov_mapping.in_library = True
-            provider = self.mass.get_provider(
-                prov_mapping.provider_instance, provider_type=MusicProvider
-            )
-            if not provider or not self.library_edit_supported(provider, full_item.media_type):
+            if prov_mapping.provider_instance not in write_targets:
+                # somebody else's account: the library row is this user's, the write is not
+                continue
+            provider = exact_provider(self.mass, prov_mapping.provider_instance)
+            if not isinstance(provider, MusicProvider) or not self.library_edit_supported(
+                provider, full_item.media_type
+            ):
                 continue
             if not self.library_sync_back_enabled(provider, full_item.media_type):
                 continue
@@ -2627,6 +2631,41 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         for allowed_player_id in player_filter:
             sources.extend(provider.get_player_audio_sources(allowed_player_id) or [])
         return sources
+
+    def _write_target_mappings(
+        self,
+        provider_mappings: Iterable[ProviderMapping],
+    ) -> list[ProviderMapping]:
+        """
+        Return the provider mappings a user-initiated write may reach.
+
+        A library item can map to several accounts of the same music service, one per
+        person in the house. Writing a favorite (or a library add or remove) to every
+        mapping then writes one person's choice into everybody else's account.
+
+        Ownership decides, not visibility: a source the acting user owns is written to, a
+        source of the whole home is written to when the user may see it, and a source owned
+        by somebody else never is, whatever it is shared as. Seeing another person's account
+        is what sharing is for; writing to it is not.
+
+        No current user means an internal caller (library sync, a plugin, a script), which
+        keeps writing everywhere exactly as before.
+        """
+        user = get_current_user()
+        if user is None:
+            return list(provider_mappings)
+        own = set(own_music_sources(self.mass, user))
+        visible = visible_music_sources(self.mass, user)
+        targets: list[ProviderMapping] = []
+        for mapping in provider_mappings:
+            instance_id = mapping.provider_instance
+            if instance_id in own:
+                targets.append(mapping)
+            elif source_owner(self.mass, instance_id) is not None:
+                continue
+            elif visible is None or instance_id in visible:
+                targets.append(mapping)
+        return targets
 
     def _apply_user_provider_filter(
         self,
