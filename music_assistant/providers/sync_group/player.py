@@ -624,13 +624,18 @@ class SyncGroupPlayer(Player):
             or not self._reconnect_relevant_change(changed_values)
         ):
             return
-        if member_player is self.sync_leader:
+        # a rediscovered player is a new instance for the same device: read the registry's
+        # instance for its member list, but leave self.sync_leader untouched — writing it
+        # here would trip _form_syncgroup's identity-based stale-form guards mid-form
+        leader = self.sync_leader
+        if (current_leader := self.mass.players.get_player(leader.player_id)) is not None:
+            leader = current_leader
+        if member_player.player_id == leader.player_id:
             for member_id in self._attr_static_group_members:
                 if member_id != member_player.player_id:
                     self._schedule_reconnect(member_id)
         elif member_player.player_id in self._attr_static_group_members and (
-            member_player.player_id
-            not in self._translate_to_parent_ids(self.sync_leader.state.group_members)
+            member_player.player_id not in self._translate_to_parent_ids(leader.state.group_members)
             or member_player.player_id in self._reconnect_pending_ids
         ):
             self._schedule_reconnect(member_player.player_id)
@@ -1428,6 +1433,13 @@ class SyncGroupPlayer(Player):
             for key in (ATTR_AVAILABLE, ATTR_ENABLED)
         ):
             return True
+        # a member released by the other group that owned it becomes recoverable, and
+        # that release is the only signal we get for it
+        if any(
+            changed_values.get(key, (None, None))[0] is not None and changed_values[key][1] is None
+            for key in ("active_group", "synced_to")
+        ):
+            return True
         # A linked output can reconnect while its parent stays available and enabled.
         # Regained group compatibility may be the only reconnect signal.
         previous, current = changed_values.get(ATTR_CAN_GROUP_WITH, (None, None))
@@ -1462,6 +1474,7 @@ class SyncGroupPlayer(Player):
     async def _reconnect_runner(self) -> None:
         """Add reconnected static members without altering the playback session."""
         attempts: dict[str, int] = {}
+        unexpected: list[Exception] = []
         try:
             while self._reconnect_pending_ids:
                 member_id = next(iter(self._reconnect_pending_ids))
@@ -1472,15 +1485,15 @@ class SyncGroupPlayer(Player):
                     # be checked before waiting for the leader lock.
                     if self.is_dynamic or not self.is_active_session or self.sync_leader is None:
                         self._reconnect_pending_ids.clear()
-                        return
+                        break
                     try:
                         keep_going = await self._reconnect_member_locked(
                             member_id, self.sync_leader.player_id, attempts
                         )
                     except Exception as err:
                         # A defect in our own state handling, not a transient provider
-                        # failure: report it and drop this member rather than letting
-                        # the retry budget hide it or one member strand the others.
+                        # failure: drop this member so it cannot strand the others, and
+                        # carry the error out to the task once the episode is drained.
                         self._reconnect_pending_ids.discard(member_id)
                         self.logger.error(
                             "Unexpected error reconnecting static member %s to syncgroup %s: %s",
@@ -1489,14 +1502,17 @@ class SyncGroupPlayer(Player):
                             err,
                             exc_info=err,
                         )
+                        unexpected.append(err)
                         continue
                     if not keep_going:
-                        return
+                        break
                 if self._reconnect_pending_ids:
                     await asyncio.sleep(RECONNECT_RETRY_DELAY)
         finally:
             if self._reconnect_task is asyncio.current_task():
                 self._reconnect_task = None
+        if unexpected:
+            raise ExceptionGroup("Unexpected errors reconnecting static members", unexpected)
 
     def _record_reconnect_attempt(self, member_id: str, attempts: dict[str, int]) -> int:
         """Record a failed reconnect attempt and retain it while retries remain."""

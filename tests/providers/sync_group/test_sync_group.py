@@ -1936,8 +1936,11 @@ class TestStaticMemberReconnect:
         task = sgp._reconnect_task
         assert task is not None
 
-        with patch("music_assistant.providers.sync_group.player.RECONNECT_RETRY_DELAY", 0):
-            # the defect must not escape the runner and kill the whole episode
+        with (
+            patch("music_assistant.providers.sync_group.player.RECONNECT_RETRY_DELAY", 0),
+            # reported to the task, but only after the remaining members were handled
+            pytest.raises(ExceptionGroup),
+        ):
             await task
 
         # both members were attempted despite one raising, and nothing is stranded
@@ -1961,6 +1964,11 @@ class TestStaticMemberReconnect:
         assert sgp._reconnect_relevant_change({"can_group_with": (None, {"a"})}) is False
         assert sgp._reconnect_relevant_change({"can_group_with": ({"a"}, None)}) is False
         assert sgp._reconnect_relevant_change({"volume_level": (1, 2)}) is False
+        # a released member becomes recoverable; acquiring or moving an owner does not
+        assert sgp._reconnect_relevant_change({"active_group": ("other", None)}) is True
+        assert sgp._reconnect_relevant_change({"synced_to": ("other", None)}) is True
+        assert sgp._reconnect_relevant_change({"active_group": (None, "other")}) is False
+        assert sgp._reconnect_relevant_change({"synced_to": ("other", "other2")}) is False
 
     @pytest.mark.asyncio
     async def test_reconnect_task_field_clears_when_runner_completes(
@@ -1988,8 +1996,9 @@ class TestStaticMemberReconnect:
         sgp.on_group_member_updated(display, {"available": (False, True)})
         task = sgp._reconnect_task
         assert task is not None
-        # contained by the runner: it must not escape and strand the episode
-        await task
+        # raised once the episode drained: it must not strand or hide the defect
+        with pytest.raises(ExceptionGroup):
+            await task
 
         # a defect must not consume the retry budget like a transient failure would
         assert mass.players._handle_set_members.await_count == 1
@@ -2127,6 +2136,103 @@ class TestStaticMemberReconnect:
         await task
 
         mass.players._handle_set_members.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reconnect_rearms_when_other_owner_releases_member(
+        self, static_reconnect_setup: Any
+    ) -> None:
+        """Releasing the member from its other owner must re-arm the reconnect."""
+        mass, sgp, leader, display = static_reconnect_setup()
+        other_group = _make_mock_player("other_group", player_type=PlayerType.GROUP)
+        other_group.state.group_members = ["other_group", "display"]
+        other_group.is_active_session = True
+        display.state.active_group = "other_group"
+        mass.players.get_player = _player_lookup(
+            {"leader": leader, "display": display, "other_group": other_group}
+        )
+        mass.players.iter_players = MagicMock(
+            return_value=iter([sgp, leader, display, other_group])
+        )
+        mass.players._handle_set_members = AsyncMock()
+
+        with patch.object(
+            type(sgp), "is_active_session", new_callable=PropertyMock, return_value=True
+        ):
+            # owned elsewhere: the first pass must skip the member entirely
+            sgp.on_group_member_updated(display, {"available": (False, True)})
+            task = sgp._reconnect_task
+            assert task is not None
+            await task
+            mass.players._handle_set_members.assert_not_awaited()
+
+            # the other owner lets go: this is the only signal that the member can
+            # now be recovered, and it must re-arm instead of being ignored
+            other_group.state.group_members = ["other_group"]
+            display.state.active_group = None
+            sgp.on_group_member_updated(display, {"active_group": ("other_group", None)})
+            retry_task = sgp._reconnect_task
+            assert retry_task is not None
+            await retry_task
+
+        mass.players._handle_set_members.assert_awaited_once_with(
+            leader, player_ids_to_add=["display"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_reconnect_survives_leader_replaced_by_new_instance(
+        self, static_reconnect_setup: Any
+    ) -> None:
+        """A leader rediscovered as a new object must still re-arm its members."""
+        mass, sgp, _leader, display = static_reconnect_setup()
+        mass.players._handle_set_members = AsyncMock()
+        # provider rediscovery builds a fresh instance for the same physical player;
+        # the group still holds the old one with the same player_id
+        rediscovered = _make_mock_player("leader", provider_domain="sendspin")
+        rediscovered.state.group_members = ["leader"]
+        rediscovered.state.can_group_with = {"display"}
+        mass.players.get_player = _player_lookup({"leader": rediscovered, "display": display})
+
+        sgp.on_group_member_updated(
+            rediscovered, {"can_group_with": (frozenset(), frozenset({"display"}))}
+        )
+        task = sgp._reconnect_task
+        assert task is not None
+        await task
+
+        mass.players._handle_set_members.assert_awaited_once_with(
+            rediscovered, player_ids_to_add=["display"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_reconnect_surfaces_defect_after_recovering_other_members(
+        self, static_reconnect_three_member_setup: Any
+    ) -> None:
+        """A defect is reported once the remaining members got their recovery."""
+        mass, sgp, leader, _display, _lamp = static_reconnect_three_member_setup()
+        attempted: list[str] = []
+
+        async def _add(_leader: Any, player_ids_to_add: list[str]) -> None:
+            attempted.append(player_ids_to_add[0])
+            if player_ids_to_add[0] == "display":
+                raise RuntimeError("defect")
+
+        mass.players._handle_set_members = AsyncMock(side_effect=_add)
+        sgp.on_group_member_updated(leader, {"can_group_with": (frozenset(), frozenset({"x"}))})
+        task = sgp._reconnect_task
+        assert task is not None
+
+        with (
+            patch("music_assistant.providers.sync_group.player.RECONNECT_RETRY_DELAY", 0),
+            pytest.raises(ExceptionGroup) as exc_info,
+        ):
+            await task
+
+        # every member was still attempted before the failure reached the task
+        assert sorted(attempted) == ["display", "lamp"]
+        assert not sgp._reconnect_pending_ids
+        # the group keeps no stale task, and the defect is named rather than swallowed
+        assert sgp._reconnect_task is None
+        assert [str(err) for err in exc_info.value.exceptions] == ["defect"]
 
 
 class TestGetConfigEntriesMemberPicker:
