@@ -3508,6 +3508,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param parent_player: The parent player to add/remove members to/from.
         :param player_ids_to_add: List of player_id's to add to the parent player.
         :param player_ids_to_remove: List of player_id's to remove from the parent player.
+        :param new_content: Set when the caller is about to publish new content, so the
+            protocol owner can clear its stale metadata before the member joins.
+        :return: The opened takeover transaction as a ``(owner, token)`` pair, or None
+            when there is nothing to finish. On success the caller owns the returned
+            transaction and must call ``on_group_content_takeover_finished`` or
+            ``on_group_content_takeover_aborted`` on it; a raised call is already aborted.
         """
         target_player = parent_player.player_id
         # handle the sync leader being removed from itself: either transfer leadership
@@ -3673,6 +3679,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param parent_player: The parent player to add/remove members to/from.
         :param player_ids_to_add: List of visible player IDs to add as members.
         :param player_ids_to_remove: List of visible player IDs to remove from members.
+        :param new_content: Set when the caller is about to publish new content, so the
+            protocol owner can clear its stale metadata before the member joins.
+        :return: The opened takeover transaction as a ``(owner, token)`` pair, or None
+            when there is nothing to finish. On success the caller owns the returned
+            transaction and must call ``on_group_content_takeover_finished`` or
+            ``on_group_content_takeover_aborted`` on it; a raised call is already aborted.
         """
         # Get parent's active protocol domain and player if available
         parent_protocol_domain = None
