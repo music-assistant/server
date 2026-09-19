@@ -11,6 +11,13 @@ from music_assistant_models.enums import ConfigEntryType, ImageType
 CONF_MISSING_ALBUM_ARTIST_ACTION = "missing_album_artist_action"
 CONF_CONTENT_TYPE = "content_type"
 
+# Hidden conf: Do we still need to promote authors/ narrators to full artists?
+CONF_AUTHOR_NARRATOR_REPARSE_DONE = "author_narrator_reparse_done"
+
+# Use a prefix: Authors/ narrators cannot be distinguished by their file path, like music artists.
+AUTHOR_ID_PREFIX: Final[str] = "author:"
+NARRATOR_ID_PREFIX: Final[str] = "narrator:"
+
 CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
     key=CONF_MISSING_ALBUM_ARTIST_ACTION,
     type=ConfigEntryType.STRING,

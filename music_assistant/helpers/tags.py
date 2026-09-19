@@ -388,6 +388,19 @@ class AudioTags:
         return ()
 
     @property
+    def authors(self) -> tuple[str, ...]:
+        """Return author(s) of an audiobook."""
+        return self.writers or self.album_artists or self.artists
+
+    @property
+    def narrators(self) -> tuple[str, ...]:
+        """Return narrator(s) of an audiobook."""
+        for key in ("narrators", "narrator", "narratedby", "composer"):
+            if tag := self.tags.get(key):
+                return split_items(tag)
+        return ()
+
+    @property
     def album_artists(self) -> tuple[str, ...]:
         """Return (all) album artists (if any)."""
         # Preferred path when unambiguously separated album artist names are available
