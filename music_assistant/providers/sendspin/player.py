@@ -120,7 +120,7 @@ from .helpers import (
     pair_method_descriptor,
     pin_code_format,
 )
-from .playback import SendspinPlaybackSession
+from .playback import ANCHOR_REBASE_SIGNIFICANT_US, SendspinPlaybackSession
 
 # Supported group commands for Sendspin players
 SUPPORTED_GROUP_COMMANDS = [
@@ -1202,6 +1202,15 @@ class SendspinPlayer(SendspinBasePlayer):
     last_sent_artist_artwork_url: str | None = None
     _last_beat_queue_item_id: str | None = None
     _last_beat_anchor_us: int | None = None
+    # Timeline movement reported but not yet reflected in _last_beat_anchor_us. A refresh
+    # awaiting audio analysis is cancelled by the next one without ever publishing, so a
+    # per-call delta would be lost; this accumulates until a schedule actually goes out.
+    _pending_anchor_delta_us: int = 0
+    # Whether that movement is a timeline rebase awaiting publication. Kept apart from
+    # the amount so two opposing rebases, which net to zero, still resolve from the last
+    # anchor instead of falling through to reported progress - and so an ordinary
+    # re-publish for the same item (a seek) still re-derives from progress, as it must.
+    _anchor_rebase_pending: bool = False
     # Background poller that retries _send_beat_schedule when analysis is
     # not yet available. Cancelled on track change / stop / successful push.
     _beat_retry_task: asyncio.Task[None] | None = None
@@ -1578,6 +1587,24 @@ class SendspinPlayer(SendspinBasePlayer):
         self.mass.create_task(
             self.send_current_media_metadata(),
             task_id=f"sendspin_metadata_{self.player_id}",
+            abort_existing=True,
+        )
+
+    def on_flow_timeline_rebased(self, anchor_delta_us: int) -> None:
+        """
+        Handle the flow stream's audio timeline being rebased by a producer stall.
+
+        :param anchor_delta_us: Signed amount the timeline anchor moved, which is what an
+            already-published beat schedule has to shift by.
+        """
+        if self.synced_to is not None:
+            # Only the leader publishes the beat schedule.
+            return
+        self._pending_anchor_delta_us += anchor_delta_us
+        self._anchor_rebase_pending = True
+        self.mass.create_task(
+            self._refresh_beat_schedule(),
+            task_id=f"sendspin_beat_rebase_{self.player_id}",
             abort_existing=True,
         )
 
@@ -2052,6 +2079,8 @@ class SendspinPlayer(SendspinBasePlayer):
         self.last_sent_artist_artwork_url = None
         self._last_beat_queue_item_id = None
         self._last_beat_anchor_us = None
+        self._pending_anchor_delta_us = 0
+        self._anchor_rebase_pending = False
 
     def _publish_repeat_shuffle(self, repeat: SendspinRepeatMode, *, shuffle: bool) -> None:
         """
@@ -2157,10 +2186,7 @@ class SendspinPlayer(SendspinBasePlayer):
         if visualizer_role is None:
             return
         if not is_playing or queue_item is None or queue_item.streamdetails is None:
-            visualizer_role.clear_beat_schedule()
-            self._last_beat_queue_item_id = None
-            self._last_beat_anchor_us = None
-            self._cancel_beat_retry()
+            self._clear_beat_state(visualizer_role)
             return
         # smart_fades is the only AA provider that emits beats. Without it, no
         # beats will ever arrive for this source.
@@ -2168,11 +2194,8 @@ class SendspinPlayer(SendspinBasePlayer):
             p.available and p.domain == "smart_fades"
             for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS)
         ):
-            visualizer_role.clear_beat_schedule()
+            self._clear_beat_state(visualizer_role)
             visualizer_role.set_beat_availability(BeatAvailability.UNAVAILABLE)
-            self._last_beat_queue_item_id = None
-            self._last_beat_anchor_us = None
-            self._cancel_beat_retry()
             return
         provider = cast("SendspinProvider", self.provider)
         now_us = provider.server_api.clock.now_us()
@@ -2184,14 +2207,36 @@ class SendspinPlayer(SendspinBasePlayer):
         offset_us = self._flow_track_offset_us(pq_data, queue_item)
         if offset_us is not None:
             anchor_us = self.playback_session.flow_track_anchor_us(offset_us)
+        if (
+            anchor_us is None
+            and self._anchor_rebase_pending
+            and queue_item.queue_item_id == self._last_beat_queue_item_id
+            and self._last_beat_anchor_us is not None
+        ):
+            # The flow log has not placed this track yet, so there is no anchor to
+            # recompute from. The timeline has moved by _pending_anchor_delta_us since
+            # the last schedule went out though - accumulated, because a refresh cancelled while
+            # awaiting analysis never published the movement it carried - so the schedule
+            # already published for this item moves by exactly that.
+            # Derived from the last anchor rather than from reported progress, which is
+            # queue-backed and corrected asynchronously - it can still be pre-rebase here.
+            anchor_us = self._last_beat_anchor_us + self._pending_anchor_delta_us
         if anchor_us is None:
             anchor_us = now_us - track_progress_ms * 1000
-        # Re-push only on track change or seek (anchor jumps beyond natural drift).
+        # Re-push only on track change, seek, or a timeline rebase (anchor jumps
+        # beyond natural drift).
         if (
             queue_item.queue_item_id == self._last_beat_queue_item_id
             and self._last_beat_anchor_us is not None
-            and abs(anchor_us - self._last_beat_anchor_us) < 500_000
+            and abs(anchor_us - self._last_beat_anchor_us) < ANCHOR_REBASE_SIGNIFICANT_US
         ):
+            # Nothing goes out, but the reported movement is accounted for: the schedule
+            # already published is within a rebase of where it belongs. Deltas that net to
+            # (nearly) zero land here, and leaving them pending would arm the fallback
+            # branch above for the next update on this same item - a seek - which would
+            # then re-derive the pre-seek anchor instead of the position seeked to.
+            self._pending_anchor_delta_us = 0
+            self._anchor_rebase_pending = False
             return
         sd = queue_item.streamdetails
         analysis = await self.mass.streams.audio_analysis.get_audio_analysis(
@@ -2200,6 +2245,15 @@ class SendspinPlayer(SendspinBasePlayer):
             media_type=sd.media_type,
             priority=(SMART_FADES_ANALYSIS_DOMAIN,),
         )
+        # The analysis await can outlive the media it was started for: a track change
+        # races with it, and the refresh a rebase schedules is not cancelled by the one a
+        # media update schedules (different task ids). Publishing the item captured before
+        # the await would then overwrite the newer track's schedule, and leave
+        # _last_beat_queue_item_id naming the old item so the re-push guard above suppresses
+        # the correction. Re-read the live media instead and drop this run if it moved on.
+        live_media = self.state.current_media
+        if live_media is None or live_media.queue_item_id != queue_item.queue_item_id:
+            return
         if analysis is None or analysis.beats is None or len(analysis.beats) == 0:
             visualizer_role.clear_beat_schedule()
             # Analysis may still be running (offline NN takes ~5-10 s). Kick a
@@ -2226,6 +2280,21 @@ class SendspinPlayer(SendspinBasePlayer):
             visualizer_role.append_beat_schedule(beats)
         self._last_beat_queue_item_id = queue_item.queue_item_id
         self._last_beat_anchor_us = anchor_us
+        self._pending_anchor_delta_us = 0
+        self._anchor_rebase_pending = False
+
+    def _clear_beat_state(self, visualizer_role: VisualizerGroupRole) -> None:
+        """
+        Drop the published beat schedule and everything tracking it.
+
+        :param visualizer_role: The group's visualizer role to clear the schedule on.
+        """
+        visualizer_role.clear_beat_schedule()
+        self._last_beat_queue_item_id = None
+        self._last_beat_anchor_us = None
+        self._pending_anchor_delta_us = 0
+        self._anchor_rebase_pending = False
+        self._cancel_beat_retry()
 
     # Initial backoff for the beat-analysis poller. The neural beat tracker
     # in smart_fades takes ~5-10 s; retry every 3 s until it lands. Capped so
