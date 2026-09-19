@@ -333,6 +333,13 @@ def test_a_paused_connect_session_is_handed_to_the_stale_source_check() -> None:
     player.update_state.assert_called_once()  # type: ignore[attr-defined]
 
 
+def test_the_player_coordinates_the_announcement_start() -> None:
+    """Test a group announcement may be fanned out: the audio clips are fired together."""
+    player, _ = _make_player()
+
+    assert player.coordinates_announcement_start is True
+
+
 def _speaker_for_playback_error() -> tuple[SonosPlayer, MagicMock]:
     """Create a coordinator SonosPlayer wired up to receive playbackError events."""
     mass = MagicMock()

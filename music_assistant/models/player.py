@@ -1010,6 +1010,19 @@ class Player(ABC):
         """
         return False
 
+    @property
+    def coordinates_announcement_start(self) -> bool:
+        """
+        Return True if the player lines up an announcement start with the other members.
+
+        When a group announcement is handed to every member at once, a player that
+        reports True starts the clip together with the other members that announce through
+        the same provider, so all rooms are heard as one. The players controller only fans a
+        group announcement out to its members when the output announcing for every member
+        reports True and all those outputs belong to one provider.
+        """
+        return False
+
     async def play_announcement(
         self, announcement: PlayerMedia, volume_level: int | None = None
     ) -> None:

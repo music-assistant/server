@@ -351,6 +351,11 @@ class AirPlayPlayer(Player):
         return True
 
     @property
+    def coordinates_announcement_start(self) -> bool:
+        """Return True: concurrent per-member calls share one audible instant."""
+        return True
+
+    @property
     def can_group_with(self) -> set[str]:
         """
         Return player IDs this player can group with.

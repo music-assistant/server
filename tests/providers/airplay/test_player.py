@@ -1130,6 +1130,11 @@ def test_player_applies_the_announcement_volume_itself(airplay_player: AirPlayPl
     assert airplay_player.applies_announcement_volume is True
 
 
+def test_player_coordinates_the_announcement_start(airplay_player: AirPlayPlayer) -> None:
+    """A group announcement may be fanned out: the members share one audible instant."""
+    assert airplay_player.coordinates_announcement_start is True
+
+
 def test_volume_reports_are_ignored_while_our_own_level_echoes(
     airplay_player: AirPlayPlayer,
 ) -> None:
