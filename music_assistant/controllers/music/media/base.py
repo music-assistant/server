@@ -211,7 +211,6 @@ class AudiobookSyncDetails(LibraryItemSyncDetails):
             (self.narrators, self.narrator_is_str, prov_item.narrators),
         ):
             if not prov_values:
-                # a provider naming nobody does not mean the book has nobody
                 continue
             if stored_is_str != all(isinstance(value, str) for value in prov_values):
                 # plain names and Artist items are stored in different places
