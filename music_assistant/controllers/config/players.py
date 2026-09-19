@@ -162,13 +162,13 @@ class PlayerConfigMixin:
     ) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider id."""
         result: list[PlayerConfig] = []
-        for key, raw_conf in list(self.get(CONF_PLAYERS, {}).items()):
-            # guard against malformed entries that lost their base keys
-            # (can happen via race between delete_player_config and a stale player
-            # update writing back a nested sub-key, which recreates a partial dict).
-            if not isinstance(raw_conf, dict) or "player_id" not in raw_conf:
-                LOGGER.warning("Removing malformed player config entry %s (missing player_id)", key)
-                self.remove(f"{CONF_PLAYERS}/{key}")
+        for key, stored_conf in list(self.get(CONF_PLAYERS, {}).items()):
+            # heal or drop a malformed entry that lost its base keys: a partial dict
+            # resurrected by a nested config-set (a stale write-back racing a delete, or
+            # a leftover from an older version). player_id/provider are recovered when
+            # possible, else the unreconstructable entry is pruned.
+            raw_conf = self._ensure_player_config_base_keys(key, stored_conf)
+            if raw_conf is None:
                 continue
             # optional provider filter
             if provider is not None and raw_conf.get("provider") != provider:
@@ -245,19 +245,12 @@ class PlayerConfigMixin:
                 raw_conf["default_name"] = (
                     raw_conf.get("default_name") or raw_conf.get("player_id") or player_id
                 )
-                raw_conf.setdefault("player_id", player_id)
-                if "provider" not in raw_conf:
-                    # a stored entry that lost its provider while its player is not
-                    # registered cannot be reconstructed (a partial dict left behind by an
-                    # older version). Drop the ghost so it can never crash the config read,
-                    # and report it as gone. The available branch above still recovers the
-                    # provider from a live player, so a merely offline player is untouched.
-                    LOGGER.warning(
-                        "Removing malformed player config entry %s (missing provider)",
-                        player_id,
-                    )
-                    self.remove(f"{CONF_PLAYERS}/{player_id}")
+                recovered = self._ensure_player_config_base_keys(player_id, raw_conf)
+                if recovered is None:
+                    # an unreconstructable ghost (missing provider, player not
+                    # registered) was pruned; report it as gone
                     raise KeyError(f"No config found for player id {player_id}")
+                raw_conf = recovered
 
             conf = cast("PlayerConfig", PlayerConfig.parse(config_entries, raw_conf))
             _apply_raw_player_icon_value(conf, raw_conf.get("values", {}))
@@ -497,11 +490,12 @@ class PlayerConfigMixin:
         This is used to get the base config for a player, without any provider specific values,
         for initialization purposes.
         """
-        if not (raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}")):
-            raw_conf = {
-                "player_id": player_id,
-                "provider": provider,
-            }
+        raw_conf = self.get(f"{CONF_PLAYERS}/{player_id}")
+        raw_conf = dict(raw_conf) if isinstance(raw_conf, dict) else {}
+        # a partial entry left on disk by an older version can miss its base keys; the
+        # caller passes the authoritative values, so recover them instead of crashing parse
+        raw_conf.setdefault("player_id", player_id)
+        raw_conf.setdefault("provider", provider)
         return cast("PlayerConfig", PlayerConfig.parse([], raw_conf))
 
     @api_command("config/players/save", required_scope=Scope.CONFIG_PLAYERS_WRITE)
@@ -662,6 +656,32 @@ class PlayerConfigMixin:
                 entry := player.config.values.get(key)
             ):
                 entry.value = value
+
+    def _ensure_player_config_base_keys(
+        self, player_id: str, raw_conf: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """
+        Return a copy of a stored raw player config with its base keys ensured, or None.
+
+        A partial entry left on disk by an older version can miss the mandatory
+        player_id/provider keys (a ghost resurrected by a nested config-set), which
+        crashes PlayerConfig.parse. player_id is taken from the lookup key and provider
+        from the live player. When the player is not registered the provider cannot be
+        recovered: the unreconstructable entry is removed and None is returned so the
+        caller treats it as absent.
+        """
+        conf = dict(raw_conf) if isinstance(raw_conf, dict) else {}
+        conf.setdefault("player_id", player_id)
+        if "provider" not in conf:
+            if player := self.mass.players.get_player(player_id, False):
+                conf["provider"] = player.provider.instance_id
+            else:
+                LOGGER.warning(
+                    "Removing malformed player config entry %s (missing provider)", player_id
+                )
+                self.remove(f"{CONF_PLAYERS}/{player_id}")
+                return None
+        return conf
 
     async def _get_player_config_entries(
         self,
