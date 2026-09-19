@@ -1,4 +1,4 @@
-"""Tests that the iBroadcast parsers hand out item id's the library can match."""
+"""Tests for the iBroadcast parsers."""
 
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ TRACK: dict[str, Any] = {
     "genre": "Rock",
     "genres_additional": None,
 }
+PLAYLIST: dict[str, Any] = {"playlist_id": 5001, "name": "Some Playlist", "type": "normal"}
 
 
 @pytest.fixture
@@ -53,9 +54,11 @@ def provider() -> IBroadcastProvider:
     client.get_artists = AsyncMock(return_value={ARTIST["artist_id"]: ARTIST})
     client.get_albums = AsyncMock(return_value={ALBUM["album_id"]: ALBUM})
     client.get_tracks = AsyncMock(return_value={TRACK["track_id"]: TRACK})
+    client.get_playlists = AsyncMock(return_value={PLAYLIST["playlist_id"]: PLAYLIST})
     client.get_artist_artwork_url = AsyncMock(return_value="https://artwork/artist")
     client.get_album_artwork_url = AsyncMock(return_value="https://artwork/album")
     client.get_track_artwork_url = AsyncMock(return_value="https://artwork/track")
+    client.get_playlist_artwork_url = AsyncMock(return_value="https://artwork/playlist")
     result._client = client
     return result
 
@@ -146,3 +149,54 @@ async def test_listed_item_ids_are_all_text(provider: IBroadcastProvider, listin
 
     assert items
     assert all(isinstance(item.item_id, str) for item in items)
+
+
+async def test_track_without_an_album_is_parsed(provider: IBroadcastProvider) -> None:
+    """Not every upload belongs to an album, and the rest of the track still parses."""
+    provider._client.get_tracks = AsyncMock(return_value={1001: {**TRACK, "album_id": 0}})
+
+    tracks = [item async for item in provider.get_library_tracks()]
+
+    assert [track.item_id for track in tracks] == ["1001"]
+    assert tracks[0].album is None
+
+
+async def test_track_without_artwork_is_parsed(provider: IBroadcastProvider) -> None:
+    """The client raises when a track carries no artwork, which is no reason to drop it."""
+    provider._client.get_track_artwork_url = AsyncMock(side_effect=ValueError("no artwork"))
+
+    tracks = [item async for item in provider.get_library_tracks()]
+
+    assert [track.item_id for track in tracks] == ["1001"]
+    assert not tracks[0].metadata.images
+
+
+async def test_album_without_artwork_is_parsed(provider: IBroadcastProvider) -> None:
+    """The client raises when no track of an album carries artwork."""
+    provider._client.get_album_artwork_url = AsyncMock(side_effect=ValueError("no artwork"))
+
+    albums = [item async for item in provider.get_library_albums()]
+
+    assert [album.item_id for album in albums] == ["101"]
+    assert not albums[0].metadata.images
+
+
+async def test_playlist_without_artwork_is_parsed(provider: IBroadcastProvider) -> None:
+    """An empty playlist has no track to take artwork from."""
+    provider._client.get_playlist_artwork_url = AsyncMock(side_effect=ValueError("no artwork"))
+
+    playlists = [item async for item in provider.get_library_playlists()]
+
+    assert [playlist.item_id for playlist in playlists] == ["5001"]
+    assert not playlists[0].metadata.images
+
+
+async def test_one_unreadable_track_does_not_end_the_listing(provider: IBroadcastProvider) -> None:
+    """A listing that gives up part way leaves the rest of the library unsynced."""
+    provider._client.get_tracks = AsyncMock(
+        return_value={1001: {**TRACK, "album_id": 0}, 1002: {**TRACK, "track_id": 1002}}
+    )
+
+    tracks = [item async for item in provider.get_library_tracks()]
+
+    assert [track.item_id for track in tracks] == ["1001", "1002"]
