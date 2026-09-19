@@ -27,7 +27,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import UNKNOWN_ARTIST, UNKNOWN_ARTIST_ID_MBID
+from music_assistant.constants import CONF_USERNAME, CONF_PASSWORD, CONF_VERIFY_SSL, UNKNOWN_ARTIST, UNKNOWN_ARTIST_ID_MBID
 from music_assistant.controllers.cache import use_cache
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
@@ -62,9 +62,6 @@ if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
 
 CONF_URL = "url"
-CONF_USERNAME = "username"
-CONF_PASSWORD = "password"
-CONF_VERIFY_SSL = "verify_ssl"
 CONF_ACCESS_TOKEN = "access_token"
 CONF_USER_ID = "user_id"
 CONF_DEVICE_ID = "device_id"

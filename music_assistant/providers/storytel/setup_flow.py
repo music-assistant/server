@@ -9,10 +9,8 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.models.setup_flow import SetupFlowError
-from music_assistant.providers.storytel.constants import (
-    CONF_PASSWORD,
-    CONF_USERNAME,
-)
+from music_assistant.constants import CONF_USERNAME, CONF_PASSWORD
+
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
