@@ -1306,17 +1306,21 @@ class WebserverController(CoreController):
         # an undecodable or non-object body is a client error, not a server fault
         if not isinstance(body, dict):
             return web.Response(status=400, text="Invalid request body")
-        username = str(body.get("username") or "").strip()
+        username = body.get("username") or ""
         password = body.get("password") or ""
-        display_name = str(body.get("display_name") or "").strip() or None
+        display_name = body.get("display_name") or ""
+        if not all(isinstance(value, str) for value in (username, password, display_name)):
+            return web.Response(status=400, text="Invalid request body")
+        username = username.strip()
+        display_name = display_name.strip() or None
 
         # Validation
-        if not username or len(username) < 2:
+        if len(username) < 2:
             return web.json_response(
                 {"success": False, "error": "Username must be at least 2 characters"}, status=400
             )
 
-        if not isinstance(password, str) or len(password) < 8:
+        if len(password) < 8:
             return web.json_response(
                 {"success": False, "error": "Password must be at least 8 characters"}, status=400
             )

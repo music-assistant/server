@@ -326,8 +326,22 @@ async def test_setup_leaves_the_display_name_empty_when_none_was_given(
 
 @pytest.mark.parametrize(
     "raw_body",
-    [b"not json", b"[1, 2]", b'"hi"', b'{"username": "marcel", "password": 12345678}'],
-    ids=["not_json", "list", "string", "password_not_a_string"],
+    [
+        b"not json",
+        b"[1, 2]",
+        b'"hi"',
+        b'{"username": 123456, "password": "correct horse battery"}',
+        b'{"username": "marcel", "password": 12345678}',
+        b'{"username": "marcel", "password": "correct horse battery", "display_name": {"a": 1}}',
+    ],
+    ids=[
+        "not_json",
+        "list",
+        "string",
+        "username_not_a_string",
+        "password_not_a_string",
+        "display_name_not_a_string",
+    ],
 )
 async def test_setup_refuses_a_body_it_cannot_read(
     webserver: WebserverController, raw_body: bytes
