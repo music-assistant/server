@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
@@ -333,6 +334,8 @@ async def test_setup_leaves_the_display_name_empty_when_none_was_given(
         b'{"username": 123456, "password": "correct horse battery"}',
         b'{"username": "marcel", "password": 12345678}',
         b'{"username": "marcel", "password": "correct horse battery", "display_name": {"a": 1}}',
+        b'{"username": "marcel", "password": "correct horse battery", "display_name": false}',
+        b'{"username": "marcel", "password": "correct horse battery", "display_name": 0}',
     ],
     ids=[
         "not_json",
@@ -341,6 +344,8 @@ async def test_setup_leaves_the_display_name_empty_when_none_was_given(
         "username_not_a_string",
         "password_not_a_string",
         "display_name_not_a_string",
+        "display_name_false",
+        "display_name_zero",
     ],
 )
 async def test_setup_refuses_a_body_it_cannot_read(
@@ -421,6 +426,19 @@ async def test_setup_is_refused_once_a_user_exists(webserver: WebserverControlle
     assert response.status == 409
     assert json.loads(response.text or "")["error"] == "Setup already completed"
     assert await webserver.auth.get_user_by_username("intruder") is None
+
+
+async def test_two_first_attempts_at_once_make_one_admin(
+    webserver: WebserverController,
+) -> None:
+    """Attempts that arrive together are taken one at a time: the second finds the admin made."""
+    first, second = await asyncio.gather(
+        _post_setup(webserver, ACCOUNT),
+        _post_setup(webserver, {**ACCOUNT, "username": "other"}),
+    )
+
+    assert sorted([first.status, second.status]) == [200, 409]
+    assert [user.username for user in await webserver.auth.list_users()] == ["marcel"]
 
 
 async def test_setup_stays_refused_across_a_restart(mass_minimal: MusicAssistant) -> None:

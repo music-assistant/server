@@ -93,6 +93,7 @@ from .sendspin_proxy import SendspinProxyHandler
 from .websocket_client import WebsocketClientHandler
 
 if TYPE_CHECKING:
+    from music_assistant_models.auth import User
     from music_assistant_models.config_entries import CoreConfig
 
     from music_assistant import MusicAssistant
@@ -203,6 +204,8 @@ class WebserverController(CoreController):
         self.auth = AuthenticationManager(self)
         self.remote_access = RemoteAccessManager(self)
         self._sendspin_proxy = SendspinProxyHandler(self)
+        # the first-time setup makes exactly one admin, however many attempts arrive at once
+        self._setup_lock = asyncio.Lock()
         # Preview tokens keyed on the token in the URL, value is
         # (provider instance id or domain, item id, monotonic expiry).
         self._preview_tokens: dict[str, tuple[str, str, float]] = {}
@@ -1306,13 +1309,17 @@ class WebserverController(CoreController):
         # an undecodable or non-object body is a client error, not a server fault
         if not isinstance(body, dict):
             return web.Response(status=400, text="Invalid request body")
-        username = body.get("username") or ""
-        password = body.get("password") or ""
-        display_name = body.get("display_name") or ""
-        if not all(isinstance(value, str) for value in (username, password, display_name)):
+        username = body.get("username", "")
+        password = body.get("password", "")
+        display_name = body.get("display_name")
+        if not (
+            isinstance(username, str)
+            and isinstance(password, str)
+            and (display_name is None or isinstance(display_name, str))
+        ):
             return web.Response(status=400, text="Invalid request body")
         username = username.strip()
-        display_name = display_name.strip() or None
+        display_name = (display_name or "").strip() or None
 
         # Validation
         if len(username) < 2:
@@ -1339,10 +1346,13 @@ class WebserverController(CoreController):
                     status=500,
                 )
 
-            # Create admin user with password
-            user = await builtin_provider.create_user_with_password(
-                username, password, role=UserRole.ADMIN, display_name=display_name
+            user = await self._create_first_admin(
+                builtin_provider, username, password, display_name
             )
+            if user is None:
+                return web.json_response(
+                    {"success": False, "error": "Setup already completed"}, status=409
+                )
 
             # Create token for the new admin
             device_name = body.get(
@@ -1376,6 +1386,30 @@ class WebserverController(CoreController):
             self.logger.exception("Error during setup")
             return web.json_response(
                 {"success": False, "error": f"Setup failed: {e!s}"}, status=500
+            )
+
+    async def _create_first_admin(
+        self,
+        provider: BuiltinLoginProvider,
+        username: str,
+        password: str,
+        display_name: str | None,
+    ) -> User | None:
+        """
+        Create the first admin account, or return None when the server already has a user.
+
+        Attempts that arrive together are taken one at a time, so only one of them makes the admin.
+
+        :param provider: The builtin login provider that stores the password.
+        :param username: The username of the admin.
+        :param password: The password of the admin.
+        :param display_name: The display name of the admin, if any.
+        """
+        async with self._setup_lock:
+            if self.auth.has_users:
+                return None
+            return await provider.create_user_with_password(
+                username, password, role=UserRole.ADMIN, display_name=display_name
             )
 
     def _resolve_preview_token(self, token: str) -> tuple[str, str] | None:
