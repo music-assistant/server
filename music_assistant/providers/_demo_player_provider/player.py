@@ -295,6 +295,9 @@ class DemoPlayer(Player):
         # If you do not use the announcement playerfeature, the default behavior is to play the
         # announcement as a regular media item using the play_media method and the MA player manager
         # will take care of setting the volume level for the announcement and resuming etc.
+        # Also override the coordinates_announcement_start property (return True) if your player
+        # lines up its start with the other members when a group announcement is handed to them
+        # all at once. Without it, a group announcement is played through the group's own stream.
 
     async def select_source(self, source: str) -> None:
         """Handle SELECT SOURCE command on the player."""

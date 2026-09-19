@@ -151,6 +151,11 @@ class SonosPlayer(Player):
         ]
 
     @property
+    def coordinates_announcement_start(self) -> bool:
+        """Return True: audio clips fired at the members together start close enough together."""
+        return True
+
+    @property
     def group_controller(self) -> SonosGroup:
         """Get the group controller, raising if unavailable."""
         if self.client.player.group is None:
