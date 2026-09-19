@@ -303,8 +303,6 @@ class LocalFileSystemProvider(MusicProvider):
     def supported_artist_types(self) -> set[ArtistType]:
         """Supported artist types."""
         if self.media_content_type == "audiobooks":
-            # an audiobook library holds no music artists at all, so every artist this
-            # instance produces is an author or a narrator of one of its books
             return {ArtistType.AUTHOR, ArtistType.NARRATOR}
         return {ArtistType.SINGER}
 
@@ -518,7 +516,10 @@ class LocalFileSystemProvider(MusicProvider):
         elif self.media_content_type == "audiobooks":
             if not self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS.key):
                 return
-            self._force_full_reparse = self._needs_full_reparse()
+            self._force_full_reparse = not self.mass.config.get_raw_provider_config_value(
+                self.instance_id, CONF_AUTHOR_NARRATOR_REPARSE_DONE, False
+            )
+
         elif self.media_content_type == "podcasts":
             if not self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_PODCASTS.key):
                 return
@@ -693,9 +694,7 @@ class LocalFileSystemProvider(MusicProvider):
             await self._process_deletions(deleted_files)
             await self._process_orphaned_albums_and_artists()
 
-        # only a complete scan may retire the one-time full reparse: an incomplete one
-        # never visited some of the files, and those would otherwise keep their legacy
-        # plain-string authors forever
+        # disable a full rescan after promoting authors/ narrators to artists once the scan completed without errors
         if self._force_full_reparse and not scan_errors.incomplete:
             self._force_full_reparse = False
             self._update_config_value(CONF_AUTHOR_NARRATOR_REPARSE_DONE, True, immediate=True)
@@ -706,9 +705,6 @@ class LocalFileSystemProvider(MusicProvider):
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         if prov_artist_id.startswith(AUTHOR_ID_PREFIX):
-            # an author/narrator of an audiobook: no folder to resolve, no artist.nfo to
-            # read and no music-artist identity to recover - the prefixed id already
-            # carries both the name and which of the two roles it was handed out for
             return self._parse_audiobook_artist(
                 prov_artist_id.removeprefix(AUTHOR_ID_PREFIX), ArtistType.AUTHOR
             )
@@ -2324,9 +2320,6 @@ class LocalFileSystemProvider(MusicProvider):
             await self.mass.music.albums.remove_item_from_library(db_row["item_id"])
 
         # Remove artists without any tracks, albums or audiobooks.
-        # audiobook_artists has to be part of this: an author or narrator is never
-        # referenced by a track or an album, so leaving it out would delete every one
-        # of them at the end of the very sync that just created them
         query = (
             f"SELECT item_id FROM {DB_TABLE_ARTISTS} "
             f"WHERE item_id not in "
@@ -2752,11 +2745,8 @@ class LocalFileSystemProvider(MusicProvider):
         Build the Artist for an audiobook author or narrator.
 
         :param name: The name as tagged on the audiobook file.
-        :param artist_type: Whether this person is the book's author or its narrator.
+        :param artist_type: author or narrator
         """
-        # the name is all the identity there is, so it is also the id (behind the prefix
-        # that keeps the two roles apart). That is what links the same person across every
-        # book they appear on, and it means a retagged name reads as a different person
         prefix = AUTHOR_ID_PREFIX if artist_type == ArtistType.AUTHOR else NARRATOR_ID_PREFIX
         prov_artist_id = f"{prefix}{name}"
         return Artist(
@@ -2772,19 +2762,6 @@ class LocalFileSystemProvider(MusicProvider):
                     in_library=True,
                 )
             },
-        )
-
-    def _needs_full_reparse(self) -> bool:
-        """Return whether this instance still owes the one-time full audiobook reparse."""
-        # An audiobook library indexed before authors/narrators became artists holds them
-        # as plain strings on the audiobook row. The scan only reparses files whose
-        # checksum changed, so without this those books would keep the old representation
-        # until the day their file happens to change. One sync that treats every file as
-        # changed rewrites them all (a reparsed existing item is written with
-        # overwrite_existing=True, which is what clears the stale string values and
-        # replaces them with the artist links), after which the marker retires it.
-        return not self.mass.config.get_raw_provider_config_value(
-            self.instance_id, CONF_AUTHOR_NARRATOR_REPARSE_DONE, False
         )
 
     async def _parse_artist(
