@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse, urlunparse
 
@@ -337,10 +338,11 @@ class IBroadcastProvider(MusicProvider):
         # iBroadcast doesn't seem to know album type - try inference
         album.album_type = infer_album_type(name, version)
 
-        # There is only an artwork in the tracks, lets get the first track one
-        artwork_url = await self._client.get_album_artwork_url(album_id)
-        if artwork_url:
-            album.metadata.images = UniqueList([self._get_artwork_object(artwork_url)])
+        # There is only an artwork in the tracks, lets get the first track one.
+        # The client raises when it finds none, which is no reason to drop the album.
+        with suppress(ValueError):
+            if artwork_url := await self._client.get_album_artwork_url(album_id):
+                album.metadata.images = UniqueList([self._get_artwork_object(artwork_url)])
         return album
 
     def _get_artwork_object(self, url: str) -> MediaItemImage:
@@ -368,8 +370,7 @@ class IBroadcastProvider(MusicProvider):
                 )
             },
         )
-        if track_obj["album_id"]:
-            album = await self._client.get_album(track_obj["album_id"])
+        album = await self._client.get_album(track_obj["album_id"]) if track_obj["album_id"] else {}
 
         if "rating" in track_obj and track_obj["rating"] == 5:
             track.favorite = True
@@ -408,10 +409,11 @@ class IBroadcastProvider(MusicProvider):
                 msg = "Track is missing artists"
                 raise InvalidDataError(msg)
 
-        # Artwork
-        track.metadata.images = UniqueList(
-            [self._get_artwork_object(await self._client.get_track_artwork_url(track_id))]
-        )
+        # Artwork, which the client raises over when the track carries none
+        with suppress(ValueError):
+            track.metadata.images = UniqueList(
+                [self._get_artwork_object(await self._client.get_track_artwork_url(track_id))]
+            )
         # Genre
         genres: set[str] = set()
         if track_obj["genre"]:
@@ -443,9 +445,11 @@ class IBroadcastProvider(MusicProvider):
         )
         # Can be supported in future, the API has options available
         playlist.is_editable = False
-        playlist.metadata.images = UniqueList(
-            [self._get_artwork_object(await self._client.get_playlist_artwork_url(playlist_id))]
-        )
+        # an empty playlist has no track to take artwork from, which the client raises over
+        with suppress(ValueError):
+            playlist.metadata.images = UniqueList(
+                [self._get_artwork_object(await self._client.get_playlist_artwork_url(playlist_id))]
+            )
         if "description" in playlist_obj:
             playlist.metadata.description = playlist_obj["description"]
         return playlist
