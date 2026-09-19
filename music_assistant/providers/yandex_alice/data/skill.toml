@@ -1,0 +1,572 @@
+# Yandex Alice skill manifest — declarative source of truth for what
+# the auto-create / auto-update pipeline ships to dialogs.yandex.ru
+# AND for the runtime dispatcher that turns matched intents into
+# ParsedControl / ParsedCommand on the webhook side.
+#
+# Format: TOML. Each ``grammar`` and the entities ``text`` block use
+# TOML triple-quoted strings — content is preserved byte-for-byte, so
+# you can copy / paste a Granet ``sourceText`` from the dev console
+# (https://dialogs.yandex.ru/developer/skills/<id>/draft/settings/intents)
+# directly into ``grammar = """ ... """``.
+#
+# Schema:
+#   schema_version            — bump when shape changes (loader rejects newer)
+#   [entities]                — single Granet block, ships via set_entities
+#     text                    — full customEntities sourceText
+#   [[intents]]               — one per intent, order-preserving
+#     form_name               — Yandex API formName (stable across edits)
+#     human_readable_name     — Yandex API humanReadableName (UI label)
+#     is_activation           — Yandex API isActivation (default false)
+#     positive_tests          — newline-separated phrases (Yandex positiveTests)
+#     negative_tests          — newline-separated phrases (Yandex negativeTests)
+#     grammar                 — Granet sourceText (sent verbatim to Yandex)
+#   [intents.runtime]         — runtime dispatch metadata (since 1.6.0)
+#     kind                    — "control" | "play" (consumer-interpreted)
+#     action                  — ControlAction literal | ParsedCommand.kind
+#   [[intents.runtime.mapping]] — optional slot-to-field mapping rules
+#     field                   — target ParsedControl/ParsedCommand field
+#     from_slot               — slot name in request.nlu.intents.<form>.slots
+#     slot_type               — "int" (default) | "str"
+#     transform               — "identity" (default) | "clamp" | "abs_clamp"
+#     min, max                — clamp bounds
+#     cap                     — skip the intent if value > cap (post-multiply)
+#     default                 — value when slot is missing
+#     sign                    — "positive" (default) | "negative"
+#     reject_if_below         — skip the intent if value < this (post-multiply)
+#   [[intents.runtime.mapping.multiply_when]] — conditional unit multiplier
+#     slot, equals, factor    — multiply value by `factor` when slot==equals
+#
+# Granet shape rules empirically pinned through v1.4.x:
+#   - Single-line alternation only (``|`` at start of continuation line
+#     is rejected as "Пустой элемент").
+#   - ``%lemma`` directive: standalone above alternation; never inside
+#     ``[...]`` optional blocks; never after ``|``.
+#   - Slot declarations live inside ``sourceText`` as a ``slots:``
+#     sub-block — the ya-dialogs-api 2.2.0+ client sees this and skips
+#     auto-composing structured slots.
+
+schema_version = 1
+
+[entities]
+text = """
+entity time_unit:
+    values:
+        seconds:
+            секунда | секунды | секунд | сек
+        minutes:
+            минута | минуты | минут | мин
+"""
+
+
+# ===========================================================================
+# Originals (no slots) — covered by Yandex platform NLU since v1.4.0.
+# ===========================================================================
+
+[[intents]]
+form_name = "control.pause"
+human_readable_name = "Пауза"
+positive_tests = """
+пауза
+поставь на паузу
+останови музыку
+на паузу
+"""
+negative_tests = """
+включи
+следующая
+"""
+grammar = """
+root:
+    %lemma
+    пауза | поставь на паузу | останови музыку | на паузу
+"""
+[intents.runtime]
+kind = "control"
+action = "pause"
+
+[[intents]]
+form_name = "control.resume"
+human_readable_name = "Продолжить"
+positive_tests = """
+продолжи
+продолжить
+возобнови
+включи снова
+"""
+grammar = """
+root:
+    %lemma
+    продолжить | возобновить | включи снова
+"""
+[intents.runtime]
+kind = "control"
+action = "resume"
+
+[[intents]]
+form_name = "control.next"
+human_readable_name = "Следующий трек"
+positive_tests = """
+следующая
+следующий трек
+дальше
+переключи
+"""
+grammar = """
+root:
+    %lemma
+    следующая | следующий трек | дальше | переключи
+"""
+[intents.runtime]
+kind = "control"
+action = "next"
+
+[[intents]]
+form_name = "control.previous"
+human_readable_name = "Предыдущий трек"
+positive_tests = """
+предыдущая
+предыдущий трек
+назад
+вернись
+"""
+grammar = """
+root:
+    %lemma
+    предыдущая | предыдущий трек | назад | вернись
+"""
+[intents.runtime]
+kind = "control"
+action = "previous"
+
+[[intents]]
+form_name = "control.stop"
+human_readable_name = "Стоп"
+positive_tests = """
+стоп
+останови
+выключи
+выключи музыку
+"""
+grammar = """
+root:
+    %lemma
+    стоп | останови | выключи | выключи музыку
+"""
+[intents.runtime]
+kind = "control"
+action = "stop"
+
+[[intents]]
+form_name = "control.volume_up"
+human_readable_name = "Громче"
+positive_tests = """
+громче
+сделай громче
+прибавь
+"""
+grammar = """
+root:
+    %lemma
+    громче | сделай громче | прибавь
+"""
+[intents.runtime]
+kind = "control"
+action = "volume_up"
+
+[[intents]]
+form_name = "control.volume_down"
+human_readable_name = "Тише"
+positive_tests = """
+тише
+сделай тише
+убавь
+"""
+grammar = """
+root:
+    %lemma
+    тише | сделай тише | убавь
+"""
+[intents.runtime]
+kind = "control"
+action = "volume_down"
+
+[[intents]]
+form_name = "control.shuffle_on"
+human_readable_name = "Включить перемешивание"
+positive_tests = """
+перемешай
+включи перемешивание
+случайный порядок
+"""
+grammar = """
+root:
+    %lemma
+    перемешай | включи перемешивание | случайный порядок | в случайном порядке
+"""
+[intents.runtime]
+kind = "control"
+action = "shuffle_on"
+
+[[intents]]
+form_name = "control.shuffle_off"
+human_readable_name = "Выключить перемешивание"
+positive_tests = """
+выключи перемешивание
+не перемешивай
+по порядку
+"""
+grammar = """
+root:
+    выключи перемешивание | не перемешивай | по порядку
+"""
+[intents.runtime]
+kind = "control"
+action = "shuffle_off"
+
+[[intents]]
+form_name = "control.now_playing"
+human_readable_name = "Что играет"
+positive_tests = """
+что играет
+что сейчас играет
+что мы слушаем
+"""
+grammar = """
+root:
+    что играет | что сейчас играет | что мы слушаем | что за песня | что за трек | что за композиция | какой трек | какой сейчас трек | какая песня | какая сейчас песня
+"""
+[intents.runtime]
+kind = "control"
+action = "now_playing"
+
+
+# ===========================================================================
+# v1.4.0 — additional no-slot intents.
+# ===========================================================================
+
+[[intents]]
+form_name = "control.mute"
+human_readable_name = "Без звука"
+positive_tests = """
+приглуши
+выключи звук
+беззвучно
+"""
+grammar = """
+root:
+    %lemma
+    приглуши | выключи звук | беззвучно | без звука
+"""
+[intents.runtime]
+kind = "control"
+action = "mute"
+
+[[intents]]
+form_name = "control.unmute"
+human_readable_name = "Вернуть звук"
+positive_tests = """
+включи звук
+сделай звук
+верни звук
+"""
+grammar = """
+root:
+    %lemma
+    включи звук | сделай звук | верни звук
+"""
+[intents.runtime]
+kind = "control"
+action = "unmute"
+
+[[intents]]
+form_name = "control.seek_start"
+human_readable_name = "К началу"
+positive_tests = """
+к началу
+в начало
+начни заново
+"""
+grammar = """
+root:
+    %lemma
+    к началу | в начало | начни заново | начни трек заново | перемотай к началу
+"""
+[intents.runtime]
+kind = "control"
+action = "seek_start"
+
+[[intents]]
+form_name = "control.repeat_one"
+human_readable_name = "Повтор одной песни"
+positive_tests = """
+повтори песню
+повтори трек
+повтори эту песню
+"""
+grammar = """
+root:
+    %lemma
+    повтори песню | повтори трек | повтори эту песню | повтори эту | повтори композицию
+"""
+[intents.runtime]
+kind = "control"
+action = "repeat_one"
+
+[[intents]]
+form_name = "control.repeat_all"
+human_readable_name = "Повтор всего"
+positive_tests = """
+повтори всё
+повтори плейлист
+повтори очередь
+"""
+grammar = """
+root:
+    %lemma
+    повтори всё | повтори все | повтори плейлист | повтори очередь | повторяй всё
+"""
+[intents.runtime]
+kind = "control"
+action = "repeat_all"
+
+[[intents]]
+form_name = "control.repeat_off"
+human_readable_name = "Выключить повтор"
+positive_tests = """
+выключи повтор
+не повторяй
+отмени повтор
+"""
+grammar = """
+root:
+    %lemma
+    выключи повтор | не повторяй | отмени повтор
+"""
+[intents.runtime]
+kind = "control"
+action = "repeat_off"
+
+[[intents]]
+form_name = "control.list_players"
+human_readable_name = "Какие колонки"
+positive_tests = """
+сколько колонок
+какие колонки
+перечисли колонки
+"""
+grammar = """
+root:
+    %lemma
+    сколько колонок | сколько колонок видишь | сколько колонок ты видишь | сколько колонок знаешь | сколько колонок ты знаешь | какие колонки | какие колонки видишь | какие колонки ты видишь | какие колонки знаешь | какие колонки ты знаешь | какие колонки есть | какие у тебя колонки | перечисли колонки | список колонок | покажи колонки | назови колонки
+"""
+[intents.runtime]
+kind = "control"
+action = "list_players"
+
+[[intents]]
+form_name = "control.forget_player"
+human_readable_name = "Забыть колонку"
+positive_tests = """
+забудь колонку
+сбрось выбор
+поменяй колонку
+"""
+grammar = """
+root:
+    %lemma
+    забудь колонку | сбрось колонку | забудь плеер | забудь выбор | сбрось выбор | поменяй колонку | сменить колонку | выбери колонку заново
+"""
+[intents.runtime]
+kind = "control"
+action = "forget_player"
+
+
+# ===========================================================================
+# v1.4.0 — slot-bearing intents.
+# ===========================================================================
+
+[[intents]]
+form_name = "control.volume_set"
+human_readable_name = "Громкость на N процентов"
+positive_tests = """
+громкость 50
+громкость на 30 процентов
+сделай громкость 75
+"""
+grammar = """
+root:
+    %lemma
+    громкость [на] $Level [процент | процентов | процента] | сделать громкость [на] $Level [процент | процентов | процента]
+$Level: $YANDEX.NUMBER
+slots:
+    level:
+        type: YANDEX.NUMBER
+        source: $Level
+"""
+[intents.runtime]
+kind = "control"
+action = "volume_set"
+[[intents.runtime.mapping]]
+field = "value"
+from_slot = "level"
+transform = "clamp"
+min = 0
+max = 100
+
+[[intents]]
+form_name = "control.volume_increase"
+human_readable_name = "Прибавить громкость на N"
+positive_tests = """
+прибавь на 20
+прибавь на 15 процентов
+на 10 громче
+"""
+grammar = """
+root:
+    %lemma
+    прибавить [на] $Delta [процент | процентов | процента] | сделать громче на $Delta [процент | процентов | процента] | на $Delta [процент | процентов | процента] громче
+$Delta: $YANDEX.NUMBER
+slots:
+    delta:
+        type: YANDEX.NUMBER
+        source: $Delta
+"""
+[intents.runtime]
+kind = "control"
+action = "volume_relative"
+[[intents.runtime.mapping]]
+field = "value"
+from_slot = "delta"
+transform = "abs_clamp"
+min = 0
+max = 100
+default = 10
+sign = "positive"
+
+[[intents]]
+form_name = "control.volume_decrease"
+human_readable_name = "Убавить громкость на N"
+positive_tests = """
+убавь на 20
+убавь на 25 процентов
+на 15 тише
+"""
+grammar = """
+root:
+    %lemma
+    убавить [на] $Delta [процент | процентов | процента] | сделать тише на $Delta [процент | процентов | процента] | на $Delta [процент | процентов | процента] тише
+$Delta: $YANDEX.NUMBER
+slots:
+    delta:
+        type: YANDEX.NUMBER
+        source: $Delta
+"""
+[intents.runtime]
+kind = "control"
+action = "volume_relative"
+[[intents.runtime.mapping]]
+field = "value"
+from_slot = "delta"
+transform = "abs_clamp"
+min = 0
+max = 100
+default = 10
+sign = "negative"
+
+[[intents]]
+form_name = "control.seek_forward"
+human_readable_name = "Перемотать вперёд"
+positive_tests = """
+перемотай вперёд на 30 секунд
+перемотай вперёд на 2 минуты
+вперёд 15 секунд
+"""
+negative_tests = """
+назад 30 секунд
+"""
+grammar = """
+root:
+    %lemma
+    вперёд [на] $Amount [$Unit] | перемотать вперёд [на] $Amount [$Unit]
+$Amount: $YANDEX.NUMBER
+$Unit: $time_unit
+slots:
+    amount:
+        type: YANDEX.NUMBER
+        source: $Amount
+    unit:
+        type: time_unit
+        source: $Unit
+"""
+[intents.runtime]
+kind = "control"
+action = "seek_forward"
+[[intents.runtime.mapping]]
+field = "value"
+from_slot = "amount"
+reject_if_below = 1
+cap = 86400
+[[intents.runtime.mapping.multiply_when]]
+slot = "unit"
+equals = "minutes"
+factor = 60
+
+[[intents]]
+form_name = "control.seek_back"
+human_readable_name = "Перемотать назад"
+positive_tests = """
+перемотай назад на 30 секунд
+перемотай назад на 1 минуту
+назад 15 секунд
+"""
+negative_tests = """
+вперёд 30 секунд
+"""
+grammar = """
+root:
+    %lemma
+    назад [на] $Amount [$Unit] | перемотать назад [на] $Amount [$Unit]
+$Amount: $YANDEX.NUMBER
+$Unit: $time_unit
+slots:
+    amount:
+        type: YANDEX.NUMBER
+        source: $Amount
+    unit:
+        type: time_unit
+        source: $Unit
+"""
+[intents.runtime]
+kind = "control"
+action = "seek_back"
+[[intents.runtime.mapping]]
+field = "value"
+from_slot = "amount"
+reject_if_below = 1
+cap = 86400
+[[intents.runtime.mapping.multiply_when]]
+slot = "unit"
+equals = "minutes"
+factor = 60
+
+
+# ===========================================================================
+# Play intents.
+# ===========================================================================
+
+[[intents]]
+form_name = "play.my_wave"
+human_readable_name = "Моя волна"
+positive_tests = """
+включи мою волну
+поставь мою волну
+включи моё радио
+"""
+grammar = """
+root:
+    %lemma
+    включи мою волну | включи моё радио | поставь мою волну | моя волна
+"""
+[intents.runtime]
+kind = "play"
+action = "my_wave"
