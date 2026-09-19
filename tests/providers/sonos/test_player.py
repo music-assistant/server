@@ -19,6 +19,7 @@ from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.player import AnnouncementFeature
 from music_assistant.providers.sonos.const import (
     PLAYER_SOURCE_MAP,
     SOURCE_LINE_IN,
@@ -390,11 +391,14 @@ def test_a_paused_connect_session_is_handed_to_the_stale_source_check() -> None:
     player.update_state.assert_called_once()  # type: ignore[attr-defined]
 
 
-def test_the_player_coordinates_the_announcement_start() -> None:
-    """Test a group announcement may be fanned out: the audio clips are fired together."""
+def test_the_player_reports_its_announcement_features() -> None:
+    """Test the clips honour the requested level and are fired together across members."""
     player, _ = _make_player()
 
-    assert player.coordinates_announcement_start is True
+    assert player.announcement_features == {
+        AnnouncementFeature.SUPPORTS_VOLUME,
+        AnnouncementFeature.COORDINATES_START,
+    }
 
 
 @pytest.mark.asyncio

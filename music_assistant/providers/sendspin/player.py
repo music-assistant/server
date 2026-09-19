@@ -73,10 +73,9 @@ from music_assistant_models.media_items import Album, Artist, is_track
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
-from music_assistant.constants import HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.helpers.util import is_valid_mac_address, join_task
-from music_assistant.models.player import Player, PlayerMedia
+from music_assistant.models.player import AnnouncementFeature, Player, PlayerMedia
 from music_assistant.models.setup_flow import FINISH_STEP_SILENT, AbortFlow, StepExpiredError
 
 from .bridge_role import BridgePlayerRole
@@ -1277,6 +1276,13 @@ class SendspinPlayer(SendspinBasePlayer):
         else:
             self._attr_supported_features.discard(PlayerFeature.PLAY_ANNOUNCEMENT)
 
+    @property
+    def announcement_features(self) -> set[AnnouncementFeature]:
+        """Drop SUPPORTS_VOLUME while relaying: the HA announce pipeline ignores the level."""
+        if self._hass_announce_entity_id is not None:
+            return set()
+        return {AnnouncementFeature.SUPPORTS_VOLUME}
+
     async def play_announcement(
         self, announcement: PlayerMedia, volume_level: int | None = None
     ) -> None:
@@ -1293,8 +1299,8 @@ class SendspinPlayer(SendspinBasePlayer):
             self.display_name,
         )
         if volume_level is not None:
-            # the device's announcement pipeline plays at its own volume;
-            # the announce volume config entries are hidden for this player
+            # the HA announce pipeline plays at its own volume; a requested level is
+            # applied through the builtin path instead, so it should not reach here
             self.logger.debug("Ignoring announcement volume level for player %s", self.display_name)
         await hass.play_announcement_on_entity(entity_id, announcement)
         self.logger.debug("Playing announcement on %s completed", self.display_name)
@@ -1713,11 +1719,6 @@ class SendspinPlayer(SendspinBasePlayer):
                     advanced=False,
                 )
             )
-
-        if self._hass_announce_entity_id is not None:
-            # announcements are relayed to the device via Home Assistant,
-            # which has no volume control for announcements
-            entries.extend(HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES)
 
         return entries
 
