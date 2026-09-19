@@ -281,7 +281,10 @@ def make_analysis_row(
         of storing it at the top level, matching rows written before the
         typed field existed.
     """
-    import json  # noqa: PLC0415
+    from music_assistant.controllers.streams.audio_analysis_codec import (  # noqa: PLC0415
+        encode,
+    )
+    from music_assistant.models.audio_analysis import AudioAnalysisData  # noqa: PLC0415
 
     analysis_payload: dict[str, Any]
     if legacy_shape:
@@ -293,9 +296,11 @@ def make_analysis_row(
         analysis_payload = {}
         if clap_embedding is not None:
             analysis_payload["clap_embedding"] = clap_embedding
+    header, payload = encode(AudioAnalysisData.from_dict(analysis_payload))
     return {
         "item_id": item_id,
         "provider": provider,
         "aa_provider_domain": aa_provider_domain,
-        "analysis_data": json.dumps(analysis_payload),
+        "header": header,
+        "payload": payload,
     }
