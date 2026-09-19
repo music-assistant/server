@@ -1037,3 +1037,53 @@ async def test_original_release_date_is_read_from_an_m4a_file(tmp_path: pathlib.
 
     assert _tags.release_date == datetime(1978, 6, 1, tzinfo=UTC)
     assert _tags.year == 2015
+
+
+def _audiobook_tags(**tag_values: str) -> tags.AudioTags:
+    """Return AudioTags carrying only the given (already normalized) tag values."""
+    return tags.AudioTags(
+        raw={},
+        sample_rate=44100,
+        channels=2,
+        bits_per_sample=16,
+        format="mp4",
+        bit_rate=None,
+        duration=180.0,
+        tags=dict(tag_values),
+        has_cover_image=False,
+        filename="book.m4b",
+    )
+
+
+def test_audiobook_author_prefers_the_writer_tag() -> None:
+    """Writer is the only tag that really means author."""
+    _tags = _audiobook_tags(writer="Jane Austen", albumartist="Someone Else")
+    assert _tags.authors == ("Jane Austen",)
+
+
+def test_audiobook_author_falls_back_to_album_artist() -> None:
+    """Taggers without a writer field reach for the album artist."""
+    _tags = _audiobook_tags(albumartist="Jane Austen", artist="Someone Else")
+    assert _tags.authors == ("Jane Austen",)
+
+
+def test_audiobook_narrator_prefers_a_narrator_tag_over_composer() -> None:
+    """The composer field is only the m4b convention, not a real narrator field."""
+    _tags = _audiobook_tags(narratedby="Jane Reader", composer="Someone Else")
+    assert _tags.narrators == ("Jane Reader",)
+
+
+def test_audiobook_narrator_falls_back_to_composer() -> None:
+    """Audible style m4b files put the narrator in the composer field."""
+    assert _audiobook_tags(composer="Jane Reader").narrators == ("Jane Reader",)
+
+
+def test_audiobook_narrator_tag_may_name_two_people() -> None:
+    """One tag holding two names is two narrators."""
+    _tags = _audiobook_tags(narrator="Jane Reader; John Voice")
+    assert _tags.narrators == ("Jane Reader", "John Voice")
+
+
+def test_audiobook_without_a_narrator_tag_has_none() -> None:
+    """A book naming nobody never falls back to its author."""
+    assert _audiobook_tags(artist="Jane Austen").narrators == ()
