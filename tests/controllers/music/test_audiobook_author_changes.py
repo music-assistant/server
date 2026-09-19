@@ -115,3 +115,9 @@ def test_plain_names_replaced_by_artist_items_are_a_change() -> None:
     """Plain names and Artist items are stored in different places."""
     stored = _stored(authors=("Jane Austen",))
     assert _needs_update(stored, _reported(authors=[_author("Jane Austen")]))
+
+
+def test_artist_items_stay_put_once_linked() -> None:
+    """Once the switch happened the names come from linked records, so it must not repeat."""
+    stored = _stored(authors=("Jane Austen",), author_is_str=False)
+    assert not _needs_update(stored, _reported(authors=[_author("Jane Austen")]))
