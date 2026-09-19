@@ -401,6 +401,20 @@ class AudioTags:
         return ()
 
     @property
+    def series(self) -> str | None:
+        """Return the series an audiobook belongs to."""
+        return self.tags.get("series")
+
+    @property
+    def series_part(self) -> float | str | None:
+        """Return the audiobook's position within its series."""
+        if not (tag := self.tags.get("seriespart")):
+            return None
+        with suppress(ValueError):
+            return float(tag)
+        return str(tag)
+
+    @property
     def album_artists(self) -> tuple[str, ...]:
         """Return (all) album artists (if any)."""
         # Preferred path when unambiguously separated album artist names are available
