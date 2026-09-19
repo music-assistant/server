@@ -222,6 +222,9 @@ class PlayerConfigMixin:
                     if CONF_PROTOCOL_KEY_SPLITTER in key or CONF_PLUGIN_KEY_SPLITTER in key
                 ]:
                     del stored_values[key]
+            # player_id is always known from the lookup key; ensure it so a partial entry
+            # that lost it cannot crash PlayerConfig.parse in the available branch below
+            raw_conf.setdefault("player_id", player_id)
             if player := self.mass.players.get_player(player_id, False):
                 raw_conf["default_name"] = player.state.name
                 raw_conf["provider"] = player.provider.instance_id
@@ -608,6 +611,13 @@ class PlayerConfigMixin:
         """
         # return early if the config already exists
         if existing_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
+            # heal a partial entry that lost its base keys (a ghost left by an older
+            # version): the root exists so these nested writes cannot resurrect a partial
+            # dict, and persisting here keeps the entry valid for every later read
+            if "player_id" not in existing_conf:
+                self.set(f"{CONF_PLAYERS}/{player_id}/player_id", player_id)
+            if "provider" not in existing_conf:
+                self.set(f"{CONF_PLAYERS}/{player_id}/provider", provider)
             # update default name if needed
             if name and name != existing_conf.get("default_name"):
                 self.set(f"{CONF_PLAYERS}/{player_id}/default_name", name)
@@ -671,16 +681,26 @@ class PlayerConfigMixin:
         caller treats it as absent.
         """
         conf = dict(raw_conf) if isinstance(raw_conf, dict) else {}
-        conf.setdefault("player_id", player_id)
-        if "provider" not in conf:
-            if player := self.mass.players.get_player(player_id, False):
-                conf["provider"] = player.provider.instance_id
-            else:
+        add_player_id = "player_id" not in conf
+        add_provider = "provider" not in conf
+        provider: str | None = None
+        if add_provider:
+            if not (player := self.mass.players.get_player(player_id, False)):
                 LOGGER.warning(
                     "Removing malformed player config entry %s (missing provider)", player_id
                 )
                 self.remove(f"{CONF_PLAYERS}/{player_id}")
                 return None
+            provider = player.provider.instance_id
+        # recover the missing base keys and persist them so the repair survives (the entry
+        # root exists here, so a nested set cannot resurrect a partial dict) and the stored
+        # values are not lost to a later prune once the player goes offline
+        if add_player_id:
+            conf["player_id"] = player_id
+            self.set(f"{CONF_PLAYERS}/{player_id}/player_id", player_id)
+        if add_provider:
+            conf["provider"] = provider
+            self.set(f"{CONF_PLAYERS}/{player_id}/provider", provider)
         return conf
 
     async def _get_player_config_entries(
