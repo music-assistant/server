@@ -264,6 +264,45 @@ async def test_get_stream_details_with_dash_manifest_duplicate_registration(
     assert call_later_mock.call_count == 2
 
 
+async def test_get_stream_details_with_replaygain(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock, mock_track: Mock
+) -> None:
+    """Test get_stream_details with ReplayGain values."""
+    provider_mock.get_track.return_value = mock_track
+    provider_mock.api.get.return_value = {
+        "urls": ["https://example.com/stream.flac"],
+        "audioQuality": "LOSSLESS",
+        "sampleRate": 44100,
+        "bitDepth": 16,
+        "trackReplayGain": -3.0,
+        "albumReplayGain": -1.5,
+    }
+
+    stream_details = await streaming_manager.get_stream_details("123")
+
+    assert stream_details.loudness == -15.0
+    assert stream_details.loudness_album == -16.5
+
+
+async def test_get_stream_details_with_replaygain_track_only(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock, mock_track: Mock
+) -> None:
+    """Test get_stream_details with ReplayGain values."""
+    provider_mock.get_track.return_value = mock_track
+    provider_mock.api.get.return_value = {
+        "urls": ["https://example.com/stream.flac"],
+        "audioQuality": "LOSSLESS",
+        "sampleRate": 44100,
+        "bitDepth": 16,
+        "trackReplayGain": -3.0,
+    }
+
+    stream_details = await streaming_manager.get_stream_details("123")
+
+    assert stream_details.loudness == -15.0
+    assert stream_details.loudness_album is None
+
+
 async def test_remove_dash_route(
     streaming_manager: TidalStreamingManager, provider_mock: Mock
 ) -> None:
