@@ -254,7 +254,7 @@ def _source_entry(default_source: str, ym_instances: list[tuple[str, str]]) -> C
 
 def _qr_image(qr_url: str) -> str:
     """Render a QR-login URL as an SVG data URI to display in the flow."""
-    return segno.make(qr_url, error="m").svg_data_uri(scale=4)
+    return str(segno.make(qr_url, error="m").svg_data_uri(scale=4))
 
 
 def _device_image(user_code: str, verification_url: str) -> str:
