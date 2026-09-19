@@ -1011,6 +1011,27 @@ async def migrate_database(  # noqa: PLR0915
             if "duplicate column" not in str(err):
                 raise
 
+    if prev_version <= 60:
+        # add is_endless_stream column to radio table: cleared, the station has a
+        # tracklist (dynamic or finite) instead of an infinite broadcast feed
+        try:
+            await database.execute(
+                f"ALTER TABLE {DB_TABLE_RADIOS} ADD COLUMN "
+                "is_endless_stream BOOLEAN DEFAULT 1 NOT NULL"
+            )
+        except Exception as err:
+            if "duplicate column" not in str(err):
+                raise
+        # a dynamic tracklist is never a stream, so existing dynamic rows are backfilled
+        # (guarded: a pre-is_dynamic database gets that column added in a later step)
+        try:
+            await database.execute(
+                f"UPDATE {DB_TABLE_RADIOS} SET is_endless_stream = 0 WHERE is_dynamic = 1"
+            )
+        except Exception as err:
+            if "no such column" not in str(err):
+                raise
+
     if prev_version <= 59:
         # a library item mapping has no provider of its own, but was briefly stored as a
         # self-referential mapping with the literal string "None" as domain and instance.
