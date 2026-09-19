@@ -1,0 +1,12 @@
+{
+  "type": "music",
+  "domain": "m3uradio",
+  "stage": "beta",
+  "name": "M3U Radio",
+  "description": "Radio stations from a self-hosted M3U / IPTV playlist, exposed as a native radio source.",
+  "codeowners": ["@cladkins"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/m3uradio/",
+  "multi_instance": true,
+  "icon": "radio"
+}
