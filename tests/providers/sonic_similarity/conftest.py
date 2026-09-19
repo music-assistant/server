@@ -265,24 +265,34 @@ def make_analysis_row(
     provider: str = "spotify",
     clap_embedding: Any = None,
     aa_provider_domain: str = "sonic_analysis",
+    legacy_shape: bool = False,
 ) -> dict[str, Any]:
     """
     Build an audio_analysis DB row dict in the shape iter_audio_analysis_rows yields.
 
     :param item_id: Track id (matches a key in ``_signature_cache``).
     :param provider: Provider instance the row belongs to.
-    :param clap_embedding: Value stored under ``extra_data["clap_embedding"]``.
+    :param clap_embedding: Value stored under the ``clap_embedding`` field.
         Use a 1024-element list of floats for happy paths; pass None to
         simulate rows that lack an embedding.
     :param aa_provider_domain: Defaults to ``"sonic_analysis"``, the
         single AA-provider the plugin reads in tests.
+    :param legacy_shape: Nest ``clap_embedding`` under ``extra_data`` instead
+        of storing it at the top level, matching rows written before the
+        typed field existed.
     """
     import json  # noqa: PLC0415
 
-    extra_data: dict[str, Any] = {}
-    if clap_embedding is not None:
-        extra_data["clap_embedding"] = clap_embedding
-    analysis_payload = {"extra_data": extra_data}
+    analysis_payload: dict[str, Any]
+    if legacy_shape:
+        extra_data: dict[str, Any] = {}
+        if clap_embedding is not None:
+            extra_data["clap_embedding"] = clap_embedding
+        analysis_payload = {"extra_data": extra_data}
+    else:
+        analysis_payload = {}
+        if clap_embedding is not None:
+            analysis_payload["clap_embedding"] = clap_embedding
     return {
         "item_id": item_id,
         "provider": provider,

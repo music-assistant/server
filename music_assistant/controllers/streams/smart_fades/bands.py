@@ -38,11 +38,9 @@ def build_band_profile(analysis: AudioAnalysisData) -> BandProfile | None:
     # numpy is imported here to keep it off the server startup path
     import numpy as np  # noqa: PLC0415
 
-    band_rms = (analysis.extra_data or {}).get("band_rms")
+    band_rms = {name: getattr(analysis, f"band_rms_{name}") for name in BAND_RMS_BANDS}
     if (
-        not band_rms
-        or set(band_rms) != set(BAND_RMS_BANDS)
-        or any(len(v) != 1800 for v in band_rms.values())
+        any(v is None or len(v) != 1800 for v in band_rms.values())
         or analysis.downbeats is None
         or len(analysis.downbeats) < 8
         or not analysis.duration
