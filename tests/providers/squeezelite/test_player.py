@@ -155,3 +155,41 @@ async def test_live_streams_start_on_a_smaller_buffer(
 def test_is_protocol_only_device(device_model: str, expected: bool) -> None:
     """Test protocol-only device detection based on the reported device model."""
     assert is_protocol_only_device(device_model) is expected
+
+
+@pytest.mark.parametrize(
+    ("url", "mime_type", "expected"),
+    [
+        # sync group member urls carry the codec in the query string, not the path
+        (
+            "http://127.0.0.1:8097/slimproto/multi?player_id=x&fmt=flac&child_player_id=y",
+            "audio/flac",
+            "audio/flac",
+        ),
+        (
+            "http://127.0.0.1:8097/slimproto/multi?player_id=x&fmt=mp3&child_player_id=y",
+            "audio/mpeg",
+            "audio/mpeg",
+        ),
+        # without an explicit mime type it is derived from the url extension
+        ("http://127.0.0.1:8097/stream.flac", None, "audio/flac"),
+    ],
+)
+async def test_play_url_mime_type_is_explicit_for_sync_members(
+    url: str, mime_type: str | None, expected: str
+) -> None:
+    """Sync group member urls pass the member codec mime type instead of deriving it."""
+    player, mass = _player_with_mocked_mass()
+    player._extra_data = {}
+    mass.player_queues.get.return_value = None
+    slimplayer = MagicMock()
+    slimplayer.play_url = AsyncMock()
+
+    await player._handle_play_url_for_slimplayer(
+        slimplayer,
+        url=url,
+        media=PlayerMedia(uri="fake://x", media_type=MediaType.TRACK, source_id="queue_1"),
+        mime_type=mime_type,
+    )
+
+    assert slimplayer.play_url.call_args.kwargs["mime_type"] == expected
