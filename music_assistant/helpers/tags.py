@@ -999,18 +999,13 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
         )
 
     # the original release date has no atom of its own, so taggers store it as a freeform
-    # tag in whatever casing they favour, and ffprobe does not expose freeform atoms at all
+    # tag in whatever casing they favour
     for atom, values in tags.items():  # type: ignore[no-untyped-call]
         if not atom.startswith("----:com.apple.iTunes:"):
             continue
         name = atom.removeprefix("----:com.apple.iTunes:").lower()
-        # taggers pick their own casing and spacing, normalize as AudioTags.parse does
-        for char in (" ", "_", "-", "/"):
-            name = name.replace(char, "")
         if name in ("originaldate", "originalyear"):
             result[name] = _decode_mp4_freeform_single(values)
-        elif name in ("narrator", "narrators", "narratedby"):
-            result[name] = _decode_mp4_freeform_list(values)
 
     return result
 
