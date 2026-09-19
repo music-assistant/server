@@ -961,8 +961,11 @@ class WebserverController(CoreController):
             # frontend (which will take care of onboarding)
 
         if not self.auth.has_users and not is_ingress_request:
-            # non ingress request and no users yet, redirect to setup
-            return web.Response(status=302, headers={"Location": "setup"})
+            # non ingress request and no users yet, redirect to setup; the query
+            # travels along as sent, so a reload keeps a client's return_url and device_name
+            query = request.rel_url.raw_query_string
+            location = f"setup?{query}" if query else "setup"
+            return web.Response(status=302, headers={"Location": location})
 
         # Serve the Vue frontend index.html
         return await self._server.serve_static(self._index_path, request)
@@ -1266,8 +1269,8 @@ class WebserverController(CoreController):
             """
             return web.Response(text=error_html, content_type="text/html", status=500)
 
-    async def _handle_setup_page(self, request: web.Request) -> web.Response:
-        """Handle request for first-time setup page."""
+    async def _handle_setup_page(self, request: web.Request) -> web.StreamResponse:
+        """Handle request for the first-time setup page (the frontend's account step)."""
         # Setup forwards the admin token here with no consent step, so require a trusted destination.
         return_url = request.query.get("return_url")
         if return_url:
@@ -1279,11 +1282,9 @@ class WebserverController(CoreController):
             # this should not happen, but guard anyways
             return await self._render_error_page("Setup has already been completed.")
 
-        setup_html_path = str(RESOURCES_DIR.joinpath("setup.html"))
-        async with aiofiles.open(setup_html_path) as f:
-            html_content = await f.read()
-
-        return web.Response(text=html_content, content_type="text/html")
+        # the frontend recognizes the setup page by its path and opens the setup
+        # wizard on the account step, so serve the app itself here
+        return await self._server.serve_static(self._index_path, request)
 
     async def _handle_setup(self, request: web.Request) -> web.Response:
         """Handle first-time setup request to create admin user (non-ingress only)."""
@@ -1298,6 +1299,7 @@ class WebserverController(CoreController):
         body = await request.json()
         username = body.get("username", "").strip()
         password = body.get("password", "")
+        display_name = (body.get("display_name") or "").strip() or None
 
         # Validation
         if not username or len(username) < 2:
@@ -1326,7 +1328,7 @@ class WebserverController(CoreController):
 
             # Create admin user with password
             user = await builtin_provider.create_user_with_password(
-                username, password, role=UserRole.ADMIN
+                username, password, role=UserRole.ADMIN, display_name=display_name
             )
 
             # Create token for the new admin
