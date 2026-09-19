@@ -41,6 +41,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
+from yarl import URL
 
 from music_assistant.constants import (
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
@@ -973,14 +974,14 @@ class WebserverController(CoreController):
     async def _handle_login_page(self, request: web.Request) -> web.Response:
         """Handle request for login page (external client OAuth callback scenario)."""
         if not self.auth.has_users:
-            # not yet onboarded (no first admin user exists), redirect to setup
-            return_url = request.query.get("return_url", "")
-            device_name = request.query.get("device_name", "")
-            setup_url = (
-                f"/setup?return_url={return_url}&device_name={device_name}"
-                if return_url
-                else "/setup"
-            )
+            # not yet onboarded (no first admin user exists), redirect to setup with the
+            # client's hand-back, re-encoded so a return url with a query of its own survives
+            hand_back = {
+                key: value
+                for key in ("return_url", "device_name")
+                if (value := request.query.get(key))
+            }
+            setup_url = str(URL("/setup").with_query(hand_back))
             return web.Response(status=302, headers={"Location": setup_url})
         # Serve login page for external clients
         login_html_path = str(RESOURCES_DIR.joinpath("login.html"))
@@ -1298,10 +1299,16 @@ class WebserverController(CoreController):
         if not request.can_read_body:
             return web.Response(status=400, text="Body required")
 
-        body = await request.json()
-        username = body.get("username", "").strip()
-        password = body.get("password", "")
-        display_name = (body.get("display_name") or "").strip() or None
+        try:
+            body = await request.json()
+        except json.JSONDecodeError, UnicodeDecodeError, LookupError:
+            body = None
+        # an undecodable or non-object body is a client error, not a server fault
+        if not isinstance(body, dict):
+            return web.Response(status=400, text="Invalid request body")
+        username = str(body.get("username") or "").strip()
+        password = body.get("password") or ""
+        display_name = str(body.get("display_name") or "").strip() or None
 
         # Validation
         if not username or len(username) < 2:
@@ -1309,7 +1316,7 @@ class WebserverController(CoreController):
                 {"success": False, "error": "Username must be at least 2 characters"}, status=400
             )
 
-        if not password or len(password) < 8:
+        if not isinstance(password, str) or len(password) < 8:
             return web.json_response(
                 {"success": False, "error": "Password must be at least 8 characters"}, status=400
             )

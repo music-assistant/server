@@ -61,22 +61,28 @@ async def webserver(mass_minimal: MusicAssistant) -> AsyncGenerator[WebserverCon
 
 
 def _request(
-    mass: MusicAssistant, method: str, path: str, body: dict[str, Any] | None = None
+    mass: MusicAssistant,
+    method: str,
+    path: str,
+    body: dict[str, Any] | None = None,
+    raw_body: bytes | None = None,
 ) -> web.Request:
     """
-    Build a request for a handler, with a JSON body when one is given.
+    Build a request for a handler, with a body when one is given.
 
     :param mass: The server the request is handled by.
     :param method: The HTTP method.
     :param path: The path, query string included.
     :param body: The JSON body of the request, if any.
+    :param raw_body: The body as sent, for one that is not valid JSON.
     """
     app = web.Application()
     app["mass"] = mass
-    if body is None:
+    data = raw_body if raw_body is not None else json.dumps(body).encode() if body else None
+    if data is None:
         return make_mocked_request(method, path, app=app)
     payload = StreamReader(MagicMock(), limit=2**16)
-    payload.feed_data(json.dumps(body).encode())
+    payload.feed_data(data)
     payload.feed_eof()
     return make_mocked_request(
         method, path, headers={"Content-Type": "application/json"}, app=app, payload=payload
@@ -176,6 +182,60 @@ async def test_the_index_keeps_a_client_hand_back_on_its_way_to_the_setup_page(
     assert dict(location.query) == {"return_url": return_url, "device_name": "Companion"}
 
 
+async def test_an_untrusted_return_url_is_refused_on_the_setup_page_it_is_forwarded_to(
+    webserver: WebserverController,
+) -> None:
+    """The forwarded query lands on the setup page's own check, which refuses it there."""
+    path = str(URL("/").with_query({"return_url": "https://evil.example/"}))
+    redirect = await webserver._handle_index(_request(webserver.mass, "GET", path))
+    assert redirect.status == 302
+
+    with patch.object(webserver._server, "serve_static", _served_app()) as serve_static:
+        response = await webserver._handle_setup_page(
+            _request(webserver.mass, "GET", "/" + redirect.headers["Location"])
+        )
+
+    assert response.status == 400
+    serve_static.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ({}, {}),
+        ({"return_url": "musicassistant://auth"}, {"return_url": "musicassistant://auth"}),
+        (
+            {
+                "return_url": "https://companion.test/auth?device=phone&next=home",
+                "device_name": "Companion phone",
+            },
+            {
+                "return_url": "https://companion.test/auth?device=phone&next=home",
+                "device_name": "Companion phone",
+            },
+        ),
+    ],
+    ids=["plain", "return_url_only", "with_query_and_spaces"],
+)
+async def test_the_login_page_sends_a_fresh_server_to_the_setup_page_with_the_hand_back(
+    webserver: WebserverController, query: dict[str, str], expected: dict[str, str]
+) -> None:
+    """
+    A client that starts at the login page is sent on to the setup page with its hand-back kept.
+
+    :param query: The query the client opened the login page with.
+    :param expected: The hand-back the setup page is expected to receive.
+    """
+    path = str(URL("/login").with_query(query))
+
+    response = await webserver._handle_login_page(_request(webserver.mass, "GET", path))
+
+    assert response.status == 302
+    location = URL(response.headers["Location"])
+    assert location.path == "/setup"
+    assert dict(location.query) == expected
+
+
 async def test_the_index_serves_the_app_once_a_user_exists(
     webserver: WebserverController,
 ) -> None:
@@ -241,14 +301,48 @@ async def test_setup_creates_the_admin_and_hands_back_a_token(
     assert webserver.auth.has_users
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"username": "marcel", "password": "correct horse battery"},
+        {**ACCOUNT, "display_name": None},
+        {**ACCOUNT, "display_name": "  "},
+    ],
+    ids=["absent", "null", "blank"],
+)
 async def test_setup_leaves_the_display_name_empty_when_none_was_given(
-    webserver: WebserverController,
+    webserver: WebserverController, body: dict[str, Any]
 ) -> None:
-    """A display name that was not given, or only spaces, is not stored as one."""
-    response = await _post_setup(webserver, {**ACCOUNT, "display_name": "  "})
+    """
+    A display name that was not given, or only spaces, is not stored as one.
+
+    :param body: The details posted, without a usable display name.
+    """
+    response = await _post_setup(webserver, body)
 
     assert response.status == 200
     assert json.loads(response.text or "")["user"]["display_name"] is None
+
+
+@pytest.mark.parametrize(
+    "raw_body",
+    [b"not json", b"[1, 2]", b'"hi"', b'{"username": "marcel", "password": 12345678}'],
+    ids=["not_json", "list", "string", "password_not_a_string"],
+)
+async def test_setup_refuses_a_body_it_cannot_read(
+    webserver: WebserverController, raw_body: bytes
+) -> None:
+    """
+    A body that is not the expected object is a client error, and makes no account.
+
+    :param raw_body: The body as the client sent it.
+    """
+    response = await webserver._handle_setup(
+        _request(webserver.mass, "POST", "/setup", raw_body=raw_body)
+    )
+
+    assert response.status == 400
+    assert not webserver.auth.has_users
 
 
 async def test_setup_forwards_the_token_to_the_client_that_started_it(
