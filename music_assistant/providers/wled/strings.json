@@ -1,0 +1,29 @@
+{
+  "config_entries": {
+    "port": {
+      "label": "Zone port",
+      "description": "UDP port for this sync zone. This is not a device address -- it identifies a group of WLED devices, not one specific device. On each WLED device you want in this zone, set the matching port under Usermods > Audio Reactive > Sync Settings > 'UDP Sound Sync Port', and enable 'Receive'. Use a different port for each independent zone (e.g. 11988, 11989, ...) so they don't interfere with each other."
+    },
+    "latency_ms": {
+      "label": "Sync latency (ms)",
+      "description": "Milliseconds to send audio-sync packets ahead of the audio, to offset the grouped speaker's own output latency (usually the dominant delay on a LAN, far more than network transit time). Increase if the lights lag the music, decrease if they run ahead of it."
+    },
+    "gain_db": {
+      "label": "Gain (dB)",
+      "description": "Boosts the loudness/spectrum/peak values before sending, since the analysis is calibrated against a theoretical full-scale signal that typical program material -- especially a loudness-normalized radio stream -- rarely gets close to. Increase if the WLED effect looks dim or flat and never reaches full brightness/range; decrease if it's pinned at maximum."
+    },
+    "scaling_mode": {
+      "label": "Scaling mode",
+      "description": "Perceptual curve applied to loudness/spectrum values before sending, matching WLED's own built-in FFT scaling options. Square Root: balanced, a good default. Linear: highest contrast between quiet and loud, easily saturates. Logarithmic: gentlest, lifts quiet content the most. There's no single correct choice -- it depends on the music and the effect you're driving, same as picking a mode on a real WLED device."
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Add WLED sync zone",
+      "description": "Pick a UDP port to identify this sync zone (pre-filled with the next unused one). WLED devices join by setting this same port as their own audioSyncPort under Usermods > Audio Reactive > Sync Settings."
+    }
+  },
+  "manifest": {
+    "description": "Drive WLED's built-in audio-reactive effects from music played by Music Assistant."
+  }
+}
