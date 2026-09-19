@@ -331,3 +331,73 @@ def test_a_paused_connect_session_is_handed_to_the_stale_source_check() -> None:
     # so the speaker only has to opt in and let the state calculation see it
     assert player._attr_external_pause_idle_timeout == EXTERNAL_PAUSE_IDLE_TIMEOUT
     player.update_state.assert_called_once()  # type: ignore[attr-defined]
+
+
+def _speaker_for_playback_error() -> tuple[SonosPlayer, MagicMock]:
+    """Create a coordinator SonosPlayer wired up to receive playbackError events."""
+    mass = MagicMock()
+    mass.closing = False
+    mass.streams.base_url = "http://192.168.1.115:8097"
+    player, client = _bind_player(mass)
+    player.connected = True
+    player._cache = {}  # storage for the base player's cached properties (display_name)
+    config = MagicMock()
+    config.name = "Living Room"
+    player._config = config
+    # a coordinator reports for its whole group
+    client.player.is_coordinator = True
+    return player, client
+
+
+def _playback_error_event(**overrides: object) -> MagicMock:
+    """Build a Sonos playbackError event, defaulting to a 404 from our own stream server."""
+    data = {
+        "errorCode": "ERROR_PLAYBACK_FAILED",
+        "reason": "ERROR_NO_RESOURCE",
+        "itemId": "item-1",
+        "trackName": "What You Saying",
+        "httpStatus": 404,
+        "serviceName": "192.168.1.115:8097",
+    }
+    data.update(overrides)
+    event = MagicMock()
+    event.data = data
+    return event
+
+
+def test_playback_error_from_stream_server_stays_at_debug(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test a 404 for an item our own stream server no longer holds is not warned about."""
+    player, _ = _speaker_for_playback_error()
+
+    with caplog.at_level(logging.DEBUG, logger="test.sonos.player"):
+        player._on_playback_error(_playback_error_event())
+
+    assert "refused" in caplog.text
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+
+
+def test_playback_error_other_failure_is_warned(caplog: pytest.LogCaptureFixture) -> None:
+    """Test a genuine playback failure is warned about, naming the track and the reason."""
+    player, _ = _speaker_for_playback_error()
+
+    with caplog.at_level(logging.DEBUG, logger="test.sonos.player"):
+        player._on_playback_error(_playback_error_event(httpStatus=500, reason="ERROR_TRANSPORT"))
+
+    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "What You Saying" in warnings[0].getMessage()
+    assert "ERROR_TRANSPORT" in warnings[0].getMessage()
+
+
+def test_playback_error_ignored_for_synced_child(caplog: pytest.LogCaptureFixture) -> None:
+    """Test a synced child stays silent, leaving the report to its group coordinator."""
+    player, client = _speaker_for_playback_error()
+    client.player.is_coordinator = False
+    client.player.group.coordinator_id = "living_room"
+
+    with caplog.at_level(logging.DEBUG, logger="test.sonos.player"):
+        player._on_playback_error(_playback_error_event(httpStatus=500))
+
+    assert caplog.records == []
