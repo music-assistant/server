@@ -22,11 +22,12 @@ from music_assistant_models.media_items import AudioFormat, ProviderMapping, Tra
 
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
 from music_assistant.constants import (
-    DB_TABLE_AUDIO_ANALYSIS,
     DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
     _default_background_scan_concurrency,
 )
 from music_assistant.controllers.streams.audio_analysis import (
+    AA_DB_SCHEMA,
+    AA_TABLE_ANALYSIS,
     LOUDNESS_ANALYSIS_DOMAIN,
     LOUDNESS_PROVIDER_PRIORITY,
     PROVIDER_LOUDNESS_DOMAIN,
@@ -489,7 +490,9 @@ def _make_controller() -> AudioAnalysisController:
     streams = MagicMock()
     streams.mass = MagicMock()
     streams.mass.logger.getChild.return_value = MagicMock()
-    return AudioAnalysisController(streams)
+    controller = AudioAnalysisController(streams)
+    controller._database_ready = True
+    return controller
 
 
 def _make_aa_provider(
@@ -650,8 +653,8 @@ async def test_find_candidates_query_gates_on_current_version(
     await controller._find_candidates_missing_analysis({"sonic_analysis": 3}, 0)
 
     sql = captured["query"]
-    assert "aa.analysis_version IS NOT NULL" in sql
-    assert "aa.analysis_version >= possible.current_version" in sql
+    assert "an.analysis_version IS NOT NULL" in sql
+    assert "an.analysis_version >= possible.current_version" in sql
     assert captured["params"]["ver_0"] == 3
     assert captured["params"]["aa_0"] == "sonic_analysis"
 
@@ -866,6 +869,7 @@ def _stub_controller(
 ) -> tuple[AudioAnalysisController, MagicMock]:
     """Build a bare AudioAnalysisController whose database is mocked."""
     c = AudioAnalysisController.__new__(AudioAnalysisController)
+    c._database_ready = True
     c.logger = MagicMock()
     db = MagicMock()
     db.get_count_from_query = AsyncMock(return_value=count_result)
@@ -1249,11 +1253,12 @@ async def test_iter_merged_audio_analysis_rows_skips_unparsable_rows() -> None:
 
 @pytest.fixture
 async def real_audio_analysis_db(tmp_path: pathlib.Path) -> AsyncGenerator[DatabaseConnection]:
-    """Create a real on-disk sqlite DB holding just the audio_analysis table."""
+    """Create a real on-disk sqlite DB with the aa-schema audio_analysis table attached."""
     db = DatabaseConnection(str(tmp_path / "test.db"))
     await db.setup()
+    await db.execute(f"ATTACH DATABASE ':memory:' AS {AA_DB_SCHEMA}")
     await db.execute(
-        f"CREATE TABLE {DB_TABLE_AUDIO_ANALYSIS}("
+        f"CREATE TABLE {AA_TABLE_ANALYSIS}("
         "id INTEGER PRIMARY KEY AUTOINCREMENT, media_type TEXT, item_id TEXT, provider TEXT, "
         "aa_provider_domain TEXT, analysis_data json, analysis_version INTEGER, "
         "timestamp_created INTEGER DEFAULT (cast(strftime('%s','now') as int)), "
@@ -1272,7 +1277,7 @@ async def test_iter_merged_audio_analysis_rows_skips_row_with_invalid_utf8_bytes
     """A row whose analysis_data TEXT holds bytes that are not valid UTF-8 is skipped."""
     for item_id, bpm in (("t2", 100.0), ("t3", 200.0)):
         await real_audio_analysis_db.execute_write(
-            f"INSERT INTO {DB_TABLE_AUDIO_ANALYSIS} "
+            f"INSERT INTO {AA_TABLE_ANALYSIS} "
             "(media_type, item_id, provider, aa_provider_domain, analysis_data) VALUES "
             "(:media_type, :item_id, :provider, :aa_provider_domain, :analysis_data)",
             {
@@ -1286,7 +1291,7 @@ async def test_iter_merged_audio_analysis_rows_skips_row_with_invalid_utf8_bytes
     # invalid UTF-8 must go in via a raw CAST(x'..' AS TEXT) literal;
     # binding it as a parameter would store a BLOB instead of corrupt TEXT
     await real_audio_analysis_db.execute_write(
-        f"INSERT INTO {DB_TABLE_AUDIO_ANALYSIS} "
+        f"INSERT INTO {AA_TABLE_ANALYSIS} "
         "(media_type, item_id, provider, aa_provider_domain, analysis_data) VALUES "
         "(:media_type, :item_id, :provider, :aa_provider_domain, "
         "CAST(x'7B226475726174696F6E223A31FFFE7D' AS TEXT))",
@@ -1305,6 +1310,7 @@ async def test_iter_merged_audio_analysis_rows_skips_row_with_invalid_utf8_bytes
     controller = AudioAnalysisController(streams)
 
     with caplog.at_level("WARNING", logger=audio_analysis_mod.LOGGER.name):
+        controller._database_ready = True
         result = [
             x async for x in controller.iter_merged_audio_analysis_rows(SONIC_ANALYSIS_DOMAIN)
         ]
@@ -1319,7 +1325,7 @@ async def test_iter_audio_analysis_rows_yields_corrupt_row_as_undecodable_bytes(
 ) -> None:
     """A corrupt non-UTF-8 row is yielded, not filtered; filtering is the consumer's job."""
     await real_audio_analysis_db.execute_write(
-        f"INSERT INTO {DB_TABLE_AUDIO_ANALYSIS} "
+        f"INSERT INTO {AA_TABLE_ANALYSIS} "
         "(media_type, item_id, provider, aa_provider_domain, analysis_data) VALUES "
         "(:media_type, :item_id, :provider, :aa_provider_domain, :analysis_data)",
         {
@@ -1333,7 +1339,7 @@ async def test_iter_audio_analysis_rows_yields_corrupt_row_as_undecodable_bytes(
     # invalid UTF-8 must go in via a raw CAST(x'..' AS TEXT) literal;
     # binding it as a parameter would store a BLOB instead of corrupt TEXT
     await real_audio_analysis_db.execute_write(
-        f"INSERT INTO {DB_TABLE_AUDIO_ANALYSIS} "
+        f"INSERT INTO {AA_TABLE_ANALYSIS} "
         "(media_type, item_id, provider, aa_provider_domain, analysis_data) VALUES "
         "(:media_type, :item_id, :provider, :aa_provider_domain, "
         "CAST(x'7B226475726174696F6E223A31FFFE7D' AS TEXT))",
@@ -1350,6 +1356,7 @@ async def test_iter_audio_analysis_rows_yields_corrupt_row_as_undecodable_bytes(
     streams.mass.music.database = real_audio_analysis_db
     controller = AudioAnalysisController(streams)
 
+    controller._database_ready = True
     rows = [row async for row in controller.iter_audio_analysis_rows(SONIC_ANALYSIS_DOMAIN)]
 
     assert {row["item_id"] for row in rows} == {"t1", "t2"}
@@ -1547,15 +1554,15 @@ async def test_count_candidates_missing_analysis_queries_with_available_filesyst
     db.get_count_from_query.assert_awaited_once()
     sql, params = db.get_count_from_query.await_args.args
     assert "NOT EXISTS" in sql
-    assert "aa.analysis_version IS NOT NULL" in sql
-    assert "aa.analysis_version >= :current_version" in sql
+    assert "an.analysis_version IS NOT NULL" in sql
+    assert "an.analysis_version >= :current_version" in sql
     assert f"'{domain}'" in sql
     assert params["media_type"] == MediaType.TRACK.value
     assert params["aa_domain"] == "sonic_analysis"
     assert params["current_version"] == 2
     assert "now" in params
-    assert "aa.analysis_version IS NOT NULL" in sql
-    assert "aa.analysis_version >= :current_version" in sql
+    assert "an.analysis_version IS NOT NULL" in sql
+    assert "an.analysis_version >= :current_version" in sql
 
 
 def test_controller_has_no_provider_specific_extra_data_keys() -> None:
@@ -1666,7 +1673,7 @@ async def test_get_audio_analysis_deletes_unparsable_rows(
     assert result is not None
     assert result.bpm == 101.0
     delete_mock = cast("AsyncMock", controller.mass.music.database.delete)
-    delete_mock.assert_awaited_once_with(DB_TABLE_AUDIO_ANALYSIS, {"id": 7})
+    delete_mock.assert_awaited_once_with(AA_TABLE_ANALYSIS, {"id": 7})
     warning = next(r for r in caplog.records if r.name == audio_analysis_mod.LOGGER.name)
     assert "in field spectral_centroid" in warning.getMessage()
 

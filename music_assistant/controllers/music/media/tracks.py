@@ -584,12 +584,12 @@ class TracksController(MediaControllerBase[Track]):
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
         """Delete record from the database."""
         db_id = int(item_id)  # ensure integer
+        # remove the item before its relations so failed analysis cleanup leaves it intact
+        await super().remove_item_from_library(db_id)
         # delete entry(s) from albumtracks table
         await self.mass.music.database.delete(DB_TABLE_ALBUM_TRACKS, {"track_id": db_id})
         # delete entry(s) from trackartists table
         await self.mass.music.database.delete(DB_TABLE_TRACK_ARTISTS, {"track_id": db_id})
-        # delete the track itself from db
-        await super().remove_item_from_library(db_id)
 
     async def set_identifiers(
         self,
