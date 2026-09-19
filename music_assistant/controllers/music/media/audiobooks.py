@@ -446,11 +446,11 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             return
         if overwrite:
             # only this type: the other one may not be part of this update at all
-            await self.mass.music.database.execute_write(
-                f"DELETE FROM {DB_TABLE_AUDIOBOOK_ARTISTS} "
-                "WHERE audiobook_id = :audiobook_id AND artist_id IN "
-                f"(SELECT item_id FROM {DB_TABLE_ARTISTS} WHERE artist_type = :artist_type)",
-                {"audiobook_id": db_id, "artist_type": artist_type.value},
+            await self.mass.music.database.delete(
+                DB_TABLE_AUDIOBOOK_ARTISTS,
+                query=f"WHERE audiobook_id = {db_id} AND artist_id IN "
+                f"(SELECT item_id FROM {DB_TABLE_ARTISTS} "
+                f"WHERE artist_type = '{artist_type.value}')",
             )
         await self._set_audiobook_authors_narrators(db_id, artists)
 
