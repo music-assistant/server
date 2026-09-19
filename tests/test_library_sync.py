@@ -93,6 +93,23 @@ async def _noop_deferred_commit() -> AsyncGenerator[None]:
     yield
 
 
+def _answer_lookups_with(mass: Mock, provider_mock: Mock) -> None:
+    """
+    Let the registry answer every lookup with this provider, as the instance asked for.
+
+    A library write resolves the exact instance instead of widening to a sibling account,
+    so a provider mock needs to carry the instance_id of the mapping being written and to
+    say it is available.
+    """
+    provider_mock.available = True
+
+    def _get_provider(instance_id: str, **_kwargs: object) -> Mock:
+        provider_mock.instance_id = instance_id
+        return provider_mock
+
+    mass.get_provider.side_effect = _get_provider
+
+
 # --- Group 1: Optimistic in_library on add ---
 
 
@@ -222,7 +239,7 @@ async def test_add_album_imports_tracks_when_enabled() -> None:
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
-    mass.get_provider.return_value = provider_mock
+    _answer_lookups_with(mass, provider_mock)
     mass.metadata = AsyncMock()
 
     with (
@@ -254,7 +271,7 @@ async def test_add_album_does_not_import_tracks_when_disabled() -> None:
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
-    mass.get_provider.return_value = provider_mock
+    _answer_lookups_with(mass, provider_mock)
     mass.metadata = AsyncMock()
 
     with (
@@ -302,7 +319,7 @@ async def test_add_album_only_imports_tracks_for_added_instance() -> None:
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
-    mass.get_provider.return_value = provider_mock
+    _answer_lookups_with(mass, provider_mock)
     mass.metadata = AsyncMock()
 
     with (
