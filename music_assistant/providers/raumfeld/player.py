@@ -27,10 +27,17 @@ if TYPE_CHECKING:
 
     from .provider import RaumfeldPlayerProvider
 
-# Poll interval (seconds) while playing / just after a play command. Kept short so a
-# finished track (and the next one starting) is picked up quickly; the per-poll reads run
-# concurrently to keep the added host traffic modest.
+# Poll interval (seconds) for the fast window: right after a play/resume command and in the
+# final seconds of a track, so a finish (and the next track) is caught promptly.
 FAST_POLL_INTERVAL = 1
+# Relaxed interval while playing steadily, and the slow interval while idle, to keep the
+# request rate on the Raumfeld host low.
+PLAYING_POLL_INTERVAL = 5
+IDLE_POLL_INTERVAL = 15
+# How close (seconds) to the track's end counts as "near the end": both switches to the
+# fast poll and gates auto-advance so a mid-track buffer stall can't be mistaken for a
+# finished track.
+NEAR_END_WINDOW = 10
 # How long (seconds) after a play/resume command to keep polling fast, so MA catches
 # the device actually starting playback (Raumfeld renderers buffer before they start).
 STARTUP_POLL_WINDOW = 20
@@ -86,6 +93,8 @@ class RaumfeldPlayer(Player):
         # playing-state seen on the previous poll (used to detect a track ending)
         self._advance_armed = False
         self._prev_playing = False
+        # whether the last playing poll was within NEAR_END_WINDOW of the track's end
+        self._near_end = False
         self._attr_device_info = DeviceInfo(model="Raumfeld", manufacturer="Teufel")
         # Raumfeld renderers are hi-res capable; declaring the rates lets MA output each
         # source at its native quality (up to 24-bit/192kHz) without manual configuration
@@ -151,6 +160,20 @@ class RaumfeldPlayer(Player):
         :param available: Whether the player is currently reachable/usable.
         """
         self._attr_available = available
+        self.update_state()
+
+    def set_room(self, room: str) -> None:
+        """
+        Follow a Raumfeld room rename: update the name used for host calls and display.
+
+        :param room: The room's current name as reported by the host.
+        """
+        # the player_id is the immutable room UDN, but hassfeld is keyed by room name, so
+        # the stored name must track a rename or play/stop/volume would target a stale name
+        if room == self.room:
+            return
+        self.room = room
+        self._attr_name = room
         self.update_state()
 
     def set_group_members(self, member_ids: list[str]) -> None:
@@ -255,7 +278,10 @@ class RaumfeldPlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command (Raumfeld volume is 0-100, same as MA)."""
-        await self.raumfeld.host.async_set_room_volume(self.room, volume_level)
+        try:
+            await self.raumfeld.host.async_set_room_volume(self.room, volume_level)
+        except HOST_ERRORS as err:
+            raise PlayerCommandFailed(f"Failed to set volume on {self.room}: {err!r}") from err
         self._attr_volume_level = volume_level
         self.update_state()
 
@@ -263,7 +289,10 @@ class RaumfeldPlayer(Player):
         """Send VOLUME_MUTE command for this room's zone."""
         # muting is a zone operation; skip it while the room is not in an active zone
         if (zone := self._active_zone()) is not None:
-            await self.raumfeld.host.async_set_zone_mute(zone, muted)
+            try:
+                await self.raumfeld.host.async_set_zone_mute(zone, muted)
+            except HOST_ERRORS as err:
+                raise PlayerCommandFailed(f"Failed to mute {self.room}: {err!r}") from err
         self._attr_volume_muted = muted
         self.update_state()
 
@@ -325,6 +354,16 @@ class RaumfeldPlayer(Player):
     async def poll(self) -> None:
         """Poll the Raumfeld host for this room's current state."""
         host = self.raumfeld.host
+        # a grouped follower shares the zone's transport/position with its leader, so it
+        # polls only its own (per-room) volume; the zone owner reads the shared state once
+        if self.synced_to and self.synced_to != self.player_id:
+            volume = await self._read_volume(host)
+            if volume is not None:
+                self._attr_volume_level = volume
+            self._attr_poll_interval = PLAYING_POLL_INTERVAL
+            self.update_state()
+            return
+
         zone = self._current_zone()
         # read volume (per room), transport and position (per zone) concurrently so a poll
         # cycle costs one round-trip of wall time instead of three, keeping state snappy
@@ -338,28 +377,36 @@ class RaumfeldPlayer(Player):
             self._attr_volume_level = volume
 
         playing = False
+        ended = False
         transport_ok = transport is not None
         if transport is not None:
-            self._attr_playback_state = _map_transport_state(transport.get("CurrentTransportState"))
+            raw_state = (transport.get("CurrentTransportState") or "").upper()
+            self._attr_playback_state = _map_transport_state(raw_state)
             playing = self._attr_playback_state == PlaybackState.PLAYING
+            ended = raw_state in ("STOPPED", "NO_MEDIA_PRESENT")
 
-        if position is not None:
-            self._apply_position(position, playing)
+        near_end = self._apply_position(position, playing) if position is not None else False
+        if playing:
+            self._near_end = near_end
 
-        # Poll fast while playing - and for a short window right after a play/resume
-        # command, so MA locks onto the device's real position quickly instead of
-        # running its own clock ahead during the device's buffering/startup delay.
+        # poll at 1s right after a play command and in the final seconds of a track (so the
+        # finish is caught quickly); a relaxed rate otherwise while playing, slow when idle
         recently_started = (time.time() - self._play_started_at) < STARTUP_POLL_WINDOW
-        self._attr_poll_interval = FAST_POLL_INTERVAL if (playing or recently_started) else 15
+        if recently_started or near_end:
+            self._attr_poll_interval = FAST_POLL_INTERVAL
+        elif playing:
+            self._attr_poll_interval = PLAYING_POLL_INTERVAL
+        else:
+            self._attr_poll_interval = IDLE_POLL_INTERVAL
 
         # the renderer can't pre-enqueue the next track, so advance the queue ourselves
         if transport_ok:
-            self._maybe_advance(playing)
+            self._maybe_advance(playing, ended)
 
         self.update_state()
 
-    def _apply_position(self, pos: dict[str, str], playing: bool) -> None:
-        """Reflect the device's TrackURI / RelTime from a GetPositionInfo response."""
+    def _apply_position(self, pos: dict[str, str], playing: bool) -> bool:
+        """Reflect the device's TrackURI / RelTime; return whether the track is near its end."""
         device_uri = pos.get("TrackURI", "") or ""
         # Only take over current_media for EXTERNAL sources. When the device is playing one
         # of our own MA streams, the queue controller owns current_media (including the
@@ -383,8 +430,9 @@ class RaumfeldPlayer(Player):
         # what MA expects (a seek, track change or buffer stall) and otherwise let MA's
         # smooth extrapolated clock run.
         elapsed = parse_duration(pos.get("RelTime"))
+        duration = parse_duration(pos.get("TrackDuration"))
         if elapsed is None or not playing:
-            return
+            return False
         now = time.time()
         if self._attr_elapsed_time is not None and self._attr_elapsed_time_last_updated is not None:
             expected = self._attr_elapsed_time + (now - self._attr_elapsed_time_last_updated)
@@ -394,6 +442,8 @@ class RaumfeldPlayer(Player):
         if diverged:
             self._attr_elapsed_time = float(elapsed)
             self._attr_elapsed_time_last_updated = now
+        # near the end when the duration is unknown (can't tell) or within the window of it
+        return duration is None or elapsed >= duration - NEAR_END_WINDOW
 
     async def _read_volume(self, host: hassfeld.RaumfeldHost) -> int | None:
         """Read this room's volume (0-100), or ``None`` on a host error."""
@@ -426,13 +476,13 @@ class RaumfeldPlayer(Player):
             self.logger.debug("Failed to read position info for zone %s: %r", zone, err)
             return None
 
-    def _maybe_advance(self, playing: bool) -> None:
-        """Play the next queue item when the current track has finished."""
-        # a track that was playing and is now stopped - and not a user stop (which
-        # disarms) - has ended on its own. _mark_play_started resets _prev_playing to
-        # False, so the not-yet-playing gap right after a play command can't look like an
-        # ended track (that gap starts from prev_playing=False).
-        if self._advance_armed and self._prev_playing and not playing:
+    def _maybe_advance(self, playing: bool, ended: bool) -> None:
+        """Play the next queue item when the current track has actually finished."""
+        # advance only on a real stop (STOPPED/NO_MEDIA, not a pause) near the track's end,
+        # so pausing from the Raumfeld app or a mid-track buffer stall never skips.
+        # _mark_play_started resets _prev_playing/_near_end, so the not-yet-playing startup
+        # gap can't look like an ended track.
+        if self._advance_armed and self._prev_playing and ended and self._near_end:
             if self._next_media is not None:
                 next_media, self._next_media = self._next_media, None
                 self.mass.create_task(self.play_media(next_media))
@@ -452,8 +502,10 @@ class RaumfeldPlayer(Player):
         self._play_started_at = time.time()
         self._attr_poll_interval = FAST_POLL_INTERVAL
         # a fresh play/resume: the not-yet-playing startup gap must not look like the
-        # previous track ending, so restart end-detection from "was not playing"
+        # previous track ending, so restart end-detection from "was not playing" and clear
+        # the stale near-end flag from the previous track
         self._prev_playing = False
+        self._near_end = False
         # reset the position: on resume MA adds a seek offset, so a stale pre-pause
         # position here would be double-counted until the device reports the new stream's
         # 0-based time (the next poll re-anchors to the real position)

@@ -2125,6 +2125,7 @@
   "provider.raumfeld.config_entries.ip_address.label": "Raumfeld host",
   "provider.raumfeld.config_entries.port.description": "Port of the Raumfeld host webservice. Only change this if you run the host on a non-default port.",
   "provider.raumfeld.config_entries.port.label": "Raumfeld host port",
+  "provider.raumfeld.errors.no_host_found": "No Raumfeld host found at the given address. Check the IP address and port, and make sure a Raumfeld device or the Raumfeld host app is running.",
   "provider.raumfeld.manifest.description": "Stream music to Teufel Raumfeld (Smart Speaker) multiroom devices.",
   "provider.recommendations.manifest.description": "Provides standard library-based recommendation rows.",
   "provider.roku_media_assistant.config_entries.auto_scan.description": "Enable automatic discovery of Roku players.",

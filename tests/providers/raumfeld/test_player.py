@@ -16,6 +16,7 @@ def _make_player() -> tuple[RaumfeldPlayer, MagicMock, MagicMock]:
     player = RaumfeldPlayer.__new__(RaumfeldPlayer)
     player._advance_armed = False
     player._prev_playing = False
+    player._near_end = False
     player._next_media = None
     mass = MagicMock()
     play_media = MagicMock()
@@ -29,14 +30,15 @@ def _media() -> PlayerMedia:
 
 
 def test_advances_to_next_when_track_ends() -> None:
-    """A playing->stopped transition with a queued next item advances the queue."""
+    """A playing->stopped transition near the end with a queued next item advances."""
     player, mass, play_media = _make_player()
     player._advance_armed = True
     player._prev_playing = True
+    player._near_end = True
     next_media: PlayerMedia | None = _media()
     player._next_media = next_media
 
-    player._maybe_advance(playing=False)
+    player._maybe_advance(playing=False, ended=True)
 
     play_media.assert_called_once_with(next_media)
     mass.create_task.assert_called_once()
@@ -49,9 +51,10 @@ def test_no_advance_during_startup_gap() -> None:
     player, _mass, play_media = _make_player()
     player._advance_armed = True
     player._prev_playing = False  # as _mark_play_started leaves it right after a play
+    player._near_end = False
     player._next_media = _media()
 
-    player._maybe_advance(playing=False)
+    player._maybe_advance(playing=False, ended=True)
 
     play_media.assert_not_called()
     assert player._next_media is not None
@@ -62,11 +65,27 @@ def test_no_advance_after_user_stop() -> None:
     player, _mass, play_media = _make_player()
     player._advance_armed = False
     player._prev_playing = True
+    player._near_end = True
     player._next_media = _media()
 
-    player._maybe_advance(playing=False)
+    player._maybe_advance(playing=False, ended=True)
 
     play_media.assert_not_called()
+
+
+def test_no_advance_on_pause_before_end() -> None:
+    """A pause mid-track (not ended, not near the end) never skips to the next item."""
+    player, _mass, play_media = _make_player()
+    player._advance_armed = True
+    player._prev_playing = True
+    player._near_end = False
+    player._next_media = _media()
+
+    # a pause reports the transport as PAUSED_PLAYBACK: not ended, not near the end
+    player._maybe_advance(playing=False, ended=False)
+
+    play_media.assert_not_called()
+    assert player._next_media is not None
 
 
 def test_disarms_when_track_ends_without_next() -> None:
@@ -74,9 +93,10 @@ def test_disarms_when_track_ends_without_next() -> None:
     player, _mass, play_media = _make_player()
     player._advance_armed = True
     player._prev_playing = True
+    player._near_end = True
     player._next_media = None
 
-    player._maybe_advance(playing=False)
+    player._maybe_advance(playing=False, ended=True)
 
     play_media.assert_not_called()
     assert player._advance_armed is False
@@ -87,9 +107,10 @@ def test_no_advance_while_still_playing() -> None:
     player, _mass, play_media = _make_player()
     player._advance_armed = True
     player._prev_playing = True
+    player._near_end = True
     player._next_media = _media()
 
-    player._maybe_advance(playing=True)
+    player._maybe_advance(playing=True, ended=False)
 
     play_media.assert_not_called()
     assert player._prev_playing is True

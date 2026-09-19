@@ -206,23 +206,27 @@ class RaumfeldPlayerProvider(PlayerProvider):
     async def _sync_rooms(self) -> None:
         """Register (or re-activate) a Music Assistant player for every Raumfeld room."""
         # ``get_rooms`` returns the list of room names currently known to the host.
-        rooms = self.host.get_rooms()
-        for room in rooms:
+        present: set[str] = set()
+        for room in self.host.get_rooms():
             if (player_id := self._room_player_id(room)) is None:
                 continue
+            present.add(player_id)
             if (existing := self.mass.players.get_player(player_id)) is not None:
-                # already registered (e.g. after a reconnect) - just mark it available
+                # already registered (e.g. after a reconnect): mark it available and, since
+                # the player_id is the immutable room UDN, follow a room rename by refreshing
+                # the stored room name (used for host calls) and the display name
                 if isinstance(existing, RaumfeldPlayer):
+                    existing.set_room(room)
                     existing.set_available(True)
                 continue
             player = RaumfeldPlayer(provider=self, player_id=player_id, room=room)
             await self.mass.players.register(player)
             self.logger.debug("Registered Raumfeld room '%s' as player %s", room, player_id)
-        # a room the host no longer lists (e.g. a speaker that dropped to deep standby or
-        # left the network) is gone until it returns; show it as unavailable meanwhile
-        present = set(rooms)
+        # a room whose UDN the host no longer lists (e.g. a speaker that dropped to deep
+        # standby or left the network) is gone until it returns; show it as unavailable.
+        # Match on the stable player_id, never the room name, so a rename does not orphan it.
         for known in self.players:
-            if isinstance(known, RaumfeldPlayer) and known.room not in present:
+            if isinstance(known, RaumfeldPlayer) and known.player_id not in present:
                 known.set_available(False)
 
     def _sync_groups(self) -> None:

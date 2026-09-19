@@ -11,5 +11,8 @@
   },
   "manifest": {
     "description": "Stream music to Teufel Raumfeld (Smart Speaker) multiroom devices."
+  },
+  "errors": {
+    "no_host_found": "No Raumfeld host found at the given address. Check the IP address and port, and make sure a Raumfeld device or the Raumfeld host app is running."
   }
 }

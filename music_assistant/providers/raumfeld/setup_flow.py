@@ -52,7 +52,7 @@ async def run_setup(session: SetupSession) -> None:
         setup_data[CONF_IP_ADDRESS] = host
         setup_data[CONF_PORT] = port
         if not await _host_reachable(session, host, port):
-            errors = {CONF_IP_ADDRESS: f"No Raumfeld host found at {host}:{port}"}
+            errors = {CONF_IP_ADDRESS: "no_host_found"}
             continue
         try:
             await session.finish(setup_data)
