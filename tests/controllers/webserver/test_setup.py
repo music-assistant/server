@@ -336,6 +336,7 @@ async def test_setup_leaves_the_display_name_empty_when_none_was_given(
         b'{"username": "marcel", "password": "correct horse battery", "display_name": {"a": 1}}',
         b'{"username": "marcel", "password": "correct horse battery", "display_name": false}',
         b'{"username": "marcel", "password": "correct horse battery", "display_name": 0}',
+        b'{"username": "marcel", "password": "correct horse battery", "device_name": 5}',
     ],
     ids=[
         "not_json",
@@ -346,6 +347,7 @@ async def test_setup_leaves_the_display_name_empty_when_none_was_given(
         "display_name_not_a_string",
         "display_name_false",
         "display_name_zero",
+        "device_name_not_a_string",
     ],
 )
 async def test_setup_refuses_a_body_it_cannot_read(
@@ -362,6 +364,23 @@ async def test_setup_refuses_a_body_it_cannot_read(
 
     assert response.status == 400
     assert not webserver.auth.has_users
+
+
+@pytest.mark.parametrize("device_name", [None, ""], ids=["null", "empty"])
+async def test_setup_names_the_token_itself_when_the_client_gave_no_name(
+    webserver: WebserverController, device_name: str | None
+) -> None:
+    """
+    A device name that was not given leaves the token named after the setup.
+
+    :param device_name: What the client sent for the device name, if anything.
+    """
+    response = await _post_setup(webserver, {**ACCOUNT, "device_name": device_name})
+
+    assert response.status == 200
+    user_id = json.loads(response.text or "")["user"]["user_id"]
+    rows = await webserver.auth.database.get_rows("auth_tokens", {"user_id": user_id})
+    assert [row["name"] for row in rows] == ["Setup (Unknown)"]
 
 
 async def test_setup_forwards_the_token_to_the_client_that_started_it(

@@ -1312,10 +1312,12 @@ class WebserverController(CoreController):
         username = body.get("username", "")
         password = body.get("password", "")
         display_name = body.get("display_name")
+        device_name = body.get("device_name")
         if not (
             isinstance(username, str)
             and isinstance(password, str)
             and (display_name is None or isinstance(display_name, str))
+            and (device_name is None or isinstance(device_name, str))
         ):
             return web.Response(status=400, text="Invalid request body")
         username = username.strip()
@@ -1355,9 +1357,8 @@ class WebserverController(CoreController):
                 )
 
             # Create token for the new admin
-            device_name = body.get(
-                "device_name", f"Setup ({request.headers.get('User-Agent', 'Unknown')[:50]})"
-            )
+            if not device_name:
+                device_name = f"Setup ({request.headers.get('User-Agent', 'Unknown')[:50]})"
             token = await self.auth.create_token(user, device_name)
 
             self.logger.info("First admin user created: %s", username)
