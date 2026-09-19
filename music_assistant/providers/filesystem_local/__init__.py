@@ -81,7 +81,7 @@ from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.cue_sheet import CueSheet
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
-from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid, split_items
+from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid
 from music_assistant.helpers.uri import create_uri
 from music_assistant.helpers.util import (
     TaskManager,
@@ -2750,7 +2750,7 @@ class LocalFileSystemProvider(MusicProvider):
         Build the Artist for an audiobook author or narrator.
 
         :param name: The name as tagged on the audiobook file.
-        :param artist_type: author or narrator
+        :param artist_type: Author or narrator.
         """
         prefix = AUTHOR_ID_PREFIX if artist_type == ArtistType.AUTHOR else NARRATOR_ID_PREFIX
         prov_artist_id = f"{prefix}{name}"
@@ -2965,36 +2965,11 @@ class LocalFileSystemProvider(MusicProvider):
             )
 
         # parse other info
-        #
-        # Authors and narrators both become full Artist items (see supported_artist_types),
-        # so that the library can list an author's books and link the same person across
-        # every book they appear on. Both are read from the file's own tags, and there is
-        # no standard that says which tag holds what for an audiobook:
-        #
-        # - author: the existing precedence (writer, then album artist, then artist) is
-        #   kept as-is. Reordering it would silently rename the author of every book that
-        #   is already in a user's library, which is not worth it for a tagging habit we
-        #   would only be guessing at.
-        # - narrator: read from its own tag. There is no dedicated narrator field in any
-        #   of the common tag formats, so taggers improvise - "narrator", "narrated by"
-        #   and the composer field (the convention Audible-style m4b files follow) are all
-        #   in use. A file that names nobody simply has no narrator; we never fall back to
-        #   the author, because a book read by its own author is a fact about that book
-        #   and not something to invent from a missing tag.
-        #
-        # NOTE: this draft just reads tags.get("narrator") and leaves the author
-        # precedence untouched. Working out the real tag names is deliberately deferred:
-        # it also needs the m4b freeform-atom gap in helpers/tags.py closed, since ffprobe
-        # does not expose those atoms at all and the mutagen fallback only picks out a
-        # hardcoded handful of them.
-        #
-        # Tag keys reach us already normalized: helpers/tags.py lowercases every key and
-        # strips spaces, underscores, dashes and slashes from it, so "NARRATED BY" and
-        # "Narrated-By" both arrive here as "narratedby". Values may name more than one
-        # person, which is what split_items handles - a single tag holding
-        # "Name A; Name B" is two people, not one oddly named one.
-        author_names = tags.writers or tags.album_artists or tags.artists
-        narrator_names = split_items(tags.get("narrator"))
+        # authors and narrators become Artist items, see supported_artist_types. a book
+        # read by its author is a fact about that book, so a missing narrator tag stays
+        # empty rather than falling back to the author
+        author_names = tags.authors
+        narrator_names = tags.narrators
         audio_book.authors.set(
             [self._parse_audiobook_artist(name, ArtistType.AUTHOR) for name in author_names]
         )
