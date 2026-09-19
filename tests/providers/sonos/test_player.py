@@ -391,6 +391,20 @@ def test_playback_error_other_failure_is_warned(caplog: pytest.LogCaptureFixture
     assert "ERROR_TRANSPORT" in warnings[0].getMessage()
 
 
+def test_playback_error_404_from_other_service_is_warned(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test a 404 from a service other than our stream server is still warned about."""
+    player, _ = _speaker_for_playback_error()
+
+    with caplog.at_level(logging.DEBUG, logger="test.sonos.player"):
+        player._on_playback_error(_playback_error_event(serviceName="external.service:443"))
+
+    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "What You Saying" in warnings[0].getMessage()
+
+
 def test_playback_error_ignored_for_synced_child(caplog: pytest.LogCaptureFixture) -> None:
     """Test a synced child stays silent, leaving the report to its group coordinator."""
     player, client = _speaker_for_playback_error()
