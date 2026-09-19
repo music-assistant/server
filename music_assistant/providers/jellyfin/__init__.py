@@ -27,7 +27,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import UNKNOWN_ARTIST, UNKNOWN_ARTIST_ID_MBID
+from music_assistant.constants import CONF_USERNAME, CONF_PASSWORD, CONF_VERIFY_SSL, UNKNOWN_ARTIST, UNKNOWN_ARTIST_ID_MBID
 from music_assistant.controllers.cache import use_cache
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
@@ -178,18 +178,12 @@ class JellyfinProvider(MusicProvider):
         # token and server_id is used in zeroconf) but hash them anyway as its meant
         # to be an opaque identifier
 
-<<<<<<< HEAD
-        device_id = hashlib.sha256(f"{self.mass.server_id}+{username}".encode()).hexdigest()
-        self._verify_ssl = bool(self.get_setup_value(CONF_VERIFY_SSL))
-        http_session = self.mass.http_session if self._verify_ssl else self.mass.http_session_no_ssl
-=======
         device_id = str(
             self.get_setup_value(CONF_DEVICE_ID)
             or hashlib.sha256(f"{self.mass.server_id}+{username}".encode()).hexdigest()
         )
         verify_ssl = bool(self.get_setup_value(CONF_VERIFY_SSL))
         http_session = self.mass.http_session if verify_ssl else self.mass.http_session_no_ssl
->>>>>>> d123aff16 (Add support for Jellyfin Quick Connect)
 
         session_config = SessionConfiguration(
             session=http_session,

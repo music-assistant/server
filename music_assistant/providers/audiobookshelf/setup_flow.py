@@ -8,14 +8,12 @@ from typing import TYPE_CHECKING
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
+from music_assistant.constants import CONF_USERNAME, CONF_PASSWORD, CONF_VERIFY_SSL
 from music_assistant.models.setup_flow import SetupFlowError
 from music_assistant.providers.audiobookshelf.constants import (
     CONF_API_TOKEN,
     CONF_OLD_TOKEN,
-    CONF_PASSWORD,
     CONF_URL,
-    CONF_USERNAME,
-    CONF_VERIFY_SSL,
 )
 
 if TYPE_CHECKING:
