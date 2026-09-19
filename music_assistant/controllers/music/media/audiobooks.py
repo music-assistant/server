@@ -642,18 +642,20 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             playlog_user_clause = "AND p2.userid = :playlog_userid "
             params["playlog_userid"] = session_user.user_id
         extra_columns = f"""
-            , EXISTS (
-                SELECT 1 FROM {DB_TABLE_AUDIOBOOK_ARTISTS}
+            , (
+                SELECT JSON_GROUP_ARRAY(artists.name) FROM {DB_TABLE_AUDIOBOOK_ARTISTS}
                 JOIN artists ON artists.item_id = audiobook_artists.artist_id
                 WHERE audiobook_artists.audiobook_id = audiobooks.item_id
                 AND artists.artist_type = '{ArtistType.AUTHOR.value}'
-            ) AS has_author_artists
-            , EXISTS (
-                SELECT 1 FROM {DB_TABLE_AUDIOBOOK_ARTISTS}
+            ) AS author_artist_names
+            , (
+                SELECT JSON_GROUP_ARRAY(artists.name) FROM {DB_TABLE_AUDIOBOOK_ARTISTS}
                 JOIN artists ON artists.item_id = audiobook_artists.artist_id
                 WHERE audiobook_artists.audiobook_id = audiobooks.item_id
                 AND artists.artist_type = '{ArtistType.NARRATOR.value}'
-            ) AS has_narrator_artists
+            ) AS narrator_artist_names
+            , audiobooks.authors AS stored_authors
+            , audiobooks.narrators AS stored_narrators
             , json_type(audiobooks.authors, '$[0]') AS first_author_type
             , json_type(audiobooks.narrators, '$[0]') AS first_narrator_type
             , playlog.fully_played AS fully_played
@@ -673,18 +675,32 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         # authors/narrators hydrate as str only when there are no linked Artist records
         # and the stored JSON column holds plain strings (mirrors _parse_db_row)
         resume_position_ms = db_row["resume_position_ms"]
+        author_artists = self._sync_details_names(db_row["author_artist_names"])
+        narrator_artists = self._sync_details_names(db_row["narrator_artist_names"])
         return AudiobookSyncDetails(
             item_id=db_row["item_id"],
             favorite=bool(db_row["favorite"]),
             date_added=datetime.fromtimestamp(db_row["timestamp_added"], tz=UTC),
             provider_mappings=self._parse_sync_details_mappings(db_row),
-            author_is_str=not db_row["has_author_artists"]
-            and db_row["first_author_type"] == "text",
-            narrator_is_str=not db_row["has_narrator_artists"]
-            and db_row["first_narrator_type"] == "text",
+            # prefer the linked artist records
+            authors=author_artists or self._sync_details_names(db_row["stored_authors"]),
+            narrators=narrator_artists or self._sync_details_names(db_row["stored_narrators"]),
+            author_is_str=not author_artists and db_row["first_author_type"] == "text",
+            narrator_is_str=not narrator_artists and db_row["first_narrator_type"] == "text",
             fully_played=parse_optional_bool(db_row["fully_played"]),
             resume_position_ms=int(resume_position_ms) if resume_position_ms is not None else None,
         )
+
+    @staticmethod
+    def _sync_details_names(raw_json: str | None) -> tuple[str, ...]:
+        """
+        Return the sorted names held in a stored JSON array.
+
+        :param raw_json: The raw JSON array as stored in the database.
+        """
+        if not raw_json:
+            return ()
+        return tuple(sorted(str(name) for name in json_loads(raw_json)))
 
     def _parse_summary_row(self, db_row: Mapping[str, Any]) -> AudiobookSummary:
         """Parse a raw summary db row into an AudiobookSummary object."""
