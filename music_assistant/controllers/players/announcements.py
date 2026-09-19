@@ -242,24 +242,28 @@ class AnnouncementsMixin:
         try:
             # mark announcement_in_progress on player
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
-            # a group announcement is only handed to the individual members when the output
-            # that would announce for each member can line up its start with the others.
-            # Members that cannot would be heard out of step, so such a group plays the clip
-            # through its own (synchronized) stream instead.
-            if player.state.type == PlayerType.GROUP and self._members_announce_in_step(player):
-                # forward the request to each individual player
-                async with TaskManager(self.mass) as tg:
-                    for group_member in player.state.group_members:
-                        tg.create_task(
-                            self.play_announcement(
-                                group_member,
-                                url=url,
-                                pre_announce=pre_announce,
-                                volume_level=volume_level,
-                                pre_announce_url=pre_announce_url,
+            if player.state.type == PlayerType.GROUP:
+                # the output that announces for a member is resolved once the audio is
+                # there, so the decision below is taken on the state the members act on
+                await render.wait_ready()
+                # a group announcement is only handed to the individual members when the output
+                # that would announce for each member can line up its start with the others.
+                # Members that cannot would be heard out of step, so such a group plays the clip
+                # through its own (synchronized) stream instead.
+                if self._members_announce_in_step(player):
+                    # forward the request to each individual player
+                    async with TaskManager(self.mass) as tg:
+                        for group_member in player.state.group_members:
+                            tg.create_task(
+                                self.play_announcement(
+                                    group_member,
+                                    url=url,
+                                    pre_announce=pre_announce,
+                                    volume_level=volume_level,
+                                    pre_announce_url=pre_announce_url,
+                                )
                             )
-                        )
-                return
+                    return
             self.logger.info(
                 "Playback announcement to player %s (with pre-announce: %s): %s",
                 player.state.name,
