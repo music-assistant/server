@@ -25,13 +25,20 @@ if TYPE_CHECKING:
     from aiohttp import ClientSession
 
     from music_assistant.models.music_provider import MusicProvider
-from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
+from music_assistant_models.enums import (
+    ArtistType,
+    ContentType,
+    ImageType,
+    MediaType,
+    StreamType,
+)
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
 )
 from music_assistant_models.media_items import (
+    Artist,
     Audiobook,
     AudioFormat,
     ItemMapping,
@@ -211,6 +218,18 @@ class AudibleHelper:
         self.provider = provider
         self.logger = logger or logging.getLogger("audible_helper")
         self._acr_cache: dict[tuple[str, MediaType], str] = {}
+
+    async def get_artist(self, asin: str) -> Artist:
+        """
+        Get an author or narrator by asin.
+
+        :param asin: The contributor's asin, as carried by its provider mapping.
+        """
+        if name := (await self.get_authors()).get(asin):
+            return self._parse_artist(asin, name, ArtistType.AUTHOR)
+        if name := (await self.get_narrators()).get(asin):
+            return self._parse_artist(asin, name, ArtistType.NARRATOR)
+        raise MediaNotFoundError(f"Artist with ASIN {asin} not found")
 
     async def _fetch_library_items(
         self,
@@ -672,16 +691,51 @@ class AudibleHelper:
         return response
 
     def _parse_contributors(
-        self, contributors_list: list[dict[str, Any]] | None, default_name: str
-    ) -> list[str]:
-        """Parse contributors (authors, narrators) from API response."""
-        result: list[str] = []
+        self,
+        contributors_list: list[dict[str, Any]] | None,
+        default_name: str,
+        artist_type: ArtistType,
+    ) -> list[Artist]:
+        """
+        Parse contributors (authors, narrators) from API response.
+
+        :param contributors_list: The "authors" or "narrators" entries of the audiobook.
+        :param default_name: Name to use for a contributor the API did not name.
+        :param artist_type: Author or narrator.
+        """
+        result: list[Artist] = []
         contributors: list[dict[str, Any]] = contributors_list or []
         if isinstance(contributors, list):
             for contributor in contributors:
                 if contributor and isinstance(contributor, dict):
-                    result.append(contributor.get("name", default_name))
+                    name = contributor.get("name", default_name)
+                    # not every contributor carries an asin, fall back to the name
+                    result.append(
+                        self._parse_artist(contributor.get("asin") or name, name, artist_type)
+                    )
         return result
+
+    def _parse_artist(self, asin: str, name: str, artist_type: ArtistType) -> Artist:
+        """
+        Build the Artist for an audiobook author or narrator.
+
+        :param asin: The contributor's asin, or its name when it has none.
+        :param name: The contributor's name.
+        :param artist_type: Author or narrator.
+        """
+        return Artist(
+            item_id=asin,
+            provider=self.provider_instance,
+            name=name,
+            artist_type=artist_type,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=asin,
+                    provider_domain=self.provider_domain,
+                    provider_instance=self.provider_instance,
+                )
+            },
+        )
 
     def _parse_collections(
         self, series_list: list[dict[str, Any]] | None
@@ -762,8 +816,12 @@ class AudibleHelper:
         title = audiobook_data.get("title", "")
 
         # Parse authors and narrators
-        narrators = self._parse_contributors(audiobook_data.get("narrators"), "Unknown Narrator")
-        authors = self._parse_contributors(audiobook_data.get("authors"), "Unknown Author")
+        narrators = self._parse_contributors(
+            audiobook_data.get("narrators"), "Unknown Narrator", ArtistType.NARRATOR
+        )
+        authors = self._parse_contributors(
+            audiobook_data.get("authors"), "Unknown Author", ArtistType.AUTHOR
+        )
 
         # Get duration from runtime_length_min (provided by 'media' response group)
         # Chapters are fetched lazily when streaming, not during library sync

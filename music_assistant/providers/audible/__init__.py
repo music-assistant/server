@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import quote, unquote
 
 import audible
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import ArtistType, MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError
-from music_assistant_models.media_items import BrowseFolder, ItemMapping
+from music_assistant_models.media_items import Artist, BrowseFolder, ItemMapping
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.models.music_provider import MusicProvider
@@ -84,6 +84,15 @@ class Audibleprovider(MusicProvider):
         self._client: audible.AsyncClient | None = None
         audible.log_helper.set_level(getLevelName(self.logger.level))
         await self._login()
+
+    @property
+    def supported_artist_types(self) -> set[ArtistType]:
+        """Supported artist types."""
+        return {ArtistType.AUTHOR, ArtistType.NARRATOR}
+
+    async def get_artist(self, prov_artist_id: str) -> Artist:
+        """Get full artist (author or narrator) details by id."""
+        return await self.helper.get_artist(prov_artist_id)
 
     async def _login(self) -> None:
         """Authenticate with Audible using the saved authentication file."""
