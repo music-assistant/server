@@ -924,10 +924,16 @@ class AnnouncementsMixin:
         """
         Return True if every member of a group announces natively and in step with the others.
 
+        A player only lines up its start with the members announcing through the same
+        provider, so the outputs announcing for the members must all belong to one
+        provider instance.
+
         :param group_player: The group player the announcement is played on.
         """
+        provider_ids: set[str] = set()
         for member in self.iter_group_members(group_player):
             announce_player = self._resolve_announce_player(member)
             if announce_player is None or not announce_player.coordinates_announcement_start:
                 return False
-        return True
+            provider_ids.add(announce_player.provider.instance_id)
+        return len(provider_ids) <= 1

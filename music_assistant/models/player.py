@@ -1034,7 +1034,7 @@ class Player(ABC):
         reports True starts the clip together with the other members that announce through
         the same provider, so all rooms are heard as one. The players controller only fans a
         group announcement out to its members when the output announcing for every member
-        reports True.
+        reports True and all those outputs belong to one provider.
         """
         return False
 

@@ -5490,6 +5490,37 @@ class TestPlayAnnouncementMessage:
         assert fallback.await_args.args[0] is group
         announce.assert_not_awaited()
 
+    async def test_members_announcing_through_different_providers_leave_it_to_the_group(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Members that only line up within their own provider are not fanned out together."""
+        announcements: dict[str, object] = {}
+        use_real_create_task(mock_mass)
+        controller, announce = self._make_player(mock_mass, announcements)
+        other_provider = MockProvider("other_provider", instance_id="other", mass=mock_mass)
+        other_member = MockPlayer(other_provider, "player_2", "Player 2")
+        other_member._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        other_announce = AsyncMock()
+        other_member.play_announcement = other_announce  # type: ignore[method-assign]
+        other_member._cache.clear()
+        controller._players["player_2"] = other_member
+        other_member.update_state(signal_event=False)
+        group = self._add_group(mock_mass, controller)
+        group._attr_group_members = ["player_1", "player_2"]
+        group._cache.clear()
+        group.update_state(signal_event=False)
+        fallback = AsyncMock()
+        controller._play_announcement = fallback  # type: ignore[method-assign]
+
+        with self._members_coordinate():
+            await controller.play_announcement("group_1", url="http://test/clip.mp3")
+
+        # the group renders the clip through its own (synchronized) stream instead
+        assert fallback.await_args is not None
+        assert fallback.await_args.args[0] is group
+        announce.assert_not_awaited()
+        other_announce.assert_not_awaited()
+
 
 class TestNativeAnnouncementRouting:
     """Announcement routing respects the player's own support and its active output."""
