@@ -436,13 +436,11 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         :param artist_type: Which of the two ``values`` holds.
         :param overwrite: Replace the stored links of this type instead of adding to them.
         """
-        # plain strings live on the audiobook row itself, only Artists get linked
         artists = [artist for artist in values if isinstance(artist, Artist)]
         for artist in artists:
             # just to be sure
             artist.artist_type = artist_type
         if not artists:
-            # nothing supplied says nothing about what is stored, so never clear it
             return
         if overwrite:
             # only this type: the other one may not be part of this update at all
