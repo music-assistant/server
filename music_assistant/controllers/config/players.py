@@ -246,6 +246,18 @@ class PlayerConfigMixin:
                     raw_conf.get("default_name") or raw_conf.get("player_id") or player_id
                 )
                 raw_conf.setdefault("player_id", player_id)
+                if "provider" not in raw_conf:
+                    # a stored entry that lost its provider while its player is not
+                    # registered cannot be reconstructed (a partial dict left behind by an
+                    # older version). Drop the ghost so it can never crash the config read,
+                    # and report it as gone. The available branch above still recovers the
+                    # provider from a live player, so a merely offline player is untouched.
+                    LOGGER.warning(
+                        "Removing malformed player config entry %s (missing provider)",
+                        player_id,
+                    )
+                    self.remove(f"{CONF_PLAYERS}/{player_id}")
+                    raise KeyError(f"No config found for player id {player_id}")
 
             conf = cast("PlayerConfig", PlayerConfig.parse(config_entries, raw_conf))
             _apply_raw_player_icon_value(conf, raw_conf.get("values", {}))
