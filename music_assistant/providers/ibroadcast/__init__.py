@@ -126,6 +126,8 @@ class IBroadcastProvider(MusicProvider):
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
                 self._report_skipped_item(MediaType.ARTIST, artist, "artist_id", error)
                 continue
+        if await self._has_various_artists():
+            yield self._various_artists()
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
@@ -310,19 +312,7 @@ class IBroadcastProvider(MusicProvider):
             },
         )
         if album_obj["artist_id"] == 0:
-            artist = Artist(
-                item_id=VARIOUS_ARTISTS_MBID,
-                name=VARIOUS_ARTISTS_NAME,
-                provider=self.instance_id,
-                provider_mappings={
-                    ProviderMapping(
-                        item_id=VARIOUS_ARTISTS_MBID,
-                        provider_domain=self.domain,
-                        provider_instance=self.instance_id,
-                    )
-                },
-            )
-            album.artists.append(artist)
+            album.artists.append(self._various_artists())
         else:
             artist_mapping = self._get_item_mapping(
                 MediaType.ARTIST,
@@ -453,6 +443,27 @@ class IBroadcastProvider(MusicProvider):
         if "description" in playlist_obj:
             playlist.metadata.description = playlist_obj["description"]
         return playlist
+
+    async def _has_various_artists(self) -> bool:
+        """Return whether any album or track in the library maps to Various Artists."""
+        if any(album["artist_id"] == 0 for album in (await self._client.get_albums()).values()):
+            return True
+        return any(track["artist_id"] == 0 for track in (await self._client.get_tracks()).values())
+
+    def _various_artists(self) -> Artist:
+        """Return the Various Artists placeholder, which iBroadcast refers to as artist 0."""
+        return Artist(
+            item_id=VARIOUS_ARTISTS_MBID,
+            name=VARIOUS_ARTISTS_NAME,
+            provider=self.instance_id,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=VARIOUS_ARTISTS_MBID,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
 
     def _report_skipped_item(
         self, media_type: MediaType, item_obj: dict[str, Any], id_key: str, err: Exception

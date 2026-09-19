@@ -390,3 +390,46 @@ async def test_unreadable_track_is_reported_as_skipped_with_a_text_id(
     media_type, item_id, _error = provider.report_skipped_sync_item.call_args.args
     assert media_type is MediaType.TRACK
     assert item_id == "1002"
+
+
+async def test_various_artists_is_listed_when_an_album_uses_it(
+    provider: IBroadcastProvider,
+) -> None:
+    """The sync treats this listing as every artist on the provider."""
+    provider._client.albums = {101: {**ALBUM, "artist_id": 0}}
+
+    artists = [item async for item in provider.get_library_artists()]
+
+    assert [artist.item_id for artist in artists] == ["42", VARIOUS_ARTISTS_MBID]
+    assert artists[-1].name == VARIOUS_ARTISTS_NAME
+
+
+async def test_various_artists_is_listed_when_a_track_uses_it(
+    provider: IBroadcastProvider,
+) -> None:
+    """A compilation track maps to Various Artists even when its album does not."""
+    provider._client.tracks = {1001: {**TRACK, "artist_id": 0}}
+
+    artists = [item async for item in provider.get_library_artists()]
+
+    assert [artist.item_id for artist in artists] == ["42", VARIOUS_ARTISTS_MBID]
+
+
+async def test_various_artists_is_not_listed_when_unused(provider: IBroadcastProvider) -> None:
+    """A library where everything has a real artist has no Various Artists to map."""
+    artists = [item async for item in provider.get_library_artists()]
+
+    assert [artist.item_id for artist in artists] == ["42"]
+
+
+async def test_listed_various_artists_matches_the_album_mapping(
+    provider: IBroadcastProvider,
+) -> None:
+    """The listed id has to equal the one the albums map to, or the mapping reads as stale."""
+    provider._client.albums = {101: {**ALBUM, "artist_id": 0}}
+
+    artists = [item async for item in provider.get_library_artists()]
+    albums = [item async for item in provider.get_library_albums()]
+
+    listed = {mapping.item_id for artist in artists for mapping in artist.provider_mappings}
+    assert {artist.item_id for album in albums for artist in album.artists} <= listed
