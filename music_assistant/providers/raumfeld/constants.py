@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import aiohttp
-from music_assistant_models.config_entries import ConfigEntry
+from typing import TYPE_CHECKING
 
-from music_assistant.constants import (
-    CONF_ENTRY_FLOW_MODE,
-    CONF_ENTRY_FLOW_MODE_SAMPLE_RATE,
-)
+import aiohttp
+
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
 
 DOMAIN = "raumfeld"
 
@@ -45,14 +44,10 @@ SUPPORTED_SAMPLE_RATES = [
     for bit_depth in (16, 24)
 ]
 
-# Per-player config entries.
-PLAYER_CONFIG_ENTRIES = [
-    # Hide the flow-mode toggle and keep it forced off. Raumfeld renderers drop the
-    # HTTP connection on pause and cannot resume a single continuous (flow) stream, so
-    # enabling flow mode would break pause/resume. Providing these keys makes MA replace
-    # its own (visible) default entries with these hidden ones.
-    ConfigEntry.from_dict(
-        {**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": False, "hidden": True}
-    ),
-    ConfigEntry.from_dict({**CONF_ENTRY_FLOW_MODE_SAMPLE_RATE.to_dict(), "hidden": True}),
-]
+# Per-player config entries. Empty: MA injects the standard (advanced, default-off)
+# flow-mode toggle for HTTP-based players itself, so leaving this empty exposes flow
+# mode as an opt-in choice - the same toggle Chromecast and other players get. Flow
+# mode is off by default because Raumfeld treats pause as stop and resumes by
+# re-streaming (see player.py): per-track streaming keeps that resume snappy, while
+# flow mode trades some of that for gapless playback.
+PLAYER_CONFIG_ENTRIES: list[ConfigEntry] = []
