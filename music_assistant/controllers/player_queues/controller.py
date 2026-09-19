@@ -300,14 +300,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     @api_command("player_queues/shuffle", required_scope=Scope.QUEUES_CONTROL)
     async def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
-        """Configure shuffle setting on the the queue."""
+        """Configure shuffle setting on the queue."""
         queue = self._queue_data[queue_id].queue
+        if queue.shuffle_enabled == shuffle_enabled:
+            return  # no change; asking for the state it is already in is never a failure
         if queue.is_dynamic:
             # a dynamic queue is an always-on, recency-orchestrated smart mix; manual shuffle
             # (and plain linear order) have no meaning here so the toggle is locked
             raise InvalidCommand("Cannot change shuffle while the queue is in dynamic mode")
-        if queue.shuffle_enabled == shuffle_enabled:
-            return  # no change
         await self._apply_local_shuffle(queue_id, shuffle_enabled)
 
     def is_smart_shuffle_active(self, queue: PlayerQueue) -> bool:
@@ -345,14 +345,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     @api_command("player_queues/repeat", required_scope=Scope.QUEUES_CONTROL)
     async def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
-        """Configure repeat setting on the the queue."""
+        """Configure repeat setting on the queue."""
         queue_data = self._queue_data[queue_id]
         queue = queue_data.queue
+        if queue.repeat_mode == repeat_mode:
+            return  # no change; asking for the state it is already in is never a failure
         if queue.is_dynamic:
             # a dynamic queue is an always-on flowing mix of its sources; repeat has no meaning here
             raise InvalidCommand("Cannot change repeat while the queue is in dynamic mode")
-        if queue.repeat_mode == repeat_mode:
-            return  # no change
         autoplay_was_enabled = queue.autoplay_enabled
         queue.repeat_mode = repeat_mode
         self._resolve_default_toggles(queue_data)
