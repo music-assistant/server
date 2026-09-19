@@ -51,6 +51,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.LIBRARY_AUDIOBOOKS,
     ProviderFeature.LIBRARY_PODCASTS,
+    ProviderFeature.LIBRARY_ARTISTS,  # authors/ narrators
 }
 
 
@@ -89,6 +90,11 @@ class Audibleprovider(MusicProvider):
     def supported_artist_types(self) -> set[ArtistType]:
         """Supported artist types."""
         return {ArtistType.AUTHOR, ArtistType.NARRATOR}
+
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
+        """Get all authors and narrators from the library."""
+        async for artist in self.helper.get_library_artists():
+            yield artist
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist (author or narrator) details by id."""

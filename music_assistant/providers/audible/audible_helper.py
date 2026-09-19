@@ -219,6 +219,13 @@ class AudibleHelper:
         self.logger = logger or logging.getLogger("audible_helper")
         self._acr_cache: dict[tuple[str, MediaType], str] = {}
 
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
+        """Yield every author and narrator of the library."""
+        for asin, name in (await self.get_authors()).items():
+            yield self._parse_artist(asin, name, ArtistType.AUTHOR)
+        for asin, name in (await self.get_narrators()).items():
+            yield self._parse_artist(asin, name, ArtistType.NARRATOR)
+
     async def get_artist(self, asin: str) -> Artist:
         """
         Get an author or narrator by asin.
