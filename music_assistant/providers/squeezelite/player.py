@@ -325,6 +325,7 @@ class SqueezelitePlayer(Player):
                         send_flush=True,
                         auto_play=False,
                         is_group_playback=True,
+                        mime_type=get_mime_type(member_codec),
                     )
                 )
 
@@ -465,8 +466,15 @@ class SqueezelitePlayer(Player):
         send_flush: bool = True,
         auto_play: bool = False,
         is_group_playback: bool = False,
+        mime_type: str | None = None,
     ) -> None:
         """Handle playback of an url on slimproto player(s)."""
+        if mime_type is None:
+            # derive from the url extension (only reliable for plain file urls; sync
+            # group member urls have no extension, so callers pass the codec mime)
+            mime_type = get_mime_type(
+                url.rsplit(".", maxsplit=1)[-1].split("?", maxsplit=1)[0]
+            )
         metadata = {
             "item_id": media.uri,
             "title": media.title,
@@ -486,7 +494,7 @@ class SqueezelitePlayer(Player):
         stream_threshold, output_threshold = (64, 1) if low_latency_stream else (200, 20)
         await slimplayer.play_url(
             url=url,
-            mime_type=get_mime_type(url.rsplit(".", maxsplit=1)[-1].split("?", maxsplit=1)[0]),
+            mime_type=mime_type,
             metadata=metadata,
             enqueue=enqueue,
             send_flush=send_flush,
@@ -512,9 +520,7 @@ class SqueezelitePlayer(Player):
                 0.2,
                 slimplayer.play_url(
                     url=url,
-                    mime_type=get_mime_type(
-                        url.rsplit(".", maxsplit=1)[-1].split("?", maxsplit=1)[0]
-                    ),
+                    mime_type=mime_type,
                     metadata=metadata,
                     enqueue=True,
                     send_flush=False,
