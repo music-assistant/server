@@ -83,7 +83,6 @@ if TYPE_CHECKING:
 
 CONF_BASE_URL = "baseURL"
 CONF_API_KEY = "api_key"
-CONF_ENABLE_PODCASTS = "enable_podcasts"
 CONF_ENABLE_RADIO_STATIONS = "enable_radio_stations"
 CONF_ENABLE_LEGACY_AUTH = "enable_legacy_auth"
 CONF_RECO_FAVES = "recommend_favorites"
@@ -118,12 +117,6 @@ class OpenSonicProvider(MusicProvider):
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
         return (
-            ConfigEntry(
-                key=CONF_ENABLE_PODCASTS,
-                type=ConfigEntryType.BOOLEAN,
-                required=True,
-                default_value=True,
-            ),
             ConfigEntry(
                 key=CONF_ENABLE_RADIO_STATIONS,
                 type=ConfigEntryType.BOOLEAN,
@@ -242,7 +235,7 @@ class OpenSonicProvider(MusicProvider):
         except OSError:
             self.logger.info("Failed to query server for OpenSubsonic extensions")
 
-        self._enable_podcasts = bool(self.config.get_value(CONF_ENABLE_PODCASTS))
+        self._enable_podcasts = bool(self.config.get_value("library_sync_podcasts"))
         self._enable_radio_stations = bool(self.config.get_value(CONF_ENABLE_RADIO_STATIONS))
         self._show_faves = bool(self.config.get_value(CONF_RECO_FAVES))
         self._show_new = bool(self.config.get_value(CONF_NEW_ALBUMS))

@@ -24,10 +24,6 @@
       "label": "Server Path",
       "description": "Path to append to the base URL for the Subsonic server, this is likely empty unless you are path routing on a proxy"
     },
-    "enable_podcasts": {
-      "label": "Enable Podcasts",
-      "description": "Should the provider query for podcasts as well as music?"
-    },
     "enable_radio_stations": {
       "label": "Enable Radio Stations",
       "description": "Should the provider query for radio stations?"
