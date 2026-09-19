@@ -222,6 +222,9 @@ class LocalFileSystemProvider(MusicProvider):
     _SYNC_CONCURRENCY: ClassVar[int] = 16
     _sync_tracks: bool = True
     _sync_playlists: bool = True
+    # set for the single sync that has to reparse an audiobook library that was
+    # indexed before authors/narrators became artists
+    _force_full_reparse: bool = False
 
     def __init__(
         self,
@@ -254,9 +257,6 @@ class LocalFileSystemProvider(MusicProvider):
         # folders already warned about a missing ALBUMARTIST tag, reset at the start of
         # each sync so every sync reports the current state of the library once per album
         self._missing_album_artist_warned: set[str] = set()
-        # set for the single sync that has to reparse an audiobook library that was
-        # indexed before authors/narrators became artists
-        self._force_full_reparse: bool = False
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
