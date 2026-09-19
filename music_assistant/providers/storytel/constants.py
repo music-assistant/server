@@ -40,8 +40,6 @@ API_DEFAULT_RESOURCE_VERSION = (
 
 
 # Provider configuration keys
-CONF_USERNAME = "username"
-CONF_PASSWORD = "password"
 CONF_LANGUAGES = "languages"
 CONF_KIDS_MODE = "kids_mode"
 
