@@ -88,6 +88,28 @@ def test_parse_album(provider_mock: Mock) -> None:
     assert [a.name for a in album.artists] == ["Lukas Graham"]
     assert album.metadata.images
     assert "750x750" in album.metadata.images[0].path
+    assert next(iter(album.provider_mappings)).audio_format.bit_depth == 16  # LOSSLESS only
+
+
+def test_parse_album_hires_bit_depth(provider_mock: Mock) -> None:
+    """Test a hi-res album carries 24 bit on its provider mapping, like tracks do."""
+    doc = JsonApiDocument(
+        {
+            "data": {
+                "id": "1",
+                "type": "albums",
+                "attributes": {
+                    "title": "Hi-Res Album",
+                    "albumType": "ALBUM",
+                    "explicit": False,
+                    "mediaTags": ["HIRES_LOSSLESS", "LOSSLESS"],
+                },
+                "relationships": {},
+            }
+        }
+    )
+    album = parse_album(provider_mock, doc, doc.data)
+    assert next(iter(album.provider_mappings)).audio_format.bit_depth == 24
 
 
 def test_parse_artist(provider_mock: Mock) -> None:

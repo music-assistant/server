@@ -44,3 +44,8 @@ CACHE_CATEGORY_ISRC_MAP: Final[int] = 2
 
 # Virtual playlist IDs
 FAVORITE_TRACKS_PLAYLIST_ID: Final[str] = "favorite_tracks"
+
+# Tidal mediaTags value marking a hi-res (24 bit) release, and the bit depths it implies
+MEDIA_TAG_HIRES_LOSSLESS: Final[str] = "HIRES_LOSSLESS"
+BIT_DEPTH_HIRES: Final[int] = 24
+BIT_DEPTH_LOSSLESS: Final[int] = 16
