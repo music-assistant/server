@@ -309,7 +309,8 @@ async def test_setup_is_refused_once_a_user_exists(webserver: WebserverControlle
 
     response = await _post_setup(webserver, {**ACCOUNT, "username": "intruder"})
 
-    assert response.status == 400
+    # a conflict, which the frontend reads as "sign in instead"
+    assert response.status == 409
     assert json.loads(response.text or "")["error"] == "Setup already completed"
     assert await webserver.auth.get_user_by_username("intruder") is None
 
@@ -326,7 +327,7 @@ async def test_setup_stays_refused_across_a_restart(mass_minimal: MusicAssistant
     try:
         assert restarted.auth.has_users
         response = await _post_setup(restarted, {**ACCOUNT, "username": "intruder"})
-        assert response.status == 400
+        assert response.status == 409
         with patch.object(restarted._server, "serve_static", _served_app()) as serve_static:
             page = await restarted._handle_setup_page(_request(mass_minimal, "GET", "/setup"))
         assert page.status == 403

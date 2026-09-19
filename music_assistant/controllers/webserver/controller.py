@@ -1289,8 +1289,10 @@ class WebserverController(CoreController):
     async def _handle_setup(self, request: web.Request) -> web.Response:
         """Handle first-time setup request to create admin user (non-ingress only)."""
         if self.auth.has_users:
+            # a conflict tells the frontend the admin exists, so it offers the sign-in
+            # instead of another attempt
             return web.json_response(
-                {"success": False, "error": "Setup already completed"}, status=400
+                {"success": False, "error": "Setup already completed"}, status=409
             )
 
         if not request.can_read_body:
