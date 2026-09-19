@@ -1087,3 +1087,25 @@ def test_audiobook_narrator_tag_may_name_two_people() -> None:
 def test_audiobook_without_a_narrator_tag_has_none() -> None:
     """A book naming nobody never falls back to its author."""
     assert _audiobook_tags(artist="Jane Austen").narrators == ()
+
+
+def test_audiobook_series_sequence_is_a_number() -> None:
+    """A book's position in its series is numeric."""
+    _tags = _audiobook_tags(series="The Expanse", seriespart="3")
+    assert (_tags.series, _tags.series_part) == ("The Expanse", 3.0)
+
+
+def test_audiobook_series_sequence_may_be_fractional() -> None:
+    """A novella between two books is tagged 1.5."""
+    assert _audiobook_tags(series="The Expanse", seriespart="1.5").series_part == 1.5
+
+
+def test_audiobook_series_sequence_keeps_a_non_numeric_value() -> None:
+    """Not every tagger numbers the parts."""
+    assert _audiobook_tags(series="Discworld", seriespart="Guards").series_part == "Guards"
+
+
+def test_audiobook_without_a_series_tag_has_none() -> None:
+    """No series tag must not end up clearing what is stored."""
+    _tags = _audiobook_tags(album="No Series")
+    assert (_tags.series, _tags.series_part) == (None, None)
