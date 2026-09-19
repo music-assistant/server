@@ -388,6 +388,19 @@ class AudioTags:
         return ()
 
     @property
+    def authors(self) -> tuple[str, ...]:
+        """Return author(s) of an audiobook."""
+        return self.writers or self.album_artists or self.artists
+
+    @property
+    def narrators(self) -> tuple[str, ...]:
+        """Return narrator(s) of an audiobook."""
+        for key in ("narrators", "narrator", "narratedby", "composer"):
+            if tag := self.tags.get(key):
+                return split_items(tag)
+        return ()
+
+    @property
     def album_artists(self) -> tuple[str, ...]:
         """Return (all) album artists (if any)."""
         # Preferred path when unambiguously separated album artist names are available
@@ -991,8 +1004,13 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
         if not atom.startswith("----:com.apple.iTunes:"):
             continue
         name = atom.removeprefix("----:com.apple.iTunes:").lower()
+        # taggers pick their own casing and spacing, normalize as AudioTags.parse does
+        for char in (" ", "_", "-", "/"):
+            name = name.replace(char, "")
         if name in ("originaldate", "originalyear"):
             result[name] = _decode_mp4_freeform_single(values)
+        elif name in ("narrator", "narrators", "narratedby"):
+            result[name] = _decode_mp4_freeform_list(values)
 
     return result
 
