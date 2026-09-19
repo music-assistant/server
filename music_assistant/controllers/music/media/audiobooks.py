@@ -678,7 +678,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             favorite=bool(db_row["favorite"]),
             date_added=datetime.fromtimestamp(db_row["timestamp_added"], tz=UTC),
             provider_mappings=self._parse_sync_details_mappings(db_row),
-            # prefer the linked artist records, the same way the full item hydrates them
+            # prefer the linked artist records
             authors=author_artists or self._sync_details_names(db_row["stored_authors"]),
             narrators=narrator_artists or self._sync_details_names(db_row["stored_narrators"]),
             author_is_str=not author_artists and db_row["first_author_type"] == "text",
