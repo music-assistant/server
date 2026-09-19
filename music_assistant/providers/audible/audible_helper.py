@@ -36,6 +36,7 @@ from music_assistant_models.media_items import (
     AudioFormat,
     ItemMapping,
     MediaItemChapter,
+    MediaItemCollection,
     MediaItemImage,
     Podcast,
     PodcastEpisode,
@@ -62,6 +63,8 @@ AUDIOBOOK_CONTENT_TYPES = ("SinglePartBook", "MultiPartBook")
 PODCAST_CONTENT_TYPES = ("PodcastParent", "Periodical")
 # legacy series report their episodes as show issues rather than podcast episodes
 SHOW_CONTENT_TYPE = "Show"
+# Bump to re-fetch cached audiobook payloads whenever the requested response groups change
+AUDIOBOOK_CACHE_CHECKSUM = "series_v1"
 
 _AUTH_CACHE: dict[str, audible.Authenticator] = {}
 
@@ -277,6 +280,7 @@ class AudibleHelper:
                 key=asin,
                 provider=self.provider_instance,
                 category=CACHE_CATEGORY_AUDIOBOOK,
+                checksum=AUDIOBOOK_CACHE_CHECKSUM,
                 default=None,
             )
 
@@ -297,6 +301,7 @@ class AudibleHelper:
             "product_desc",
             "product_details",
             "product_extended_attrs",
+            "series",
         ]
 
         async for item in self._fetch_library_items(
@@ -317,6 +322,7 @@ class AudibleHelper:
                 key=asin,
                 provider=self.provider_instance,
                 category=CACHE_CATEGORY_AUDIOBOOK,
+                checksum=AUDIOBOOK_CACHE_CHECKSUM,
                 default=None,
             )
             if cached_book is not None:
@@ -328,7 +334,7 @@ class AudibleHelper:
             f"library/{asin}",
             response_groups="""
                 contributors, media, price, product_attrs, product_desc, product_details,
-                product_extended_attrs,is_finished
+                product_extended_attrs, series, is_finished
                 """,
         )
 
@@ -343,6 +349,7 @@ class AudibleHelper:
             key=asin,
             provider=self.provider_instance,
             category=CACHE_CATEGORY_AUDIOBOOK,
+            checksum=AUDIOBOOK_CACHE_CHECKSUM,
             data=item_data,
         )
         book = self._parse_audiobook(item_data)
@@ -676,6 +683,25 @@ class AudibleHelper:
                     result.append(contributor.get("name", default_name))
         return result
 
+    def _parse_collections(
+        self, series_list: list[dict[str, Any]] | None
+    ) -> list[MediaItemCollection]:
+        """
+        Parse the series an audiobook belongs to from the API response.
+
+        :param series_list: The "series" entries of the audiobook, if requested.
+        """
+        collections: list[MediaItemCollection] = []
+        for series in series_list or []:
+            if not isinstance(series, dict) or not (title := series.get("title")):
+                continue
+            sequence: float | str | None = series.get("sequence")
+            # a novella between two books is sequence 1.5, so it is not an int
+            with suppress(ValueError, TypeError):
+                sequence = float(sequence)  # type: ignore[arg-type]
+            collections.append(MediaItemCollection(title=title, sequence=sequence))
+        return collections
+
     def _create_images(self, image_path: str | None) -> list[MediaItemImage]:
         """Create image objects if image path exists."""
         images: list[MediaItemImage] = []
@@ -777,6 +803,11 @@ class AudibleHelper:
         reviews = audiobook_data.get("editorial_reviews", [])
         if reviews and reviews[0]:
             book.metadata.review = _html_to_txt(str(reviews[0]))
+
+        # Set series
+        if collections := self._parse_collections(audiobook_data.get("series")):
+            # left as None without a series: an empty list would clear what is stored
+            book.metadata.collections = UniqueList(collections)
 
         # Set genres
         book.metadata.genres = {
