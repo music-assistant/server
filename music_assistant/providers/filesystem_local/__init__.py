@@ -2974,7 +2974,6 @@ class LocalFileSystemProvider(MusicProvider):
             [self._parse_audiobook_artist(name, ArtistType.NARRATOR) for name in narrator_names]
         )
         if series := tags.series:
-            # left as None without a series tag: an empty list would clear what is stored
             audio_book.metadata.collections = UniqueList(
                 [MediaItemCollection(title=series, sequence=tags.series_part)]
             )
