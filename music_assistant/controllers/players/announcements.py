@@ -75,7 +75,7 @@ class AnnouncementsMixin:
 
     Handles:
     - Resolving the pre-announce chime and announcement volume from configuration
-    - Forwarding a group announcement to its individual members
+    - Forwarding a group announcement to its individual members, when they can start it together
     - Native announcement support (on the player itself or a linked protocol)
     - The fallback implementation for players without native support
 
@@ -242,27 +242,28 @@ class AnnouncementsMixin:
         try:
             # mark announcement_in_progress on player
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
-            # if player type is group with all members supporting announcements,
-            # we forward the request to each individual player
-            if player.state.type == PlayerType.GROUP and (
-                all(
-                    PlayerFeature.PLAY_ANNOUNCEMENT in x.state.supported_features
-                    for x in self.iter_group_members(player)
-                )
-            ):
-                # forward the request to each individual player
-                async with TaskManager(self.mass) as tg:
-                    for group_member in player.state.group_members:
-                        tg.create_task(
-                            self.play_announcement(
-                                group_member,
-                                url=url,
-                                pre_announce=pre_announce,
-                                volume_level=volume_level,
-                                pre_announce_url=pre_announce_url,
+            if player.state.type == PlayerType.GROUP:
+                # the output that announces for a member is resolved once the audio is
+                # there, so the decision below is taken on the state the members act on
+                await render.wait_ready()
+                # a group announcement is only handed to the individual members when the output
+                # that would announce for each member can line up its start with the others.
+                # Members that cannot would be heard out of step, so such a group plays the clip
+                # through its own (synchronized) stream instead.
+                if self._members_announce_in_step(player):
+                    # forward the request to each individual player
+                    async with TaskManager(self.mass) as tg:
+                        for group_member in player.state.group_members:
+                            tg.create_task(
+                                self.play_announcement(
+                                    group_member,
+                                    url=url,
+                                    pre_announce=pre_announce,
+                                    volume_level=volume_level,
+                                    pre_announce_url=pre_announce_url,
+                                )
                             )
-                        )
-                return
+                    return
             self.logger.info(
                 "Playback announcement to player %s (with pre-announce: %s): %s",
                 player.state.name,
@@ -922,3 +923,21 @@ class AnnouncementsMixin:
         if mute_control == PLAYER_CONTROL_NONE:
             return
         await self._handle_cmd_volume_mute(player, mute_control, muted)
+
+    def _members_announce_in_step(self, group_player: Player) -> bool:
+        """
+        Return True if every member of a group announces natively and in step with the others.
+
+        A player only lines up its start with the members announcing through the same
+        provider, so the outputs announcing for the members must all belong to one
+        provider instance.
+
+        :param group_player: The group player the announcement is played on.
+        """
+        provider_ids: set[str] = set()
+        for member in self.iter_group_members(group_player):
+            announce_player = self._resolve_announce_player(member)
+            if announce_player is None or not announce_player.coordinates_announcement_start:
+                return False
+            provider_ids.add(announce_player.provider.instance_id)
+        return len(provider_ids) <= 1
