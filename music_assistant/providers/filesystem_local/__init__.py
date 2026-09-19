@@ -2965,9 +2965,6 @@ class LocalFileSystemProvider(MusicProvider):
             )
 
         # parse other info
-        # authors and narrators become Artist items, see supported_artist_types. a book
-        # read by its author is a fact about that book, so a missing narrator tag stays
-        # empty rather than falling back to the author
         author_names = tags.authors
         narrator_names = tags.narrators
         audio_book.authors.set(
