@@ -8,7 +8,7 @@
   "credits": [
     "[aioslimproto](https://github.com/music-assistant/aioslimproto)"
   ],
-  "requirements": ["aioslimproto==3.2.2"],
+  "requirements": ["aioslimproto @ git+https://github.com/Carunga/aioslimproto@d5bbf9601fcd965d438049941f48670e338a4de0"],
   "documentation": "https://music-assistant.io/player-support/squeezelite/",
   "multi_instance": false,
   "builtin": false
