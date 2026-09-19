@@ -255,7 +255,7 @@ class LocalFileSystemProvider(MusicProvider):
         # each sync so every sync reports the current state of the library once per album
         self._missing_album_artist_warned: set[str] = set()
         # set for the single sync that has to reparse an audiobook library that was
-        # indexed before authors/narrators became artists; see _needs_full_reparse
+        # indexed before authors/narrators became artists
         self._force_full_reparse: bool = False
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -281,7 +281,12 @@ class LocalFileSystemProvider(MusicProvider):
         """Return the features supported by this Provider."""
         base_features = {*SUPPORTED_FEATURES}
         if self.media_content_type == "audiobooks":
-            return {ProviderFeature.LIBRARY_AUDIOBOOKS, *base_features}
+            # authors and narrators are artists, see supported_artist_types
+            return {
+                ProviderFeature.LIBRARY_AUDIOBOOKS,
+                ProviderFeature.LIBRARY_ARTISTS,
+                *base_features,
+            }
         if self.media_content_type == "podcasts":
             return {ProviderFeature.LIBRARY_PODCASTS, *base_features}
         if self.media_content_type == "sound_effects":
