@@ -31,6 +31,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.music.media.artists import ArtistsController
 from music_assistant.mass import MusicAssistant
 from tests.common import set_music_source_access
 
@@ -113,6 +114,54 @@ def test_apply_user_provider_filter_no_filter_returns_all(
     result = controller._apply_user_provider_filter([music_a, music_b])
 
     assert [p.instance_id for p in result] == ["m_a", "m_b"]
+
+
+@patch(GET_CURRENT_USER)
+def test_ensure_provider_filter_passes_a_metadata_source(mock_get_user: Mock) -> None:
+    """A metadata source feeding an aggregated row is honored, never a permission error."""
+    mock_get_user.return_value = _user(USER_A)
+    metadata = _make_prov("meta_a", ProviderType.METADATA)
+
+    controller = ArtistsController.__new__(ArtistsController)
+    controller.mass = Mock()
+    controller.mass.providers = [metadata]
+    # USER_A may see m_a but not m_b
+    set_music_source_access(controller.mass, {"m_a": None, "m_b": _private(USER_B)})
+
+    assert controller._ensure_provider_filter("meta_a") == ["meta_a"]
+
+
+@patch(GET_CURRENT_USER)
+def test_ensure_provider_filter_denies_a_hidden_music_source(mock_get_user: Mock) -> None:
+    """A music source the user may not see still raises."""
+    mock_get_user.return_value = _user(USER_A)
+
+    controller = ArtistsController.__new__(ArtistsController)
+    controller.mass = Mock()
+    controller.mass.providers = []
+    set_music_source_access(controller.mass, {"m_a": None, "m_b": _private(USER_B)})
+
+    with pytest.raises(InsufficientPermissions):
+        controller._ensure_provider_filter("m_b")
+
+
+@patch(GET_CURRENT_USER)
+def test_ensure_provider_filter_keeps_non_music_sources_when_unfiltered(
+    mock_get_user: Mock,
+) -> None:
+    """With no explicit filter, a filtered user keeps its music sources and every non-music one."""
+    mock_get_user.return_value = _user(USER_A)
+    metadata = _make_prov("meta_a", ProviderType.METADATA)
+    plugin = _make_prov("plug_a", ProviderType.PLUGIN)
+
+    controller = ArtistsController.__new__(ArtistsController)
+    controller.mass = Mock()
+    controller.mass.providers = [metadata, plugin]
+    set_music_source_access(controller.mass, {"m_a": None, "m_b": _private(USER_B)})
+
+    result = controller._ensure_provider_filter(None)
+    assert result is not None
+    assert set(result) == {"m_a", "meta_a", "plug_a"}
 
 
 @patch("music_assistant.controllers.music.controller.get_current_user")
