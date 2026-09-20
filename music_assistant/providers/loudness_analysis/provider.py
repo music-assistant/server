@@ -56,6 +56,17 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
     """Audio analysis provider that measures EBU R128 integrated loudness."""
 
     analysis_version: int = 2
+    # Without this, start_analysis() (base class) never declines long tracks up
+    # front, so the only cap was the inline chunks_received check in
+    # process_pcm_chunk() below -- which stops this provider's own ffmpeg process
+    # but never evicts it from the shared streaming session. The controller then
+    # keeps decoding the source (audiobook chapters, hour-long mixes, ...) all the
+    # way to its real EOF for a provider that stopped listening after 10 minutes,
+    # holding a background-scan concurrency slot hostage for the full track length.
+    # Setting this lets the base class reject the session before it ever starts,
+    # matching how SonicAnalysisProvider/SmartFadesProvider already opt in via
+    # ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS.
+    max_analysis_duration: float = MAX_DURATION_SECONDS
 
     def __init__(
         self,
