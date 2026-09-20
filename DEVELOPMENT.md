@@ -189,4 +189,4 @@ The manifest file contains metadata and configuration about a provider. The supp
 
 A provider's config entries are not declared in the manifest. They are built in code by overriding `get_config_entries` on the provider, and their values are read via `self.config.get_value(key)`. One-time setup input is collected by the provider's setup flow (`setup_flow.py`).
 
-Two more `ProviderManifest` fields are filled in automatically at load time and must not be set in the manifest: `icon_images` (the icon variants found in the provider folder: `icon.*`, `icon_dark.*`, `icon_monochrome.*`) and `has_setup_flow` (set when the provider folder contains a `setup_flow.py`).
+Two more `ProviderManifest` fields are filled in automatically at load time and must not be set in the manifest: `icon_images` (the icon variants found in the provider folder — `icon.svg`/`icon.png`, `icon_dark.svg`/`icon_dark.png` and `icon_monochrome.svg`/`icon_monochrome.png`, with SVG preferred over PNG) and `has_setup_flow` (set when the provider folder contains a `setup_flow.py`).
