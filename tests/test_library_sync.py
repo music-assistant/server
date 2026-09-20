@@ -994,8 +994,8 @@ def test_ensure_provider_filter_allows_explicit_non_music_provider() -> None:
     assert result == ["smart_playlist_1"]
 
 
-def test_ensure_provider_filter_does_not_auto_allow_other_non_music_providers() -> None:
-    """Test that only plugin providers are auto-allowed when user filter is active."""
+def test_ensure_provider_filter_auto_allows_non_music_providers() -> None:
+    """Non-music providers (metadata, plugin) are household-wide and always kept."""
     ctrl = Mock(spec=MediaControllerBase)
     ctrl.mass = Mock()
     ctrl.mass.providers = [
@@ -1014,7 +1014,26 @@ def test_ensure_provider_filter_does_not_auto_allow_other_non_music_providers() 
     assert result is not None
     assert "spotify_1" in result
     assert "smart_playlist_1" in result
-    assert "meta_1" not in result
+    assert "meta_1" in result
+
+
+def test_ensure_provider_filter_allows_explicit_metadata_provider() -> None:
+    """Explicitly requesting a metadata provider is allowed for filtered users."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    ctrl.mass.providers = [
+        Mock(instance_id="spotify_1", type=ProviderType.MUSIC),
+        Mock(instance_id="meta_1", type=ProviderType.METADATA),
+    ]
+    ctrl._ensure_provider_filter = MediaControllerBase._ensure_provider_filter.__get__(ctrl)
+
+    with patch(
+        "music_assistant.controllers.music.media.base.get_current_user",
+        return_value=Mock(provider_filter=["spotify_1"]),
+    ):
+        result = ctrl._ensure_provider_filter("meta_1")
+
+    assert result == ["meta_1"]
 
 
 def test_select_provider_id_prefers_allowed_music_over_plugin() -> None:

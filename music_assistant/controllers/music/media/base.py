@@ -2061,8 +2061,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         user_provider_filter = user.provider_filter if user and user.provider_filter else None
         final_provider_filter: list[str] | None = None
         if user_provider_filter:
-            plugin_provider_instances = {
-                prov.instance_id for prov in self.mass.providers if prov.type == ProviderType.PLUGIN
+            # access control applies to music sources only; non-music providers (metadata,
+            # plugin) are household-wide, so they are always kept alongside the user's sources
+            non_music_provider_instances = {
+                prov.instance_id for prov in self.mass.providers if prov.type != ProviderType.MUSIC
             }
             # User has a provider filter set
             if provider:
@@ -2072,7 +2074,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 final_provider_filter = [
                     p
                     for p in requested_providers
-                    if p in user_provider_filter or p in plugin_provider_instances
+                    if p in user_provider_filter or p in non_music_provider_instances
                 ]
                 if not final_provider_filter:
                     # No overlap - user requested providers they don't have access to
@@ -2080,9 +2082,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         "User does not have permission to access the requested provider(s)."
                     )
             else:
-                # No explicit filter - apply user music provider filter but keep plugin providers.
+                # No explicit filter - apply user music provider filter but keep non-music providers.
                 final_provider_filter = list(
-                    dict.fromkeys([*user_provider_filter, *plugin_provider_instances])
+                    dict.fromkeys([*user_provider_filter, *non_music_provider_instances])
                 )
         elif provider is not None:
             # No user filter - use the provided filter as is
