@@ -335,9 +335,11 @@ class SonosPlayerProvider(PlayerProvider):
         # log the answer, not just the request: for "stopped playing early" reports the served
         # begin/end flags and item count are the decisive facts, and a wrongly set end flag is
         # what makes a speaker drop items it cached past our window
-        self.logger.debug(
+        message = (
             "Cloud queue itemWindow for %s: reason=%s itemId=%s previous=%s upcoming=%s "
-            "queueVersion=%s -> %s begin=%s end=%s items=%s%s",
+            "queueVersion=%s -> %s begin=%s end=%s items=%s"
+        )
+        args: list[object] = [
             player.player_id,
             request.query.get("reason"),
             wire_center,
@@ -348,8 +350,11 @@ class SonosPlayerProvider(PlayerProvider):
             window.includes_beginning,
             window.includes_end,
             len(window.items),
-            f" (queue not describable: {unavailable})" if unavailable else "",
-        )
+        ]
+        if unavailable is not None:
+            message += " (queue not describable: %s)"
+            args.append(unavailable)
+        self.logger.debug(message, *args)
         result = {
             "includesBeginningOfQueue": window.includes_beginning,
             "includesEndOfQueue": window.includes_end,
