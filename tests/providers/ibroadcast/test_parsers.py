@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from music_assistant_models.enums import MediaType
@@ -131,6 +132,10 @@ class FakeIBroadcastClient:
 def provider() -> IBroadcastProvider:
     """Create an iBroadcast provider backed by a number keyed fake api client."""
     mass = Mock()
+    # the cached lookups always miss, so each test exercises the real code path
+    mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
+    mass.cache.set = AsyncMock()
+    mass.create_task = lambda coro, *_args, **_kwargs: asyncio.ensure_future(coro)
     manifest = Mock()
     manifest.domain = "ibroadcast"
     config = Mock()
@@ -375,21 +380,41 @@ async def test_generated_playlists_are_not_listed(
     assert playlists == []
 
 
-async def test_unreadable_track_is_reported_as_skipped_with_a_text_id(
+@pytest.mark.parametrize(
+    ("listing", "store", "media_type", "good", "broken", "drop"),
+    [
+        ("get_library_artists", "artists", MediaType.ARTIST, ARTIST, 43, "name"),
+        ("get_library_albums", "albums", MediaType.ALBUM, ALBUM, 102, "name"),
+        ("get_library_tracks", "tracks", MediaType.TRACK, TRACK, 1002, "title"),
+    ],
+)
+async def test_unreadable_item_is_reported_as_skipped_with_a_text_id(
     provider: IBroadcastProvider,
+    listing: str,
+    store: str,
+    media_type: MediaType,
+    good: dict[str, Any],
+    broken: int,
+    drop: str,
 ) -> None:
-    """The sync protects skipped id's from the deletion pass, which matches them as text."""
-    broken = {**TRACK, "track_id": 1002}
-    del broken["title"]
-    provider._client.tracks = {1001: TRACK, 1002: broken}
+    """
+    The sync protects skipped id's from the deletion pass, which matches them as text.
+
+    An id reported as a number matches nothing there, so the item's mapping reads as
+    stale and the sync removes it.
+    """
+    id_key = f"{media_type.value}_id"
+    unreadable = {**good, id_key: broken}
+    del unreadable[drop]
+    setattr(provider._client, store, {good[id_key]: good, broken: unreadable})
     provider.report_skipped_sync_item = Mock()  # type: ignore[method-assign]
 
-    tracks = [item async for item in provider.get_library_tracks()]
+    items = [item async for item in getattr(provider, listing)()]
 
-    assert [track.item_id for track in tracks] == ["1001"]
-    media_type, item_id, _error = provider.report_skipped_sync_item.call_args.args
-    assert media_type is MediaType.TRACK
-    assert item_id == "1002"
+    assert [item.item_id for item in items] == [str(good[id_key])]
+    reported_type, item_id, _error = provider.report_skipped_sync_item.call_args.args
+    assert reported_type is media_type
+    assert item_id == str(broken)
 
 
 async def test_various_artists_is_listed_when_an_album_uses_it(
@@ -433,3 +458,45 @@ async def test_listed_various_artists_matches_the_album_mapping(
 
     listed = {mapping.item_id for artist in artists for mapping in artist.provider_mappings}
     assert {artist.item_id for album in albums for artist in album.artists} <= listed
+
+
+async def test_playlist_tracks_are_numbered_in_order(provider: IBroadcastProvider) -> None:
+    """A playlist track carries its position, which is what orders the queue."""
+    provider._client.tracks = {1001: TRACK, 1002: {**TRACK, "track_id": 1002}}
+    provider._client.playlists = {5001: {**PLAYLIST, "tracks": [1002, 1001]}}
+
+    tracks = await provider.get_playlist_tracks("5001")
+
+    assert [(track.item_id, track.position) for track in tracks] == [("1002", 1), ("1001", 2)]
+
+
+async def test_album_tracks_carry_no_playlist_position(provider: IBroadcastProvider) -> None:
+    """Position belongs to a playlist entry, not to a track on an album."""
+    tracks = await provider.get_album_tracks("101")
+
+    assert [track.item_id for track in tracks] == ["1001"]
+    assert tracks[0].position is None
+
+
+async def test_playlist_tracks_are_not_paged(provider: IBroadcastProvider) -> None:
+    """Every track comes back on the first page, so any later page is empty."""
+    provider._client.playlists = {5001: {**PLAYLIST, "tracks": [1001]}}
+
+    assert [track.item_id for track in await provider.get_playlist_tracks("5001")] == ["1001"]
+    assert await provider.get_playlist_tracks("5001", page=1) == []
+
+
+async def test_playlist_without_tracks_is_empty(provider: IBroadcastProvider) -> None:
+    """A playlist that has never had a track added carries no track list at all."""
+    assert await provider.get_playlist_tracks("5001") == []
+
+
+async def test_playlist_track_the_account_deleted_is_skipped(
+    provider: IBroadcastProvider,
+) -> None:
+    """The client answers an unknown id with an empty object rather than nothing."""
+    provider._client.playlists = {5001: {**PLAYLIST, "tracks": [1001, 9999]}}
+
+    tracks = await provider.get_playlist_tracks("5001")
+
+    assert [track.item_id for track in tracks] == ["1001"]

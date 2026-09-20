@@ -254,7 +254,7 @@ class IBroadcastProvider(MusicProvider):
         tracks = []
         for index, track_id in enumerate(track_ids, 1):
             track_obj = await self._client.get_track(track_id)
-            if track_obj is not None:
+            if track_obj:
                 track = await self._parse_track(track_obj)
                 if is_playlist:
                     track.position = index
