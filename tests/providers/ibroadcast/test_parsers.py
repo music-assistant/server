@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
+from music_assistant_models.enums import MediaType
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.providers.ibroadcast import SUPPORTED_FEATURES, IBroadcastProvider
@@ -55,6 +56,8 @@ class FakeIBroadcastClient:
         self.artwork_ids: list[Any] = []
         #: kinds whose artwork lookup raises, as the real client does when it finds none
         self.missing_artwork: set[str] = set()
+        #: url the stream lookup hands back, before the provider rewrites its bitrate
+        self.stream_url = "https://stream.ibroadcast.com/128/file.mp3?Expires=1&Signature=abc"
 
     def _artwork(self, item_id: int, kind: str) -> str:
         self.artwork_ids.append(item_id)
@@ -101,6 +104,11 @@ class FakeIBroadcastClient:
     async def get_playlist(self, playlist_id: Any) -> dict[str, Any]:
         """Look up one playlist by its numeric id."""
         return self.playlists.get(self._key(playlist_id), {})
+
+    async def get_full_stream_url(self, track_id: Any, platform: str) -> str:
+        """Return the stream url for a track by its numeric id."""
+        self._key(track_id)
+        return self.stream_url
 
     async def get_artist_artwork_url(self, artist_id: Any) -> str:
         """Record the id it was handed and return an artist artwork url."""
@@ -296,3 +304,89 @@ async def test_one_unreadable_track_does_not_end_the_listing(provider: IBroadcas
     tracks = [item async for item in provider.get_library_tracks()]
 
     assert [track.item_id for track in tracks] == ["1001", "1002"]
+
+
+async def test_stream_url_asks_for_the_original_upload(provider: IBroadcastProvider) -> None:
+    """The bitrate segment defaults to 128kbps, so it is swapped for the original format."""
+    provider._client.stream_url = (
+        "https://stream.ibroadcast.com/128/file.mp3?Expires=1&Signature=abc"
+    )
+
+    details = await provider.get_stream_details("1001", MediaType.TRACK)
+
+    assert details.path == "https://stream.ibroadcast.com/orig/file.mp3?Expires=1&Signature=abc"
+
+
+async def test_stream_url_without_a_bitrate_segment_is_left_alone(
+    provider: IBroadcastProvider,
+) -> None:
+    """Only a numeric first segment is a bitrate, and the rest of the url has to survive."""
+    provider._client.stream_url = "https://stream.ibroadcast.com/orig/file.mp3?Expires=1"
+
+    details = await provider.get_stream_details("1001", MediaType.TRACK)
+
+    assert details.path == "https://stream.ibroadcast.com/orig/file.mp3?Expires=1"
+
+
+async def test_trashed_track_is_mapped_as_unavailable(provider: IBroadcastProvider) -> None:
+    """A trashed track stays in the listing, but must not be offered for playback."""
+    provider._client.tracks = {1001: {**TRACK, "trashed": True}}
+
+    tracks = [item async for item in provider.get_library_tracks()]
+
+    assert [mapping.available for track in tracks for mapping in track.provider_mappings] == [False]
+
+
+@pytest.mark.parametrize(
+    ("album_disc", "track_field", "expected_disc", "expected_track"),
+    [
+        (2, 1, 2, 1),
+        (0, 201, 2, 1),
+        (0, 1, 0, 1),
+    ],
+    ids=["album_disc_wins", "packed_disc_and_track", "plain_track_number"],
+)
+async def test_disc_and_track_numbers(
+    provider: IBroadcastProvider,
+    album_disc: int,
+    track_field: int,
+    expected_disc: int,
+    expected_track: int,
+) -> None:
+    """Without a disc on the album, a track number over 99 packs the disc into its first digit."""
+    provider._client.albums = {101: {**ALBUM, "disc": album_disc}}
+    provider._client.tracks = {1001: {**TRACK, "track": track_field}}
+
+    tracks = [item async for item in provider.get_library_tracks()]
+
+    assert tracks[0].disc_number == expected_disc
+    assert tracks[0].track_number == expected_track
+
+
+@pytest.mark.parametrize("playlist_type", ["recently-played", "thumbsup"])
+async def test_generated_playlists_are_not_listed(
+    provider: IBroadcastProvider, playlist_type: str
+) -> None:
+    """The two playlists iBroadcast maintains itself do not belong in the library."""
+    provider._client.playlists = {5001: {**PLAYLIST, "type": playlist_type}}
+
+    playlists = [item async for item in provider.get_library_playlists()]
+
+    assert playlists == []
+
+
+async def test_unreadable_track_is_reported_as_skipped_with_a_text_id(
+    provider: IBroadcastProvider,
+) -> None:
+    """The sync protects skipped id's from the deletion pass, which matches them as text."""
+    broken = {**TRACK, "track_id": 1002}
+    del broken["title"]
+    provider._client.tracks = {1001: TRACK, 1002: broken}
+    provider.report_skipped_sync_item = Mock()  # type: ignore[method-assign]
+
+    tracks = [item async for item in provider.get_library_tracks()]
+
+    assert [track.item_id for track in tracks] == ["1001"]
+    media_type, item_id, _error = provider.report_skipped_sync_item.call_args.args
+    assert media_type is MediaType.TRACK
+    assert item_id == "1002"
