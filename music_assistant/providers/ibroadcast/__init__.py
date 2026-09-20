@@ -260,14 +260,14 @@ class IBroadcastProvider(MusicProvider):
 
     async def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:
         """Parse a iBroadcast user response to Artist model object."""
-        artist_id = str(artist_obj["artist_id"])
+        artist_id = artist_obj["artist_id"]
         artist = Artist(
-            item_id=artist_id,
+            item_id=str(artist_id),
             name=artist_obj["name"],
             provider=self.instance_id,
             provider_mappings={
                 ProviderMapping(
-                    item_id=artist_id,
+                    item_id=str(artist_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     url=f"https://media.ibroadcast.com/?view=container&container_id={artist_id}&type=artists",
@@ -290,17 +290,17 @@ class IBroadcastProvider(MusicProvider):
 
     async def _parse_album(self, album_obj: dict[str, Any]) -> Album:
         """Parse ibroadcast album object to generic layout."""
-        album_id = str(album_obj["album_id"])
+        album_id = album_obj["album_id"]
         name, version = parse_title_and_version(album_obj["name"])
         album = Album(
-            item_id=album_id,
+            item_id=str(album_id),
             provider=self.instance_id,
             name=name,
             year=album_obj["year"],
             version=version,
             provider_mappings={
                 ProviderMapping(
-                    item_id=album_id,
+                    item_id=str(album_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
@@ -353,14 +353,14 @@ class IBroadcastProvider(MusicProvider):
 
     async def _parse_track(self, track_obj: dict[str, Any]) -> Track:
         """Parse an iBroadcast track object to a Track model object."""
-        track_id = str(track_obj["track_id"])
+        track_id = track_obj["track_id"]
         track = Track(
-            item_id=track_id,
+            item_id=str(track_id),
             provider=self.instance_id,
             name=track_obj["title"],
             provider_mappings={
                 ProviderMapping(
-                    item_id=track_id,
+                    item_id=str(track_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     available=not track_obj["trashed"],
@@ -410,7 +410,7 @@ class IBroadcastProvider(MusicProvider):
 
         # Artwork
         track.metadata.images = UniqueList(
-            [self._get_artwork_object(await self._client.get_track_artwork_url(int(track_id)))]
+            [self._get_artwork_object(await self._client.get_track_artwork_url(track_id))]
         )
         # Genre
         genres: set[str] = set()
@@ -428,14 +428,14 @@ class IBroadcastProvider(MusicProvider):
 
     async def _parse_playlist(self, playlist_obj: dict[str, Any]) -> Playlist:
         """Parse an iBroadcast Playlist response to a Playlist object."""
-        playlist_id = str(playlist_obj["playlist_id"])
+        playlist_id = playlist_obj["playlist_id"]
         playlist = Playlist(
-            item_id=playlist_id,
+            item_id=str(playlist_id),
             provider=self.instance_id,
             name=playlist_obj["name"],
             provider_mappings={
                 ProviderMapping(
-                    item_id=playlist_id,
+                    item_id=str(playlist_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                 )
@@ -444,11 +444,7 @@ class IBroadcastProvider(MusicProvider):
         # Can be supported in future, the API has options available
         playlist.is_editable = False
         playlist.metadata.images = UniqueList(
-            [
-                self._get_artwork_object(
-                    await self._client.get_playlist_artwork_url(int(playlist_id))
-                )
-            ]
+            [self._get_artwork_object(await self._client.get_playlist_artwork_url(playlist_id))]
         )
         if "description" in playlist_obj:
             playlist.metadata.description = playlist_obj["description"]
