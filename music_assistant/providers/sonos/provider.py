@@ -314,17 +314,6 @@ class SonosPlayerProvider(PlayerProvider):
         queue_version = player.cloud_queue_version
         wire_generation = player.cloud_queue_item_generation
         wire_center = request.query.get("itemId")
-        self.logger.debug(
-            "Cloud queue itemWindow for %s: reason=%s itemId=%s previous=%s upcoming=%s "
-            "queueVersion=%s -> %s",
-            player.player_id,
-            request.query.get("reason"),
-            wire_center,
-            request.query.get("previousWindowSize"),
-            request.query.get("upcomingWindowSize"),
-            request.query.get("queueVersion"),
-            queue_version,
-        )
         # built from the queue as it is right now: the speaker fetches on its own schedule and
         # plays out of what it cached, so only a live answer keeps a track added mid-playback
         # from being played over. The beginning/end flags must be honest - signalling
@@ -342,6 +331,23 @@ class SonosPlayerProvider(PlayerProvider):
             # one - any other failure must not read to the speaker as "queue over".
             self.logger.debug("Cannot describe the queue for %s: %s", player.display_name, err)
             window = SonosQueueWindow(includes_beginning=True, includes_end=True)
+        # log the answer, not just the request: for "stopped playing early" reports the served
+        # begin/end flags and item count are the decisive facts, and a wrongly set end flag is
+        # what makes a speaker drop items it cached past our window
+        self.logger.debug(
+            "Cloud queue itemWindow for %s: reason=%s itemId=%s previous=%s upcoming=%s "
+            "queueVersion=%s -> %s begin=%s end=%s items=%s",
+            player.player_id,
+            request.query.get("reason"),
+            wire_center,
+            request.query.get("previousWindowSize"),
+            request.query.get("upcomingWindowSize"),
+            request.query.get("queueVersion"),
+            queue_version,
+            window.includes_beginning,
+            window.includes_end,
+            len(window.items),
+        )
         result = {
             "includesBeginningOfQueue": window.includes_beginning,
             "includesEndOfQueue": window.includes_end,

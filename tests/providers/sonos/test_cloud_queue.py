@@ -369,8 +369,13 @@ async def test_itemwindow_logs_the_speakers_request_at_debug(
     player.cloud_queue_version = 12.5
     player.cloud_queue_item_generation = 4
     player.bare_item_id = SonosPlayer.bare_item_id
+    player.wire_item_id = MagicMock(return_value=None)
     player.build_cloud_queue_window = AsyncMock(
-        return_value=SonosQueueWindow(includes_beginning=True, includes_end=False)
+        return_value=SonosQueueWindow(
+            items=[PlayerMedia(uri="track1.mp3"), PlayerMedia(uri="track2.mp3")],
+            includes_beginning=True,
+            includes_end=False,
+        )
     )
     provider = _make_provider()
     request = MagicMock()
@@ -391,6 +396,28 @@ async def test_itemwindow_logs_the_speakers_request_at_debug(
     for expected in ("reason=queueCompleted", "itemId=track7@4", "previous=9", "upcoming=10"):
         assert expected in message
     assert "queueVersion=11.0 -> 12.5" in message
+    assert "begin=True end=False items=2" in message
+
+
+async def test_itemwindow_logs_the_end_of_queue_fallback_at_debug(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test the served window is logged even when the queue can no longer be described."""
+    player = MagicMock(spec=SonosPlayer)
+    player.player_id = "RINCON_TEST"
+    player.display_name = "Kantoor"
+    player.cloud_queue_version = 1.0
+    player.cloud_queue_item_generation = 1
+    player.build_cloud_queue_window = AsyncMock(side_effect=InvalidDataError("no session"))
+    provider = _make_provider()
+    request = MagicMock()
+    request.query = {}
+
+    with caplog.at_level(logging.DEBUG, logger="test.sonos.cloud_queue"):
+        await provider._handle_sonos_queue_itemwindow(player, request)
+
+    served = next(m for m in caplog.messages if "itemWindow for" in m)
+    assert "begin=True end=True items=0" in served
 
 
 async def test_version_logs_the_speakers_poll_at_debug(
