@@ -90,6 +90,41 @@ async def test_registered_player_with_ghost_config_recovers(
 
     assert conf.player_id == PLAYER_ID
     assert conf.provider == "airplay"
+    # the repair is persisted, so the entry survives a later prune once the player is offline
+    assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/player_id") == PLAYER_ID
+    assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/provider") == "airplay"
+
+
+async def test_non_mapping_entry_is_pruned_from_list(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A corrupt non-mapping entry is removed instead of crashing the list read."""
+    mass_minimal.players = MagicMock()
+    mass_minimal.players.get_player.return_value = None
+    mass_minimal.config.create_default_player_config(
+        "apvalid", "airplay", PlayerType.PLAYER, "Valid"
+    )
+    mass_minimal.config.set(f"{CONF_PLAYERS}/apbroken", "not-a-dict")
+
+    configs = await mass_minimal.config.get_player_configs()
+
+    ids = {conf.player_id for conf in configs}
+    assert "apvalid" in ids
+    assert mass_minimal.config.get(f"{CONF_PLAYERS}/apbroken") is None
+
+
+async def test_create_default_overwrites_non_mapping_entry(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """Registration replaces a corrupt non-mapping entry with a valid default config."""
+    mass_minimal.config.set(f"{CONF_PLAYERS}/{PLAYER_ID}", "not-a-dict")
+
+    mass_minimal.config.create_default_player_config(
+        PLAYER_ID, "airplay", PlayerType.PLAYER, "Bedroom"
+    )
+
+    assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/player_id") == PLAYER_ID
+    assert mass_minimal.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/provider") == "airplay"
 
 
 async def test_get_base_player_config_recovers_missing_base_keys(
