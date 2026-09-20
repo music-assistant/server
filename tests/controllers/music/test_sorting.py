@@ -235,3 +235,25 @@ async def test_library_items_random_sort_supports_pagination(
         sort_field=SortField.RANDOM, limit=5, offset=5, summary=False
     )
     assert len(result) == 5
+
+
+def test_random_play_count_subquery_preserves_play_count_order(
+    mass: MusicAssistant,
+) -> None:
+    """RANDOM_PLAY_COUNT must sort by play count before shuffling equal counts."""
+    query_parts: list[str] = []
+    mass.music.tracks._apply_random_subquery(
+        query_parts=query_parts,
+        query_params={},
+        join_parts=[],
+        favorite=None,
+        search=None,
+        genre_ids=None,
+        provider_filter=None,
+        order_by="random_play_count",
+        limit=5,
+        offset=7,
+    )
+    query = query_parts[0]
+    assert "ORDER BY COALESCE(play_count, 0), RANDOM()" in query
+    assert "LIMIT 12" in query
