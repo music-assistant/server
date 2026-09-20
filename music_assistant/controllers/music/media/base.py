@@ -1988,7 +1988,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         # Sample limit+offset rows so later pages aren't skipped past an exhausted sample.
         order_sql = (
-            "COALESCE(play_count, 0), RANDOM()" if order_by == "random_play_count" else "RANDOM()"
+            f"COALESCE({self.db_table}.play_count, 0), RANDOM()"
+            if order_by == "random_play_count"
+            else "RANDOM()"
         )
         sub_query += f" ORDER BY {order_sql} LIMIT {limit + offset}"
 

@@ -255,5 +255,5 @@ def test_random_play_count_subquery_preserves_play_count_order(
         offset=7,
     )
     query = query_parts[0]
-    assert "ORDER BY COALESCE(play_count, 0), RANDOM()" in query
+    assert "ORDER BY COALESCE(tracks.play_count, 0), RANDOM()" in query
     assert "LIMIT 12" in query
