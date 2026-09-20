@@ -319,6 +319,7 @@ class SonosPlayerProvider(PlayerProvider):
         # from being played over. The beginning/end flags must be honest - signalling
         # end-of-queue is what makes Sonos drop items it cached past our window, so a queue
         # rewrite (replace_next) does not resurrect stale tracks.
+        unavailable: InvalidDataError | None = None
         try:
             window = await player.build_cloud_queue_window(
                 player.bare_item_id(wire_center) if wire_center else None,
@@ -329,14 +330,14 @@ class SonosPlayerProvider(PlayerProvider):
             # the queue went away under us (a stop that never reached this speaker, so it keeps
             # polling): end-of-queue is the right answer and beats a 500 per poll. Only this
             # one - any other failure must not read to the speaker as "queue over".
-            self.logger.debug("Cannot describe the queue for %s: %s", player.display_name, err)
             window = SonosQueueWindow(includes_beginning=True, includes_end=True)
+            unavailable = err
         # log the answer, not just the request: for "stopped playing early" reports the served
         # begin/end flags and item count are the decisive facts, and a wrongly set end flag is
         # what makes a speaker drop items it cached past our window
         self.logger.debug(
             "Cloud queue itemWindow for %s: reason=%s itemId=%s previous=%s upcoming=%s "
-            "queueVersion=%s -> %s begin=%s end=%s items=%s",
+            "queueVersion=%s -> %s begin=%s end=%s items=%s%s",
             player.player_id,
             request.query.get("reason"),
             wire_center,
@@ -347,6 +348,7 @@ class SonosPlayerProvider(PlayerProvider):
             window.includes_beginning,
             window.includes_end,
             len(window.items),
+            f" (queue not describable: {unavailable})" if unavailable else "",
         )
         result = {
             "includesBeginningOfQueue": window.includes_beginning,

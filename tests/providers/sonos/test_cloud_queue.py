@@ -405,7 +405,6 @@ async def test_itemwindow_logs_the_end_of_queue_fallback_at_debug(
     """Test the served window is logged even when the queue can no longer be described."""
     player = MagicMock(spec=SonosPlayer)
     player.player_id = "RINCON_TEST"
-    player.display_name = "Kantoor"
     player.cloud_queue_version = 1.0
     player.cloud_queue_item_generation = 1
     player.build_cloud_queue_window = AsyncMock(side_effect=InvalidDataError("no session"))
@@ -416,8 +415,10 @@ async def test_itemwindow_logs_the_end_of_queue_fallback_at_debug(
     with caplog.at_level(logging.DEBUG, logger="test.sonos.cloud_queue"):
         await provider._handle_sonos_queue_itemwindow(player, request)
 
-    served = next(m for m in caplog.messages if "itemWindow for" in m)
-    assert "begin=True end=True items=0" in served
+    assert [record.levelno for record in caplog.records] == [logging.DEBUG]
+    message = caplog.records[0].getMessage()
+    assert "begin=True end=True items=0" in message
+    assert "no session" in message
 
 
 async def test_version_logs_the_speakers_poll_at_debug(
