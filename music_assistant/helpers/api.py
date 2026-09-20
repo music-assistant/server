@@ -41,9 +41,19 @@ class APICommandHandler:
     type_hints: dict[str, Any]
     target: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]]
     authenticated: bool = True
-    required_scope: Scope | None = None  # None means any authenticated user
+    # a tuple lists scopes of which one suffices, None means any authenticated user
+    required_scope: Scope | tuple[Scope, ...] | None = None
     allow_impersonation: bool = False  # If True, the command accepts a 'user' argument
     alias: bool = False  # If True, this is an alias for backward compatibility
+
+    @property
+    def required_scope_label(self) -> str | None:
+        """Return the required scope(s) as text, None when any authenticated user may call."""
+        if self.required_scope is None:
+            return None
+        if isinstance(self.required_scope, tuple):
+            return " or ".join(str(scope) for scope in self.required_scope)
+        return str(self.required_scope)
 
     @classmethod
     def parse(
@@ -51,7 +61,7 @@ class APICommandHandler:
         command: str,
         func: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]],
         authenticated: bool = True,
-        required_scope: Scope | None = None,
+        required_scope: Scope | tuple[Scope, ...] | None = None,
         allow_impersonation: bool = False,
         alias: bool = False,
     ) -> APICommandHandler:
@@ -61,8 +71,8 @@ class APICommandHandler:
         :param command: The command name/path.
         :param func: The function to handle the command.
         :param authenticated: Whether authentication is required (default: True).
-        :param required_scope: Scope required to execute the command,
-            None for any authenticated user.
+        :param required_scope: Scope required to execute the command, a tuple of scopes
+            of which the caller needs one, None for any authenticated user.
         :param allow_impersonation: Whether the command accepts a 'user' argument
             to execute the command on behalf of another user (default: False).
         :param alias: Whether this is an alias for backward compatibility (default: False).
@@ -141,7 +151,7 @@ class APICommandHandler:
 def api_command(
     command: str,
     authenticated: bool = True,
-    required_scope: Scope | None = None,
+    required_scope: Scope | tuple[Scope, ...] | None = None,
     allow_impersonation: bool = False,
     alias: bool = False,
 ) -> Callable[[_F], _F]:
@@ -150,8 +160,8 @@ def api_command(
 
     :param command: The command name/path.
     :param authenticated: Whether authentication is required (default: True).
-    :param required_scope: Scope required to execute the command,
-        None means any authenticated user.
+    :param required_scope: Scope required to execute the command, a tuple of scopes
+        of which the caller needs one, None means any authenticated user.
     :param allow_impersonation: Whether the command accepts a 'user' argument
         to execute the command on behalf of another user (default: False).
     :param alias: Whether this is a backward-compatible alias (default: False).

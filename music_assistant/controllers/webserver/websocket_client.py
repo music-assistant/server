@@ -287,7 +287,7 @@ class WebsocketClientHandler:
                     ErrorResultMessage(
                         msg.message_id,
                         InsufficientPermissions.error_code,
-                        f"This command requires the {handler.required_scope} scope",
+                        f"This command requires the {handler.required_scope_label} scope",
                         translation_key="insufficient_permissions",
                     )
                 )

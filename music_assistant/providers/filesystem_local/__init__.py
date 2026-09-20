@@ -246,6 +246,9 @@ class LocalFileSystemProvider(MusicProvider):
         # is not enough, since a concurrent on-demand parse could otherwise start consulting
         # the index for the entire (potentially long) walk before it is actually populated
         self._sync_nfo_index_ready: bool = False
+        # folders already warned about a missing ALBUMARTIST tag, reset at the start of
+        # each sync so every sync reports the current state of the library once per album
+        self._missing_album_artist_warned: set[str] = set()
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -545,6 +548,7 @@ class LocalFileSystemProvider(MusicProvider):
         self.sync_running = True
         self._sync_nfo_by_dir = {}
         self._sync_nfo_index_ready = False
+        self._missing_album_artist_warned = set()
         try:
             await self._enumerate_files_for_sync(
                 file_checksums=file_checksums,
@@ -2222,11 +2226,14 @@ class LocalFileSystemProvider(MusicProvider):
 
         except Exception as err:
             # we don't want the whole sync to crash on one file so we catch all exceptions here
+            # an unreadable/corrupt file is already fully described by the message itself,
+            # so only attach a traceback for errors we did not expect
+            unexpected = not isinstance(err, InvalidDataError)
             self.logger.error(
                 "Error processing %s - %s",
                 item.relative_path,
                 str(err),
-                exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                exc_info=err if unexpected and self.logger.isEnabledFor(logging.DEBUG) else None,
             )
             report_current_task_failure(f"Failed to process {item.relative_path}: {err}")
             # the file is still on the storage, so keep it in the scan result:
@@ -3229,6 +3236,16 @@ class LocalFileSystemProvider(MusicProvider):
         else:
             # album artist tag is missing, determine fallback
             fallback_action = self.config.get_value(CONF_ENTRY_MISSING_ALBUM_ARTIST.key)
+            # the same fallback applies to every track in the folder, so warn for the first
+            # track only and leave the rest to debug, instead of repeating the same line for
+            # every track of an untagged album
+            warn_key = album_dir or track_dir
+            log_missing_tag = (
+                self.logger.debug
+                if warn_key in self._missing_album_artist_warned
+                else self.logger.warning
+            )
+            self._missing_album_artist_warned.add(warn_key)
             if (
                 album_dir
                 and (
@@ -3240,7 +3257,7 @@ class LocalFileSystemProvider(MusicProvider):
             ):
                 # a single album artist named in the album folder's own album.nfo beats the
                 # configured fallback, a disc subfolder's album.nfo is never consulted here
-                self.logger.warning(
+                log_missing_tag(
                     "%s is missing ID3 tag [albumartist], using %s from %s as fallback",
                     track_path,
                     nfo_artist_name,
@@ -3257,7 +3274,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             elif fallback_action == "folder_name" and album_dir:
                 possible_artist_folder = os.path.dirname(album_dir)
-                self.logger.warning(
+                log_missing_tag(
                     "%s is missing ID3 tag [albumartist], using foldername %s as fallback",
                     track_path,
                     possible_artist_folder,
@@ -3274,7 +3291,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             # fallback to track artists (if defined by user)
             elif fallback_action == "track_artist":
-                self.logger.warning(
+                log_missing_tag(
                     "%s is missing ID3 tag [albumartist], using track artist(s) as fallback",
                     track_path,
                 )
@@ -3290,7 +3307,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             # all other: fallback to various artists
             else:
-                self.logger.warning(
+                log_missing_tag(
                     "%s is missing ID3 tag [albumartist], using %s as fallback",
                     track_path,
                     VARIOUS_ARTISTS_NAME,

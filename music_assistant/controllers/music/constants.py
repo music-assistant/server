@@ -11,7 +11,7 @@ DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 
-DB_SCHEMA_VERSION: Final[int] = 59
+DB_SCHEMA_VERSION: Final[int] = 60
 
 # tracks longer that this will not be included in radio mode
 RADIO_TRACK_MAX_DURATION_SECS: Final[int] = 20 * 60
@@ -65,7 +65,6 @@ CONF_TRACK_RECONCILIATION_RESCAN_DUE: Final[str] = "track_reconciliation_rescan_
 # max difference in seconds between two track durations to still consider them the same
 # recording; matches the widest duration window compare_track is willing to accept
 TRACK_RECONCILIATION_MAX_DURATION_DELTA: Final[int] = 8
-
 # Base SQL mappings for sort fields (can be overridden per MediaType)
 BASE_SORT_FIELD_SQL = {
     SortField.NAME: "search_name",
@@ -111,3 +110,8 @@ LEGACY_SORT_KEYS = {
     "random": (SortField.RANDOM, None),
     "random_play_count": (SortField.RANDOM_PLAY_COUNT, None),
 }
+
+# max number of library rows that may share one normalized title before the duplicate track
+# walk skips that title. Pairing the rows of a title is quadratic in their count, and a title
+# held by hundreds of rows is a generic one rather than a duplicate
+TRACK_RECONCILIATION_MAX_TITLE_ROWS: Final[int] = 200

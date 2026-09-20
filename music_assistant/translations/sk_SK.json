@@ -2,6 +2,7 @@
   "common.config_categories.advanced": "Rozšírené nastavenia",
   "common.config_categories.generic": "Všeobecné nastavenia",
   "common.config_categories.player_controls": "Ovládacie prvky prehrávača",
+  "common.config_categories.preferences": "Predvoľby",
   "common.config_categories.protocol_generic": "Všeobecné nastavenia",
   "common.config_categories.settings": "Nastavenia",
   "common.config_entries.announce_volume.description": "Percentuálna, relatívna alebo absolútna úroveň hlasitosti, ktorá sa používa pri stratégii pre oznámenia.",

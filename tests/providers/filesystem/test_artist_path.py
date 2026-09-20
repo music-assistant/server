@@ -56,6 +56,7 @@ def _make_provider(base_path: str, lib_artists: list[Artist]) -> LocalFileSystem
     provider.sync_running = False
     provider._sync_nfo_by_dir = {}
     provider._sync_nfo_index_ready = False
+    provider._missing_album_artist_warned = set()
 
     async def iter_library_items(
         search: str | None = None,  # noqa: ARG001

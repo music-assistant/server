@@ -207,17 +207,21 @@ async def get_authenticated_user(request: web.Request) -> User | None:
     return user
 
 
-def has_scope(user: User, scope: Scope) -> bool:
+def has_scope(user: User, scope: Scope | tuple[Scope, ...]) -> bool:
     """
     Check if the given user is granted the given scope (through its role).
 
     :param user: The user to check.
-    :param scope: The scope required.
+    :param scope: The scope required, or a tuple of scopes of which one suffices.
     """
     role_scopes = ROLE_SCOPES.get(user.role)
     if role_scopes is None:
         role_scopes = _custom_role_scopes.get(user.role, frozenset())
-    return Scope.ALL in role_scopes or scope in role_scopes
+    if Scope.ALL in role_scopes:
+        return True
+    if isinstance(scope, tuple):
+        return any(one in role_scopes for one in scope)
+    return scope in role_scopes
 
 
 def custom_role_scopes(scopes: Iterable[Scope]) -> list[Scope]:
