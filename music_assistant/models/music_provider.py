@@ -1249,18 +1249,34 @@ class MusicProvider(Provider):
         sync_state = sync_run_state()
         listed_item_ids = sync_state.listed_item_ids.get(media_type, set())
         skipped_item_ids = sync_state.skipped_item_ids.get(media_type, set())
-        seen_item_ids = listed_item_ids | skipped_item_ids
+        # the library stores provider item id's as text, while a provider may list them as
+        # numbers, which would make every one of its mappings look stale
+        seen_item_ids = {str(item_id) for item_id in listed_item_ids | skipped_item_ids}
         # replacing a file makes providers like plex hand out a new id, and the library item
         # then keeps the mapping to the deleted item next to the new one, still marked
         # available, so playback fails whenever that one is picked
-        stale_mappings = [
-            (row["item_id"], row["provider_item_id"])
-            async for row in self.mass.music.database.iter_items(
-                DB_TABLE_PROVIDER_MAPPINGS,
-                {"media_type": media_type.value, "provider_instance": self.instance_id},
+        stale_mappings: list[tuple[int, str]] = []
+        kept_db_ids: set[int] = set()
+        async for row in self.mass.music.database.iter_items(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {"media_type": media_type.value, "provider_instance": self.instance_id},
+        ):
+            if row["item_id"] not in cur_db_ids:
+                continue
+            if row["provider_item_id"] in seen_item_ids:
+                kept_db_ids.add(row["item_id"])
+            else:
+                stale_mappings.append((row["item_id"], row["provider_item_id"]))
+        if orphaned_db_ids := {db_id for db_id, _ in stale_mappings} - kept_db_ids:
+            # this sync just matched each of these items to an item the provider listed, so
+            # losing every mapping means the id's do not compare, not that the items are gone
+            self.logger.warning(
+                "Not removing stale %s mappings: %s library items would lose every mapping to "
+                "this provider, so its item id's do not match the ones in the library",
+                media_type.value,
+                len(orphaned_db_ids),
             )
-            if row["item_id"] in cur_db_ids and row["provider_item_id"] not in seen_item_ids
-        ]
+            return
         controller = self.mass.music.get_controller(media_type)
         for db_id, provider_item_id in stale_mappings:
             self.logger.debug(
