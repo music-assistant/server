@@ -265,6 +265,80 @@ async def test_album_tracks_prefer_a_playable_copy(mass: MusicAssistant, unplaya
     ]
 
 
+@pytest.mark.parametrize("with_library_track", [False, True])
+async def test_album_tracks_preserve_repeated_movement_titles(
+    mass: MusicAssistant, with_library_track: bool
+) -> None:
+    """The fourteen Mozart Momentum movements remain distinct, including repeated titles."""
+    album = create_album("qobuz_1", "kbiz0u05dkexb")
+    library_album = await mass.music.albums.add_item_to_library(album)
+    await set_global_cache_values({"available_providers": {"qobuz_1"}})
+    titles = [
+        [
+            "I. Allegro",
+            "II. Romanze",
+            "III. Rondo, Allegro assai",
+            "I. Allegro maestoso",
+            "II. Andante",
+            "III. Allegro vivace assai",
+        ],
+        [
+            "Fantasia",
+            "I. Allegro",
+            "II. Andante",
+            "III. Rondo",
+            "Trauermusik",
+            "I. Allegro",
+            "II. Andante",
+            "III. Allegro",
+        ],
+    ]
+    provider_tracks: list[Track] = []
+    for disc, movements in enumerate(titles, 1):
+        for number, title in enumerate(movements, 1):
+            track = _album_track("qobuz_1", title, len(provider_tracks) + 1, available=True)
+            track.disc_number = disc
+            track.track_number = number
+            track.album = library_album
+            provider_tracks.append(track)
+    if with_library_track:
+        await mass.music.tracks.add_item_to_library(provider_tracks[0])
+
+    with patch.object(
+        mass.music.albums, "_get_provider_album_tracks", AsyncMock(return_value=provider_tracks)
+    ):
+        tracks = await mass.music.albums.tracks(library_album.item_id, "library")
+
+    assert [(track.disc_number, track.track_number, track.name) for track in tracks] == [
+        (track.disc_number, track.track_number, track.name) for track in provider_tracks
+    ]
+
+
+@pytest.mark.parametrize("number", [0, 1])
+async def test_album_tracks_same_position_different_titles(
+    mass: MusicAssistant, number: int
+) -> None:
+    """Known positions deduplicate despite title differences; unknown positions do not."""
+    album = create_album("qobuz_1", "album_q")
+    album.provider_mappings.add(
+        ProviderMapping(item_id="album_s", provider_domain="spotify", provider_instance="spotify_1")
+    )
+    library_album = await mass.music.albums.add_item_to_library(album)
+    await set_global_cache_values({"available_providers": {"qobuz_1", "spotify_1"}})
+    provider_tracks = {
+        "qobuz_1": [_album_track("qobuz_1", "I. Allegro", number, available=False)],
+        "spotify_1": [_album_track("spotify_1", "Concerto: I. Allegro", number, available=True)],
+    }
+    with patch.object(
+        mass.music.albums,
+        "_get_provider_album_tracks",
+        AsyncMock(side_effect=lambda _item_id, instance: provider_tracks[instance]),
+    ):
+        tracks = await mass.music.albums.tracks(library_album.item_id, "library")
+    assert len(tracks) == (1 if number else 2)
+    assert any(track.provider == "spotify_1" and track.available for track in tracks)
+
+
 def test_album_from_library_item_mapping_has_no_self_mapping(mass: MusicAssistant) -> None:
     """A library item mapping has no provider of its own, so it gets no provider mapping."""
     item = ItemMapping(item_id="42", provider="library", name="Test Album")

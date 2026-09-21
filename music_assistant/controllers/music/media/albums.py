@@ -407,13 +407,6 @@ class AlbumsController(MediaControllerBase[Album]):
         # return all (unique) items from all providers
         # because we are returning the items from all providers combined,
         # we need to make sure that we don't return duplicates
-        unique_ids: set[str] = {f"{x.disc_number}.{x.track_number}" for x in db_items}
-        unique_ids.update({f"{x.name.lower()}.{x.version.lower()}" for x in db_items})
-        for db_item in db_items:
-            unique_ids.update(x.item_id for x in db_item.provider_mappings)
-        # where each provider track landed in the result, so a playable copy from another
-        # provider can take the place of an unplayable one
-        provider_slots: dict[str, int] = {}
         for provider_mapping in library_album.provider_mappings:
             if (
                 allowed_providers is not None
@@ -428,12 +421,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 # library_tracks. Ensure to update the disc/track number when interacting with
                 # album tracks
                 db_track = next(
-                    (
-                        x
-                        for x in db_items
-                        if x.sort_name == provider_track.sort_name
-                        and x.version == provider_track.version
-                    ),
+                    (x for x in db_items if _same_album_track(x, provider_track)),
                     None,
                 )
                 if (
@@ -446,25 +434,26 @@ class AlbumsController(MediaControllerBase[Album]):
                         db_track_id=int(db_track.item_id),
                         track=provider_track,
                     )
-                if provider_track.item_id in unique_ids:
-                    continue
-                unique_id = f"{provider_track.disc_number}.{provider_track.track_number}"
-                if unique_id in unique_ids:
-                    continue
-                unique_id = f"{provider_track.name.lower()}.{provider_track.version.lower()}"
-                slot = provider_slots.get(unique_id)
-                if unique_id in unique_ids and (
-                    slot is None or result[slot].available or not provider_track.available
+                    db_track.disc_number = provider_track.disc_number
+                    db_track.track_number = provider_track.track_number
+                slot = next(
+                    (
+                        index
+                        for index, existing in enumerate(result)
+                        if _same_album_track(existing, provider_track)
+                    ),
+                    None,
+                )
+                if slot is not None and (
+                    slot < len(db_items) or result[slot].available or not provider_track.available
                 ):
                     continue
-                unique_ids.add(unique_id)
                 provider_track.album = library_album
                 # always prefer album image
                 album_images = [library_album.image] if library_album.image else []
                 track_images: list[MediaItemImage] = provider_track.metadata.images or []
                 provider_track.metadata.images = UniqueList(album_images + track_images)
                 if slot is None:
-                    provider_slots[unique_id] = len(result)
                     result.append(provider_track)
                 else:
                     result[slot] = provider_track
@@ -996,6 +985,27 @@ class AlbumsController(MediaControllerBase[Album]):
         item.album_type = AlbumType(db_row["album_type"])
         item.artists = self._parse_summary_artist_mappings(db_row)
         return item
+
+
+def _same_album_track(left: Track, right: Track) -> bool:
+    """Return whether two entries represent the same position on an album."""
+    # Repeated titles (and even repeated recordings) can occupy distinct album positions.
+    # Only fall back to identity/title matching when a position is missing.
+    if left.disc_number and right.disc_number and left.disc_number != right.disc_number:
+        return False
+    if left.track_number and right.track_number:
+        return (left.disc_number or 1, left.track_number) == (
+            right.disc_number or 1,
+            right.track_number,
+        )
+    if any(
+        left_mapping.provider_instance == right_mapping.provider_instance
+        and left_mapping.item_id == right_mapping.item_id
+        for left_mapping in left.provider_mappings
+        for right_mapping in right.provider_mappings
+    ):
+        return True
+    return left.name.lower() == right.name.lower() and left.version.lower() == right.version.lower()
 
 
 def _canonical_album_barcodes(album: Album) -> set[str]:
