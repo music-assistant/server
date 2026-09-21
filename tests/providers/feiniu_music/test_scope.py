@@ -15,6 +15,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.providers.feiniu_music.client import NetworkError
+from music_assistant.providers.feiniu_music.provider import MEMBERSHIP_TTL
 
 from .test_client import Response, client_with
 from .test_provider import provider as provider  # noqa: PLC0414
@@ -117,11 +118,16 @@ async def test_reload_same_instance_does_not_reuse_previous_account_cache(provid
         await other.resolve_image(first.metadata.images[0].path)
 
 
-async def test_expired_collection_failure_does_not_use_stale_membership(provider: Any) -> None:
+async def test_expired_collection_failure_does_not_use_stale_membership(
+    provider: Any, monkeypatch: Any
+) -> None:
     """An expired successful read cannot disguise a failed refresh."""
+    clock = [100.0]
+    monkeypatch.setattr(
+        "music_assistant.providers.feiniu_music.provider.monotonic", lambda: clock[0]
+    )
     await provider.get_track("track-test")
-    _, items = provider._memberships["track"]
-    provider._memberships["track"] = (0, items)
+    clock[0] += MEMBERSHIP_TTL
     provider._client.page = AsyncMock(side_effect=NetworkError("synthetic"))
     with pytest.raises(ResourceTemporarilyUnavailable):
         await provider.get_track("track-test")
