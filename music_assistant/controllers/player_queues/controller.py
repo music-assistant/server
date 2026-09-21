@@ -899,10 +899,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_items = self._queue_data[queue_id].items
         resume_item = queue.current_item
         queue_player = self.mass.players.get_player(queue_id)
-        # While an announcement is in progress, player→queue updates are suppressed so
-        # the queue can still look PLAYING even though the device was stopped. Prefer
-        # the parked resume_pos in that case instead of wall-clock corrected_elapsed_time
-        # (which keeps advancing for the whole announcement and seeks past the track).
+        # Announcement suppresses player→queue updates, so the queue can still
+        # look PLAYING after the device was stopped — use the parked resume_pos.
         announcement_in_progress = bool(
             queue_player and queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
         )
@@ -941,7 +939,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 # we're not able to skip in online radio so this is pointless
                 resume_pos = 0
             elif resume_item.duration and resume_pos > resume_item.duration:
-                # a stale PLAYING clock (or a bad parked value) must not seek past the end
+                # do not seek past the end of the track
                 resume_pos = int(resume_item.duration)
             await self.play_index(
                 queue_id, resume_item.queue_item_id, int(resume_pos), fade_in or False

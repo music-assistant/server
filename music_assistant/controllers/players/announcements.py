@@ -101,7 +101,9 @@ class AnnouncementsMixin:
             self, player_id: str, raise_unavailable: bool = False
         ) -> Player | None: ...
 
-        def get_active_queue(self, player: Player) -> PlayerQueue | None: ...  # noqa: D102
+        def get_active_queue(  # noqa: D102
+            self, player: Player
+        ) -> PlayerQueue | None: ...
 
         def iter_group_members(  # noqa: D102
             self,
@@ -764,11 +766,10 @@ class AnnouncementsMixin:
                 player.state.name,
                 prev_media_name,
             )
-            # Prefer the queue stop path when a MA queue is active: that parks
-            # resume_pos so restore can seek back after the announcement. A bare
-            # device stop leaves the queue PLAYING (player updates are suppressed
-            # while ATTR_ANNOUNCEMENT_IN_PROGRESS is set) and resume would then
-            # use wall-clock corrected_elapsed_time, seeking past the real position.
+            # Stop through the queue when one is active so resume_pos is parked.
+            # A device-only stop leaves the queue PLAYING (updates are suppressed
+            # during ATTR_ANNOUNCEMENT_IN_PROGRESS), and resume would then use
+            # wall-clock corrected_elapsed_time past the real position.
             if active_queue := self.get_active_queue(player):
                 await self.mass.player_queues._handle_stop(active_queue.queue_id)
             else:
