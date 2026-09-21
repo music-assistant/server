@@ -295,6 +295,11 @@ class DemoPlayer(Player):
         # If you do not use the announcement playerfeature, the default behavior is to play the
         # announcement as a regular media item using the play_media method and the MA player manager
         # will take care of setting the volume level for the announcement and resuming etc.
+        # Override the announcement_features property to declare how this player behaves during
+        # an announcement (see AnnouncementFeature): add COORDINATES_START if it lines up its start
+        # with the other members of a group announcement, APPLIES_VOLUME if it mixes the clip and
+        # sets the level itself, and drop SUPPORTS_VOLUME if its native route ignores the level
+        # (the announcement then uses the builtin path once a level is requested).
 
     async def select_source(self, source: str) -> None:
         """Handle SELECT SOURCE command on the player."""

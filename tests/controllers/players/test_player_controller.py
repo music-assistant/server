@@ -73,7 +73,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     sendspin_player_id,
 )
 from music_assistant.helpers.tts import TTS_QUERY_TIMEOUT_SECONDS, TTSLanguageNotSupportedError
-from music_assistant.models.player import LinkedOutputProtocol, Player
+from music_assistant.models.player import AnnouncementFeature, LinkedOutputProtocol, Player
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.universal_player.player import UniversalPlayer
 from tests.common import MockPlayer, MockProvider, create_mock_config, use_real_create_task
@@ -4808,6 +4808,123 @@ class TestCurrentMediaTimeUpdates:
         assert self._player_updated_signalled(mock_mass)
 
 
+class TestGetAnnouncementVolume:
+    """Test how the per-player announcement volume is resolved."""
+
+    def _controller(self, mock_mass: MagicMock, player: object) -> PlayerController:
+        """Return a controller that knows a single fake player."""
+        controller = PlayerController(mock_mass)
+        controller._players = {"p1": cast("MockPlayer", player)}
+        mock_mass.players = controller
+        return controller
+
+    @staticmethod
+    def _player(features: set[AnnouncementFeature], volume_level: int | None) -> SimpleNamespace:
+        """Build a fake player that announces natively, with the given features and volume."""
+        return SimpleNamespace(
+            player_id="p1",
+            announcement_features=features,
+            supported_features={PlayerFeature.PLAY_ANNOUNCEMENT},
+            state=SimpleNamespace(volume_level=volume_level, available=True, enabled=True),
+        )
+
+    def test_native_volume_absent_defaults_to_no_adjustment(self, mock_mass: MagicMock) -> None:
+        """A player whose native route ignores the level gets no bump by default."""
+        controller = self._controller(mock_mass, self._player(set(), 40))
+        assert controller.get_announcement_volume("p1", None) is None
+
+    def test_explicit_override_wins_over_the_none_default(self, mock_mass: MagicMock) -> None:
+        """An explicit level is honoured even when the strategy resolves to none."""
+        controller = self._controller(mock_mass, self._player(set(), 40))
+        assert controller.get_announcement_volume("p1", 60) == 60
+
+    def test_explicit_override_is_clamped_to_the_max(self, mock_mass: MagicMock) -> None:
+        """An explicit level is still bounded by the configured maximum (default 75)."""
+        controller = self._controller(mock_mass, self._player(set(), 40))
+        assert controller.get_announcement_volume("p1", 90) == 75
+
+    def test_native_volume_present_defaults_to_percentual(self, mock_mass: MagicMock) -> None:
+        """A player whose native route honours the level keeps the percentual default."""
+        player = self._player({AnnouncementFeature.SUPPORTS_VOLUME}, 40)
+        controller = self._controller(mock_mass, player)
+        # percentual: 40 + (40/100) * 85 = 74, within the default 15..75 bounds
+        assert controller.get_announcement_volume("p1", None) == 74
+
+    def test_default_follows_the_resolved_announce_output(self, mock_mass: MagicMock) -> None:
+        """The default reflects the output that announces, not the parent's own hint."""
+        parent = self._player({AnnouncementFeature.SUPPORTS_VOLUME}, 40)
+        output = SimpleNamespace(player_id="out", announcement_features=set())
+        controller = self._controller(mock_mass, parent)
+        with patch.object(controller, "_resolve_announce_player", return_value=output):
+            assert controller.announce_output_supports_volume(cast("MockPlayer", parent)) is False
+            assert controller.get_announcement_volume("p1", None) is None
+
+    def test_generic_fallback_route_supports_volume(self, mock_mass: MagicMock) -> None:
+        """With no native announce output, the builtin fallback applies the level."""
+        parent = self._player(set(), 40)
+        controller = self._controller(mock_mass, parent)
+        with patch.object(controller, "_resolve_announce_player", return_value=None):
+            assert controller.announce_output_supports_volume(cast("MockPlayer", parent)) is True
+            # percentual default applies: 40 + (40/100) * 85 = 74
+            assert controller.get_announcement_volume("p1", None) == 74
+
+
+class TestNativeRouteIgnoresWantedVolume:
+    """Test the decision to leave the native announce route for the builtin path."""
+
+    def _controller(self, mock_mass: MagicMock) -> PlayerController:
+        """Return a controller with get_announcement_volume stubbed to a fixed level."""
+        controller = PlayerController(mock_mass)
+        controller.get_announcement_volume = MagicMock(return_value=60)  # type: ignore[method-assign]
+        return controller
+
+    @staticmethod
+    def _player(volume_control: str, volume_level: int | None) -> SimpleNamespace:
+        """Build a fake target player with the given volume control and level."""
+        return SimpleNamespace(
+            player_id="p1",
+            state=SimpleNamespace(volume_control=volume_control, volume_level=volume_level),
+        )
+
+    @staticmethod
+    def _output(supports_volume: bool) -> SimpleNamespace:
+        """Build a fake announce output that does or does not honour the volume."""
+        features = {AnnouncementFeature.SUPPORTS_VOLUME} if supports_volume else set()
+        return SimpleNamespace(announcement_features=features)
+
+    def _decide(
+        self, controller: PlayerController, player: SimpleNamespace, output: SimpleNamespace
+    ) -> bool:
+        """Run the divert decision with the fakes cast to the expected type."""
+        return controller._native_route_ignores_wanted_volume(
+            cast("MockPlayer", player), cast("MockPlayer", output), None
+        )
+
+    def test_diverts_when_the_target_volume_can_be_set(self, mock_mass: MagicMock) -> None:
+        """A wanted level the native route ignores diverts to the builtin path."""
+        controller = self._controller(mock_mass)
+        player = self._player(PLAYER_CONTROL_NATIVE, 40)
+        assert self._decide(controller, player, self._output(False))
+
+    def test_stays_native_when_the_output_applies_the_volume(self, mock_mass: MagicMock) -> None:
+        """An output that honours the level keeps the native route."""
+        controller = self._controller(mock_mass)
+        player = self._player(PLAYER_CONTROL_NATIVE, 40)
+        assert not self._decide(controller, player, self._output(True))
+
+    def test_stays_native_without_a_volume_control(self, mock_mass: MagicMock) -> None:
+        """No volume control means the builtin path cannot apply the level, so stay native."""
+        controller = self._controller(mock_mass)
+        player = self._player(PLAYER_CONTROL_NONE, 40)
+        assert not self._decide(controller, player, self._output(False))
+
+    def test_stays_native_with_an_unknown_level(self, mock_mass: MagicMock) -> None:
+        """An unknown current level cannot be restored, so stay native."""
+        controller = self._controller(mock_mass)
+        player = self._player(PLAYER_CONTROL_NATIVE, None)
+        assert not self._decide(controller, player, self._output(False))
+
+
 class TestPlayAnnouncementCleanup:
     """Test announcement data cleanup after play_announcement."""
 
@@ -4944,6 +5061,57 @@ class TestPlayAnnouncementCleanup:
         registered = mock_mass.streams.announcement_renderer.register.call_args.args[1]
         assert registered["announce_player_id"] is None
 
+    async def test_native_route_without_volume_support_falls_back_when_a_level_is_wanted(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A native route that ignores the level uses the builtin path once one is requested."""
+        announcements: dict[str, object] = {}
+        controller, player, _render = self._make_player(mock_mass, announcements)
+        # the builtin path can only apply the level when the target has a settable volume
+        player._attr_supported_features.add(PlayerFeature.VOLUME_SET)
+        player._attr_volume_level = 40
+        player._cache.clear()
+        player.update_state(signal_event=False)
+
+        with (
+            patch.object(
+                type(player),
+                "announcement_features",
+                new_callable=PropertyMock,
+                return_value=set(),
+            ),
+            patch.object(controller, "_play_native_announcement") as native,
+            patch.object(controller, "_play_announcement") as fallback,
+        ):
+            await controller.play_announcement(
+                "player_1", "http://test/announcement.mp3", volume_level=60
+            )
+
+        native.assert_not_awaited()
+        fallback.assert_awaited_once()
+
+    async def test_native_route_without_volume_support_stays_native_by_default(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """With no level requested it defaults to no adjustment and keeps the native route."""
+        announcements: dict[str, object] = {}
+        controller, player, _render = self._make_player(mock_mass, announcements)
+
+        with (
+            patch.object(
+                type(player),
+                "announcement_features",
+                new_callable=PropertyMock,
+                return_value=set(),
+            ),
+            patch.object(controller, "_play_native_announcement") as native,
+            patch.object(controller, "_play_announcement") as fallback,
+        ):
+            await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        native.assert_awaited_once()
+        fallback.assert_not_awaited()
+
 
 class _AnnounceSetup(NamedTuple):
     """A player announcing through a linked protocol output, with the calls it makes mocked."""
@@ -5048,9 +5216,12 @@ class TestNativeAnnouncementVolumeRouting:
 
         with patch.object(
             type(setup.output),
-            "applies_announcement_volume",
+            "announcement_features",
             new_callable=PropertyMock,
-            return_value=True,
+            return_value={
+                AnnouncementFeature.SUPPORTS_VOLUME,
+                AnnouncementFeature.APPLIES_VOLUME,
+            },
         ):
             await self._announce(setup)
 
@@ -5183,6 +5354,28 @@ class TestPlayAnnouncementMessage:
         announce = AsyncMock()
         player.play_announcement = announce  # type: ignore[method-assign]
         return controller, announce
+
+    def _add_group(self, mock_mass: MagicMock, controller: PlayerController) -> MockPlayer:
+        """Register a group player that holds the controller's player as its only member."""
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        group = MockPlayer(provider, "group_1", "Group 1", player_type=PlayerType.GROUP)
+        group._attr_group_members = ["player_1"]
+        group._cache.clear()
+        controller._players["group_1"] = group
+        group.update_state(signal_event=False)
+        return group
+
+    def _members_coordinate(self) -> Any:
+        """Let every mock player report that it lines up an announcement start."""
+        return patch.object(
+            MockPlayer,
+            "announcement_features",
+            new_callable=PropertyMock,
+            return_value={
+                AnnouncementFeature.SUPPORTS_VOLUME,
+                AnnouncementFeature.COORDINATES_START,
+            },
+        )
 
     async def test_message_is_spoken_by_the_configured_engine(self, mock_mass: MagicMock) -> None:
         """A message is rendered by the default engine and announced as the rendered audio."""
@@ -5418,17 +5611,12 @@ class TestPlayAnnouncementMessage:
         announcements: dict[str, object] = {}
         use_real_create_task(mock_mass)
         controller, _announce = self._make_player(mock_mass, announcements)
-        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
-        group = MockPlayer(provider, "group_1", "Group 1", player_type=PlayerType.GROUP)
-        group._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
-        group._attr_group_members = ["player_1"]
-        group._cache.clear()
-        controller._players["group_1"] = group
-        group.update_state(signal_event=False)
+        self._add_group(mock_mass, controller)
         engine = self._make_engine()
 
-        with patch(
-            f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)
+        with (
+            patch(f"{self.ANNOUNCE_MODULE}.select_core_tts_engine", AsyncMock(return_value=engine)),
+            self._members_coordinate(),
         ):
             await controller.play_announcement("group_1", message="dinner is ready")
 
@@ -5440,6 +5628,104 @@ class TestPlayAnnouncementMessage:
             if call_args.args[0] == "player_1"
         )
         assert member_call.args[1]["announcement_url"] == "http://speech/spoken.mp3"
+
+    async def test_members_that_start_together_are_each_handed_the_announcement(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Members that announce natively and line up their start get the announcement each."""
+        announcements: dict[str, object] = {}
+        use_real_create_task(mock_mass)
+        controller, announce = self._make_player(mock_mass, announcements)
+        self._add_group(mock_mass, controller)
+        fallback = AsyncMock()
+        controller._play_announcement = fallback  # type: ignore[method-assign]
+
+        with self._members_coordinate():
+            await controller.play_announcement("group_1", url="http://test/clip.mp3")
+
+        announce.assert_awaited_once()
+        fallback.assert_not_awaited()
+
+    async def test_members_that_can_not_start_together_leave_it_to_the_group(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Members that announce natively but can not line up would be heard out of step."""
+        announcements: dict[str, object] = {}
+        use_real_create_task(mock_mass)
+        controller, announce = self._make_player(mock_mass, announcements)
+        group = self._add_group(mock_mass, controller)
+        fallback = AsyncMock()
+        controller._play_announcement = fallback  # type: ignore[method-assign]
+
+        await controller.play_announcement("group_1", url="http://test/clip.mp3")
+
+        # the group renders the clip through its own (synchronized) stream instead
+        assert fallback.await_args is not None
+        assert fallback.await_args.args[0] is group
+        announce.assert_not_awaited()
+
+    async def test_members_announcing_through_different_providers_leave_it_to_the_group(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Members that only line up within their own provider are not fanned out together."""
+        announcements: dict[str, object] = {}
+        use_real_create_task(mock_mass)
+        controller, announce = self._make_player(mock_mass, announcements)
+        other_provider = MockProvider("other_provider", instance_id="other", mass=mock_mass)
+        other_member = MockPlayer(other_provider, "player_2", "Player 2")
+        other_member._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        other_announce = AsyncMock()
+        other_member.play_announcement = other_announce  # type: ignore[method-assign]
+        other_member._cache.clear()
+        controller._players["player_2"] = other_member
+        other_member.update_state(signal_event=False)
+        group = self._add_group(mock_mass, controller)
+        group._attr_group_members = ["player_1", "player_2"]
+        group._cache.clear()
+        group.update_state(signal_event=False)
+        fallback = AsyncMock()
+        controller._play_announcement = fallback  # type: ignore[method-assign]
+
+        with self._members_coordinate():
+            await controller.play_announcement("group_1", url="http://test/clip.mp3")
+
+        # the group renders the clip through its own (synchronized) stream instead
+        assert fallback.await_args is not None
+        assert fallback.await_args.args[0] is group
+        announce.assert_not_awaited()
+        other_announce.assert_not_awaited()
+
+    async def test_group_decides_on_the_outputs_that_announce_once_the_audio_is_ready(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A member that loses its native support while the audio renders falls back as a group."""
+        announcements: dict[str, object] = {}
+        use_real_create_task(mock_mass)
+        controller, player, render = TestPlayAnnouncementCleanup()._make_player(
+            mock_mass, announcements
+        )
+        announce = AsyncMock()
+        player.play_announcement = announce  # type: ignore[method-assign]
+        group = self._add_group(mock_mass, controller)
+        fallback = AsyncMock()
+        controller._play_announcement = fallback  # type: ignore[method-assign]
+
+        async def _stop_announcing_natively() -> bool:
+            player._attr_supported_features.discard(PlayerFeature.PLAY_ANNOUNCEMENT)
+            player._cache.clear()
+            player.update_state(signal_event=False)
+            return True
+
+        render.wait_ready = AsyncMock(side_effect=_stop_announcing_natively)
+
+        with self._members_coordinate():
+            await controller.play_announcement("group_1", url="http://test/clip.mp3")
+
+        assert controller._resolve_announce_player(player) is None
+        # the group renders the clip through its own (synchronized) stream instead
+        assert fallback.await_args is not None
+        assert fallback.await_args.args[0] is group
+        announce.assert_not_awaited()
 
 
 class TestNativeAnnouncementRouting:
@@ -5600,6 +5886,49 @@ class TestNativeAnnouncementRouting:
 
         native_path.assert_awaited_once()
         assert native_path.call_args.args[1] is player
+
+    async def test_group_member_announcing_through_its_output_is_handed_the_announcement(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        A member announcing through its rendering output is fanned out.
+
+        The output that would announce for the member lines up the start, so the group
+        hands the clip to its members instead of playing it through its own stream.
+        """
+        use_real_create_task(mock_mass)
+        controller, _player, proto, native_path, generic_path = self._make_player_with_linked_child(
+            mock_mass,
+            PlaybackState.PLAYING,
+            active_protocol="proto_1",
+        )
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        group = MockPlayer(provider, "group_1", "Group 1", player_type=PlayerType.GROUP)
+        group._attr_group_members = ["player_1"]
+        group._cache.clear()
+        controller._players["group_1"] = group
+        group.update_state(signal_event=False)
+
+        # only the protocol child lines up its start, the member itself does not
+        with patch.object(
+            MockPlayer,
+            "announcement_features",
+            property(
+                lambda self: (
+                    {
+                        AnnouncementFeature.SUPPORTS_VOLUME,
+                        AnnouncementFeature.COORDINATES_START,
+                    }
+                    if self.player_id == "proto_1"
+                    else {AnnouncementFeature.SUPPORTS_VOLUME}
+                )
+            ),
+        ):
+            await controller.play_announcement("group_1", "http://test/announcement.mp3")
+
+        native_path.assert_awaited_once()
+        assert native_path.call_args.args[1] is proto
+        generic_path.assert_not_awaited()
 
 
 @pytest.mark.usefixtures("running_background_tasks")

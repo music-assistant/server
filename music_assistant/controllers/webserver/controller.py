@@ -41,6 +41,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
+from yarl import URL
 
 from music_assistant.constants import (
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
@@ -92,6 +93,7 @@ from .sendspin_proxy import SendspinProxyHandler
 from .websocket_client import WebsocketClientHandler
 
 if TYPE_CHECKING:
+    from music_assistant_models.auth import User
     from music_assistant_models.config_entries import CoreConfig
 
     from music_assistant import MusicAssistant
@@ -202,6 +204,8 @@ class WebserverController(CoreController):
         self.auth = AuthenticationManager(self)
         self.remote_access = RemoteAccessManager(self)
         self._sendspin_proxy = SendspinProxyHandler(self)
+        # the first-time setup makes exactly one admin, however many attempts arrive at once
+        self._setup_lock = asyncio.Lock()
         # Preview tokens keyed on the token in the URL, value is
         # (provider instance id or domain, item id, monotonic expiry).
         self._preview_tokens: dict[str, tuple[str, str, float]] = {}
@@ -961,8 +965,11 @@ class WebserverController(CoreController):
             # frontend (which will take care of onboarding)
 
         if not self.auth.has_users and not is_ingress_request:
-            # non ingress request and no users yet, redirect to setup
-            return web.Response(status=302, headers={"Location": "setup"})
+            # non ingress request and no users yet, redirect to setup; the query
+            # travels along as sent, so a reload keeps a client's return_url and device_name
+            query = request.rel_url.raw_query_string
+            location = f"setup?{query}" if query else "setup"
+            return web.Response(status=302, headers={"Location": location})
 
         # Serve the Vue frontend index.html
         return await self._server.serve_static(self._index_path, request)
@@ -970,14 +977,14 @@ class WebserverController(CoreController):
     async def _handle_login_page(self, request: web.Request) -> web.Response:
         """Handle request for login page (external client OAuth callback scenario)."""
         if not self.auth.has_users:
-            # not yet onboarded (no first admin user exists), redirect to setup
-            return_url = request.query.get("return_url", "")
-            device_name = request.query.get("device_name", "")
-            setup_url = (
-                f"/setup?return_url={return_url}&device_name={device_name}"
-                if return_url
-                else "/setup"
-            )
+            # not yet onboarded (no first admin user exists), redirect to setup with the
+            # client's hand-back, re-encoded so a return url with a query of its own survives
+            hand_back = {
+                key: value
+                for key in ("return_url", "device_name")
+                if (value := request.query.get(key))
+            }
+            setup_url = str(URL("/setup").with_query(hand_back))
             return web.Response(status=302, headers={"Location": setup_url})
         # Serve login page for external clients
         login_html_path = str(RESOURCES_DIR.joinpath("login.html"))
@@ -1266,8 +1273,8 @@ class WebserverController(CoreController):
             """
             return web.Response(text=error_html, content_type="text/html", status=500)
 
-    async def _handle_setup_page(self, request: web.Request) -> web.Response:
-        """Handle request for first-time setup page."""
+    async def _handle_setup_page(self, request: web.Request) -> web.StreamResponse:
+        """Handle request for the first-time setup page (the frontend's account step)."""
         # Setup forwards the admin token here with no consent step, so require a trusted destination.
         return_url = request.query.get("return_url")
         if return_url:
@@ -1279,33 +1286,50 @@ class WebserverController(CoreController):
             # this should not happen, but guard anyways
             return await self._render_error_page("Setup has already been completed.")
 
-        setup_html_path = str(RESOURCES_DIR.joinpath("setup.html"))
-        async with aiofiles.open(setup_html_path) as f:
-            html_content = await f.read()
-
-        return web.Response(text=html_content, content_type="text/html")
+        # the frontend recognizes the setup page by its path and opens the setup
+        # wizard on the account step, so serve the app itself here
+        return await self._server.serve_static(self._index_path, request)
 
     async def _handle_setup(self, request: web.Request) -> web.Response:
         """Handle first-time setup request to create admin user (non-ingress only)."""
         if self.auth.has_users:
+            # a conflict tells the frontend the admin exists, so it offers the sign-in
+            # instead of another attempt
             return web.json_response(
-                {"success": False, "error": "Setup already completed"}, status=400
+                {"success": False, "error": "Setup already completed"}, status=409
             )
 
         if not request.can_read_body:
             return web.Response(status=400, text="Body required")
 
-        body = await request.json()
-        username = body.get("username", "").strip()
+        try:
+            body = await request.json()
+        except json.JSONDecodeError, UnicodeDecodeError, LookupError:
+            body = None
+        # an undecodable or non-object body is a client error, not a server fault
+        if not isinstance(body, dict):
+            return web.Response(status=400, text="Invalid request body")
+        username = body.get("username", "")
         password = body.get("password", "")
+        display_name = body.get("display_name")
+        device_name = body.get("device_name")
+        if not (
+            isinstance(username, str)
+            and isinstance(password, str)
+            and (display_name is None or isinstance(display_name, str))
+            and (device_name is None or isinstance(device_name, str))
+        ):
+            return web.Response(status=400, text="Invalid request body")
+        username = username.strip()
+        display_name = (display_name or "").strip() or None
 
         # Validation
-        if not username or len(username) < 2:
+        if len(username) < 2:
             return web.json_response(
                 {"success": False, "error": "Username must be at least 2 characters"}, status=400
             )
 
-        if not password or len(password) < 8:
+        if len(password) < 8:
             return web.json_response(
                 {"success": False, "error": "Password must be at least 8 characters"}, status=400
             )
@@ -1324,15 +1348,17 @@ class WebserverController(CoreController):
                     status=500,
                 )
 
-            # Create admin user with password
-            user = await builtin_provider.create_user_with_password(
-                username, password, role=UserRole.ADMIN
+            user = await self._create_first_admin(
+                builtin_provider, username, password, display_name
             )
+            if user is None:
+                return web.json_response(
+                    {"success": False, "error": "Setup already completed"}, status=409
+                )
 
             # Create token for the new admin
-            device_name = body.get(
-                "device_name", f"Setup ({request.headers.get('User-Agent', 'Unknown')[:50]})"
-            )
+            if not device_name:
+                device_name = f"Setup ({request.headers.get('User-Agent', 'Unknown')[:50]})"
             token = await self.auth.create_token(user, device_name)
 
             self.logger.info("First admin user created: %s", username)
@@ -1361,6 +1387,30 @@ class WebserverController(CoreController):
             self.logger.exception("Error during setup")
             return web.json_response(
                 {"success": False, "error": f"Setup failed: {e!s}"}, status=500
+            )
+
+    async def _create_first_admin(
+        self,
+        provider: BuiltinLoginProvider,
+        username: str,
+        password: str,
+        display_name: str | None,
+    ) -> User | None:
+        """
+        Create the first admin account, or return None when the server already has a user.
+
+        Attempts that arrive together are taken one at a time, so only one of them makes the admin.
+
+        :param provider: The builtin login provider that stores the password.
+        :param username: The username of the admin.
+        :param password: The password of the admin.
+        :param display_name: The display name of the admin, if any.
+        """
+        async with self._setup_lock:
+            if self.auth.has_users:
+                return None
+            return await provider.create_user_with_password(
+                username, password, role=UserRole.ADMIN, display_name=display_name
             )
 
     def _resolve_preview_token(self, token: str) -> tuple[str, str] | None:

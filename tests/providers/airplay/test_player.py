@@ -23,6 +23,7 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.models.player import AnnouncementFeature
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_PCM_FORMAT,
     CONF_AIRPLAY_CREDENTIALS,
@@ -1125,9 +1126,13 @@ def test_announcements_are_advertised_only_with_live_audio(
     assert PlayerFeature.PLAY_ANNOUNCEMENT not in airplay_player.supported_features
 
 
-def test_player_applies_the_announcement_volume_itself(airplay_player: AirPlayPlayer) -> None:
-    """The clip is mixed into live audio, so the level is moved around it, not before it."""
-    assert airplay_player.applies_announcement_volume is True
+def test_player_reports_its_announcement_features(airplay_player: AirPlayPlayer) -> None:
+    """The clip is mixed into live audio at the requested level, in step across members."""
+    assert airplay_player.announcement_features == {
+        AnnouncementFeature.SUPPORTS_VOLUME,
+        AnnouncementFeature.APPLIES_VOLUME,
+        AnnouncementFeature.COORDINATES_START,
+    }
 
 
 def test_volume_reports_are_ignored_while_our_own_level_echoes(

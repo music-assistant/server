@@ -282,7 +282,6 @@ class LocalFileSystemProvider(MusicProvider):
         """Return the features supported by this Provider."""
         base_features = {*SUPPORTED_FEATURES}
         if self.media_content_type == "audiobooks":
-            # authors and narrators are artists, see supported_artist_types
             return {
                 ProviderFeature.LIBRARY_AUDIOBOOKS,
                 ProviderFeature.LIBRARY_ARTISTS,
