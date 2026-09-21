@@ -2195,7 +2195,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if field == SortField.RANDOM:
             return sql_field
         if field == SortField.RANDOM_PLAY_COUNT:
-            return f"RANDOM(), {self.db_table}.play_count"
+            return f"COALESCE({self.db_table}.play_count, 0), RANDOM()"
 
         # Qualify bare column names with table name to avoid ambiguity when JOINs are present
         if "." not in sql_field and "(" not in sql_field:
