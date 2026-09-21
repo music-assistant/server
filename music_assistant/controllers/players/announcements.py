@@ -61,6 +61,8 @@ from .helpers import AnnounceData, handle_player_command
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from music_assistant_models.player_queue import PlayerQueue
+
     from music_assistant import MusicAssistant
     from music_assistant.controllers.streams.announcements import AnnouncementRender
 
@@ -98,6 +100,8 @@ class AnnouncementsMixin:
         def get_player(  # noqa: D102
             self, player_id: str, raise_unavailable: bool = False
         ) -> Player | None: ...
+
+        def get_active_queue(self, player: Player) -> PlayerQueue | None: ...  # noqa: D102
 
         def iter_group_members(  # noqa: D102
             self,
@@ -760,7 +764,15 @@ class AnnouncementsMixin:
                 player.state.name,
                 prev_media_name,
             )
-            await self._handle_cmd_stop(player.player_id)
+            # Prefer the queue stop path when a MA queue is active: that parks
+            # resume_pos so restore can seek back after the announcement. A bare
+            # device stop leaves the queue PLAYING (player updates are suppressed
+            # while ATTR_ANNOUNCEMENT_IN_PROGRESS is set) and resume would then
+            # use wall-clock corrected_elapsed_time, seeking past the real position.
+            if active_queue := self.get_active_queue(player):
+                await self.mass.player_queues._handle_stop(active_queue.queue_id)
+            else:
+                await self._handle_cmd_stop(player.player_id)
             # wait for the player to stop
             await self._wait_for_playback_state(player, PlaybackState.IDLE, 10, 0.4)
         # unmute and adjust volume if needed

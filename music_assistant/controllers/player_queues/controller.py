@@ -898,7 +898,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue = self._queue_data[queue_id].queue
         queue_items = self._queue_data[queue_id].items
         resume_item = queue.current_item
-        if queue.state == PlaybackState.PLAYING:
+        queue_player = self.mass.players.get_player(queue_id)
+        # While an announcement is in progress, player→queue updates are suppressed so
+        # the queue can still look PLAYING even though the device was stopped. Prefer
+        # the parked resume_pos in that case instead of wall-clock corrected_elapsed_time
+        # (which keeps advancing for the whole announcement and seeks past the track).
+        announcement_in_progress = bool(
+            queue_player and queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
+        )
+        if queue.state == PlaybackState.PLAYING and not announcement_in_progress:
             # resume requested while already playing,
             # use current position as resume position
             resume_pos = queue.corrected_elapsed_time
@@ -920,7 +928,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             resume_pos = 0
 
         if resume_item is not None:
-            queue_player = self.mass.players.get_player(queue_id)
             if queue_player is None:
                 raise PlayerUnavailableError(f"Player {queue_id} is not available")
             if (
@@ -933,6 +940,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             if resume_item.media_type == MediaType.RADIO:
                 # we're not able to skip in online radio so this is pointless
                 resume_pos = 0
+            elif resume_item.duration and resume_pos > resume_item.duration:
+                # a stale PLAYING clock (or a bad parked value) must not seek past the end
+                resume_pos = int(resume_item.duration)
             await self.play_index(
                 queue_id, resume_item.queue_item_id, int(resume_pos), fade_in or False
             )

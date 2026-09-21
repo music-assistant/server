@@ -5994,6 +5994,30 @@ class TestPlayAnnouncementRestore:
 
         resume_mock.assert_awaited_once()
 
+    async def test_active_queue_is_stopped_to_park_resume_position(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        An active MA queue is stopped through the queue controller, not the device alone.
+
+        Device-only stop leaves the queue PLAYING while announcement updates are suppressed,
+        so resume would use wall-clock corrected_elapsed_time instead of the parked position.
+        """
+        controller, player, _resume_mock = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+        active_queue = MagicMock()
+        active_queue.queue_id = "player_1"
+        controller.get_active_queue = MagicMock(return_value=active_queue)  # type: ignore[method-assign]
+        queue_stop = AsyncMock()
+        mock_mass.player_queues._handle_stop = queue_stop
+        device_stop = controller._handle_cmd_stop
+
+        await controller._play_announcement(player, _announcement())
+
+        queue_stop.assert_awaited_once_with("player_1")
+        device_stop.assert_not_awaited()
+
     async def test_previous_announcement_is_not_restored(self, mock_mass: MagicMock) -> None:
         """A player still busy with an earlier announcement has no playback to restore."""
         controller, player, resume_mock = self._make_player(
