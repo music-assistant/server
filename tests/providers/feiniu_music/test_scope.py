@@ -14,8 +14,9 @@ from music_assistant_models.errors import (
     UnplayableMediaError,
 )
 
-from music_assistant.providers.feiniu_music.client import NetworkError, StreamRejectedError
+from music_assistant.providers.feiniu_music.client import NetworkError
 
+from .test_client import Response, client_with
 from .test_provider import provider as provider  # noqa: PLC0414
 from .test_provider import track_data
 
@@ -69,10 +70,13 @@ async def test_cover_must_match_account_listed_owner(provider: Any) -> None:
     provider._client.cover.assert_awaited_once_with("cover-test")
 
 
-async def test_legacy_cover_requires_current_collection_membership(provider: Any) -> None:
-    """Existing MA image references continue working only for currently listed artwork."""
-    assert await provider.resolve_image("cover-test") == b"synthetic-image"
-    provider._client.cover.assert_awaited_once_with("cover-test")
+async def test_legacy_cover_is_rejected_without_library_reads(provider: Any) -> None:
+    """Unsupported development-era references must not trigger full library scans."""
+    with pytest.raises(ProviderPermissionDenied):
+        await provider.resolve_image("cover-test")
+    provider._client.page.assert_not_awaited()
+    provider._client.playlists.assert_not_awaited()
+    provider._client.cover.assert_not_awaited()
 
 
 async def test_unknown_cover_lookup_failure_is_not_denial(provider: Any) -> None:
@@ -128,10 +132,13 @@ async def test_expired_collection_failure_does_not_use_stale_membership(provider
 
 async def test_stream_business_rejection_is_not_reauthentication(provider: Any) -> None:
     """A stream-context 100004 is unplayable, with no invented global permission meaning."""
-    provider._client.media_prefix = AsyncMock(side_effect=StreamRejectedError("synthetic"))
+    client = client_with(Response(b'{"code":100004}'))
+    client._token = "synthetic-token"
+    provider._client.audio_stream = client.audio_stream
     provider._reauthenticate = AsyncMock()
+    details = await provider.get_stream_details("track-test", MediaType.TRACK)
     with pytest.raises(UnplayableMediaError):
-        await provider.get_stream_details("track-test", MediaType.TRACK)
+        await anext(provider.get_audio_stream(details))
     provider._reauthenticate.assert_not_awaited()
     assert (await provider.get_track("track-test")).item_id == "track-test"
 

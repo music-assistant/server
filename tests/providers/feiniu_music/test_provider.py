@@ -43,9 +43,7 @@ async def test_closing_outer_audio_stream_releases_inner_response(provider: Any)
     client = client_with(response)
     client._token = "synthetic-token"
     provider._client.audio_stream = client.audio_stream
-    provider._client.media_prefix = AsyncMock(
-        return_value=({"status": 200, "signature": "id3-tagged-audio"}, b"ID3")
-    )
+    provider._client.media_prefix = AsyncMock(side_effect=AssertionError("Unexpected audio probe"))
     details = await provider.get_stream_details("track-test", MediaType.TRACK)
     stream = provider.get_audio_stream(details)
     assert (await anext(stream)).startswith(b"ID3")
@@ -337,9 +335,7 @@ async def test_stream_details_remain_inside_server(provider: Any) -> None:
     provider._client.detail = AsyncMock(
         return_value={"track": data, "audioSpec": data["audioSpec"]}
     )
-    provider._client.media_prefix = AsyncMock(
-        return_value=({"status": 206, "signature": "id3-tagged-audio"}, b"ID3")
-    )
+    provider._client.media_prefix = AsyncMock(side_effect=AssertionError("Unexpected audio probe"))
     details = await provider.get_stream_details("track-test", MediaType.TRACK)
     assert details.item_id == "track-test"
     assert details.provider == "feiniu-test"
@@ -349,6 +345,53 @@ async def test_stream_details_remain_inside_server(provider: Any) -> None:
     assert not details.extra_input_args
     assert details.allow_seek
     assert not details.can_seek
+    provider._client.media_prefix.assert_not_awaited()
+
+
+async def test_stream_opens_audio_once_and_yields_all_chunks(provider: Any) -> None:
+    """Metadata lookup does not open audio; the streaming path consumes one response."""
+    payload = b"ID3" + b"x" * 8192
+    client = client_with(Response(payload))
+    client._token = "synthetic-token"
+    provider._client.audio_stream = client.audio_stream
+    provider._client.media_prefix = AsyncMock(side_effect=AssertionError("Unexpected audio probe"))
+    details = await provider.get_stream_details("track-test", MediaType.TRACK)
+    assert not client._session.calls
+    chunks = [chunk async for chunk in provider.get_audio_stream(details)]
+    assert len(chunks) > 1
+    assert b"".join(chunks) == payload
+    assert len(client._session.calls) == 1
+
+
+@pytest.mark.parametrize("payload", [b'{"code":100004}', b"<html>login</html>"])
+async def test_stream_details_do_not_bypass_stream_validation(
+    provider: Any, payload: bytes
+) -> None:
+    """Error JSON and login HTML are rejected in the actual audio path."""
+    client = client_with(Response(payload))
+    client._token = "synthetic-token"
+    provider._client.audio_stream = client.audio_stream
+    details = await provider.get_stream_details("track-test", MediaType.TRACK)
+    with pytest.raises((StreamRejectedError, ProtocolError)):
+        await anext(provider.get_audio_stream(details))
+
+
+async def test_search_limit_closes_pages_immediately(provider: Any) -> None:
+    """A limit stops fetching and closes the suspended paging generator before returning."""
+    closed = asyncio.Event()
+
+    async def pages(_fetch: Any) -> AsyncIterator[dict[str, Any]]:
+        try:
+            yield track_data()
+            pytest.fail("Search fetched past its limit")
+        finally:
+            closed.set()
+
+    provider._pages = pages
+    provider._client.search = AsyncMock()
+    result = await provider.search("Example", [MediaType.TRACK], limit=1)
+    assert len(result.tracks) == 1
+    assert closed.is_set()
 
 
 def test_only_verified_read_features_are_declared() -> None:

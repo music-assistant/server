@@ -204,29 +204,20 @@ class FeiNiuProvider(MusicProvider):
             if kind not in media_types:
                 continue
             found = []
-            async for item in self._pages(
-                partial(self._client.search, kind.value, search_query, size=min(limit, 100))
-            ):
-                found.append(self._bind_images(parser(item, self.instance_id)))
-                if len(found) >= limit:
-                    break
+            async with aclosing(
+                self._pages(
+                    partial(self._client.search, kind.value, search_query, size=min(limit, 100))
+                )
+            ) as pages:
+                async for item in pages:
+                    found.append(self._bind_images(parser(item, self.instance_id)))
+                    if len(found) >= limit:
+                        break
             setattr(results, attribute, found)
         return results
 
     async def resolve_image(self, path: str) -> bytes:
         """Proxy authenticated artwork as bytes, never as a credential-bearing URL."""
-        if "/" not in path:
-            # Earlier development builds stored bare cover IDs in MA. Resolve
-            # those only through listed artwork; do not trust cover HTTP success.
-            for kind in ("track", "album", "artist", "playlist"):
-                items = await self._collection(kind)
-                if any(
-                    unquote(image.rsplit("/", 1)[-1]) == path
-                    for item in items.values()
-                    for image in self._image_paths(item)
-                ):
-                    return await self._call(lambda: self._client.cover(path))
-            raise ProviderPermissionDenied("Artwork is outside the current FeiNiu library")
         parts = path.split("/")
         if len(parts) != 5 or parts[:2] != ["scoped", self._image_scope]:
             raise ProviderPermissionDenied("Unknown FeiNiu artwork owner")
@@ -247,12 +238,6 @@ class FeiNiuProvider(MusicProvider):
         track = data.get("track")
         if not isinstance(track, dict) or track.get("guid") != item_id or track.get("isCue"):
             raise UnplayableMediaError("Missing track or unsupported CUE track")
-        summary, _ = await self._call(lambda: self._probe_audio(item_id))
-        if summary["status"] not in {200, 206} or summary["signature"] in {
-            "unknown",
-            "html-or-json",
-        }:
-            raise UnplayableMediaError("FeiNiu did not return recognized audio")
         spec = data.get("audioSpec") or {}
         return StreamDetails(
             provider=self.instance_id,
@@ -317,9 +302,6 @@ class FeiNiuProvider(MusicProvider):
         ) as err:
             self.logger.warning("Optional FeiNiu lyrics unavailable (%s)", type(err).__name__)
         return result
-
-    async def _probe_audio(self, item_id: str) -> tuple[dict[str, Any], bytes]:
-        return await self._client.media_prefix("audio", item_id, limit=4096, validate=True)
 
     def _check_open(self) -> None:
         if self._closed:
