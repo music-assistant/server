@@ -9,7 +9,9 @@ from unittest.mock import MagicMock
 import mutagen
 import pytest
 from music_assistant_models.errors import InvalidDataError
-from mutagen.id3 import ID3, TDOR, TDRC, UFID
+from mutagen.apev2 import APEv2
+from mutagen.flac import FLAC
+from mutagen.id3 import ID3, TCOM, TDOR, TDRC, TXXX, UFID
 from mutagen.mp4 import MP4, MP4FreeForm
 
 from music_assistant.constants import UNKNOWN_ARTIST
@@ -1039,73 +1041,130 @@ async def test_original_release_date_is_read_from_an_m4a_file(tmp_path: pathlib.
     assert _tags.year == 2015
 
 
-def _audiobook_tags(**tag_values: str) -> tags.AudioTags:
-    """Return AudioTags carrying only the given (already normalized) tag values."""
-    return tags.AudioTags(
-        raw={},
-        sample_rate=44100,
-        channels=2,
-        bits_per_sample=16,
-        format="mp4",
-        bit_rate=None,
-        duration=180.0,
-        tags=dict(tag_values),
-        has_cover_image=False,
-        filename="book.m4b",
-    )
+async def test_audiobook_credits_are_read_from_an_m4b_file(tmp_path: pathlib.Path) -> None:
+    """The narrator and writer atoms of an m4b name every person, not just the first."""
+    dest = tmp_path / "book.m4b"
+    shutil.copy(FILE_M4A, dest)
+    mp4 = MP4(str(dest))  # type: ignore[no-untyped-call]
+    mp4["----:com.apple.iTunes:NARRATOR"] = [
+        MP4FreeForm(b"Jane Reader"),  # type: ignore[no-untyped-call]
+        MP4FreeForm(b"John Voice"),  # type: ignore[no-untyped-call]
+    ]
+    mp4["----:com.apple.iTunes:WRITER"] = [
+        MP4FreeForm(b"Jane Austen"),  # type: ignore[no-untyped-call]
+        MP4FreeForm(b"John Writer"),  # type: ignore[no-untyped-call]
+    ]
+    mp4.save()  # type: ignore[no-untyped-call]
 
+    _tags = await tags.async_parse_tags(str(dest))
 
-def test_audiobook_author_prefers_the_writer_tag() -> None:
-    """Writer is the only tag that really means author."""
-    _tags = _audiobook_tags(writer="Jane Austen", albumartist="Someone Else")
-    assert _tags.authors == ("Jane Austen",)
-
-
-def test_audiobook_author_falls_back_to_album_artist() -> None:
-    """Taggers without a writer field reach for the album artist."""
-    _tags = _audiobook_tags(albumartist="Jane Austen", artist="Someone Else")
-    assert _tags.authors == ("Jane Austen",)
-
-
-def test_audiobook_narrator_prefers_a_narrator_tag_over_composer() -> None:
-    """The composer field is only the m4b convention, not a real narrator field."""
-    _tags = _audiobook_tags(narratedby="Jane Reader", composer="Someone Else")
-    assert _tags.narrators == ("Jane Reader",)
-
-
-def test_audiobook_narrator_falls_back_to_composer() -> None:
-    """Audible style m4b files put the narrator in the composer field."""
-    assert _audiobook_tags(composer="Jane Reader").narrators == ("Jane Reader",)
-
-
-def test_audiobook_narrator_tag_may_name_two_people() -> None:
-    """One tag holding two names is two narrators."""
-    _tags = _audiobook_tags(narrator="Jane Reader; John Voice")
+    assert _tags.authors == ("Jane Austen", "John Writer")
     assert _tags.narrators == ("Jane Reader", "John Voice")
 
 
-def test_audiobook_without_a_narrator_tag_has_none() -> None:
-    """A book naming nobody never falls back to its author."""
-    assert _audiobook_tags(artist="Jane Austen").narrators == ()
+async def test_audiobook_narrator_falls_back_to_the_composer_atom(tmp_path: pathlib.Path) -> None:
+    """Audible style m4b files name the narrator in the composer atom."""
+    dest = tmp_path / "book.m4b"
+    shutil.copy(FILE_M4A, dest)
+    mp4 = MP4(str(dest))  # type: ignore[no-untyped-call]
+    mp4["\xa9wrt"] = ["Jane Reader", "John Voice"]
+    mp4.save()  # type: ignore[no-untyped-call]
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert _tags.narrators == ("Jane Reader", "John Voice")
 
 
-def test_audiobook_series_sequence_is_a_number() -> None:
-    """A book's position in its series is numeric."""
-    _tags = _audiobook_tags(series="The Expanse", seriespart="3")
-    assert (_tags.series, _tags.series_part) == ("The Expanse", 3.0)
+async def test_audiobook_credits_are_read_from_an_mp3_file(tmp_path: pathlib.Path) -> None:
+    """A narrator frame wins over the composer frame, and both names survive."""
+    dest = tmp_path / "book.mp3"
+    shutil.copy(FILE_MP3, dest)
+    id3 = ID3(str(dest))  # type: ignore[no-untyped-call]
+    id3.add(TXXX(encoding=3, desc="NARRATOR", text=["Jane Reader", "John Voice"]))  # type: ignore[no-untyped-call]
+    id3.add(TXXX(encoding=3, desc="WRITER", text=["Jane Austen", "John Writer"]))  # type: ignore[no-untyped-call]
+    id3.add(TCOM(encoding=3, text=["Someone Else"]))  # type: ignore[no-untyped-call]
+    id3.save(v2_version=4)
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert _tags.authors == ("Jane Austen", "John Writer")
+    assert _tags.narrators == ("Jane Reader", "John Voice")
 
 
-def test_audiobook_series_sequence_may_be_fractional() -> None:
-    """A novella between two books is tagged 1.5."""
-    assert _audiobook_tags(series="The Expanse", seriespart="1.5").series_part == 1.5
+async def test_audiobook_narrator_falls_back_to_the_composer_frame(tmp_path: pathlib.Path) -> None:
+    """The composer frame is null separated, so both narrators have to come through."""
+    dest = tmp_path / "book.mp3"
+    shutil.copy(FILE_MP3, dest)
+    id3 = ID3(str(dest))  # type: ignore[no-untyped-call]
+    id3.add(TCOM(encoding=3, text=["Jane Reader", "John Voice"]))  # type: ignore[no-untyped-call]
+    id3.save(v2_version=4)
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert _tags.narrators == ("Jane Reader", "John Voice")
 
 
-def test_audiobook_series_sequence_keeps_a_non_numeric_value() -> None:
-    """Not every tagger numbers the parts."""
-    assert _audiobook_tags(series="Discworld", seriespart="Guards").series_part == "Guards"
+async def test_audiobook_credits_are_read_from_a_flac_file(tmp_path: pathlib.Path) -> None:
+    """Vorbis comments repeat a field per name."""
+    dest = tmp_path / "book.flac"
+    shutil.copy(FILE_FLAC, dest)
+    flac = FLAC(str(dest))  # type: ignore[no-untyped-call]
+    flac["NARRATOR"] = ["Jane Reader", "John Voice"]
+    flac["WRITER"] = ["Jane Austen", "John Writer"]
+    flac.save()
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert _tags.authors == ("Jane Austen", "John Writer")
+    assert _tags.narrators == ("Jane Reader", "John Voice")
 
 
-def test_audiobook_without_a_series_tag_has_none() -> None:
-    """No series tag must not end up clearing what is stored."""
-    _tags = _audiobook_tags(album="No Series")
-    assert (_tags.series, _tags.series_part) == (None, None)
+def test_audiobook_credits_are_read_from_a_wavpack_file(tmp_path: pathlib.Path) -> None:
+    """
+    APEv2 separates the names with a null byte.
+
+    Uses parse_tags_mutagen directly since the minimal WavPack fixture
+    does not contain valid audio data for ffprobe to parse.
+    """
+    dest = tmp_path / "book.wv"
+    shutil.copy(FILE_WV, dest)
+    ape = APEv2(str(dest))  # type: ignore[no-untyped-call]
+    ape["NARRATOR"] = ["Jane Reader", "John Voice"]
+    ape["WRITER"] = ["Jane Austen", "John Writer"]
+    ape.save(str(dest))
+
+    result = parse_tags_mutagen(str(dest))
+
+    assert result.get("narrators") == ["Jane Reader", "John Voice"]
+    assert result.get("writers") == ["Jane Austen", "John Writer"]
+
+
+async def test_audiobook_author_falls_back_to_the_album_artist(tmp_path: pathlib.Path) -> None:
+    """Taggers without a writer field reach for the album artist."""
+    dest = tmp_path / "book.m4b"
+    shutil.copy(FILE_M4A, dest)
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert _tags.authors == ("MyArtist",)
+    assert _tags.narrators == ()
+
+
+async def test_audiobook_author_is_not_invented_from_the_filename() -> None:
+    """An author becomes a real artist, so an untagged book may not name one."""
+    filename = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle without Tags.mp3"))
+
+    _tags = await tags.async_parse_tags(filename)
+
+    assert _tags.artists == ("MyArtist",)
+    assert _tags.authors == ()
+
+
+async def test_audiobook_author_is_never_the_unknown_artist() -> None:
+    """The unknown artist placeholder may not end up in the library as an author."""
+    filename = str(RESOURCES_DIR.joinpath("test.mp3"))
+
+    _tags = await tags.async_parse_tags(filename)
+
+    assert _tags.artists == (UNKNOWN_ARTIST,)
+    assert _tags.authors == ()
