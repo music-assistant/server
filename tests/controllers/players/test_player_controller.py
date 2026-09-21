@@ -6011,7 +6011,7 @@ class TestPlayAnnouncementRestore:
         controller.get_active_queue = MagicMock(return_value=active_queue)  # type: ignore[method-assign]
         queue_stop = AsyncMock()
         mock_mass.player_queues._handle_stop = queue_stop
-        device_stop = controller._handle_cmd_stop
+        device_stop = cast("AsyncMock", controller._handle_cmd_stop)
 
         await controller._play_announcement(player, _announcement())
 
