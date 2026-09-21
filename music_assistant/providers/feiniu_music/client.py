@@ -16,41 +16,46 @@ from urllib.parse import quote, urlencode, urlsplit
 from weakref import WeakValueDictionary
 
 import aiohttp
+from music_assistant_models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+    ProviderPermissionDenied,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+    UnplayableMediaError,
+)
 
 _LOGIN_LOCKS: WeakValueDictionary[tuple[asyncio.AbstractEventLoop, str], asyncio.Lock] = (
     WeakValueDictionary()
 )
 
 
-class FeiNiuError(Exception):
-    """An error whose message contains no server response or credentials."""
-
-
-class AuthenticationError(FeiNiuError):
+class AuthenticationError(LoginFailed):
     """Authentication is required or rejected."""
 
 
-class NotFoundError(FeiNiuError):
+class NotFoundError(MediaNotFoundError):
     """A resource was not found."""
 
 
-class PermissionDeniedError(FeiNiuError):
+class PermissionDeniedError(ProviderPermissionDenied):
     """The server explicitly rejected an operation (HTTP 403)."""
 
 
-class StreamRejectedError(FeiNiuError):
+class StreamRejectedError(UnplayableMediaError):
     """The stream endpoint refused audio; the precise reason may be version-specific."""
 
 
-class ProtocolError(FeiNiuError):
+class ProtocolError(InvalidDataError):
     """The server returned an unexpected response."""
 
 
-class NetworkError(FeiNiuError):
+class NetworkError(ResourceTemporarilyUnavailable):
     """Connection or timeout failure."""
 
 
-class RateLimitError(FeiNiuError):
+class RateLimitError(RateLimited):
     """Server rate limit; callers must back off."""
 
 
@@ -124,9 +129,9 @@ def check_media_response(status: int, data: bytes, *, stream: bool) -> None:
     if status == 404:
         raise NotFoundError("Media not found")
     if status == 429:
-        raise RateLimitError("Media rate limit")
+        raise RateLimitError("Media rate limit", backoff_time=60)
     if status >= 500:
-        raise NetworkError("Media service temporarily unavailable")
+        raise NetworkError("Media service temporarily unavailable", backoff_time=30)
     if status not in {200, 206}:
         raise ProtocolError("Unexpected media HTTP response")
     if data.lstrip().startswith(b"{"):
@@ -398,7 +403,7 @@ class FeiNiuClient:
                 async for chunk in response.content.iter_chunked(65536):
                     yield chunk
         except TimeoutError, aiohttp.ClientError, OSError:
-            raise NetworkError("Audio connection failed or timed out") from None
+            raise NetworkError("Audio connection failed or timed out", backoff_time=30) from None
 
     async def media_prefix(
         self,
@@ -463,9 +468,9 @@ class FeiNiuClient:
         if status == 404:
             raise NotFoundError("HTTP 404")
         if status == 429:
-            raise RateLimitError("HTTP 429")
+            raise RateLimitError("HTTP 429", backoff_time=60)
         if status >= 500:
-            raise NetworkError("Service temporarily unavailable")
+            raise NetworkError("Service temporarily unavailable", backoff_time=30)
         if status != 200:
             raise ProtocolError(f"Unexpected HTTP status {status}")
         try:
@@ -543,7 +548,7 @@ class FeiNiuClient:
                         raise ProtocolError("Response exceeds size limit")
                     return response.status, response.headers, bytes(chunks)
             except TimeoutError, aiohttp.ClientError, OSError:
-                raise NetworkError("HTTP connection failed or timed out") from None
+                raise NetworkError("HTTP connection failed or timed out", backoff_time=30) from None
 
     async def _throttle(self) -> None:
         if self._acquire:

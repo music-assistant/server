@@ -10,7 +10,7 @@ from copy import deepcopy
 from dataclasses import replace
 from functools import partial
 from time import monotonic
-from typing import Any, NoReturn, cast
+from typing import Any, cast
 from urllib.parse import quote, unquote
 from uuid import uuid4
 
@@ -42,17 +42,7 @@ from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.music_provider import MusicProvider
 
-from .client import (
-    AuthenticationError,
-    FeiNiuClient,
-    FeiNiuError,
-    NetworkError,
-    NotFoundError,
-    PermissionDeniedError,
-    ProtocolError,
-    RateLimitError,
-    StreamRejectedError,
-)
+from .client import AuthenticationError, FeiNiuClient
 from .lyrics import parse_lyrics
 from .parsers import (
     audio_format,
@@ -298,10 +288,8 @@ class FeiNiuProvider(MusicProvider):
                 return
             except AuthenticationError:
                 if emitted or attempt:
-                    raise LoginFailed("FeiNiu music session expired") from None
+                    raise
                 await self._reauthenticate(generation)
-            except FeiNiuError as err:
-                self._raise_error(err)
 
     @use_cache(expiration=30)
     async def _track_detail(self, item_id: str, cache_id: str) -> dict[str, Any]:
@@ -421,23 +409,20 @@ class FeiNiuProvider(MusicProvider):
         raise InvalidDataError("FeiNiu playlist exceeded its safety limit")
 
     async def _login(self) -> None:
-        try:
-            user = await self._client.login(
-                str(self.get_setup_value("username")),
-                str(self.get_setup_value("password")),
-                str(self.get_setup_value("device_id")),
-            )
-            account_id = user.get("guid")
-            if not isinstance(account_id, str) or not account_id:
-                raise LoginFailed("FeiNiu login returned no account identity")
-            if self._account_id is not None and self._account_id != account_id:
-                self._closed = True
-                raise LoginFailed("FeiNiu account identity changed; reconfigure the provider")
-            self._account_id = account_id
-            identity = [self.instance_id, self.get_setup_value("url"), account_id]
-            self._image_scope = hashlib.sha256(repr(identity).encode()).hexdigest()[:24]
-        except FeiNiuError as err:
-            self._raise_error(err)
+        user = await self._client.login(
+            str(self.get_setup_value("username")),
+            str(self.get_setup_value("password")),
+            str(self.get_setup_value("device_id")),
+        )
+        account_id = user.get("guid")
+        if not isinstance(account_id, str) or not account_id:
+            raise LoginFailed("FeiNiu login returned no account identity")
+        if self._account_id is not None and self._account_id != account_id:
+            self._closed = True
+            raise LoginFailed("FeiNiu account identity changed; reconfigure the provider")
+        self._account_id = account_id
+        identity = [self.instance_id, self.get_setup_value("url"), account_id]
+        self._image_scope = hashlib.sha256(repr(identity).encode()).hexdigest()[:24]
         self._generation += 1
 
     async def _reauthenticate(self, generation: int) -> None:
@@ -464,10 +449,8 @@ class FeiNiuProvider(MusicProvider):
                 return result
             except AuthenticationError:
                 if attempt:
-                    raise LoginFailed("FeiNiu music authentication failed") from None
+                    raise
                 await self._reauthenticate(generation)
-            except FeiNiuError as err:
-                self._raise_error(err)
         raise LoginFailed("FeiNiu music authentication failed")
 
     async def _pages(
@@ -503,23 +486,3 @@ class FeiNiuProvider(MusicProvider):
         ):
             raise InvalidDataError("FeiNiu returned an invalid page")
         return result["list"], result["total"]
-
-    @staticmethod
-    def _raise_error(err: FeiNiuError) -> NoReturn:
-        if isinstance(err, PermissionDeniedError):
-            raise ProviderPermissionDenied("FeiNiu denied this media operation") from None
-        if isinstance(err, StreamRejectedError):
-            raise UnplayableMediaError("FeiNiu rejected the audio request") from None
-        if isinstance(err, AuthenticationError):
-            raise LoginFailed("FeiNiu music authentication failed") from None
-        if isinstance(err, NotFoundError):
-            raise MediaNotFoundError("FeiNiu resource not found") from None
-        if isinstance(err, RateLimitError):
-            raise RateLimited("FeiNiu rate limit", backoff_time=60) from None
-        if isinstance(err, NetworkError):
-            raise ResourceTemporarilyUnavailable(
-                "FeiNiu connection failed", backoff_time=30
-            ) from None
-        if isinstance(err, ProtocolError):
-            raise InvalidDataError(str(err)) from None
-        raise InvalidDataError("Unexpected FeiNiu response") from None

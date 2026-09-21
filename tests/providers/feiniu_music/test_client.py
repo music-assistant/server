@@ -2,12 +2,22 @@
 
 import asyncio
 import json
+import traceback
 from collections.abc import AsyncIterator
 from typing import Any, Self
 from unittest.mock import AsyncMock
 
 import aiohttp
 import pytest
+from music_assistant_models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+    ProviderPermissionDenied,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+    UnplayableMediaError,
+)
 
 from music_assistant.providers.feiniu_music.client import (
     AuthenticationError,
@@ -22,6 +32,26 @@ from music_assistant.providers.feiniu_music.client import (
     classify_media,
     make_signature,
 )
+
+
+@pytest.mark.parametrize(
+    ("client_error", "ma_error"),
+    [
+        (AuthenticationError, LoginFailed),
+        (NotFoundError, MediaNotFoundError),
+        (PermissionDeniedError, ProviderPermissionDenied),
+        (StreamRejectedError, UnplayableMediaError),
+        (ProtocolError, InvalidDataError),
+        (NetworkError, ResourceTemporarilyUnavailable),
+        (RateLimitError, RateLimited),
+    ],
+)
+def test_client_errors_inherit_ma_types(client_error: Any, ma_error: Any) -> None:
+    """Native errors have MA semantics without a provider conversion step."""
+    error = client_error("synthetic")
+    assert isinstance(error, ma_error)
+    assert error.error_code == ma_error.error_code
+    assert error.translation_key == ma_error.translation_key
 
 
 @pytest.mark.parametrize(
@@ -209,12 +239,17 @@ async def test_incomplete_playlist_collection_fails(payload: dict[str, Any]) -> 
         (302, ProtocolError),
     ],
 )
-async def test_http_errors_never_echo_response(status: Any, error: Any) -> None:
+@pytest.mark.parametrize("media", [False, True])
+async def test_http_errors_never_echo_response(status: Any, error: Any, media: bool) -> None:
     """Http errors never echo response."""
     client = client_with(Response(b"SECRET_TOKEN_AND_PRIVATE_PATH", status))
+    client._token = "synthetic-token"
+    operation = anext(client.audio_stream("synthetic-id")) if media else client.current_user()
     with pytest.raises(error) as raised:
-        await client.current_user()
+        await operation
     assert "SECRET" not in str(raised.value)
+    if status in {429, 500}:
+        assert raised.value.backoff_time == (60 if status == 429 else 30)
     assert len(client._session.calls) == 1
     assert client._session.calls[0][2]["allow_redirects"] is False
 
@@ -244,12 +279,17 @@ async def test_malformed_success_is_not_empty_library(payload: Any) -> None:
 
 
 @pytest.mark.parametrize("failure", [TimeoutError(), aiohttp.ClientConnectionError("SECRET")])
-async def test_network_failure_is_finite_and_sanitized(failure: Any) -> None:
+@pytest.mark.parametrize("media", [False, True])
+async def test_network_failure_is_finite_and_sanitized(failure: Any, media: bool) -> None:
     """Network failure is finite and sanitized."""
     client = client_with(failure)
+    client._token = "synthetic-token"
+    operation = anext(client.audio_stream("synthetic-id")) if media else client.current_user()
     with pytest.raises(NetworkError) as raised:
-        await client.current_user()
+        await operation
     assert "SECRET" not in str(raised.value)
+    assert "SECRET" not in "".join(traceback.format_exception(raised.value))
+    assert raised.value.backoff_time == 30
     assert len(client._session.calls) == 1
 
 

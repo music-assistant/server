@@ -3,6 +3,8 @@
 import asyncio
 import json
 import logging
+import traceback
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -14,7 +16,15 @@ from music_assistant_models.errors import InvalidDataError, LoginFailed
 from music_assistant.constants import UNKNOWN_ARTIST, UNKNOWN_ARTIST_ID_MBID
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.providers.feiniu_music import SUPPORTED_FEATURES
-from music_assistant.providers.feiniu_music.client import AuthenticationError, NetworkError
+from music_assistant.providers.feiniu_music.client import (
+    AuthenticationError,
+    NetworkError,
+    NotFoundError,
+    PermissionDeniedError,
+    ProtocolError,
+    RateLimitError,
+    StreamRejectedError,
+)
 from music_assistant.providers.feiniu_music.parsers import parse_track
 from music_assistant.providers.feiniu_music.provider import FeiNiuProvider
 
@@ -181,7 +191,7 @@ async def test_failed_relogin_does_not_lock_out_user_by_repeated_attempts(
     provider: Any,
 ) -> None:
     """One failed reauthentication is terminal for that generation."""
-    provider._login = AsyncMock(side_effect=LoginFailed("synthetic failure"))
+    provider._login = AsyncMock(side_effect=AuthenticationError("synthetic failure"))
     for _ in range(3):
         with pytest.raises(LoginFailed):
             await provider._reauthenticate(1)
@@ -191,11 +201,114 @@ async def test_failed_relogin_does_not_lock_out_user_by_repeated_attempts(
 async def test_reauthentication_retries_operation_only_once(provider: Any) -> None:
     """Repeated 401 responses stop after one retry."""
     provider._reauthenticate = AsyncMock()
-    action = AsyncMock(side_effect=AuthenticationError("synthetic failure"))
-    with pytest.raises(LoginFailed):
+    error = AuthenticationError("synthetic failure")
+    action = AsyncMock(side_effect=error)
+    with pytest.raises(LoginFailed) as raised:
         await provider._call(action)
+    assert raised.value is error
     assert action.await_count == 2
     assert provider._reauthenticate.await_count == 1
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        NotFoundError("synthetic"),
+        PermissionDeniedError("synthetic"),
+        StreamRejectedError("synthetic"),
+        ProtocolError("synthetic"),
+        NetworkError("synthetic", backoff_time=30),
+        RateLimitError("synthetic", backoff_time=60),
+    ],
+)
+async def test_call_preserves_client_error_and_cause(provider: Any, error: Exception) -> None:
+    """Non-authentication errors retain their instance, cause and original throw site."""
+    cause = ValueError("synthetic origin")
+    provider._reauthenticate = AsyncMock()
+
+    async def action() -> None:
+        raise error from cause
+
+    with pytest.raises(type(error)) as raised:
+        await provider._call(action)
+    assert raised.value is error
+    assert raised.value.__cause__ is cause
+    assert traceback.extract_tb(raised.value.__traceback__)[-1].name == "action"
+    provider._reauthenticate.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        AuthenticationError("synthetic"),
+        NotFoundError("synthetic"),
+        PermissionDeniedError("synthetic"),
+        StreamRejectedError("synthetic"),
+        ProtocolError("synthetic"),
+        NetworkError("synthetic", backoff_time=30),
+        RateLimitError("synthetic", backoff_time=60),
+    ],
+)
+async def test_login_propagates_original_client_error(provider: Any, error: Exception) -> None:
+    """Login needs no conversion and cannot advance the generation on failure."""
+    provider.get_setup_value = lambda _key: "synthetic"
+    provider._client.login = AsyncMock(side_effect=error)
+    with pytest.raises(type(error)) as raised:
+        await provider._login()
+    assert raised.value is error
+    assert provider._generation == 1
+    provider._client.login.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "error_type"),
+    [(403, b"SECRET", PermissionDeniedError), (200, b'{"code":100004}', StreamRejectedError)],
+)
+async def test_audio_refusal_does_not_reauthenticate(
+    provider: Any,
+    status: int,
+    body: bytes,
+    error_type: Any,
+) -> None:
+    """Both HTTP permission denial and native stream rejection stop before audio delivery."""
+    client = client_with(Response(body, status))
+    client._token = "synthetic-token"
+    provider._client.audio_stream = client.audio_stream
+    provider._reauthenticate = AsyncMock()
+    details = SimpleNamespace(provider=provider.instance_id, item_id="track-test", data="test-load")
+    with pytest.raises(error_type) as raised:
+        await anext(provider.get_audio_stream(details))
+    assert "audio_stream" in [
+        frame.name for frame in traceback.extract_tb(raised.value.__traceback__)
+    ]
+    provider._reauthenticate.assert_not_awaited()
+    assert len(client._session.calls) == 1
+
+
+@pytest.mark.parametrize("emit_first", [False, True])
+async def test_audio_authentication_retry_is_bounded(provider: Any, emit_first: bool) -> None:
+    """An expired stream retries once before any audio, and never after a delivered block."""
+    calls = 0
+    error = AuthenticationError("synthetic expiry")
+
+    async def audio_stream(_item_id: str) -> AsyncIterator[bytes]:
+        nonlocal calls
+        calls += 1
+        if emit_first:
+            yield b"audio"
+        raise error
+
+    provider._client.audio_stream = audio_stream
+    provider._reauthenticate = AsyncMock()
+    details = SimpleNamespace(provider=provider.instance_id, item_id="track-test", data="test-load")
+    stream = provider.get_audio_stream(details)
+    if emit_first:
+        assert await anext(stream) == b"audio"
+    with pytest.raises(LoginFailed) as raised:
+        await anext(stream)
+    assert raised.value is error
+    assert calls == (1 if emit_first else 2)
+    assert provider._reauthenticate.await_count == (0 if emit_first else 1)
 
 
 async def test_library_sync_reads_all_pages(provider: Any) -> None:
