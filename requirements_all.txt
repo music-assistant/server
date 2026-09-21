@@ -103,7 +103,7 @@ transformers==5.14.1
 usearch==2.26.0
 uv>=0.8.0
 websocket-client==1.9.0
-wiim==0.1.7
+wiim==0.1.8
 xmltodict==1.0.4
 ya-dialogs-api==2.4.0
 ya-passport-auth[ma]==2.0.1
