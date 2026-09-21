@@ -24,7 +24,12 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.controllers.streams.audio import overlay_active
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, is_valid_mac_address
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.player import (
+    AnnouncementFeature,
+    DeviceInfo,
+    Player,
+    PlayerMedia,
+)
 from music_assistant.models.setup_flow import AbortFlow
 
 from . import announce
@@ -346,9 +351,13 @@ class AirPlayPlayer(Player):
         return self.stream.running and self.stream.connected
 
     @property
-    def applies_announcement_volume(self) -> bool:
-        """Return True: the announcement volume is applied around the mixed clip."""
-        return True
+    def announcement_features(self) -> set[AnnouncementFeature]:
+        """Return the full set: the clip is mixed into live audio, in step across members."""
+        return {
+            AnnouncementFeature.SUPPORTS_VOLUME,
+            AnnouncementFeature.APPLIES_VOLUME,
+            AnnouncementFeature.COORDINATES_START,
+        }
 
     @property
     def can_group_with(self) -> set[str]:

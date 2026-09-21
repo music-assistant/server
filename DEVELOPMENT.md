@@ -169,20 +169,24 @@ Will follow soon™
 The manifest file contains metadata and configuration about a provider. The supported properties are:
 | Name  | Description  | Type  |
 |---|---|---|
-| type  | `music`, `player`, `metadata` or `plugin`  | string  |
+| type  | `music`, `player`, `metadata`, `plugin` or `audio_analysis`  | string  |
 | domain  | The internal unique id of the provider, e.g. `spotify` or `ytmusic`  | string  |
 | name  | The full name of the provider, e.g. `Spotify` or `Youtube Music`  | string  |
 | description  | The full description of the provider  | string  |
 | codeowners  | List of Github names of the codeowners of the provider  | array[string]  |
-| config_entries  | List of configurable properties for the provider, e.g. `username` or `password`*. | array[object]  |
-| config_entries.key  | The unique key of the config entry, used to obtain the value in the provider code  | string  |
-| config_entries.type  | The type of the config entry. Possible values: `string`, `secure_string` (for passwords), `boolean`, `float`, `integer`, `label` (for a single line of text in the settings page)  | string  |
-| config_entries.label | The label of the config entry. Used in the settings page | string |
-| requirements | List of requirements for the provider in pip string format. Supported values are `package==version` and `git+https://gitrepoforpackage` | array[string]
-| documentation | URL to the Github discussion containing the documentation for the provider. | string |
-| multi_instances | Whether multiple instances of the configuration are supported, e.g. multiple user accounts for Spotify | boolean |
-| self_service | Whether members may set up and reconfigure an instance of the provider as a music source of their own. Defaults to `true`. Set it to `false` when the setup reaches into the server itself, like a folder on its local disk | boolean |
+| stage | The development/stability stage: `alpha`, `beta`, `stable`, `experimental`, `unmaintained` or `deprecated`. Defaults to `stable`. | string |
+| requirements | Python packages the provider needs, in standard pip / [PEP 508](https://peps.python.org/pep-0508/) requirement syntax, e.g. `package==version`, a version range, an extras marker, or a `git+https://…` direct reference | array[string] |
+| documentation | URL to the provider's documentation page. | string |
+| multi_instance | Whether multiple instances of the provider are supported, e.g. multiple user accounts for Spotify | boolean |
+| builtin | Whether this is a system/builtin provider that is loaded by default | boolean |
+| allow_disable | Whether a builtin provider may be disabled. Defaults to `true`. | boolean |
+| depends_on | Domain of another provider this provider needs to function | string |
+| icon | Name of the [Material Design Icon](https://pictogrammers.com/library/mdi) to use for the provider | string |
 | mdns_discovery | List of Zeroconf service types the provider wants to subscribe to. | array[string] |
 | upnp_discovery | List of SSDP search targets the provider wants to subscribe to. | array[string] |
+| self_service | Whether members may set up and reconfigure an instance of the provider as a music source of their own. Defaults to `true`. Set it to `false` when the setup reaches into the server itself, like a folder on its local disk | boolean |
+| credits | List of credits/attributions, e.g. for libraries or icons used. Accepts markdown formatting. | array[string] |
 
-\* These `config_entries` are used to automatically generate the settings page for the provider in the front-end. The values can be obtained via `self.config.get_value(key)`.
+A provider's config entries are not declared in the manifest. They are built in code by overriding `get_config_entries` on the provider, and their values are read via `self.config.get_value(key)`. One-time setup input is collected by the provider's setup flow (`setup_flow.py`).
+
+Two more `ProviderManifest` fields are filled in automatically at load time and must not be set in the manifest: `icon_images` (the icon variants found in the provider folder — `icon.svg`/`icon.png`, `icon_dark.svg`/`icon_dark.png` and `icon_monochrome.svg`/`icon_monochrome.png`, with SVG preferred over PNG) and `has_setup_flow` (set when the provider folder contains a `setup_flow.py`).
