@@ -100,7 +100,7 @@ async def test_reload_same_instance_does_not_reuse_previous_account_cache(provid
     first = await provider.get_track("track-test")
     await asyncio.sleep(0)
     other = copy(provider)
-    other._collections = {}
+    other._memberships = {}
     other._collection_locks = {}
     other._cache_id = "new-load"
     other._image_scope = "new-account"
@@ -120,8 +120,8 @@ async def test_reload_same_instance_does_not_reuse_previous_account_cache(provid
 async def test_expired_collection_failure_does_not_use_stale_membership(provider: Any) -> None:
     """An expired successful read cannot disguise a failed refresh."""
     await provider.get_track("track-test")
-    _, items = provider._collections["track"]
-    provider._collections["track"] = (0, items)
+    _, items = provider._memberships["track"]
+    provider._memberships["track"] = (0, items)
     provider._client.page = AsyncMock(side_effect=NetworkError("synthetic"))
     with pytest.raises(ResourceTemporarilyUnavailable):
         await provider.get_track("track-test")

@@ -45,7 +45,6 @@ from music_assistant.models.music_provider import MusicProvider
 from .client import AuthenticationError, FeiNiuClient
 from .lyrics import parse_lyrics
 from .parsers import (
-    audio_format,
     number,
     parse_album,
     parse_artist,
@@ -55,6 +54,9 @@ from .parsers import (
 )
 from .protocol import PROFILE
 
+# Membership lasts across consecutive tracks; explicit library sync refreshes it sooner.
+MEMBERSHIP_TTL = 15 * 60
+
 
 class FeiNiuProvider(MusicProvider):
     """A personal library with authentication and caches isolated per instance."""
@@ -62,7 +64,7 @@ class FeiNiuProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Open an isolated session and authenticate with the configured music account."""
         self._login_lock = asyncio.Lock()
-        self._collections: dict[str, tuple[float, dict[str, MediaItem]]] = {}
+        self._memberships: dict[str, tuple[float, dict[str, set[str]]]] = {}
         self._collection_locks: dict[str, asyncio.Lock] = {}
         self._cache_id = uuid4().hex
         self._account_id: str | None = None
@@ -91,7 +93,7 @@ class FeiNiuProvider(MusicProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Close only this instance's HTTP session."""
         self._closed = True
-        self._collections.clear()
+        self._memberships.clear()
         if hasattr(self, "_client"):
             await self._client.__aexit__(None, None, None)
 
@@ -102,39 +104,35 @@ class FeiNiuProvider(MusicProvider):
 
     async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Yield every accessible track."""
-        for item in (await self._collection("track", refresh=True)).values():
+        for item in (await self._collection("track")).values():
             yield cast("Track", deepcopy(item))
 
     async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Yield every accessible album."""
-        for item in (await self._collection("album", refresh=True)).values():
+        for item in (await self._collection("album")).values():
             yield cast("Album", deepcopy(item))
 
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Yield every accessible artist."""
-        for item in (await self._collection("artist", refresh=True)).values():
+        for item in (await self._collection("artist")).values():
             yield cast("Artist", deepcopy(item))
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Read the complete native playlist collection, which is not paginated."""
-        for item in (await self._collection("playlist", refresh=True)).values():
+        for item in (await self._collection("playlist")).values():
             yield cast("Playlist", deepcopy(item))
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Return listed metadata and optional lyrics for this account."""
         track = cast("Track", await self._listed("track", prov_track_id))
-        detail = await self._track_detail(prov_track_id, self._cache_id)
-        track.provider_mappings = {
-            replace(mapping, audio_format=audio_format(detail["audioSpec"]))
-            for mapping in track.provider_mappings
-        }
+        detail = await self._track_lyrics(prov_track_id, self._cache_id)
         track.metadata.lyrics = detail["lyrics"]
         track.metadata.lrc_lyrics = detail["lrc_lyrics"]
         self._check_open()
         return track
 
     async def get_album(self, prov_album_id: str) -> Album:
-        """Use the account-filtered album collection as the metadata source."""
+        """Return album details after checking the account-filtered collection."""
         return cast("Album", await self._listed("album", prov_album_id))
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
@@ -149,10 +147,10 @@ class FeiNiuProvider(MusicProvider):
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Read all pages of the album relationship."""
-        await self._listed("album", prov_album_id)
-        listed = await self._collection("track")
+        await self._require_listed("album", prov_album_id)
+        listed = await self._membership("track")
         return [
-            cast("Track", deepcopy(listed[item["guid"]]))
+            cast("Track", self._bind_images(parse_track(item, self.instance_id)))
             async for item in self._pages(
                 lambda page: self._client.related("album", prov_album_id, page)
             )
@@ -163,10 +161,10 @@ class FeiNiuProvider(MusicProvider):
         """Read all pages of the artist's album relationship."""
         if prov_artist_id == UNKNOWN_ARTIST:
             return []
-        await self._listed("artist", prov_artist_id)
-        listed = await self._collection("album")
+        await self._require_listed("artist", prov_artist_id)
+        listed = await self._membership("album")
         return [
-            cast("Album", deepcopy(listed[item["guid"]]))
+            cast("Album", self._bind_images(parse_album(item, self.instance_id)))
             async for item in self._pages(
                 lambda page: self._client.related("artist", prov_artist_id, page, albums=True)
             )
@@ -175,15 +173,15 @@ class FeiNiuProvider(MusicProvider):
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Read a playlist page, retaining server order and duplicate track positions."""
-        await self._listed("playlist", prov_playlist_id)
-        listed = await self._collection("track")
+        await self._require_listed("playlist", prov_playlist_id)
+        listed = await self._membership("track")
         # Filtering a single page could turn an intermediate page into an empty
         # result, which MA treats as the end. Retain order and duplicate positions.
-        ids = await self._playlist_ids(prov_playlist_id, self._cache_id)
-        visible = [item_id for item_id in ids if item_id in listed]
+        items = await self._playlist_items(prov_playlist_id, self._cache_id)
+        visible = [item for item in items if item["item_id"] in listed]
         tracks = []
-        for index, item_id in enumerate(visible[page * 100 : (page + 1) * 100]):
-            track = cast("Track", deepcopy(listed[item_id]))
+        for index, item in enumerate(visible[page * 100 : (page + 1) * 100]):
+            track = Track.from_dict(item)
             track.position = page * 100 + index + 1
             tracks.append(track)
         return tracks
@@ -224,8 +222,8 @@ class FeiNiuProvider(MusicProvider):
         kind, item_id, cover = (unquote(value) for value in parts[2:])
         if kind not in {"track", "album", "artist", "playlist"}:
             raise ProviderPermissionDenied("Unknown FeiNiu artwork owner")
-        item = await self._listed(kind, item_id)
-        if path not in self._image_paths(item):
+        paths = await self._require_listed(kind, item_id)
+        if path not in paths:
             raise ProviderPermissionDenied("Artwork is outside the current FeiNiu library")
         return await self._call(lambda: self._client.cover(cover))
 
@@ -233,19 +231,19 @@ class FeiNiuProvider(MusicProvider):
         """Return a server-owned stream with a stable track identity."""
         if media_type != MediaType.TRACK:
             raise UnplayableMediaError("FeiNiu supports track playback only")
-        await self._listed("track", item_id)
-        data = await self._call(lambda: self._client.detail("track", item_id))
-        track = data.get("track")
-        if not isinstance(track, dict) or track.get("guid") != item_id or track.get("isCue"):
-            raise UnplayableMediaError("Missing track or unsupported CUE track")
-        spec = data.get("audioSpec") or {}
+        await self._require_listed("track", item_id)
+        data = await self._detail("track", item_id, self._cache_id)
+        track = Track.from_dict(data["item"])
+        mapping = next(iter(track.provider_mappings))
+        if not mapping.available:
+            raise UnplayableMediaError("Unsupported CUE track")
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
             stream_type=StreamType.CUSTOM,
-            audio_format=audio_format(spec),
-            duration=number(track.get("duration")) // 1000 or None,
-            size=number(spec.get("size")) or None,
+            audio_format=mapping.audio_format,
+            duration=track.duration or None,
+            size=data["size"],
             can_seek=False,
             allow_seek=True,
             expiration=0,
@@ -260,7 +258,7 @@ class FeiNiuProvider(MusicProvider):
             raise InvalidDataError("Stream belongs to another instance or requests native seek")
         if streamdetails.data != self._cache_id:
             raise UnplayableMediaError("FeiNiu account configuration changed")
-        await self._listed("track", streamdetails.item_id)
+        await self._require_listed("track", streamdetails.item_id)
         generation = self._generation
         emitted = False
         for attempt in range(2):
@@ -277,18 +275,24 @@ class FeiNiuProvider(MusicProvider):
                 await self._reauthenticate(generation)
 
     @use_cache(expiration=30)
-    async def _track_detail(self, item_id: str, cache_id: str) -> dict[str, Any]:
-        """Cache only playback format and optional lyrics for one provider load."""
-        data = await self._call(lambda: self._client.detail("track", item_id))
-        if not isinstance(data.get("track"), dict) or data["track"].get("guid") != item_id:
-            raise InvalidDataError("FeiNiu returned a different or missing track")
-        result: dict[str, Any] = {"audioSpec": {}, "lyrics": None, "lrc_lyrics": None}
-        spec = data.get("audioSpec") or {}
-        result["audioSpec"] = {
-            key: spec[key]
-            for key in ("format", "codec", "sampleRate", "bitDepth", "channel", "bitrate")
-            if key in spec
+    async def _detail(self, kind: str, item_id: str, cache_id: str) -> dict[str, Any]:
+        """Cache sanitized per-item metadata independently of library membership."""
+        data = await self._call(lambda: self._client.detail(kind, item_id))
+        row = data.get("track") if kind == "track" else data
+        if not isinstance(row, dict) or row.get("guid") != item_id:
+            raise InvalidDataError("FeiNiu returned a different or missing item")
+        if kind == "track":
+            row = {**row, "audioSpec": data.get("audioSpec") or row.get("audioSpec") or {}}
+        item = self._parse_item(kind, row)
+        return {
+            "item": item.to_dict(),
+            "size": number((row.get("audioSpec") or {}).get("size")) or None,
         }
+
+    @use_cache(expiration=30)
+    async def _track_lyrics(self, item_id: str, cache_id: str) -> dict[str, Any]:
+        """Read optional lyrics without retaining private native metadata."""
+        result: dict[str, Any] = {"lyrics": None, "lrc_lyrics": None}
         try:
             lyrics = await self._call(lambda: self._client.lyrics(item_id))
             result["lyrics"], result["lrc_lyrics"] = parse_lyrics(lyrics)
@@ -307,41 +311,66 @@ class FeiNiuProvider(MusicProvider):
         if self._closed:
             raise ResourceTemporarilyUnavailable("FeiNiu account configuration changed")
 
-    async def _collection(self, kind: str, *, refresh: bool = False) -> dict[str, MediaItem]:
+    async def _collection(self, kind: str) -> dict[str, MediaItem]:
+        async with self._collection_locks.setdefault(kind, asyncio.Lock()):
+            return await self._read_collection(kind)
+
+    async def _read_collection(self, kind: str) -> dict[str, MediaItem]:
+        self._check_open()
+        # A failed refresh invalidates old membership, never publishing a partial
+        # or empty successful scope. The next request can retry the ordinary read.
+        self._memberships.pop(kind, None)
+        rows = (
+            await self._call(self._client.playlists)
+            if kind == "playlist"
+            else [row async for row in self._pages(lambda page: self._client.page(kind, page))]
+        )
+        items = {}
+        for row in rows:
+            item = self._parse_item(kind, row)
+            if item.item_id in items:
+                raise InvalidDataError("FeiNiu returned duplicate collection identifiers")
+            items[item.item_id] = item
+        self._check_open()
+        self._memberships[kind] = (
+            monotonic(),
+            {item_id: self._image_paths(item) for item_id, item in items.items()},
+        )
+        return items
+
+    async def _membership(self, kind: str) -> dict[str, set[str]]:
         self._check_open()
         async with self._collection_locks.setdefault(kind, asyncio.Lock()):
-            cached = self._collections.get(kind)
-            if not refresh and cached and monotonic() - cached[0] < 30:
-                return cached[1]
-            # An incomplete read must neither replace the collection nor fall back
-            # to stale membership. A later request can retry the ordinary read.
-            self._collections.pop(kind, None)
-            rows = (
-                await self._call(self._client.playlists)
-                if kind == "playlist"
-                else [row async for row in self._pages(lambda page: self._client.page(kind, page))]
-            )
-            parser = {
-                "track": parse_track,
-                "album": parse_album,
-                "artist": parse_artist,
-                "playlist": parse_playlist,
-            }[kind]
-            items = {}
-            for row in rows:
-                item = self._bind_images(parser(row, self.instance_id))
-                if item.item_id in items:
-                    raise InvalidDataError("FeiNiu returned duplicate collection identifiers")
-                items[item.item_id] = item
-            self._check_open()
-            self._collections[kind] = (monotonic(), items)
-            return items
+            cached = self._memberships.get(kind)
+            if not cached or monotonic() - cached[0] >= MEMBERSHIP_TTL:
+                await self._read_collection(kind)
+            return self._memberships[kind][1]
 
-    async def _listed(self, kind: str, item_id: str) -> MediaItem:
-        items = await self._collection(kind)
+    async def _require_listed(self, kind: str, item_id: str) -> set[str]:
+        items = await self._membership(kind)
         if item_id not in items:
             raise ProviderPermissionDenied("Item is outside the current FeiNiu library")
-        return deepcopy(items[item_id])
+        return items[item_id]
+
+    async def _listed(self, kind: str, item_id: str) -> MediaItem:
+        await self._require_listed(kind, item_id)
+        detail = await self._detail(kind, item_id, self._cache_id)
+        models: dict[str, type[Track | Album | Artist | Playlist]] = {
+            "track": Track,
+            "album": Album,
+            "artist": Artist,
+            "playlist": Playlist,
+        }
+        return models[kind].from_dict(detail["item"])
+
+    def _parse_item(self, kind: str, row: dict[str, Any]) -> MediaItem:
+        parser = {
+            "track": parse_track,
+            "album": parse_album,
+            "artist": parse_artist,
+            "playlist": parse_playlist,
+        }[kind]
+        return self._bind_images(parser(row, self.instance_id))
 
     def _bind_images(self, item: MediaItem) -> MediaItem:
         prefix = (
@@ -370,8 +399,8 @@ class FeiNiuProvider(MusicProvider):
         }
 
     @use_cache(expiration=30)
-    async def _playlist_ids(self, item_id: str, cache_id: str) -> list[str]:
-        ids: list[str] = []
+    async def _playlist_items(self, item_id: str, cache_id: str) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
         total = None
         for page in range(1, 10001):
             rows, count = self._page_data(
@@ -383,10 +412,10 @@ class FeiNiuProvider(MusicProvider):
             for row in rows:
                 if not isinstance(row.get("guid"), str) or not row["guid"]:
                     raise InvalidDataError("FeiNiu playlist has a missing track ID")
-                ids.append(row["guid"])
-            if len(ids) == total:
-                return ids
-            if not rows or len(ids) > total:
+                items.append(self._parse_item("track", row).to_dict())
+            if len(items) == total:
+                return items
+            if not rows or len(items) > total:
                 raise InvalidDataError("FeiNiu playlist pagination is incomplete")
         raise InvalidDataError("FeiNiu playlist exceeded its safety limit")
 
@@ -418,7 +447,7 @@ class FeiNiuProvider(MusicProvider):
                     await self._login()
                 except LoginFailed:
                     self._failed_login_generation = generation
-                    self._collections.clear()
+                    self._memberships.clear()
                     raise
 
     async def _call[T](self, action: Callable[[], Awaitable[T]]) -> T:

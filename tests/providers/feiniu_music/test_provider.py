@@ -106,7 +106,7 @@ def provider() -> Any:
     )
     result._client.detail = AsyncMock(return_value={"track": track_data()})
     result._client.cover = AsyncMock(return_value=b"synthetic-image")
-    result._collections = {}
+    result._memberships = {}
     result._collection_locks = {}
     result._cache_id = "test-load"
     result._image_scope = "test-scope"
@@ -495,7 +495,7 @@ async def test_real_cache_decorator_roundtrip_and_instance_isolation(
         lyrics=AsyncMock(return_value={"list": []}),
     )
     other._closed = False
-    other._collections = {}
+    other._memberships = {}
     other._collection_locks = {}
     other._cache_id = "another-load"
     other._image_scope = "another-scope"
