@@ -65,7 +65,10 @@ def snapcast_player(provider: MockProvider) -> SnapCastPlayer:
     provider.mass.config.get_base_player_config.return_value = create_mock_config(
         "Test Snapcast Player"
     )
-    player = SnapCastPlayer(provider, "player_1", MagicMock())  # type: ignore[arg-type]
+    # group=None keeps _get_active_snapstream() from reaching for snap_provider._snapserver,
+    # which MockProvider does not have - playback_state is read eagerly during Player.__init__.
+    snap_client = MagicMock(group=None)
+    player = SnapCastPlayer(provider, "player_1", snap_client)  # type: ignore[arg-type]
     player._attr_supported_features = {
         PlayerFeature.PLAY_MEDIA,
         PlayerFeature.VOLUME_SET,
