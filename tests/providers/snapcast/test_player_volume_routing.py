@@ -15,9 +15,9 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 
-from music_assistant.constants import PLAYER_CONTROL_NATIVE
 from music_assistant.controllers.players import PlayerController
 from music_assistant.providers.snapcast.player import SnapCastPlayer
 from tests.common import MockPlayer, MockProvider, create_mock_config
@@ -55,7 +55,7 @@ def controller(mock_mass: MagicMock) -> PlayerController:
 def provider(mock_mass: MagicMock) -> MockProvider:
     """Create a mock Snapcast provider, including the attributes SnapCastPlayer needs."""
     prov = MockProvider("snapcast", instance_id="test_snapcast", mass=mock_mass)
-    prov.stream_audio_format = MagicMock(sample_rate=48000, bit_depth=16)
+    prov.stream_audio_format = MagicMock(sample_rate=48000, bit_depth=16)  # type: ignore[attr-defined]
     return prov
 
 
@@ -65,7 +65,7 @@ def snapcast_player(provider: MockProvider) -> SnapCastPlayer:
     provider.mass.config.get_base_player_config.return_value = create_mock_config(
         "Test Snapcast Player"
     )
-    player = SnapCastPlayer(provider, "player_1", MagicMock())
+    player = SnapCastPlayer(provider, "player_1", MagicMock())  # type: ignore[arg-type]
     player._attr_supported_features = {
         PlayerFeature.PLAY_MEDIA,
         PlayerFeature.VOLUME_SET,
