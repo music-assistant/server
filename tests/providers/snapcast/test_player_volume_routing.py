@@ -25,9 +25,7 @@ from tests.common import MockPlayer, MockProvider, create_mock_config
 
 @pytest.fixture
 def mock_mass() -> MagicMock:
-    """Create a mock MusicAssistant instance, wired the same way as the sibling
-    protocol-state tests in tests/controllers/players/test_player_protocol_state.py.
-    """
+    """Create a mock MusicAssistant instance, wired like the sibling protocol-state tests."""
     mass = MagicMock()
     mass.closing = False
     mass.loop = None
@@ -79,12 +77,8 @@ def snapcast_player(provider: MockProvider) -> SnapCastPlayer:
 
 @pytest.fixture
 def sendspin_player(provider: MockProvider) -> MockPlayer:
-    """Create a Sendspin protocol player that supports volume, standing in for the
-    real Sendspin provider's player.
-    """
-    player = MockPlayer(
-        provider, "sendspin_1", "Sendspin Bridge", player_type=PlayerType.PROTOCOL
-    )
+    """Create a Sendspin protocol player that supports volume, standing in for the real one."""
+    player = MockPlayer(provider, "sendspin_1", "Sendspin Bridge", player_type=PlayerType.PROTOCOL)
     player._attr_supported_features = {PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE}
     player._attr_playback_state = PlaybackState.PLAYING
     player._cache.clear()
