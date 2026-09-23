@@ -25,7 +25,7 @@ class MusicBrainzAPIClient:
     """Thin HTTP client for the MusicBrainz API."""
 
     domain = "musicbrainz"
-    throttler = ThrottlerManager(rate_limit=10, period=10)
+    throttler = ThrottlerManager(rate_limit=180, period=60)
 
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize the API client."""
