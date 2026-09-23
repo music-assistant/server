@@ -190,7 +190,6 @@ async def test_ingress_links_a_username_match_keeping_its_role(
     assert user is not None
     assert user.user_id == existing.user_id
     assert user.role == role
-    # the matched user is now linked to the Home Assistant user id
     linked = await auth_manager.get_user_by_provider_link(AuthProviderType.HOME_ASSISTANT, "ha_bob")
     assert linked is not None
     assert linked.user_id == existing.user_id
