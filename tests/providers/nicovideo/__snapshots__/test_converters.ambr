@@ -1113,6 +1113,7 @@
 # ---
 # name: test_converter_with_fixture[playlists/following_mylists.json]
   dict({
+    'access': None,
     'date_added': None,
     'external_ids': list([
     ]),
@@ -1201,6 +1202,7 @@
 # ---
 # name: test_converter_with_fixture[playlists/own_mylists.json]
   dict({
+    'access': None,
     'date_added': None,
     'external_ids': list([
     ]),
@@ -1290,6 +1292,7 @@
 # name: test_converter_with_fixture[playlists/single_mylist_details.json]
   dict({
     'playlist': dict({
+      'access': None,
       'date_added': None,
       'external_ids': list([
       ]),
@@ -1553,6 +1556,7 @@
 # ---
 # name: test_converter_with_fixture[search/mylist_search.json]
   dict({
+    'access': None,
     'date_added': None,
     'external_ids': list([
     ]),

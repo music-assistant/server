@@ -29,6 +29,7 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_RENDER_TIMEOUT,
     AIRPLAY_ARTWORK_SIZE,
     AIRPLAY_CONTENT_CUT_TOLERANCE_MS,
+    AIRPLAY_DEFAULT_PORT,
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_START_ACK_TIMEOUT_MS,
@@ -38,6 +39,7 @@ from music_assistant.providers.airplay.constants import (
     CONF_ENCRYPTION,
     CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
+    RAOP_DEFAULT_PORT,
     STREAMING_MODE_AP2_COMPAT,
     STREAMING_MODE_AP2_NTP,
     STREAMING_MODE_AP2_PTP,
@@ -1071,12 +1073,13 @@ class AirPlayStream:
 
         # The endpoint must follow the same capability decision as the binary:
         # legacy RAOP uses _raop, while native and RAOP-compatible AP2 use _airplay.
+        # An unresolved SRV leaves the port None or 0, which the binary's atoi() dials as 0.
         if target_protocol == StreamingProtocol.AIRPLAY2 and airplay_info:
-            args += ["--port", str(airplay_info.port)]
+            args += ["--port", str(airplay_info.port or AIRPLAY_DEFAULT_PORT)]
             args += ["--name", self.player.display_name]
             args += ["--hostname", str(airplay_info.server)]
         elif raop_info:
-            args += ["--port", str(raop_info.port)]
+            args += ["--port", str(raop_info.port or RAOP_DEFAULT_PORT)]
 
         # mDNS properties from the RAOP service (needed by the RAOP-based flows)
         if raop_info:

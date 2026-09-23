@@ -58,8 +58,9 @@ class CandidateSelector:
                 verdict.reason for entry in scored for verdict in entry.verdicts if verdict.rejected
             )
             reasons = ", ".join(f"{reason} x{count}" for reason, count in histogram.most_common())
+            # the planner logs which fallback actually ships after this pass
             self._logger.debug(
-                "all %d candidates rejected (%s); emergency handoff will be used",
+                "all %d candidates rejected (%s)",
                 len(scored),
                 reasons,
             )

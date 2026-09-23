@@ -34,7 +34,17 @@ async def run_setup(session: SetupSession) -> None:
             replace(entry, value=setup_data.get(entry.key, entry.value)) for entry in _ENTRIES
         ]
         submitted = await session.form(entries, step_id="user", errors=errors, last_step=True)
-        setup_data.update(submitted)
+        # Secret fields are never prefilled in the form. A blank submission must
+        # retain the saved credential rather than erase it during reconfiguration.
+        setup_data.update(
+            (key, value)
+            for key, value in submitted.items()
+            if key not in (CONF_API_KEY, CONF_PASSWORD) or value not in (None, "")
+        )
+        if submitted.get(CONF_API_KEY):
+            setup_data[CONF_PASSWORD] = None
+        elif submitted.get(CONF_PASSWORD):
+            setup_data[CONF_API_KEY] = None
         try:
             await session.finish(setup_data)
             return

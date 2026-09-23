@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
@@ -295,6 +297,10 @@ def parse_track(
         track.metadata.explicit = content_rating == "explicit"
     if isrc := attributes.get("isrc"):
         track.external_ids.add((ExternalID.ISRC, isrc))
+    # dateAdded lives on the library object only, never on the catalog copy read above.
+    with suppress(TypeError, ValueError):
+        if added := raw_attributes.get("dateAdded"):
+            track.date_added = datetime.fromisoformat(added).replace(microsecond=0)
     track.favorite = is_favourite or False
     return track
 

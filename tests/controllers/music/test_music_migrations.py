@@ -14,6 +14,7 @@ from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_PLAYLOG,
+    DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_SETTINGS,
 )
 from music_assistant.controllers.music import MusicController
@@ -542,3 +543,54 @@ async def test_migration_adds_is_dynamic_column_to_radios(database: DatabaseConn
     )
 
     assert "is_dynamic" in await _table_columns(database, "radios")
+
+
+async def test_migration_adds_access_column_to_playlists(database: DatabaseConnection) -> None:
+    """A pre-59 database gets the playlists.access column; running it twice is harmless."""
+    assert "access" not in await _table_columns(database, "playlists")
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    for _ in range(2):
+        await migrate_database(
+            mass,
+            database,
+            MagicMock(),
+            prev_version=58,
+            create_tables=AsyncMock(),
+        )
+
+    assert "access" in await _table_columns(database, "playlists")
+
+
+async def test_migration_drops_none_provider_mappings(database: DatabaseConnection) -> None:
+    """A pre-60 database drops the bogus "None" self-mappings and keeps the real ones."""
+    await database.execute(
+        f"CREATE TABLE {DB_TABLE_PROVIDER_MAPPINGS}([media_type] TEXT, [item_id] INTEGER, "
+        "[provider_domain] TEXT, [provider_instance] TEXT, [provider_item_id] TEXT)"
+    )
+    await database.execute(
+        f"INSERT INTO {DB_TABLE_PROVIDER_MAPPINGS} "
+        "(media_type, item_id, provider_domain, provider_instance, provider_item_id) VALUES "
+        "('artist', 1, 'qobuz', 'qobuz--1', 'q1'), "
+        "('artist', 1, 'None', 'None', '1'), "
+        "('artist', 2, 'None', 'None', '2')"
+    )
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    # a second pass must be a harmless no-op
+    for _ in range(2):
+        await migrate_database(
+            mass,
+            database,
+            MagicMock(),
+            prev_version=59,
+            create_tables=AsyncMock(),
+        )
+
+    rows = await database.get_rows_from_query(
+        f"SELECT item_id, provider_domain, provider_instance FROM {DB_TABLE_PROVIDER_MAPPINGS}"
+    )
+    assert [(r["provider_domain"], r["provider_instance"]) for r in rows] == [("qobuz", "qobuz--1")]

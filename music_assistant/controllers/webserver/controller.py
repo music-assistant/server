@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import html
 import inspect
+import json
 import os
 import secrets
 import socket
@@ -40,6 +41,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
+from yarl import URL
 
 from music_assistant.constants import (
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
@@ -60,6 +62,7 @@ from music_assistant.controllers.webserver.helpers.ssl import (
 )
 from music_assistant.helpers.api import parse_arguments
 from music_assistant.helpers.json import json_dumps, json_loads
+from music_assistant.helpers.provider_access import with_derived_provider_filter
 from music_assistant.helpers.redirect_validation import (
     build_code_redirect_url,
     is_allowed_redirect_url,
@@ -90,6 +93,7 @@ from .sendspin_proxy import SendspinProxyHandler
 from .websocket_client import WebsocketClientHandler
 
 if TYPE_CHECKING:
+    from music_assistant_models.auth import User
     from music_assistant_models.config_entries import CoreConfig
 
     from music_assistant import MusicAssistant
@@ -200,6 +204,8 @@ class WebserverController(CoreController):
         self.auth = AuthenticationManager(self)
         self.remote_access = RemoteAccessManager(self)
         self._sendspin_proxy = SendspinProxyHandler(self)
+        # the first-time setup makes exactly one admin, however many attempts arrive at once
+        self._setup_lock = asyncio.Lock()
         # Preview tokens keyed on the token in the URL, value is
         # (provider instance id or domain, item id, monotonic expiry).
         self._preview_tokens: dict[str, tuple[str, str, float]] = {}
@@ -480,7 +486,6 @@ class WebserverController(CoreController):
         self,
         user_id: str,
         player_filter: list[str] | None = None,
-        provider_filter: list[str] | None = None,
     ) -> None:
         """
         Apply updated access filters to the live sessions of a user.
@@ -490,7 +495,6 @@ class WebserverController(CoreController):
 
         :param user_id: ID of the user whose sessions must be updated.
         :param player_filter: The new player filter, or None to leave it untouched.
-        :param provider_filter: The new provider filter, or None to leave it untouched.
         """
         for client in list(self.clients):
             user = client.authenticated_user
@@ -499,8 +503,6 @@ class WebserverController(CoreController):
             # updated in place: the connection's context holds this very object
             if player_filter is not None:
                 user.player_filter[:] = player_filter
-            if provider_filter is not None:
-                user.provider_filter[:] = provider_filter
             self.logger.debug("Updated the access filters of a live session of %s", user.username)
 
     def set_sendspin_player_for_token(self, token: str, player_id: str) -> None:
@@ -642,27 +644,6 @@ class WebserverController(CoreController):
                 requires_reload=False,
             ),
             ConfigEntry(
-                key=CONF_BASE_URL,
-                type=ConfigEntryType.STRING,
-                default_value=CONF_VALUE_AUTO,
-                requires_reload=False,
-            ),
-            ConfigEntry(
-                key=CONF_EXTERNAL_URL,
-                type=ConfigEntryType.STRING,
-                required=False,
-                requires_reload=False,
-            ),
-            ConfigEntry(
-                key=CONF_BIND_PORT,
-                type=ConfigEntryType.INTEGER,
-                default_value=DEFAULT_SERVER_PORT,
-                requires_reload=True,
-            ),
-            # the two alerts are mutually exclusive: the generic one while SSL is switched off,
-            # and the SSL specific one when a certificate failed to load and left the webserver
-            # on plain HTTP
-            ConfigEntry(
                 key="webserver_warn",
                 type=ConfigEntryType.ALERT,
                 required=False,
@@ -671,22 +652,46 @@ class WebserverController(CoreController):
                 depends_on_value=False,
             ),
             ConfigEntry(
-                key="ssl_inactive_warn",
-                type=ConfigEntryType.ALERT,
+                key=CONF_BASE_URL,
+                type=ConfigEntryType.STRING,
+                default_value=CONF_VALUE_AUTO,
+                advanced=True,
+                requires_reload=False,
+            ),
+            ConfigEntry(
+                key=CONF_EXTERNAL_URL,
+                type=ConfigEntryType.STRING,
                 required=False,
-                hidden=not self._ssl_configured or self._ssl_active,
-                depends_on=CONF_ENABLE_SSL,
+                advanced=True,
+                requires_reload=False,
+            ),
+            ConfigEntry(
+                key=CONF_BIND_PORT,
+                type=ConfigEntryType.INTEGER,
+                default_value=DEFAULT_SERVER_PORT,
+                advanced=True,
+                requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_ENABLE_SSL,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
+                advanced=True,
                 requires_reload=True,
+            ),
+            ConfigEntry(
+                key="ssl_inactive_warn",
+                type=ConfigEntryType.ALERT,
+                required=False,
+                hidden=not self._ssl_configured or self._ssl_active,
+                advanced=True,
+                depends_on=CONF_ENABLE_SSL,
             ),
             ConfigEntry(
                 key=CONF_SSL_CERTIFICATE,
                 type=ConfigEntryType.STRING,
                 required=False,
+                advanced=True,
                 depends_on=CONF_ENABLE_SSL,
                 requires_reload=True,
             ),
@@ -694,6 +699,7 @@ class WebserverController(CoreController):
                 key=CONF_SSL_PRIVATE_KEY,
                 type=ConfigEntryType.SECURE_STRING,
                 required=False,
+                advanced=True,
                 depends_on=CONF_ENABLE_SSL,
                 requires_reload=True,
             ),
@@ -701,6 +707,7 @@ class WebserverController(CoreController):
                 key=CONF_ACTION_VERIFY_SSL,
                 type=ConfigEntryType.ACTION,
                 action=CONF_ACTION_VERIFY_SSL,
+                advanced=True,
                 depends_on=CONF_ENABLE_SSL,
                 required=False,
             ),
@@ -857,7 +864,7 @@ class WebserverController(CoreController):
         if handler.required_scope and not has_scope(user, handler.required_scope):
             return web.Response(
                 status=403,
-                text=f"This command requires the {handler.required_scope} scope",
+                text=f"This command requires the {handler.required_scope_label} scope",
             )
         return None
 
@@ -958,8 +965,11 @@ class WebserverController(CoreController):
             # frontend (which will take care of onboarding)
 
         if not self.auth.has_users and not is_ingress_request:
-            # non ingress request and no users yet, redirect to setup
-            return web.Response(status=302, headers={"Location": "setup"})
+            # non ingress request and no users yet, redirect to setup; the query
+            # travels along as sent, so a reload keeps a client's return_url and device_name
+            query = request.rel_url.raw_query_string
+            location = f"setup?{query}" if query else "setup"
+            return web.Response(status=302, headers={"Location": location})
 
         # Serve the Vue frontend index.html
         return await self._server.serve_static(self._index_path, request)
@@ -967,14 +977,14 @@ class WebserverController(CoreController):
     async def _handle_login_page(self, request: web.Request) -> web.Response:
         """Handle request for login page (external client OAuth callback scenario)."""
         if not self.auth.has_users:
-            # not yet onboarded (no first admin user exists), redirect to setup
-            return_url = request.query.get("return_url", "")
-            device_name = request.query.get("device_name", "")
-            setup_url = (
-                f"/setup?return_url={return_url}&device_name={device_name}"
-                if return_url
-                else "/setup"
-            )
+            # not yet onboarded (no first admin user exists), redirect to setup with the
+            # client's hand-back, re-encoded so a return url with a query of its own survives
+            hand_back = {
+                key: value
+                for key in ("return_url", "device_name")
+                if (value := request.query.get(key))
+            }
+            setup_url = str(URL("/setup").with_query(hand_back))
             return web.Response(status=302, headers={"Location": setup_url})
         # Serve login page for external clients
         login_html_path = str(RESOURCES_DIR.joinpath("login.html"))
@@ -1000,7 +1010,21 @@ class WebserverController(CoreController):
             if not request.can_read_body:
                 return web.Response(status=400, text="Body required")
 
-            body = await request.json()
+            try:
+                body = await request.json()
+            except json.JSONDecodeError, UnicodeDecodeError, LookupError:
+                body = None
+            # an undecodable or non-object body is a client error, not a server fault
+            if not isinstance(body, dict):
+                return web.Response(
+                    status=400,
+                    text="Invalid request body",
+                    headers={
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Methods": "POST, OPTIONS",
+                        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+                    },
+                )
             provider_id = body.get("provider_id", "builtin")  # Default to built-in provider
             credentials = body.get("credentials", {})
             return_url = body.get("return_url")  # Optional return URL for redirect after login
@@ -1029,7 +1053,7 @@ class WebserverController(CoreController):
             response_data = {
                 "success": True,
                 "token": token,
-                "user": auth_result.user.to_dict(),
+                "user": with_derived_provider_filter(self.mass, auth_result.user).to_dict(),
             }
 
             # If return_url provided, append code parameter and return as redirect_to
@@ -1096,7 +1120,7 @@ class WebserverController(CoreController):
         if not user:
             return web.Response(status=401, text="Not authenticated")
 
-        return web.json_response(user.to_dict())
+        return web.json_response(with_derived_provider_filter(self.mass, user).to_dict())
 
     async def _handle_auth_me_update(self, request: web.Request) -> web.Response:
         """Handle request to update current user's profile."""
@@ -1121,7 +1145,12 @@ class WebserverController(CoreController):
                 avatar_url=avatar_url,
             )
 
-            return web.json_response({"success": True, "user": updated_user.to_dict()})
+            return web.json_response(
+                {
+                    "success": True,
+                    "user": with_derived_provider_filter(self.mass, updated_user).to_dict(),
+                }
+            )
         except Exception:
             self.logger.exception("Error updating user profile")
             return web.json_response(
@@ -1244,8 +1273,8 @@ class WebserverController(CoreController):
             """
             return web.Response(text=error_html, content_type="text/html", status=500)
 
-    async def _handle_setup_page(self, request: web.Request) -> web.Response:
-        """Handle request for first-time setup page."""
+    async def _handle_setup_page(self, request: web.Request) -> web.StreamResponse:
+        """Handle request for the first-time setup page (the frontend's account step)."""
         # Setup forwards the admin token here with no consent step, so require a trusted destination.
         return_url = request.query.get("return_url")
         if return_url:
@@ -1257,33 +1286,50 @@ class WebserverController(CoreController):
             # this should not happen, but guard anyways
             return await self._render_error_page("Setup has already been completed.")
 
-        setup_html_path = str(RESOURCES_DIR.joinpath("setup.html"))
-        async with aiofiles.open(setup_html_path) as f:
-            html_content = await f.read()
-
-        return web.Response(text=html_content, content_type="text/html")
+        # the frontend recognizes the setup page by its path and opens the setup
+        # wizard on the account step, so serve the app itself here
+        return await self._server.serve_static(self._index_path, request)
 
     async def _handle_setup(self, request: web.Request) -> web.Response:
         """Handle first-time setup request to create admin user (non-ingress only)."""
         if self.auth.has_users:
+            # a conflict tells the frontend the admin exists, so it offers the sign-in
+            # instead of another attempt
             return web.json_response(
-                {"success": False, "error": "Setup already completed"}, status=400
+                {"success": False, "error": "Setup already completed"}, status=409
             )
 
         if not request.can_read_body:
             return web.Response(status=400, text="Body required")
 
-        body = await request.json()
-        username = body.get("username", "").strip()
+        try:
+            body = await request.json()
+        except json.JSONDecodeError, UnicodeDecodeError, LookupError:
+            body = None
+        # an undecodable or non-object body is a client error, not a server fault
+        if not isinstance(body, dict):
+            return web.Response(status=400, text="Invalid request body")
+        username = body.get("username", "")
         password = body.get("password", "")
+        display_name = body.get("display_name")
+        device_name = body.get("device_name")
+        if not (
+            isinstance(username, str)
+            and isinstance(password, str)
+            and (display_name is None or isinstance(display_name, str))
+            and (device_name is None or isinstance(device_name, str))
+        ):
+            return web.Response(status=400, text="Invalid request body")
+        username = username.strip()
+        display_name = (display_name or "").strip() or None
 
         # Validation
-        if not username or len(username) < 2:
+        if len(username) < 2:
             return web.json_response(
                 {"success": False, "error": "Username must be at least 2 characters"}, status=400
             )
 
-        if not password or len(password) < 8:
+        if len(password) < 8:
             return web.json_response(
                 {"success": False, "error": "Password must be at least 8 characters"}, status=400
             )
@@ -1302,15 +1348,17 @@ class WebserverController(CoreController):
                     status=500,
                 )
 
-            # Create admin user with password
-            user = await builtin_provider.create_user_with_password(
-                username, password, role=UserRole.ADMIN
+            user = await self._create_first_admin(
+                builtin_provider, username, password, display_name
             )
+            if user is None:
+                return web.json_response(
+                    {"success": False, "error": "Setup already completed"}, status=409
+                )
 
             # Create token for the new admin
-            device_name = body.get(
-                "device_name", f"Setup ({request.headers.get('User-Agent', 'Unknown')[:50]})"
-            )
+            if not device_name:
+                device_name = f"Setup ({request.headers.get('User-Agent', 'Unknown')[:50]})"
             token = await self.auth.create_token(user, device_name)
 
             self.logger.info("First admin user created: %s", username)
@@ -1319,7 +1367,7 @@ class WebserverController(CoreController):
             response_data: dict[str, Any] = {
                 "success": True,
                 "token": token,
-                "user": user.to_dict(),
+                "user": with_derived_provider_filter(self.mass, user).to_dict(),
             }
 
             # Only forward the token to a trusted destination (no consent step here).
@@ -1339,6 +1387,30 @@ class WebserverController(CoreController):
             self.logger.exception("Error during setup")
             return web.json_response(
                 {"success": False, "error": f"Setup failed: {e!s}"}, status=500
+            )
+
+    async def _create_first_admin(
+        self,
+        provider: BuiltinLoginProvider,
+        username: str,
+        password: str,
+        display_name: str | None,
+    ) -> User | None:
+        """
+        Create the first admin account, or return None when the server already has a user.
+
+        Attempts that arrive together are taken one at a time, so only one of them makes the admin.
+
+        :param provider: The builtin login provider that stores the password.
+        :param username: The username of the admin.
+        :param password: The password of the admin.
+        :param display_name: The display name of the admin, if any.
+        """
+        async with self._setup_lock:
+            if self.auth.has_users:
+                return None
+            return await provider.create_user_with_password(
+                username, password, role=UserRole.ADMIN, display_name=display_name
             )
 
     def _resolve_preview_token(self, token: str) -> tuple[str, str] | None:

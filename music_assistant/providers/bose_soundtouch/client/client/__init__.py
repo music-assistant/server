@@ -24,6 +24,7 @@ from music_assistant.providers.bose_soundtouch.client.schema.models import (
     Volume,
     Zone,
 )
+from music_assistant.providers.bose_soundtouch.const import STRING_ENCODING
 
 from .session_configuration import SessionConfiguration
 
@@ -314,7 +315,7 @@ class SoundtouchDevice:
         if status == 404:
             raise NotFoundError
         if response.content_type == "text/xml" and status == 200:
-            _response = await response.read()
+            _response = (await response.read()).decode(STRING_ENCODING)
             return cast("Element[str]", ElementTree.fromstring(_response))
         raise ApiError(f"API GET call to {endpoint} failed.")
 
@@ -322,13 +323,13 @@ class SoundtouchDevice:
         self,
         endpoint: str,
         data: str | None = None,
-    ) -> bytes:
+    ) -> str:
         """POST request to api."""
 
         async def _request() -> ClientResponse:
             return await self.session_config.session.post(
                 f"http://{self.session_config.ip}:{self.session_config.http_port}/{endpoint}",
-                data=data,
+                data=data.encode(STRING_ENCODING) if data else None,
                 raise_for_status=True,
                 timeout=self.session_config.timeout,
             )
@@ -340,4 +341,4 @@ class SoundtouchDevice:
                 raise NotFoundError from exc
             raise ApiError(f"API POST call to {endpoint} failed.") from exc
 
-        return await response.read()
+        return (await response.read()).decode(STRING_ENCODING)

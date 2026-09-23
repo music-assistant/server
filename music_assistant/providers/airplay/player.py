@@ -24,11 +24,17 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.controllers.streams.audio import overlay_active
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, is_valid_mac_address
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.player import (
+    AnnouncementFeature,
+    DeviceInfo,
+    Player,
+    PlayerMedia,
+)
 from music_assistant.models.setup_flow import AbortFlow
 
 from . import announce
 from .constants import (
+    AIRPLAY_DEFAULT_PORT,
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_HIRES_AUDIO_FORMATS,
     AIRPLAY_HIRES_SAMPLE_RATES,
@@ -55,6 +61,7 @@ from .constants import (
     PAIRING_PIN_FORMAT,
     PASSWORD_BIT,
     PIN_REQUIRED,
+    RAOP_DEFAULT_PORT,
     RAOP_DISCOVERY_TYPE,
     STREAMING_MODE_AP2_COMPAT,
     STREAMING_MODE_AP2_NTP,
@@ -344,9 +351,13 @@ class AirPlayPlayer(Player):
         return self.stream.running and self.stream.connected
 
     @property
-    def applies_announcement_volume(self) -> bool:
-        """Return True: the announcement volume is applied around the mixed clip."""
-        return True
+    def announcement_features(self) -> set[AnnouncementFeature]:
+        """Return the full set: the clip is mixed into live audio, in step across members."""
+        return {
+            AnnouncementFeature.SUPPORTS_VOLUME,
+            AnnouncementFeature.APPLIES_VOLUME,
+            AnnouncementFeature.COORDINATES_START,
+        }
 
     @property
     def can_group_with(self) -> set[str]:
@@ -586,59 +597,64 @@ class AirPlayPlayer(Player):
             sync_clients = self._get_sync_clients()
             session_pcm_format = await self._get_session_pcm_format(sync_clients, media)
 
-            # Warm path: a live, compatible session absorbs the new media via a
-            # flush-refill in place (seek/next never pays the reconnect cost).
-            if (
-                self.stream
-                and self.stream.running
-                and self.stream.session
-                and self.stream.session.can_replace(sync_clients, session_pcm_format)
-            ):
-                self._transitioning = True
+            # Ignore stale DACP messages (like prevent-playback) from the old CLI
+            # process while the stream is being (re)established. The finally clears
+            # it even if replace/stop/start raises, so the flag never sticks and
+            # leaves the player deaf to future prevent-playback messages.
+            self._transitioning = True
+            try:
+                # Warm path: a live, compatible session absorbs the new media via a
+                # flush-refill in place (seek/next never pays the reconnect cost).
+                if (
+                    self.stream
+                    and self.stream.running
+                    and self.stream.session
+                    and self.stream.session.can_replace(sync_clients, session_pcm_format)
+                ):
+                    audio_source = self.mass.streams.get_stream(
+                        media, session_pcm_format, self.player_id
+                    )
+                    if await self.stream.session.replace(audio_source, media):
+                        # A seek changes no media identity, so the identity-driven
+                        # metadata callback stays silent and receivers would show
+                        # a stale Now Playing position; nudge every member once
+                        # the queue position has settled.
+                        for member in self.stream.session.sync_clients:
+                            self.mass.call_later(
+                                1,
+                                member.on_player_media_updated,
+                                task_id=f"player_media_updated_{member.player_id}",
+                            )
+                        return
+                    # warm replacement failed; fall through to a cold restart
+
+                # Cold path: stop any existing stream and set up from scratch
+                if self.stream and self.stream.running and self.stream.session:
+                    stopped_stream = self.stream
+                    await self.stream.session.stop()
+                    # Only drop what this call stopped: tearing a group session down
+                    # awaits every member, and a bridge can publish its own stream
+                    # here. Erasing that would leave the start below with nothing to
+                    # displace and a live process still on the speaker.
+                    if self.stream is stopped_stream:
+                        self.stream = None
+
+                # select audio source
                 audio_source = self.mass.streams.get_stream(
                     media, session_pcm_format, self.player_id
                 )
-                if await self.stream.session.replace(audio_source, media):
-                    self._transitioning = False
-                    # A seek changes no media identity, so the identity-driven
-                    # metadata callback stays silent and receivers would show
-                    # a stale Now Playing position; nudge every member once
-                    # the queue position has settled.
-                    for member in self.stream.session.sync_clients:
-                        self.mass.call_later(
-                            1,
-                            member.on_player_media_updated,
-                            task_id=f"player_media_updated_{member.player_id}",
-                        )
-                    return
-                # warm replacement failed; fall through to a cold restart
 
-            # Cold path: stop any existing stream and set up from scratch
-            if self.stream and self.stream.running and self.stream.session:
-                # Set transitioning flag to ignore stale DACP messages (like prevent-playback)
-                self._transitioning = True
-                stopped_stream = self.stream
-                await self.stream.session.stop()
-                # Only drop what this call stopped: tearing a group session down
-                # awaits every member, and a bridge can publish its own stream
-                # here. Erasing that would leave the start below with nothing to
-                # displace and a live process still on the speaker.
-                if self.stream is stopped_stream:
-                    self.stream = None
-
-            # select audio source
-            audio_source = self.mass.streams.get_stream(media, session_pcm_format, self.player_id)
-
-            # setup StreamSession for player (and its sync childs if any)
-            provider = cast("AirPlayProvider", self.provider)
-            stream_session = AirPlayStreamSession(
-                provider,
-                sync_clients,
-                session_pcm_format,
-                media,
-            )
-            await stream_session.start(audio_source)
-            self._transitioning = False
+                # setup StreamSession for player (and its sync childs if any)
+                provider = cast("AirPlayProvider", self.provider)
+                stream_session = AirPlayStreamSession(
+                    provider,
+                    sync_clients,
+                    session_pcm_format,
+                    media,
+                )
+                await stream_session.start(audio_source)
+            finally:
+                self._transitioning = False
 
     async def play_announcement(
         self, announcement: PlayerMedia, volume_level: int | None = None
@@ -1301,9 +1317,9 @@ class AirPlayPlayer(Player):
         # when streaming will use RAOP; the RAOP port (5000) is only for streaming.
         port: int | None = None
         if self.airplay_discovery_info:
-            port = self.airplay_discovery_info.port or 7000
+            port = self.airplay_discovery_info.port or AIRPLAY_DEFAULT_PORT
         elif self.raop_discovery_info:
-            port = self.raop_discovery_info.port or 5000
+            port = self.raop_discovery_info.port or RAOP_DEFAULT_PORT
         provider = cast("AirPlayProvider", self.provider)
         device_id = provider.dacp_id
         pairing_address = self.address

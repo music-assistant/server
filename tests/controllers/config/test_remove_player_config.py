@@ -15,14 +15,15 @@ Also covers removing a whole player provider: its unregistered players must have
 DSP/queue settings and persisted queue cache wiped along with their player config,
 while players of other providers are left untouched.
 
-Finally, a removed provider or player must also disappear from the per user access
-filters, which would otherwise keep pointing at something that no longer exists.
+Finally, a removed player must also disappear from the per user access filters, which
+would otherwise keep pointing at something that no longer exists.
 """
 
 import asyncio
 import logging
 from collections.abc import Callable, Generator
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -486,27 +487,11 @@ async def test_remove_provider_config_detaches_registered_protocol_player(
     assert _pop_scheduled_evaluation(mass)
 
 
-async def _get_user_filters(mass: MusicAssistant, user_id: str) -> tuple[list[str], list[str]]:
-    """Read the raw provider and player filter of the given user."""
+async def _get_user_player_filter(mass: MusicAssistant, user_id: str) -> list[str]:
+    """Read the raw player filter of the given user."""
     row = await mass.webserver.auth.database.get_row("users", {"user_id": user_id})
     assert row is not None
-    return json_loads(row["provider_filter"]), json_loads(row["player_filter"])
-
-
-async def test_remove_provider_config_strips_user_provider_filter(
-    mass: MusicAssistant,
-) -> None:
-    """Removing a provider also removes it from the access filters of restricted users."""
-    _store_provider_config(mass)
-    user = await mass.webserver.auth.create_user(
-        username="restricted",
-        provider_filter=[PLAYER_PROVIDER_DOMAIN, OTHER_PROVIDER_INSTANCE_ID],
-    )
-
-    await mass.config.remove_provider_config(PLAYER_PROVIDER_DOMAIN)
-
-    provider_filter, _ = await _get_user_filters(mass, user.user_id)
-    assert provider_filter == [OTHER_PROVIDER_INSTANCE_ID]
+    return cast("list[str]", json_loads(row["player_filter"]))
 
 
 async def test_remove_player_config_strips_user_player_filter(mass: MusicAssistant) -> None:
@@ -520,6 +505,6 @@ async def test_remove_player_config_strips_user_player_filter(mass: MusicAssista
 
     # the filter cleanup is scheduled by the (non-async) config wipe
     deadline = asyncio.get_running_loop().time() + 5.0
-    while (await _get_user_filters(mass, user.user_id))[1] != ["other_player"]:
+    while await _get_user_player_filter(mass, user.user_id) != ["other_player"]:
         assert asyncio.get_running_loop().time() < deadline, "player filter was not cleaned up"
         await asyncio.sleep(0.01)

@@ -3,6 +3,7 @@
     "description": "Play music, manage groups, and control SONOS speakers throughout your home."
   },
   "errors": {
-    "player_synced_cannot_play": "Player {0} can not accept the play command, it is synced to another player."
+    "player_synced_cannot_play": "Player {0} can not accept the play command, it is synced to another player.",
+    "wake_on_lan_timeout": "{0} did not respond to wake-on-LAN."
   }
 }

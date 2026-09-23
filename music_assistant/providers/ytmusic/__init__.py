@@ -150,6 +150,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SIMILAR_TRACKS,
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.RECOMMENDATIONS,
+    ProviderFeature.ALBUM_VERSIONS,
 }
 
 
@@ -186,8 +187,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
     @property
     def max_concurrent_streams(self) -> int:
-        """YouTube Music serves one stream per account session."""
-        return 1
+        """Allow a few parallel fetches and leave YouTube to enforce its account allowance."""
+        return 3
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
@@ -202,10 +203,13 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             self.get_setup_value(CONF_PO_TOKEN_SERVER_URL) or DEFAULT_PO_TOKEN_SERVER_URL
         )
         if not await self._verify_po_token_url():
-            raise LoginFailed(
+            # Unreachable server isn't a credentials problem, so raise a retryable setup failure.
+            raise SetupFailedError(
                 "PO Token server URL is not reachable. "
                 "Make sure you have installed the YT Music PO Token Generator "
-                "and that it is running."
+                "and that it is running.",
+                translation_key="po_token_server_unreachable",
+                translation_owner=self.translation_owner,
             )
         yt_username = str(self.get_setup_value(CONF_USERNAME))
         self._yt_user = yt_username if is_brand_account(yt_username) else None
@@ -397,6 +401,27 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 continue
             tracks.append(track)
         return tracks
+
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
+    async def get_album_versions(self, prov_album_id: str) -> list[Album]:
+        """
+        Get albums that YTM has indicated as alternate versions to the given album.
+
+        YTM won't surface these variants via search, so we must explicitly grab
+        them out of the other_versions field.
+        """
+        if album_obj := await get_album(
+            headers=self._headers,
+            prov_album_id=prov_album_id,
+            language=self.language,
+            user=self._yt_user,
+        ):
+            return [
+                self._parse_album(album_obj=ov, album_id=ov["browseId"])
+                for ov in album_obj.get("other_versions", [])
+            ]
+        msg = f"Item {prov_album_id} not found"
+        raise MediaNotFoundError(msg)
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_artist(self, prov_artist_id: str) -> Artist:
@@ -695,6 +720,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             can_seek=True,
             allow_seek=True,
             expiration=expiration,
+            # YouTube throttles delivery to ~playback rate, so treat it as a live-paced source.
+            is_realtime=True,
         )
         if (audio_channels := stream_format.get("audio_channels")) and str(
             audio_channels

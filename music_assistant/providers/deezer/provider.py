@@ -14,21 +14,30 @@ from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from deezer_python_gql import DeezerGQLClient, GraphQLClientError
+from deezer_python_gql import DeezerGQLClient, GraphQLClientAuthError, GraphQLClientError
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .browse import DeezerBrowseManager
-from .gw_client import DeezerGWError, GWClient
+from .constants import DECRYPT_KEY_ERROR, DECRYPT_KEY_LENGTH
+from .gw_client import (
+    DeezerGWAuthError,
+    DeezerGWError,
+    DeezerGWNoSubscriptionError,
+    GWClient,
+)
 from .media import DeezerMediaManager
+from .rest_client import DeezerRESTClient
 from .streaming import DeezerStreamingManager
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
+    from music_assistant_models.enums import ExternalID
     from music_assistant_models.media_items import (
         Album,
         Artist,
@@ -48,6 +57,8 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
 SUPPORTED_FEATURES = {
+    ProviderFeature.TRACK_BY_EXTERNAL_ID,
+    ProviderFeature.ALBUM_BY_EXTERNAL_ID,
     ProviderFeature.LIBRARY_ARTISTS,
     ProviderFeature.LIBRARY_ALBUMS,
     ProviderFeature.LIBRARY_TRACKS,
@@ -88,6 +99,7 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
 
     gql_client: DeezerGQLClient
     gw_client: GWClient
+    rest_client: DeezerRESTClient
     media_manager: DeezerMediaManager
     browse_manager: DeezerBrowseManager
     streaming_manager: DeezerStreamingManager
@@ -111,10 +123,40 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
             self.user_id = me.id
             self.gw_client = GWClient(self.mass.http_session, arl_token)
             await self.gw_client.setup()
+        except DeezerGWNoSubscriptionError as err:
+            self.logger.error("Deezer account has no streamable subscription: %s", err)
+            raise LoginFailed(
+                "This Deezer account has no subscription that Music Assistant can stream from.",
+                translation_key="no_subscription",
+                translation_owner=self.translation_owner,
+            ) from err
+        except DeezerGWAuthError as err:
+            self.logger.error("Deezer GW authentication failed: %s", err)
+            raise LoginFailed(
+                "Deezer could not establish a playback session for this account.",
+                translation_key="gw_no_session",
+                translation_owner=self.translation_owner,
+            ) from err
+        except GraphQLClientAuthError as err:
+            self.logger.error("Deezer ARL authentication failed: %s", err)
+            raise LoginFailed(
+                "Deezer could not authenticate with the supplied ARL token.",
+                translation_key="arl_rejected",
+                translation_owner=self.translation_owner,
+            ) from err
         except (GraphQLClientError, DeezerGWError) as err:
-            raise LoginFailed("Deezer authentication failed. Please check your ARL token.") from err
+            self.logger.error("Deezer authentication failed: %s", err)
+            raise LoginFailed(
+                "Deezer authentication failed. See the Music Assistant log for the reason.",
+                translation_key="auth_failed",
+                translation_owner=self.translation_owner,
+            ) from err
+
+        if len(app_var("deezer_decrypt_key")) != DECRYPT_KEY_LENGTH:
+            self.logger.warning(DECRYPT_KEY_ERROR)
 
         self.media_manager = DeezerMediaManager(self)
+        self.rest_client = DeezerRESTClient(self.mass)
         self.browse_manager = DeezerBrowseManager(self)
         self.streaming_manager = DeezerStreamingManager(self)
 
@@ -175,6 +217,18 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         return await self.media_manager.get_track(prov_track_id)
+
+    async def get_track_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Track | None:
+        """Retrieve a track by ISRC."""
+        return await self.media_manager.get_track_by_external_id(external_id, external_id_type)
+
+    async def get_album_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Album | None:
+        """Retrieve an album by barcode (UPC/EAN)."""
+        return await self.media_manager.get_album_by_external_id(external_id, external_id_type)
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""

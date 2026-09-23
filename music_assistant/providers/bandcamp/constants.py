@@ -17,6 +17,7 @@ SUPPORTED_FEATURES = {
 # Config keys
 CONF_IDENTITY = "identity"
 CONF_TOP_TRACKS_LIMIT = "top_tracks_limit"
+CONF_GET_LYRICS = "get_lyrics"
 DEFAULT_TOP_TRACKS_LIMIT = 50
 
 # Cache TTLs

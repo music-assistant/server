@@ -30,6 +30,10 @@ from music_assistant.controllers.streams.smart_fades.planner.context import (
     TransitionContext,
     build_transition_context,
 )
+from music_assistant.controllers.streams.smart_fades.vocal import (
+    COLLISION_SECONDS_LIMIT,
+    WEIGHTED_COLLISION_LIMIT,
+)
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from tests.controllers.streams.smart_fades.conftest import _analysis_with_bands
 
@@ -185,7 +189,9 @@ class TestSmartCrossFadePlanner:
         inc.downbeats = (np.asarray(inc.downbeats, dtype=np.float32) + 33.0).tolist()
         plan = _plan(_analysis(120.0, duration=240.0), inc)
         assert plan.crossfade_duration == pytest.approx(8.0)
-        assert plan.fadein_trim_start == pytest.approx(33.0)
+        # an 8s overlap cannot justify cutting a 33s intro the listener never
+        # hears any part of, so the incoming track plays from its head
+        assert plan.fadein_trim_start is None
 
     def test_valid_entry_too_late_for_the_bars_duration_reduces_the_rungs_too(self) -> None:
         """A found entry point that still overflows the buffer also demotes the candidate."""
@@ -197,7 +203,8 @@ class TestSmartCrossFadePlanner:
         inc.downbeats = [20.0]
         plan = _plan(out, inc)
         assert plan.crossfade_duration == pytest.approx(16.0)
-        assert plan.fadein_trim_start == pytest.approx(20.0)
+        # the 20s cut exceeds the 16s the overlap plays under the outgoing track
+        assert plan.fadein_trim_start is None
 
     def test_entry_fit_uses_the_tempo_compensated_duration(self) -> None:
         """A valid entry is not rejected when tempo compensation makes the overlap fit."""
@@ -444,14 +451,101 @@ class TestRescuePassBeforeEmergencyHandoff:
     """When the rescue pass also fails, the emergency handoff ships as the last resort."""
 
     def test_emergency_handoff_still_ships_when_the_rescue_pass_also_fails(self) -> None:
-        """Wall-to-wall vocal collision on both decks rejects the rescue rung too: handoff ships."""
-        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(200.0, 239.9)])
-        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 40.0)])
+        """
+        A sung outro tail against a sung intro head rejects the rescue rung too: handoff ships.
+
+        Both masks stay structured (well under saturation, so the collision
+        guard does not abstain), yet every rung's overlap collides, and the
+        8s fallback crossfade breaches its severity ceiling (twice the
+        candidate limits) so the click-free handoff remains the last resort.
+        """
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(225.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(0.0, 20.0)])
 
         plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
 
         assert plan.metrics.strategy is TransitionStrategy.SHORT_VOCAL_HANDOFF
         assert 0.4 <= plan.crossfade_duration <= 1.0
+
+
+class TestFallbackCrossfade:
+    """All candidates rejected but the collision mild: a plain volume crossfade ships."""
+
+    def _mild_pair(self) -> tuple[AudioAnalysisData, AudioAnalysisData]:
+        """
+        Wall-to-wall outgoing vocal against two short incoming phrases.
+
+        The early phrase (~0.93-2.0s) breaches the weighted collision limit at
+        every 1/2/4-bar rung; the late phrase (10-12.1s) breaches the raw limit
+        at the 8-bar rung but sits beyond the 8s fallback window, whose own
+        weighted collision (~0.63) lands between the candidate limit and the
+        fallback's severity ceiling.
+        """
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(200.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(1.0, 1.9), (10.0, 12.1)])
+        return out, inc
+
+    def test_the_mild_pair_really_rejects_every_phrased_rung(self) -> None:
+        """Confirm the mild pair's ladder rungs all breach the candidate-level limits."""
+        out, inc = self._mild_pair()
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+        factory = CandidateFactory(ctx, LOGGER)
+        for bars in (8, 4, 2, 1):
+            candidate = factory.build(
+                CandidateSpec(tier=ctx.tier, bars=bars, anchor_s=None, entry_s=None)
+            )
+            assert candidate is not None
+            assert (
+                candidate.metrics.collision_seconds >= COLLISION_SECONDS_LIMIT
+                or candidate.metrics.weighted_collision_seconds >= WEIGHTED_COLLISION_LIMIT
+            ), bars
+
+    def test_mild_all_rejected_collision_ships_the_fallback_crossfade(self) -> None:
+        """A mild collision ships the plain 8s equal-power crossfade, not the handoff."""
+        out, inc = self._mild_pair()
+
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
+
+        assert plan.metrics.strategy is TransitionStrategy.FALLBACK_CROSSFADE
+        assert 1.0 < plan.crossfade_duration <= 8.0
+        assert not plan.tempo_plan.steps
+        assert plan.fadein_trim_start is None
+        eq = plan.eq_plan
+        assert eq.low_out is None
+        assert eq.low_in is None
+        assert eq.high_out is None
+        assert eq.high_in is None
+
+    def test_colliding_fallback_ducks_the_outgoing_mid(self) -> None:
+        """Weighted collision at/over the candidate limit engages the -8dB duck on A only."""
+        out, inc = self._mild_pair()
+
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
+
+        assert plan.metrics.strategy is TransitionStrategy.FALLBACK_CROSSFADE
+        assert plan.metrics.weighted_collision_seconds >= WEIGHTED_COLLISION_LIMIT
+        assert plan.eq_plan.mid_out is not None
+        assert plan.eq_plan.mid_out.steps[0] == (0.0, 0.0)
+        assert plan.eq_plan.mid_out.steps[-1][1] == pytest.approx(-8.0)
+        assert plan.eq_plan.mid_in is None
+
+    def test_sub_limit_collision_ships_the_fallback_without_the_duck(self) -> None:
+        """
+        A fallback whose own window stays under the candidate limit skips the duck.
+
+        The quick-fade pair's 1-bar rungs all collide with B's opening phrase,
+        but that phrase sits so early in the 8s fallback window that its
+        weighted collision stays under the candidate limit: no duck needed.
+        """
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(200.0, 239.9)])
+        inc = _with_vocal_activity(_analysis(150.0, duration=240.0), [(0.0, 1.0)])
+
+        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
+
+        assert plan.metrics.strategy is TransitionStrategy.FALLBACK_CROSSFADE
+        assert plan.metrics.weighted_collision_seconds < WEIGHTED_COLLISION_LIMIT
+        assert plan.eq_plan.mid_out is None
+        assert plan.eq_plan.mid_in is None
 
 
 def _bands_pair(f_low_out: float, f_low_in: float) -> tuple[AudioAnalysisData, AudioAnalysisData]:

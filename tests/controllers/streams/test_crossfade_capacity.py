@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import struct
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from typing import Any, cast
@@ -18,6 +19,18 @@ from music_assistant.controllers.streams.audio import (
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
+
+
+def _audio(pcm_format: AudioFormat, seconds: float) -> bytes:
+    """
+    Return PCM that reads as audio rather than as an item's trailing silence.
+
+    The holdback measures the silent run a buffer ends with, so a fixture filled
+    with zeroes would stand in for a track that has already finished.
+    """
+    frame = struct.pack("<2h", 9000, -9000)
+    size = int(pcm_format.pcm_sample_size * seconds)
+    return (frame * (size // len(frame) + 1))[:size]
 
 
 def _streamdetails(audio_buffer: AudioBuffer | None) -> StreamDetails:
@@ -186,8 +199,8 @@ async def test_unprepared_next_track_flushes_outgoing_tail_without_opening_sourc
     ) -> AsyncGenerator[bytes]:
         if queue_item is not current_item:
             pytest.fail("The incoming source was opened during crossfade fallback")
-        yield bytes(pcm_format.pcm_sample_size * 8)
-        yield bytes(pcm_format.pcm_sample_size * 8)
+        yield _audio(pcm_format, 8)
+        yield _audio(pcm_format, 8)
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _current_stream)
     stream = audio.get_queue_item_stream_with_smartfade(
@@ -268,6 +281,7 @@ async def test_crossfade_reads_its_window_past_the_resident_buffer(
     smart_fade = SimpleNamespace(
         timing_info=SimpleNamespace(
             pre_crossfade_duration=0,
+            post_crossfade_duration=0,
             crossfade_duration=crossfade_duration,
             fadein_trimmed_duration=0,
         )
@@ -297,13 +311,13 @@ async def test_crossfade_reads_its_window_past_the_resident_buffer(
     ) -> AsyncGenerator[bytes]:
         nonlocal incoming_seconds_read
         if queue_item is current_item:
-            yield bytes(pcm_format.pcm_sample_size * 8)
-            yield bytes(pcm_format.pcm_sample_size * 8)
+            yield _audio(pcm_format, 8)
+            yield _audio(pcm_format, 8)
             return
         # the incoming source keeps delivering beyond what was resident at the boundary
         for _ in range(20):
             incoming_seconds_read += 1
-            yield bytes(pcm_format.pcm_sample_size)
+            yield _audio(pcm_format, 1)
 
     monkeypatch.setattr(audio, "get_queue_item_stream", _item_stream)
     stream = audio.get_queue_item_stream_with_smartfade(
@@ -317,7 +331,7 @@ async def test_crossfade_reads_its_window_past_the_resident_buffer(
     _ = [chunk async for chunk in stream]
 
     assert incoming_seconds_read > resident_media_duration
-    crossfade_data = audio._crossfade_data["queue-1"]
+    crossfade_data = audio._crossfade_handover["queue-1"]
     assert crossfade_data.queue_item_id == "next"
     # the window is stream time, so fast playback reaches the incoming track's
     # half-duration cap sooner: at 2x an 8s overlap would eat this whole track

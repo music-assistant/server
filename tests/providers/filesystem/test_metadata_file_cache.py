@@ -34,6 +34,7 @@ def _provider() -> Any:
     provider.sync_running = False
     provider._sync_nfo_by_dir = {}
     provider._sync_nfo_index_ready = False
+    provider._missing_album_artist_warned = set()
     return provider
 
 

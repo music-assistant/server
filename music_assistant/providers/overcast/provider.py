@@ -260,12 +260,17 @@ class OvercastProvider(MusicProvider):
 
     async def _login(self) -> None:
         """Authenticate with Overcast and persist the session cookie."""
-        email = str(self.get_setup_value(CONF_USERNAME))
-        password = str(self.get_setup_value(CONF_PASSWORD))
+        email = self.get_setup_value(CONF_USERNAME)
+        password = self.get_setup_value(CONF_PASSWORD)
+        if not email or not password:
+            # an app linked account has no credentials to sign in with a second time
+            raise LoginFailed(
+                "The Overcast session has expired, set the provider up again to renew it"
+            )
         try:
             async with self.http_session.post(
                 LOGIN_URL,
-                data={"email": email, "password": password},
+                data={"email": str(email), "password": str(password)},
                 allow_redirects=False,
             ) as response:
                 status = response.status

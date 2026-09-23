@@ -18,6 +18,7 @@ import time
 from abc import ABC
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Any, TypeVar, cast, final, overload
 
 from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER, ConfigValueType
@@ -148,6 +149,29 @@ MEDIA_IDENTITY_KEYS = frozenset(
 # only invalidated by set_config, all other cached properties (including those
 # defined by player implementations) are invalidated on every update_state call
 _CONFIG_CACHED_PROPS = frozenset({"hide_in_ui", "expose_to_ha"})
+
+
+class AnnouncementFeature(Enum):
+    """
+    Server-side hints about how a player behaves during an announcement.
+
+    Read by the players controller to route and time an announcement. Not part of
+    PlayerFeature and never sent to clients.
+    """
+
+    SUPPORTS_VOLUME = "supports_volume"
+    """The native announcement route applies a requested volume level."""
+
+    APPLIES_VOLUME = "applies_volume"
+    """The player mixes the clip into running audio and sets/restores the level itself."""
+
+    COORDINATES_START = "coordinates_start"
+    """
+    The player lines up its start with the other members of a group announcement.
+
+    A player reporting this is expected to also report SUPPORTS_VOLUME, so a group
+    announcement that fans out to its members is never diverted to the builtin path.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -428,6 +452,15 @@ class Player(ABC):
     # apart from a real pause - time is then the only signal left. Leave at None for
     # devices that report a source they no longer play as stopped by themselves.
     _attr_external_pause_idle_timeout: int | None = None
+    # Set this on players whose device names the service it plays itself, so a source
+    # on its own source list counts as a takeover of the remembered MA queue. Leave at
+    # False for devices that also list the transport our own stream arrives on.
+    _attr_trusts_reported_source: bool = False
+    # Set this on players that play upcoming tracks from their own cached copy of the
+    # queue (which may not be refreshable, e.g. the Sonos cloud queue): a stream request
+    # for a queue item away from the playhead is then refused, so the player re-reads
+    # the queue instead of silently playing a stale cached track.
+    _attr_strict_queue_item_requests: bool = False
 
     def __init__(self, provider: PlayerProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -699,6 +732,17 @@ class Player(ABC):
         the player_id if the player is currently playing a MA queue.
         """
         return self._attr_active_source
+
+    @property
+    def trusts_reported_source(self) -> bool:
+        """
+        Return whether a source this player lists for itself counts as a takeover.
+
+        Most devices do not report their active source accurately, so only the sources
+        in EXTERNAL_SOURCES are trusted. A provider that does report accurately can opt
+        in, so a service Music Assistant has no name of its own for is recognised too.
+        """
+        return self._attr_trusts_reported_source
 
     @property
     def group_members(self) -> list[str]:
@@ -994,16 +1038,17 @@ class Player(ABC):
         )
 
     @property
-    def applies_announcement_volume(self) -> bool:
+    def announcement_features(self) -> set[AnnouncementFeature]:
         """
-        Return True if the player applies the announcement volume itself.
+        Return the announcement-behaviour hints for this player.
 
-        A player that mixes an announcement into audio it is already playing knows when
-        the clip becomes audible, so it applies and restores the level at that moment -
-        through the volume control that owns its output. The players controller then
-        leaves the volume alone instead of raising it before the announcement starts.
+        SUPPORTS_VOLUME is reported by default: an announcement played through the
+        builtin path always applies the level via the device volume, and most native
+        routes honour it too. A provider whose native announcement ignores the level
+        drops it, so the controller uses the builtin path once a level is requested.
+        APPLIES_VOLUME and COORDINATES_START are opt-in (see AnnouncementFeature).
         """
-        return False
+        return {AnnouncementFeature.SUPPORTS_VOLUME}
 
     async def play_announcement(
         self, announcement: PlayerMedia, volume_level: int | None = None
@@ -1706,6 +1751,18 @@ class Player(ABC):
         Otherwise checks the native player's GAPLESS_PLAYBACK feature.
         """
         return self._check_feature_with_active_protocol(PlayerFeature.GAPLESS_PLAYBACK)
+
+    @property
+    @final
+    def strict_queue_item_requests(self) -> bool:
+        """
+        Return whether queue item stream requests must match the queue's playhead.
+
+        When set, a stream request for a queue item the queue no longer places at or
+        around the playhead is refused, so the player re-reads the queue instead of
+        playing a track out of a stale cached copy of it.
+        """
+        return self._attr_strict_queue_item_requests
 
     @property
     @final
@@ -3292,9 +3349,11 @@ class Player(ABC):
                 # that would otherwise reintroduce it.
                 return False
             # Don't include (playing) players that have group members (they are group leaders)
+            # Use the normalized members: a solo player that reports itself as its only
+            # member (e.g. a detached Sendspin client) is not a group leader.
             if (  # noqa: SIM103
                 player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
-                and player.group_members
+                and player.state.group_members
             ):
                 return False
             return True
@@ -3383,12 +3442,9 @@ class Player(ABC):
             return session.active_source
 
         # always prefer active MA source but add a guard to detect if player is really playing
-        # something different, such as a line-in or TV input, we use an explicit list here
-        # because many players do not accurately report the active_source
-        # this way, for the obvious cases, we can detect a source "takeover"
-        if self.__active_mass_source and (
-            not self.active_source or self.active_source.lower() not in EXTERNAL_SOURCES
-        ):
+        # something different, such as a line-in or TV input. Many players do not accurately
+        # report the active_source, so only the obvious cases count as a source "takeover"
+        if self.__active_mass_source and not self.__reports_source_takeover():
             return self.__active_mass_source
 
         # active source as reported by the player itself
@@ -3569,6 +3625,17 @@ class Player(ABC):
     def __ne__(self, other: object) -> bool:
         """Check inequality of two Player objects."""
         return not self.__eq__(other)
+
+    @final
+    def __reports_source_takeover(self) -> bool:
+        """Return whether the source the player reports for itself took it over."""
+        if (reported_source := self.active_source) is None:
+            return False
+        if reported_source.lower() in EXTERNAL_SOURCES:
+            return True
+        return self.trusts_reported_source and any(
+            x.id == reported_source for x in self.source_list
+        )
 
     @final
     def __external_source_active(self) -> bool:

@@ -20,6 +20,8 @@ from music_assistant.providers.party import (
     CONF_ENABLE_GUEST_ACCESS,
     CONF_PARTY_DURATION,
     CONF_PARTY_MODE,
+    CONF_PARTY_PLAYER,
+    CONF_PARTY_PLAYER_AUTO,
     CONF_PREVENT_DUPLICATE_TRACKS,
     PartyPlugin,
 )
@@ -83,7 +85,7 @@ async def test_add_to_queue_rechecks_duplicates_during_priority_insert() -> None
     player_queues.load.assert_not_awaited()
 
 
-def _create_session_test_plugin(mode: str) -> PartyPlugin:
+def _create_session_test_plugin(mode: str, guest_access: bool = True) -> PartyPlugin:
     """Create a party plugin with a real get_party_player for session tests."""
     plugin = PartyPlugin.__new__(PartyPlugin)
     plugin.mass = MagicMock()
@@ -92,11 +94,20 @@ def _create_session_test_plugin(mode: str) -> PartyPlugin:
     plugin._session = None
     plugin._session_lock = asyncio.Lock()
     config_values = {
-        CONF_ENABLE_GUEST_ACCESS: True,
+        CONF_ENABLE_GUEST_ACCESS: guest_access,
         CONF_PARTY_MODE: mode,
+        CONF_PARTY_PLAYER: CONF_PARTY_PLAYER_AUTO,
     }
     plugin.config.get_value.side_effect = config_values.__getitem__
     return plugin
+
+
+def _queue(queue_id: str, state: PlaybackState, active: bool = True) -> MagicMock:
+    queue = MagicMock()
+    queue.queue_id = queue_id
+    queue.state = state
+    queue.active = active
+    return queue
 
 
 @pytest.mark.asyncio
@@ -117,6 +128,39 @@ async def test_get_party_player_remote_mode_no_session() -> None:
     plugin._get_session = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
     assert await plugin.get_party_player() is None
+
+
+@pytest.mark.asyncio
+async def test_get_party_player_remote_mode_needs_guest_access() -> None:
+    """Remote mode plays on the guest session's player, so it needs guest access."""
+    plugin = _create_session_test_plugin(SharedPlaybackMode.REMOTE.value, guest_access=False)
+
+    assert await plugin.get_party_player() is None
+
+
+@pytest.mark.asyncio
+async def test_get_party_player_resolves_without_guest_access() -> None:
+    """Auto-select works with guest access disabled: dashboards need a player to follow."""
+    plugin = _create_session_test_plugin(SharedPlaybackMode.VENUE.value, guest_access=False)
+    plugin.mass.player_queues = [  # type: ignore[assignment]
+        _queue("idle", PlaybackState.IDLE),
+        _queue("playing", PlaybackState.PLAYING),
+    ]
+
+    assert await plugin.get_party_player() == "playing"
+
+
+@pytest.mark.asyncio
+async def test_get_party_player_auto_select_prefers_playing_then_paused() -> None:
+    """Auto-select order: playing queue, then paused, then any active queue."""
+    plugin = _create_session_test_plugin(SharedPlaybackMode.VENUE.value)
+    plugin.mass.player_queues = [  # type: ignore[assignment]
+        _queue("inactive", PlaybackState.PLAYING, active=False),
+        _queue("idle", PlaybackState.IDLE),
+        _queue("paused", PlaybackState.PAUSED),
+    ]
+
+    assert await plugin.get_party_player() == "paused"
 
 
 @pytest.mark.asyncio

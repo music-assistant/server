@@ -7,12 +7,17 @@ import os
 import sys
 import time
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from music_assistant.helpers import process as process_module
-from music_assistant.helpers.process import AsyncProcess
+from music_assistant.helpers.process import (
+    AsyncProcess,
+    collect_child_process_counts,
+    parse_child_process_name,
+)
 
 # Comfortably beyond the OS pipe capacity plus asyncio's default high-water mark,
 # so the bytes are guaranteed to still be queued in our own write buffer.
@@ -359,3 +364,44 @@ async def test_close_reaps_a_child_when_cancelled_while_waiting_for_exit(
             await proc.close()
 
     assert proc.returncode is not None
+
+
+def test_parse_child_process_name() -> None:
+    """Test that a /proc stat line yields the process name only for a matching parent."""
+    # comm may contain spaces and parentheses; ppid is the field after the state field
+    stat = "4321 (ffmpeg (edit)) S 100 4321 4321 0 -1 4194304\n"
+    assert parse_child_process_name(stat, parent_pid=100) == "ffmpeg (edit)"
+    assert parse_child_process_name(stat, parent_pid=999) is None
+    assert parse_child_process_name("garbage without fields", parent_pid=100) is None
+
+
+def test_collect_child_process_counts(tmp_path: Path) -> None:
+    """Test that children of the given pid are counted by name from a fake /proc."""
+
+    def _write(pid: int, comm: str, ppid: int, state: str = "S") -> None:
+        proc_dir = tmp_path / str(pid)
+        proc_dir.mkdir()
+        (proc_dir / "stat").write_text(f"{pid} ({comm}) {state} {ppid} {pid} {pid} 0 -1\n")
+
+    _write(11, "ffmpeg", ppid=100)
+    _write(12, "ffmpeg", ppid=100)
+    _write(13, "librespot", ppid=100)
+    _write(14, "ffmpeg", ppid=999)  # child of another process, not counted
+    _write(15, "ffmpeg", ppid=100, state="Z")  # a defunct child is the leak signal, still counted
+    (tmp_path / "self").mkdir()  # non-numeric entries are skipped
+    (tmp_path / "42").mkdir()  # a process that exits mid-walk leaves no stat file
+    assert collect_child_process_counts(tmp_path, parent_pid=100) == {"ffmpeg": 3, "librespot": 1}
+    # no children of this pid
+    assert collect_child_process_counts(tmp_path, parent_pid=555) == {}
+    # /proc absent, for example on non-Linux platforms
+    assert collect_child_process_counts(tmp_path / "nowhere", parent_pid=100) is None
+
+
+def test_collect_child_process_counts_tolerates_non_utf8_comm(tmp_path: Path) -> None:
+    """Test that a child whose name holds non-UTF-8 bytes is counted, not raised on."""
+    proc_dir = tmp_path / "16"
+    proc_dir.mkdir()
+    (proc_dir / "stat").write_bytes(b"16 (odd\xff name) S 100 16 16 0 -1\n")
+    counts = collect_child_process_counts(tmp_path, parent_pid=100)
+    assert counts is not None
+    assert sum(counts.values()) == 1

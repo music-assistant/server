@@ -103,6 +103,26 @@ class TestFactoryGoldenTiming:
         assert candidate.plan.fadein_trim_start == 0.0
 
 
+class TestUnheardIntroClamp:
+    """A fade-in trim is bounded by what the overlap plays under the outgoing track."""
+
+    def test_a_trim_deeper_than_the_overlap_is_stripped(self) -> None:
+        """A cut skipping more of the incoming track than the blend plays is dropped."""
+        out, inc = _analysis(80.0, duration=240.0), _analysis(83.2, duration=240.0)
+        ctx = _ctx(out, inc)
+        deep = CandidateFactory(ctx, LOGGER).build(_spec(ctx, 8, anchor_s=20.0, entry_s=30.0))
+        assert deep is not None
+        assert deep.plan.fadein_trim_start is None
+
+    def test_a_trim_the_overlap_covers_is_kept(self) -> None:
+        """An entry the blend actually plays under the outgoing track survives."""
+        out, inc = _analysis(80.0, duration=240.0), _analysis(83.2, duration=240.0)
+        ctx = _ctx(out, inc)
+        shallow = CandidateFactory(ctx, LOGGER).build(_spec(ctx, 8, anchor_s=20.0, entry_s=10.0))
+        assert shallow is not None
+        assert shallow.plan.fadein_trim_start == pytest.approx(10.0, abs=2.0)
+
+
 class TestCandidateBuildGuards:
     """Ports of the old candidate build guards, against the factory API."""
 

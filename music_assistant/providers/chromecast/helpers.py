@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 import urllib.error
+from contextlib import suppress
 from dataclasses import asdict, dataclass, replace
 from ipaddress import IPv6Address, ip_address
 from typing import TYPE_CHECKING, Any, cast
@@ -103,6 +104,21 @@ def send_hide_dashboard(chromecast: Chromecast) -> bool:
 
     chromecast.socket_client.send_app_message(DASHBOARD_NAMESPACE, {"type": "hide_dashboard"})
     return True
+
+
+def disconnect_cast(chromecast: Chromecast, timeout: float) -> None:
+    """
+    Close the socket to a Cast device and wait up to timeout for its worker thread.
+
+    Blocking call, run from an executor for a non-zero timeout. A worker thread that
+    outlives the timeout is not an error here: it is a daemon thread and the socket is
+    closed either way, while pychromecast raises TimeoutError for it.
+
+    :param chromecast: Chromecast to disconnect.
+    :param timeout: Seconds to wait for the worker thread. Use 0 to not wait.
+    """
+    with suppress(TimeoutError):
+        chromecast.disconnect(timeout)
 
 
 @dataclass

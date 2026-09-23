@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 from music_assistant_models import media_items
-from music_assistant_models.enums import ExternalID
+from music_assistant_models.enums import ExternalID, MediaType
 
 from music_assistant.helpers import compare
 
@@ -69,6 +69,56 @@ def _track(
         provider_mappings={
             media_items.ProviderMapping(
                 item_id=item_id, provider_domain="test", provider_instance="test1"
+            )
+        },
+    )
+
+
+def _provider_track(
+    item_id: str,
+    provider: str,
+    *,
+    name: str = "Track",
+    version: str = "",
+    duration: int = 200,
+    album_name: str = "Album",
+    artist_names: tuple[str, ...] = ("Artist A",),
+    external_ids: set[tuple[ExternalID, str]] | None = None,
+    album_external_ids: set[tuple[ExternalID, str]] | None = None,
+) -> media_items.Track:
+    """Build a provider track for confidence comparisons."""
+    album = _album(
+        item_id=f"album-{item_id}",
+        provider=provider,
+        name=album_name,
+        external_ids=album_external_ids,
+    )
+    return media_items.Track(
+        item_id=item_id,
+        provider=provider,
+        name=name,
+        version=version,
+        duration=duration,
+        disc_number=1,
+        track_number=1,
+        artists=media_items.UniqueList(
+            [
+                media_items.ItemMapping(
+                    item_id=f"artist-{index}",
+                    provider=provider,
+                    name=artist_name,
+                    media_type=MediaType.ARTIST,
+                )
+                for index, artist_name in enumerate(artist_names)
+            ]
+        ),
+        album=album,
+        external_ids=external_ids or set(),
+        provider_mappings={
+            media_items.ProviderMapping(
+                item_id=item_id,
+                provider_domain=provider,
+                provider_instance=provider,
             )
         },
     )
@@ -771,13 +821,7 @@ def test_compare_album_evidence_blank_vs_remaster_resolves_with_fingerprint() ->
 def test_compare_album_evidence_blank_vs_recording_conflict_is_no_match(
     conflict_version: str,
 ) -> None:
-    """
-    A blank version next to a recording-changing qualifier is a proven conflict.
-
-    Unlike a blank version next to plain packaging wording (remaster, deluxe, ...), a
-    missing version tag can never explain away a recording-altering qualifier on the
-    other side, so this must not be left for a tracklist to resolve.
-    """
+    """A blank version never cancels a recording-changing qualifier."""
     base_item = _album(version="")
     compare_item = _album(item_id="2", provider="test2", version=conflict_version)
 
@@ -1212,6 +1256,718 @@ def test_compare_track_missing_disc_number_assumes_disc_one() -> None:
     disc_two = _albumtrack("3", "test2", disc_number=2)
     disc_two.duration = 320
     assert compare.compare_track(untagged, disc_two) is False
+
+
+def test_compare_track_evidence_ranks_release_and_recording_matches() -> None:
+    """Exact-release evidence outranks the same recording on another album."""
+    mb_album_id = {(ExternalID.MB_ALBUM, "11111111-1111-1111-1111-111111111111")}
+    base = _provider_track("base", "provider_a", album_external_ids=mb_album_id)
+    exact = _provider_track("exact", "provider_b", album_external_ids=mb_album_id)
+    alternate_release = _provider_track(
+        "alternate",
+        "provider_b",
+        album_name="Compilation",
+    )
+
+    assert compare.compare_track_evidence(base, exact) == compare.TrackMatchConfidence.EXACT
+    assert (
+        compare.compare_track_evidence(base, alternate_release)
+        == compare.TrackMatchConfidence.LIKELY
+    )
+
+
+def test_compare_track_evidence_full_metadata_agreement_without_release_evidence_is_likely() -> (
+    None
+):
+    """Title/artist/version/position agreement alone, with no release-level id, caps at LIKELY."""
+    base = _provider_track("base", "provider_a")
+    candidate = _provider_track("candidate", "provider_b")
+
+    # Matching metadata alone is not release-level proof.
+    assert compare.compare_track_evidence(base, candidate) == compare.TrackMatchConfidence.LIKELY
+
+
+def test_compare_track_evidence_conflicting_release_track_ids_are_not_exact() -> None:
+    """Different MusicBrainz release-track IDs can still identify the same recording."""
+    base = _provider_track(
+        "base",
+        "provider_a",
+        external_ids={
+            (
+                ExternalID.MB_TRACK,
+                "11111111-1111-1111-1111-111111111111",
+            )
+        },
+    )
+    candidate = _provider_track(
+        "candidate",
+        "provider_b",
+        external_ids={
+            (
+                ExternalID.MB_TRACK,
+                "22222222-2222-2222-2222-222222222222",
+            )
+        },
+    )
+
+    assert compare.compare_track_evidence(base, candidate) == compare.TrackMatchConfidence.LIKELY
+
+
+def test_compare_track_evidence_cross_instance_item_id_collision_is_not_exact() -> None:
+    """A coincidental item id shared by two different provider instances is not proof."""
+    base = media_items.Track(
+        item_id="Artist/Album/01.flac",
+        provider="filesystem_1",
+        name="Track One",
+        version="",
+        duration=200,
+        disc_number=1,
+        track_number=1,
+        artists=media_items.UniqueList(
+            [
+                media_items.ItemMapping(
+                    item_id="artist-a",
+                    provider="filesystem_1",
+                    name="Artist A",
+                    media_type=MediaType.ARTIST,
+                )
+            ]
+        ),
+        provider_mappings={
+            media_items.ProviderMapping(
+                item_id="Artist/Album/01.flac",
+                provider_domain="filesystem",
+                provider_instance="filesystem_1",
+            )
+        },
+    )
+    # Non-streaming sibling instances do not share item IDs.
+    unrelated = media_items.Track(
+        item_id="Artist/Album/01.flac",
+        provider="filesystem_2",
+        name="Completely Different Song",
+        version="",
+        duration=321,
+        disc_number=1,
+        track_number=7,
+        artists=media_items.UniqueList(
+            [
+                media_items.ItemMapping(
+                    item_id="artist-b",
+                    provider="filesystem_2",
+                    name="Someone Else",
+                    media_type=MediaType.ARTIST,
+                )
+            ]
+        ),
+        provider_mappings={
+            media_items.ProviderMapping(
+                item_id="Artist/Album/01.flac",
+                provider_domain="filesystem",
+                provider_instance="filesystem_2",
+            )
+        },
+    )
+
+    assert compare.compare_track_evidence(base, unrelated) == compare.TrackMatchConfidence.NO_MATCH
+
+    # the same instance sharing the same item id is unambiguous identity and stays EXACT
+    same_instance = media_items.Track(
+        item_id="Artist/Album/01.flac",
+        provider="filesystem_1",
+        name="Completely Different Song",
+        version="",
+        duration=321,
+        disc_number=1,
+        track_number=7,
+        artists=base.artists,
+        provider_mappings={
+            media_items.ProviderMapping(
+                item_id="Artist/Album/01.flac",
+                provider_domain="filesystem",
+                provider_instance="filesystem_1",
+            )
+        },
+    )
+    assert compare.compare_track_evidence(base, same_instance) == compare.TrackMatchConfidence.EXACT
+
+
+def test_compare_track_evidence_cross_instance_album_id_collision_is_not_same_album() -> None:
+    """A coincidental album item id shared across non-streaming instances is not proof."""
+
+    def _colliding_album(provider_instance: str, name: str) -> media_items.Album:
+        return media_items.Album(
+            item_id="Various/Comp/album.dir",
+            provider=provider_instance,
+            name=name,
+            artists=media_items.UniqueList(
+                [
+                    media_items.Artist(
+                        item_id="artist",
+                        provider=provider_instance,
+                        name="Various Artists",
+                        provider_mappings={
+                            media_items.ProviderMapping(
+                                item_id="artist",
+                                provider_domain="filesystem",
+                                provider_instance=provider_instance,
+                            )
+                        },
+                    )
+                ]
+            ),
+            provider_mappings={
+                media_items.ProviderMapping(
+                    item_id="Various/Comp/album.dir",
+                    provider_domain="filesystem",
+                    provider_instance=provider_instance,
+                )
+            },
+        )
+
+    def _album_track(
+        provider_instance: str, album: media_items.Album, track_number: int
+    ) -> media_items.Track:
+        return media_items.Track(
+            item_id=f"{provider_instance}-track",
+            provider=provider_instance,
+            name="Some Song Title",
+            duration=200,
+            disc_number=1,
+            track_number=track_number,
+            artists=media_items.UniqueList(
+                [
+                    media_items.ItemMapping(
+                        item_id="artist-a",
+                        provider=provider_instance,
+                        name="Some Artist",
+                        media_type=MediaType.ARTIST,
+                    )
+                ]
+            ),
+            album=album,
+            provider_mappings={
+                media_items.ProviderMapping(
+                    item_id=f"{provider_instance}-track",
+                    provider_domain="filesystem",
+                    provider_instance=provider_instance,
+                )
+            },
+        )
+
+    # Non-streaming sibling instances do not share album IDs either.
+    album_a = _colliding_album("filesystem_1", "Compilation Volume 1")
+    album_b = _colliding_album("filesystem_2", "A Totally Different Compilation")
+    assert compare._same_album(album_a, album_b) is False
+
+    # The false album match must not force a NO_MATCH here.
+    base = _album_track("filesystem_1", album_a, 3)
+    candidate = _album_track("filesystem_2", album_b, 9)
+    assert compare.compare_track_evidence(base, candidate) == compare.TrackMatchConfidence.LIKELY
+
+
+def test_compare_track_evidence_authoritative_id_overrides_position_drift() -> None:
+    """Provider track-number drift does not override an authoritative release-track ID."""
+    mb_track = (
+        ExternalID.MB_TRACK,
+        "11111111-1111-1111-1111-111111111111",
+    )
+    base = _provider_track("base", "provider_a", external_ids={mb_track})
+    candidate = _provider_track(
+        "candidate",
+        "provider_b",
+        external_ids={mb_track},
+    )
+    candidate.track_number = 2
+
+    assert compare.compare_track_evidence(base, candidate) == compare.TrackMatchConfidence.EXACT
+
+    base.external_ids.clear()
+    candidate.external_ids.clear()
+    assert compare.compare_track_evidence(base, candidate) == compare.TrackMatchConfidence.NO_MATCH
+
+
+def test_compare_track_evidence_simplified_albums_do_not_prove_exact_release() -> None:
+    """Album mappings without artist and year evidence only support a recording match."""
+    base = _provider_track("base", "provider_a")
+    candidate = _provider_track("candidate", "provider_b")
+    base.album = media_items.ItemMapping(
+        item_id="album-a",
+        provider="provider_a",
+        name="Album",
+        media_type=MediaType.ALBUM,
+    )
+    candidate.album = media_items.ItemMapping(
+        item_id="album-b",
+        provider="provider_b",
+        name="Album",
+        media_type=MediaType.ALBUM,
+    )
+
+    assert compare.compare_track_evidence(base, candidate) == compare.TrackMatchConfidence.LIKELY
+
+
+def test_compare_track_evidence_accepts_missing_remaster_by_album_year() -> None:
+    """Matching album years resolve version metadata omitted by one provider."""
+    base = _provider_track("base", "provider_a")
+    remaster = _provider_track(
+        "remaster",
+        "provider_b",
+        version="2022 Remaster",
+    )
+    assert isinstance(base.album, media_items.Album)
+    base.album.year = 2022
+    assert isinstance(remaster.album, media_items.Album)
+    remaster.album.year = 2022
+
+    assert compare.compare_track_evidence(base, remaster) == compare.TrackMatchConfidence.LIKELY
+
+    remaster.album.year = 2021
+    assert compare.compare_track_evidence(base, remaster) == compare.TrackMatchConfidence.LOOSE
+
+
+def test_compare_track_evidence_rejects_recording_version_conflicts() -> None:
+    """A recording-changing version never matches the original recording."""
+    recording_id = (
+        ExternalID.MB_RECORDING,
+        "12345678-1234-1234-1234-123456789abc",
+    )
+    base = _provider_track("base", "provider_a", external_ids={recording_id})
+    remix = _provider_track(
+        "remix",
+        "provider_b",
+        version="Club Remix",
+        external_ids={recording_id},
+    )
+
+    assert compare.compare_track_evidence(base, remix) == compare.TrackMatchConfidence.NO_MATCH
+
+
+def test_compare_track_evidence_release_track_id_overrides_version_drift() -> None:
+    """A shared release-track ID overrides conflicting provider version metadata."""
+    mb_track = (
+        ExternalID.MB_TRACK,
+        "12345678-1234-1234-1234-123456789abc",
+    )
+    base = _provider_track("base", "provider_a", external_ids={mb_track})
+    mislabeled = _provider_track(
+        "candidate",
+        "provider_b",
+        version="Club Remix",
+        external_ids={mb_track},
+    )
+
+    assert compare.compare_track_evidence(base, mislabeled) == compare.TrackMatchConfidence.EXACT
+
+
+def test_compare_track_evidence_handles_featured_artist_title_drift() -> None:
+    """Featured credits may move between the title and structured artist list."""
+    title_credit = _provider_track(
+        "base",
+        "provider_a",
+        name="Track (feat. Guest)",
+    )
+    structured_credit = _provider_track(
+        "candidate",
+        "provider_b",
+        album_name="Compilation",
+        artist_names=("Artist A", "Guest"),
+    )
+
+    assert (
+        compare.compare_track_evidence(title_credit, structured_credit)
+        == compare.TrackMatchConfidence.LIKELY
+    )
+
+
+def test_compare_track_evidence_handles_with_artist_title_drift() -> None:
+    """A with-credit may move between the title and structured artist list."""
+    title_credit = _provider_track(
+        "base",
+        "provider_a",
+        name="Track (with Guest)",
+    )
+    structured_credit = _provider_track(
+        "candidate",
+        "provider_b",
+        album_name="Compilation",
+        artist_names=("Artist A", "Guest"),
+    )
+
+    assert (
+        compare.compare_track_evidence(title_credit, structured_credit)
+        == compare.TrackMatchConfidence.LIKELY
+    )
+
+
+def test_compare_track_evidence_stops_feature_credit_before_version() -> None:
+    """Version brackets after a bare featured credit are not part of the artist name."""
+    title_credit = _provider_track(
+        "base",
+        "provider_a",
+        name="Track feat. Guest (Radio Edit)",
+        album_name="Original",
+    )
+    structured_credit = _provider_track(
+        "candidate",
+        "provider_b",
+        version="Radio Edit",
+        album_name="Compilation",
+        artist_names=("Artist A", "Guest"),
+    )
+
+    assert (
+        compare.compare_track_evidence(title_credit, structured_credit)
+        == compare.TrackMatchConfidence.LIKELY
+    )
+
+
+def test_compare_track_evidence_strips_bare_colon_feature_credit() -> None:
+    """A bare colon-form featured credit is stripped like the dot/space forms during search."""
+    title_credit = _provider_track(
+        "base",
+        "provider_a",
+        name="Track feat:Guest",
+        album_name="Original",
+    )
+    structured_credit = _provider_track(
+        "candidate",
+        "provider_b",
+        album_name="Compilation",
+        artist_names=("Artist A", "Guest"),
+    )
+
+    assert (
+        compare.compare_track_evidence(title_credit, structured_credit)
+        == compare.TrackMatchConfidence.LIKELY
+    )
+
+
+def test_compare_track_evidence_allows_omitted_featured_artist() -> None:
+    """A provider may omit a featured credit carried by the other provider."""
+    credited = _provider_track(
+        "base",
+        "provider_a",
+        name="Track (feat. Guest)",
+        album_name="Original",
+    )
+    omitted = _provider_track(
+        "candidate",
+        "provider_b",
+        album_name="Compilation",
+    )
+
+    assert compare.compare_track_evidence(credited, omitted) == compare.TrackMatchConfidence.LIKELY
+
+
+def test_compare_track_evidence_rejects_conflicting_featured_artists() -> None:
+    """Different explicit featured credits identify different collaborations."""
+    alice = _provider_track(
+        "alice",
+        "provider_a",
+        name="Track (feat. Alice)",
+        album_name="Original",
+    )
+    bob = _provider_track(
+        "bob",
+        "provider_b",
+        name="Track (feat. Bob)",
+        album_name="Compilation",
+    )
+
+    assert compare.compare_track_evidence(alice, bob) == compare.TrackMatchConfidence.NO_MATCH
+
+
+def test_compare_track_evidence_rejects_conflicting_colon_featured_artists() -> None:
+    """Colon-form featured credits remain part of track identity."""
+    alice = _provider_track(
+        "alice",
+        "provider_a",
+        name="Track (feat:Alice)",
+        album_name="Original",
+    )
+    bob = _provider_track(
+        "bob",
+        "provider_b",
+        name="Track (feat:Bob)",
+        album_name="Compilation",
+    )
+
+    assert compare.compare_track_evidence(alice, bob) == compare.TrackMatchConfidence.NO_MATCH
+
+
+def test_compare_track_evidence_keeps_composite_artist_identity() -> None:
+    """A partial overlap does not match a complete composite artist credit."""
+    partial_credit = _provider_track(
+        "partial",
+        "provider_a",
+        name="Track (feat. Tyler)",
+        album_name="Original",
+    )
+    composite_credit = _provider_track(
+        "composite",
+        "provider_b",
+        album_name="Compilation",
+        artist_names=("Artist A", "Tyler, The Creator"),
+    )
+
+    assert (
+        compare.compare_track_evidence(partial_credit, composite_credit)
+        == compare.TrackMatchConfidence.NO_MATCH
+    )
+
+
+def test_compare_track_evidence_rejects_candidate_missing_primary_artist() -> None:
+    """A candidate crediting only the source's featured guest is not the same track."""
+    original = _provider_track(
+        "original",
+        "provider_a",
+        artist_names=("Alice", "Bob"),
+        album_name="Original",
+    )
+    guest_only = _provider_track(
+        "guest_only",
+        "provider_b",
+        artist_names=("Bob",),
+        album_name="Bob Solo Album",
+    )
+
+    assert (
+        compare.compare_track_evidence(original, guest_only)
+        == compare.TrackMatchConfidence.NO_MATCH
+    )
+
+
+def test_compare_track_evidence_keeps_complete_featured_artist_name() -> None:
+    """A separator inside one featured artist name is not treated as conflicting credits."""
+    title_credit = _provider_track(
+        "base",
+        "provider_a",
+        name="Track (feat. Simon and Garfunkel)",
+        album_name="Original",
+    )
+    structured_credit = _provider_track(
+        "candidate",
+        "provider_b",
+        album_name="Compilation",
+        artist_names=("Artist A", "Simon & Garfunkel"),
+    )
+
+    assert (
+        compare.compare_track_evidence(title_credit, structured_credit)
+        == compare.TrackMatchConfidence.LIKELY
+    )
+
+
+def test_compare_track_evidence_matches_composite_primary_artist() -> None:
+    """A composite band name credited as the sole primary artist still matches itself."""
+    base = _provider_track(
+        "base",
+        "provider_a",
+        album_name="Original",
+        artist_names=("Simon & Garfunkel",),
+    )
+    candidate = _provider_track(
+        "candidate",
+        "provider_b",
+        album_name="Compilation",
+        artist_names=("Simon & Garfunkel",),
+    )
+
+    assert compare.compare_track_evidence(base, candidate) != compare.TrackMatchConfidence.NO_MATCH
+
+
+def test_compare_track_evidence_matches_asymmetric_composite_credit() -> None:
+    """A single composite credit reconstructed from an M3U still matches two split artists."""
+    # a third-party M3U exporter can collapse a multi-artist credit into one combined
+    # name; the provider candidate credits the same two artists as separate entries
+    m3u_credit = _provider_track(
+        "m3u",
+        "provider_a",
+        album_name="Original",
+        artist_names=("Artist A, Artist B",),
+    )
+    provider_credit = _provider_track(
+        "provider",
+        "provider_b",
+        album_name="Compilation",
+        artist_names=("Artist A", "Artist B"),
+    )
+
+    assert (
+        compare.compare_track_evidence(m3u_credit, provider_credit)
+        != compare.TrackMatchConfidence.NO_MATCH
+    )
+
+
+def test_compare_track_evidence_rejects_unrelated_separate_artists_matching_band_name() -> None:
+    """A structured act name is not shredded into unrelated solo artists sharing its words."""
+    # "Earth, Wind & Fire" is one official act's own name, not a list of three artists -
+    # a track crediting three separate solo artists literally named Earth/Wind/Fire is
+    # an unrelated recording that must not be treated as the same one
+    band_credit = _provider_track(
+        "band",
+        "provider_a",
+        album_name="Original",
+        artist_names=("Earth, Wind & Fire",),
+    )
+    solo_artists_credit = _provider_track(
+        "solo",
+        "provider_b",
+        album_name="Compilation",
+        artist_names=("Earth", "Wind", "Fire"),
+    )
+
+    assert (
+        compare.compare_track_evidence(band_credit, solo_artists_credit)
+        == compare.TrackMatchConfidence.NO_MATCH
+    )
+
+
+def test_compare_track_evidence_ranks_recording_identifiers() -> None:
+    """Release-track IDs are exact while recording IDs identify alternate releases."""
+    mb_track = (
+        ExternalID.MB_TRACK,
+        "12345678-1234-1234-1234-123456789abc",
+    )
+    mb_recording = (
+        ExternalID.MB_RECORDING,
+        "abcdefab-abcd-abcd-abcd-abcdefabcdef",
+    )
+    base = _provider_track(
+        "base",
+        "provider_a",
+        album_name="Original",
+        external_ids={mb_track, mb_recording},
+    )
+    exact = _provider_track(
+        "exact",
+        "provider_b",
+        album_name="Reissue",
+        external_ids={mb_track, mb_recording},
+    )
+    recording = _provider_track(
+        "recording",
+        "provider_b",
+        album_name="Compilation",
+        external_ids={
+            (
+                ExternalID.MB_TRACK,
+                "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb",
+            ),
+            mb_recording,
+        },
+    )
+    conflicting_recording = _provider_track(
+        "conflict",
+        "provider_b",
+        external_ids={
+            mb_track,
+            (
+                ExternalID.MB_RECORDING,
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            ),
+        },
+    )
+
+    assert compare.compare_track_evidence(base, exact) == compare.TrackMatchConfidence.EXACT
+    assert compare.compare_track_evidence(base, recording) == compare.TrackMatchConfidence.LIKELY
+    assert (
+        compare.compare_track_evidence(base, conflicting_recording)
+        == compare.TrackMatchConfidence.NO_MATCH
+    )
+
+
+def test_compare_track_evidence_uses_isrc_duration_tolerance() -> None:
+    """A valid shared ISRC tolerates provider duration drift up to eight seconds."""
+    isrc = (ExternalID.ISRC, "USRC17607839")
+    base = _provider_track("base", "provider_a", duration=200, external_ids={isrc})
+    within_tolerance = _provider_track(
+        "within",
+        "provider_b",
+        duration=208,
+        album_name="Compilation",
+        external_ids={isrc},
+    )
+    outside_tolerance = _provider_track(
+        "outside",
+        "provider_b",
+        duration=209,
+        album_name="Compilation",
+        external_ids={isrc},
+    )
+
+    assert (
+        compare.compare_track_evidence(base, within_tolerance)
+        == compare.TrackMatchConfidence.LIKELY
+    )
+    assert (
+        compare.compare_track_evidence(base, outside_tolerance)
+        == compare.TrackMatchConfidence.NO_MATCH
+    )
+
+
+def test_compare_track_evidence_treats_unknown_duration_as_loose_not_reject() -> None:
+    """A title/artist match isn't rejected just because one side's duration is unknown."""
+    base = _provider_track("base", "provider_a", duration=200)
+    # 0 is the unset default; -1 is the M3U convention for an unadvertised duration
+    missing_duration = _provider_track(
+        "missing", "provider_b", duration=0, album_name="Compilation"
+    )
+    unknown_duration = _provider_track(
+        "unknown", "provider_b", duration=-1, album_name="Compilation"
+    )
+
+    assert (
+        compare.compare_track_evidence(base, missing_duration) == compare.TrackMatchConfidence.LOOSE
+    )
+    assert (
+        compare.compare_track_evidence(base, unknown_duration) == compare.TrackMatchConfidence.LOOSE
+    )
+
+
+def test_compare_track_evidence_rejects_explicitness_conflicts() -> None:
+    """Explicit and clean recordings are not interchangeable migration matches."""
+    explicit = _provider_track("explicit", "provider_a")
+    clean = _provider_track("clean", "provider_b")
+    explicit.metadata.explicit = True
+    clean.metadata.explicit = False
+
+    assert compare.compare_track_evidence(explicit, clean) == compare.TrackMatchConfidence.NO_MATCH
+
+
+def test_compare_track_evidence_uses_hydrated_album_explicitness() -> None:
+    """Hydrated album metadata prevents clean and explicit substitutions."""
+    base = _provider_track("base", "provider_a")
+    candidate = _provider_track("candidate", "provider_b")
+    assert isinstance(base.album, media_items.Album)
+    assert isinstance(candidate.album, media_items.Album)
+    base_album = base.album
+    candidate_album = candidate.album
+    base_album.metadata.explicit = True
+    candidate_album.metadata.explicit = False
+    base.album = media_items.ItemMapping(
+        item_id=base_album.item_id,
+        provider=base_album.provider,
+        name=base_album.name,
+        media_type=MediaType.ALBUM,
+    )
+    candidate.album = media_items.ItemMapping(
+        item_id=candidate_album.item_id,
+        provider=candidate_album.provider,
+        name=candidate_album.name,
+        media_type=MediaType.ALBUM,
+    )
+
+    assert (
+        compare.compare_track_evidence(
+            base,
+            candidate,
+            base_album=base_album,
+            compare_album_item=candidate_album,
+        )
+        == compare.TrackMatchConfidence.NO_MATCH
+    )
 
 
 def test_compare_strings_accent_drift_matches() -> None:

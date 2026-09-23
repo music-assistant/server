@@ -190,11 +190,11 @@ async def test_a_session_that_starts_mid_cleanup_keeps_what_it_attaches() -> Non
     assert later.streamdetails.buffer is not None
 
 
-async def test_pending_crossfade_data_is_always_dropped() -> None:
+async def test_a_pending_crossfade_handover_is_always_dropped() -> None:
     """A restarted session starts its first track from scratch, with nothing to fade from."""
     ctrl = _controller([_item("a", "sess-2")], playing="sess-2")
 
     await ctrl._cleanup_queue_audio_data(QUEUE_ID, "sess-1")
 
-    clear_crossfade_data = cast("MagicMock", ctrl.mass.streams.audio.clear_crossfade_data)
-    clear_crossfade_data.assert_called_once_with(QUEUE_ID)
+    clear_crossfade_handover = cast("MagicMock", ctrl.mass.streams.audio.clear_crossfade_handover)
+    clear_crossfade_handover.assert_called_once_with(QUEUE_ID)

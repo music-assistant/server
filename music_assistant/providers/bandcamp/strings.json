@@ -7,6 +7,10 @@
     "top_tracks_limit": {
       "label": "Artist Top Tracks search limit",
       "description": "Search limit while getting artist top tracks."
+    },
+    "get_lyrics": {
+      "label": "Fetch song lyrics",
+      "description": "Fetch song lyrics from Bandcamp. One extra Bandcamp request per album or per standalone track, cached for 30 days."
     }
   },
   "media": {

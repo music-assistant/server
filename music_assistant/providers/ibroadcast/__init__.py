@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse, urlunparse
 
@@ -102,6 +103,15 @@ class IBroadcastProvider(MusicProvider):
         # temporary call to refresh library until ibroadcast provides a detailed api
         await self._client.refresh_library()
 
+        # Every artwork lookup resolves against this one url, and raises the same
+        # ValueError as an item that simply has no artwork when it is missing. Report
+        # it once here, or a library that silently comes in without any artwork at all
+        # leaves nothing behind to explain itself.
+        try:
+            await self._client.get_artwork_base_url()
+        except ValueError as error:
+            self.logger.warning("No artwork will be available for this account: %s", error)
+
     async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from ibroadcast."""
         for album in (await self._client.get_albums()).values():
@@ -125,14 +135,17 @@ class IBroadcastProvider(MusicProvider):
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
                 self._report_skipped_item(MediaType.ARTIST, artist, "artist_id", error)
                 continue
+        if await self._has_various_artists():
+            yield self._various_artists()
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of albums for the given artist."""
+        artist_id = self._to_client_artist_id(prov_artist_id)
         albums_objs = [
             album
             for album in (await self._client.get_albums()).values()
-            if album["artist_id"] == int(prov_artist_id)
+            if album.get("artist_id") == artist_id
         ]
         albums = []
         for album in albums_objs:
@@ -158,6 +171,8 @@ class IBroadcastProvider(MusicProvider):
     @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
+        if prov_artist_id == VARIOUS_ARTISTS_MBID:
+            return self._various_artists()
         artist_obj = await self._client.get_artist(int(prov_artist_id))
         return await self._parse_artist(artist_obj)
 
@@ -173,15 +188,20 @@ class IBroadcastProvider(MusicProvider):
                 self._report_skipped_item(MediaType.TRACK, track, "track_id", error)
                 continue
 
-    def _get_artist_item_mapping(self, artist_id: str, artist_obj: dict[str, Any]) -> ItemMapping:
-        if (not artist_id and artist_obj["name"] == "Various Artists") or artist_id == "0":
-            artist_id = VARIOUS_ARTISTS_MBID
+    def _get_artist_item_mapping(
+        self, artist_id: str | int, artist_obj: dict[str, Any]
+    ) -> ItemMapping:
+        # iBroadcast uses artist id 0 for an album without a single artist
+        if not artist_id or str(artist_id) == "0":
+            return self._get_item_mapping(
+                MediaType.ARTIST, VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
+            )
         return self._get_item_mapping(MediaType.ARTIST, artist_id, str(artist_obj.get("name")))
 
-    def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
+    def _get_item_mapping(self, media_type: MediaType, key: str | int, name: str) -> ItemMapping:
         return ItemMapping(
             media_type=media_type,
-            item_id=key,
+            item_id=str(key),
             provider=self.instance_id,
             name=name,
         )
@@ -189,9 +209,13 @@ class IBroadcastProvider(MusicProvider):
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve playlists from iBroadcast."""
         for playlist in (await self._client.get_playlists()).values():
-            # Skip the auto generated playlist
-            if playlist["type"] != "recently-played" and playlist["type"] != "thumbsup":
-                yield await self._parse_playlist(playlist)
+            try:
+                # Skip the auto generated playlist
+                if playlist["type"] != "recently-played" and playlist["type"] != "thumbsup":
+                    yield await self._parse_playlist(playlist)
+            except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+                self._report_skipped_item(MediaType.PLAYLIST, playlist, "playlist_id", error)
+                continue
 
     @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
@@ -246,7 +270,7 @@ class IBroadcastProvider(MusicProvider):
         tracks = []
         for index, track_id in enumerate(track_ids, 1):
             track_obj = await self._client.get_track(track_id)
-            if track_obj is not None:
+            if track_obj:
                 track = await self._parse_track(track_obj)
                 if is_playlist:
                     track.position = index
@@ -257,30 +281,23 @@ class IBroadcastProvider(MusicProvider):
         """Parse a iBroadcast user response to Artist model object."""
         artist_id = artist_obj["artist_id"]
         artist = Artist(
-            item_id=artist_id,
+            item_id=str(artist_id),
             name=artist_obj["name"],
             provider=self.instance_id,
             provider_mappings={
                 ProviderMapping(
-                    item_id=artist_id,
+                    item_id=str(artist_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     url=f"https://media.ibroadcast.com/?view=container&container_id={artist_id}&type=artists",
                 )
             },
         )
-        # Artwork
+        # Artwork, which the client raises over when it holds no url for this artist
         if "artwork_id" in artist_obj:
-            artist.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=await self._client.get_artist_artwork_url(artist_id),
-                        provider=self.instance_id,
-                        remotely_accessible=True,
-                    )
-                ]
-            )
+            with suppress(ValueError):
+                artwork_url = await self._client.get_artist_artwork_url(artist_id)
+                artist.metadata.images = UniqueList([self._get_artwork_object(artwork_url)])
         return artist
 
     async def _parse_album(self, album_obj: dict[str, Any]) -> Album:
@@ -288,14 +305,14 @@ class IBroadcastProvider(MusicProvider):
         album_id = album_obj["album_id"]
         name, version = parse_title_and_version(album_obj["name"])
         album = Album(
-            item_id=album_id,
+            item_id=str(album_id),
             provider=self.instance_id,
             name=name,
             year=album_obj["year"],
             version=version,
             provider_mappings={
                 ProviderMapping(
-                    item_id=album_id,
+                    item_id=str(album_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
@@ -304,19 +321,7 @@ class IBroadcastProvider(MusicProvider):
             },
         )
         if album_obj["artist_id"] == 0:
-            artist = Artist(
-                item_id=VARIOUS_ARTISTS_MBID,
-                name=VARIOUS_ARTISTS_NAME,
-                provider=self.instance_id,
-                provider_mappings={
-                    ProviderMapping(
-                        item_id=VARIOUS_ARTISTS_MBID,
-                        provider_domain=self.domain,
-                        provider_instance=self.instance_id,
-                    )
-                },
-            )
-            album.artists.append(artist)
+            album.artists.append(self._various_artists())
         else:
             artist_mapping = self._get_item_mapping(
                 MediaType.ARTIST,
@@ -332,10 +337,11 @@ class IBroadcastProvider(MusicProvider):
         # iBroadcast doesn't seem to know album type - try inference
         album.album_type = infer_album_type(name, version)
 
-        # There is only an artwork in the tracks, lets get the first track one
-        artwork_url = await self._client.get_album_artwork_url(album_id)
-        if artwork_url:
-            album.metadata.images = UniqueList([self._get_artwork_object(artwork_url)])
+        # There is only an artwork in the tracks, lets get the first track one.
+        # The client raises when it finds none, which is no reason to drop the album.
+        with suppress(ValueError):
+            if artwork_url := await self._client.get_album_artwork_url(album_id):
+                album.metadata.images = UniqueList([self._get_artwork_object(artwork_url)])
         return album
 
     def _get_artwork_object(self, url: str) -> MediaItemImage:
@@ -348,13 +354,14 @@ class IBroadcastProvider(MusicProvider):
 
     async def _parse_track(self, track_obj: dict[str, Any]) -> Track:
         """Parse an iBroadcast track object to a Track model object."""
+        track_id = track_obj["track_id"]
         track = Track(
-            item_id=track_obj["track_id"],
+            item_id=str(track_id),
             provider=self.instance_id,
             name=track_obj["title"],
             provider_mappings={
                 ProviderMapping(
-                    item_id=track_obj["track_id"],
+                    item_id=str(track_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     available=not track_obj["trashed"],
@@ -362,8 +369,7 @@ class IBroadcastProvider(MusicProvider):
                 )
             },
         )
-        if track_obj["album_id"]:
-            album = await self._client.get_album(track_obj["album_id"])
+        album = await self._client.get_album(track_obj["album_id"]) if track_obj["album_id"] else {}
 
         if "rating" in track_obj and track_obj["rating"] == 5:
             track.favorite = True
@@ -402,14 +408,11 @@ class IBroadcastProvider(MusicProvider):
                 msg = "Track is missing artists"
                 raise InvalidDataError(msg)
 
-        # Artwork
-        track.metadata.images = UniqueList(
-            [
-                self._get_artwork_object(
-                    await self._client.get_track_artwork_url(track_obj["track_id"])
-                )
-            ]
-        )
+        # Artwork, which the client raises over when the track carries none
+        with suppress(ValueError):
+            track.metadata.images = UniqueList(
+                [self._get_artwork_object(await self._client.get_track_artwork_url(track_id))]
+            )
         # Genre
         genres: set[str] = set()
         if track_obj["genre"]:
@@ -426,14 +429,14 @@ class IBroadcastProvider(MusicProvider):
 
     async def _parse_playlist(self, playlist_obj: dict[str, Any]) -> Playlist:
         """Parse an iBroadcast Playlist response to a Playlist object."""
-        playlist_id = str(playlist_obj["playlist_id"])
+        playlist_id = playlist_obj["playlist_id"]
         playlist = Playlist(
-            item_id=playlist_id,
+            item_id=str(playlist_id),
             provider=self.instance_id,
             name=playlist_obj["name"],
             provider_mappings={
                 ProviderMapping(
-                    item_id=playlist_id,
+                    item_id=str(playlist_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                 )
@@ -441,16 +444,51 @@ class IBroadcastProvider(MusicProvider):
         )
         # Can be supported in future, the API has options available
         playlist.is_editable = False
-        playlist.metadata.images = UniqueList(
-            [
-                self._get_artwork_object(
-                    await self._client.get_playlist_artwork_url(int(playlist_id))
-                )
-            ]
-        )
+        # an empty playlist has no track to take artwork from, which the client raises over
+        with suppress(ValueError):
+            playlist.metadata.images = UniqueList(
+                [self._get_artwork_object(await self._client.get_playlist_artwork_url(playlist_id))]
+            )
         if "description" in playlist_obj:
             playlist.metadata.description = playlist_obj["description"]
         return playlist
+
+    def _to_client_artist_id(self, prov_artist_id: str) -> int:
+        """
+        Translate an artist id we handed out into the id the iBroadcast client expects.
+
+        :param prov_artist_id: An artist item_id from one of our own media items.
+        """
+        # We hand out the Various Artists placeholder under its MusicBrainz id,
+        # which iBroadcast itself files under artist id 0.
+        if prov_artist_id == VARIOUS_ARTISTS_MBID:
+            return 0
+        return int(prov_artist_id)
+
+    async def _has_various_artists(self) -> bool:
+        """Return whether any album or track in the library maps to Various Artists."""
+        # A short row from the api carries no "artist_id" at all, which is not the same
+        # as artist 0, so it must not raise its way out of the listing that calls us.
+        if any(album.get("artist_id") == 0 for album in (await self._client.get_albums()).values()):
+            return True
+        return any(
+            track.get("artist_id") == 0 for track in (await self._client.get_tracks()).values()
+        )
+
+    def _various_artists(self) -> Artist:
+        """Return the Various Artists placeholder, which iBroadcast refers to as artist 0."""
+        return Artist(
+            item_id=VARIOUS_ARTISTS_MBID,
+            name=VARIOUS_ARTISTS_NAME,
+            provider=self.instance_id,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=VARIOUS_ARTISTS_MBID,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
 
     def _report_skipped_item(
         self, media_type: MediaType, item_obj: dict[str, Any], id_key: str, err: Exception

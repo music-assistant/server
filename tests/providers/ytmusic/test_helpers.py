@@ -72,3 +72,43 @@ async def test_search_passes_auth_headers_and_user() -> None:
     with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm) as mock_ytmusic:
         await helpers.search(query="test", headers=headers, user="123")
     mock_ytmusic.assert_called_once_with(auth=headers, language="en", user="123")
+
+
+async def test_get_album_passes_auth_headers_and_user() -> None:
+    """get_album must authenticate its YTMusic client so tracks resolve with real ids."""
+    mock_ytm = MagicMock()
+    mock_ytm.get_album.return_value = {}
+    headers = {"cookie": "abc"}
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm) as mock_ytmusic:
+        await helpers.get_album(headers=headers, prov_album_id="album", user="123")
+    mock_ytmusic.assert_called_once_with(auth=headers, language="en", user="123")
+
+
+async def test_get_album_survives_missing_audio_playlist_id() -> None:
+    """A present-but-null audioPlaylistId must not reach get_playlist(playlistId=None)."""
+    mock_ytm = MagicMock()
+    mock_ytm.get_album.return_value = {"audioPlaylistId": None, "tracks": []}
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm):
+        album = await helpers.get_album(headers={}, prov_album_id="album")
+    assert album == {"audioPlaylistId": None, "tracks": []}
+    mock_ytm.get_playlist.assert_not_called()
+
+
+async def test_add_playlist_tracks_allows_duplicates() -> None:
+    """Playlist writes must opt into duplicate entries."""
+    mock_ytm = MagicMock()
+    headers = {"cookie": "abc"}
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm):
+        await helpers.add_remove_playlist_tracks(
+            headers=headers,
+            prov_playlist_id="playlist",
+            prov_track_ids=["track", "track"],
+            add=True,
+            user="123",
+        )
+
+    mock_ytm.add_playlist_items.assert_called_once_with(
+        playlistId="playlist",
+        videoIds=["track", "track"],
+        duplicates=True,
+    )

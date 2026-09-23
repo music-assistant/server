@@ -159,12 +159,22 @@ class InternetArchiveProvider(MusicProvider):
         search_strategies = []
 
         # For music searches: focus on title and creator
+        # Include both mediatype:audio and mediatype:etree (Live Music Archive)
         if any(mt in media_types for mt in [MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST]):
             search_strategies.extend(
                 [
-                    (f"creator:({search_query}) AND mediatype:audio", "downloads desc"),
-                    (f"title:({search_query}) AND mediatype:audio", "downloads desc"),
-                    (f"subject:({search_query}) AND mediatype:audio", "downloads desc"),
+                    (
+                        f"creator:({search_query}) AND (mediatype:audio OR mediatype:etree)",
+                        "downloads desc",
+                    ),
+                    (
+                        f"title:({search_query}) AND (mediatype:audio OR mediatype:etree)",
+                        "downloads desc",
+                    ),
+                    (
+                        f"subject:({search_query}) AND (mediatype:audio OR mediatype:etree)",
+                        "downloads desc",
+                    ),
                 ]
             )
 

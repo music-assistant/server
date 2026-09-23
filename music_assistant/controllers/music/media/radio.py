@@ -50,6 +50,7 @@ if TYPE_CHECKING:
     from music_assistant_models.background_task import BackgroundTask
 
     from music_assistant import MusicAssistant
+    from music_assistant.models.plugin import PluginProvider
 
 
 class RadioController(MediaControllerBase[Radio]):
@@ -120,7 +121,9 @@ class RadioController(MediaControllerBase[Radio]):
         )
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
-        return await cast("MusicProvider", provider).get_dynamic_radio_tracks(item_id)
+        return await cast("MusicProvider | PluginProvider", provider).get_dynamic_radio_tracks(
+            item_id
+        )
 
     async def export_radios(self) -> str:
         """Export all library radio stations to M3U8 format."""

@@ -45,7 +45,7 @@ from .constants import (
     MASS_APP_ID,
     SENDSPIN_CAST_APP_ID,
 )
-from .helpers import CastStatusListener, ChromecastInfo
+from .helpers import CastStatusListener, ChromecastInfo, disconnect_cast
 from .receiver_commands import MassCastCommandController
 
 if TYPE_CHECKING:
@@ -302,9 +302,9 @@ class ChromecastPlayer(Player):
             # Non-blocking disconnect: close socket, don't wait for thread.
             # Socket threads are daemon threads and die on process exit.
             # Blocking disconnect can stall shutdown if threads are slow to exit.
-            self.cc.disconnect(0)
+            disconnect_cast(self.cc, 0)
         else:
-            await asyncio.to_thread(self.cc.disconnect, 10)
+            await asyncio.to_thread(disconnect_cast, self.cc, 10)
 
     ### Callbacks from Chromecast Statuslistener
 

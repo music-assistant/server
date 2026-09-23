@@ -424,5 +424,17 @@
   "provider.yandex_smarthome.config_entries.external_base_url.label": "外部基本 URL (HTTPS，可選覆蓋)",
   "provider.yandex_smarthome.config_entries.otp_code_cp.label": "OTP 驗證碼",
   "provider.yandex_smarthome.config_entries.ym_instance.label": "Yandex 帳戶來源",
-  "provider.airplay.config_entries.hires_playback.label": "啟用 Hi-Res (24-bit) 播放"
+  "provider.airplay.config_entries.hires_playback.label": "啟用 Hi-Res (24-bit) 播放",
+  "provider.plex.config_entries.stream_quality.options.128": "128 kbps",
+  "provider.plex.config_entries.stream_quality.options.192": "192 kbps",
+  "provider.plex.config_entries.stream_quality.options.320": "320 kbps",
+  "provider.plex.config_entries.stream_quality.options.96": "96 kbps",
+  "provider.plex.config_entries.stream_quality.options.original": "原來",
+  "common.config_entries.client_id.description": "OAuthAPP驗證的客戶端ID",
+  "common.config_entries.client_id.label": "客戶端ID",
+  "core.player_queues.config_entries.autoplay_enabled.label": "自己播放",
+  "core.player_queues.config_entries.smart_shuffle_optimize_smart_fades.option_descriptions.global": "跟隨播放機隊列預設",
+  "core.player_queues.config_entries.smart_shuffle_optimize_smart_fades.options.disabled": "無啟用",
+  "core.player_queues.config_entries.smart_shuffle_optimize_smart_fades.options.enabled": "已啟用",
+  "core.player_queues.config_entries.smart_shuffle_optimize_smart_fades.options.global": "全部"
 }

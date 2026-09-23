@@ -36,6 +36,7 @@ The streams controller runs its own dedicated HTTP-only webserver on a separate 
 - **No SSL/TLS**: Many audio players (especially embedded devices) have limited resources and struggle with SSL handshakes. Since the stream server only runs on the internal network, encryption is unnecessary.
 - **No authentication**: Players need to access streams without credentials. Instead, stream URLs include a **session ID** that is validated on each request to prevent stale or invalid stream attempts.
 - **Separate port**: Keeps audio streaming isolated from the API, allowing independent scaling and configuration.
+- **Reachability probe**: `GET /info` answers with the server id and CORS headers (preflight included), so a browser on the local network can check that the published address leads to this server. The `streams/info` API command reports that address.
 
 ## Inbound Audio
 
@@ -121,7 +122,7 @@ Supporting modules in `helpers/`:
 - **Queue streaming**: `get_queue_item_stream`, `get_queue_item_stream_with_smartfade`, `get_queue_flow_stream`
 - **Format selection**: `get_output_format`, `select_pcm_format`, `select_flow_format`
 - **DSP and output plans**: `get_player_output_plan`, `get_player_dsp_details`, `get_stream_dsp_details`
-- **Crossfade management**: `crossfade_allowed`, `clear_crossfade_data`
+- **Crossfade management**: `crossfade_allowed`, `clear_crossfade_handover`
 - **Loudness analysis**: `attach_loudness_analyzer` (via buffer callbacks)
 
 `AudioProcessingManager`, initialized as `self.audio_processing` on the

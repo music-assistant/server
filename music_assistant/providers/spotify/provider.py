@@ -18,6 +18,7 @@ import aiohttp
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
+    ExternalID,
     ImageType,
     MediaType,
     ProviderFeature,
@@ -55,8 +56,18 @@ from orjson import JSONDecodeError
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
+from music_assistant.helpers.external_ids import (
+    barcode_to_upc,
+    is_valid_barcode,
+    is_valid_isrc,
+    normalize_external_id,
+)
 from music_assistant.helpers.json import SerializableType, json_loads
-from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
+from music_assistant.helpers.throttle_retry import (
+    ThrottlerManager,
+    parse_retry_after,
+    throttle_with_retries,
+)
 from music_assistant.helpers.util import lock
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 from music_assistant.providers.spotify_connect.base import (
@@ -144,7 +155,7 @@ class SpotifyProvider(MusicProvider):
                 required=False,
                 # librespot hands over Spotify's own file untouched, so there is
                 # nothing on that backend to normalize with
-                hidden=self.get_setup_value(CONF_PLAYBACK_BACKEND) != BACKEND_SOLOIST,
+                hidden=not self._soloist_configured,
             ),
             ConfigEntry(
                 key=CONF_AUDIO_QUALITY,
@@ -154,7 +165,7 @@ class SpotifyProvider(MusicProvider):
                 options=AUDIO_QUALITY_OPTIONS,
                 # librespot streams Spotify's own file untouched, so there is
                 # nothing to choose there
-                hidden=self.get_setup_value(CONF_PLAYBACK_BACKEND) != BACKEND_SOLOIST,
+                hidden=not self._soloist_configured,
             ),
             ConfigEntry(
                 key=CONF_SYNC_PODCAST_PROGRESS,
@@ -268,14 +279,14 @@ class SpotifyProvider(MusicProvider):
         """
         Return how many source streams Music Assistant may run against this provider.
 
-        Two on either playback backend: a Spotify account tolerates two
-        concurrent librespot fetches (main + playback), and on the Soloist
-        backend the item that is ending and the item that continues from the
-        same session are two streams reading it in turn.
+        Three for librespot (two playing queues plus a prebuffer); one for
+        Soloist, whose engine serves a single run at a time.
         """
-        # not answered per backend: MusicProvider sizes the stream semaphore from
-        # this in __init__, long before the configured backend is created
-        return 2
+        # read from the stored setup choice: MusicProvider sizes the stream
+        # semaphore from this in __init__, before the backend object exists
+        if self._soloist_configured:
+            return 1
+        return 3
 
     @property
     def audiobooks_supported(self) -> bool:
@@ -495,13 +506,30 @@ class SpotifyProvider(MusicProvider):
         track_obj = await self._get_data(f"tracks/{prov_track_id}")
         return parse_track(track_obj, self)
 
+    async def get_track_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Track | None:
+        """Retrieve track by external ID (ISRC)."""
+        if external_id_type != ExternalID.ISRC or not is_valid_isrc(external_id):
+            return None
+        normalized_isrc = normalize_external_id(ExternalID.ISRC, external_id)
+        return await self._get_track_by_external_id(normalized_isrc)
+
+    async def get_album_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Album | None:
+        """Retrieve album by external ID (UPC/Barcode)."""
+        if external_id_type != ExternalID.BARCODE or not is_valid_barcode(external_id):
+            return None
+        normalized_upc = barcode_to_upc(external_id)
+        return await self._get_album_by_external_id(normalized_upc)
+
     @use_cache()
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         if prov_playlist_id == self._get_liked_songs_playlist_id():
             return await self._get_liked_songs_playlist()
 
-        # Check cache to see if this playlist requires global token
         use_global = await self._playlist_requires_global_token(prov_playlist_id)
         if use_global:
             playlist_obj = await self._get_data(
@@ -1230,7 +1258,7 @@ class SpotifyProvider(MusicProvider):
 
     def _create_backend(self) -> SpotifyPlaybackBackend:
         """Return the playback backend selected by this instance's configuration."""
-        if self.get_setup_value(CONF_PLAYBACK_BACKEND) == BACKEND_SOLOIST:
+        if self._soloist_configured:
             return SoloistBackend(self)
         return LibrespotBackend(self)
 
@@ -1267,6 +1295,16 @@ class SpotifyProvider(MusicProvider):
         shutil.rmtree(path, onexc=_report)
 
     @property
+    def _soloist_configured(self) -> bool:
+        """
+        Return True if this instance is set up to play through the soloist backend.
+
+        Answers from the stored setup choice, so it is also valid before the
+        backend object exists.
+        """
+        return self.get_setup_value(CONF_PLAYBACK_BACKEND) == BACKEND_SOLOIST
+
+    @property
     def _soloist_backend(self) -> SoloistBackend | None:
         """Return the playback backend when the soloist one is in use, else None."""
         backend = getattr(self, "backend", None)
@@ -1276,6 +1314,24 @@ class SpotifyProvider(MusicProvider):
     def _instance_storage_dir(self) -> Path:
         """Return this instance's private storage directory."""
         return Path(self.mass.storage_path) / "spotify" / self.instance_id
+
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
+    async def _get_track_by_external_id(self, external_id: str) -> Track | None:
+        """Retrieve a track by its normalized ISRC using the Spotify API."""
+        result = await self._get_data("search", q=f"isrc:{external_id}", type="track", limit=1)
+        if not result.get("tracks", {}).get("items"):
+            return None
+        track_obj = result["tracks"]["items"][0]
+        return parse_track(track_obj, self)
+
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
+    async def _get_album_by_external_id(self, external_id: str) -> Album | None:
+        """Retrieve an album by its normalized UPC using the Spotify API."""
+        result = await self._get_data("search", q=f"upc:{external_id}", type="album", limit=1)
+        if not result.get("albums", {}).get("items"):
+            return None
+        album_obj = result["albums"]["items"][0]
+        return parse_album(album_obj, self)
 
     async def _get_auth_info(self, use_global_session: bool = False) -> dict[str, Any]:
         """
@@ -1606,7 +1662,7 @@ class SpotifyProvider(MusicProvider):
         ):
             # handle spotify rate limiter
             if response.status == 429:
-                backoff_time = int(response.headers["Retry-After"])
+                backoff_time = parse_retry_after(response.headers.get("Retry-After"))
                 raise RateLimited("Spotify Rate Limiter", backoff_time=backoff_time)
             # handle temporary server error
             if response.status in (502, 503):
@@ -1657,7 +1713,7 @@ class SpotifyProvider(MusicProvider):
         ) as response:
             # handle spotify rate limiter
             if response.status == 429:
-                backoff_time = int(response.headers["Retry-After"])
+                backoff_time = parse_retry_after(response.headers.get("Retry-After"))
                 raise RateLimited("Spotify Rate Limiter", backoff_time=backoff_time)
             # handle token expired, raise ResourceTemporarilyUnavailable
             # so it will be retried (and the token refreshed)
@@ -1685,7 +1741,7 @@ class SpotifyProvider(MusicProvider):
         ) as response:
             # handle spotify rate limiter
             if response.status == 429:
-                backoff_time = int(response.headers["Retry-After"])
+                backoff_time = parse_retry_after(response.headers.get("Retry-After"))
                 raise RateLimited("Spotify Rate Limiter", backoff_time=backoff_time)
             # handle token expired, raise ResourceTemporarilyUnavailable
             # so it will be retried (and the token refreshed)
@@ -1716,7 +1772,7 @@ class SpotifyProvider(MusicProvider):
         ) as response:
             # handle spotify rate limiter
             if response.status == 429:
-                backoff_time = int(response.headers["Retry-After"])
+                backoff_time = parse_retry_after(response.headers.get("Retry-After"))
                 raise RateLimited("Spotify Rate Limiter", backoff_time=backoff_time)
             # handle token expired, raise ResourceTemporarilyUnavailable
             # so it will be retried (and the token refreshed)

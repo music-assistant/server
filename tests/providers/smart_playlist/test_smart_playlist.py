@@ -10,11 +10,14 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.auth import User, UserRole
+from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import (
     AlbumType,
     ImageType,
     MediaType,
     ProviderFeature,
+    ProviderSharing,
     ProviderType,
 )
 from music_assistant_models.errors import InvalidDataError
@@ -45,7 +48,7 @@ from music_assistant.providers.smart_playlist.helpers import (
     SmartPlaylistRules,
     write_json,
 )
-from tests.common import use_real_create_task
+from tests.common import set_music_source_access, use_real_create_task
 
 # ---------------------------------------------------------------------------
 # SmartPlaylistRules unit tests
@@ -1467,11 +1470,11 @@ async def test_get_playlist_tracks_dynamic_uses_resolved_provider_id(
 
 
 @pytest.mark.asyncio
-async def test_get_playlist_tracks_dynamic_cache_key_differs_by_provider_filter(
+async def test_get_playlist_tracks_dynamic_cache_key_differs_by_music_sources(
     tmp_path: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Different provider filters produce different cache keys for dynamic playlists."""
+    """Different sets of music sources produce different cache keys for dynamic playlists."""
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
     manifest = MagicMock()
@@ -1486,16 +1489,24 @@ async def test_get_playlist_tracks_dynamic_cache_key_differs_by_provider_filter(
     cached_dynamic_sample_mock = AsyncMock(return_value=[])
     monkeypatch.setattr(plugin, "_cached_dynamic_sample", cached_dynamic_sample_mock)
 
-    # Call once with no user (no provider filter)
+    set_music_source_access(
+        mass,
+        {
+            "spotify_instance_id": ProviderAccess(owner="user-a", sharing=ProviderSharing.PRIVATE),
+            "tidal_instance_id": ProviderAccess(owner="user-a", sharing=ProviderSharing.PRIVATE),
+            "qobuz_instance_id": ProviderAccess(owner="user-b", sharing=ProviderSharing.PRIVATE),
+        },
+    )
+
+    # Call once with no user (no restriction)
     monkeypatch.setattr("music_assistant.providers.smart_playlist.get_current_user", lambda: None)
     await plugin.get_playlist_tracks("abc")
 
-    # Call again with a user that has a provider filter
-    user_with_filter = MagicMock()
-    user_with_filter.provider_filter = ["spotify_instance_id", "tidal_instance_id"]
+    # Call again with a user that only owns two of the three music sources
+    restricted_user = User(user_id="user-a", username="user-a", role=UserRole.USER)
     monkeypatch.setattr(
         "music_assistant.providers.smart_playlist.get_current_user",
-        lambda: user_with_filter,
+        lambda: restricted_user,
     )
     await plugin.get_playlist_tracks("abc")
 

@@ -12,9 +12,11 @@ import aiofiles
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import InvalidDataError
 
+from music_assistant.controllers.player_queues.helpers import committed_index
 from music_assistant.helpers.json import async_json_loads
 
 from .constants import ATTR_GAP_NEXT_ID, ATTR_QUEUE_DJ, ATTR_SESSION_ID
+from .helpers import check_player_access, has_player_access
 from .models import DJQueueState, PlannedSection, SessionState
 
 if TYPE_CHECKING:
@@ -64,6 +66,7 @@ class AIRadioQueueDJMixin:
         queue_id = str(queue_id).strip()
         if not queue_id:
             raise InvalidDataError("queue_id is required")
+        check_player_access(queue_id)
         armed: DJQueueState | None = None
         try:
             async with self._dj_lock:
@@ -95,8 +98,12 @@ class AIRadioQueueDJMixin:
         return await self.get_queue_dj_status()
 
     async def get_queue_dj_status(self) -> dict[str, str]:
-        """Return the queue-to-host mapping of all active queue DJs."""
-        return {queue_id: state.host_id for queue_id, state in self._dj_queues.items()}
+        """Return the queue-to-host mapping of the queue DJs the calling user may see."""
+        return {
+            queue_id: state.host_id
+            for queue_id, state in self._dj_queues.items()
+            if has_player_access(queue_id)
+        }
 
     async def _load_queue_dj(self) -> None:
         """Load persisted queue DJ assignments and arm their states."""
@@ -404,9 +411,8 @@ class AIRadioQueueDJMixin:
         """Return the highest queue index the player already owns."""
         # the player owns the current and the already buffered item, and the slot right
         # after the buffered one may be handed to the player at any moment
-        current_index = queue.current_index if queue.current_index is not None else -1
-        index_in_buffer = queue.index_in_buffer if queue.index_in_buffer is not None else -1
-        return max(current_index, index_in_buffer)
+        boundary_index = committed_index(queue)
+        return boundary_index if boundary_index is not None else -1
 
     def _repair_dj_clips(
         self, queue_id: str, state: DJQueueState, items: list[QueueItem], guard_index: int

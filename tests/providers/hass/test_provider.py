@@ -874,7 +874,7 @@ async def test_changed_engines_notify_the_consumers_once() -> None:
 
         events = _providers_updated_events(provider)
         assert len(events) == 1
-        assert events[0].kwargs["data"] is mass.get_providers.return_value
+        assert events[0].kwargs["data"] is mass.providers
 
 
 async def test_a_lost_ai_engine_notifies_the_consumers() -> None:
