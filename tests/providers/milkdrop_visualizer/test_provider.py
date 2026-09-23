@@ -7,9 +7,12 @@ from unittest.mock import AsyncMock, Mock
 
 from music_assistant.providers.milkdrop_visualizer.provider import (
     CAPABILITY_COMMAND,
+    CONF_COLOR_TINT,
     CONF_SHOW_ON_DASHBOARDS,
     CONFIG_COMMAND,
     MAX_REPORT_FIELD_LEN,
+    PREF_PALETTE_COLORS,
+    PREF_PALETTE_RAMP,
     UNKNOWN_DISPLAY,
     MilkdropVisualizerProvider,
 )
@@ -24,6 +27,10 @@ def _provider(
     config_value = AsyncMock()
     mass = Mock()
     mass.config.get_provider_config_value = config_value
+    mass.config.get_raw_provider_config_value = Mock(return_value=None)
+    mass.config.remove_provider_config_value = AsyncMock()
+    mass.webserver.auth.list_users = AsyncMock(return_value=[])
+    mass.webserver.auth.update_user_preferences = AsyncMock()
     mass.dashboard.get_dashboard_sessions = AsyncMock(return_value=sessions or [])
     mocked = cast("Any", provider)
     mocked.logger = logger
@@ -53,6 +60,7 @@ async def test_loaded_in_mass_registers_nothing_while_unloading() -> None:
     # the relay route unregisters by name too, and this instance is past its own close()
     mocked._relay.setup.assert_not_called()
     mocked.mass.register_api_command.assert_not_called()
+    mocked.mass.config.get_raw_provider_config_value.assert_not_called()
     assert provider._unregister_handles == []
 
 
@@ -70,6 +78,22 @@ async def test_loaded_in_mass_registers_the_viewer_commands() -> None:
     registered = [call.args[0] for call in mocked.mass.register_api_command.call_args_list]
     assert registered == [CONFIG_COMMAND, CAPABILITY_COMMAND]
     assert len(provider._unregister_handles) == 2
+
+
+async def test_loaded_in_mass_runs_the_color_tint_migration_before_setup() -> None:
+    """The migration must settle before the relay (and thus viewer traffic) comes up."""
+    provider, _logger, _config_value = _provider()
+    mocked = cast("Any", provider)
+    mocked.unloading = False
+    mocked._unregister_handles = []
+    order: list[str] = []
+    mocked._migrate_color_tint = AsyncMock(side_effect=lambda: order.append("migrate"))
+    mocked._relay = Mock()
+    mocked._relay.setup = Mock(side_effect=lambda: order.append("setup"))
+
+    await provider.loaded_in_mass()
+
+    assert order == ["migrate", "setup"]
 
 
 async def test_visualizer_config_reflects_dashboard_setting() -> None:
@@ -107,6 +131,38 @@ async def test_capability_report_tolerates_malformed_render_fields() -> None:
     await provider.report_capability(render={"note": "steady", "late_ratio": "not-a-number"})
     assert logger.info.called
     assert 0 in logger.info.call_args.args
+
+
+async def test_capability_report_zeroes_malformed_ratios_instead_of_raising() -> None:
+    """An infinite, NaN, boolean or string ratio is malformed and logs as 0, not a raise."""
+    # blocked_ratio is pinned to a distinct value so late_pct=0 is unambiguous in the log line
+    for late_ratio in (float("inf"), float("nan"), True, "0.5"):
+        provider, logger, _config_value = _provider()
+        await provider.report_capability(
+            render={"note": "steady", "late_ratio": late_ratio, "blocked_ratio": 0.5}
+        )
+        assert logger.info.called, late_ratio
+        assert 0 in logger.info.call_args.args, late_ratio
+
+
+async def test_capability_report_clamps_out_of_range_ratios_to_a_hundred_percent() -> None:
+    """A ratio above 1, finite-but-huge (1e308) or otherwise, clamps to 100 without raising."""
+    for late_ratio in (1.5, 1e308):
+        provider, logger, _config_value = _provider()
+        await provider.report_capability(
+            render={"note": "steady", "late_ratio": late_ratio, "blocked_ratio": 0.5}
+        )
+        assert logger.info.called, late_ratio
+        assert 100 in logger.info.call_args.args, late_ratio
+
+
+async def test_capability_report_converts_a_well_formed_ratio_to_a_percentage() -> None:
+    """A well-formed ratio converts straightforwardly to a whole percentage."""
+    provider, logger, _config_value = _provider()
+    await provider.report_capability(
+        render={"note": "steady", "late_ratio": 0.25, "blocked_ratio": 0.5}
+    )
+    assert 25 in logger.info.call_args.args
 
 
 async def test_capability_report_flattens_and_caps_viewer_strings() -> None:
@@ -194,3 +250,101 @@ async def test_the_cooldown_is_kept_per_display() -> None:
 
     assert logger.info.call_count == 2
     logger.debug.assert_not_called()
+
+
+async def test_unload_clears_the_report_cooldown_cache() -> None:
+    """Unload must not leave rate-limit state behind for a later load of the same instance."""
+    provider, _logger, _config_value = _provider()
+    mocked = cast("Any", provider)
+    mocked._relay = Mock()
+    mocked._relay.close = AsyncMock()
+    handle1, handle2 = Mock(), Mock()
+    mocked._unregister_handles = [handle1, handle2]
+    mocked._last_report = {("chromecast_abc", "render"): 123.0}
+
+    await provider.unload()
+
+    handle1.assert_called_once_with()
+    handle2.assert_called_once_with()
+    assert mocked._unregister_handles == []
+    assert mocked._last_report == {}
+
+
+async def test_color_tint_migration_is_a_noop_without_the_old_key() -> None:
+    """No stored color_tint means nothing to migrate: no users listed, nothing removed."""
+    provider, _logger, _config_value = _provider()
+    mocked = cast("Any", provider)
+
+    await provider._migrate_color_tint()
+
+    mocked.mass.webserver.auth.list_users.assert_not_called()
+    mocked.mass.config.remove_provider_config_value.assert_not_called()
+
+
+async def test_color_tint_migration_folds_an_explicit_false_into_user_preferences() -> None:
+    """A disabled tint is folded into every user, keeping each user's own existing value."""
+    provider, _logger, _config_value = _provider()
+    mocked = cast("Any", provider)
+    mocked.mass.config.get_raw_provider_config_value = Mock(return_value=False)
+    user_without_prefs = Mock(user_id="u1", preferences={})
+    user_with_partial_prefs = Mock(user_id="u2", preferences={PREF_PALETTE_COLORS: True})
+    mocked.mass.webserver.auth.list_users = AsyncMock(
+        return_value=[user_without_prefs, user_with_partial_prefs]
+    )
+
+    await provider._migrate_color_tint()
+
+    calls = {
+        call.args[0].user_id: call.args[1]
+        for call in mocked.mass.webserver.auth.update_user_preferences.call_args_list
+    }
+    assert calls["u1"] == {PREF_PALETTE_COLORS: False, PREF_PALETTE_RAMP: 0}
+    assert calls["u2"] == {PREF_PALETTE_COLORS: True, PREF_PALETTE_RAMP: 0}
+    mocked.mass.config.remove_provider_config_value.assert_awaited_once_with(
+        provider.instance_id, CONF_COLOR_TINT
+    )
+
+
+async def test_color_tint_migration_skips_users_that_already_carry_both_keys() -> None:
+    """A user who already has both palette preferences set is left untouched."""
+    provider, _logger, _config_value = _provider()
+    mocked = cast("Any", provider)
+    mocked.mass.config.get_raw_provider_config_value = Mock(return_value=False)
+    user = Mock(user_id="u1", preferences={PREF_PALETTE_COLORS: True, PREF_PALETTE_RAMP: 50})
+    mocked.mass.webserver.auth.list_users = AsyncMock(return_value=[user])
+
+    await provider._migrate_color_tint()
+
+    mocked.mass.webserver.auth.update_user_preferences.assert_not_called()
+    mocked.mass.config.remove_provider_config_value.assert_awaited_once_with(
+        provider.instance_id, CONF_COLOR_TINT
+    )
+
+
+async def test_color_tint_migration_only_removes_the_key_when_tint_was_enabled() -> None:
+    """A stored `True` (the old default) needs no per-user migration, only cleanup."""
+    provider, _logger, _config_value = _provider()
+    mocked = cast("Any", provider)
+    mocked.mass.config.get_raw_provider_config_value = Mock(return_value=True)
+
+    await provider._migrate_color_tint()
+
+    mocked.mass.webserver.auth.list_users.assert_not_called()
+    mocked.mass.config.remove_provider_config_value.assert_awaited_once_with(
+        provider.instance_id, CONF_COLOR_TINT
+    )
+
+
+async def test_color_tint_migration_keeps_the_key_when_a_user_update_fails() -> None:
+    """A failed per-user update must not raise, nor drop the key that would retry it."""
+    provider, logger, _config_value = _provider()
+    mocked = cast("Any", provider)
+    mocked.mass.config.get_raw_provider_config_value = Mock(return_value=False)
+    user = Mock(user_id="u1", preferences={})
+    mocked.mass.webserver.auth.list_users = AsyncMock(return_value=[user])
+    mocked.mass.webserver.auth.update_user_preferences = AsyncMock(side_effect=RuntimeError("boom"))
+
+    await provider._migrate_color_tint()
+
+    logger.warning.assert_called_once()
+    mocked.mass.config.remove_provider_config_value.assert_not_called()

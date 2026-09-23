@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -23,6 +24,12 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 CONF_SHOW_ON_DASHBOARDS = "show_on_dashboards"
+# provider setting replaced by the per-user palette preferences, migrated once on load
+CONF_COLOR_TINT = "color_tint"
+PREF_PALETTE_COLORS = "visualizer_palette_colors"
+PREF_PALETTE_RAMP = "visualizer_palette_ramp"
+# the per-user values that reproduce a disabled color tint
+PALETTE_OFF_PREFERENCES = {PREF_PALETTE_COLORS: False, PREF_PALETTE_RAMP: 0}
 CONFIG_COMMAND = "milkdrop_visualizer/config"
 CAPABILITY_COMMAND = "milkdrop_visualizer/report_capability"
 # viewer-reported strings go straight into the server log, cap what a display can write
@@ -70,6 +77,7 @@ class MilkdropVisualizerProvider(PluginProvider):
         # commands and then tear them down with itself, as both unregister by name.
         if self.unloading:
             return
+        await self._migrate_color_tint()
         self._relay.setup()
         # PROVIDERS_READ (held by guests) so the dashboard viewer user can use these
         for command, handler in (
@@ -137,10 +145,8 @@ class MilkdropVisualizerProvider(PluginProvider):
             )
             return
         # best-effort observability: a malformed field must not fail the report
-        late_ratio = render.get("late_ratio")
-        late_pct = round(late_ratio * 100) if isinstance(late_ratio, (int, float)) else 0
-        blocked_ratio = render.get("blocked_ratio")
-        blocked_pct = round(blocked_ratio * 100) if isinstance(blocked_ratio, (int, float)) else 0
+        late_pct = _ratio_pct(render.get("late_ratio"))
+        blocked_pct = _ratio_pct(render.get("blocked_ratio"))
         gpu_part = ""
         if render.get("gpu_warp") is not None:
             gpu_part = (
@@ -175,6 +181,7 @@ class MilkdropVisualizerProvider(PluginProvider):
             unregister()
         self._unregister_handles.clear()
         await self._relay.close()
+        self._last_report.clear()
 
     async def _resolve_display(self, dashboard_id: str | None) -> str:
         """
@@ -206,9 +213,49 @@ class MilkdropVisualizerProvider(PluginProvider):
         self._last_report[display, kind] = now
         return True
 
+    async def _migrate_color_tint(self) -> None:
+        """
+        Fold a stored color_tint opt-out into every user's palette preferences, once.
+
+        Removes the old provider setting once every user carries its replacement, so a
+        server that never had it (or already migrated it) does nothing here.
+        """
+        stored = self.mass.config.get_raw_provider_config_value(self.instance_id, CONF_COLOR_TINT)
+        if stored is None:
+            return
+        if stored is False:
+            try:
+                auth = self.mass.webserver.auth
+                for user in await auth.list_users():
+                    preferences = user.preferences if isinstance(user.preferences, dict) else {}
+                    missing = {
+                        key: value
+                        for key, value in PALETTE_OFF_PREFERENCES.items()
+                        if key not in preferences
+                    }
+                    if not missing:
+                        continue
+                    await auth.update_user_preferences(user, {**preferences, **missing})
+            except Exception:
+                # keep the old key so the migration is retried on the next load
+                self.logger.warning(
+                    "Could not migrate the color tint setting into user preferences",
+                    exc_info=True,
+                )
+                return
+            self.logger.info("Migrated the disabled color tint into the users' palette preferences")
+        await self.mass.config.remove_provider_config_value(self.instance_id, CONF_COLOR_TINT)
+
 
 def _trim(value: object) -> str | None:
     """Cap a viewer-reported value and flatten newlines, so it cannot forge log lines."""
     if value is None:
         return None
     return str(value).replace("\n", " ").replace("\r", " ")[:MAX_REPORT_FIELD_LEN]
+
+
+def _ratio_pct(value: Any) -> int:
+    """Clamp a viewer-reported 0..1 ratio into a whole percentage, 0 for anything malformed."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return 0
+    return round(min(max(value, 0.0), 1.0) * 100)
