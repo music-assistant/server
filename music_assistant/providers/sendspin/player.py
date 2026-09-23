@@ -494,7 +494,7 @@ class SendspinBasePlayer(Player):
             await session.finish({})
             return
         if not options:
-            raise AbortFlow(self._no_options_abort_reason(provider))
+            raise AbortFlow("no_pair_methods")
         if len(options) == 1:
             method = options[0]
         else:
@@ -992,20 +992,9 @@ class SendspinBasePlayer(Player):
             options.append(PAIR_METHOD_DYNAMIC_PIN if both_pin_methods else PAIR_METHOD_PIN)
             if both_pin_methods:
                 options.append(PAIR_METHOD_STATIC_PIN)
-        if not options and PairMethod.PAIRING_PSK in pair_methods:
-            # Token pairing is machine-to-machine only and must never be user facing
-            # when a proper pairing method (PIN) is available.
+        if PairMethod.PAIRING_PSK in pair_methods:
             options.append(PAIR_METHOD_TOKEN)
         return options
-
-    def _no_options_abort_reason(self, provider: SendspinProvider) -> str:
-        """Say whether the device offers nothing at all, or only the server-side method."""
-        pair_methods = effective_pair_methods(
-            self.api.info_or_none, provider.pairing_config_snapshot(self.player_id)
-        )
-        if PairMethod.PAIRING_PSK in pair_methods:
-            return "token_pairing_only"
-        return "no_pair_methods"
 
     async def _pairing_succeeded(
         self,

@@ -949,23 +949,33 @@ async def test_token_only_device_pairs_with_token() -> None:
     assert provider.tokens == ["SP:0TEST"]
 
 
-async def test_token_hidden_when_the_device_can_pair_by_pin() -> None:
-    """Token pairing is machine-to-machine only and stays hidden while PIN pairing works."""
+async def test_token_offered_next_to_pin() -> None:
+    """A device offering pairing_psk alongside a PIN lets the operator pick the token."""
     api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE), _desc(PairMethod.PAIRING_PSK)])
-    provider = _FakeProvider(api)
-    session, mass = _make_session(_ok_finish)
+    provider = _FakeProvider(api, token_errors=[SecurityActionError("pairing_error_token_invalid")])
+    session, _mass = _make_session(_ok_finish)
     player = _make_player(api, provider)
 
     task = asyncio.create_task(player.run_setup_flow(session))
-    # PIN is the only operator-facing option, so the flow skips straight past the
-    # method picker instead of offering a choice between PIN and token.
-    await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_pin")
-    assert not any(s.step_id == "select_method" for s in _published_steps(mass))
-    session.handle_submit({CONF_PAIRING_PIN: "123456"})
+    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="select_method")
+    assert [option.value for option in step.entries[0].options] == [
+        PAIR_METHOD_PIN,
+        PAIR_METHOD_TOKEN,
+    ]
+    session.handle_submit({CONF_PAIRING_METHOD: PAIR_METHOD_TOKEN})
+
+    await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_token")
+    session.handle_submit({CONF_PAIRING_TOKEN: "SP:0BAD"})
+    step = await _wait_step(
+        session, step_type=FlowStepType.FORM, step_id="enter_token", with_errors=True
+    )
+    assert step.errors == {"base": "pairing_error_token_invalid"}
+    session.handle_submit({CONF_PAIRING_TOKEN: "  SP:0TEST  "})
 
     await _wait_for(lambda: session.finished)
     await task
-    assert provider.tokens == []
+    assert provider.tokens == ["SP:0BAD", "SP:0TEST"]
+    assert provider.start_calls == 0
 
 
 async def test_no_pair_methods_aborts() -> None:
@@ -995,7 +1005,7 @@ async def test_unencrypted_connection_aborts() -> None:
 
 
 def test_pairing_method_options_derivation() -> None:
-    """Derive PIN choices and expose pairing_psk as an operator-facing token option."""
+    """Derive PIN choices, followed by the token option whenever pairing_psk is offered."""
     api = _FakeApi([_desc(PairMethod.DYNAMIC_PAIRING_CODE), _desc(PairMethod.STATIC_PAIRING_CODE)])
     provider = _FakeProvider(api)
     player = _make_player(api, provider)
@@ -1006,8 +1016,22 @@ def test_pairing_method_options_derivation() -> None:
         PAIR_METHOD_STATIC_PIN,
     ]
 
-    # Token pairing is machine-to-machine only, so it stays hidden while PIN pairing
-    # is usable, even though the device also advertises pairing_psk.
+    api_all = _FakeApi(
+        [
+            _desc(PairMethod.DYNAMIC_PAIRING_CODE),
+            _desc(PairMethod.STATIC_PAIRING_CODE),
+            _desc(PairMethod.PAIRING_PSK),
+        ]
+    )
+    provider_all = _FakeProvider(api_all)
+    player_all = _make_player(api_all, provider_all)
+    assert player_all._pairing_method_options(cast("SendspinProvider", provider_all)) == [
+        PAIR_METHOD_DYNAMIC_PIN,
+        PAIR_METHOD_STATIC_PIN,
+        PAIR_METHOD_TOKEN,
+    ]
+
+    # The token follows the PIN option whenever the device also advertises pairing_psk.
     api_single = _FakeApi(
         [_desc(PairMethod.STATIC_PAIRING_CODE), _desc(PairMethod.PAIRING_PSK)], unpaired_access=True
     )
@@ -1015,6 +1039,7 @@ def test_pairing_method_options_derivation() -> None:
     player_single = _make_player(api_single, provider_single)
     assert player_single._pairing_method_options(cast("SendspinProvider", provider_single)) == [
         PAIR_METHOD_PIN,
+        PAIR_METHOD_TOKEN,
     ]
 
     # A token-only device goes directly to the token entry form.

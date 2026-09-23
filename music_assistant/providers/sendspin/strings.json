@@ -52,20 +52,25 @@
       "label": "Saving the pairing data failed: {0}."
     },
     "pairing_method": {
-      "label": "Which pairing code does the device use?",
+      "label": "How do you want to pair this device?",
       "options": {
         "pin": "Pairing code",
         "dynamic_pin": "Dynamic pairing code",
-        "static_pin": "Static pairing code"
+        "static_pin": "Static pairing code",
+        "token": "Pairing token"
       },
       "option_descriptions": {
         "pin": "Enter the device's pairing code.",
         "dynamic_pin": "Enter the device's dynamically generated pairing code.",
-        "static_pin": "Enter the device's fixed pairing code."
+        "static_pin": "Enter the device's fixed pairing code.",
+        "token": "Paste the pairing token shown on the device or its leaflet. It starts with SP:."
       }
     },
     "pairing_pin": {
       "label": "Pairing code"
+    },
+    "pairing_token": {
+      "label": "Pairing token"
     },
     "unpair": {
       "label": "Unpair",
@@ -195,6 +200,10 @@
     "enter_pin": {
       "title": "Enter the pairing code"
     },
+    "enter_token": {
+      "title": "Enter the pairing token",
+      "description": "Paste the pairing token shown on the device or its leaflet. It starts with SP:."
+    },
     "confirming": {
       "title": "Finishing pairing",
       "description": "Completing the secure pairing with the device.",
@@ -211,8 +220,7 @@
       "pairing_error_concurrent": "Another pairing attempt is already in progress.",
       "pairing_error_not_connected": "The device is no longer connected.",
       "pairing_failed": "Pairing with the device failed. Please try again.",
-      "timed_out": "The device did not respond in time. Run the setup again to retry.",
-      "token_pairing_only": "This device cannot be paired from here. It only offers the pairing method servers use to enrol themselves, which has no code for you to enter."
+      "timed_out": "The device did not respond in time. Run the setup again to retry."
     },
     "approve_device_source": {
       "title": "How do you want to connect?",
