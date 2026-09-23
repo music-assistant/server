@@ -1,7 +1,9 @@
-"""Offline synthetic fixtures only; no NAS, credentials, or sockets are used."""
+"""Synthetic fixtures and loopback HTTP failures; no NAS or real credentials."""
 
 import asyncio
+import errno
 import json
+import socket
 import traceback
 from collections.abc import AsyncIterator
 from typing import Any, Self
@@ -278,19 +280,101 @@ async def test_malformed_success_is_not_empty_library(payload: Any) -> None:
         await client.current_user()
 
 
-@pytest.mark.parametrize("failure", [TimeoutError(), aiohttp.ClientConnectionError("SECRET")])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        TimeoutError(),
+        aiohttp.ClientConnectorDNSError(
+            aiohttp.client_reqrep.ConnectionKey("test.invalid", 80, False, True, None, None, None),
+            socket.gaierror(socket.EAI_NONAME, "Name or service not known"),
+        ),
+        aiohttp.ClientConnectorError(
+            aiohttp.client_reqrep.ConnectionKey("test.invalid", 80, False, True, None, None, None),
+            ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused"),
+        ),
+        aiohttp.ClientConnectionResetError(errno.ECONNRESET, "Connection reset by peer"),
+        aiohttp.ServerDisconnectedError(),
+    ],
+)
 @pytest.mark.parametrize("media", [False, True])
-async def test_network_failure_is_finite_and_sanitized(failure: Any, media: bool) -> None:
-    """Network failure is finite and sanitized."""
+async def test_network_failure_preserves_cause_and_backoff(failure: Any, media: bool) -> None:
+    """Transport failures retain their actual diagnostic cause without adding retries."""
     client = client_with(failure)
     client._token = "synthetic-token"
     operation = anext(client.audio_stream("synthetic-id")) if media else client.current_user()
     with pytest.raises(NetworkError) as raised:
         await operation
-    assert "SECRET" not in str(raised.value)
-    assert "SECRET" not in "".join(traceback.format_exception(raised.value))
+    assert raised.value.__cause__ is failure
     assert raised.value.backoff_time == 30
     assert len(client._session.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "payload", [b'{"private":"synthetic-value"', b'{"private":"synthetic-value\xff"}']
+)
+@pytest.mark.parametrize("media", [False, True])
+async def test_json_decode_preserves_cause_without_echoing_body(
+    payload: bytes, media: bool
+) -> None:
+    """JSON/Unicode errors describe the parse location without printing the response body."""
+    client = client_with(Response(payload))
+    client._token = "synthetic-token"
+    operation = anext(client.audio_stream("synthetic-id")) if media else client.current_user()
+    with pytest.raises(ProtocolError) as raised:
+        await operation
+    assert isinstance(raised.value.__cause__, (json.JSONDecodeError, UnicodeDecodeError))
+    assert "synthetic-value" not in "".join(traceback.format_exception(raised.value))
+
+
+@pytest.mark.parametrize("media", [False, True])
+@pytest.mark.parametrize("malformation", ["status", "chunk", "incomplete_headers"])
+async def test_actual_http_parser_does_not_echo_response_fragments(
+    media: bool, malformation: str
+) -> None:
+    """Exercise aiohttp's real parser with private text in malformed HTTP responses."""
+    secret = b"synthetic-response-credential"
+    responses = {
+        "status": b"HTTP/1.1 " + secret + b"\r\n\r\n",
+        "chunk": b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" + secret + b"\r\n",
+        "incomplete_headers": b"HTTP/1.1 200 OK\r\nX-Private: " + secret + b"\r\n",
+    }
+    handlers: set[asyncio.Task[None]] = set()
+
+    async def respond(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(responses[malformation])
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    def connected(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        task = asyncio.create_task(respond(reader, writer))
+        handlers.add(task)
+        task.add_done_callback(handlers.discard)
+
+    async with await asyncio.start_server(connected, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        async with FeiNiuClient(f"http://127.0.0.1:{port}", PROFILE) as client:
+            client._token = "synthetic-request-cookie"
+            operation = (
+                anext(client.audio_stream("synthetic-id")) if media else client.current_user()
+            )
+            try:
+                with pytest.raises(NetworkError) as raised:
+                    await operation
+                original = raised.value.__context__
+                assert isinstance(original, aiohttp.ClientError)
+                assert secret.decode() in "".join(traceback.format_exception(original))
+                rendered = "".join(traceback.format_exception(raised.value))
+                assert secret.decode() not in rendered
+                assert "synthetic-request-cookie" not in rendered
+                assert type(original).__name__ in str(raised.value)
+                assert raised.value.__cause__ is None
+                assert raised.value.backoff_time == 30
+            finally:
+                await asyncio.gather(*handlers)
 
 
 async def test_instance_authentication_and_no_cookie_jar_dependency() -> None:

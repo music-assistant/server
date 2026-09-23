@@ -137,8 +137,8 @@ def check_media_response(status: int, data: bytes, *, stream: bool) -> None:
     if data.lstrip().startswith(b"{"):
         try:
             result = json.loads(data[:4096])
-        except ValueError:
-            raise ProtocolError("Invalid bounded media error response") from None
+        except ValueError as err:
+            raise ProtocolError("Invalid bounded media error response") from err
         if not isinstance(result, dict) or type(result.get("code")) is not int:
             raise ProtocolError("Invalid media error envelope")
         code = result["code"]
@@ -402,8 +402,17 @@ class FeiNiuClient:
                 yield bytes(prefix)
                 async for chunk in response.content.iter_chunked(65536):
                     yield chunk
-        except TimeoutError, aiohttp.ClientError, OSError:
-            raise NetworkError("Audio connection failed or timed out", backoff_time=30) from None
+        except (TimeoutError, aiohttp.ClientError, OSError) as err:
+            if isinstance(err, aiohttp.ClientResponseError | aiohttp.ClientPayloadError) or (
+                isinstance(err, aiohttp.ServerDisconnectedError)
+                and not isinstance(err.message, str)
+            ):
+                # aiohttp parser errors can contain raw response/header fragments.
+                raise NetworkError(
+                    f"Audio response failed ({type(err).__name__}, status {getattr(err, 'status', 0)})",
+                    backoff_time=30,
+                ) from None
+            raise NetworkError("Audio connection failed or timed out", backoff_time=30) from err
 
     async def media_prefix(
         self,
@@ -475,8 +484,8 @@ class FeiNiuClient:
             raise ProtocolError(f"Unexpected HTTP status {status}")
         try:
             result = json.loads(data)
-        except ValueError, UnicodeDecodeError:
-            raise ProtocolError("Response is not JSON") from None
+        except (ValueError, UnicodeDecodeError) as err:
+            raise ProtocolError("Response is not JSON") from err
         if not isinstance(result, dict) or type(result.get("code")) is not int:
             raise ProtocolError("Invalid response envelope")
         code = result["code"]
@@ -547,8 +556,17 @@ class FeiNiuClient:
                     if len(chunks) > limit:
                         raise ProtocolError("Response exceeds size limit")
                     return response.status, response.headers, bytes(chunks)
-            except TimeoutError, aiohttp.ClientError, OSError:
-                raise NetworkError("HTTP connection failed or timed out", backoff_time=30) from None
+            except (TimeoutError, aiohttp.ClientError, OSError) as err:
+                if isinstance(err, aiohttp.ClientResponseError | aiohttp.ClientPayloadError) or (
+                    isinstance(err, aiohttp.ServerDisconnectedError)
+                    and not isinstance(err.message, str)
+                ):
+                    # aiohttp parser errors can contain raw response/header fragments.
+                    raise NetworkError(
+                        f"HTTP response failed ({type(err).__name__}, status {getattr(err, 'status', 0)})",
+                        backoff_time=30,
+                    ) from None
+                raise NetworkError("HTTP connection failed or timed out", backoff_time=30) from err
 
     async def _throttle(self) -> None:
         if self._acquire:
