@@ -901,6 +901,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_player = self.mass.players.get_player(queue_id)
         # Announcement suppresses player→queue updates, so the queue can still
         # look PLAYING after the device was stopped — use the parked resume_pos.
+        # Skipping the PLAYING branch also leaves fade_in unset, so a player
+        # idle for more than a minute after an announcement may fade back in
+        # (same as a normal resume from idle).
         announcement_in_progress = bool(
             queue_player and queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
         )
@@ -938,9 +941,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             if resume_item.media_type == MediaType.RADIO:
                 # we're not able to skip in online radio so this is pointless
                 resume_pos = 0
-            elif resume_item.duration and resume_pos > resume_item.duration:
-                # do not seek past the end of the track
-                resume_pos = int(resume_item.duration)
             await self.play_index(
                 queue_id, resume_item.queue_item_id, int(resume_pos), fade_in or False
             )

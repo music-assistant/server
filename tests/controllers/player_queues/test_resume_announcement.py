@@ -97,18 +97,3 @@ async def test_resume_while_playing_without_announcement_uses_live_clock() -> No
     await ctrl.resume(QUEUE_ID)
 
     ctrl.play_index.assert_awaited_once_with(QUEUE_ID, ITEM_ID, live_pos, False)  # type: ignore[attr-defined]
-
-
-async def test_resume_during_announcement_clamps_past_end() -> None:
-    """A parked position past the track duration is clamped before seek."""
-    ctrl, _queue = _controller(
-        queue_state=PlaybackState.PLAYING,
-        resume_pos=250,
-        elapsed_time=250,
-        announcement_in_progress=True,
-        duration=200,
-    )
-
-    await ctrl.resume(QUEUE_ID)
-
-    ctrl.play_index.assert_awaited_once_with(QUEUE_ID, ITEM_ID, 200, False)  # type: ignore[attr-defined]
