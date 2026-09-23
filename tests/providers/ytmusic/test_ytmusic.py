@@ -305,7 +305,9 @@ async def test_get_artist_albums_falls_back_to_preview_on_parse_failure(
     assert len(caplog.records) == 1
     assert caplog.records[0].levelname == "WARNING"
     assert "shows" in caplog.records[0].message
-    assert caplog.records[0].exc_info[1] is error
+    exc_info = caplog.records[0].exc_info
+    assert exc_info is not None
+    assert exc_info[1] is error
 
 
 async def test_get_artist_albums_propagates_server_error_instead_of_caching_truncated(
