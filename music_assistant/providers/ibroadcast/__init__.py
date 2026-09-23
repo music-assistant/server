@@ -132,10 +132,11 @@ class IBroadcastProvider(MusicProvider):
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of albums for the given artist."""
+        artist_id = self._to_client_artist_id(prov_artist_id)
         albums_objs = [
             album
             for album in (await self._client.get_albums()).values()
-            if album["artist_id"] == int(prov_artist_id)
+            if album.get("artist_id") == artist_id
         ]
         albums = []
         for album in albums_objs:
@@ -161,6 +162,8 @@ class IBroadcastProvider(MusicProvider):
     @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
+        if prov_artist_id == VARIOUS_ARTISTS_MBID:
+            return self._various_artists()
         artist_obj = await self._client.get_artist(int(prov_artist_id))
         return await self._parse_artist(artist_obj)
 
@@ -444,11 +447,27 @@ class IBroadcastProvider(MusicProvider):
             playlist.metadata.description = playlist_obj["description"]
         return playlist
 
+    def _to_client_artist_id(self, prov_artist_id: str) -> int:
+        """
+        Translate an artist id we handed out into the id the iBroadcast client expects.
+
+        :param prov_artist_id: An artist item_id from one of our own media items.
+        """
+        # We hand out the Various Artists placeholder under its MusicBrainz id,
+        # which iBroadcast itself files under artist id 0.
+        if prov_artist_id == VARIOUS_ARTISTS_MBID:
+            return 0
+        return int(prov_artist_id)
+
     async def _has_various_artists(self) -> bool:
         """Return whether any album or track in the library maps to Various Artists."""
-        if any(album["artist_id"] == 0 for album in (await self._client.get_albums()).values()):
+        # A short row from the api carries no "artist_id" at all, which is not the same
+        # as artist 0, so it must not raise its way out of the listing that calls us.
+        if any(album.get("artist_id") == 0 for album in (await self._client.get_albums()).values()):
             return True
-        return any(track["artist_id"] == 0 for track in (await self._client.get_tracks()).values())
+        return any(
+            track.get("artist_id") == 0 for track in (await self._client.get_tracks()).values()
+        )
 
     def _various_artists(self) -> Artist:
         """Return the Various Artists placeholder, which iBroadcast refers to as artist 0."""

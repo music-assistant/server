@@ -460,6 +460,76 @@ async def test_listed_various_artists_matches_the_album_mapping(
     assert {artist.item_id for album in albums for artist in album.artists} <= listed
 
 
+async def test_short_rows_do_not_end_the_artist_listing(provider: IBroadcastProvider) -> None:
+    """The api zips rows against a field map, so a short row has no "artist_id" key at all."""
+    provider._client.albums = {101: {k: v for k, v in ALBUM.items() if k != "artist_id"}}
+    provider._client.tracks = {1001: {k: v for k, v in TRACK.items() if k != "artist_id"}}
+
+    artists = [item async for item in provider.get_library_artists()]
+
+    assert [artist.item_id for artist in artists] == ["42"]
+
+
+async def test_a_short_row_is_not_read_as_various_artists(provider: IBroadcastProvider) -> None:
+    """A missing "artist_id" means unknown, which is not the same as iBroadcast's artist 0."""
+    provider._client.albums = {101: {k: v for k, v in ALBUM.items() if k != "artist_id"}}
+    provider._client.tracks = {}
+
+    artists = [item async for item in provider.get_library_artists()]
+
+    assert VARIOUS_ARTISTS_MBID not in [artist.item_id for artist in artists]
+
+
+async def test_short_rows_do_not_end_the_artist_album_lookup(
+    provider: IBroadcastProvider,
+) -> None:
+    """One short row must not take down the album list behind an artist page."""
+    provider._client.albums = {
+        101: ALBUM,
+        102: {k: v for k, v in ALBUM.items() if k != "artist_id"} | {"album_id": 102},
+    }
+
+    albums = await provider.get_artist_albums("42")
+
+    assert [album.item_id for album in albums] == ["101"]
+
+
+async def test_various_artists_can_be_opened_as_an_artist(
+    provider: IBroadcastProvider,
+) -> None:
+    """The listing hands out a mbid, so the lookup behind its page must accept one."""
+    artist = await provider.get_artist(VARIOUS_ARTISTS_MBID)
+
+    assert artist.item_id == VARIOUS_ARTISTS_MBID
+    assert artist.name == VARIOUS_ARTISTS_NAME
+
+
+async def test_various_artists_albums_are_the_ones_without_an_artist(
+    provider: IBroadcastProvider,
+) -> None:
+    """An album with no single artist is filed under artist id 0."""
+    provider._client.albums = {
+        101: ALBUM,
+        102: {**ALBUM, "album_id": 102, "artist_id": 0},
+    }
+
+    albums = await provider.get_artist_albums(VARIOUS_ARTISTS_MBID)
+
+    assert [album.item_id for album in albums] == ["102"]
+
+
+async def test_artist_albums_still_resolve_a_numeric_id(provider: IBroadcastProvider) -> None:
+    """A real artist id is a number, and must keep selecting only its own albums."""
+    provider._client.albums = {
+        101: ALBUM,
+        102: {**ALBUM, "album_id": 102, "artist_id": 0},
+    }
+
+    albums = await provider.get_artist_albums("42")
+
+    assert [album.item_id for album in albums] == ["101"]
+
+
 async def test_playlist_tracks_are_numbered_in_order(provider: IBroadcastProvider) -> None:
     """A playlist track carries its position, which is what orders the queue."""
     provider._client.tracks = {1001: TRACK, 1002: {**TRACK, "track_id": 1002}}
