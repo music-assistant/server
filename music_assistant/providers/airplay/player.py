@@ -597,59 +597,64 @@ class AirPlayPlayer(Player):
             sync_clients = self._get_sync_clients()
             session_pcm_format = await self._get_session_pcm_format(sync_clients, media)
 
-            # Warm path: a live, compatible session absorbs the new media via a
-            # flush-refill in place (seek/next never pays the reconnect cost).
-            if (
-                self.stream
-                and self.stream.running
-                and self.stream.session
-                and self.stream.session.can_replace(sync_clients, session_pcm_format)
-            ):
-                self._transitioning = True
+            # Ignore stale DACP messages (like prevent-playback) from the old CLI
+            # process while the stream is being (re)established. The finally clears
+            # it even if replace/stop/start raises, so the flag never sticks and
+            # leaves the player deaf to future prevent-playback messages.
+            self._transitioning = True
+            try:
+                # Warm path: a live, compatible session absorbs the new media via a
+                # flush-refill in place (seek/next never pays the reconnect cost).
+                if (
+                    self.stream
+                    and self.stream.running
+                    and self.stream.session
+                    and self.stream.session.can_replace(sync_clients, session_pcm_format)
+                ):
+                    audio_source = self.mass.streams.get_stream(
+                        media, session_pcm_format, self.player_id
+                    )
+                    if await self.stream.session.replace(audio_source, media):
+                        # A seek changes no media identity, so the identity-driven
+                        # metadata callback stays silent and receivers would show
+                        # a stale Now Playing position; nudge every member once
+                        # the queue position has settled.
+                        for member in self.stream.session.sync_clients:
+                            self.mass.call_later(
+                                1,
+                                member.on_player_media_updated,
+                                task_id=f"player_media_updated_{member.player_id}",
+                            )
+                        return
+                    # warm replacement failed; fall through to a cold restart
+
+                # Cold path: stop any existing stream and set up from scratch
+                if self.stream and self.stream.running and self.stream.session:
+                    stopped_stream = self.stream
+                    await self.stream.session.stop()
+                    # Only drop what this call stopped: tearing a group session down
+                    # awaits every member, and a bridge can publish its own stream
+                    # here. Erasing that would leave the start below with nothing to
+                    # displace and a live process still on the speaker.
+                    if self.stream is stopped_stream:
+                        self.stream = None
+
+                # select audio source
                 audio_source = self.mass.streams.get_stream(
                     media, session_pcm_format, self.player_id
                 )
-                if await self.stream.session.replace(audio_source, media):
-                    self._transitioning = False
-                    # A seek changes no media identity, so the identity-driven
-                    # metadata callback stays silent and receivers would show
-                    # a stale Now Playing position; nudge every member once
-                    # the queue position has settled.
-                    for member in self.stream.session.sync_clients:
-                        self.mass.call_later(
-                            1,
-                            member.on_player_media_updated,
-                            task_id=f"player_media_updated_{member.player_id}",
-                        )
-                    return
-                # warm replacement failed; fall through to a cold restart
 
-            # Cold path: stop any existing stream and set up from scratch
-            if self.stream and self.stream.running and self.stream.session:
-                # Set transitioning flag to ignore stale DACP messages (like prevent-playback)
-                self._transitioning = True
-                stopped_stream = self.stream
-                await self.stream.session.stop()
-                # Only drop what this call stopped: tearing a group session down
-                # awaits every member, and a bridge can publish its own stream
-                # here. Erasing that would leave the start below with nothing to
-                # displace and a live process still on the speaker.
-                if self.stream is stopped_stream:
-                    self.stream = None
-
-            # select audio source
-            audio_source = self.mass.streams.get_stream(media, session_pcm_format, self.player_id)
-
-            # setup StreamSession for player (and its sync childs if any)
-            provider = cast("AirPlayProvider", self.provider)
-            stream_session = AirPlayStreamSession(
-                provider,
-                sync_clients,
-                session_pcm_format,
-                media,
-            )
-            await stream_session.start(audio_source)
-            self._transitioning = False
+                # setup StreamSession for player (and its sync childs if any)
+                provider = cast("AirPlayProvider", self.provider)
+                stream_session = AirPlayStreamSession(
+                    provider,
+                    sync_clients,
+                    session_pcm_format,
+                    media,
+                )
+                await stream_session.start(audio_source)
+            finally:
+                self._transitioning = False
 
     async def play_announcement(
         self, announcement: PlayerMedia, volume_level: int | None = None

@@ -131,6 +131,56 @@ async def test_cold_restart_keeps_a_stream_published_while_it_was_stopping(
     assert airplay_player.stream is bridge_stream
 
 
+async def test_play_media_clears_transitioning_when_warm_replace_raises(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    A failed warm replacement must not leave the player deaf to prevent-playback.
+
+    _transitioning gates the DACP prevent-playback handler; if a raising replace()
+    left it stuck, the player would ignore every stop from the speaker's own remote
+    until the next successful play_media.
+    """
+    session = MagicMock()
+    session.can_replace = MagicMock(return_value=True)
+    session.replace = AsyncMock(side_effect=RuntimeError("device unreachable"))
+    airplay_player.stream = MagicMock(running=True, session=session)
+
+    with (
+        patch.object(airplay_player, "_get_sync_clients", return_value=[airplay_player]),
+        patch.object(airplay_player, "_get_session_pcm_format", new_callable=AsyncMock),
+        patch.object(airplay_player.mass.streams, "get_stream", MagicMock()),
+        pytest.raises(RuntimeError),
+    ):
+        await airplay_player.play_media(MagicMock())
+
+    assert airplay_player._transitioning is False
+
+
+async def test_play_media_clears_transitioning_when_cold_start_raises(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A failed cold restart must also clear the transition flag."""
+    old_session = MagicMock()
+    old_session.can_replace = MagicMock(return_value=False)
+    old_session.stop = AsyncMock()
+    airplay_player.stream = MagicMock(running=True, session=old_session)
+
+    with (
+        patch.object(airplay_player, "_get_sync_clients", return_value=[airplay_player]),
+        patch.object(airplay_player, "_get_session_pcm_format", new_callable=AsyncMock),
+        patch.object(airplay_player.mass.streams, "get_stream", MagicMock()),
+        patch(
+            "music_assistant.providers.airplay.player.AirPlayStreamSession",
+            return_value=MagicMock(start=AsyncMock(side_effect=RuntimeError("start failed"))),
+        ),
+        pytest.raises(RuntimeError),
+    ):
+        await airplay_player.play_media(MagicMock())
+
+    assert airplay_player._transitioning is False
+
+
 def test_has_live_audio_ignores_a_stream_being_torn_down(
     airplay_player: AirPlayPlayer,
 ) -> None:
