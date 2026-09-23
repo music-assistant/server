@@ -507,10 +507,10 @@ class TestProvider(MusicProvider):
         """Get the collection(s) the given audiobook is part of, if any."""
         audiobook_idx = int(prov_audiobook_id)
         num_collections = len(AUDIOBOOK_COLLECTIONS_TITLE)
-        collection_title = AUDIOBOOK_COLLECTIONS_TITLE.get(audiobook_idx % num_collections)
+        collection_title = AUDIOBOOK_COLLECTIONS_TITLE.get(audiobook_idx % (num_collections + 1))
         if collection_title is None:
             return None
         collection = MediaItemCollection(
-            title=collection_title, sequence=audiobook_idx // num_collections
+            title=collection_title, sequence=audiobook_idx // (num_collections + 1)
         )
         return UniqueList([collection])
