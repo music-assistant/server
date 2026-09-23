@@ -4,15 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest import mock
 
 import pytest
 from music_assistant_models.enums import FlowStepType, PlayerType
 
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowContext, SetupSession
-from music_assistant.providers.plex_connect import CONF_MASS_PLAYER_ID, CONF_PLEX_PROVIDER_ID
+from music_assistant.providers.plex_connect import (
+    CONF_MASS_PLAYER_ID,
+    CONF_PLEX_PROVIDER_ID,
+    CONF_PLEXTV_TOKEN,
+)
 from music_assistant.providers.plex_connect import setup_flow as pc_flow
+
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigValueType
 
 
 def _provider(instance_id: str, name: str) -> mock.Mock:
@@ -40,6 +47,7 @@ def _make_session(
     players: list[mock.Mock] | None = None,
     setup_data: dict[str, Any] | None = None,
     values: dict[str, Any] | None = None,
+    instance_id: str | None = None,
 ) -> SetupSession:
     """Build a real SetupSession backed by a Mock mass with the given live state."""
     mass = mock.Mock()
@@ -51,10 +59,14 @@ def _make_session(
     mass.players.all_players = mock.Mock(
         return_value=players if players is not None else [_player("player1", "Kitchen")]
     )
+    mass.config.get_provider_setup_value = mock.Mock(
+        side_effect=lambda _instance_id, key: (setup_data or {}).get(key)
+    )
     context = SetupFlowContext(
-        kind="setup",
+        kind="reconfigure" if instance_id else "setup",
         reason="user",
         domain="plex_connect",
+        instance_id=instance_id,
         setup_data=setup_data or {},
         values=values or {},
     )
@@ -156,6 +168,104 @@ async def test_prefills_from_legacy_option_values() -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.parametrize("changed_key", [CONF_MASS_PLAYER_ID, CONF_PLEX_PROVIDER_ID])
+@pytest.mark.parametrize("legacy_selection", [False, True])
+@pytest.mark.parametrize("link_after_open", [False, True])
+async def test_linked_reconfiguration_requires_unlink(
+    changed_key: str, legacy_selection: bool, link_after_open: bool
+) -> None:
+    """Identity changes require unlinking, including while the form remains open."""
+    selected = {CONF_PLEX_PROVIDER_ID: "plex--1", CONF_MASS_PLAYER_ID: "player1"}
+    stored: dict[str, Any] = {
+        CONF_PLEXTV_TOKEN: None if link_after_open else "devtoken",
+    }
+    if not legacy_selection:
+        stored.update(selected)
+    finish = mock.AsyncMock(return_value={"instance_id": "plex_connect--1"})
+    session = _make_session(
+        finish,
+        plex_providers=[_provider("plex--1", "Plex"), _provider("plex--2", "Plex Audiobooks")],
+        players=[_player("player1", "Kitchen"), _player("player2", "Living Room")],
+        setup_data=stored,
+        values=selected if legacy_selection else None,
+        instance_id="plex_connect--1",
+    )
+    submitted: dict[str, ConfigValueType] = {
+        **selected,
+        changed_key: "player2" if changed_key == CONF_MASS_PLAYER_ID else "plex--2",
+    }
+    task = asyncio.create_task(pc_flow.run_setup(session))
+    try:
+        await _await_user_form(session)
+        if link_after_open:
+            stored[CONF_PLEXTV_TOKEN] = "devtoken"
+        assert session.handle_submit(submitted) is None
+        await session.wait_for_step_change(timeout=1)
+        step = session.current_step
+        assert step is not None
+        assert step.errors == {"base": "plextv_unlink_required"}
+        finish.assert_not_awaited()
+        assert stored[CONF_PLEXTV_TOKEN] == "devtoken"
+
+        stored[CONF_PLEXTV_TOKEN] = None
+        assert session.handle_submit(submitted) is None
+        await _wait_for_finish(session)
+        await task
+
+        finish.assert_awaited_once_with(session, submitted)
+        assert stored[CONF_PLEXTV_TOKEN] is None
+    finally:
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+
+@pytest.mark.parametrize("token", ["devtoken", None])
+async def test_reconfigure_unchanged_identity_preserves_link(token: str | None) -> None:
+    """Keeping the same selections does not require unlinking or rewrite credentials."""
+    selected: dict[str, ConfigValueType] = {
+        CONF_PLEX_PROVIDER_ID: "plex--1",
+        CONF_MASS_PLAYER_ID: "player1",
+    }
+    stored = {**selected, CONF_PLEXTV_TOKEN: token}
+    finish = mock.AsyncMock(return_value={"instance_id": "plex_connect--1"})
+    session = _make_session(finish, setup_data=stored, instance_id="plex_connect--1")
+    task = asyncio.create_task(pc_flow.run_setup(session))
+    await _await_user_form(session)
+    assert session.handle_submit(selected) is None
+    await _wait_for_finish(session)
+    await task
+
+    finish.assert_awaited_once_with(session, selected)
+    assert stored[CONF_PLEXTV_TOKEN] == token
+
+
+async def test_reconfigure_unlinked_identity_can_change() -> None:
+    """An unlinked instance can select a different player and Plex provider."""
+    selected = {CONF_PLEX_PROVIDER_ID: "plex--1", CONF_MASS_PLAYER_ID: "player1"}
+    stored = {**selected, CONF_PLEXTV_TOKEN: None}
+    finish = mock.AsyncMock(return_value={"instance_id": "plex_connect--1"})
+    session = _make_session(
+        finish,
+        plex_providers=[_provider("plex--1", "Plex"), _provider("plex--2", "Plex Audiobooks")],
+        players=[_player("player1", "Kitchen"), _player("player2", "Living Room")],
+        setup_data=stored,
+        instance_id="plex_connect--1",
+    )
+    submitted: dict[str, ConfigValueType] = {
+        CONF_PLEX_PROVIDER_ID: "plex--2",
+        CONF_MASS_PLAYER_ID: "player2",
+    }
+    task = asyncio.create_task(pc_flow.run_setup(session))
+    await _await_user_form(session)
+    assert session.handle_submit(submitted) is None
+    await _wait_for_finish(session)
+    await task
+
+    finish.assert_awaited_once_with(session, submitted)
 
 
 async def test_aborts_without_loaded_plex_provider() -> None:
