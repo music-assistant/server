@@ -103,6 +103,15 @@ class IBroadcastProvider(MusicProvider):
         # temporary call to refresh library until ibroadcast provides a detailed api
         await self._client.refresh_library()
 
+        # Every artwork lookup resolves against this one url, and raises the same
+        # ValueError as an item that simply has no artwork when it is missing. Report
+        # it once here, or a library that silently comes in without any artwork at all
+        # leaves nothing behind to explain itself.
+        try:
+            await self._client.get_artwork_base_url()
+        except ValueError as error:
+            self.logger.warning("No artwork will be available for this account: %s", error)
+
     async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from ibroadcast."""
         for album in (await self._client.get_albums()).values():
@@ -284,7 +293,7 @@ class IBroadcastProvider(MusicProvider):
                 )
             },
         )
-        # Artwork, which the client raises over when the account carries no artwork server
+        # Artwork, which the client raises over when it holds no url for this artist
         if "artwork_id" in artist_obj:
             with suppress(ValueError):
                 artwork_url = await self._client.get_artist_artwork_url(artist_id)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
@@ -10,6 +11,7 @@ import pytest
 from music_assistant_models.enums import MediaType
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
+from music_assistant.providers import ibroadcast
 from music_assistant.providers.ibroadcast import SUPPORTED_FEATURES, IBroadcastProvider
 
 # the api returns every id as a number, while the library stores it as text
@@ -59,6 +61,22 @@ class FakeIBroadcastClient:
         self.missing_artwork: set[str] = set()
         #: url the stream lookup hands back, before the provider rewrites its bitrate
         self.stream_url = "https://stream.ibroadcast.com/128/file.mp3?Expires=1&Signature=abc"
+        #: base url every artwork lookup resolves against, unset when the account has none
+        self.artwork_base_url: str | None = "https://artwork"
+
+    async def login(self, username: str, password: str) -> dict[str, Any]:
+        """Return the login status the provider reads its user id from."""
+        return {"user": {"id": "user"}}
+
+    async def refresh_library(self) -> None:
+        """Stand in for the library refresh, which the fake library needs no part of."""
+
+    async def get_artwork_base_url(self) -> str:
+        """Return the artwork base url, raising as the real client does when it has none."""
+        if not self.artwork_base_url:
+            msg = "Artwork base URL not found in settings"
+            raise ValueError(msg)
+        return self.artwork_base_url
 
     def _artwork(self, item_id: int, kind: str) -> str:
         self.artwork_ids.append(item_id)
@@ -459,6 +477,43 @@ async def test_listed_various_artists_matches_the_album_mapping(
 
     listed = {mapping.item_id for artist in artists for mapping in artist.provider_mappings}
     assert {artist.item_id for album in albums for artist in album.artists} <= listed
+
+
+async def _init_with(
+    provider: IBroadcastProvider,
+    monkeypatch: pytest.MonkeyPatch,
+    artwork_base_url: str | None,
+) -> None:
+    """Run the provider setup against the fake client, with the given artwork base url."""
+    client = FakeIBroadcastClient()
+    client.artwork_base_url = artwork_base_url
+    monkeypatch.setattr(ibroadcast, "IBroadcastClient", lambda *_args: client)
+    monkeypatch.setattr(provider, "get_setup_value", lambda _key: "secret")
+    await provider.handle_async_init()
+
+
+async def test_an_account_without_artwork_is_reported_at_setup(
+    provider: IBroadcastProvider,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Every lookup raises the same error as an artwork-less item, so it has to be said once."""
+    with caplog.at_level(logging.WARNING):
+        await _init_with(provider, monkeypatch, None)
+
+    assert "No artwork will be available" in caplog.text
+
+
+async def test_an_account_with_artwork_is_not_reported_at_setup(
+    provider: IBroadcastProvider,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An item that simply has no artwork must not read as an account wide failure."""
+    with caplog.at_level(logging.WARNING):
+        await _init_with(provider, monkeypatch, "https://artwork")
+
+    assert "No artwork will be available" not in caplog.text
 
 
 async def test_artist_without_artwork_is_parsed(provider: IBroadcastProvider) -> None:
