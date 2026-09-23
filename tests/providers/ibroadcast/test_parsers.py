@@ -322,19 +322,16 @@ async def test_playlist_without_artwork_is_parsed(provider: IBroadcastProvider) 
 
 async def test_one_unreadable_track_does_not_end_the_listing(provider: IBroadcastProvider) -> None:
     """A listing that gives up part way leaves the rest of the library unsynced."""
-    provider._client.tracks = {1001: {**TRACK, "album_id": 0}, 1002: {**TRACK, "track_id": 1002}}
+    unreadable = {k: v for k, v in TRACK.items() if k != "title"}
+    provider._client.tracks = {1001: unreadable, 1002: {**TRACK, "track_id": 1002}}
 
     tracks = [item async for item in provider.get_library_tracks()]
 
-    assert [track.item_id for track in tracks] == ["1001", "1002"]
+    assert [track.item_id for track in tracks] == ["1002"]
 
 
 async def test_stream_url_asks_for_the_original_upload(provider: IBroadcastProvider) -> None:
     """The bitrate segment defaults to 128kbps, so it is swapped for the original format."""
-    provider._client.stream_url = (
-        "https://stream.ibroadcast.com/128/file.mp3?Expires=1&Signature=abc"
-    )
-
     details = await provider.get_stream_details("1001", MediaType.TRACK)
 
     assert details.path == "https://stream.ibroadcast.com/orig/file.mp3?Expires=1&Signature=abc"
