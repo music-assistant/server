@@ -198,16 +198,7 @@ def _get_artist_albums_unwrapped() -> Any:
 async def test_get_artist_albums_paginates_when_browse_pair_present(
     provider: YoutubeMusicProvider,
 ) -> None:
-    """
-    A release section with browseId+params is fetched via the full paginated call.
-
-    Reproduces the real shape of "Die drei ??? Kids": the Hoerspiel Folgen live
-    under "shows" (not "albums", which this artist has none of), so every
-    release section must be paginated, not just "albums". Also covers a brand
-    account "on behalf of" user: the pagination call's own ytmusicapi.YTMusic
-    construction must receive the provider's _yt_user, the same way its sibling
-    helpers (get_album, get_home, ...) already do.
-    """
+    """A release section with browseId+params is fetched via the full paginated call."""
     provider._headers = {}
     provider._yt_user = "test-brand-user"
     provider.language = "en"
@@ -268,16 +259,7 @@ async def test_get_artist_albums_skips_pagination_without_browse_pair(
 async def test_get_artist_albums_falls_back_to_preview_on_parse_failure(
     provider: YoutubeMusicProvider, error: Exception, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """
-    A section whose pagination fails to parse degrades to its inline preview and is logged.
-
-    Reproduces a live failure: ytmusicapi's own grid/carousel navigation raised a
-    bare KeyError for this artist's "shows" section (empty page, no items, no
-    continuations) even though the inline preview had real albums. ytmusicapi's
-    nav() also indexes without a bounds check in places (IndexError) and a page
-    with no gridRenderer at all raises TypeError - all three must degrade the
-    same way rather than losing the section entirely or crashing the whole call.
-    """
+    """A section whose pagination fails to parse degrades to its inline preview and is logged."""
     provider._headers = {}
     provider._yt_user = None
     provider.language = "en"
@@ -313,16 +295,7 @@ async def test_get_artist_albums_falls_back_to_preview_on_parse_failure(
 async def test_get_artist_albums_propagates_server_error_instead_of_caching_truncated(
     provider: YoutubeMusicProvider,
 ) -> None:
-    """
-    A genuine ytmusicapi server error must propagate, not degrade to a cached-truncated result.
-
-    Unlike the parse-failure family above, a transient backend error is not a shape
-    problem with this section - falling back to the preview here would cache (this
-    method is cached for 7 days with allow_expired_cache=True) an artificially
-    truncated discography under a fresh-looking cache entry, while letting the
-    exception propagate lets the cache decorator serve the last known-good full
-    list instead.
-    """
+    """A genuine ytmusicapi server error must propagate, not degrade to the preview."""
     provider._headers = {}
     provider._yt_user = None
     provider.language = "en"
@@ -347,14 +320,7 @@ async def test_get_artist_albums_propagates_server_error_instead_of_caching_trun
 async def test_get_artist_albums_signed_out_still_raises(
     provider: YoutubeMusicProvider,
 ) -> None:
-    """
-    A genuinely signed-out session must still surface as LoginFailed, not be swallowed.
-
-    The graceful pagination-failure fallback must not catch this: _run_ytmusic
-    already translates a signed-out KeyError to LoginFailed before it reaches
-    get_artist_albums' own except clause, so LoginFailed (not KeyError) is what
-    must propagate here.
-    """
+    """A genuinely signed-out session must still surface as LoginFailed, not be swallowed."""
     provider._headers = {}
     provider._yt_user = None
     provider.language = "en"
@@ -382,14 +348,7 @@ async def test_get_artist_albums_signed_out_still_raises(
 async def test_get_artist_albums_signed_out_raises_even_if_another_section_succeeds(
     provider: YoutubeMusicProvider,
 ) -> None:
-    """
-    LoginFailed from one section must still propagate when sections are gathered concurrently.
-
-    Sections are paginated with asyncio.gather(..., return_exceptions=True), so a
-    LoginFailed from one section arrives as a value in the gathered results rather
-    than an immediately-raised exception - it must not be silently outrun by a
-    sibling section that already succeeded and had its albums added.
-    """
+    """LoginFailed from one section must still propagate when sections are gathered concurrently."""
     provider._headers = {}
     provider._yt_user = None
     provider.language = "en"
@@ -428,14 +387,7 @@ async def test_get_artist_albums_signed_out_raises_even_if_another_section_succe
 async def test_get_artist_albums_orders_by_section_and_dedupes_across_sections(
     provider: YoutubeMusicProvider,
 ) -> None:
-    """
-    Output order follows each section's own order (albums, then singles, then shows).
-
-    A stock albums/singles/shows dict-merge that adds every section's inline
-    preview before any paginated result would scramble YTM's own per-section
-    ordering - the exact listing a numbered Hoerspiel series is scanned by. An
-    item present in two sections' paginated results must also only appear once.
-    """
+    """Output order follows each section's own order (albums, then singles, then shows)."""
     provider._headers = {}
     provider._yt_user = None
     provider.language = "en"

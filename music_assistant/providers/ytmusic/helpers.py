@@ -58,8 +58,7 @@ async def get_artist_albums(
     """
     Async wrapper around the ytmusicapi get_artist_albums function.
 
-    :param channel_id: The browseId of one of an artist's own release sections
-        (get_artist()'s "albums", "singles" or "shows" key) - not the artist's channelId.
+    :param channel_id: The browseId of an artist section (albums/singles/shows).
     :param params: The params value from that same section, paired with channel_id.
     :param headers: Auth headers for the YTMusic client.
     :param language: Response language.
@@ -68,8 +67,6 @@ async def get_artist_albums(
 
     def _get_artist_albums() -> list[dict[str, Any]]:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
-        # limit=None fetches the section's full paginated list rather than the
-        # ~10-25 item inline preview get_artist() returns.
         return ytm.get_artist_albums(channelId=channel_id, params=params, limit=None)
 
     return await _run_ytmusic(_get_artist_albums)

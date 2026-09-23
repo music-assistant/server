@@ -523,17 +523,9 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of albums for the given artist."""
-        artist_obj = await get_artist(
-            prov_artist_id=prov_artist_id, headers=self._headers, language=self.language
-        )
+        artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
 
-        # YouTube Music spreads an artist's releases across up to three independently
-        # paginated sections - regular albums, singles/EPs, and audiobooks/shows. The
-        # latter is where Hoerspiel-style series (e.g. "Die drei ??? Kids") live: some
-        # have no "albums" section at all, only "shows". get_artist() only returns each
-        # section's inline preview (~10-25 items); page through every section that
-        # offers a full list and prefer that as the authoritative, correctly ordered
-        # result, falling back to the preview when pagination isn't offered or fails.
+        # get_artist() only returns a short preview per section; page through each for the full set.
         sections = [
             (key, section)
             for key in ("albums", "singles", "shows")
@@ -544,16 +536,12 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             for key, section in sections
             if section.get("browseId") and section.get("params")
         ]
-        # Fetch every section concurrently rather than one at a time - this method is
-        # cached for a week specifically because YTM's discography pages are slow, so
-        # a cache-miss/refresh shouldn't pay for up to three sequential round-trips.
         paginated_lists = await asyncio.gather(
             *(
                 get_artist_albums(
                     channel_id=section["browseId"],
                     params=section["params"],
                     headers=self._headers,
-                    language=self.language,
                     user=self._yt_user,
                 )
                 for _key, section in paginatable
@@ -570,13 +558,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             result = paginated_by_key.get(key)
             if isinstance(result, BaseException):
                 if isinstance(result, (KeyError, IndexError, TypeError)):
-                    # ytmusicapi's grid/carousel navigation for a section can fail to parse
-                    # in a few ways (seen live, reproducible against ytmusicapi 1.12.2 and
-                    # its unreleased main branch): an empty grid with no items and no
-                    # continuations raises KeyError or IndexError depending on which nav()
-                    # call trips first, and a page with no gridRenderer at all raises
-                    # TypeError. Keep the inline preview already returned by get_artist()
-                    # rather than losing this section's albums entirely.
+                    # ytmusicapi fails to parse some empty sections; keep the preview instead.
                     self.logger.warning(
                         "Failed to paginate YouTube Music artist %s section %r, "
                         "using the inline preview instead",
@@ -586,9 +568,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     )
                     items = section.get("results", [])
                 else:
-                    # A genuine server/network error (or a signed-out session, already
-                    # translated to LoginFailed) must propagate rather than be cached as
-                    # if it were a complete discography.
+                    # Network/auth errors must not be cached as a complete discography.
                     raise result
             else:
                 items = result if result is not None else section.get("results", [])
