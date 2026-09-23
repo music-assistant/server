@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import EventType, PlaybackState
 
 from music_assistant.providers.sendspin_source.provider import SendspinSourceProvider
 
@@ -96,6 +96,23 @@ class _FakeServerApi:
     def emit(self, event: Any) -> None:
         for callback in list(self.listeners):
             callback(self, event)
+
+
+class _FakeSendspinProvider:
+    """Sendspin player provider stand-in exposing its server and role listeners."""
+
+    def __init__(self, server_api: _FakeServerApi) -> None:
+        self.server_api = server_api
+        self.roles_listeners: list[Callable[[str], None]] = []
+
+    def add_client_roles_listener(self, callback: Callable[[str], None]) -> Callable[[], None]:
+        self.roles_listeners.append(callback)
+        return lambda: self.roles_listeners.remove(callback)
+
+    def signal_roles_changed(self, client_id: str) -> None:
+        """Notify listeners, as a pairing or trust change does after (de)activating roles."""
+        for callback in list(self.roles_listeners):
+            callback(client_id)
 
 
 class _FakeQueue:
@@ -220,6 +237,12 @@ class _FakeMass:
         self._sendspin_provider = sendspin_provider
         self._timers: dict[str, asyncio.TimerHandle] = {}
         self._tasks: dict[str, asyncio.Task[Any]] = {}
+        self.events: list[tuple[EventType, str | None, Any]] = []
+
+    def signal_event(
+        self, event: EventType, object_id: str | None = None, data: Any = None
+    ) -> None:
+        self.events.append((event, object_id, data))
 
     def get_provider(self, domain: str) -> Any:
         if domain == "sendspin":
@@ -306,7 +329,7 @@ async def make_provider(
 ) -> SendspinSourceProvider:
     """Build a provider wired to fake mass/server_api around the given clients."""
     server_api = _FakeServerApi(clients)
-    sendspin_provider = type("FakeSendspinProvider", (), {"server_api": server_api})()
+    sendspin_provider = _FakeSendspinProvider(server_api)
     # Constructed rather than hand-populated, so a new instance attribute cannot go
     # missing here and take the fake out of step with the provider.
     provider = SendspinSourceProvider(
@@ -334,6 +357,21 @@ def get_server_api(provider: SendspinSourceProvider) -> _FakeServerApi:
     """Return the fake server api the given provider is wired to."""
     sendspin = cast("Any", provider.mass.get_provider("sendspin"))
     return cast("_FakeServerApi", sendspin.server_api)
+
+
+def get_sendspin(provider: SendspinSourceProvider) -> _FakeSendspinProvider:
+    """Return the fake sendspin player provider the given provider is wired to."""
+    return cast("_FakeSendspinProvider", provider.mass.get_provider("sendspin"))
+
+
+def get_sources_events(provider: SendspinSourceProvider) -> list[Any]:
+    """Return the payloads of the sources-changed events the given provider emitted."""
+    mass = cast("_FakeMass", provider.mass)
+    return [
+        data
+        for event, object_id, data in mass.events
+        if event == EventType.PROVIDER_EVENT and object_id == f"{provider.instance_id}/sources"
+    ]
 
 
 def get_players(provider: SendspinSourceProvider) -> _FakePlayers:

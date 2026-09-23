@@ -36,6 +36,7 @@ def _make_provider(player: SendspinBasePlayer | None) -> SendspinProvider:
             create_task=Mock(side_effect=AssertionError("refresh must not spawn tasks")),
         ),
     )
+    provider._client_roles_listeners = []
     return provider
 
 
@@ -58,6 +59,17 @@ async def test_refresh_player_ignores_unknown_player() -> None:
     """A refresh for a client without a registered player is a no-op."""
     provider = _make_provider(None)
     await provider._refresh_player("c")
+
+
+async def test_refresh_player_notifies_role_listeners() -> None:
+    """A pairing/trust change re-activates roles in place, so listeners hear of it."""
+    provider = _make_provider(None)
+    changed: list[str] = []
+    remove = provider.add_client_roles_listener(changed.append)
+    await provider._refresh_player("c")
+    remove()
+    await provider._refresh_player("c")
+    assert changed == ["c"]
 
 
 async def test_refresh_player_ignores_uninitialized_player() -> None:

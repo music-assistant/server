@@ -9,6 +9,8 @@ import pytest
 from aiosendspin.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server import (
     ClientConnectedEvent,
+    ClientDisconnectedEvent,
+    ClientRemovedEvent,
     SignalState,
     SourceSignalChangedEvent,
     SourceStreamStartedEvent,
@@ -32,7 +34,9 @@ from .conftest import (
     get_config,
     get_players,
     get_queues,
+    get_sendspin,
     get_server_api,
+    get_sources_events,
     make_provider,
 )
 
@@ -643,3 +647,83 @@ async def test_deferred_reconnect_does_not_rewatch_after_unload(fake_client: _Fa
     await provider.unload()
     await _settle()
     assert fake_client.listeners == []
+
+
+async def test_source_connecting_announces_once() -> None:
+    """A source client coming online nudges clients to re-fetch, exactly once."""
+    client = _FakeClient("client-1", name="Turntable", connected=False)
+    provider = await make_provider([client])
+    assert get_sources_events(provider) == []
+    client.is_connected = True
+    get_server_api(provider).emit(ClientConnectedEvent("client-1"))
+    await _settle()
+    assert get_sources_events(provider) == [{"event": "sources_updated"}]
+
+
+async def test_reconnect_with_unchanged_sources_is_silent(fake_client: _FakeClient) -> None:
+    """A reconnect that leaves the listed sources as they were emits nothing."""
+    provider = await make_provider([fake_client])
+    get_server_api(provider).emit(ClientConnectedEvent("client-1"))
+    await _settle()
+    assert get_sources_events(provider) == []
+
+
+async def test_client_without_source_role_is_silent() -> None:
+    """A client that offers no source never changes the listed sources."""
+    client = _FakeClient("speaker", has_source_role=False, connected=False)
+    provider = await make_provider([client])
+    client.is_connected = True
+    get_server_api(provider).emit(ClientConnectedEvent("speaker"))
+    await _settle()
+    client.is_connected = False
+    get_server_api(provider).emit(ClientDisconnectedEvent("speaker", None))
+    assert get_sources_events(provider) == []
+
+
+async def test_source_disconnecting_announces(fake_client: _FakeClient) -> None:
+    """A source going offline is announced."""
+    provider = await make_provider([fake_client])
+    fake_client.is_connected = False
+    get_server_api(provider).emit(ClientDisconnectedEvent("client-1", None))
+    assert get_sources_events(provider) == [{"event": "sources_updated"}]
+
+
+async def test_source_removal_announces(fake_client: _FakeClient) -> None:
+    """A source removed from the server is announced."""
+    provider = await make_provider([fake_client])
+    server_api = get_server_api(provider)
+    server_api._clients.pop("client-1")
+    server_api.emit(ClientRemovedEvent("client-1"))
+    assert get_sources_events(provider) == [{"event": "sources_updated"}]
+
+
+async def test_role_activation_through_pairing_announces(fake_client: _FakeClient) -> None:
+    """Pairing (de)activates the source role in place, without any server event."""
+    role = fake_client.detach_roles()
+    provider = await make_provider([fake_client])
+    sendspin = get_sendspin(provider)
+    fake_client.attach_roles(role)
+    sendspin.signal_roles_changed("client-1")
+    sendspin.signal_roles_changed("client-1")
+    assert len(get_sources_events(provider)) == 1
+    fake_client.detach_roles()
+    sendspin.signal_roles_changed("client-1")
+    assert len(get_sources_events(provider)) == 2
+
+
+async def test_sources_event_carries_no_source_details(fake_client: _FakeClient) -> None:
+    """The broadcast reaches users whose player filter hides the source, so it names nothing."""
+    provider = await make_provider([fake_client])
+    fake_client.is_connected = False
+    get_server_api(provider).emit(ClientDisconnectedEvent("client-1", None))
+    (payload,) = get_sources_events(provider)
+    assert "Turntable" not in repr(payload)
+    assert "client-1" not in repr(payload)
+
+
+async def test_unload_announces_and_stops_listening(fake_client: _FakeClient) -> None:
+    """Unloading drops the listed sources and detaches from role changes."""
+    provider = await make_provider([fake_client])
+    await provider.unload()
+    assert get_sources_events(provider) == [{"event": "sources_updated"}]
+    assert get_sendspin(provider).roles_listeners == []

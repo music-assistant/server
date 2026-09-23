@@ -61,6 +61,7 @@ def _make_provider(api: _ApprovalServerApi) -> SendspinProvider:
     provider.server_api = cast("SendspinServer", api)
     provider.logger = logging.getLogger("test.sendspin.guest")
     provider._client_event_versions = {"c1": 1}
+    provider._client_roles_listeners = []
     return provider
 
 
@@ -72,6 +73,18 @@ async def test_a_guest_capable_player_is_approved_on_connect() -> None:
     await provider._auto_trust_guest_access("c1", _client(), 1)
 
     assert api.trusted == ["c1"]
+
+
+async def test_guest_approval_notifies_role_listeners() -> None:
+    """Approval activates roles on the live connection, which no server event reports."""
+    api = _ApprovalServerApi()
+    provider = _make_provider(api)
+    changed: list[str] = []
+    provider.add_client_roles_listener(changed.append)
+
+    await provider._auto_trust_guest_access("c1", _client(), 1)
+
+    assert changed == ["c1"]
 
 
 async def test_a_combo_with_an_audio_input_is_approved_too() -> None:

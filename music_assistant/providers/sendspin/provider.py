@@ -396,6 +396,7 @@ class SendspinProvider(PlayerProvider):
         ] = {}
         self._unloading = False
         self._hass_available = False
+        self._client_roles_listeners: list[Callable[[str], None]] = []
         self.unregister_cbs = []
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -558,6 +559,23 @@ class SendspinProvider(PlayerProvider):
         :param underlying_player_id: The player_id of the player the bridge rides on.
         """
         self._bridge_underlying_players[client_id] = underlying_player_id
+
+    def add_client_roles_listener(self, callback: Callable[[str], None]) -> Callable[[], None]:
+        """
+        Register a callback for when a connected client's active roles may have changed.
+
+        Pairing and trust changes (de)activate roles on the live connection, which no
+        server event reports. Returns a function that removes the listener.
+
+        :param callback: Called with the client_id whose roles may have changed.
+        """
+        self._client_roles_listeners.append(callback)
+
+        def remove() -> None:
+            if callback in self._client_roles_listeners:
+                self._client_roles_listeners.remove(callback)
+
+        return remove
 
     def register_bridge_static_delay_default(self, client_id: str, default_ms: int) -> None:
         """
@@ -1362,6 +1380,7 @@ class SendspinProvider(PlayerProvider):
             self.logger.debug("PIN pairing with %s timed out: %s", session.client_id, err)
             session.retryable = True
             self._arm_pin_idle_timeout(session)
+            self._signal_client_roles_changed(session.client_id)
         except PairingAbortError as err:
             if (
                 isinstance(err, LocalPairingAbortError)
@@ -1422,6 +1441,7 @@ class SendspinProvider(PlayerProvider):
             await self.server_api.end_pairing(client_id)
         except Exception as err:
             self.logger.debug("Ending pairing for %s failed: %s", client_id, err)
+        self._signal_client_roles_changed(client_id)
 
     def _management_session_or_raise(self, client_id: str) -> ManagementSession:
         """Return the client's management session or raise if none is open."""
@@ -1461,6 +1481,7 @@ class SendspinProvider(PlayerProvider):
 
     async def _refresh_player(self, client_id: str) -> None:
         """Re-evaluate a registered player after a pairing/trust change (in place)."""
+        self._signal_client_roles_changed(client_id)
         player = self.mass.players.get_player(client_id)
         if not isinstance(player, SendspinBasePlayer) or not player.initialized.is_set():
             return
@@ -1468,6 +1489,14 @@ class SendspinProvider(PlayerProvider):
         # so pushed config (preferred format, static delay) must be re-applied.
         await player.on_config_updated()
         player.update_state()
+
+    def _signal_client_roles_changed(self, client_id: str) -> None:
+        """Notify role listeners that a client's active roles may have changed."""
+        for callback in list(self._client_roles_listeners):
+            try:
+                callback(client_id)
+            except Exception:
+                self.logger.exception("Error in client roles listener for %s", client_id)
 
     def _on_user_access_revoked(self, user: User) -> None:
         """Handle a user's access being withdrawn (tokens revoked or account deleted)."""
@@ -1656,6 +1685,7 @@ class SendspinProvider(PlayerProvider):
             return
         self.logger.debug("Approving guest access for %s", client_id)
         await self.server_api.trust_unpaired(client_id)
+        self._signal_client_roles_changed(client_id)
 
     async def _handle_client_removed(self, client_id: str, event_version: int) -> None:
         """Handle a client disconnection asynchronously."""
