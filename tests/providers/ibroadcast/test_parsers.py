@@ -386,6 +386,7 @@ async def test_generated_playlists_are_not_listed(
         ("get_library_artists", "artists", MediaType.ARTIST, ARTIST, 43, "name"),
         ("get_library_albums", "albums", MediaType.ALBUM, ALBUM, 102, "name"),
         ("get_library_tracks", "tracks", MediaType.TRACK, TRACK, 1002, "title"),
+        ("get_library_playlists", "playlists", MediaType.PLAYLIST, PLAYLIST, 5002, "name"),
     ],
 )
 async def test_unreadable_item_is_reported_as_skipped_with_a_text_id(
@@ -458,6 +459,30 @@ async def test_listed_various_artists_matches_the_album_mapping(
 
     listed = {mapping.item_id for artist in artists for mapping in artist.provider_mappings}
     assert {artist.item_id for album in albums for artist in album.artists} <= listed
+
+
+async def test_artist_without_artwork_is_parsed(provider: IBroadcastProvider) -> None:
+    """The client raises when the account carries no artwork server, per artist."""
+    provider._client.missing_artwork.add("artist")
+
+    artists = [item async for item in provider.get_library_artists()]
+
+    assert [artist.item_id for artist in artists] == ["42"]
+    assert not artists[0].metadata.images
+
+
+async def test_playlist_without_a_type_does_not_end_the_listing(
+    provider: IBroadcastProvider,
+) -> None:
+    """The listing reads "type" itself to drop the generated playlists, before parsing."""
+    provider._client.playlists = {
+        5001: PLAYLIST,
+        5002: {"playlist_id": 5002, "name": "Typeless"},
+    }
+
+    playlists = [item async for item in provider.get_library_playlists()]
+
+    assert [playlist.item_id for playlist in playlists] == ["5001"]
 
 
 async def test_short_rows_do_not_end_the_artist_listing(provider: IBroadcastProvider) -> None:

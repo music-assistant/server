@@ -200,9 +200,13 @@ class IBroadcastProvider(MusicProvider):
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve playlists from iBroadcast."""
         for playlist in (await self._client.get_playlists()).values():
-            # Skip the auto generated playlist
-            if playlist["type"] != "recently-played" and playlist["type"] != "thumbsup":
-                yield await self._parse_playlist(playlist)
+            try:
+                # Skip the auto generated playlist
+                if playlist["type"] != "recently-played" and playlist["type"] != "thumbsup":
+                    yield await self._parse_playlist(playlist)
+            except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+                self._report_skipped_item(MediaType.PLAYLIST, playlist, "playlist_id", error)
+                continue
 
     @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
@@ -280,18 +284,11 @@ class IBroadcastProvider(MusicProvider):
                 )
             },
         )
-        # Artwork
+        # Artwork, which the client raises over when the account carries no artwork server
         if "artwork_id" in artist_obj:
-            artist.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=await self._client.get_artist_artwork_url(artist_id),
-                        provider=self.instance_id,
-                        remotely_accessible=True,
-                    )
-                ]
-            )
+            with suppress(ValueError):
+                artwork_url = await self._client.get_artist_artwork_url(artist_id)
+                artist.metadata.images = UniqueList([self._get_artwork_object(artwork_url)])
         return artist
 
     async def _parse_album(self, album_obj: dict[str, Any]) -> Album:
