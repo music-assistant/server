@@ -11,6 +11,7 @@ from bandcamp_async_api import (
     BandcampMustBeLoggedInError,
     BandcampNotFoundError,
     BandcampRateLimitError,
+    BandcampUnexpectedResponseError,
     SearchResultAlbum,
     SearchResultArtist,
     SearchResultItem,
@@ -215,7 +216,7 @@ class BandcampProvider(MusicProvider):
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampAPIError as error:
-            raise InvalidDataError("Unexpected error during Bandcamp search") from error
+            raise InvalidDataError(f"Bandcamp search failed: {error}") from error
 
         capped = search_results[:limit]
         # Map band_id -> SearchResultArtist for cross-result dedup. When an
@@ -1218,8 +1219,10 @@ class BandcampProvider(MusicProvider):
             raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
+        except BandcampUnexpectedResponseError as error:
+            raise InvalidDataError(f"{context}: {error}") from error
         except BandcampAPIError as error:
-            raise MediaNotFoundError(context) from error
+            raise MediaNotFoundError(f"{context}: {error}") from error
 
     @staticmethod
     def _deserialize_content_item(item: dict[str, object]) -> Album | Track:
