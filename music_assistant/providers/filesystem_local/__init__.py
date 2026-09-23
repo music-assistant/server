@@ -2977,6 +2977,10 @@ class LocalFileSystemProvider(MusicProvider):
             audio_book.metadata.collections = UniqueList(
                 [MediaItemCollection(title=series, sequence=tags.series_part)]
             )
+        else:
+            # clean up removed collections
+            audio_book.metadata.collections = UniqueList([])
+
         audio_book.metadata.genres = (
             set(tags.genres) if tags.genres else {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
         )
