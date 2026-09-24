@@ -260,8 +260,10 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
                     session_config=session_config, username=username, password=password
                 )
             libraries = await self._client.get_all_libraries()
-            # cache username
-            self.abs_username = (await self._client.get_my_user()).username
+            # cache user
+            abs_user = await self._client.get_my_user()
+            self.abs_username = abs_user.username
+            self.abs_user_id = abs_user.id_
             # connect the socket last: a failed init is never unloaded, so it would leak
             await self._client_socket.init_client()
         except AbsLoginError as exc:
@@ -327,6 +329,7 @@ for more details.
         )
 
         self._client_socket.set_user_callbacks(
+            on_user_updated=self._socket_abs_user_updated,
             on_user_item_progress_updated=self._socket_abs_user_item_progress_updated,
         )
 
@@ -1289,7 +1292,8 @@ for more details.
             updated = False
             if session_helper := self.sessions.get(prov_item_id):
                 updated = await _update_by_session(session_helper=session_helper, duration=duration)
-            if not updated:
+            # a session sync can't mark the item finished
+            if not updated or fully_played:
                 self.logger.debug(
                     f"Updating media progress of {media_type.value}, title {media_item.name}."
                 )
@@ -1326,7 +1330,7 @@ for more details.
             updated = False
             if session_helper := self.sessions.get(prov_item_id):
                 updated = await _update_by_session(session_helper=session_helper, duration=duration)
-            if not updated:
+            if not updated or fully_played:
                 self.logger.debug(f"Updating {media_type.value} named {media_item.name} progress")
                 await self._client.update_my_media_progress(
                     item_id=prov_item_id,
@@ -1708,6 +1712,13 @@ for more details.
             await self._update_playlog_book(progress)
             return
         await self._update_playlog_episode(progress)
+
+    async def _socket_abs_user_updated(self, user: User) -> None:
+        # progress changes by other clients, e.g. the web UI, arrive only here
+        # admins also receive updates of other users
+        if user.id_ != self.abs_user_id:
+            return
+        await self._set_playlog_from_user(user)
 
     async def _socket_abs_playlist_changed(self, abs_playlist: AbsPlaylistExpanded) -> None:
         if time.time() - self.playlist_last < 5:
