@@ -74,26 +74,30 @@ class ProgressGuard:
     class is used.
     """
 
-    def __init__(self) -> None:
-        """Init."""
+    def __init__(self, applied: dict[str, tuple[int, bool]] | None = None) -> None:
+        """
+        Init.
+
+        :param applied: Persisted state of applied abs progresses, see applied_to_dict.
+        """
         self._progresses: list[_ProgressHelper] = []
         self._max_progresses = 100
         # 8s have to have passed before we accept an external progress update
         # abs updates every 10 s
         self._min_time_between_updates_ms = 8000
+        # mass item id: (abs last_update of the last seen progress, finished state)
+        self._applied: dict[str, tuple[int, bool]] = applied or {}
 
-    def _get_progress(self, item_id: str, episode_id: str | None = None) -> _ProgressHelper | None:
-        """Get a helper progress."""
-        for x in self._progresses:
-            if x.id_ == item_id and x.episode_id == episode_id:
-                return x
-        return None
+    @classmethod
+    def from_applied_dict(cls, data: dict[str, list[int | bool]]) -> ProgressGuard:
+        """Create a guard from the persisted state of applied abs progresses."""
+        return cls(applied={key: (int(x[0]), bool(x[1])) for key, x in data.items()})
 
-    def _remove_oldest(self) -> None:
-        """Remove oldest helper progress."""
-        progresses = sorted(self._progresses, key=lambda x: x.last_update_ms)
-        if len(progresses) > 0:
-            self._progresses.remove(progresses[0])
+    def applied_to_dict(self) -> dict[str, list[int | bool]]:
+        """Return the state of applied abs progresses for persistence."""
+        return {
+            key: [last_update, finished] for key, (last_update, finished) in self._applied.items()
+        }
 
     def remove_progress(self, item_id: str, episode_id: str | None = None) -> None:
         """Remove a helper progress."""
@@ -111,15 +115,44 @@ class ProgressGuard:
         )
         self._progresses.append(progress)
 
+    def add_abs_progress(self, abs_progress: MediaProgress) -> None:
+        """Store an abs progress, which is applied to mass."""
+        self.add_progress(abs_progress.library_item_id, abs_progress.episode_id)
+        self._set_applied(abs_progress)
+
+    def set_finished(self, item_id: str, episode_id: str | None, is_finished: bool) -> bool:
+        """
+        Store the finished state mass reported to abs. Returns True, if it changed.
+
+        :param item_id: Abs library item id.
+        :param episode_id: Abs episode id.
+        :param is_finished: Finished state reported to abs.
+        """
+        key = _get_key(item_id, episode_id)
+        last_update, finished = self._applied.get(key, (0, False))
+        self._applied[key] = (last_update, is_finished)
+        return finished != is_finished
+
     def guard_ok_abs(self, abs_progress: MediaProgress) -> bool:
         """
         Check, if we may update against an abs media progress.
 
-        The abs media progress has a property last_update_ms, which also reflects non
-        mass external updates. Here, we compare this property against a potential
-        stored one.
+        Progresses already applied, or a finished state already known to mass, are rejected.
         """
-        return self.guard_ok_mass(abs_progress.library_item_id, abs_progress.episode_id)
+        if not self.guard_ok_mass(abs_progress.library_item_id, abs_progress.episode_id):
+            # echo of our own update
+            self._set_applied(abs_progress)
+            return False
+        key = _get_key(abs_progress.library_item_id, abs_progress.episode_id)
+        if (applied := self._applied.get(key)) is None:
+            return True
+        last_update, finished = applied
+        if abs_progress.last_update <= last_update:
+            return False
+        if finished and abs_progress.is_finished:
+            self._set_applied(abs_progress)
+            return False
+        return True
 
     def guard_ok_mass(self, item_id: str, episode_id: str | None = None) -> bool:
         """
@@ -134,3 +167,24 @@ class ProgressGuard:
             int(time.time() * 1000) - stored_progress.last_update_ms
             >= self._min_time_between_updates_ms
         )
+
+    def _get_progress(self, item_id: str, episode_id: str | None = None) -> _ProgressHelper | None:
+        """Get a helper progress."""
+        for x in self._progresses:
+            if x.id_ == item_id and x.episode_id == episode_id:
+                return x
+        return None
+
+    def _remove_oldest(self) -> None:
+        """Remove oldest helper progress."""
+        progresses = sorted(self._progresses, key=lambda x: x.last_update_ms)
+        if len(progresses) > 0:
+            self._progresses.remove(progresses[0])
+
+    def _set_applied(self, abs_progress: MediaProgress) -> None:
+        key = _get_key(abs_progress.library_item_id, abs_progress.episode_id)
+        self._applied[key] = (abs_progress.last_update, abs_progress.is_finished)
+
+
+def _get_key(item_id: str, episode_id: str | None) -> str:
+    return item_id if episode_id is None else f"{item_id} {episode_id}"

@@ -126,7 +126,9 @@ from .constants import (
     ABS_SHELF_ID_TRANSLATION_KEY,
     AIOHTTP_TIMEOUT,
     CACHE_CATEGORY_LIBRARIES,
+    CACHE_CATEGORY_PROGRESSES,
     CACHE_KEY_LIBRARIES,
+    CACHE_KEY_PROGRESSES,
     CONF_API_TOKEN,
     CONF_HIDE_EMPTY_PODCASTS,
     CONF_OLD_TOKEN,
@@ -329,7 +331,16 @@ for more details.
         )
 
         # progress guard
-        self.progress_guard = ProgressGuard()
+        cached_progresses = await self.mass.cache.get(
+            key=CACHE_KEY_PROGRESSES,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_PROGRESSES,
+            default=None,
+        )
+        if cached_progresses is None:
+            self.progress_guard = ProgressGuard()
+        else:
+            self.progress_guard = ProgressGuard.from_applied_dict(cached_progresses)
 
         # safe guard reauthentication
         self.reauthenticate_lock = asyncio.Lock()
@@ -1275,6 +1286,8 @@ for more details.
                 # occurs sometimes, if a player disconnects unexpectedly, or reports
                 # a false position - seen this for MC players, but not for sendspin
                 return
+            if self.progress_guard.set_finished(abs_podcast_id, abs_episode_id, fully_played):
+                await self._cache_set_progress_guard()
 
             if position == 0 and not fully_played:
                 # marked unplayed
@@ -1314,6 +1327,8 @@ for more details.
             if fully_played and position < media_item.duration - PLAYBACK_REPORT_INTERVAL_SECONDS:
                 # faulty position update, see above
                 return
+            if self.progress_guard.set_finished(prov_item_id, None, fully_played):
+                await self._cache_set_progress_guard()
 
             if position == 0 and not fully_played:
                 # marked unplayed
@@ -1831,8 +1846,9 @@ for more details.
 
         if progress.episode_id is None:
             await self._update_playlog_book(progress)
-            return
-        await self._update_playlog_episode(progress)
+        else:
+            await self._update_playlog_episode(progress)
+        await self._cache_set_progress_guard()
 
     async def _socket_abs_playlist_changed(self, abs_playlist: AbsPlaylistExpanded) -> None:
         if time.time() - self.playlist_last < 5:
@@ -1997,20 +2013,24 @@ for more details.
                     provider_instance_id_or_domain=self.instance_id,
                 ):
                     self.progress_guard.add_progress(discarded_progress_id)
+                    self.progress_guard.set_finished(discarded_progress_id, None, False)
                     await self.mass.music.mark_item_unplayed(discarded_item)
             else:
                 with suppress(MediaNotFoundError):
                     discarded_item = await self.get_podcast_episode(
                         prov_episode_id=discarded_progress_id, add_progress=False
                     )
-                    self.progress_guard.add_progress(*discarded_progress_id.split(" "))
+                    abs_podcast_id, abs_episode_id = discarded_progress_id.split(" ")
+                    self.progress_guard.add_progress(abs_podcast_id, abs_episode_id)
+                    self.progress_guard.set_finished(abs_podcast_id, abs_episode_id, False)
                     await self.mass.music.mark_item_unplayed(discarded_item)
             self.logger.debug("Discarded item %s ", discarded_progress_id)
+        await self._cache_set_progress_guard()
 
     async def _update_playlog_book(self, progress: MediaProgress) -> None:
         # helper progress also ensures no useless progress updates,
         # see comment above
-        self.progress_guard.add_progress(progress.library_item_id)
+        self.progress_guard.add_abs_progress(progress)
         if progress.current_time is None:
             return
         mass_audiobook = await self.mass.music.get_library_item_by_prov_id(
@@ -2033,7 +2053,7 @@ for more details.
     async def _update_playlog_episode(self, progress: MediaProgress) -> None:
         # helper progress also ensures no useless progress updates,
         # see comment above
-        self.progress_guard.add_progress(progress.library_item_id, progress.episode_id)
+        self.progress_guard.add_abs_progress(progress)
         if progress.current_time is None:
             return
         _episode_id = f"{progress.library_item_id} {progress.episode_id}"
@@ -2086,6 +2106,15 @@ for more details.
             provider=self.instance_id,
             category=CACHE_CATEGORY_LIBRARIES,
             data=self.libraries.to_dict(),
+        )
+
+    async def _cache_set_progress_guard(self) -> None:
+        await self.mass.cache.set(
+            key=CACHE_KEY_PROGRESSES,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_PROGRESSES,
+            data=self.progress_guard.applied_to_dict(),
+            persistent=True,
         )
 
     def _sync_library_keys(self, libraries: list[Any]) -> None:

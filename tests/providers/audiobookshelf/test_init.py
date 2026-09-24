@@ -7,7 +7,7 @@ from music_assistant_models.enums import MediaType, ProviderFeature
 
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audiobookshelf import Audiobookshelf
-from music_assistant.providers.audiobookshelf.helpers import LibraryHelper
+from music_assistant.providers.audiobookshelf.helpers import LibraryHelper, ProgressGuard
 
 
 def test_supported_features_before_async_init(provider: Audiobookshelf) -> None:
@@ -30,6 +30,7 @@ async def test_sync_library_clears_stale_library_ids(provider: Audiobookshelf) -
     provider._client.get_my_user = AsyncMock()  # type: ignore[method-assign]
     provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
     provider.mass.music.get_playlog_provider_item_ids = AsyncMock(return_value=set())  # type: ignore[method-assign]
+    provider.progress_guard = ProgressGuard()
 
     with patch.object(MusicProvider, "sync_library", AsyncMock()):
         await provider.sync_library(MediaType.AUDIOBOOK)
