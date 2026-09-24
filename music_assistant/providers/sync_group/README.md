@@ -271,7 +271,7 @@ If the last member is removed, the group is dissolved (leader stopped, sync_lead
 
 ## Feature Inheritance
 
-The SyncGroupPlayer has limited base features but inherits additional capabilities from the sync leader:
+The SyncGroupPlayer has limited base features but inherits additional capabilities from the sync leader and the members:
 
 ### Base Features
 - `PLAY_MEDIA` - Always supported
@@ -280,9 +280,13 @@ The SyncGroupPlayer has limited base features but inherits additional capabiliti
 ### Features from Sync Leader (when active)
 - `ENQUEUE` - Queue next track
 - `GAPLESS_PLAYBACK` - Seamless track transitions
-- `VOLUME_SET` - Volume control
-- `VOLUME_MUTE` - Mute control
 - `MULTI_DEVICE_DSP` - DSP processing
+- `VOLUME_SET` / `VOLUME_MUTE` - When the leader has them
+
+### Features from Members
+- `VOLUME_SET` - Volume control, from any available member (volume is fanned out to every capable member, so a leader without a volume control does not hide it)
+- `VOLUME_MUTE` - Mute control, likewise
+- While dormant (no sync leader) all of the features above are derived from the configured members
 
 ### Dynamic Feature
 - `SET_MEMBERS` - Only if group is configured as dynamic
