@@ -419,15 +419,27 @@ async def test_overlapping_rejected_reports_unload_only_once(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Reports racing on the same rejected token warn and unload exactly once."""
-    session = _FakeSession(payload={"valid": True}, post_statuses=[401])
-    provider = _provider({CONF_USER_TOKEN: "token"}, http_session=session)
-    await provider.handle_async_init()
-    await provider.loaded_in_mass()
+    provider = _provider({CONF_USER_TOKEN: "token"})
+
+    # a barrier holds both reports inside the handler until each has captured it, so the
+    # identity guard's race — not the plain None check — is what stops the second unload
+    barrier = asyncio.Barrier(2)
+
+    class _GatedHandler:
+        async def on_media_item_played(self, _report: MediaItemPlaybackProgressReport) -> None:
+            await barrier.wait()
+            raise LoginFailed(
+                "ListenBrainz rejected the user token",
+                translation_key="token_invalid",
+                translation_owner="provider.listenbrainz_scrobble",
+            )
+
+    provider._handler = _GatedHandler()  # type: ignore[assignment]
 
     with patch.object(provider, "unload_with_error") as unload_with_error:
         await asyncio.gather(
-            provider.on_media_item_played(_playing_report()),
-            provider.on_media_item_played(_playing_report()),
+            provider.on_media_item_played(_report()),
+            provider.on_media_item_played(_report()),
         )
 
     assert provider._handler is None
