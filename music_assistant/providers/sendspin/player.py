@@ -240,6 +240,11 @@ _SECRET_HINT_LABELS = {
         "display": "dynamic_pin_channel_display",
         "speaker": "dynamic_pin_channel_speaker",
     },
+    PairMethod.PAIRING_PSK: {
+        "device": "pairing_psk_location_device",
+        "leaflet": "pairing_psk_location_leaflet",
+        "operator": "pairing_psk_location_operator",
+    },
 }
 
 # A device conveying the PIN both ways needs a label naming both, since the operator can use
@@ -479,7 +484,7 @@ class SendspinBasePlayer(Player):
             await session.finish({})
             return
         if not options:
-            raise AbortFlow(self._no_options_abort_reason(provider))
+            raise AbortFlow("no_pair_methods")
         if len(options) == 1:
             method = options[0]
         else:
@@ -985,15 +990,6 @@ class SendspinBasePlayer(Player):
             options.append(PAIR_METHOD_TOKEN)
         return options
 
-    def _no_options_abort_reason(self, provider: SendspinProvider) -> str:
-        """Say whether the device offers nothing at all, or only the server-side method."""
-        pair_methods = effective_pair_methods(
-            self.api.info_or_none, provider.pairing_config_snapshot(self.player_id)
-        )
-        if any(descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods):
-            return "token_pairing_only"
-        return "no_pair_methods"
-
     async def _pairing_succeeded(
         self, provider: SendspinProvider, pin_session: PinPairingSession
     ) -> bool:
@@ -1110,7 +1106,14 @@ class SendspinBasePlayer(Player):
         errors: dict[str, str] | None = None
         while True:
             token_values = await session.form(
-                [ConfigEntry(key=CONF_PAIRING_TOKEN, type=ConfigEntryType.STRING, required=True)],
+                [
+                    ConfigEntry(
+                        key=CONF_PAIRING_TOKEN,
+                        type=ConfigEntryType.STRING,
+                        required=True,
+                        translation_key=self._secret_hint_key(provider, PairMethod.PAIRING_PSK),
+                    )
+                ],
                 step_id="enter_token",
                 errors=errors,
             )
