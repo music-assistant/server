@@ -15,6 +15,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerMedia
 
+from music_assistant.providers.openhome_media.constants import PLAYLIST, RADIO
 from music_assistant.providers.openhome_media.player import (  # type: ignore[attr-defined]
     OpenHomePlayer,
     ProductSourceType,
@@ -155,7 +156,7 @@ class TestPowerCommand:
         await player.power(powered=True)
 
         # Should return None on error (decorator behaviour)
-        assert player._attr_needs_poll is True
+        assert player.force_poll is True
 
 
 class TestVolumeCommands:
@@ -271,21 +272,55 @@ class TestPlaybackCommands:
         ).assert_called_once_with(60)
 
         player._attr_active_source = ProductSourceType.RADIO
-        await player.seek(position=40)
-        cast("AsyncMock", mock_ohm_device.async_radio_seek_second_absolute).assert_called_once_with(
-            40
-        )
+        with patch.object(
+            mock_ohm_device,
+            "async_active_source_type",
+            AsyncMock(return_value=ProductSourceType.RADIO),
+        ):
+            await player.seek(position=42)
+            cast(
+                "AsyncMock", mock_ohm_device.async_radio_seek_second_absolute
+            ).assert_called_once_with(42)
 
 
 class TestPlayMediaCommand:
     """Tests for PLAY_MEDIA command."""
 
+    xml_value = """<Sources>
+        <Source><Visible>true</Visible><Name>Playlist</Name><Type>Playlist</Type><SystemName>Playlist</SystemName></Source>
+        <Source><Visible>true</Visible><Name>Radio</Name><Type>Radio</Type><SystemName>Radio</SystemName></Source>
+        <Source><Visible>false</Visible><Name>CD</Name><Type>Digital</Type><SystemName>TOSLINK1</SystemName></Source>
+    </Sources>"""
+
     @pytest.mark.asyncio
-    async def test_play_media_basic(
+    async def test_play_media_calls_stop(
         self, player: OpenHomePlayer, mock_ohm_device: OhmDevice
     ) -> None:
         """Test that play_media sends stop before starting new media."""
-        player.set_available(True)
+        player.mass.config.get_player_config_value = AsyncMock(return_value=RADIO)  # type: ignore[method-assign]
+        player.profile.product_source_xml = self.xml_value  # type: ignore[union-attr]
+
+        with (
+            patch.object(player, "stop", new_callable=AsyncMock) as mock_stop,
+            patch.object(player, "set_current_media", new_callable=AsyncMock) as mock_current_media,
+        ):
+            media = PlayerMedia(
+                uri="http://music/stream",
+                media_type=MediaType.TRACK,
+                title="Test Track",
+            )
+
+            await player.play_media(media)
+            mock_stop.assert_awaited_once()
+            mock_current_media.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_play_media_radio_source(
+        self, player: OpenHomePlayer, mock_ohm_device: OhmDevice
+    ) -> None:
+        """Test play_media with radio source."""
+        player.mass.config.get_player_config_value = AsyncMock(return_value=RADIO)  # type: ignore[method-assign]
+        player.profile.product_source_xml = self.xml_value  # type: ignore[union-attr]
         media = PlayerMedia(
             uri="http://music/stream",
             media_type=MediaType.TRACK,
@@ -294,50 +329,28 @@ class TestPlayMediaCommand:
 
         await player.play_media(media)
 
-        cast("AsyncMock", mock_ohm_device.async_stop).assert_called()
-        # cast(AsyncMock, player.set_current_media).assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_play_media_radio_source(
-        self, player: OpenHomePlayer, mock_ohm_device: OhmDevice
-    ) -> None:
-        """Test play_media with radio source."""
-        with patch.object(
-            mock_ohm_device, "has_source_type", return_value=True
-        ):  # test is for Radio source type
-            media = PlayerMedia(
-                uri="http://music/stream",
-                media_type=MediaType.TRACK,
-                title="Test Track",
-            )
-
-            await player.play_media(media)
-
-            cast(
-                "AsyncMock", mock_ohm_device.async_product_set_source_index
-            ).assert_called_once_with(0)
-            cast("AsyncMock", mock_ohm_device.async_radio_set_channel).assert_called()
-            cast("AsyncMock", mock_ohm_device.async_radio_play).assert_called()
+        cast("AsyncMock", mock_ohm_device.async_product_set_source_index).assert_called_once_with(0)
+        cast("AsyncMock", mock_ohm_device.async_radio_set_channel).assert_called()
+        cast("AsyncMock", mock_ohm_device.async_radio_play).assert_called()
 
     @pytest.mark.asyncio
     async def test_play_media_playlist_source(
         self, player: OpenHomePlayer, mock_ohm_device: OhmDevice
     ) -> None:
-        """Test play_media with playlist source (non-radio)."""
-        with patch.object(
-            mock_ohm_device, "has_source_type", return_value=False
-        ):  # test is for Radio source type
-            media = PlayerMedia(
-                uri="http://music/stream",
-                media_type=MediaType.TRACK,
-                title="Test Track",
-            )
+        """Test play_media with playlist source."""
+        player.mass.config.get_player_config_value = AsyncMock(return_value=PLAYLIST)  # type: ignore[method-assign]
 
-            await player.play_media(media)
+        media = PlayerMedia(
+            uri="http://music/stream",
+            media_type=MediaType.TRACK,
+            title="Test Track",
+        )
 
-            cast("AsyncMock", mock_ohm_device.async_playlist_last_id).assert_called_once()
-            cast("AsyncMock", mock_ohm_device.async_playlist_insert).assert_called_once()
-            cast("AsyncMock", mock_ohm_device.async_playlist_seek_id).assert_called_once()
+        await player.play_media(media)
+
+        cast("AsyncMock", mock_ohm_device.async_playlist_last_id).assert_called_once()
+        cast("AsyncMock", mock_ohm_device.async_playlist_insert).assert_called_once()
+        cast("AsyncMock", mock_ohm_device.async_playlist_seek_id).assert_called_once()
 
 
 # =============================================================================
@@ -352,7 +365,7 @@ class TestEventHandling:
         """Test event with no state variables triggers poll mode."""
         service = MagicMock(service_id=ServiceId.VOLUME)
         player._handle_event(service, [])
-        assert player._attr_needs_poll is True
+        assert player.force_poll is True
 
     def test_handle_event_volume_change(self, player: OpenHomePlayer) -> None:
         """Test handling volume change events."""
@@ -506,10 +519,10 @@ class TestPolling:
     ) -> None:
         """Test poll skips update when subscribed."""
         mock_ohm_device.is_subscribed = True
-        player._attr_needs_poll = True
+        player.force_poll = True
         await player.poll()
         cast("AsyncMock", mock_ohm_device.async_update_state_variables).assert_not_called()
-        assert player._attr_needs_poll is False
+        assert player.force_poll is False
 
     @pytest.mark.asyncio
     async def test_poll_forces_update_when_needs_poll(
@@ -517,7 +530,7 @@ class TestPolling:
     ) -> None:
         """Test poll forces update when needs_poll flag is set."""
         mock_ohm_device.is_subscribed = False
-        player._attr_needs_poll = True
+        player.force_poll = True
 
         await player.poll()
 

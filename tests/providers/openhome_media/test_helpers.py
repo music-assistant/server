@@ -5,6 +5,8 @@ import pytest
 from async_upnp_client.profiles.ohmedia import TransportStateAllowedValues
 from music_assistant_models.enums import PlaybackState
 
+from music_assistant.providers.openhome_media.constants import PLAYLIST, RADIO
+from music_assistant.providers.openhome_media.helpers import get_source_index_of_type
 from music_assistant.providers.openhome_media.player import (  # type: ignore[attr-defined]
     OpenHomePlayer,
     PlayerSource,
@@ -44,7 +46,7 @@ class TestMacFromUuid:
     )
     def test_get_mac_from_uuid(self, uuid: str, expected: str) -> None:
         """Test MAC extraction from valid UUID format."""
-        actual = OpenHomePlayer.get_mac_from_uuid(uuid)
+        actual = OpenHomePlayer.get_mac_from_udn(uuid)
         assert actual == expected
 
 
@@ -57,8 +59,8 @@ class TestTransportStateConversion:
             (TransportStateAllowedValues.PLAYING, PlaybackState.PLAYING),
             (TransportStateAllowedValues.PAUSED, PlaybackState.PAUSED),
             (TransportStateAllowedValues.STOPPED, PlaybackState.IDLE),
-            (TransportStateAllowedValues.BUFFERING, PlaybackState.UNKNOWN),
-            (TransportStateAllowedValues.WAITING, PlaybackState.IDLE),
+            (TransportStateAllowedValues.BUFFERING, PlaybackState.PLAYING),
+            (TransportStateAllowedValues.WAITING, PlaybackState.PLAYING),
             (None, PlaybackState.UNKNOWN),
             ("UnknownState", PlaybackState.UNKNOWN),
         ],
@@ -72,11 +74,41 @@ class TestTransportStateConversion:
 
 
 class TestSourceList:
-    """Tests for _source_list_from_source_xml() XML parsing and filtering."""
+    """Tests for source XML parsing and filtering."""
 
     def test_none(self) -> None:
         """Test None returns empty list."""
         assert OpenHomePlayer._source_list_from_source_xml(None) == []
+
+    def test_get_source_index_of_type(self) -> None:
+        """Test get_source_index_of_type returns expected values."""
+        xml = """<Sources>
+                    <Source>
+                        <Visible>true</Visible>
+                        <Name>Playlist</Name>
+                        <Type>Playlist</Type>
+                        <SystemName>Playlist</SystemName>
+                    </Source>
+                    <Source>
+                        <Visible>true</Visible>
+                        <Name>Radio</Name>
+                        <Type>Radio</Type>
+                        <SystemName>Radio</SystemName>
+                    </Source>
+                    <Source>
+                        <Visible>true</Visible>
+                        <Name>Local Music</Name>
+                        <Type>Analog</Type>
+                        <SystemName>Analog</SystemName>
+                    </Source>
+                </Sources>"""
+
+        index = get_source_index_of_type(xml, PLAYLIST)
+        assert index == 0
+        index = get_source_index_of_type(xml, RADIO)
+        assert index == 1
+        index = get_source_index_of_type(xml, "SOURCE_NOT_FOUND")
+        assert index is None
 
     def test_single_visible_source(self) -> None:
         """Test single visible source extraction."""
@@ -92,7 +124,7 @@ class TestSourceList:
         source_xml = DefusedET.fromstring(xml)
         result = OpenHomePlayer._source_list_from_source_xml(source_xml)
         assert len(result) == 1
-        assert result[0].id == "0"
+        assert result[0].id == "External"
         assert result[0].name == "CD"
 
     def test_multiple_sources(self) -> None:
@@ -344,9 +376,9 @@ class TestSourceList:
         source_xml = DefusedET.fromstring(xml)
         result = OpenHomePlayer._source_list_from_source_xml(source_xml)
 
-        assert result[0].id == "0"
-        assert result[1].id == "1"
-        assert result[2].id == "2"
+        assert result[0].id == "External"
+        assert result[1].id == "External"
+        assert result[2].id == "External"
 
     def test_mixed_visibility_preserves_order(self) -> None:
         """Test that visible sources maintain their relative order."""
@@ -390,10 +422,10 @@ class TestSourceList:
         assert result[0].name == "Visible 1"
         assert result[1].name == "Visible 2"
         assert result[2].name == "Visible 3"
-        # Id should match original index position in source_xml
-        assert result[0].id == "0"
-        assert result[1].id == "1"
-        assert result[2].id == "3"
+        # Id should be External for all visible sources
+        assert result[0].id == "External"
+        assert result[1].id == "External"
+        assert result[2].id == "External"
 
     def test_case_sensitive_type_values_preserved(self) -> None:
         """Test that Type values preserve case."""
