@@ -88,15 +88,18 @@ class ListenBrainzScrobbleProvider(PluginProvider):
 
     async def on_media_item_played(self, report: MediaItemPlaybackProgressReport) -> None:
         """Forward a playback progress report to ListenBrainz."""
-        if self._handler is None:
+        handler = self._handler
+        if handler is None:
             return
         try:
-            await self._handler.on_media_item_played(report)
+            await handler.on_media_item_played(report)
         except LoginFailed as err:
-            # stop submitting right away: the unload below only runs after a short delay
-            self._handler = None
-            self.logger.warning("%s, reconfigure this plugin to resume scrobbling", err)
-            self.unload_with_error(err)
+            # overlapping reports can each hit the rejection; only the first tears the
+            # handler down, warns and unloads, so the rest don't pile up duplicates
+            if self._handler is handler:
+                self._handler = None
+                self.logger.warning("%s, reconfigure this plugin to resume scrobbling", err)
+                self.unload_with_error(err)
 
     async def _validate_token(self, api_base_url: str, token: str) -> None:
         """

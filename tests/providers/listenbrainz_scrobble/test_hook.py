@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Self
 from unittest.mock import AsyncMock, Mock, patch
@@ -411,4 +412,24 @@ async def test_a_rejected_token_stops_scrobbling_and_asks_for_reconfigure(
     assert isinstance(err, LoginFailed)
     assert err.translation_key == "token_invalid"
     assert err.translation_owner == "provider.listenbrainz_scrobble"
+    assert [r.levelno for r in caplog.records if r.levelno >= logging.WARNING] == [logging.WARNING]
+
+
+async def test_overlapping_rejected_reports_unload_only_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Reports racing on the same rejected token warn and unload exactly once."""
+    session = _FakeSession(payload={"valid": True}, post_statuses=[401])
+    provider = _provider({CONF_USER_TOKEN: "token"}, http_session=session)
+    await provider.handle_async_init()
+    await provider.loaded_in_mass()
+
+    with patch.object(provider, "unload_with_error") as unload_with_error:
+        await asyncio.gather(
+            provider.on_media_item_played(_playing_report()),
+            provider.on_media_item_played(_playing_report()),
+        )
+
+    assert provider._handler is None
+    unload_with_error.assert_called_once()
     assert [r.levelno for r in caplog.records if r.levelno >= logging.WARNING] == [logging.WARNING]
