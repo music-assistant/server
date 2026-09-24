@@ -499,6 +499,19 @@ class AlbumsController(MediaControllerBase[Album]):
                 # make sure that the 'base' version is NOT included
                 and not album.provider_mappings.intersection(prov_item.provider_mappings)
             )
+            if ProviderFeature.ALBUM_VERSIONS in provider.supported_features:
+                # Call the specialized function in addition to searching to
+                # handle cases where the provider hasn't merged the album
+                # variants
+                if mapped_id := next(
+                    (
+                        p.item_id
+                        for p in album.provider_mappings
+                        if p.provider_instance == provider.instance_id
+                    ),
+                    None,
+                ):
+                    result.extend(await provider.get_album_versions(mapped_id))
         return result
 
     async def get_library_album_tracks(
@@ -580,23 +593,19 @@ class AlbumsController(MediaControllerBase[Album]):
 
     def album_from_item_mapping(self, item: ItemMapping) -> Album:
         """Create an Album object from an ItemMapping object."""
-        domain, instance_id = None, None
+        # a library item mapping references an item already in the library, which has no
+        # mapping to itself, so only a resolvable provider yields a real provider mapping
+        provider_mappings: list[dict[str, Any]] = []
         if prov := self.mass.get_provider(item.provider):
-            domain = prov.domain
-            instance_id = prov.instance_id
-        return Album.from_dict(
-            {
-                **item.to_dict(),
-                "provider_mappings": [
-                    {
-                        "item_id": item.item_id,
-                        "provider_domain": domain,
-                        "provider_instance": instance_id,
-                        "available": item.available,
-                    }
-                ],
-            }
-        )
+            provider_mappings.append(
+                {
+                    "item_id": item.item_id,
+                    "provider_domain": prov.domain,
+                    "provider_instance": prov.instance_id,
+                    "available": item.available,
+                }
+            )
+        return Album.from_dict({**item.to_dict(), "provider_mappings": provider_mappings})
 
     async def _add_library_item(self, item: Album, overwrite_existing: bool = False) -> int:
         """Add a new record to the database."""

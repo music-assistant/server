@@ -1029,6 +1029,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         elif provider_item_id:
             subquery_parts.append("provider_mappings.provider_item_id = :item_id")
             query_params["item_id"] = provider_item_id
+        # Library item IDs are only unique within each media type.
+        subquery_parts.append("provider_mappings.media_type = :media_type")
+        query_params["media_type"] = self.media_type.value
         subquery = f"SELECT item_id FROM provider_mappings WHERE {' AND '.join(subquery_parts)}"
         query = f"WHERE {self.db_table}.item_id IN ({subquery})"
         return await self.get_library_items_by_query(
@@ -2195,8 +2198,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         visible_sources = visible_music_sources(self.mass, user) if user else None
         final_provider_filter: list[str] | None = None
         if visible_sources is not None:
-            plugin_provider_instances = {
-                prov.instance_id for prov in self.mass.providers if prov.type == ProviderType.PLUGIN
+            # access control applies to music sources only; non-music providers (metadata,
+            # plugin) are household-wide, so they are always kept alongside the user's sources
+            non_music_provider_instances = {
+                prov.instance_id for prov in self.mass.providers if prov.type != ProviderType.MUSIC
             }
             # User has a provider filter set
             if provider:
@@ -2206,7 +2211,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 final_provider_filter = [
                     p
                     for p in requested_providers
-                    if p in visible_sources or p in plugin_provider_instances
+                    if p in visible_sources or p in non_music_provider_instances
                 ]
                 if not final_provider_filter:
                     # No overlap - user requested providers they don't have access to
@@ -2214,9 +2219,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         "User does not have permission to access the requested provider(s)."
                     )
             else:
-                # No explicit filter - apply user music provider filter but keep plugin providers.
+                # No explicit filter - apply user music provider filter but keep non-music providers.
                 final_provider_filter = list(
-                    dict.fromkeys([*visible_sources, *plugin_provider_instances])
+                    dict.fromkeys([*visible_sources, *non_music_provider_instances])
                 )
         elif provider is not None:
             # No user filter - use the provided filter as is

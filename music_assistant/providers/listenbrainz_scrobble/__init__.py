@@ -14,6 +14,7 @@ from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import (
     InvalidToken,
+    LoginFailed,
     RateLimited,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
@@ -87,8 +88,18 @@ class ListenBrainzScrobbleProvider(PluginProvider):
 
     async def on_media_item_played(self, report: MediaItemPlaybackProgressReport) -> None:
         """Forward a playback progress report to ListenBrainz."""
-        if self._handler is not None:
-            await self._handler.on_media_item_played(report)
+        handler = self._handler
+        if handler is None:
+            return
+        try:
+            await handler.on_media_item_played(report)
+        except LoginFailed as err:
+            # overlapping reports can each hit the rejection; only the first tears the
+            # handler down, warns and unloads, so the rest don't pile up duplicates
+            if self._handler is handler:
+                self._handler = None
+                self.logger.warning("%s, reconfigure this plugin to resume scrobbling", err)
+                self.unload_with_error(err)
 
     async def _validate_token(self, api_base_url: str, token: str) -> None:
         """
@@ -233,5 +244,14 @@ class ListenBrainzEventHandler(ScrobblerHelper):
                 raise ResourceTemporarilyUnavailable(
                     "ListenBrainz is temporarily unavailable",
                     backoff_time=parse_retry_after(response.headers.get("Retry-After")),
+                )
+            # a rejected token never recovers by retrying: surface it so the provider unloads
+            # with an auth error and the UI asks the user to reconfigure, instead of retrying
+            # (and logging a traceback) on every played track
+            if response.status == 401:
+                raise LoginFailed(
+                    "ListenBrainz rejected the user token",
+                    translation_key="token_invalid",
+                    translation_owner="provider.listenbrainz_scrobble",
                 )
             response.raise_for_status()
