@@ -244,6 +244,26 @@ async def test_get_artist_albums_skips_pagination_without_browse_pair(
     mock_ytm.get_artist_albums.assert_not_called()
 
 
+async def test_get_artist_albums_preview_with_empty_artists_falls_back_to_page_artist(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """An albums preview item with an empty artists list gets the page artist."""
+    provider._headers = {}
+    mock_ytm = MagicMock()
+    mock_ytm.get_artist.return_value = {
+        "channelId": "UCtest",
+        "name": "Test Artist",
+        "albums": {"results": [{"browseId": "MPREb_album1", "title": "An Album", "artists": []}]},
+    }
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm):
+        albums = await _get_artist_albums_unwrapped()(provider, "UCtest")
+
+    assert [a.item_id for a in albums] == ["MPREb_album1"]
+    assert [(artist.item_id, artist.name) for artist in albums[0].artists] == [
+        ("UCtest", "Test Artist")
+    ]
+
+
 @pytest.mark.parametrize(
     "error",
     [

@@ -578,7 +578,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 if not browse_id or browse_id in seen:
                     continue
                 seen.add(browse_id)
-                if "artists" not in album_obj:
+                if not album_obj.get("artists"):
                     album_obj["artists"] = [
                         {"id": artist_obj["channelId"], "name": artist_obj["name"]}
                     ]
