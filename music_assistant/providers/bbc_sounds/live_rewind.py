@@ -30,6 +30,10 @@ NOREWIND_PLAYLIST_SUFFIX = ".norewind.m3u8"
 LIVE_EDGE_SEGMENTS = 3
 # a seek further than this past the live edge is snapped back to the live edge
 LIVE_SEEK_TOLERANCE = 60
+# BBC HLS programme dates run this far ahead of the broadcast: the BBC Sounds player
+# starts a programme 20 seconds into the DASH timeline, which itself runs 16 seconds
+# behind the HLS dates (availabilityStartTime 1969-12-31T23:59:44Z, same segment numbers)
+PROGRAMME_DATE_OFFSET = 36
 SEGMENT_FETCH_ATTEMPTS = 3
 SEGMENT_FETCH_TIMEOUT = ClientTimeout(total=30)
 
@@ -133,13 +137,17 @@ def parse_timeline(
     clock: float | None = None
     for sequence, segment in enumerate(playlist.segments, start=playlist.media_sequence):
         if start_time := segment.start_time:
-            clock = start_time.timestamp()
+            clock = start_time.timestamp() - PROGRAMME_DATE_OFFSET
         if clock is None:
             raise InvalidDataError("Live playlist carries no programme date and time")
         if sequence >= from_sequence:
             segments.append(
                 TimedSegment(
-                    sequence=sequence, start=clock, url=urljoin(playlist_url, segment.segment_url)
+                    sequence=sequence,
+                    # summing durations drifts a little, which would move a start that
+                    # falls exactly on a segment boundary into the segment before
+                    start=round(clock, 3),
+                    url=urljoin(playlist_url, segment.segment_url),
                 )
             )
         clock += segment.duration

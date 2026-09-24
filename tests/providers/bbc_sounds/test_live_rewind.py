@@ -17,6 +17,7 @@ from sounds.models import LiveStation, Network, Schedule, ScheduleItem
 
 from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 from music_assistant.providers.bbc_sounds.live_rewind import (
+    PROGRAMME_DATE_OFFSET,
     LiveProgrammeId,
     parse_timeline,
     rewind_playlist_url,
@@ -34,7 +35,7 @@ PROGRAMME = LiveProgrammeId("bbc_radio_one", "m0031hzl", 1790229600, 1790242200)
 
 def _playlist(first_sequence: int, count: int, ended: bool = False) -> str:
     """Build a live playlist of 6 second segments, the first starting at WINDOW_START."""
-    start = datetime.fromtimestamp(_segment_time(first_sequence), tz=UTC)
+    start = datetime.fromtimestamp(_segment_time(first_sequence) + PROGRAMME_DATE_OFFSET, tz=UTC)
     lines = [
         "#EXTM3U",
         "#EXT-X-VERSION:3",
@@ -158,6 +159,15 @@ class TestPlaylists:
         assert [s.start for s in timeline.segments] == [_segment_time(n) for n in range(100, 104)]
         assert timeline.segments[0].url == f"{BASE_URL}seg-100.ts"
         assert not timeline.ended
+
+    def test_timeline_is_moved_back_to_broadcast_time(self) -> None:
+        """Test segment times are the playlist dates less the BBC HLS offset."""
+        playlist = (
+            "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:1\n#EXT-X-TARGETDURATION:6\n"
+            "#EXT-X-PROGRAM-DATE-TIME:2026-09-24T14:33:36Z\n#EXTINF:6.4,\nseg-1.ts"
+        )
+        timeline = parse_timeline(playlist, REWIND_URL)
+        assert timeline.segments[0].start == datetime(2026, 9, 24, 14, 33, tzinfo=UTC).timestamp()
 
     def test_index_at_stays_behind_the_live_edge(self) -> None:
         """Test the start segment is found by time, and clamped a few segments from the edge."""
