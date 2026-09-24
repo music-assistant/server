@@ -738,11 +738,13 @@ class ArtistsController(MediaControllerBase[Artist]):
         # fallback: enumerate (and dedupe) the tracks of all the artist's albums on the provider
         result: list[Track] = []
         unique_ids: set[str] = set()
+        provider_error: Exception | None = None
         for album in await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain):
             try:
                 album_tracks = await self.mass.music.albums.tracks(album.item_id, album.provider)
             except PROVIDER_FETCH_ERRORS as err:
                 # one failing album must not drop the artist's other tracks on this provider
+                provider_error = err
                 self.logger.warning(
                     "Unable to fetch tracks for album %s from provider %s: %s",
                     album.name,
@@ -756,6 +758,9 @@ class ArtistsController(MediaControllerBase[Artist]):
                     continue
                 unique_ids.add(unique_id)
                 result.append(track)
+        if provider_error is not None and not result:
+            # nothing could be listed at all, so surface the reason instead of an empty list
+            raise provider_error
         return result
 
     async def get_library_artist_tracks(
