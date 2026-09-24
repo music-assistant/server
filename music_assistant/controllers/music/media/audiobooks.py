@@ -474,7 +474,13 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         ):
             db_artist = existing
 
-        if not db_artist or overwrite:
+        # stale links are removed by the stored type, so a changed role must be stored
+        role_changed = (
+            isinstance(db_artist, Artist)
+            and isinstance(artist, Artist)
+            and db_artist.artist_type != artist.artist_type
+        )
+        if not db_artist or overwrite or role_changed:
             # Convert ItemMapping to Artist if needed
             artist_to_add = (
                 self.mass.music.artists.artist_from_item_mapping(artist)

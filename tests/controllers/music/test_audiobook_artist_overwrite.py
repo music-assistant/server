@@ -111,3 +111,20 @@ async def test_without_overwrite_nothing_is_removed(mass: MusicAssistant) -> Non
     )
 
     assert "Old Voice" in await _linked(mass, db_id, ArtistType.NARRATOR)
+
+
+async def test_overwrite_keeps_an_artist_whose_role_changed(mass: MusicAssistant) -> None:
+    """The narrator pass used to remove the link of a narrator who became the author."""
+    db_id = await _add(mass, _book(narrators=[_artist("Kate Voice", ArtistType.NARRATOR)]))
+
+    await mass.music.audiobooks.update_item_in_library(
+        db_id,
+        _book(
+            authors=[_artist("Kate Voice", ArtistType.AUTHOR)],
+            narrators=[_artist("New Voice", ArtistType.NARRATOR)],
+        ),
+        overwrite=True,
+    )
+
+    assert await _linked(mass, db_id, ArtistType.AUTHOR) == {"Kate Voice"}
+    assert await _linked(mass, db_id, ArtistType.NARRATOR) == {"New Voice"}
