@@ -181,6 +181,15 @@ def sort_tracks(tracks: list[_SortableT], sort_by: str) -> list[_SortableT]:
         ),
         "duration": (lambda t: getattr(t, "duration", 0) or 0, False),
         "duration_desc": (lambda t: getattr(t, "duration", 0) or 0, True),
+        # items without a date_added sort as the oldest
+        "timestamp_added": (
+            lambda t: t.date_added.timestamp() if t.date_added else 0.0,
+            False,
+        ),
+        "timestamp_added_desc": (
+            lambda t: t.date_added.timestamp() if t.date_added else 0.0,
+            True,
+        ),
         "track_number": (
             lambda t: (
                 getattr(t, "disc_number", 0) or 0,
