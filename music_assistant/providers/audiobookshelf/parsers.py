@@ -1,8 +1,10 @@
 """Parser for ABS -> MASS."""
 
+from base64 import b64encode
 from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 from aioaudiobookshelf.schema.author import AuthorExpanded as AbsAuthorExpanded
 from aioaudiobookshelf.schema.author import AuthorMinified as AbsAuthorMinified
@@ -292,7 +294,6 @@ def parse_audiobook(
     domain: str,
     token: str | None,
     base_url: str,
-    audiobook_narrators: set[AbsNarrator] | set[NarratorHelper],
     media_progress: AbsMediaProgress | None = None,
 ) -> MassAudiobook:
     """Translate AbsBook to Mass Book."""
@@ -383,8 +384,15 @@ def parse_audiobook(
 
     mass_audiobook.narrators.set(
         [
-            parse_narrator(abs_narrator=narrator, instance_id=instance_id, domain=domain)
-            for narrator in audiobook_narrators
+            parse_narrator(
+                # same id as abs' narrators endpoint
+                abs_narrator=NarratorHelper(
+                    id_=quote(b64encode(name.encode()).decode(), safe=""), name=name
+                ),
+                instance_id=instance_id,
+                domain=domain,
+            )
+            for name in abs_audiobook.media.metadata.narrators
         ]
     )
 

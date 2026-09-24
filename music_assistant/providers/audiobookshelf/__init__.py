@@ -107,6 +107,7 @@ from music_assistant_models.media_items.media_item import RecommendationFolder
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 from music_assistant.constants import PLAYBACK_REPORT_INTERVAL_SECONDS, PlaylistPlayableItem
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
@@ -141,7 +142,7 @@ from .constants import (
     AbsBrowseItemsPodcastTranslationKey,
     AbsBrowsePaths,
 )
-from .helpers import LibrariesHelper, LibraryHelper, NarratorHelper, ProgressGuard, SessionHelper
+from .helpers import LibrariesHelper, LibraryHelper, ProgressGuard, SessionHelper
 
 if TYPE_CHECKING:
     from aioaudiobookshelf.schema.events_socket import LibraryItemRemoved
@@ -439,7 +440,6 @@ for more details.
         """Obtain audiobook library ids and podcast library ids."""
         if media_type == MediaType.AUDIOBOOK:
             self.libraries.audiobooks.clear()
-            self.libraries.audiobook_narrators.clear()
         elif media_type == MediaType.PODCAST:
             self.libraries.podcasts.clear()
         elif media_type == MediaType.PLAYLIST:
@@ -455,7 +455,6 @@ for more details.
         for library in libraries:
             if library.media_type == AbsLibraryMediaType.BOOK and media_type == MediaType.AUDIOBOOK:
                 self.libraries.audiobooks[library.id_] = LibraryHelper(name=library.name)
-                await self._update_book_narrators(library.id_)
             elif (
                 library.media_type == AbsLibraryMediaType.PODCAST
                 and media_type == MediaType.PODCAST
@@ -581,7 +580,6 @@ for more details.
                     parse_audiobook(
                         abs_audiobook=item.library_item,
                         instance_id=self.instance_id,
-                        audiobook_narrators=await self._get_audiobook_narrators(item.library_item),
                         domain=self.domain,
                         token=self._client.token,
                         media_progress=progress,
@@ -876,7 +874,6 @@ for more details.
                         continue
                     mass_audiobook = parse_audiobook(
                         abs_audiobook=book_expanded,
-                        audiobook_narrators=await self._get_audiobook_narrators(book_expanded),
                         instance_id=self.instance_id,
                         domain=self.domain,
                         token=self._client.token,
@@ -906,7 +903,6 @@ for more details.
         abs_audiobook = await self._get_abs_expanded_audiobook(prov_audiobook_id=prov_audiobook_id)
         return parse_audiobook(
             abs_audiobook=abs_audiobook,
-            audiobook_narrators=await self._get_audiobook_narrators(abs_audiobook),
             instance_id=self.instance_id,
             domain=self.domain,
             token=self._client.token,
@@ -1733,7 +1729,6 @@ for more details.
                     continue
                 mass_audiobook = parse_audiobook(
                     abs_audiobook=abs_item,
-                    audiobook_narrators=await self._get_audiobook_narrators(abs_item),
                     instance_id=self.instance_id,
                     domain=self.domain,
                     token=self._client.token,
@@ -2028,9 +2023,7 @@ for more details.
                     await self.mass.music.mark_item_unplayed(discarded_item)
             else:
                 with suppress(MediaNotFoundError):
-                    discarded_item = await self.get_podcast_episode(
-                        prov_episode_id=discarded_progress_id, add_progress=False
-                    )
+                    discarded_item = await self._get_playlog_podcast_episode(discarded_progress_id)
                     abs_podcast_id, abs_episode_id = discarded_progress_id.split(" ")
                     self.progress_guard.add_progress(abs_podcast_id, abs_episode_id)
                     self.progress_guard.set_finished(abs_podcast_id, abs_episode_id, False)
@@ -2070,7 +2063,7 @@ for more details.
         _episode_id = f"{progress.library_item_id} {progress.episode_id}"
         try:
             # need to obtain full podcast, and then search for episode
-            mass_episode = await self.get_podcast_episode(_episode_id, add_progress=False)
+            mass_episode = await self._get_playlog_podcast_episode(_episode_id)
         except MediaNotFoundError:
             return
         if int(progress.current_time) == 0 and not progress.is_finished:
@@ -2083,33 +2076,10 @@ for more details.
                 user_initiated=False,
             )
 
-    async def _update_book_narrators(self, library_id: str) -> None:
-        # narrators are not expanded in ABS' response, so acquire them here
-        narrators = await self._client.get_library_narrators(library_id=library_id)
-        audiobook_narrators: dict[str, set[NarratorHelper]] = {}
-        for narrator in narrators:
-            async for response in self._client.get_library_items(
-                library_id=library_id, filter_str=f"narrators.{narrator.id_}"
-            ):
-                if not response.results:
-                    break
-                for item in response.results:
-                    narrator_set = audiobook_narrators.get(item.id_, set())
-                    narrator_set.add(NarratorHelper(id_=narrator.id_, name=narrator.name))
-                    audiobook_narrators[item.id_] = narrator_set
-        self.libraries.audiobook_narrators = {
-            **self.libraries.audiobook_narrators,
-            **audiobook_narrators,
-        }
-
-    async def _get_audiobook_narrators(
-        self, book: AbsLibraryItemExpandedBook
-    ) -> set[NarratorHelper]:
-        """Get narrators of an audiobook, either from cache or API calls."""
-        if cached_narrators := self.libraries.audiobook_narrators.get(book.id_):
-            return cached_narrators
-        await self._update_book_narrators(book.library_id)
-        return self.libraries.audiobook_narrators.get(book.id_, set())
+    # other abs clients report the progress of a playing episode every 15s
+    @use_cache(300)
+    async def _get_playlog_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
+        return await self.get_podcast_episode(prov_episode_id, add_progress=False)
 
     async def _cache_set_helper_libraries(self) -> None:
         await self.mass.cache.set(
