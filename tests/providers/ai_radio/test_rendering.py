@@ -53,7 +53,6 @@ from music_assistant.providers.ai_radio.constants import (
     TTS_PEAK_CEILING_DB,
     TTS_SPEECHNORM_FILTER,
 )
-from music_assistant.providers.ai_radio.models import SessionState
 from music_assistant.providers.ai_radio.rendering import AIRadioRenderMixin
 
 
@@ -66,7 +65,6 @@ class DummyRenderer(AIRadioRenderMixin):
     def __init__(self) -> None:
         """Initialize the harness with recording stubs."""
         self.logger = logging.getLogger("tests.ai_radio.rendering")
-        self._sessions: dict[str, Any] = {}
         self._hosts: dict[str, dict[str, Any]] = {}
         self.llm_prompts: list[str] = []
         self.tts_texts: list[str] = []
@@ -403,23 +401,8 @@ async def test_render_tts_media_does_not_retry_after_a_timeout_style_failure() -
     engine.provider.get_tts_message.assert_awaited_once()
 
 
-async def test_clip_is_found_in_the_owning_sessions_queue() -> None:
-    """The session registry points the lookup at the queue that holds the clip."""
-    renderer = DummyRenderer()
-    session = SessionState(session_id="sess", station_id="st", queue_id="player_b")
-    renderer._sessions = {"sess": session}
-    _attach_queues(
-        renderer,
-        {"player_a": [], "player_b": [_clip_item("sess_001", queue_id="player_b")]},
-    )
-
-    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
-
-    assert streamdetails.item_id == "sess_001"
-
-
-async def test_clip_is_found_by_scanning_every_queue_after_a_restart() -> None:
-    """With the session registry gone, the clip is still located in its persisted queue."""
+async def test_clip_is_found_by_scanning_every_queue() -> None:
+    """Every queue is a candidate, so the clip is located wherever it is persisted."""
     renderer = DummyRenderer()
     _attach_queues(
         renderer,
@@ -461,23 +444,22 @@ async def test_llm_failure_raises_media_not_found() -> None:
         await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
 
-async def test_render_failure_increments_the_session_skip_counter() -> None:
-    """A skipped clip is recorded on its session without failing the run."""
+async def test_generation_failure_logs_the_skip(caplog: pytest.LogCaptureFixture) -> None:
+    """A clip that fails to generate is skipped and logged, without failing the run."""
     renderer = DummyRenderer()
-    session = SessionState(session_id="sess", station_id="st")
-    renderer._sessions = {"sess": session}
     _attach_queue(renderer, [_clip_item("sess_001")])
     renderer.fail_generation = True
 
-    with pytest.raises(MediaNotFoundError):
+    with caplog.at_level(logging.WARNING), pytest.raises(MediaNotFoundError):
         await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
-    assert session.skipped_sections == 1
-    assert session.last_render_error
+    assert any("failed to generate" in message for message in caplog.messages)
 
 
-async def test_tts_failure_raises_media_not_found_and_records_skip() -> None:
-    """A TTS failure surfaces as missing media and is recorded on the owning session."""
+async def test_tts_failure_raises_media_not_found_and_logs_the_skip(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A TTS failure surfaces as missing media and is logged."""
 
     class UnspeakableRenderer(DummyRenderer):
         async def _render_tts_media(
@@ -490,15 +472,12 @@ async def test_tts_failure_raises_media_not_found_and_records_skip() -> None:
             raise RuntimeError("tts down")
 
     renderer = UnspeakableRenderer()
-    session = SessionState(session_id="sess", station_id="st")
-    renderer._sessions = {"sess": session}
     _attach_queue(renderer, [_clip_item("sess_001")])
 
-    with pytest.raises(MediaNotFoundError):
+    with caplog.at_level(logging.WARNING), pytest.raises(MediaNotFoundError):
         await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
-    assert session.skipped_sections == 1
-    assert session.last_render_error
+    assert any("failed TTS" in message for message in caplog.messages)
 
 
 class NoWeatherRenderer(DummyRenderer):
@@ -509,20 +488,19 @@ class NoWeatherRenderer(DummyRenderer):
         return {}
 
 
-async def test_weather_required_clip_is_skipped_when_weather_is_unavailable() -> None:
+async def test_weather_required_clip_is_skipped_when_weather_is_unavailable(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """A weather-required clip with no forecast data is skipped instead of airing a guess."""
     renderer = NoWeatherRenderer()
-    session = SessionState(session_id="sess", station_id="st")
-    renderer._sessions = {"sess": session}
     item = _clip_item("sess_001")
     item.extra_attributes[ATTR_WEATHER_REQUIRED] = True
     _attach_queue(renderer, [item])
 
-    with pytest.raises(MediaNotFoundError):
+    with caplog.at_level(logging.WARNING), pytest.raises(MediaNotFoundError):
         await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
-    assert session.skipped_sections == 1
-    assert session.last_render_error
+    assert any("weather data unavailable" in message for message in caplog.messages)
     assert renderer.llm_prompts == []
 
 
@@ -580,7 +558,6 @@ def _failing_probe(message: str, monkeypatch: pytest.MonkeyPatch) -> RealProbeRe
 
     monkeypatch.setattr("music_assistant.providers.ai_radio.rendering.async_parse_tags", _raise)
     renderer = RealProbeRenderer()
-    renderer._sessions = {"sess": SessionState(session_id="sess", station_id="st")}
     _attach_queue(renderer, [_clip_item("sess_001")])
     return renderer
 
@@ -590,7 +567,7 @@ def _failing_probe(message: str, monkeypatch: pytest.MonkeyPatch) -> RealProbeRe
     ["Server returned 5XX Server Error reply", "HTTP error 500 Internal Server Error"],
 )
 async def test_tts_server_error_fails_the_clip_with_an_actionable_message(
-    server_error: str, monkeypatch: pytest.MonkeyPatch
+    server_error: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """An engine that hands out a URL it cannot render fails the clip, not the playback."""
     renderer = _failing_probe(
@@ -598,16 +575,14 @@ async def test_tts_server_error_fails_the_clip_with_an_actionable_message(
         monkeypatch,
     )
 
-    with pytest.raises(MediaNotFoundError):
+    with caplog.at_level(logging.WARNING), pytest.raises(MediaNotFoundError):
         await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
-    session = renderer._sessions["sess"]
-    assert session.skipped_sections == 1
-    assert "Check the logs of the TTS engine" in session.last_render_error
+    assert "Check the logs of the TTS engine" in caplog.text
     # the hint is a guess, so the whole probe message travels with it - the url included,
     # since that is what tells a failing engine apart from a failing tts server behind it
-    assert "http://ha.invalid/api/tts_proxy/1.mp3" in session.last_render_error
-    assert server_error in session.last_render_error
+    assert "http://ha.invalid/api/tts_proxy/1.mp3" in caplog.text
+    assert server_error in caplog.text
 
 
 async def test_unmeasurable_clip_still_plays(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -621,7 +596,6 @@ async def test_unmeasurable_clip_still_plays(monkeypatch: pytest.MonkeyPatch) ->
     streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
 
     assert streamdetails.duration is None
-    assert renderer._sessions["sess"].skipped_sections == 0
 
 
 async def test_generate_script_uses_host_instructions() -> None:
