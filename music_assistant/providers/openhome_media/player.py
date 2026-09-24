@@ -433,7 +433,6 @@ class OpenHomePlayer(Player):
         assert self.profile is not None  # for type checking
         track_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         didl_metadata = create_didl_metadata(media, track_url)
-        player = self.mass.players.get_player(self.player_id)
         active_queue_id = self.active_queue.queue_id
         queue = self.active_queue  # TODO swap permanently if it works
         selected_play_source: str = await self.mass.config.get_player_config_value(
