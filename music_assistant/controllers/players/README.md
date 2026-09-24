@@ -35,6 +35,10 @@ The `Player` class is the actual object provided by a Player Provider. It:
 - Is used internally by providers and the controller
 - May contain provider-specific implementation details
 
+The remembered MA source is cleared after five seconds of continuous idle.
+Returning to playing or paused before that timeout cancels the reset, preserving
+the selected queue through transient device stops during playback transitions.
+
 ### PlayerState (API Model)
 
 The `PlayerState` is a dataclass representing the final state of the player. It:
