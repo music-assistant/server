@@ -249,13 +249,16 @@ class GPodder(MusicProvider):
                         continue
                     match _action:
                         case EpisodeActionNew():
-                            await self.mass.music.mark_item_unplayed(mass_episode)
+                            await self.mass.music.mark_item_unplayed(
+                                mass_episode, provider_instance_id=self.instance_id
+                            )
                         case EpisodeActionPlay():
                             await self.mass.music.mark_item_played(
                                 mass_episode,
                                 fully_played=_action.position >= _action.total,
                                 seconds_played=_action.position,
                                 user_initiated=False,
+                                provider_instance_id=self.instance_id,
                             )
 
             # cache
@@ -331,7 +334,7 @@ class GPodder(MusicProvider):
 
                         # propagate to playlog
                         await self.mass.music.mark_item_unplayed(
-                            mass_episode,
+                            mass_episode, provider_instance_id=self.instance_id
                         )
                     elif isinstance(action, EpisodeActionPlay):
                         fully_played = action.position >= action.total
@@ -345,6 +348,7 @@ class GPodder(MusicProvider):
                             fully_played=fully_played,
                             seconds_played=resume_position_s,
                             user_initiated=False,
+                            provider_instance_id=self.instance_id,
                         )
                     elif isinstance(action, EpisodeActionDelete):
                         for mapping in mass_episode.provider_mappings:
