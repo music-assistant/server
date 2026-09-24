@@ -2268,7 +2268,7 @@
   "provider.sendspin.setup_flow.confirming.progress_text": "Completing pairing with the device...",
   "provider.sendspin.setup_flow.confirming.title": "Finishing pairing",
   "provider.sendspin.setup_flow.enter_pin.title": "Enter the pairing code",
-  "provider.sendspin.setup_flow.enter_token.description": "Paste the device's pairing token to set up a secure connection. You can find it in the device's own settings.",
+  "provider.sendspin.setup_flow.enter_token.description": "Paste the device's pairing token to set up a secure connection.",
   "provider.sendspin.setup_flow.enter_token.title": "Enter the pairing token",
   "provider.sendspin.setup_flow.select_method.title": "Pair this device",
   "provider.sendspin.setup_flow.source_input.description": "This device can send its audio (such as a line-in) to Music Assistant. To use the input, the device must be paired.",

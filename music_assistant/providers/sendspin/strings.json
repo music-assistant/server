@@ -213,7 +213,7 @@
     },
     "enter_token": {
       "title": "Enter the pairing token",
-      "description": "Paste the device's pairing token to set up a secure connection. You can find it in the device's own settings."
+      "description": "Paste the device's pairing token to set up a secure connection."
     },
     "confirming": {
       "title": "Finishing pairing",
