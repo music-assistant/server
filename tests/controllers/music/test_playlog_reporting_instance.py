@@ -8,58 +8,68 @@ library item, the item's first provider mapping must not decide whose progress i
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
-from unittest.mock import patch
 
-from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import Artist, ProviderMapping, Track
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import MediaType, ProviderSharing
+from music_assistant_models.media_items import Artist, AudioFormat, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import DB_TABLE_PLAYLOG
 from music_assistant.mass import MusicAssistant
+from tests.common import set_music_source_access
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
-
     from music_assistant_models.auth import User
 
 INSTANCE_A = "audiobookshelf--a"
 INSTANCE_B = "audiobookshelf--b"
 
 
-async def _add_track(mass: MusicAssistant, name: str) -> Track:
-    artist = await mass.music.artists.add_item_to_library(
-        Artist(
-            item_id="0",
-            provider="library",
-            name=f"{name} Artist",
-            provider_mappings={
-                ProviderMapping(
-                    item_id=f"{name}-artist",
-                    provider_domain="library",
-                    provider_instance="library",
-                    in_library=True,
-                )
-            },
+def _mappings(item_id: str) -> set[ProviderMapping]:
+    return {
+        ProviderMapping(
+            item_id=item_id,
+            provider_domain="audiobookshelf",
+            provider_instance=instance_id,
+            audio_format=AudioFormat(),
         )
+        for instance_id in (INSTANCE_A, INSTANCE_B)
+    }
+
+
+async def _setup(mass: MusicAssistant, name: str) -> tuple[User, User, Track]:
+    """Create two users, each owning one instance, and a track merged from both instances."""
+    user_a = await mass.webserver.auth.create_user(f"{name}a")
+    user_b = await mass.webserver.auth.create_user(f"{name}b")
+    set_music_source_access(
+        mass,
+        {
+            INSTANCE_A: ProviderAccess(owner=user_a.user_id, sharing=ProviderSharing.PRIVATE),
+            INSTANCE_B: ProviderAccess(owner=user_b.user_id, sharing=ProviderSharing.PRIVATE),
+        },
     )
     added = await mass.music.tracks.add_item_to_library(
         Track(
-            item_id="0",
-            provider="library",
+            item_id=f"{name}-track",
+            provider=INSTANCE_A,
             name=name,
             duration=180,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=f"{name}-track",
-                    provider_domain="library",
-                    provider_instance="library",
-                    in_library=True,
-                )
-            },
-            artists=UniqueList([artist]),
+            provider_mappings=_mappings(f"{name}-track"),
+            artists=UniqueList(
+                [
+                    Artist(
+                        item_id=f"{name}-artist",
+                        provider=INSTANCE_A,
+                        name=f"{name} Artist",
+                        provider_mappings=_mappings(f"{name}-artist"),
+                    )
+                ]
+            ),
         )
     )
-    return await mass.music.tracks.get_library_item(added.item_id)
+    track = await mass.music.tracks.get_library_item(added.item_id)
+    assert {m.provider_instance for m in track.provider_mappings} == {INSTANCE_A, INSTANCE_B}
+    return user_a, user_b, track
 
 
 async def _playlog_row(mass: MusicAssistant, track: Track, userid: str) -> dict[str, Any] | None:
@@ -75,49 +85,45 @@ async def _playlog_row(mass: MusicAssistant, track: Track, userid: str) -> dict[
     return dict(row) if row else None
 
 
-def _user_lookup(user_a: User, user_b: User) -> Any:
-    async def _lookup(provider_mappings_or_instance_id: Iterable[ProviderMapping] | str) -> User:
-        if isinstance(provider_mappings_or_instance_id, str):
-            return {INSTANCE_A: user_a, INSTANCE_B: user_b}[provider_mappings_or_instance_id]
-        # guessing from the item's mappings lands on the first account
-        return user_a
-
-    return _lookup
-
-
 async def test_mark_played_uses_the_reporting_instance_user(mass: MusicAssistant) -> None:
-    """Progress reported by B's instance is stored for B, not for the first mapping's user."""
-    user_a = await mass.webserver.auth.create_user("reportera")
-    user_b = await mass.webserver.auth.create_user("reporterb")
-    track = await _add_track(mass, "Reported")
+    """Progress reported by each instance is stored for its owner only."""
+    user_a, user_b, track = await _setup(mass, "reporter")
 
-    with patch.object(mass.music, "_get_user_for_provider", _user_lookup(user_a, user_b)):
-        await mass.music.mark_item_played(
-            track,
-            fully_played=False,
-            seconds_played=120,
-            user_initiated=False,
-            provider_instance_id=INSTANCE_B,
-        )
+    # both directions, so the test fails whichever mapping a lookup would pick first
+    await mass.music.mark_item_played(
+        track,
+        fully_played=False,
+        seconds_played=60,
+        user_initiated=False,
+        provider_instance_id=INSTANCE_A,
+    )
+    await mass.music.mark_item_played(
+        track,
+        fully_played=False,
+        seconds_played=120,
+        user_initiated=False,
+        provider_instance_id=INSTANCE_B,
+    )
 
+    row_a = await _playlog_row(mass, track, user_a.user_id)
     row_b = await _playlog_row(mass, track, user_b.user_id)
+    assert row_a is not None
     assert row_b is not None
+    assert row_a["seconds_played"] == 60
     assert row_b["seconds_played"] == 120
-    assert await _playlog_row(mass, track, user_a.user_id) is None
 
 
 async def test_mark_unplayed_uses_the_reporting_instance_user(mass: MusicAssistant) -> None:
-    """A progress discarded on B's instance leaves A's progress alone."""
-    user_a = await mass.webserver.auth.create_user("discardera")
-    user_b = await mass.webserver.auth.create_user("discarderb")
-    track = await _add_track(mass, "Discarded")
+    """Progress discarded on one instance leaves the other owner's progress alone."""
+    user_a, user_b, track = await _setup(mass, "discarder")
     for user in (user_a, user_b):
         await mass.music.mark_item_played(
             track, fully_played=False, seconds_played=60, userid=user.user_id
         )
 
-    with patch.object(mass.music, "_get_user_for_provider", _user_lookup(user_a, user_b)):
-        await mass.music.mark_item_unplayed(track, provider_instance_id=INSTANCE_B)
-
+    await mass.music.mark_item_unplayed(track, provider_instance_id=INSTANCE_B)
     assert await _playlog_row(mass, track, user_b.user_id) is None
     assert await _playlog_row(mass, track, user_a.user_id) is not None
+
+    await mass.music.mark_item_unplayed(track, provider_instance_id=INSTANCE_A)
+    assert await _playlog_row(mass, track, user_a.user_id) is None
