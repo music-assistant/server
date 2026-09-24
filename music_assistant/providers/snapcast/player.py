@@ -142,13 +142,8 @@ class SnapCastPlayer(Player):
     def supported_features(self) -> set[PlayerFeature]:
         """Return the supported features of the player."""
         if self.active_output_protocol and self.active_output_protocol != "native":
-            # A snapclient's volume is a private software gain on its own decoded
-            # stream - it has no effect on audio actually being rendered by another
-            # protocol (e.g. Sendspin) sharing this device's physical output. Hide
-            # native volume/mute while a foreign protocol is the active output, so
-            # the player controller falls through to the protocol actually driving
-            # the output instead of silently no-opping on the idle snapclient.
-            # See https://github.com/music-assistant/support/issues/6468
+            # native volume only affects the snapclient's own stream, not whatever
+            # protocol is actually driving the output right now (support#6468)
             return self._attr_supported_features - {
                 PlayerFeature.VOLUME_SET,
                 PlayerFeature.VOLUME_MUTE,

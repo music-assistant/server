@@ -1,13 +1,8 @@
 """
-Tests for SnapCastPlayer volume/mute feature exposure vs. the active output protocol.
+Tests for SnapCastPlayer volume/mute exposure vs. the active output protocol.
 
-Regression coverage for music-assistant/support#6468: a snapclient's native volume
-control is a private software gain applied only to its own decoded stream. It has
-no effect on audio actually being rendered by another protocol (e.g. Sendspin)
-sharing the same physical output, so it must not be offered as the volume/mute
-control while a foreign protocol is the active output - otherwise volume/mute
-commands silently land on the idle snapclient instead of the player actually
-producing sound.
+Regression test for support#6468: native Snapcast volume/mute must not be
+offered while a foreign protocol (e.g. Sendspin) is actually driving output.
 """
 
 from __future__ import annotations
@@ -126,14 +121,7 @@ class TestSnapCastVolumeFeatureExposure:
         sendspin_player: MockPlayer,
         controller: PlayerController,
     ) -> None:
-        """
-        volume_control/mute_control must redirect to Sendspin once it is active.
-
-        This is the actual bug in #6468: without the supported_features override,
-        the native snapclient always won volume/mute resolution, even while idle,
-        because it advertises PlayerFeature.VOLUME_SET regardless of what is
-        currently producing sound.
-        """
+        """volume_control/mute_control redirect to Sendspin once it is active."""
         controller._players = {
             snapcast_player.player_id: snapcast_player,
             sendspin_player.player_id: sendspin_player,
