@@ -8,9 +8,9 @@
   "credits": [
     "[Asyncio UPnP Client library by Steven Looman](https://github.com/StevenLooman/async_upnp_client)"
   ],
-  "requirements": ["async-upnp-client==0.48.0"],
+  "requirements": ["async-upnp-client==0.48.2", "defusedxml==0.7.1", "python-didl-lite==1.5.1"],
+  "upnp_discovery": ["urn:linn-co-uk:device:Source:1","urn:av-openhome-org:device:Source:1"],
   "documentation": "https://music-assistant.io/player-support/openhome_media/",
-  "mdns_discovery": ["_openhome._odp._tcp.local."],
   "multi_instance": false,
   "builtin": false
 }
