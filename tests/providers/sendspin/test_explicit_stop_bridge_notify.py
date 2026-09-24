@@ -22,6 +22,7 @@ from music_assistant.providers.sendspin.player import SendspinPlayer
 def _player_mock() -> MagicMock:
     """Create a mock to bind the real methods under test to."""
     mock = MagicMock()
+    mock._clear_current_media_metadata = AsyncMock()
     mock.playback_session.cancel = AsyncMock()
     mock.api.group.stop = AsyncMock()
     mock.api.group.remove_client = AsyncMock()
