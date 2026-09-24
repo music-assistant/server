@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from aioaudiobookshelf.schema.media_progress import MediaProgress
+from aioaudiobookshelf.schema.user import User
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import Audiobook
 
@@ -129,3 +130,27 @@ async def test_relistened_item_counted_again(
         clock.now += 3600
 
     assert _fully_played_calls(playlog_provider) == [True, False, True]
+
+
+async def test_progress_of_web_ui_applied(playlog_provider: Audiobookshelf) -> None:
+    """A progress changed by another abs client, only sent as user update, is applied."""
+    playlog_provider.abs_user_id = "user1"
+    user = Mock(spec=User)
+    user.id_ = "user1"
+    user.media_progress = [_progress(last_update=1000, is_finished=True)]
+
+    await playlog_provider._socket_abs_user_updated(user)
+
+    assert _fully_played_calls(playlog_provider) == [True]
+
+
+async def test_progress_of_other_user_ignored(playlog_provider: Audiobookshelf) -> None:
+    """An admin receiving another user's update does not apply its progresses."""
+    playlog_provider.abs_user_id = "user1"
+    user = Mock(spec=User)
+    user.id_ = "user2"
+    user.media_progress = [_progress(last_update=1000, is_finished=True)]
+
+    await playlog_provider._socket_abs_user_updated(user)
+
+    cast("AsyncMock", playlog_provider.mass.music.mark_item_played).assert_not_called()

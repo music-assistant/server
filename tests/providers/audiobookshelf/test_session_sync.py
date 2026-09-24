@@ -96,3 +96,31 @@ async def test_failed_sync_count_reset_on_success(
     await _play(provider)
     assert session.failed_sync_count == 0
     assert "pod1 ep1" in provider.sessions
+
+
+async def test_fully_played_with_session_marks_finished(
+    provider: Audiobookshelf,
+) -> None:
+    """Finishing an item with an open session marks it finished in abs."""
+    _install_session(provider)
+    sync_open_session = AsyncMock()
+    provider._client.sync_open_session = sync_open_session  # type: ignore[method-assign]
+    update_my_media_progress = AsyncMock()
+    provider._client.update_my_media_progress = update_my_media_progress  # type: ignore[method-assign]
+
+    await provider.on_played(
+        media_type=MediaType.PODCAST_EPISODE,
+        prov_item_id="pod1 ep1",
+        fully_played=True,
+        position=600,
+        media_item=_make_episode(),
+    )
+
+    sync_open_session.assert_awaited_once()
+    update_my_media_progress.assert_awaited_once_with(
+        item_id="pod1",
+        episode_id="ep1",
+        duration_seconds=600,
+        progress_seconds=600,
+        is_finished=True,
+    )
