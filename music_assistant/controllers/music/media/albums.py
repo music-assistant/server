@@ -59,7 +59,7 @@ from music_assistant.helpers.external_ids import (
 )
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.helpers.uri import share_url_provider
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS, MusicProvider
 from music_assistant.providers.musicbrainz.provider import (
     is_digital_release,
     relation_urls,
@@ -433,10 +433,7 @@ class AlbumsController(MediaControllerBase[Album]):
         # return all (unique) items from all providers
         # because we are returning the items from all providers combined,
         # we need to make sure that we don't return duplicates
-        unique_ids: set[str] = {f"{x.disc_number}.{x.track_number}" for x in db_items}
-        unique_ids.update({f"{x.name.lower()}.{x.version.lower()}" for x in db_items})
-        for db_item in db_items:
-            unique_ids.update(x.item_id for x in db_item.provider_mappings)
+        unique_ids = self._album_track_unique_ids(db_items)
         # where each provider track landed in the result, so a playable copy from another
         # provider can take the place of an unplayable one
         provider_slots: dict[str, int] = {}
@@ -451,16 +448,16 @@ class AlbumsController(MediaControllerBase[Album]):
                 provider_tracks = await self._get_provider_album_tracks(
                     provider_mapping.item_id, provider_mapping.provider_instance
                 )
-            except _ALBUM_TRACK_LOOKUP_ERRORS as err:
-                # one provider that no longer lists the album must not hide the other
-                # providers' tracks
-                self.logger.debug(
-                    "Album tracks unavailable for %s on %s: %s",
-                    provider_mapping.item_id,
+            except PROVIDER_FETCH_ERRORS as err:
+                # one failing provider must not take the whole album down: the tracks
+                # from the library and the other providers are still playable
+                lookup_error = err
+                self.logger.warning(
+                    "Unable to fetch tracks for album %s from provider %s: %s",
+                    library_album.name,
                     provider_mapping.provider_instance,
                     err,
                 )
-                lookup_error = err
                 continue
             for provider_track in provider_tracks:
                 # In some cases (looking at you YTM) the disc/track number is not obtained from
@@ -507,8 +504,8 @@ class AlbumsController(MediaControllerBase[Album]):
                     result.append(provider_track)
                 else:
                     result[slot] = provider_track
-        if not result and lookup_error is not None:
-            # nothing else lists the album, so the failure is the caller's answer
+        if lookup_error is not None and not any(track.available for track in result):
+            # nothing could be played at all, so surface the reason instead of an empty list
             raise lookup_error
         # NOTE: we need to return the results sorted on disc/track here
         # to ensure the correct order at playback
@@ -941,6 +938,15 @@ class AlbumsController(MediaControllerBase[Album]):
                 await self.mass.music.tracks.add_unclaimed_provider_mappings(
                     db_track.item_id, provider_track.provider_mappings
                 )
+
+    @staticmethod
+    def _album_track_unique_ids(db_items: Iterable[Track]) -> set[str]:
+        """Return the identifiers by which provider album tracks are matched to library tracks."""
+        unique_ids: set[str] = {f"{x.disc_number}.{x.track_number}" for x in db_items}
+        unique_ids.update({f"{x.name.lower()}.{x.version.lower()}" for x in db_items})
+        for db_item in db_items:
+            unique_ids.update(x.item_id for x in db_item.provider_mappings)
+        return unique_ids
 
     def _library_match_names(self, item: Album | ItemMapping) -> list[str]:
         """Return the normalized album names, with and without a spelled-out retail suffix."""
