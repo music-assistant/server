@@ -391,9 +391,10 @@ for more details.
             return_exceptions=True,
         )
         self.sessions.clear()
+        # first, so a failing logout can't leave the socket reconnecting forever
+        await self._client_socket.logout()
         try:
             await self._client.logout()
-            await self._client_socket.logout()
         except AbsError as err:
             self.logger.debug("Ignoring error during logout: %s", err)
         for callback in self._on_unload_callbacks:
