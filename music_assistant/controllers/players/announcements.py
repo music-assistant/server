@@ -302,9 +302,7 @@ class AnnouncementsMixin:
             # use fallback/default implementation
             await self._play_announcement(player, announcement, volume_level)
         finally:
-            # Clear only after _play_announcement's restore finishes: resume()
-            # prefers parked resume_pos while this flag is set, so restore must
-            # run before the flag drops.
+            # Keep set until restore finishes so resume() still uses parked resume_pos.
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
             await self.mass.streams.announcement_renderer.unregister(player_id, render)
 
@@ -769,14 +767,8 @@ class AnnouncementsMixin:
                 player.state.name,
                 prev_media_name,
             )
-            # Stop through the queue when one is active so resume_pos is parked.
-            # A device-only stop leaves the queue PLAYING (updates are suppressed
-            # during ATTR_ANNOUNCEMENT_IN_PROGRESS), and resume would then use
-            # wall-clock corrected_elapsed_time past the real position.
-            # Use _handle_stop (not public stop) to skip the user permission check —
-            # this is an internal announcement path, not a user command.
-            # That also cancels preload/enqueue-next and tears down the stream
-            # session and audio buffers (see test_stop_teardown).
+            # Prefer queue stop so resume_pos is parked; _handle_stop skips the
+            # user permission check on this internal path.
             if active_queue := self.get_active_queue(player):
                 await self.mass.player_queues._handle_stop(active_queue.queue_id)
             else:

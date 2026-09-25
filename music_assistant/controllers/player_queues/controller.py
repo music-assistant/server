@@ -899,11 +899,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_items = self._queue_data[queue_id].items
         resume_item = queue.current_item
         queue_player = self.mass.players.get_player(queue_id)
-        # Announcement suppresses player→queue updates, so the queue can still
-        # look PLAYING after the device was stopped — use the parked resume_pos.
-        # Skipping the PLAYING branch also leaves fade_in unset, so a player
-        # idle for more than a minute after an announcement may fade back in
-        # (same as a normal resume from idle).
+        # During announce the queue may still look PLAYING; use parked resume_pos.
         announcement_in_progress = bool(
             queue_player and queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
         )

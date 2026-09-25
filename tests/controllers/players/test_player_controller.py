@@ -5997,14 +5997,7 @@ class TestPlayAnnouncementRestore:
     async def test_active_queue_is_stopped_to_park_resume_position(
         self, mock_mass: MagicMock
     ) -> None:
-        """
-        An active MA queue is stopped through the queue controller, not the device alone.
-
-        Device-only stop leaves the queue PLAYING while announcement updates are suppressed,
-        so resume would use wall-clock corrected_elapsed_time instead of the parked position.
-        Routing through _handle_stop also cancels preload/enqueue-next and tears down the
-        stream session and audio buffers (covered by test_stop_teardown).
-        """
+        """Active MA queue is stopped via the queue controller, not the device alone."""
         controller, player, _resume_mock = self._make_player(
             mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
         )

@@ -1,10 +1,4 @@
-"""
-Tests for queue resume while a fallback announcement is in progress.
-
-When ATTR_ANNOUNCEMENT_IN_PROGRESS is set, player→queue updates are suppressed so the
-queue can still look PLAYING after the device was stopped for the announcement. Resume
-must use the parked resume_pos instead of wall-clock corrected_elapsed_time.
-"""
+"""Tests for queue resume while a fallback announcement is in progress."""
 
 from __future__ import annotations
 
@@ -47,8 +41,7 @@ def _controller(
     queue.state = queue_state
     queue.resume_pos = resume_pos
     queue.elapsed_time = elapsed_time
-    # Anchor far enough in the past that corrected_elapsed_time would inflate past the
-    # parked position if resume incorrectly used the PLAYING wall-clock path.
+    # Far enough back that wall-clock corrected_elapsed_time would overshoot.
     queue.elapsed_time_last_updated = time.time() - 30
     queue_data = PlayerQueueData(queue=queue)
     queue_data.items = [item]
@@ -68,14 +61,13 @@ def _controller(
 
 
 async def test_resume_during_announcement_uses_parked_resume_pos() -> None:
-    """A stale PLAYING queue during announce restores the parked position, not wall clock."""
+    """Resume during announce uses parked resume_pos, not wall clock."""
     ctrl, queue = _controller(
         queue_state=PlaybackState.PLAYING,
         resume_pos=90,
         elapsed_time=90,
         announcement_in_progress=True,
     )
-    # Without the announce guard, corrected_elapsed_time would be ~120 here.
     assert queue.corrected_elapsed_time > 110
 
     await ctrl.resume(QUEUE_ID)
@@ -84,7 +76,7 @@ async def test_resume_during_announcement_uses_parked_resume_pos() -> None:
 
 
 async def test_resume_while_playing_without_announcement_uses_live_clock() -> None:
-    """Normal resume-while-playing still follows the live corrected clock."""
+    """Resume while playing without announce still uses the live clock."""
     ctrl, queue = _controller(
         queue_state=PlaybackState.PLAYING,
         resume_pos=90,
