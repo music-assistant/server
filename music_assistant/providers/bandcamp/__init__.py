@@ -5,6 +5,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import asynccontextmanager, suppress
 from typing import TYPE_CHECKING, Any, cast
 
+from aiohttp import ClientError
 from bandcamp_async_api import (
     BandcampAPIClient,
     BandcampAPIError,
@@ -183,8 +184,9 @@ class BandcampProvider(MusicProvider):
                 await self._client.get_collection_summary()
             except BandcampMustBeLoggedInError as error:
                 raise LoginFailed("Bandcamp login is invalid or expired.") from error
-            except BandcampAPIError as error:
-                self.logger.warning("Could not validate Bandcamp login: %s", error)
+            except (BandcampAPIError, ClientError, TimeoutError) as error:
+                # str(TimeoutError()) is empty, so log the error type too.
+                self.logger.warning("Could not validate Bandcamp login: %r", error)
 
     @property
     def is_streaming_provider(self) -> bool:

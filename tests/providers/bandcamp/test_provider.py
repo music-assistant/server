@@ -1,11 +1,13 @@
 """Test Bandcamp Provider integration."""
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator
 from typing import cast
 from unittest.mock import AsyncMock, Mock, call, patch
 
 import pytest
+from aiohttp import ClientConnectionError
 from bandcamp_async_api import (
     BandcampAPIClient,
     BandcampAPIError,
@@ -206,6 +208,24 @@ async def test_handle_async_init_without_identity(mass_mock: Mock, manifest_mock
             identity_token=None,
             default_retry_after=3,
         )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [BandcampAPIError("boom"), ClientConnectionError("down"), TimeoutError()],
+)
+async def test_handle_async_init_survives_a_transient_error(
+    provider: BandcampProvider, error: Exception, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failed login check caused by the network only logs a warning, with the error type."""
+    with (
+        patch("music_assistant.providers.bandcamp.BandcampAPIClient") as mock_client_class,
+        caplog.at_level(logging.WARNING),
+    ):
+        mock_client_class.return_value.get_collection_summary = AsyncMock(side_effect=error)
+        await provider.handle_async_init()
+
+    assert f"Could not validate Bandcamp login: {error!r}" in caplog.text
 
 
 async def test_is_streaming_provider(provider: BandcampProvider) -> None:
