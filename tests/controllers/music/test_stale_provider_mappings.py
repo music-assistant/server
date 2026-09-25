@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -13,6 +14,8 @@ from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+
+    import pytest
 
 INSTANCE_ID = "test--1"
 # provider album id -> library db id the sync hands out for it
@@ -28,6 +31,8 @@ MAPPING_ROWS = [
 class LocalLibraryProvider(MusicProvider):
     """Provider whose catalog is its library, like a media server or local files."""
 
+    #: provider album id -> library db id, for each album the provider lists
+    listed_albums: dict[Any, int] = LISTED_ALBUMS
     #: provider album id to drop while listing the library, reported as skipped
     skip_item_id: str | None = None
     #: report the skipped album without an id, which makes the run incomplete
@@ -42,7 +47,7 @@ class LocalLibraryProvider(MusicProvider):
         """Yield the listed albums, dropping the one to skip."""
         if self.skip_unidentified:
             self.report_skipped_sync_item(MediaType.ALBUM, None, InvalidDataError("no id"))
-        for item_id in (*LISTED_ALBUMS, self.skip_item_id):
+        for item_id in (*self.listed_albums, self.skip_item_id):
             if item_id is None:
                 continue
             if item_id == self.skip_item_id:
@@ -68,10 +73,18 @@ class StreamingProvider(LocalLibraryProvider):
         return True
 
 
-def _build_mass() -> MagicMock:
-    """Return a mocked mass holding MAPPING_ROWS and the listed albums in its library."""
+def _build_mass(
+    listed_albums: dict[Any, int] = LISTED_ALBUMS,
+    mapping_rows: list[dict[str, Any]] = MAPPING_ROWS,
+) -> MagicMock:
+    """
+    Return a mocked mass holding the given mappings and listed albums in its library.
+
+    :param listed_albums: Provider album id -> library db id of each listed album.
+    :param mapping_rows: The provider's mapping rows in the library.
+    """
     mass = MagicMock()
-    mass.cache.get = AsyncMock(return_value=list(LISTED_ALBUMS.values()))
+    mass.cache.get = AsyncMock(return_value=list(listed_albums.values()))
     mass.cache.set = AsyncMock()
     mass.music.library_supported = MagicMock(return_value=True)
     mass.music.genres.sync_media_item_genres = AsyncMock()
@@ -80,13 +93,13 @@ def _build_mass() -> MagicMock:
     albums.get_library_item_sync_details = AsyncMock(return_value=None)
 
     async def add_item_to_library(prov_item: Any) -> Any:
-        return MagicMock(item_id=LISTED_ALBUMS[prov_item.item_id], favorite=False)
+        return MagicMock(item_id=listed_albums[prov_item.item_id], favorite=False)
 
     albums.add_item_to_library = AsyncMock(side_effect=add_item_to_library)
 
     async def iter_items(_table: str, match: dict[str, Any]) -> AsyncGenerator[dict[str, Any]]:
         assert match == {"media_type": "album", "provider_instance": INSTANCE_ID}
-        for row in MAPPING_ROWS:
+        for row in mapping_rows:
             yield row
 
     mass.music.database.iter_items = iter_items
@@ -168,3 +181,42 @@ async def test_skipped_item_keeps_its_mapping() -> None:
     await provider.sync_library(MediaType.ALBUM)
 
     assert _removed_mappings(mass) == []
+
+
+async def test_numeric_item_ids_match_the_mappings_stored_as_text() -> None:
+    """A provider that lists its id's as numbers only loses the mapping it no longer has."""
+    # the library stores the id's as text
+    listed_albums = {101: 1, 102: 2}
+    mapping_rows = [
+        {"item_id": 1, "provider_item_id": "101"},
+        {"item_id": 1, "provider_item_id": "99"},
+        {"item_id": 2, "provider_item_id": "102"},
+    ]
+    mass = _build_mass(listed_albums, mapping_rows)
+    provider = _build_provider(mass)
+    provider.listed_albums = listed_albums
+
+    await provider.sync_library(MediaType.ALBUM)
+
+    assert _removed_mappings(mass) == [(1, INSTANCE_ID, "99")]
+
+
+async def test_nothing_is_removed_when_the_listed_ids_do_not_match_the_library(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    Every synced item keeps a mapping to an item the provider listed.
+
+    When the pass would take all of them from an item, the id's do not compare, and going
+    ahead would empty the library.
+    """
+    listed_albums = {"other_1": 1, "other_2": 2}
+    mass = _build_mass(listed_albums, MAPPING_ROWS)
+    provider = _build_provider(mass)
+    provider.listed_albums = listed_albums
+
+    with caplog.at_level(logging.WARNING):
+        await provider.sync_library(MediaType.ALBUM)
+
+    assert _removed_mappings(mass) == []
+    assert "Not removing stale album mappings" in caplog.text

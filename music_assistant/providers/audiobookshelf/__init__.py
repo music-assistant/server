@@ -86,7 +86,11 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+)
 from music_assistant_models.media_items import (
     Artist,
     Audiobook,
@@ -95,6 +99,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemType,
     Playlist,
+    Podcast,
     PodcastEpisode,
     UniqueList,
 )
@@ -140,7 +145,6 @@ if TYPE_CHECKING:
     from aioaudiobookshelf.schema.events_socket import LibraryItemRemoved
     from aioaudiobookshelf.schema.media_progress import MediaProgress
     from aioaudiobookshelf.schema.user import User
-    from music_assistant_models.media_items import Podcast
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -163,6 +167,7 @@ async def setup(
     return Audiobookshelf(mass, manifest, config, SUPPORTED_FEATURES)
 
 
+M = TypeVar("M", bound=MediaItemType)
 R = TypeVar("R")
 P = ParamSpec("P")
 
@@ -1707,27 +1712,37 @@ for more details.
                 # If the book has no audiofiles, we skip -> ebook only.
                 if len(abs_item.media.tracks) == 0:
                     continue
-                self.logger.debug(
-                    'Updated book "%s" via socket.', abs_item.media.metadata.title or ""
+                mass_audiobook = parse_audiobook(
+                    abs_audiobook=abs_item,
+                    audiobook_narrators=await self._get_audiobook_narrators(abs_item),
+                    instance_id=self.instance_id,
+                    domain=self.domain,
+                    token=self._client.token,
+                    base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 )
-                await self.mass.music.audiobooks.add_item_to_library(
-                    parse_audiobook(
-                        abs_audiobook=abs_item,
-                        audiobook_narrators=await self._get_audiobook_narrators(abs_item),
-                        instance_id=self.instance_id,
-                        domain=self.domain,
-                        token=self._client.token,
-                        base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
-                    ),
-                    overwrite_existing=True,
-                )
+                mass_audiobook = self._socket_ensure_provider_mapping_in_library(mass_audiobook)
+                if (
+                    mass_existing_audiobook := await self.mass.music.get_library_item_by_prov_id(
+                        media_type=MediaType.AUDIOBOOK,
+                        item_id=abs_item.id_,
+                        provider_instance_id_or_domain=self.instance_id,
+                    )
+                ) and isinstance(mass_existing_audiobook, Audiobook):
+                    self.logger.debug(
+                        'Updated book "%s" via socket.', abs_item.media.metadata.title or ""
+                    )
+                    await self.mass.music.audiobooks.update_item_in_library(
+                        mass_existing_audiobook.item_id, mass_audiobook
+                    )
+                else:
+                    self.logger.debug(
+                        'Added book "%s" via socket.', abs_item.media.metadata.title or ""
+                    )
+                    await self.mass.music.audiobooks.add_item_to_library(mass_audiobook)
                 lib = self.libraries.audiobooks.get(abs_item.library_id, None)
                 if lib is not None:
                     lib.item_ids.add(abs_item.id_)
             elif isinstance(abs_item, LibraryItemExpandedPodcast):
-                self.logger.debug(
-                    'Updated podcast "%s" via socket.', abs_item.media.metadata.title or ""
-                )
                 mass_podcast = parse_podcast(
                     abs_podcast=abs_item,
                     instance_id=self.instance_id,
@@ -1735,17 +1750,33 @@ for more details.
                     token=self._client.token,
                     base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 )
-                if not (
+                if (
                     bool(self.config.get_value(CONF_HIDE_EMPTY_PODCASTS))
                     and mass_podcast.total_episodes == 0
                 ):
-                    await self.mass.music.podcasts.add_item_to_library(
-                        mass_podcast,
-                        overwrite_existing=True,
+                    continue
+                mass_podcast = self._socket_ensure_provider_mapping_in_library(mass_podcast)
+                if (
+                    mass_existing_podcast := await self.mass.music.get_library_item_by_prov_id(
+                        media_type=MediaType.PODCAST,
+                        item_id=abs_item.id_,
+                        provider_instance_id_or_domain=self.instance_id,
                     )
-                    lib = self.libraries.podcasts.get(abs_item.library_id, None)
-                    if lib is not None:
-                        lib.item_ids.add(abs_item.id_)
+                ) and isinstance(mass_existing_podcast, Podcast):
+                    self.logger.debug(
+                        'Updated podcast "%s" via socket.', abs_item.media.metadata.title or ""
+                    )
+                    await self.mass.music.podcasts.update_item_in_library(
+                        mass_existing_podcast.item_id, mass_podcast
+                    )
+                else:
+                    self.logger.debug(
+                        'Added podcast "%s" via socket.', abs_item.media.metadata.title or ""
+                    )
+                    await self.mass.music.podcasts.add_item_to_library(mass_podcast)
+                lib = self.libraries.podcasts.get(abs_item.library_id, None)
+                if lib is not None:
+                    lib.item_ids.add(abs_item.id_)
         await self._cache_set_helper_libraries()
 
     async def _socket_abs_item_removed(self, item: LibraryItemRemoved) -> None:
@@ -1822,6 +1853,7 @@ for more details.
                 owner=self.abs_username,
                 media_type=media_type,
             )
+            parsed_playlist = self._socket_ensure_provider_mapping_in_library(parsed_playlist)
             ma_library_playlist = await self.mass.music.get_library_item_by_prov_id(
                 media_type=MediaType.PLAYLIST,
                 item_id=abs_playlist.id_,
@@ -1829,7 +1861,7 @@ for more details.
             )
             if ma_library_playlist is not None and isinstance(ma_library_playlist, Playlist):
                 await self.mass.music.playlists.update_item_in_library(
-                    item_id=ma_library_playlist.item_id, update=parsed_playlist, overwrite=True
+                    item_id=ma_library_playlist.item_id, update=parsed_playlist
                 )
             else:
                 await self.mass.music.playlists.add_item_to_library(item=parsed_playlist)
@@ -1856,6 +1888,20 @@ for more details.
                     with suppress(KeyError):
                         playlist_set.remove(abs_playlist.id_)
         await self._cache_set_helper_libraries()
+
+    def _socket_ensure_provider_mapping_in_library(self, updated_item: M) -> M:
+        """
+        Ensure that in_library is set to True on the updated/ added item during a socket update.
+
+        This guarantees, that the UI doesn't "loose" the item in its view.
+        """
+        # the updated item only has a single provider mapping given by this provider's parse function
+        if len(updated_item.provider_mappings) != 1:
+            raise InvalidDataError("Expected exactly one provider mapping.")
+        updated_provider_mapping = updated_item.provider_mappings.pop()
+        updated_provider_mapping.in_library = True
+        updated_item.provider_mappings = {updated_provider_mapping}
+        return updated_item
 
     async def _socket_abs_refresh_token_expired(self) -> None:
         await self.reauthenticate()

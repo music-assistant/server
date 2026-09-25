@@ -12,6 +12,7 @@ from bandcamp_async_api import (
     BandcampMustBeLoggedInError,
     BandcampNotFoundError,
     BandcampRateLimitError,
+    BandcampUnexpectedResponseError,
     SearchResultAlbum,
     SearchResultArtist,
     SearchResultTrack,
@@ -690,11 +691,32 @@ async def test_search_without_identity(provider: BandcampProvider) -> None:
     assert len(results.artists) == 0
 
 
+@pytest.mark.parametrize("browse", [False, True])
+async def test_unexpected_response_error(provider: BandcampProvider, browse: bool) -> None:
+    """Preserve the library's response error and guidance in Music Assistant errors."""
+    error = BandcampUnexpectedResponseError(
+        "The Bandcamp API returned a response that is not usable JSON (HTTP 200). Try again later."
+    )
+    if browse:
+        with pytest.raises(InvalidDataError) as exc:
+            async with provider._map_api_errors("Bandcamp browse failed"):
+                raise error
+    else:
+        with (
+            patch.object(provider._client, "search", side_effect=error),
+            pytest.raises(InvalidDataError) as exc,
+        ):
+            await provider.search("private query", [MediaType.TRACK])
+    context = "Bandcamp browse failed" if browse else "Bandcamp search failed"
+    assert str(exc.value) == f"{context}: {error}"
+    assert exc.value.__cause__ is error
+
+
 async def test_search_api_error(provider: BandcampProvider) -> None:
     """Test search handles API errors gracefully."""
     with (
         patch.object(provider._client, "search", side_effect=BandcampAPIError("API Error")),
-        pytest.raises(InvalidDataError, match="Unexpected error during Bandcamp search"),
+        pytest.raises(InvalidDataError, match="Bandcamp search failed: API Error"),
     ):
         await provider.search("test query", [MediaType.TRACK])
 
@@ -2285,7 +2307,7 @@ async def test_map_api_errors_rate_limit(provider: BandcampProvider) -> None:
 
 async def test_map_api_errors_generic_api_error(provider: BandcampProvider) -> None:
     """Test _map_api_errors maps BandcampAPIError to MediaNotFoundError with context."""
-    with pytest.raises(MediaNotFoundError, match="my custom context"):
+    with pytest.raises(MediaNotFoundError, match="my custom context: Something went wrong"):
         async with provider._map_api_errors("my custom context"):
             raise BandcampAPIError("Something went wrong")
 
