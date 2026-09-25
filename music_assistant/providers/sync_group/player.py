@@ -30,6 +30,7 @@ from .constants import (
     PLAYBACK_START_TIMEOUT,
     PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH,
     REFORM_DEBOUNCE_SECONDS,
+    VOLUME_FEATURES_FROM_MEMBERS,
 )
 
 if TYPE_CHECKING:
@@ -146,19 +147,23 @@ class SyncGroupPlayer(Player):
         if self.is_dynamic:
             base_features.add(PlayerFeature.SET_MEMBERS)
         if self.sync_leader:
-            # add features supported by the sync leader
+            # playback capabilities (enqueue, gapless, DSP) stay bound to the sync
+            # leader: those commands are only ever forwarded there
             for feature in EXTRA_FEATURES_FROM_MEMBERS:
                 if feature in self.sync_leader.state.supported_features:
                     base_features.add(feature)
+            member_features = VOLUME_FEATURES_FROM_MEMBERS
         else:
-            # derive features from all (configured) group members
-            # so that features like volume control are always advertised
-            for member_id in self._attr_group_members:
-                member_player = self.mass.players.get_player(member_id)
-                if member_player and member_player.state.available:
-                    for feature in EXTRA_FEATURES_FROM_MEMBERS:
-                        if feature in member_player.state.supported_features:
-                            base_features.add(feature)
+            member_features = EXTRA_FEATURES_FROM_MEMBERS
+        # Volume and mute are fanned out to every capable member of the live session,
+        # so an active sync leader that lacks a control must not hide it from the
+        # group. A dormant group derives all of its features from the configured members.
+        for member_id in self.group_members:
+            member_player = self.mass.players.get_player(member_id)
+            if member_player and member_player.state.available:
+                for feature in member_features:
+                    if feature in member_player.state.supported_features:
+                        base_features.add(feature)
         return base_features
 
     @property

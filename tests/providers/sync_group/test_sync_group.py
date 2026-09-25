@@ -9,10 +9,17 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import OutputProtocol
 
-from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_PLAYERS, PROTOCOL_PRIORITY
+from music_assistant.constants import (
+    CONF_GROUP_MEMBERS,
+    CONF_MUTE_CONTROL,
+    CONF_PLAYERS,
+    CONF_VOLUME_CONTROL,
+    PROTOCOL_PRIORITY,
+)
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.models.player import LinkedOutputProtocol
 from music_assistant.providers.sync_group.player import SyncGroupPlayer
@@ -2058,6 +2065,128 @@ class TestWaitMemberUnsynced:
 
         assert ok is False
         mass.players._handle_set_members.assert_not_awaited()
+
+
+def _raw_controls_none(_player_id: str, key: str, default: object = None) -> object:
+    """Return the stored controls of a group whose leader had no volume when it was set up."""
+    if key in (CONF_VOLUME_CONTROL, CONF_MUTE_CONTROL):
+        return PLAYER_CONTROL_NONE
+    return default
+
+
+class TestSupportedFeaturesFromActiveMembers:
+    """Active groups inherit volume controls from all available current members."""
+
+    def test_volume_member_is_not_hidden_by_a_volume_less_sync_leader(self) -> None:
+        """A display-only sync leader must not hide a WiiM-like member's volume."""
+        mass = _make_mock_mass()
+        # the stored controls resolve to "none", which the final feature set must not
+        # apply to a group (an unconfigured mock would resolve to a mock player control)
+        mass.config.get_raw_player_config_value = MagicMock(side_effect=_raw_controls_none)
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("display", provider_domain="sendspin")
+        member = _make_mock_player("speaker")
+        member_features = {
+            PlayerFeature.PLAY_MEDIA,
+            PlayerFeature.VOLUME_SET,
+            PlayerFeature.VOLUME_MUTE,
+        }
+        member.supported_features = member_features
+        member.state.supported_features = member_features
+        mass.players.get_player = _player_lookup({"display": leader, "speaker": member})
+
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["display", "speaker"]
+
+        assert PlayerFeature.VOLUME_SET in sgp.supported_features
+        assert PlayerFeature.VOLUME_MUTE in sgp.supported_features
+        # PlayerState uses the final feature set, which must preserve the
+        # member-derived controls even though the group has no native control.
+        sgp.update_state(signal_event=False)
+        assert PlayerFeature.VOLUME_SET in sgp.state.supported_features
+        assert PlayerFeature.VOLUME_MUTE in sgp.state.supported_features
+
+    def test_playback_features_stay_bound_to_the_sync_leader(self) -> None:
+        """Enqueue, gapless and DSP come from the leader only; a member cannot add them."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader")
+        member = _make_mock_player("member")
+        member_features = {
+            PlayerFeature.PLAY_MEDIA,
+            PlayerFeature.ENQUEUE,
+            PlayerFeature.GAPLESS_PLAYBACK,
+            PlayerFeature.MULTI_DEVICE_DSP,
+        }
+        member.supported_features = member_features
+        member.state.supported_features = member_features
+        mass.players.get_player = _player_lookup({"leader": leader, "member": member})
+
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "member"]
+
+        features = sgp.supported_features
+        assert PlayerFeature.ENQUEUE not in features
+        assert PlayerFeature.GAPLESS_PLAYBACK not in features
+        assert PlayerFeature.MULTI_DEVICE_DSP not in features
+
+        leader.state.supported_features = {
+            PlayerFeature.PLAY_MEDIA,
+            PlayerFeature.ENQUEUE,
+            PlayerFeature.GAPLESS_PLAYBACK,
+            PlayerFeature.MULTI_DEVICE_DSP,
+        }
+        features = sgp.supported_features
+        assert PlayerFeature.ENQUEUE in features
+        assert PlayerFeature.GAPLESS_PLAYBACK in features
+        assert PlayerFeature.MULTI_DEVICE_DSP in features
+
+    def test_volume_comes_from_the_live_session_members_only(self) -> None:
+        """A configured member that did not join the session cannot add volume control."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("display", provider_domain="sendspin")
+        joined = _make_mock_player("joined", provider_domain="sendspin")
+        absent = _make_mock_player("absent")
+        absent_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.VOLUME_SET}
+        absent.supported_features = absent_features
+        absent.state.supported_features = absent_features
+        mass.players.get_player = _player_lookup(
+            {"display": leader, "joined": joined, "absent": absent}
+        )
+
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["display", "joined", "absent"]
+        # group volume is fanned out to the leader's live session, which "absent" never joined
+        leader.state.group_members = ["display", "joined"]
+
+        assert PlayerFeature.VOLUME_SET not in sgp.supported_features
+
+        leader.state.group_members = ["display", "joined", "absent"]
+        assert PlayerFeature.VOLUME_SET in sgp.supported_features
+
+    def test_dormant_group_derives_all_features_from_members(self) -> None:
+        """Without a sync leader every member feature is advertised, as before."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        member = _make_mock_player("member")
+        member_features = {
+            PlayerFeature.PLAY_MEDIA,
+            PlayerFeature.ENQUEUE,
+            PlayerFeature.VOLUME_SET,
+            PlayerFeature.VOLUME_MUTE,
+        }
+        member.supported_features = member_features
+        member.state.supported_features = member_features
+        mass.players.get_player = _player_lookup({"member": member})
+
+        sgp.sync_leader = None
+        sgp._attr_group_members = ["member"]
+
+        features = sgp.supported_features
+        assert PlayerFeature.ENQUEUE in features
+        assert PlayerFeature.VOLUME_SET in features
+        assert PlayerFeature.VOLUME_MUTE in features
 
 
 class TestSupportedFeaturesPower:

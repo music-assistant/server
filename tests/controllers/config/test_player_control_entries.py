@@ -32,10 +32,12 @@ _CONTROL_FEATURES = [
 _ALL_FEATURES = {feature for _conf_key, feature in _CONTROL_FEATURES}
 
 
-def _make_player(features: set[PlayerFeature]) -> MagicMock:
-    """Return a mock non-group player that supports exactly the given features."""
+def _make_player(
+    features: set[PlayerFeature], player_type: PlayerType = PlayerType.PLAYER
+) -> MagicMock:
+    """Return a mock player of the given type that supports exactly the given features."""
     player = MagicMock()
-    player.state.type = PlayerType.PLAYER
+    player.state.type = player_type
     player.linked_output_protocols = []
     player.supports_feature.side_effect = lambda feature: feature in features
     return player
@@ -45,9 +47,10 @@ def _entries_by_key(
     mass: MusicAssistant,
     features: set[PlayerFeature],
     protocol_player: MagicMock | None = None,
+    player_type: PlayerType = PlayerType.PLAYER,
 ) -> dict[str, ConfigEntry]:
     """Build the player-control config entries for a player with the given features."""
-    player = _make_player(features)
+    player = _make_player(features, player_type)
     if protocol_player is not None:
         player.linked_output_protocols = [
             MagicMock(output_protocol_id="protocol_player_1", protocol_domain="squeezelite")
@@ -121,3 +124,9 @@ async def test_fake_mute_not_offered_without_any_volume_path(
     """Fake mute stays hidden when neither the player nor a protocol player provides volume."""
     entry = _entries_by_key(mass_minimal, {PlayerFeature.VOLUME_MUTE})[CONF_MUTE_CONTROL]
     assert all(option.value != PLAYER_CONTROL_FAKE for option in entry.options)
+
+
+async def test_group_player_only_gets_a_power_control(mass_minimal: MusicAssistant) -> None:
+    """A group's volume and mute go to its members, so it is only offered the power control."""
+    entries = _entries_by_key(mass_minimal, _ALL_FEATURES, player_type=PlayerType.GROUP)
+    assert set(entries) == {CONF_POWER_CONTROL}
