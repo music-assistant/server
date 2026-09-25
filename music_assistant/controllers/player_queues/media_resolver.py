@@ -808,14 +808,10 @@ class MediaResolver:
         for item in folder_items:
             if not item.is_playable:
                 continue
-            if isinstance(item, Radio) and item.is_dynamic:
-                # a dynamic station supplies its tracks on demand through the managed pool;
-                # queued as a plain item it cannot be streamed, so leave it out here
-                continue
             try:
                 # recursively resolve every child, so a folder of podcast episodes or
                 # radio stations plays just like a folder of tracks
-                items += await self._resolve_media_items(
+                resolved = await self._resolve_media_items(
                     item,
                     userid=userid,
                     queue_id=queue_id,
@@ -825,6 +821,10 @@ class MediaResolver:
                 # best-effort: skip child items/subfolders that are empty or unreachable
                 # so a single bad entry does not abort playback of the whole folder
                 continue
+            # a dynamic station supplies its tracks on demand through the managed pool;
+            # queued as a plain item it cannot be streamed, so leave it out here. This is
+            # checked after resolving, as an ItemMapping child only reveals it once resolved.
+            items += [x for x in resolved if not (isinstance(x, Radio) and x.is_dynamic)]
         return items
 
     def _mark_container_played(

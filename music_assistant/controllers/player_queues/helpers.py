@@ -17,7 +17,6 @@ if TYPE_CHECKING:
     from music_assistant_models.enums import ContentType, PlaybackState
     from music_assistant_models.media_items import (
         BrowseFolder,
-        ItemMapping,
         MediaItemType,
         PlayableMediaItemType,
     )
@@ -114,9 +113,7 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
     return wrapper
 
 
-def is_dynamic_source(
-    item: MediaItemType | ItemMapping | BrowseFolder,
-) -> TypeGuard[Playlist | Radio]:
+def is_dynamic_source(item: MediaItemType | BrowseFolder) -> TypeGuard[Playlist | Radio]:
     """Return True if the item supplies its own on-demand track feed."""
     return isinstance(item, Playlist | Radio) and item.is_dynamic
 

@@ -8,6 +8,7 @@ from uuid import uuid4
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import (
     BrowseFolder,
+    ItemMapping,
     Podcast,
     PodcastEpisode,
     ProviderMapping,
@@ -114,3 +115,29 @@ async def test_folder_start_from_beginning_ignores_saved_progress(mass: MusicAss
 
     assert isinstance(items[0], PodcastEpisode)
     assert items[0].resume_position_ms == 0
+
+
+async def test_folder_skips_dynamic_station_behind_item_mapping(mass: MusicAssistant) -> None:
+    """A dynamic station listed as an ItemMapping is left out once it is resolved."""
+    station = Radio(
+        item_id="station-2",
+        provider=PROVIDER,
+        name="Station",
+        provider_mappings=_provider_mapping(),
+        is_dynamic=True,
+    )
+    mapping = ItemMapping(
+        item_id="station-2", provider=PROVIDER, name="Station", media_type=MediaType.RADIO
+    )
+    track = Track(
+        item_id="track-2", provider=PROVIDER, name="Track", provider_mappings=_provider_mapping()
+    )
+    folder = BrowseFolder(item_id="stations", provider=PROVIDER, name="Stations")
+
+    with (
+        patch.object(mass.music, "browse", AsyncMock(return_value=[mapping, track])),
+        patch.object(mass.music, "get_item_by_uri", AsyncMock(return_value=station)),
+    ):
+        items = await mass.player_queues._media_resolver._resolve_media_items(folder)
+
+    assert [x.media_type for x in items] == [MediaType.TRACK]
