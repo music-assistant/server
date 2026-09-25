@@ -155,10 +155,10 @@ class SyncGroupPlayer(Player):
             member_features = VOLUME_FEATURES_FROM_MEMBERS
         else:
             member_features = EXTRA_FEATURES_FROM_MEMBERS
-        # Volume and mute are fanned out to every capable member, so an active sync
-        # leader that lacks a control must not hide it from the group. A dormant group
-        # derives all of its features from the (configured) members.
-        for member_id in self._attr_group_members:
+        # Volume and mute are fanned out to every capable member of the live session,
+        # so an active sync leader that lacks a control must not hide it from the
+        # group. A dormant group derives all of its features from the configured members.
+        for member_id in self.group_members:
             member_player = self.mass.players.get_player(member_id)
             if member_player and member_player.state.available:
                 for feature in member_features:
