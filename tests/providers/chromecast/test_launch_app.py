@@ -61,6 +61,8 @@ def _fake_cast(
     fake.config.get_value = MagicMock(return_value=use_mass_app)
     fake.launch_attempts = []
     fake.cc.socket_client.receiver_controller.launch_failure.reason = refusal_reason
+    # no volume was deferred while idle in these launch tests
+    fake._pending_volume = None
 
     def launch_app(
         app_id: str,
