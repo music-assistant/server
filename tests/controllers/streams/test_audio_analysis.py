@@ -33,11 +33,13 @@ from music_assistant.controllers.streams.audio_analysis import (
     SONIC_ANALYSIS_DOMAIN,
     AudioAnalysisController,
     _merged_from_rows,
+    _parse_row,
 )
+from music_assistant.controllers.streams.audio_analysis_codec import decode, encode
 from music_assistant.controllers.streams.audio_buffer import AudioBufferEOF
 from music_assistant.controllers.streams.constants import AA_DB_SCHEMA, AA_TABLE_ANALYSIS
 from music_assistant.helpers.database import DatabaseConnection
-from music_assistant.helpers.json import json_dumps, json_loads
+from music_assistant.helpers.json import json_dumps
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import (
     AudioAnalysisProvider,
@@ -956,14 +958,29 @@ _ALL_AA_DOMAINS = {LOUDNESS_ANALYSIS_DOMAIN, SMART_FADES_ANALYSIS_DOMAIN, SONIC_
 
 def _aa_row(domain: str, row_id: int, **fields: Any) -> dict[str, Any]:
     """Build one audio_analysis db row (rows are passed oldest-first / ascending row_id)."""
+    header, payload = encode(AudioAnalysisData(**fields))
     return {
         "id": row_id,
         "item_id": "track-1",
         "provider": "test-provider",
         "media_type": MediaType.TRACK.value,
         "aa_provider_domain": domain,
-        "analysis_data": json_dumps(AudioAnalysisData(**fields).to_dict()),
+        "header": header,
+        "payload": payload,
     }
+
+
+@pytest.mark.parametrize("header", ['"bad"', "null", "42", "false", "[]"])
+def test_merged_from_rows_skips_non_object_headers(header: str) -> None:
+    """A malformed packed header must not prevent reading other providers' valid analysis."""
+    invalid = _aa_row(SONIC_ANALYSIS_DOMAIN, 1, bpm=60)
+    invalid["header"] = header
+    valid = _aa_row(SMART_FADES_ANALYSIS_DOMAIN, 2, bpm=120)
+
+    merged = _merged_from_rows([invalid, valid], _ALL_AA_DOMAINS)
+
+    assert merged is not None
+    assert merged.bpm == 120
 
 
 def test_merged_from_rows_priority_none_is_last_write_wins() -> None:
@@ -1039,7 +1056,7 @@ def test_merged_from_rows_regression_sonic_does_not_clobber_loudness() -> None:
 async def test_get_audio_analysis_priority_threads_through_to_merge() -> None:
     """get_audio_analysis forwards priority so the loudness call gets the EBU R128 value."""
     c, db = _stub_controller()
-    db.get_rows = AsyncMock(
+    db.get_rows_from_query = AsyncMock(
         return_value=[
             _aa_row(LOUDNESS_ANALYSIS_DOMAIN, 1, loudness_integrated=-7.5),
             _aa_row(SONIC_ANALYSIS_DOMAIN, 2, loudness_integrated=-12.0),
@@ -1080,7 +1097,7 @@ async def test_set_track_loudness_persists_under_provider_loudness_domain() -> N
     _table, row = db.insert_or_replace.await_args.args
     assert row["aa_provider_domain"] == PROVIDER_LOUDNESS_DOMAIN
     assert row["analysis_version"] == 1
-    stored = AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
+    stored = decode(row["header"], row["payload"])
     assert stored.loudness_integrated == -9.0
     assert stored.loudness_album == -8.5
 
@@ -1089,7 +1106,7 @@ async def test_set_track_loudness_persists_under_provider_loudness_domain() -> N
 async def test_get_audio_analysis_merges_provider_loudness_without_aa_providers() -> None:
     """A provider_loudness row merges even when no AA providers are loaded."""
     c, db = _stub_controller()
-    db.get_rows = AsyncMock(
+    db.get_rows_from_query = AsyncMock(
         return_value=[_aa_row(PROVIDER_LOUDNESS_DOMAIN, 1, loudness_integrated=-9.0)]
     )
     music_prov = MagicMock(spec=MusicProvider)
@@ -1154,8 +1171,8 @@ async def test_get_audio_analysis_count_respects_media_type_override() -> None:
 async def test_iter_audio_analysis_rows_yields_all_rows() -> None:
     """iter_audio_analysis_rows yields each DB row in order; no filtering or parsing."""
     rows: list[dict[str, Any]] = [
-        {"item_id": "a", "provider": "filesystem_local", "analysis_data": "{}"},
-        {"item_id": "b", "provider": "filesystem_local", "analysis_data": "{}"},
+        {"item_id": "a", "provider": "filesystem_local", "header": "{}", "payload": b""},
+        {"item_id": "b", "provider": "filesystem_local", "header": "{}", "payload": b""},
     ]
     c, _ = _stub_controller(iter_rows=rows)
     result = [r async for r in c.iter_audio_analysis_rows("sonic_analysis")]
@@ -1206,13 +1223,15 @@ async def test_iter_merged_audio_analysis_rows_merges_within_group() -> None:
             "item_id": "t1",
             "provider": "filesystem_local",
             "aa_provider_domain": "sonic_analysis",
-            "analysis_data": '{"bpm": 100.0, "energy": 0.5}',
+            "header": '{"bpm": 100.0, "energy": 0.5}',
+            "payload": b"",
         },
         {
             "item_id": "t1",
             "provider": "filesystem_local",
             "aa_provider_domain": "smart_fades",
-            "analysis_data": '{"bpm": 120.0, "key": "C"}',
+            "header": '{"bpm": 120.0, "key": "C"}',
+            "payload": b"",
         },
     ]
     c, _ = _stub_controller(iter_rows=rows)
@@ -1240,13 +1259,15 @@ async def test_iter_merged_audio_analysis_rows_skips_unavailable_providers() -> 
             "item_id": "t1",
             "provider": "filesystem_local",
             "aa_provider_domain": "sonic_analysis",
-            "analysis_data": '{"bpm": 100.0}',
+            "header": '{"bpm": 100.0}',
+            "payload": b"",
         },
         {
             "item_id": "t1",
             "provider": "filesystem_local",
             "aa_provider_domain": "disabled_provider",
-            "analysis_data": '{"bpm": 999.0}',
+            "header": '{"bpm": 999.0}',
+            "payload": b"",
         },
     ]
     c, _ = _stub_controller(iter_rows=rows)
@@ -1265,13 +1286,15 @@ async def test_iter_merged_audio_analysis_rows_groups_by_item_provider() -> None
             "item_id": "t1",
             "provider": "filesystem_local",
             "aa_provider_domain": "sonic_analysis",
-            "analysis_data": '{"bpm": 100.0}',
+            "header": '{"bpm": 100.0}',
+            "payload": b"",
         },
         {
             "item_id": "t2",
             "provider": "filesystem_local",
             "aa_provider_domain": "sonic_analysis",
-            "analysis_data": '{"bpm": 200.0}',
+            "header": '{"bpm": 200.0}',
+            "payload": b"",
         },
     ]
     c, _ = _stub_controller(iter_rows=rows)
@@ -1290,13 +1313,15 @@ async def test_iter_merged_audio_analysis_rows_skips_unparsable_rows() -> None:
             "item_id": "t1",
             "provider": "filesystem_local",
             "aa_provider_domain": "sonic_analysis",
-            "analysis_data": "not-json",
+            "header": "not-json",
+            "payload": b"",
         },
         {
             "item_id": "t1",
             "provider": "filesystem_local",
             "aa_provider_domain": "smart_fades",
-            "analysis_data": '{"bpm": 120.0}',
+            "header": '{"bpm": 120.0}',
+            "payload": b"",
         },
     ]
     c, _ = _stub_controller(iter_rows=rows)
@@ -1321,8 +1346,9 @@ async def real_audio_analysis_db(tmp_path: pathlib.Path) -> AsyncGenerator[Datab
     await db.execute(
         f"CREATE TABLE {AA_TABLE_ANALYSIS}("
         "id INTEGER PRIMARY KEY AUTOINCREMENT, media_type TEXT, item_id TEXT, provider TEXT, "
-        "aa_provider_domain TEXT, analysis_data json, analysis_version INTEGER, "
+        "aa_provider_domain TEXT, analysis_version INTEGER, "
         "timestamp_created INTEGER DEFAULT (cast(strftime('%s','now') as int)), "
+        "header TEXT NOT NULL, payload BLOB NOT NULL, "
         "UNIQUE(item_id,provider,aa_provider_domain,media_type))"
     )
     await db.commit()
@@ -1330,39 +1356,140 @@ async def real_audio_analysis_db(tmp_path: pathlib.Path) -> AsyncGenerator[Datab
     await db.close()
 
 
+async def _insert_packed_row(
+    db: DatabaseConnection, item_id: str, header: str, payload: bytes
+) -> None:
+    """Insert one packed analysis row for the sonic_analysis domain."""
+    await db.execute_write(
+        f"INSERT INTO {AA_TABLE_ANALYSIS} "
+        "(media_type, item_id, provider, aa_provider_domain, header, payload) VALUES "
+        "(:media_type, :item_id, :provider, :aa_provider_domain, :header, :payload)",
+        {
+            "media_type": MediaType.TRACK.value,
+            "item_id": item_id,
+            "provider": "filesystem_local",
+            "aa_provider_domain": SONIC_ANALYSIS_DOMAIN,
+            "header": header,
+            "payload": payload,
+        },
+    )
+
+
+async def _insert_corrupt_header_row(db: DatabaseConnection, item_id: str) -> None:
+    """Insert a row whose header column holds TEXT that is not valid UTF-8."""
+    # invalid UTF-8 must go in via a raw CAST(x'..' AS TEXT) literal;
+    # binding it as a parameter would store a BLOB instead of corrupt TEXT
+    await db.execute_write(
+        f"INSERT INTO {AA_TABLE_ANALYSIS} "
+        "(media_type, item_id, provider, aa_provider_domain, header, payload) VALUES "
+        "(:media_type, :item_id, :provider, :aa_provider_domain, "
+        "CAST(x'7B226475726174696F6E223A31FFFE7D' AS TEXT), x'')",
+        {
+            "media_type": MediaType.TRACK.value,
+            "item_id": item_id,
+            "provider": "filesystem_local",
+            "aa_provider_domain": SONIC_ANALYSIS_DOMAIN,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_audio_analysis_deletes_invalid_utf8_header(
+    real_audio_analysis_db: DatabaseConnection,
+) -> None:
+    """Point reads decode corrupt TEXT as bytes and keep valid analysis from other providers."""
+    await _insert_corrupt_header_row(real_audio_analysis_db, "t1")
+    await real_audio_analysis_db.update(
+        AA_TABLE_ANALYSIS,
+        {"item_id": "t1"},
+        {"aa_provider_domain": SMART_FADES_ANALYSIS_DOMAIN},
+    )
+    header, payload = encode(AudioAnalysisData(bpm=120.0))
+    await _insert_packed_row(real_audio_analysis_db, "t1", header, payload)
+    music_provider = MagicMock(spec=MusicProvider)
+    music_provider.is_streaming_provider = False
+    music_provider.instance_id = "filesystem_local"
+    streams = MagicMock()
+    streams.mass.music.database = real_audio_analysis_db
+    streams.mass.get_provider.return_value = music_provider
+    streams.mass.get_providers.return_value = [
+        _aa_provider_stub(SONIC_ANALYSIS_DOMAIN),
+        _aa_provider_stub(SMART_FADES_ANALYSIS_DOMAIN),
+    ]
+    controller = AudioAnalysisController(streams)
+    controller._database_ready = True
+
+    result = await controller.get_audio_analysis("t1", "filesystem_local")
+
+    assert result is not None
+    assert result.bpm == 120.0
+    remaining = await real_audio_analysis_db.get_rows(AA_TABLE_ANALYSIS)
+    assert len(remaining) == 1
+    assert remaining[0]["aa_provider_domain"] == SONIC_ANALYSIS_DOMAIN
+
+
 @pytest.mark.asyncio
 async def test_iter_merged_audio_analysis_rows_skips_row_with_invalid_utf8_bytes(
     real_audio_analysis_db: DatabaseConnection,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A row whose analysis_data TEXT holds bytes that are not valid UTF-8 is skipped."""
+    """A row whose header TEXT holds bytes that are not valid UTF-8 is skipped, not fatal."""
     for item_id, bpm in (("t2", 100.0), ("t3", 200.0)):
-        await real_audio_analysis_db.execute_write(
-            f"INSERT INTO {AA_TABLE_ANALYSIS} "
-            "(media_type, item_id, provider, aa_provider_domain, analysis_data) VALUES "
-            "(:media_type, :item_id, :provider, :aa_provider_domain, :analysis_data)",
-            {
-                "media_type": MediaType.TRACK.value,
-                "item_id": item_id,
-                "provider": "filesystem_local",
-                "aa_provider_domain": SONIC_ANALYSIS_DOMAIN,
-                "analysis_data": json_dumps(AudioAnalysisData(bpm=bpm).to_dict()),
-            },
-        )
-    # invalid UTF-8 must go in via a raw CAST(x'..' AS TEXT) literal;
-    # binding it as a parameter would store a BLOB instead of corrupt TEXT
-    await real_audio_analysis_db.execute_write(
-        f"INSERT INTO {AA_TABLE_ANALYSIS} "
-        "(media_type, item_id, provider, aa_provider_domain, analysis_data) VALUES "
-        "(:media_type, :item_id, :provider, :aa_provider_domain, "
-        "CAST(x'7B226475726174696F6E223A31FFFE7D' AS TEXT))",
-        {
-            "media_type": MediaType.TRACK.value,
-            "item_id": "t1",
-            "provider": "filesystem_local",
-            "aa_provider_domain": SONIC_ANALYSIS_DOMAIN,
-        },
-    )
+        header, payload = encode(AudioAnalysisData(bpm=bpm))
+        await _insert_packed_row(real_audio_analysis_db, item_id, header, payload)
+    await _insert_corrupt_header_row(real_audio_analysis_db, "t1")
+
+    streams = MagicMock()
+    streams.mass = MagicMock()
+    streams.mass.music.database = real_audio_analysis_db
+    streams.mass.get_providers = MagicMock(return_value=[_aa_provider_stub(SONIC_ANALYSIS_DOMAIN)])
+    controller = AudioAnalysisController(streams)
+    controller._database_ready = True
+
+    with caplog.at_level("WARNING", logger=audio_analysis_mod.LOGGER.name):
+        result = [
+            x async for x in controller.iter_merged_audio_analysis_rows(SONIC_ANALYSIS_DOMAIN)
+        ]
+
+    assert {item_id for item_id, _provider, _merged in result} == {"t2", "t3"}
+    assert any("Skipping unparsable audio_analysis row" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_iter_audio_analysis_rows_yields_corrupt_row_as_undecodable_bytes(
+    real_audio_analysis_db: DatabaseConnection,
+) -> None:
+    """A corrupt non-UTF-8 row is yielded, not filtered; filtering is the consumer's job."""
+    header, payload = encode(AudioAnalysisData(bpm=100.0))
+    await _insert_packed_row(real_audio_analysis_db, "t1", header, payload)
+    await _insert_corrupt_header_row(real_audio_analysis_db, "t2")
+
+    streams = MagicMock()
+    streams.mass = MagicMock()
+    streams.mass.music.database = real_audio_analysis_db
+    controller = AudioAnalysisController(streams)
+    controller._database_ready = True
+
+    rows = [row async for row in controller.iter_audio_analysis_rows(SONIC_ANALYSIS_DOMAIN)]
+
+    assert {row["item_id"] for row in rows} == {"t1", "t2"}
+    corrupt_row = next(row for row in rows if row["item_id"] == "t2")
+    assert isinstance(corrupt_row["header"], bytes)
+    with pytest.raises(UnicodeDecodeError):
+        corrupt_row["header"].decode("utf-8", errors="strict")
+    assert _parse_row(corrupt_row) is None
+
+
+@pytest.mark.asyncio
+async def test_iter_merged_audio_analysis_rows_skips_row_with_corrupt_header(
+    real_audio_analysis_db: DatabaseConnection,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A row whose stored header is not valid JSON is skipped, the others still merge."""
+    for item_id, bpm in (("t2", 100.0), ("t3", 200.0)):
+        header, payload = encode(AudioAnalysisData(bpm=bpm))
+        await _insert_packed_row(real_audio_analysis_db, item_id, header, payload)
+    await _insert_packed_row(real_audio_analysis_db, "t1", "not-json", b"")
 
     streams = MagicMock()
     streams.mass = MagicMock()
@@ -1381,36 +1508,12 @@ async def test_iter_merged_audio_analysis_rows_skips_row_with_invalid_utf8_bytes
 
 
 @pytest.mark.asyncio
-async def test_iter_audio_analysis_rows_yields_corrupt_row_as_undecodable_bytes(
+async def test_iter_audio_analysis_rows_yields_packed_columns(
     real_audio_analysis_db: DatabaseConnection,
 ) -> None:
-    """A corrupt non-UTF-8 row is yielded, not filtered; filtering is the consumer's job."""
-    await real_audio_analysis_db.execute_write(
-        f"INSERT INTO {AA_TABLE_ANALYSIS} "
-        "(media_type, item_id, provider, aa_provider_domain, analysis_data) VALUES "
-        "(:media_type, :item_id, :provider, :aa_provider_domain, :analysis_data)",
-        {
-            "media_type": MediaType.TRACK.value,
-            "item_id": "t1",
-            "provider": "filesystem_local",
-            "aa_provider_domain": SONIC_ANALYSIS_DOMAIN,
-            "analysis_data": json_dumps(AudioAnalysisData(bpm=100.0).to_dict()),
-        },
-    )
-    # invalid UTF-8 must go in via a raw CAST(x'..' AS TEXT) literal;
-    # binding it as a parameter would store a BLOB instead of corrupt TEXT
-    await real_audio_analysis_db.execute_write(
-        f"INSERT INTO {AA_TABLE_ANALYSIS} "
-        "(media_type, item_id, provider, aa_provider_domain, analysis_data) VALUES "
-        "(:media_type, :item_id, :provider, :aa_provider_domain, "
-        "CAST(x'7B226475726174696F6E223A31FFFE7D' AS TEXT))",
-        {
-            "media_type": MediaType.TRACK.value,
-            "item_id": "t2",
-            "provider": "filesystem_local",
-            "aa_provider_domain": SONIC_ANALYSIS_DOMAIN,
-        },
-    )
+    """Rows are yielded with their header/payload pair, ready for _parse_row."""
+    header, payload = encode(AudioAnalysisData(bpm=100.0, rms_energy=[0.5] * 1800))
+    await _insert_packed_row(real_audio_analysis_db, "t1", header, payload)
 
     streams = MagicMock()
     streams.mass = MagicMock()
@@ -1420,11 +1523,12 @@ async def test_iter_audio_analysis_rows_yields_corrupt_row_as_undecodable_bytes(
     controller._database_ready = True
     rows = [row async for row in controller.iter_audio_analysis_rows(SONIC_ANALYSIS_DOMAIN)]
 
-    assert {row["item_id"] for row in rows} == {"t1", "t2"}
-    corrupt_row = next(row for row in rows if row["item_id"] == "t2")
-    assert isinstance(corrupt_row["analysis_data"], bytes)
-    with pytest.raises(UnicodeDecodeError):
-        corrupt_row["analysis_data"].decode("utf-8", errors="strict")
+    assert [row["item_id"] for row in rows] == ["t1"]
+    parsed = _parse_row(rows[0])
+    assert parsed is not None
+    assert parsed.bpm == 100.0
+    assert parsed.rms_energy is not None
+    assert len(parsed.rms_energy) == 1800
 
 
 @pytest.mark.asyncio
@@ -1448,14 +1552,16 @@ async def test_iter_merged_audio_analysis_rows_logs_warning_for_unparsable_rows(
             "item_id": "t1",
             "provider": "filesystem_local",
             "aa_provider_domain": "sonic_analysis",
-            "analysis_data": "not-json",
+            "header": "not-json",
+            "payload": b"",
         },
         {
             "id": 43,
             "item_id": "t1",
             "provider": "filesystem_local",
             "aa_provider_domain": "smart_fades",
-            "analysis_data": '{"bpm": 120.0}',
+            "header": '{"bpm": 120.0}',
+            "payload": b"",
         },
     ]
     c, _ = _stub_controller(iter_rows=rows)
@@ -1485,13 +1591,15 @@ async def test_iter_merged_audio_analysis_rows_drops_groups_with_only_corrupt_ro
             "item_id": "broken",
             "provider": "filesystem_local",
             "aa_provider_domain": "sonic_analysis",
-            "analysis_data": "not-json",
+            "header": "not-json",
+            "payload": b"",
         },
         {
             "item_id": "good",
             "provider": "filesystem_local",
             "aa_provider_domain": "sonic_analysis",
-            "analysis_data": '{"bpm": 100.0}',
+            "header": '{"bpm": 100.0}',
+            "payload": b"",
         },
     ]
     c, _ = _stub_controller(iter_rows=rows)
@@ -1660,7 +1768,7 @@ def _analysis_controller_with_rows(
 ) -> AudioAnalysisController:
     """Build a stub controller whose DB returns the given analysis rows for any track."""
     c, db = _stub_controller()
-    db.get_rows = AsyncMock(return_value=rows)
+    db.get_rows_from_query = AsyncMock(return_value=rows)
     music_prov = MagicMock(spec=MusicProvider)
     music_prov.is_streaming_provider = True
     music_prov.domain = "test-provider"
@@ -1687,9 +1795,9 @@ async def test_get_track_audio_metadata_skips_corrupt_sqlite_row(
             "list[Mapping[str, Any]]",
             db.execute(
                 """
-                SELECT 1 AS id, ? AS aa_provider_domain, ? AS analysis_data
+                SELECT 1 AS id, ? AS aa_provider_domain, ? AS header, x'' AS payload
                 UNION ALL
-                SELECT 2, ?, ?
+                SELECT 2, ?, ?, x''
                 """,
                 (
                     SONIC_ANALYSIS_DOMAIN,
@@ -1723,7 +1831,8 @@ async def test_get_audio_analysis_deletes_unparsable_rows(
         {
             "id": 7,
             "aa_provider_domain": SMART_FADES_ANALYSIS_DOMAIN,
-            "analysis_data": json_dumps({"spectral_centroid": [100.0, None]}),
+            "header": json_dumps({"spectral_centroid": [100.0, None]}),
+            "payload": b"",
         },
         _aa_row(SONIC_ANALYSIS_DOMAIN, 8, bpm=101.0),
     ]

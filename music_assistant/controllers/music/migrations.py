@@ -55,7 +55,7 @@ async def ensure_legacy_audio_analysis_table(database: DatabaseConnection) -> No
     """
     Create the pre-2.9 audio_analysis table in library.db if it is missing.
 
-    Only the v38 loudness migration writes to it; the AudioAnalysisController relocates the
+    Only the v38 loudness migration writes to it; the AudioAnalysisController converts the
     rows into audio_analysis.db right after the music database has been set up.
     """
     await database.execute(

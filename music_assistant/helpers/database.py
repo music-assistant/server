@@ -541,7 +541,7 @@ class DatabaseConnection:
         return freelist_count / page_count
 
     async def vacuum(self) -> None:
-        """Run vacuum command on database."""
+        """Run vacuum command on database and checkpoint the WAL so the freed space is reclaimed."""
         # VACUUM rebuilds the whole database in temp storage; with temp_store=memory that
         # copy lives entirely in RAM and OOMs memory constrained devices on large databases,
         # so spill it to a temp file (located at SQLITE_TMPDIR) for the duration.
@@ -549,6 +549,9 @@ class DatabaseConnection:
         try:
             await self._db.execute("VACUUM")
             await self._db.commit()
+            # in WAL mode VACUUM writes the rebuilt database into the WAL file instead of
+            # freeing disk space immediately, so checkpoint and truncate it right away
+            await self._db.execute("PRAGMA wal_checkpoint(TRUNCATE);")
         finally:
             await self._db.execute("PRAGMA temp_store=memory;")
 
