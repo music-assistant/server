@@ -409,9 +409,9 @@ class IHeartRadioProvider(MusicProvider):
 
 
 def _station_matches(station: dict[str, Any], words: list[str]) -> bool:
-    """Return whether a station search hit names every one of the query words."""
+    """Return whether a station search hit names every one of the query words, if any."""
     text = " ".join(
         str(station.get(key) or "")
         for key in ("name", "callLetters", "description", "frequency", "genre")
     ).casefold()
-    return all(word in text for word in words)
+    return bool(words) and all(word in text for word in words)
