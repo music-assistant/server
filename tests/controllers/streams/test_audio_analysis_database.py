@@ -14,24 +14,26 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import Track
 
-import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
+import music_assistant.controllers.streams.audio_analysis_migrations as migrations_mod
+import music_assistant.controllers.streams.constants as streams_constants
 from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_AUDIO_ANALYSIS_FAILURES,
     DB_TABLE_SETTINGS,
 )
 from music_assistant.controllers.streams.audio_analysis import (
-    AA_DB_FILENAME,
-    AA_DB_SCHEMA,
-    AA_DB_SCHEMA_VERSION,
-    AA_TABLE_ANALYSIS,
-    AA_TABLE_ANALYSIS_V1,
-    AA_TABLE_FAILURES,
-    AA_TABLE_SETTINGS,
     PROVIDER_LOUDNESS_DOMAIN,
     AudioAnalysisController,
 )
 from music_assistant.controllers.streams.audio_analysis_codec import decode, encode
+from music_assistant.controllers.streams.constants import (
+    AA_DB_FILENAME,
+    AA_DB_SCHEMA,
+    AA_DB_SCHEMA_VERSION,
+    AA_TABLE_ANALYSIS,
+    AA_TABLE_FAILURES,
+    AA_TABLE_SETTINGS,
+)
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.json import json_dumps
 from music_assistant.models.audio_analysis import AudioAnalysisData
@@ -440,8 +442,8 @@ async def test_conversion_walks_the_source_in_batches(
     library_db: DatabaseConnection, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Conversion completes across multiple cursor batches, not just the first one."""
-    monkeypatch.setattr(audio_analysis_mod, "MIGRATE_BATCH_SIZE", 2)
-    monkeypatch.setattr(audio_analysis_mod, "RELOCATE_BATCH_SIZE", 4)
+    monkeypatch.setattr(streams_constants, "MIGRATE_BATCH_SIZE", 2)
+    monkeypatch.setattr(streams_constants, "RELOCATE_BATCH_SIZE", 4)
     await _seed_legacy(library_db, n_analysis=7, n_failures=9)  # ids 1..19 span 5 batches
     ctrl = _make_controller(library_db, tmp_path)
     await ctrl.setup_database()
@@ -739,6 +741,8 @@ async def test_failed_relocation_disables_analysis_until_restart(
     await ctrl.setup_database()
     await _assert_analysis_unavailable(ctrl)
     assert len(await library_db.get_rows(f"main.{failed_table}")) == 2
+    # the version is only stamped once every step succeeded, so the ladder runs again
+    assert await library_db.get_row(AA_TABLE_SETTINGS, {"key": "version"}) is None
     monkeypatch.setattr(library_db, "execute", real_execute)
     restarted = _make_controller(library_db, tmp_path)
     await restarted.setup_database()
@@ -748,39 +752,22 @@ async def test_failed_relocation_disables_analysis_until_restart(
     assert failed_table not in await _table_names(library_db, "main")
 
 
-V1_TABLE_NAME = f"{DB_TABLE_AUDIO_ANALYSIS}_v1"
-V1_ANALYSIS_DDL = (
-    f"CREATE TABLE {AA_TABLE_ANALYSIS}("
-    "id INTEGER PRIMARY KEY AUTOINCREMENT, media_type TEXT NOT NULL, item_id TEXT NOT NULL, "
-    "provider TEXT NOT NULL, aa_provider_domain TEXT NOT NULL, analysis_data json NOT NULL, "
-    "analysis_version INTEGER DEFAULT 1, "
-    "timestamp_created INTEGER DEFAULT (cast(strftime('%s','now') as int)), "
-    "UNIQUE(item_id,provider,aa_provider_domain,media_type))"
-)
-
-
-async def _seed_v1_table(
-    db: DatabaseConnection, ctrl: AudioAnalysisController, rows: list[tuple[str, str]]
-) -> None:
+async def _seed_legacy_json(db: DatabaseConnection, rows: list[tuple[str, str]]) -> None:
     """
-    Attach the analysis db and put a v1-shaped table holding the given JSON rows in it.
+    Create the legacy library.db analysis table holding the given JSON rows.
 
-    :param db: The library database connection the analysis db is attached onto.
-    :param ctrl: Controller used to attach the analysis database.
+    :param db: The library database connection.
     :param rows: (item_id, analysis_data JSON) pairs, inserted with timestamp 1000 + index.
     """
-    await ctrl.setup_database()
-    await db.execute(f"DROP TABLE {AA_TABLE_ANALYSIS}")
-    await db.execute(V1_ANALYSIS_DDL)
+    await db.execute(LEGACY_ANALYSIS_DDL)
     for index, (item_id, data) in enumerate(rows):
         await db.execute(
-            f"INSERT INTO {AA_TABLE_ANALYSIS}"
+            f"INSERT INTO {DB_TABLE_AUDIO_ANALYSIS}"
             "(media_type, item_id, provider, aa_provider_domain, analysis_data, "
             " analysis_version, timestamp_created) VALUES "
-            "(:media_type, :item, 'fs--a', 'sonic_analysis', :data, 3, :ts)",
-            {"media_type": "track", "item": item_id, "data": data, "ts": 1000 + index},
+            "('track', :item, 'fs--a', 'sonic_analysis', :data, 3, :ts)",
+            {"item": item_id, "data": data, "ts": 1000 + index},
         )
-    await db.insert_or_replace(AA_TABLE_SETTINGS, {"key": "version", "value": "1", "type": "str"})
     await db.commit()
 
 
@@ -792,26 +779,50 @@ async def _stored_version(db: DatabaseConnection) -> int:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("source_table", [f"main.{DB_TABLE_AUDIO_ANALYSIS}", AA_TABLE_ANALYSIS_V1])
+async def test_new_file_without_legacy_tables_skips_migration(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A fresh install is stamped with the current version without running the ladder."""
+    ctrl = _make_controller(library_db, tmp_path)
+    with caplog.at_level(logging.INFO):
+        await ctrl.setup_database()
+    assert ctrl.database_ready
+    assert await _stored_version(library_db) == AA_DB_SCHEMA_VERSION
+    assert "Migrating" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_legacy_tables_recreated_by_stable_are_moved_again(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """Rows a stable build wrote into library.db after a switch back are picked up again."""
+    ctrl = _make_controller(library_db, tmp_path)
+    await ctrl.setup_database()
+    await _seed_legacy(library_db, n_analysis=2, n_failures=1)
+
+    await ctrl.setup_database()
+
+    assert {r["item_id"] for r in await library_db.get_rows(AA_TABLE_ANALYSIS)} == {"t0", "t1"}
+    assert len(await library_db.get_rows(AA_TABLE_FAILURES)) == 1
+    main_tables = await _table_names(library_db, "main")
+    assert DB_TABLE_AUDIO_ANALYSIS not in main_tables
+    assert DB_TABLE_AUDIO_ANALYSIS_FAILURES not in main_tables
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("source_timestamp", [900, 1000, 1100])
 async def test_json_migration_keeps_newest_same_key_record(
     library_db: DatabaseConnection,
     tmp_path: pathlib.Path,
-    source_table: str,
     source_timestamp: int,
 ) -> None:
-    """Both JSON sources keep the newest content and preserve the packed destination id."""
+    """Conversion keeps the newest content and preserves the packed destination id."""
     ctrl = _make_controller(library_db, tmp_path)
     source_analysis = AudioAnalysisData(bpm=120.0, beats=[0.5, 1.0], clap_embedding=[0.25, 0.5])
     source_json = json_dumps(source_analysis.to_dict())
-    if source_table == AA_TABLE_ANALYSIS_V1:
-        await _seed_v1_table(library_db, ctrl, [("t0", source_json)])
-        await library_db.execute(f"ALTER TABLE {AA_TABLE_ANALYSIS} RENAME TO {V1_TABLE_NAME}")
-        await library_db.commit()
-        await ctrl._prepare_analysis_table()
-    else:
-        await ctrl.setup_database()
-        await _seed_legacy(library_db, n_analysis=1, n_failures=0)
+    await ctrl.setup_database()
+    await _seed_legacy(library_db, n_analysis=1, n_failures=0)
+    source_table = f"main.{DB_TABLE_AUDIO_ANALYSIS}"
     await library_db.execute(
         f"UPDATE {source_table} SET analysis_data = :data, timestamp_created = :timestamp",
         {"data": source_json, "timestamp": source_timestamp},
@@ -836,45 +847,28 @@ async def test_json_migration_keeps_newest_same_key_record(
     expected = source if source_timestamp > 1000 else destination
     result = dict((await library_db.get_rows(AA_TABLE_ANALYSIS))[0])
     assert result == {**expected, "id": 42}
-    schema, _, table = source_table.partition(".")
-    assert table not in await _table_names(library_db, schema)
+    assert DB_TABLE_AUDIO_ANALYSIS not in await _table_names(library_db, "main")
     assert ctrl._database_ready
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("source_table", [f"main.{DB_TABLE_AUDIO_ANALYSIS}", AA_TABLE_ANALYSIS_V1])
 async def test_legacy_null_embedding_is_skipped_during_migration(
     library_db: DatabaseConnection,
     tmp_path: pathlib.Path,
     caplog: pytest.LogCaptureFixture,
-    source_table: str,
 ) -> None:
     """A null in a legacy embedding is logged and skipped without losing a valid row."""
     ctrl = _make_controller(library_db, tmp_path)
     bad_json = json_dumps({"extra_data": {"clap_embedding": [0.25, None, 0.5]}})
-    if source_table == AA_TABLE_ANALYSIS_V1:
-        await _seed_v1_table(
-            library_db, ctrl, [("t0", bad_json), ("t1", '{"loudness_integrated": -1}')]
-        )
-    else:
-        await _seed_legacy(library_db, n_analysis=2, n_failures=0)
-        await library_db.execute(
-            f"UPDATE {source_table} SET analysis_data = :data WHERE item_id = 't0'",
-            {"data": bad_json},
-        )
+    await _seed_legacy_json(library_db, [("t0", bad_json), ("t1", '{"loudness_integrated": -1}')])
     with caplog.at_level(logging.WARNING):
         await ctrl.setup_database()
 
     rows = await library_db.get_rows(AA_TABLE_ANALYSIS, limit=0)
     assert [row["item_id"] for row in rows] == ["t1"]
     assert decode(rows[0]["header"], rows[0]["payload"]).loudness_integrated == -1
-    schema, _, table = source_table.partition(".")
-    assert table not in await _table_names(library_db, schema)
+    assert DB_TABLE_AUDIO_ANALYSIS not in await _table_names(library_db, "main")
     assert ctrl._database_ready
-    assert any(
-        record.levelno == logging.WARNING and "Skipping unpackable" in record.getMessage()
-        for record in caplog.records
-    )
     assert any(
         record.levelno == logging.WARNING
         and "1 unreadable audio analysis rows" in record.getMessage()
@@ -883,34 +877,22 @@ async def test_legacy_null_embedding_is_skipped_during_migration(
 
 
 @pytest.mark.asyncio
-async def test_v1_table_is_converted_to_packed_rows(
+async def test_both_json_row_shapes_convert_to_packed_rows(
     library_db: DatabaseConnection, tmp_path: pathlib.Path
 ) -> None:
-    """Both JSON row shapes in a v1 file convert to packed rows and the source is dropped."""
-    ctrl = _make_controller(library_db, tmp_path)
+    """Typed and legacy extra_data rows both convert to packed rows with metadata preserved."""
     typed = json_dumps(AudioAnalysisData(bpm=120.0, rms_energy=[0.5] * 1800).to_dict())
     legacy = json_dumps({"extra_data": {"clap_embedding": [0.25] * 1024}})
-    await _seed_v1_table(library_db, ctrl, [("t0", typed), ("t1", legacy)])
+    await _seed_legacy_json(library_db, [("t0", typed), ("t1", legacy)])
+    ctrl = _make_controller(library_db, tmp_path)
 
     await ctrl.setup_database()
 
     assert await _stored_version(library_db) == AA_DB_SCHEMA_VERSION
-    columns = await library_db.get_rows_from_query(
-        f"PRAGMA {AA_DB_SCHEMA}.table_info({DB_TABLE_AUDIO_ANALYSIS})", limit=0
-    )
-    names = {c["name"] for c in columns}
-    assert {"header", "payload"} <= names
-    assert "analysis_data" not in names
-    assert f"{DB_TABLE_AUDIO_ANALYSIS}_v1" not in await _table_names(library_db, AA_DB_SCHEMA)
-
     rows = await library_db.get_rows(AA_TABLE_ANALYSIS, order_by="timestamp_created", limit=0)
     assert [r["item_id"] for r in rows] == ["t0", "t1"]
     assert [r["timestamp_created"] for r in rows] == [1000, 1001]
     assert [r["analysis_version"] for r in rows] == [3, 3]
-    assert [(r["provider"], r["aa_provider_domain"]) for r in rows] == [
-        ("fs--a", "sonic_analysis"),
-        ("fs--a", "sonic_analysis"),
-    ]
     first = decode(rows[0]["header"], rows[0]["payload"])
     assert first.bpm == 120.0
     assert first.rms_energy == pytest.approx([0.5] * 1800)
@@ -924,13 +906,10 @@ async def test_migration_resumes_after_partial_run(
 ) -> None:
     """A packed row already written by an interrupted run is kept, the rest still convert."""
     ctrl = _make_controller(library_db, tmp_path)
-    rows = [(f"t{i}", json_dumps({"bpm": 100.0 + i})) for i in range(3)]
-    await _seed_v1_table(library_db, ctrl, rows)
-    # simulate a crash after the first batch: the v1 table is already renamed, the v2 table
-    # exists and holds the first row
-    await library_db.execute(f"ALTER TABLE {AA_TABLE_ANALYSIS} RENAME TO {V1_TABLE_NAME}")
-    await library_db.commit()
-    await ctrl._prepare_analysis_table()
+    await ctrl.setup_database()
+    await _seed_legacy_json(
+        library_db, [(f"t{i}", json_dumps({"bpm": 100.0 + i})) for i in range(3)]
+    )
     header, payload = encode(AudioAnalysisData(bpm=100.0))
     await library_db.insert(
         AA_TABLE_ANALYSIS,
@@ -951,59 +930,46 @@ async def test_migration_resumes_after_partial_run(
 
     packed = await library_db.get_rows(AA_TABLE_ANALYSIS, order_by="timestamp_created", limit=0)
     assert [r["item_id"] for r in packed] == ["t0", "t1", "t2"]
-    assert V1_TABLE_NAME not in await _table_names(library_db, AA_DB_SCHEMA)
+    assert DB_TABLE_AUDIO_ANALYSIS not in await _table_names(library_db, "main")
 
 
 @pytest.mark.asyncio
-async def test_unreadable_v1_rows_are_dropped_with_a_summary_warning(
+async def test_unreadable_rows_are_dropped_with_a_summary_warning(
     library_db: DatabaseConnection, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A row that cannot be decoded is dropped with the source and reported once."""
-    ctrl = _make_controller(library_db, tmp_path)
-    await _seed_v1_table(
-        library_db,
-        ctrl,
-        [("t0", '{"bpm": 100.0}'), ("bad", "not json"), ("t1", '{"bpm": 110.0}')],
+    await _seed_legacy_json(
+        library_db, [("t0", '{"bpm": 100.0}'), ("bad", "not json"), ("t1", '{"bpm": 110.0}')]
     )
+    ctrl = _make_controller(library_db, tmp_path)
 
     with caplog.at_level(logging.WARNING):
         await ctrl.setup_database()
 
     rows = await library_db.get_rows(AA_TABLE_ANALYSIS, limit=0)
     assert {r["item_id"] for r in rows} == {"t0", "t1"}
-    assert V1_TABLE_NAME not in await _table_names(library_db, AA_DB_SCHEMA)
+    assert DB_TABLE_AUDIO_ANALYSIS not in await _table_names(library_db, "main")
     assert any(
         record.levelno == logging.WARNING
-        and "unreadable" in record.getMessage()
-        and "1" in record.getMessage()
+        and "1 unreadable audio analysis rows" in record.getMessage()
         for record in caplog.records
     )
 
 
 @pytest.mark.asyncio
-async def test_migration_failure_keeps_v1_table(
-    library_db: DatabaseConnection,
-    tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
+async def test_all_unreadable_rows_still_compact_the_library(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A failing insert preserves the source while keeping older readers out."""
+    """Dropping a source whose every row was unreadable still reclaims its space."""
+    await _seed_legacy_json(library_db, [("bad", "not json")])
     ctrl = _make_controller(library_db, tmp_path)
-    await _seed_v1_table(library_db, ctrl, [("t0", '{"bpm": 100.0}')])
-    real_execute = library_db.execute
+    vacuum = AsyncMock()
+    monkeypatch.setattr(library_db, "vacuum", vacuum)
 
-    async def failing_execute(query: str, values: dict[str, Any] | None = None) -> Any:
-        if query.lstrip().upper().startswith("INSERT INTO AA.AUDIO_ANALYSIS "):
-            raise sqlite3.OperationalError("disk I/O error")
-        return await real_execute(query, values)
+    await ctrl.setup_database()
 
-    monkeypatch.setattr(library_db, "execute", failing_execute)
-    with caplog.at_level(logging.ERROR):
-        await ctrl.setup_database()
-
-    assert V1_TABLE_NAME in await _table_names(library_db, AA_DB_SCHEMA)
-    assert await _stored_version(library_db) == AA_DB_SCHEMA_VERSION
-    assert "disk I/O error" in caplog.text
+    assert DB_TABLE_AUDIO_ANALYSIS not in await _table_names(library_db, "main")
+    vacuum.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
@@ -1014,31 +980,24 @@ async def test_unencodable_rows_are_counted_and_dropped(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """One row that cannot be packed is dropped like an unreadable one; the rest convert."""
-    ctrl = _make_controller(library_db, tmp_path)
-    await _seed_v1_table(
-        library_db,
-        ctrl,
-        [("t0", '{"bpm": 100.0}'), ("bad", '{"bpm": 105.0}'), ("t1", '{"bpm": 110.0}')],
+    await _seed_legacy_json(
+        library_db, [("t0", '{"bpm": 100.0}'), ("bad", '{"bpm": 105.0}'), ("t1", '{"bpm": 110.0}')]
     )
+    ctrl = _make_controller(library_db, tmp_path)
 
     def failing_encode(analysis: AudioAnalysisData) -> tuple[str, bytes]:
         if analysis.bpm == 105.0:
             raise TypeError("boom")
         return encode(analysis)
 
-    monkeypatch.setattr(audio_analysis_mod, "encode", failing_encode)
+    monkeypatch.setattr(migrations_mod, "encode", failing_encode)
     with caplog.at_level(logging.WARNING):
         await ctrl.setup_database()
 
     rows = await library_db.get_rows(AA_TABLE_ANALYSIS, limit=0)
     assert {r["item_id"] for r in rows} == {"t0", "t1"}
-    assert V1_TABLE_NAME not in await _table_names(library_db, AA_DB_SCHEMA)
     assert await _stored_version(library_db) == AA_DB_SCHEMA_VERSION
     assert ctrl._database_ready
-    assert any(
-        record.levelno == logging.WARNING and "unpackable" in record.getMessage()
-        for record in caplog.records
-    )
     assert any(
         record.levelno == logging.WARNING
         and "1 unreadable audio analysis rows" in record.getMessage()
@@ -1053,9 +1012,9 @@ async def test_incomplete_conversion_keeps_source_table(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A row that silently fails to land keeps the source table for the next start."""
+    """A row that silently fails to land keeps the source and the version for the next start."""
+    await _seed_legacy_json(library_db, [("t0", '{"bpm": 100.0}'), ("t1", '{"bpm": 110.0}')])
     ctrl = _make_controller(library_db, tmp_path)
-    await _seed_v1_table(library_db, ctrl, [("t0", '{"bpm": 100.0}'), ("t1", '{"bpm": 110.0}')])
     real_execute = library_db.execute
 
     async def dropping_execute(query: str, values: dict[str, Any] | None = None) -> Any:
@@ -1071,122 +1030,18 @@ async def test_incomplete_conversion_keeps_source_table(
     with caplog.at_level(logging.ERROR):
         await ctrl.setup_database()
 
-    assert V1_TABLE_NAME in await _table_names(library_db, AA_DB_SCHEMA)
-    assert await _stored_version(library_db) == AA_DB_SCHEMA_VERSION
-    packed_rows = await library_db.get_rows(AA_TABLE_ANALYSIS)
-    assert len(packed_rows) == 1
-    with monkeypatch.context() as downgrade:
-        downgrade.setattr(audio_analysis_mod, "AA_DB_SCHEMA_VERSION", 1)
-        older = _make_controller(library_db, tmp_path)
-        await older.setup_database()
-        await _assert_analysis_unavailable(older)
-    assert await _stored_version(library_db) == AA_DB_SCHEMA_VERSION
-    assert await library_db.get_rows(AA_TABLE_ANALYSIS) == packed_rows
+    await _assert_analysis_unavailable(ctrl)
+    assert DB_TABLE_AUDIO_ANALYSIS in await _table_names(library_db, "main")
+    assert await library_db.get_row(AA_TABLE_SETTINGS, {"key": "version"}) is None
     assert any(
         record.levelno == logging.ERROR and "incomplete" in record.getMessage()
         for record in caplog.records
     )
-
-
-@pytest.mark.asyncio
-async def test_failed_conversion_disables_analysis_until_restart(
-    library_db: DatabaseConnection,
-    tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Incomplete packed conversion blocks all analysis but leaves playback available."""
-    ctrl = _make_controller(library_db, tmp_path)
-    await _seed_v1_table(library_db, ctrl, [("t0", '{"bpm": 100.0}')])
-    real_execute = library_db.execute
-
-    async def failing_execute(query: str, values: dict[str, Any] | None = None) -> Any:
-        if query.lstrip().upper().startswith("INSERT INTO AA.AUDIO_ANALYSIS "):
-            raise sqlite3.OperationalError("disk I/O error")
-        return await real_execute(query, values)
-
-    monkeypatch.setattr(library_db, "execute", failing_execute)
-    await ctrl.setup_database()
-    await _assert_analysis_unavailable(ctrl)
-    assert V1_TABLE_NAME in await _table_names(library_db, AA_DB_SCHEMA)
-    assert await _stored_version(library_db) == AA_DB_SCHEMA_VERSION
-    find_candidates = AsyncMock(return_value=[])
-    monkeypatch.setattr(ctrl, "_find_candidates_missing_analysis", find_candidates)
-    await ctrl._run_background_scan()
-    find_candidates.assert_not_awaited()
     monkeypatch.setattr(library_db, "execute", real_execute)
     restarted = _make_controller(library_db, tmp_path)
     await restarted.setup_database()
     assert restarted._database_ready
-    assert await restarted.get_audio_analysis_count("sonic_analysis") == 1
-    assert V1_TABLE_NAME not in await _table_names(library_db, AA_DB_SCHEMA)
-
-
-@pytest.mark.asyncio
-async def test_database_is_ready_after_a_successful_start(
-    library_db: DatabaseConnection, tmp_path: pathlib.Path
-) -> None:
-    """A fresh install and a completed conversion both leave the scan gate open."""
-    ctrl = _make_controller(library_db, tmp_path)
-    await ctrl.setup_database()
-    assert ctrl._database_ready
-
-    await _seed_v1_table(library_db, ctrl, [("t0", '{"bpm": 100.0}')])
-    await ctrl.setup_database()
-    assert ctrl._database_ready
-
-
-@pytest.mark.asyncio
-async def test_schema_preparation_failure_does_not_quarantine_the_file(
-    library_db: DatabaseConnection, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A locked v1 rename disables analysis without moving the file aside."""
-    ctrl = _make_controller(library_db, tmp_path)
-    await _seed_v1_table(library_db, ctrl, [("t0", '{"bpm": 100.0}')])
-    real_execute = library_db.execute
-
-    async def failing_execute(query: str, values: dict[str, Any] | None = None) -> Any:
-        if query.lstrip().upper().startswith("ALTER TABLE"):
-            raise sqlite3.OperationalError("database table is locked")
-        return await real_execute(query, values)
-
-    monkeypatch.setattr(library_db, "execute", failing_execute)
-    await ctrl.setup_database()
-    await _assert_analysis_unavailable(ctrl)
-
-    assert not (tmp_path / f"{AA_DB_FILENAME}.corrupt").exists()
-    # the rename never happened, so the JSON-shaped table is still the live one
-    columns = await library_db.get_rows_from_query(
-        f"PRAGMA {AA_DB_SCHEMA}.table_info({DB_TABLE_AUDIO_ANALYSIS})", limit=0
-    )
-    assert "analysis_data" in {c["name"] for c in columns}
-    with sqlite3.connect(tmp_path / AA_DB_FILENAME) as db:
-        version = db.execute("SELECT value FROM settings WHERE key = 'version'").fetchone()
-        assert int(version[0]) == AA_DB_SCHEMA_VERSION
-    monkeypatch.setattr(library_db, "execute", real_execute)
-    restarted = _make_controller(library_db, tmp_path)
-    await restarted.setup_database()
-    assert restarted._database_ready
-    assert await restarted.get_audio_analysis_count("sonic_analysis") == 1
-
-
-@pytest.mark.asyncio
-async def test_schema_marker_failure_keeps_json_table(
-    library_db: DatabaseConnection, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """No packed schema may be created before its compatibility marker is durable."""
-    ctrl = _make_controller(library_db, tmp_path)
-    await _seed_v1_table(library_db, ctrl, [("t0", '{"bpm": 100.0}')])
-    monkeypatch.setattr(
-        library_db,
-        "insert_or_replace",
-        AsyncMock(side_effect=sqlite3.OperationalError("disk full")),
-    )
-    await ctrl.setup_database()
-    await _assert_analysis_unavailable(ctrl)
-    assert await _stored_version(library_db) == 1
-    rows = await library_db.get_rows(AA_TABLE_ANALYSIS)
-    assert rows[0]["analysis_data"] == '{"bpm": 100.0}'
-    assert V1_TABLE_NAME not in await _table_names(library_db, AA_DB_SCHEMA)
+    assert await restarted.get_audio_analysis_count("sonic_analysis") == 2
 
 
 @pytest.mark.asyncio
@@ -1208,24 +1063,6 @@ async def test_setup_database_on_file_without_settings_table(
 
 
 @pytest.mark.asyncio
-async def test_analysis_db_is_compacted_after_conversion(
-    library_db: DatabaseConnection, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The analysis file is compacted after a conversion, and left alone without one."""
-    ctrl = _make_controller(library_db, tmp_path)
-    await _seed_v1_table(library_db, ctrl, [("t0", '{"bpm": 100.0}')])
-    mock_vacuum = AsyncMock()
-    monkeypatch.setattr(library_db, "vacuum", mock_vacuum)
-
-    await ctrl.setup_database()
-    mock_vacuum.assert_any_await(schema=AA_DB_SCHEMA)
-
-    mock_vacuum.reset_mock()
-    await ctrl.setup_database()
-    mock_vacuum.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_progress_is_logged_every_2000_rows(
     library_db: DatabaseConnection,
     tmp_path: pathlib.Path,
@@ -1233,10 +1070,10 @@ async def test_progress_is_logged_every_2000_rows(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Long conversions report progress at a fixed row interval."""
-    monkeypatch.setattr(audio_analysis_mod, "MIGRATE_PROGRESS_ROWS", 2)
-    monkeypatch.setattr(audio_analysis_mod, "MIGRATE_BATCH_SIZE", 1)
+    monkeypatch.setattr(streams_constants, "MIGRATE_PROGRESS_ROWS", 2)
+    monkeypatch.setattr(streams_constants, "MIGRATE_BATCH_SIZE", 1)
+    await _seed_legacy_json(library_db, [(f"t{i}", '{"bpm": 100.0}') for i in range(5)])
     ctrl = _make_controller(library_db, tmp_path)
-    await _seed_v1_table(library_db, ctrl, [(f"t{i}", '{"bpm": 100.0}') for i in range(5)])
 
     with caplog.at_level(logging.INFO):
         await ctrl.setup_database()
@@ -1244,11 +1081,9 @@ async def test_progress_is_logged_every_2000_rows(
     progress = [
         record.getMessage()
         for record in caplog.records
-        if record.levelno == logging.INFO
-        and record.getMessage().startswith("Converted ")
-        and "/5 audio analysis rows" in record.getMessage()
+        if record.levelno == logging.INFO and "/5 audio analysis rows" in record.getMessage()
     ]
     assert progress == [
-        f"Converted 2/5 audio analysis rows from {AA_TABLE_ANALYSIS_V1}",
-        f"Converted 4/5 audio analysis rows from {AA_TABLE_ANALYSIS_V1}",
+        "Converted 2/5 audio analysis rows",
+        "Converted 4/5 audio analysis rows",
     ]
