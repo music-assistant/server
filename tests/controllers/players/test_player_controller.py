@@ -2318,6 +2318,25 @@ class TestExternalPowerOffEndsTheQueue:
         controller.cmd_ungroup.assert_called_once_with("member")
         assert _scheduled_queue_stops(mock_mass) == []
 
+    def test_a_group_leader_ends_its_own_queue(self, mock_mass: MagicMock) -> None:
+        """A group player is not mistaken for a member, so its own queue is ended."""
+        controller, group, _queue_stop = self._standalone_playing_player(
+            mock_mass, PlayerType.GROUP
+        )
+        provider = MockProvider("test", instance_id="test", mass=mock_mass)
+        member = MockPlayer(provider, "member", "Member")
+        controller._players["member"] = member
+        member.set_initialized()
+        member.update_state(signal_event=False)
+        group._attr_group_members = ["member"]
+        group.update_state(signal_event=False)
+        assert group.state.group_members == ["member"]
+
+        controller.signal_player_state_update(group, {"powered": (True, False)})
+
+        assert len(_scheduled_queue_stops(mock_mass)) == 1
+        controller.cmd_ungroup.assert_not_called()  # type: ignore[attr-defined]
+
     @pytest.mark.asyncio
     async def test_the_scheduled_stop_ends_the_players_own_queue(
         self, mock_mass: MagicMock

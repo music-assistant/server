@@ -2981,9 +2981,14 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             or player.state.type not in PLAYBACK_TARGET_TYPES
         ):
             return
-        if player.state.synced_to or player.state.active_group or player.state.group_members:
-            # a grouped player is detached from its group instead, which ends the
-            # group's queue through the group's own power off
+        if (
+            player.state.synced_to
+            or player.state.active_group
+            or (player.state.group_members and player.state.type in UNGROUP_ON_POWER_OFF_TYPES)
+        ):
+            # a player that is a member of a group, or a sync leader handing its
+            # leadership on, is detached instead and the group's own power off ends the
+            # queue. a group player leads its own members, so its queue is ended here.
             return
         # a device that powers itself off may report its stop in this very update, so
         # judge on the playback state as it was before it - which is also the snapshot
