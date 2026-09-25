@@ -899,7 +899,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_items = self._queue_data[queue_id].items
         resume_item = queue.current_item
         queue_player = self.mass.players.get_player(queue_id)
-        # During announce the queue may still look PLAYING; use parked resume_pos.
+        # Queue can still look PLAYING during announce.
+        # Don't trust the wall clock — use the parked resume_pos instead.
         announcement_in_progress = bool(
             queue_player and queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
         )
