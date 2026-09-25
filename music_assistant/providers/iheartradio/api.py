@@ -321,12 +321,23 @@ class IHeartRadioApiClient:
                 PATH_PODCAST_EPISODES.format(podcast_id=podcast_id),
                 {"limit": EPISODE_PAGE_LIMIT, "pageKey": page_key},
             )
-            if not isinstance(payload, dict):
+            if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+                if episodes:
+                    # a broken page past the first would otherwise cache a truncated listing
+                    raise InvalidDataError(
+                        f"iHeartRadio returned an invalid episode page for podcast {podcast_id}"
+                    )
                 break
-            episodes.extend(json_items(payload.get("data")))
+            episodes.extend(json_items(payload["data"]))
             links = payload.get("links") or {}
             if not (page_key := links.get("next") if isinstance(links, dict) else None):
                 break
+        else:
+            self.logger.debug(
+                "Listing podcast %s stopped at %s episodes; older episodes are left out",
+                podcast_id,
+                len(episodes),
+            )
         return episodes
 
     @use_cache(CACHE_TTL_PODCAST, category=CACHE_CATEGORY_PODCASTS)

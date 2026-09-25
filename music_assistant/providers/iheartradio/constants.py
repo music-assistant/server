@@ -135,13 +135,13 @@ MAX_ACTIVE_STATIONS: Final[int] = 10
 # The largest page the API serves; a country's full market list fits in one.
 STATION_PAGE_LIMIT: Final[int] = 500
 MARKET_PAGE_LIMIT: Final[int] = 500
-EPISODE_PAGE_LIMIT: Final[int] = 100
+EPISODE_PAGE_LIMIT: Final[int] = 500
 # The follow lists cap their page size at 25.
 FOLLOWS_PAGE_LIMIT: Final[int] = 25
 PODCAST_FOLLOWS_PAGE_LIMIT: Final[int] = 20
-# Podcasts with a decade of episodes exist; cap the walk so listing one cannot fire an
-# unbounded number of requests. The newest episodes are listed first, so a capped listing
-# drops the oldest.
+# Podcasts with a decade of episodes exist; cap the walk (at 2500 episodes) so listing one
+# cannot fire an unbounded number of requests. The newest episodes are listed first, so a
+# capped listing drops the oldest.
 MAX_EPISODE_PAGES: Final[int] = 5
 
 # -- Caching --

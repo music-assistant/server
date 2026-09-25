@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import pytest
 from music_assistant_models.enums import MediaType, StreamType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 
 from music_assistant.controllers.streams.constants import STREAMDETAILS_INBAND_TITLE_KEY
 from music_assistant.providers.iheartradio.constants import (
+    MAX_EPISODE_PAGES,
     PATH_CATALOG_ALBUM,
     PATH_LIVE_STATION,
     PATH_NOW_PLAYING,
@@ -65,6 +66,40 @@ async def test_podcast_episodes_newest_has_highest_position(
         (f"{PODCAST_ID}:1", 1),
     ]
     assert api.calls[-1][1]["pageKey"] == "cursor-2"
+
+
+async def test_search_without_words_keeps_no_stations(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """A query of only punctuation matches no station rather than every padded one."""
+    api.responses[PATH_SEARCH] = {"results": {"stations": [{"id": 1, "name": "KIIS 1065"}]}}
+    assert (await provider.search("!!!", [MediaType.RADIO])).radio == []
+
+
+async def test_podcast_episodes_reject_a_broken_later_page(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """A malformed page after the first raises instead of returning a truncated listing."""
+    path = PATH_PODCAST_EPISODES.format(podcast_id=PODCAST_ID)
+    api.pages[path] = [{"data": [EPISODE], "links": {"next": "cursor-2"}}, {"data": {}}]
+    api.responses[PATH_PODCAST.format(podcast_id=PODCAST_ID)] = PODCAST
+    with pytest.raises(InvalidDataError):
+        [episode async for episode in provider.get_podcast_episodes(PODCAST_ID)]
+
+
+async def test_podcast_episodes_stop_at_the_page_cap(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """The listing stops after the page cap even when the API offers more pages."""
+    path = PATH_PODCAST_EPISODES.format(podcast_id=PODCAST_ID)
+    api.pages[path] = [
+        {"data": [{**EPISODE, "id": page, "startDate": 1000 - page}], "links": {"next": "more"}}
+        for page in range(MAX_EPISODE_PAGES + 1)
+    ]
+    api.responses[PATH_PODCAST.format(podcast_id=PODCAST_ID)] = PODCAST
+    episodes = [episode async for episode in provider.get_podcast_episodes(PODCAST_ID)]
+    assert len(episodes) == MAX_EPISODE_PAGES
+    assert len(api.pages[path]) == 1
 
 
 async def test_station_stream_with_now_playing(provider: IHeartRadioProvider, api: FakeApi) -> None:
