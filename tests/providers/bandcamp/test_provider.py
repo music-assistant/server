@@ -7,7 +7,7 @@ from typing import cast
 from unittest.mock import AsyncMock, Mock, call, patch
 
 import pytest
-from aiohttp import ClientConnectionError
+from aiohttp import ClientConnectionError, ClientPayloadError, ConnectionTimeoutError
 from bandcamp_async_api import (
     BandcampAPIClient,
     BandcampAPIError,
@@ -42,6 +42,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.bandcamp import BandcampProvider, setup, split_id
 from music_assistant.providers.bandcamp.constants import (
+    BANDCAMP_TIMEOUT,
     CACHE_EMPTY_RESULTS,
     CACHE_USER_LISTS,
     CONF_GET_LYRICS,
@@ -183,6 +184,7 @@ async def test_handle_async_init_with_identity(provider: BandcampProvider) -> No
             session=provider.mass.http_session,
             identity_token="mock_identity_token",
             default_retry_after=3,
+            timeout=BANDCAMP_TIMEOUT,
         )
         assert provider._client == mock_client
         assert provider._converters is not None
@@ -207,6 +209,7 @@ async def test_handle_async_init_without_identity(mass_mock: Mock, manifest_mock
             session=provider.mass.http_session,
             identity_token=None,
             default_retry_after=3,
+            timeout=BANDCAMP_TIMEOUT,
         )
 
 
@@ -1828,6 +1831,55 @@ async def test_fetch_api_track_rate_limit_error(provider: BandcampProvider) -> N
 
     assert mock_get_album.call_count == provider.throttler.retry_attempts
     assert mock_sleep.call_count == provider.throttler.retry_attempts - 1
+
+
+@pytest.mark.parametrize("error", [ClientConnectionError("down"), ClientPayloadError("cut")])
+async def test_fetch_api_track_retries_a_transport_error(
+    provider: BandcampProvider, error: Exception
+) -> None:
+    """A dropped connection is retried, and the next answer wins."""
+    api_album = Mock(tracks=[Mock(id=789)])
+    with (
+        patch.object(
+            provider._client, "get_album", side_effect=[error, api_album]
+        ) as mock_get_album,
+        patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+    ):
+        _, album = await provider._fetch_api_track("123-456-789")
+
+    assert album is api_album
+    assert mock_get_album.call_count == 2
+    assert mock_sleep.call_count == 1
+
+
+async def test_fetch_api_track_gives_up_after_transport_errors(provider: BandcampProvider) -> None:
+    """A transport error on every attempt ends in RetriesExhausted, not a raw aiohttp error."""
+    with (
+        patch.object(
+            provider._client, "get_album", side_effect=ClientConnectionError("down")
+        ) as mock_get_album,
+        patch("asyncio.sleep", new_callable=AsyncMock),
+        pytest.raises(RetriesExhausted),
+    ):
+        await provider._fetch_api_track("123-456-789")
+
+    assert mock_get_album.call_count == provider.throttler.retry_attempts
+
+
+@pytest.mark.parametrize("error", [TimeoutError(), ConnectionTimeoutError()])
+async def test_fetch_api_track_does_not_retry_a_timeout(
+    provider: BandcampProvider, error: Exception
+) -> None:
+    """A timeout fails at once, because a hang would repeat on every attempt."""
+    with (
+        patch.object(provider._client, "get_album", side_effect=error) as mock_get_album,
+        patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        pytest.raises(TimeoutError),
+    ):
+        await provider._fetch_api_track("123-456-789")
+
+    assert mock_get_album.call_count == 1
+    mock_sleep.assert_not_awaited()
 
 
 async def test_fetch_api_track_generic_api_error(provider: BandcampProvider) -> None:

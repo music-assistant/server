@@ -1,11 +1,12 @@
 """Bandcamp music provider support for MusicAssistant."""
 
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+import functools
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager, suppress
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Concatenate, cast
 
-from aiohttp import ClientError
+from aiohttp import ClientConnectionError, ClientError, ClientPayloadError
 from bandcamp_async_api import (
     BandcampAPIClient,
     BandcampAPIError,
@@ -69,6 +70,7 @@ from music_assistant.models.music_provider import MusicProvider
 
 from ._ids import make_artist_id, parse_artist_id, slugify_performer
 from .constants import (
+    BANDCAMP_TIMEOUT,
     BROWSE_FANS,
     BROWSE_FEED,
     BROWSE_FOLLOWERS,
@@ -127,6 +129,26 @@ def split_track_id(id_: str) -> tuple[int, int, int]:
     return artist_id, album_id, track_id
 
 
+def _retry_transport_errors[ProviderT, **P, R](
+    func: Callable[Concatenate[ProviderT, P], Awaitable[R]],
+) -> Callable[Concatenate[ProviderT, P], Awaitable[R]]:
+    """Turn a dropped connection into an error that throttle_with_retries retries."""
+    # Like Apple Music: a library sync makes hundreds of requests, and one blip must not
+    # abort it. Unlike Apple Music, a timeout is not retried: a hang repeats on every
+    # attempt, and five 120 s waits would hold a call for about 11 minutes.
+
+    @functools.wraps(func)
+    async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            return await func(self, *args, **kwargs)
+        except TimeoutError:
+            raise
+        except (ClientConnectionError, ClientPayloadError) as error:
+            raise ResourceTemporarilyUnavailable(f"Bandcamp request failed: {error!r}") from error
+
+    return wrapper
+
+
 class BandcampProvider(MusicProvider):
     """Bandcamp provider support."""
 
@@ -170,6 +192,7 @@ class BandcampProvider(MusicProvider):
             session=self.mass.http_session,
             identity_token=identity,
             default_retry_after=3,  # Bandcamp responds with Retry-After 3
+            timeout=BANDCAMP_TIMEOUT,
         )
         self._converters = BandcampConverters(self.domain, self.instance_id)
         self._slug_to_fan_id = {}
@@ -194,6 +217,7 @@ class BandcampProvider(MusicProvider):
         return True
 
     @throttle_with_retries
+    @_retry_transport_errors
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 50
     ) -> SearchResults:
@@ -433,6 +457,7 @@ class BandcampProvider(MusicProvider):
         return band_id
 
     @throttle_with_retries
+    @_retry_transport_errors
     async def _fetch_performer_band_id(self, performer_name: str, target_slug: str) -> int | None:
         """Autocomplete-search for ``performer_name``; return the first non-label band match."""
         try:
@@ -457,6 +482,7 @@ class BandcampProvider(MusicProvider):
         return None
 
     @throttle_with_retries
+    @_retry_transport_errors
     async def _fetch_collection_page(
         self,
         collection_type: CollectionType,
@@ -585,6 +611,7 @@ class BandcampProvider(MusicProvider):
 
     @use_cache(CACHE_METADATA)
     @throttle_with_retries
+    @_retry_transport_errors
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """
         Get full artist details by ID.
@@ -675,6 +702,7 @@ class BandcampProvider(MusicProvider):
 
     @use_cache(CACHE_METADATA)
     @throttle_with_retries
+    @_retry_transport_errors
     async def _fetch_discography(self, band_id: int) -> list[dict[str, Any]]:
         """
         Fetch a band's discography.
@@ -713,6 +741,7 @@ class BandcampProvider(MusicProvider):
 
     @use_cache(CACHE_METADATA)
     @throttle_with_retries
+    @_retry_transport_errors
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         artist_id, album_id, _ = split_id(prov_album_id)
@@ -734,6 +763,7 @@ class BandcampProvider(MusicProvider):
         return self._converters.album_from_api(api_album, artist_item_id=artist_item_id)
 
     @throttle_with_retries
+    @_retry_transport_errors
     async def _fetch_api_track(self, item_id: str) -> tuple[BCTrack, BCAlbum | None]:
         """
         Fetch a raw API track and its parent album by compound item ID.
@@ -787,6 +817,7 @@ class BandcampProvider(MusicProvider):
 
     @use_cache(CACHE_METADATA)
     @throttle_with_retries
+    @_retry_transport_errors
     async def _get_tralbum_lyrics(self, tralbum_id: int, is_album: bool) -> dict[str, str | None]:
         """
         Fetch the lyrics map of a whole tralbum: one request per album.
@@ -849,6 +880,7 @@ class BandcampProvider(MusicProvider):
 
     @use_cache(CACHE_METADATA)
     @throttle_with_retries
+    @_retry_transport_errors
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all tracks in an album."""
         artist_id, album_id, _ = split_id(prov_album_id)
@@ -886,6 +918,7 @@ class BandcampProvider(MusicProvider):
 
     @use_cache(CACHE_METADATA)
     @throttle_with_retries
+    @_retry_transport_errors
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """
         Get albums by an artist.
@@ -979,6 +1012,7 @@ class BandcampProvider(MusicProvider):
 
     @use_cache(CACHE_METADATA)
     @throttle_with_retries
+    @_retry_transport_errors
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get top tracks of an artist."""
         tracks: list[Track] = []
@@ -993,6 +1027,7 @@ class BandcampProvider(MusicProvider):
         return tracks[: self.top_tracks_limit]
 
     @throttle_with_retries
+    @_retry_transport_errors
     async def _fetch_feed(self) -> FeedResponse:
         """Fetch the authenticated user's feed with throttling and retry."""
         try:
@@ -1238,6 +1273,7 @@ class BandcampProvider(MusicProvider):
         raise ValueError(msg)
 
     @throttle_with_retries
+    @_retry_transport_errors
     async def _browse_person_content(
         self, person_id: int | None, collection_type: CollectionType
     ) -> list[Album | Track]:
@@ -1272,6 +1308,7 @@ class BandcampProvider(MusicProvider):
         return results
 
     @throttle_with_retries
+    @_retry_transport_errors
     async def _browse_person_following(self, person_id: int | None) -> list[Artist]:
         """
         Fetch a person's followed artists.
@@ -1303,6 +1340,7 @@ class BandcampProvider(MusicProvider):
         return artists
 
     @throttle_with_retries
+    @_retry_transport_errors
     async def _browse_person_people(
         self,
         collection_type: CollectionType,
