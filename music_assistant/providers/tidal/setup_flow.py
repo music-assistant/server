@@ -49,6 +49,7 @@ async def run_setup(session: SetupSession) -> None:
                 url=_verification_url(device),
                 step_id="device_login",
                 expires_in=float(device["expiresIn"]),
+                copy_text=str(device["userCode"]),
                 # shown on the step so the code can also be typed at link.tidal.com
                 # from a phone, rather than only carried by the Open button's url
                 translation_params=[str(device["userCode"])],
