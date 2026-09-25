@@ -700,7 +700,7 @@ class AirPlayPlayer(Player):
         async with self._lock:
             if self.synced_to:
                 # this should not happen, but guard anyways
-                raise RuntimeError("Player is synced, cannot set members")
+                raise PlayerCommandFailed("Player is synced, cannot set members")
             if not player_ids_to_add and not player_ids_to_remove:
                 # nothing to do
                 return

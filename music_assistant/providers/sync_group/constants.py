@@ -4,8 +4,16 @@ from __future__ import annotations
 
 from typing import Final
 
+from aiohttp import ClientError
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, PlayerFeature
+from music_assistant_models.errors import (
+    ActionUnavailable,
+    PlayerCommandFailed,
+    PlayerUnavailableError,
+    ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+)
 
 SGP_PREFIX: Final[str] = "syncgroup_"
 
@@ -27,6 +35,23 @@ PLAYBACK_START_TIMEOUT: Final[float] = 5.0
 # group re-forms and resumes playback exactly once with the final member list
 # instead of restarting for every removal.
 REFORM_DEBOUNCE_SECONDS: Final[float] = 2.0
+
+# Reconnect attempts are bounded so a permanently incompatible member cannot keep
+# a task alive, while a short device/leader outage can recover without user action.
+RECONNECT_RETRY_DELAY: Final[float] = 1.0
+RECONNECT_MAX_ATTEMPTS: Final[int] = 3
+
+# Other exceptions must propagate rather than trigger reconnect retries.
+RECONNECT_RETRYABLE_ERRORS: Final[tuple[type[Exception], ...]] = (
+    PlayerCommandFailed,
+    PlayerUnavailableError,
+    ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+    ActionUnavailable,
+    TimeoutError,
+    ClientError,
+    ConnectionError,
+)
 
 CONF_ENTRY_SGP_NOTE = ConfigEntry(
     key="sgp_note",
