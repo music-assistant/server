@@ -67,7 +67,6 @@ def mock_mass(tmp_path: Path) -> MagicMock:
     mass.music.tracks = MagicMock()
     mass.music.tracks.get = AsyncMock()
     mass.music.database = MagicMock()
-    mass.music.database.get_count_from_query = AsyncMock(return_value=0)
 
     # tasks controller (scheduled background jobs)
     mass.tasks = MagicMock()
@@ -97,6 +96,7 @@ def mock_mass(tmp_path: Path) -> MagicMock:
         side_effect=_iter_merged
     )
     mass.streams.audio_analysis.get_coverage = AsyncMock(return_value=None)
+    mass.streams.audio_analysis.get_audio_analysis_count = AsyncMock(return_value=0)
     return mass
 
 
