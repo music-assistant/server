@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import re
 from dataclasses import replace
 from typing import Any
@@ -31,6 +32,9 @@ _NON_CUE_BLOCKS = ("WEBVTT", "NOTE", "STYLE", "REGION")
 # until a sentence ends, capped so a stretch without punctuation still breaks into lines
 _SENTENCE_END = (".", "!", "?", "\u2026")
 _MAX_JOINED_SEGMENT_CHARS = 200
+# a pause longer than this ends the sentence even without punctuation, so text spoken
+# later is never shown at the earlier timestamp
+_MAX_JOINED_SEGMENT_GAP = 2.0
 # speech recognition working on a rolling window repeats the tail of one cue at the start
 # of the next. Short repeats are left alone because they are usually really said twice.
 _MIN_REPEATED_PREFIX = 15
@@ -185,6 +189,7 @@ def _json_segments(document: str) -> list[Any] | None:
 def _cues_from_json_segments(segments: list[Any]) -> list[MediaItemTranscriptCue]:
     """Build cues from Podcasting 2.0 JSON segments, joining word-level ones into sentences."""
     cues: list[MediaItemTranscriptCue] = []
+    last_start = 0.0
     for segment in segments:
         if not isinstance(segment, dict):
             continue
@@ -194,24 +199,29 @@ def _cues_from_json_segments(segments: list[Any]) -> list[MediaItemTranscriptCue
             continue
         end = _as_seconds(segment.get("endTime"))
         speaker = _collapse(html.unescape(str(segment.get("speaker") or ""))) or None
-        if cues and _continues_sentence(cues[-1], speaker, text):
-            previous = cues[-1]
-            cues[-1] = replace(
-                previous,
-                end=previous.end if end is None else end,
-                text=f"{previous.text} {text}",
-            )
-            continue
-        cues.append(MediaItemTranscriptCue(start=start, end=end, text=text, speaker=speaker))
+        if cues and _continues_sentence(cues[-1], last_start, start, speaker, text):
+            cues[-1] = replace(cues[-1], end=end, text=f"{cues[-1].text} {text}")
+        else:
+            cues.append(MediaItemTranscriptCue(start=start, end=end, text=text, speaker=speaker))
+        last_start = start
     return cues
 
 
-def _continues_sentence(previous: MediaItemTranscriptCue, speaker: str | None, text: str) -> bool:
+def _continues_sentence(
+    previous: MediaItemTranscriptCue,
+    previous_segment_start: float,
+    start: float,
+    speaker: str | None,
+    text: str,
+) -> bool:
     """Whether a segment belongs to the sentence the previous cue left unfinished."""
+    # without an end time, the gap is measured from where the last joined segment began
+    previous_end = previous_segment_start if previous.end is None else previous.end
     return (
         previous.speaker == speaker
         and not previous.text.endswith(_SENTENCE_END)
         and len(previous.text) + len(text) < _MAX_JOINED_SEGMENT_CHARS
+        and start - previous_end <= _MAX_JOINED_SEGMENT_GAP
     )
 
 
@@ -220,9 +230,10 @@ def _as_seconds(value: Any) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
     try:
-        return float(value)
+        seconds = float(value)
     except TypeError, ValueError:
         return None
+    return seconds if math.isfinite(seconds) else None
 
 
 def _normalize_newlines(raw: str) -> str:

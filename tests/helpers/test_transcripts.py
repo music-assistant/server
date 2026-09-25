@@ -294,6 +294,47 @@ def test_json_segments_split_on_a_speaker_change() -> None:
     assert [cue.text for cue in parse_transcript_cues(document)] == ["Well I", "disagree."]
 
 
+def test_json_segments_split_on_a_long_pause() -> None:
+    """Test that unpunctuated segments far apart in time are not joined into one cue."""
+    document = (
+        '{"segments": [{"speaker": "A", "startTime": 0, "endTime": 1, "body": "Well I"},'
+        ' {"speaker": "A", "startTime": 120, "endTime": 121, "body": "think so"}]}'
+    )
+    cues = parse_transcript_cues(document)
+    assert [(cue.start, cue.text) for cue in cues] == [(0, "Well I"), (120, "think so")]
+
+
+def test_json_segments_without_end_times_join_by_their_starts() -> None:
+    """Test that the pause is measured from the last joined segment when end times are missing."""
+    words = ", ".join(
+        f'{{"speaker": "A", "startTime": {index}, "body": "word{index}"}}' for index in range(6)
+    )
+    document = f'{{"segments": [{words}, {{"speaker": "A", "startTime": 60, "body": "later"}}]}}'
+    cues = parse_transcript_cues(document)
+    assert [cue.start for cue in cues] == [0, 60]
+    assert cues[0].text == "word0 word1 word2 word3 word4 word5"
+
+
+def test_joined_json_cue_end_is_unknown_when_the_last_segment_has_none() -> None:
+    """Test that a joined cue never claims to end before its last segment began."""
+    document = (
+        '{"segments": [{"startTime": 0, "endTime": 0.5, "body": "Hello"},'
+        ' {"startTime": 1, "body": "there."}]}'
+    )
+    cues = parse_transcript_cues(document)
+    assert [(cue.text, cue.end) for cue in cues] == [("Hello there.", None)]
+
+
+def test_json_segments_with_non_finite_timings_are_skipped() -> None:
+    """Test that NaN and infinite timings are treated as unreadable."""
+    document = (
+        '{"segments": [{"startTime": "nan", "body": "Bad."}, {"startTime": "inf", "body": "Bad."},'
+        ' {"startTime": 1, "endTime": "-inf", "body": "Kept."}]}'
+    )
+    cues = parse_transcript_cues(document)
+    assert [(cue.start, cue.end, cue.text) for cue in cues] == [(1, None, "Kept.")]
+
+
 def test_json_segments_without_timings_or_text_are_skipped() -> None:
     """Test that unusable segments are dropped rather than failing the document."""
     document = (
