@@ -23,6 +23,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers.util import parse_title_and_version
+from music_assistant.mass import MusicAssistant
 
 from .const import (
     DOMAIN,
@@ -30,6 +31,7 @@ from .const import (
     ITEM_KEY_ALBUM_ARTIST,
     ITEM_KEY_ALBUM_ARTISTS,
     ITEM_KEY_ALBUM_ID,
+    ITEM_KEY_ALBUM_NORMALIZATION_GAIN,
     ITEM_KEY_ARTIST_ITEMS,
     ITEM_KEY_CAN_DOWNLOAD,
     ITEM_KEY_CONTAINER,
@@ -52,6 +54,7 @@ from .const import (
     ITEM_KEY_PROVIDER_IDS,
     ITEM_KEY_RUNTIME_TICKS,
     ITEM_KEY_SORT_NAME,
+    ITEM_KEY_TRACK_NORMALIZATION_GAIN,
     ITEM_KEY_USER_DATA,
     MEDIA_IMAGE_TYPES,
     USER_DATA_KEY_IS_FAVORITE,
@@ -205,7 +208,11 @@ def audio_format(track: JellyTrack) -> AudioFormat:
 
 
 def parse_track(
-    logger: Logger, instance_id: str, client: Connection, jellyfin_track: JellyTrack
+    mass: MusicAssistant,
+    logger: Logger,
+    instance_id: str,
+    client: Connection,
+    jellyfin_track: JellyTrack,
 ) -> Track:
     """Parse a Jellyfin Track response to a Track model object."""
     available = jellyfin_track[ITEM_KEY_CAN_DOWNLOAD]
@@ -274,6 +281,25 @@ def parse_track(
             )
     user_data = jellyfin_track.get(ITEM_KEY_USER_DATA, {})
     track.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+
+    # handle optional loudness measurement tag(s) assuming -18 dB reference according to ReplayGain 2.0
+    track_gain = jellyfin_track.get(ITEM_KEY_TRACK_NORMALIZATION_GAIN)
+    if track_gain is not None:
+        track_loudness = -18.0 - track_gain
+
+        album_gain = jellyfin_track.get(ITEM_KEY_ALBUM_NORMALIZATION_GAIN)
+
+        album_loudness = -18.0 - album_gain if album_gain is not None else None
+
+        mass.create_task(
+            mass.streams.audio_analysis.set_track_loudness(
+                track.item_id,
+                instance_id,
+                track_loudness,
+                album_loudness,
+            )
+        )
+
     return track
 
 
