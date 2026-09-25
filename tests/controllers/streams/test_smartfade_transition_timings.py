@@ -131,7 +131,7 @@ def _with_vocal_activity(
     for start, end in windows:
         for index in range(int(start / frame_duration), int(end / frame_duration)):
             probabilities[index] = 0.9
-    analysis.extra_data = {"vocal_activity": probabilities}
+    analysis.vocal_activity = probabilities
     return analysis
 
 
@@ -716,12 +716,10 @@ class TestMixerBuild:
         monkeypatch.setattr(SmartCrossFade, "build", fail_smart_build)
         missing = _analysis(120.0, duration=240.0, rms_energy=_rms_with_silent_tail(240.0, 5.0))
         stale = _analysis(120.0, duration=240.0, rms_energy=_rms_with_silent_tail(240.0, 5.0))
-        stale.extra_data = {
-            "vocal_activity": {
-                "model": "firered_aed",
-                "frame_duration": 0.1,
-                "probabilities": [0.9] * 2400,
-            }
+        stale.vocal_activity = {  # type: ignore[assignment]
+            "model": "firered_aed",
+            "frame_duration": 0.1,
+            "probabilities": [0.9] * 2400,
         }
 
         trims: list[int] = []

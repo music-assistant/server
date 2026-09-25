@@ -11,7 +11,6 @@ the package init.
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -42,7 +41,10 @@ from music_assistant_models.media_items import (
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
+from music_assistant.controllers.streams.audio_analysis import (
+    SMART_FADES_ANALYSIS_DOMAIN,
+    _parse_row,
+)
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.sonic_similarity.clap_index import ClapIndex
 from music_assistant.providers.sonic_similarity.constants import (
@@ -61,7 +63,6 @@ from music_assistant.providers.sonic_similarity.constants import (
     CONF_SIMILAR_DIVERSITY,
     CONF_SIMILAR_PRESET,
     CONF_SIMILAR_TRACKS_ENGINE,
-    EXTRA_DATA_CLAP_EMBEDDING,
     METADATA_BONUS_SCALE,
     PERIODIC_REFRESH_INTERVAL_HOURS,
     PERIODIC_REFRESH_TASK_ID,
@@ -1620,13 +1621,10 @@ class SonicSimilarityPlugin(PluginProvider):
                 seen.add(key)
                 if self._clap_index.contains(row["provider"], row["item_id"]):
                     continue
-                try:
-                    raw = json.loads(row["analysis_data"])
-                except ValueError, TypeError:
+                analysis = _parse_row(row)
+                if analysis is None:
                     continue
-                emb = _parse_clap_embedding(
-                    (raw.get("extra_data") or {}).get(EXTRA_DATA_CLAP_EMBEDDING)
-                )
+                emb = _parse_clap_embedding(analysis.clap_embedding)
                 if emb is None:
                     continue
                 try:
