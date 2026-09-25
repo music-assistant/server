@@ -3,8 +3,8 @@ Tests for deferring a Cast volume_set received while the device is idle.
 
 Some receivers store a volume set while no audio is flowing but keep playing at their
 previous level, then de-duplicate a plain resend of the value they report. So a volume
-set while idle is deferred, and once the device is actually playing it is re-asserted
-with a 1/255 nudge (target - 1/255, then target) that the device cannot de-duplicate.
+set while idle is deferred and re-asserted at playback start, with a 1/255 nudge first
+when the device already reports the target, so it cannot de-duplicate the resend.
 """
 
 from __future__ import annotations
@@ -121,6 +121,37 @@ async def test_reassert_nudges_when_the_device_is_wedged_at_the_target() -> None
     assert player._pending_volume is None
 
 
+async def test_reassert_nudges_upward_when_wedged_at_zero() -> None:
+    """At a target of 0 a downward nudge clamps back to 0, so the nudge must go up instead."""
+    player = _make_player(app_id=MASS_APP_ID)
+    player._pending_volume = 0
+    cast("MagicMock", player.cc).status.volume_level = 0.0
+
+    with patch("music_assistant.providers.chromecast.player.VOLUME_REASSERT_GAP", 0):
+        await player._reassert_pending_volume()
+
+    assert _sent_volumes(player) == [pytest.approx(1 / 255), 0.0]
+
+
+async def test_reassert_yields_to_a_volume_set_during_the_nudge_gap() -> None:
+    """A volume the user sets while the nudge waits must not be overwritten by the old target."""
+    player = _make_player(app_id=MASS_APP_ID)
+    player._pending_volume = 30
+    cast("MagicMock", player.cc).status.volume_level = 0.30
+
+    async def user_sets_volume_during_gap(_delay: float) -> None:
+        await player.volume_set(50)
+
+    with patch(
+        "music_assistant.providers.chromecast.player.asyncio.sleep", user_sets_volume_during_gap
+    ):
+        await player._reassert_pending_volume()
+
+    sent = _sent_volumes(player)
+    assert sent[-1] == 0.5
+    assert 0.3 not in sent
+
+
 async def test_reassert_pending_volume_with_nothing_pending_is_a_noop() -> None:
     """With no deferred value there is nothing to re-assert."""
     player = _make_player(app_id=MASS_APP_ID)
@@ -136,7 +167,7 @@ async def test_reassert_pending_volume_with_nothing_pending_is_a_noop() -> None:
     [RequestFailed("volume"), RequestTimeout("volume", 10.0), NotConnected("down")],
 )
 async def test_reassert_pending_volume_survives_a_failed_send(error: PyChromecastError) -> None:
-    """A failed re-assert is swallowed; it is fire-and-forget from the status handler."""
+    """A failed re-assert is swallowed, so it cannot abort the playback start that called it."""
     player = _make_player(app_id=MASS_APP_ID)
     player._pending_volume = 36
     cast("MagicMock", player.cc).status.volume_level = 0.06
