@@ -7,7 +7,7 @@ import pytest
 import ytmusicapi
 from aiohttp import ClientError, ServerDisconnectedError
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, SetupFailedError
 
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.ytmusic import YoutubeMusicProvider
@@ -24,6 +24,9 @@ def provider() -> YoutubeMusicProvider:
     config.get_value.return_value = "GLOBAL"
     prov = YoutubeMusicProvider(mass, manifest, config)
     prov._po_token_server_url = "http://localhost:4416"
+    prov._headers = {}
+    prov._yt_user = None
+    prov.language = "en"
     return prov
 
 
@@ -71,6 +74,31 @@ async def test_verify_po_token_url_transient_failure(
     assert await provider._verify_po_token_url() is False
 
 
+async def test_init_unreachable_po_token_server_is_a_retried_setup_failure(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """
+    An unreachable PO Token server at load is a setup failure the core retries, not a login one.
+
+    The PO Token server is a separate add-on/container that routinely comes up after
+    Music Assistant on a host reboot. A LoginFailed is never retried (it waits for the
+    user to fix their credentials), which left the provider dead until a manual reload.
+    """
+    provider.mass.http_session.get = MagicMock(  # type: ignore[method-assign]
+        return_value=_ping_context_manager(exc=ClientError("connection refused"))
+    )
+    with (
+        patch.object(provider, "_install_packages", AsyncMock()),
+        patch.object(provider, "get_setup_value", return_value=""),
+        pytest.raises(SetupFailedError) as exc_info,
+    ):
+        await provider.handle_async_init()
+
+    assert not isinstance(exc_info.value, LoginFailed)
+    assert exc_info.value.translation_key == "po_token_server_unreachable"
+    assert exc_info.value.translation_owner == "provider.ytmusic"
+
+
 async def test_sync_library_unloads_on_invalid_session(provider: YoutubeMusicProvider) -> None:
     """A library sync that hits an invalid session unloads the provider for re-auth."""
     provider.available = True
@@ -116,8 +144,6 @@ async def test_search_is_not_translated(provider: YoutubeMusicProvider) -> None:
     # ytmusicapi matches the (translated) result shelf title against the English filter
     # name, so a filtered search silently returns nothing in most other languages.
     provider.language = "cs"
-    provider._headers = {}
-    provider._yt_user = None
     mock_ytm = MagicMock()
     mock_ytm.search.return_value = []
     search = cast("Any", YoutubeMusicProvider.search).__wrapped__
@@ -125,3 +151,39 @@ async def test_search_is_not_translated(provider: YoutubeMusicProvider) -> None:
         await search(provider, "test", [MediaType.TRACK])
 
     assert mock_ytmusic.call_args.kwargs["language"] == "en"
+
+
+async def test_album_versions_with_versions(provider: YoutubeMusicProvider) -> None:
+    """get_album_versions method of the YTM provider should return other album versions if any exist."""
+    album_with_versions = {
+        "title": "All Stand Together",
+        "other_versions": [
+            {"browseId": "MPREb_LzqETWfppYZ", "title": "All Stand Together (Deluxe)"}
+        ],
+    }
+    with patch(
+        "music_assistant.providers.ytmusic.get_album", AsyncMock(return_value=album_with_versions)
+    ):
+        # call the undecorated function so the @use_cache wrapper stays out of the test
+        get_album_versions = cast("Any", YoutubeMusicProvider.get_album_versions).__wrapped__
+        albums = await get_album_versions(provider, "_")
+
+    assert albums[0].item_id == "MPREb_LzqETWfppYZ"
+    assert albums[0].name == "All Stand Together"
+    assert albums[0].version == "Deluxe"
+
+
+async def test_album_versions_without_versions(provider: YoutubeMusicProvider) -> None:
+    """get_album_versions method of the YTM provider should return nothing if there are no other versions."""
+    album_without_versions = {
+        "title": "All Stand Together",
+    }
+    with patch(
+        "music_assistant.providers.ytmusic.get_album",
+        AsyncMock(return_value=album_without_versions),
+    ):
+        # call the undecorated function so the @use_cache wrapper stays out of the test
+        get_album_versions = cast("Any", YoutubeMusicProvider.get_album_versions).__wrapped__
+        albums = await get_album_versions(provider, "_")
+
+    assert len(albums) == 0

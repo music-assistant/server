@@ -14,8 +14,8 @@ aiojellyfin==0.14.1
 aiolibdatachannel @ git+https://github.com/music-assistant/aiolibdatachannel@feat/certpem-testdrive
 aiomusiccast==0.15.0
 aiosendspin[server]==9.1.1
-aioslimproto==3.2.0
-aiosonos==0.1.12
+aioslimproto==3.2.2
+aiosonos==0.1.13
 aiosqlite==0.22.1
 aiosxm==0.3.0
 aiovban==1.1.0
@@ -25,7 +25,7 @@ audible==0.10.0
 auntie-sounds==2.0.9
 av==18.1.0
 awesomeversion>=24.6.0
-bandcamp-async-api==0.2.4
+bandcamp-async-api==0.2.5
 beat-this==1.1.0
 bidict==0.24.1
 certifi==2025.11.12
@@ -49,10 +49,10 @@ liblistenbrainz==0.7.0
 librosa==0.11.0
 lyricsgenius==3.12.2
 markdownify==1.2.3
-mashumaro==3.20
-modern_colorthief==0.2.1
-music-assistant-frontend==2.17.305
-music-assistant-models==1.1.209
+mashumaro==3.22
+modern_colorthief==0.3.0
+music-assistant-frontend==2.17.319
+music-assistant-models==1.1.212
 mutagen==1.48.1
 niconico.py-ma==2.1.0.post3
 nnAudio==0.3.4
@@ -66,11 +66,11 @@ plexapi==4.18.2
 podcastparser==0.6.11
 propcache>=0.2.1
 psutil==7.2.2
-py-opensonic==10.3.0
+py-opensonic==10.4.1
 pyacoustid==1.3.1
 pyamplipi==0.4.12
 pyatv==0.18.0
-pyblu==2.0.8
+pyblu==2.1.0
 PyChromecast==14.0.10
 pycryptodome==3.23.0
 pyheos==1.0.6
@@ -102,8 +102,8 @@ torchlibrosa==0.1.0
 transformers==5.14.1
 usearch==2.26.0
 uv>=0.8.0
-websocket-client==1.9.0
-wiim==0.1.7
+websocket-client==1.9.2
+wiim==0.1.8
 xmltodict==1.0.4
 ya-dialogs-api==2.4.0
 ya-passport-auth[ma]==2.0.1

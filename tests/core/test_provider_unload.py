@@ -19,6 +19,7 @@ from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.tasks import TasksController
 from music_assistant.controllers.tasks.constants import TASK_UPDATE_TIMER_ID
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
@@ -476,3 +477,61 @@ async def test_unload_provider_rejects_in_flight_player_registration(
     await asyncio.gather(register, unload)
 
     assert mass_minimal.players._players == {}
+
+
+async def test_unload_cancels_pending_post_load(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unloading a provider mid post-load cancels that task before it can announce readiness."""
+    music = MagicMock()
+    music.unschedule_provider_sync = AsyncMock()
+    monkeypatch.setattr(mass_minimal, "music", music, raising=False)
+    monkeypatch.setattr(mass_minimal, "_update_available_providers_cache", AsyncMock())
+    monkeypatch.setattr(mass_minimal.discovery, "on_provider_unload", MagicMock())
+
+    gate = asyncio.Event()
+    resumed = False
+
+    class GatedProvider(MetadataProvider):
+        """Metadata provider whose post-load blocks until the test releases it."""
+
+        async def loaded_in_mass(self) -> None:
+            """Block in the post-load step the way a slow migration would."""
+            nonlocal resumed
+            await gate.wait()
+            resumed = True
+
+    provider_config = ProviderConfig(
+        values={},
+        type=ProviderType.METADATA,
+        domain="test_meta",
+        instance_id="test_meta--1",
+        name="Test metadata",
+    )
+    monkeypatch.setattr(provider_config, "get_value", lambda *_args, **_kwargs: "GLOBAL")
+    provider = GatedProvider(
+        mass_minimal,
+        manifest=ProviderManifest(
+            type=ProviderType.METADATA,
+            domain="test_meta",
+            name="Test metadata",
+            description="Test metadata",
+            codeowners=["@music-assistant"],
+        ),
+        config=provider_config,
+    )
+
+    await mass_minimal._register_loaded_provider(provider, provider_config)
+    await asyncio.sleep(0)  # let the post load task reach the gate
+    post_load_task = mass_minimal._tracked_tasks["post_load_provider_test_meta--1"]
+    assert not post_load_task.done()
+
+    await mass_minimal.unload_provider(provider.instance_id)
+    await asyncio.sleep(0)
+
+    # the post-load task was cancelled by unload, so it never ran past the gate to
+    # announce a provider that is already gone
+    assert post_load_task.cancelled()
+    assert resumed is False
+    assert provider.instance_id not in mass_minimal._providers
