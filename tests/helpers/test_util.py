@@ -28,6 +28,7 @@ from music_assistant.helpers.util import (
     load_provider_module,
     sanitize_http_header_value,
     select_free_port,
+    try_parse_duration,
 )
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
@@ -677,6 +678,30 @@ class TestSanitizeHttpHeaderValue:
     def test_leading_trailing_whitespace_stripped(self) -> None:
         """Control chars at the edges don't leave dangling whitespace."""
         assert sanitize_http_header_value("\x00Artist - Track\x1f") == "Artist - Track"
+
+
+class TestTryParseDuration:
+    """try_parse_duration reads a duration string as a number of seconds."""
+
+    def test_hours_minutes_seconds(self) -> None:
+        """A full HH:MM:SS duration counts the hours."""
+        assert try_parse_duration("12:34:56") == 45296.0
+
+    def test_fractional_seconds(self) -> None:
+        """The fraction after the seconds is kept."""
+        assert try_parse_duration("00:01:02.500") == 62.5
+
+    def test_comma_as_decimal_separator(self) -> None:
+        """SubRip transcripts write the fraction after a comma."""
+        assert try_parse_duration("00:01:02,500") == 62.5
+
+    def test_hours_are_optional(self) -> None:
+        """A WebVTT cue may leave out the hour part."""
+        assert try_parse_duration("01:02.500") == 62.5
+
+    def test_bare_seconds(self) -> None:
+        """A duration without any colon is read as seconds."""
+        assert try_parse_duration("62") == 62.0
 
 
 class TestGuardSingleRequest:
