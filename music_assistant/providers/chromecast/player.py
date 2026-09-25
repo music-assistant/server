@@ -102,6 +102,8 @@ class ChromecastPlayer(Player):
         self._media_error_reported = False
         # holds a volume set deferred while idle; see volume_set for why
         self._pending_volume: int | None = None
+        # bumped by every volume_set, so a re-assert can tell it was overtaken mid-nudge
+        self._volume_sets = 0
         # set static variables
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
@@ -221,6 +223,7 @@ class ChromecastPlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
+        self._volume_sets += 1
         if self.cc.app_id in (None, IDLE_APP_ID):
             # some receivers store a volume set while idle but keep playing at the old level;
             # defer it and re-assert it for real at playback start
@@ -540,7 +543,7 @@ class ChromecastPlayer(Player):
         A plain send normally suffices: the device still reports the old, pre-idle level,
         so the target differs from it and takes effect. Only when the device is wedged - it
         already reports the target but keeps playing the old level, and de-duplicates a
-        resend of its own reported value - is a 1/255 nudge below the target needed first to
+        resend of its own reported value - is a 1/255 nudge off the target needed first to
         escape that. cc.set_volume is called directly because volume_set rounds to 0.01,
         which would swallow the 1/255 step.
         """
@@ -552,8 +555,13 @@ class ChromecastPlayer(Player):
         reported = self.cc.status.volume_level if self.cc.status else None
         try:
             if reported is not None and abs(reported - level) < 1 / 255:
-                await asyncio.to_thread(self.cc.set_volume, max(0.0, level - 1 / 255))
+                # nudge up at 0, where a step down would clamp back onto the target
+                nudge = level + 1 / 255 if level < 1 / 255 else level - 1 / 255
+                volume_sets = self._volume_sets
+                await asyncio.to_thread(self.cc.set_volume, nudge)
                 await asyncio.sleep(VOLUME_REASSERT_GAP)
+                if self._volume_sets != volume_sets:
+                    return  # a newer volume_set landed during the gap and must win
             await asyncio.to_thread(self.cc.set_volume, level)
         except PyChromecastError as err:
             self.logger.warning("Could not re-assert volume on %s: %s", self.display_name, err)
