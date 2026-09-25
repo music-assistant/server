@@ -12,7 +12,7 @@ from music_assistant_models.media_items import Artist, ProviderMapping, Track, U
 
 from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.controllers.music.constants import CONF_DELETED_PROVIDERS
-from music_assistant.controllers.streams.audio_analysis import AA_TABLE_ANALYSIS, AA_TABLE_FAILURES
+from music_assistant.controllers.streams.constants import AA_TABLE_ANALYSIS, AA_TABLE_FAILURES
 from music_assistant.mass import MusicAssistant
 
 FS_DOMAIN = "filesystem_local"

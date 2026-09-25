@@ -10,11 +10,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
-from music_assistant.controllers.streams.audio_analysis import (
-    AA_TABLE_ANALYSIS,
-    AA_TABLE_FAILURES,
-    AudioAnalysisController,
-)
+from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
+from music_assistant.controllers.streams.constants import AA_TABLE_ANALYSIS, AA_TABLE_FAILURES
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.music_provider import MusicProvider

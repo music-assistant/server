@@ -14,19 +14,19 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import Track
 
-import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
+import music_assistant.controllers.streams.constants as streams_constants
 from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_AUDIO_ANALYSIS_FAILURES,
     DB_TABLE_SETTINGS,
 )
-from music_assistant.controllers.streams.audio_analysis import (
+from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
+from music_assistant.controllers.streams.constants import (
     AA_DB_FILENAME,
     AA_DB_SCHEMA,
     AA_DB_SCHEMA_VERSION,
     AA_TABLE_ANALYSIS,
     AA_TABLE_FAILURES,
-    AudioAnalysisController,
 )
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.models.audio_analysis import AudioAnalysisData
@@ -99,6 +99,36 @@ async def test_setup_database_is_idempotent(
     await ctrl.setup_database()
     rows = await library_db.get_rows(f"{AA_DB_SCHEMA}.{DB_TABLE_SETTINGS}", {"key": "version"})
     assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_new_file_without_legacy_tables_skips_migration(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A fresh install is stamped with the current version without running the ladder."""
+    ctrl = _make_controller(library_db, tmp_path)
+    with caplog.at_level(logging.INFO):
+        await ctrl.setup_database()
+    assert ctrl.database_ready
+    assert "Migrating" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_legacy_tables_recreated_by_stable_are_moved_again(
+    library_db: DatabaseConnection, tmp_path: pathlib.Path
+) -> None:
+    """Rows a stable build wrote into library.db after a switch back are picked up again."""
+    ctrl = _make_controller(library_db, tmp_path)
+    await ctrl.setup_database()
+    await _seed_legacy(library_db, n_analysis=2, n_failures=1)
+
+    await ctrl.setup_database()
+
+    assert {r["item_id"] for r in await library_db.get_rows(AA_TABLE_ANALYSIS)} == {"t0", "t1"}
+    assert len(await library_db.get_rows(AA_TABLE_FAILURES)) == 1
+    main_tables = await _table_names(library_db, "main")
+    assert DB_TABLE_AUDIO_ANALYSIS not in main_tables
+    assert DB_TABLE_AUDIO_ANALYSIS_FAILURES not in main_tables
 
 
 @pytest.mark.asyncio
@@ -380,7 +410,7 @@ async def test_relocation_walks_id_ranges_in_batches(
     library_db: DatabaseConnection, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Relocation completes across multiple id-range batches, not just the first one."""
-    monkeypatch.setattr(audio_analysis_mod, "RELOCATE_BATCH_SIZE", 4)
+    monkeypatch.setattr(streams_constants, "RELOCATE_BATCH_SIZE", 4)
     await _seed_legacy(library_db, n_analysis=7, n_failures=0)  # ids 1..19 span 5 batches
     ctrl = _make_controller(library_db, tmp_path)
     await ctrl.setup_database()
@@ -705,6 +735,10 @@ async def test_failed_relocation_disables_analysis_until_restart(
     await ctrl.setup_database()
     await _assert_analysis_unavailable(ctrl)
     assert len(await library_db.get_rows(f"main.{failed_table}")) == 2
+    # the version is only stamped once every step succeeded, so the ladder runs again
+    assert (
+        await library_db.get_row(f"{AA_DB_SCHEMA}.{DB_TABLE_SETTINGS}", {"key": "version"}) is None
+    )
     monkeypatch.setattr(library_db, "execute", real_execute)
     restarted = _make_controller(library_db, tmp_path)
     await restarted.setup_database()

@@ -7,6 +7,11 @@ from typing import Final
 
 from music_assistant_models.enums import VolumeNormalizationMode
 
+from music_assistant.constants import (
+    DB_TABLE_AUDIO_ANALYSIS,
+    DB_TABLE_AUDIO_ANALYSIS_FAILURES,
+    DB_TABLE_SETTINGS,
+)
 from music_assistant.helpers.util import get_total_system_memory, meets_memory_target
 
 # What the volume normalization preference falls back to.
@@ -175,3 +180,14 @@ STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY: Final[str] = "inband_title_handoff"
 # stream title after an opted-in provider takes ownership of stream_metadata
 # (StreamDetails.stream_title is a derived view whose setter would overwrite it).
 STREAMDETAILS_INBAND_TITLE_KEY: Final[str] = "inband_stream_title"
+
+# The analysis tables live in their own SQLite file, attached onto the music connection
+# under this schema name so candidate/coverage queries can still join provider_mappings.
+AA_DB_SCHEMA: Final[str] = "aa"
+AA_DB_FILENAME: Final[str] = "audio_analysis.db"
+AA_DB_SCHEMA_VERSION: Final[int] = 1
+AA_TABLE_ANALYSIS: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_AUDIO_ANALYSIS}"
+AA_TABLE_FAILURES: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_AUDIO_ANALYSIS_FAILURES}"
+AA_TABLE_SETTINGS: Final[str] = f"{AA_DB_SCHEMA}.{DB_TABLE_SETTINGS}"
+# Legacy rows are copied out of library.db in id ranges of this size, one transaction each.
+RELOCATE_BATCH_SIZE: Final[int] = 5000

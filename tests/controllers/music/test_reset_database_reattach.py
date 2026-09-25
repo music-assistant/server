@@ -11,7 +11,7 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import ProviderUnavailableError
 
 from music_assistant.constants import DB_TABLE_AUDIO_ANALYSIS_FAILURES
-from music_assistant.controllers.streams.audio_analysis import (
+from music_assistant.controllers.streams.constants import (
     AA_DB_SCHEMA,
     AA_TABLE_ANALYSIS,
     AA_TABLE_FAILURES,

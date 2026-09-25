@@ -26,8 +26,6 @@ from music_assistant.constants import (
     _default_background_scan_concurrency,
 )
 from music_assistant.controllers.streams.audio_analysis import (
-    AA_DB_SCHEMA,
-    AA_TABLE_ANALYSIS,
     LOUDNESS_ANALYSIS_DOMAIN,
     LOUDNESS_PROVIDER_PRIORITY,
     PROVIDER_LOUDNESS_DOMAIN,
@@ -37,6 +35,7 @@ from music_assistant.controllers.streams.audio_analysis import (
     _merged_from_rows,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBufferEOF
+from music_assistant.controllers.streams.constants import AA_DB_SCHEMA, AA_TABLE_ANALYSIS
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
