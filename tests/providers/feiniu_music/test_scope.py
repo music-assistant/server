@@ -3,7 +3,7 @@
 import asyncio
 from copy import copy
 from typing import Any
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call
 
 import aiohttp
 import pytest
@@ -224,6 +224,55 @@ async def test_stream_business_rejection_is_not_reauthentication(
         await anext(provider.get_audio_stream(details))
     provider._reauthenticate.assert_not_awaited()
     assert (await provider.get_track("track-test")).item_id == "track-test"
+
+
+async def test_album_tracks_without_access_status_preserve_pagination(provider: Any) -> None:
+    """Album rows without access flags retain all pages in server order."""
+    rows = [{**track_data(), "guid": f"track-{index}"} for index in range(102)]
+    for row in rows:
+        row.pop("accessStatus")
+    provider._client.related = AsyncMock(
+        side_effect=[
+            {"list": rows[:100], "total": 102},
+            {"list": rows[100:], "total": 102},
+        ]
+    )
+    tracks = await provider.get_album_tracks("album-test")
+    assert [track.item_id for track in tracks] == [row["guid"] for row in rows]
+    assert provider._client.related.await_args_list == [
+        call("album", "album-test", 1),
+        call("album", "album-test", 2),
+    ]
+    provider._client.detail.assert_not_awaited()
+    provider._client.page.assert_not_awaited()
+    provider._client.playlists.assert_not_awaited()
+
+
+async def test_artist_albums_without_access_status_preserve_filtered_pages(provider: Any) -> None:
+    """Parse the server's filtered album pages without extra lookups or reordering."""
+    # The synthetic server response omits album-50 and has no per-row access flag.
+    rows = [
+        {"guid": f"album-{index}", "name": f"Album {index}"}
+        for index in reversed(range(103))
+        if index != 50
+    ]
+    provider._client.related = AsyncMock(
+        side_effect=[
+            {"list": rows[:100], "total": 102},
+            {"list": rows[100:], "total": 102},
+        ]
+    )
+    albums = await provider.get_artist_albums("artist-test")
+    assert [album.item_id for album in albums] == [row["guid"] for row in rows]
+    assert [album.name for album in albums] == [row["name"] for row in rows]
+    assert "album-50" not in {album.item_id for album in albums}
+    assert provider._client.related.await_args_list == [
+        call("artist", "artist-test", 1, albums=True),
+        call("artist", "artist-test", 2, albums=True),
+    ]
+    provider._client.detail.assert_not_awaited()
+    provider._client.page.assert_not_awaited()
+    provider._client.playlists.assert_not_awaited()
 
 
 async def test_playlist_filters_hidden_pages_without_truncating(provider: Any) -> None:

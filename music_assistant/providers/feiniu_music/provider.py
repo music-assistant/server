@@ -141,6 +141,8 @@ class FeiNiuProvider(MusicProvider):
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Read all pages of the album relationship."""
+        # Music 1.0.1 (0.8.41) album track rows omit accessStatus, unlike playlist rows.
+        # Inaccessible tracks are filtered from the album relationship server-side.
         return [
             cast("Track", self._bind_images(parse_track(item, self.instance_id)))
             async for item in self._pages(
@@ -152,6 +154,8 @@ class FeiNiuProvider(MusicProvider):
         """Read all pages of the artist's album relationship."""
         if prov_artist_id == UNKNOWN_ARTIST:
             return []
+        # Music 1.0.1 (0.8.41) artist relations filter inaccessible albums server-side
+        # and omit accessStatus, unlike playlist track rows.
         return [
             cast("Album", self._bind_images(parse_album(item, self.instance_id)))
             async for item in self._pages(

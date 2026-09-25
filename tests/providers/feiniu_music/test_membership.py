@@ -120,6 +120,8 @@ async def test_relationships_and_playlist_pages_do_not_read_membership(provider:
         if kind == "playlist":
             return {"list": [track_data()] * (100 if page == 1 else 2), "total": 102}
         row = {"guid": "album-test", "name": "Album"} if kind == "artist" else track_data()
+        if kind == "album":
+            row.pop("accessStatus")
         return {"list": [row], "total": 1}
 
     provider._client.related = AsyncMock(side_effect=related)
