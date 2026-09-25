@@ -6,7 +6,6 @@ import asyncio
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
-import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.auth import User, UserRole
@@ -22,22 +21,6 @@ if TYPE_CHECKING:
 async def drain_event_callbacks() -> None:
     """Yield to the event loop so pending event subscriber callbacks run."""
     await asyncio.sleep(0)
-
-
-@pytest.fixture
-def webserver(mass_minimal: MusicAssistant) -> WebserverController:
-    """Return a WebserverController with stubbed serialization dependencies."""
-    # stub the controllers referenced by the serialization resolvers
-    # (mass_minimal does not set up metadata/translations/tasks)
-    mass_minimal.metadata = SimpleNamespace(  # type: ignore[assignment]
-        compute_image_id=lambda provider, path: f"{provider}--{path}"
-    )
-    mass_minimal.translations = SimpleNamespace(  # type: ignore[assignment]
-        get_translation=lambda _key, **_kwargs: None
-    )
-    webserver = WebserverController(mass_minimal)
-    mass_minimal.webserver = webserver
-    return webserver
 
 
 def create_ws_client(
