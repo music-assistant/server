@@ -26,7 +26,7 @@ from music_assistant.controllers.player_queues.helpers import build_queue_item, 
 from music_assistant.helpers import guest_access
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import GuestSession, PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
@@ -479,6 +479,18 @@ class PartyPlugin(PluginProvider):
         await super().unload(is_removed)
 
     # ==================== Configuration API Commands ====================
+
+    async def get_active_guest_session(self) -> GuestSession | None:
+        """Return the active Party guest session through the shared plugin contract."""
+        if not (join_url := await self.get_party_url()):
+            return None
+        config = await self.get_party_config()
+        return GuestSession(
+            provider=self,
+            join_url=join_url,
+            name=config.party_name,
+            description=config.qr_text,
+        )
 
     async def get_party_url(self) -> str | None:
         """

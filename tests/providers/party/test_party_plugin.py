@@ -207,6 +207,34 @@ async def test_get_party_config_exposes_mode(mode: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_active_guest_session_maps_party_details() -> None:
+    """Party exposes its active session through the shared plugin contract."""
+    plugin = _create_party_plugin()
+    config = MagicMock(party_name="My Party", qr_text="Scan to join")
+    plugin.get_party_url = AsyncMock(return_value="https://example.test/?join=abc")  # type: ignore[method-assign]
+    plugin.get_party_config = AsyncMock(return_value=config)  # type: ignore[method-assign]
+
+    session = await plugin.get_active_guest_session()
+
+    assert session is not None
+    assert session.provider is plugin
+    assert session.join_url == "https://example.test/?join=abc"
+    assert session.name == "My Party"
+    assert session.description == "Scan to join"
+
+
+@pytest.mark.asyncio
+async def test_active_guest_session_is_absent_when_guest_access_is_off() -> None:
+    """Party does not advertise a session when it has no guest join URL."""
+    plugin = _create_party_plugin()
+    plugin.get_party_url = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    plugin.get_party_config = AsyncMock()  # type: ignore[method-assign]
+
+    assert await plugin.get_active_guest_session() is None
+    plugin.get_party_config.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_guest_readable_commands_use_guest_scope() -> None:
     """party/url and party/config stay on a guest-readable scope, never a host-only one."""
     plugin = _create_party_plugin()
