@@ -13,6 +13,7 @@ import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 
+from music_assistant.constants import CONF_MUTE_CONTROL, CONF_VOLUME_CONTROL
 from music_assistant.controllers.players import PlayerController
 from music_assistant.providers.snapcast.player import SnapCastPlayer
 from tests.common import MockPlayer, MockProvider, create_mock_config
@@ -131,3 +132,67 @@ class TestSnapCastVolumeFeatureExposure:
         assert snapcast_player.volume_control == sendspin_player.player_id
         assert snapcast_player.mute_control == sendspin_player.player_id
         assert snapcast_player.volume_control != PLAYER_CONTROL_NATIVE
+
+    def test_volume_control_reverts_to_native_when_protocol_cleared(
+        self,
+        snapcast_player: SnapCastPlayer,
+        sendspin_player: MockPlayer,
+        controller: PlayerController,
+    ) -> None:
+        """Once Sendspin stops being active, native volume/mute control returns."""
+        controller._players = {
+            snapcast_player.player_id: snapcast_player,
+            sendspin_player.player_id: sendspin_player,
+        }
+        snapcast_player.set_active_output_protocol(sendspin_player.player_id)
+        assert snapcast_player.volume_control == sendspin_player.player_id
+
+        snapcast_player.set_active_output_protocol(None)
+
+        assert snapcast_player.volume_control == PLAYER_CONTROL_NATIVE
+        assert snapcast_player.mute_control == PLAYER_CONTROL_NATIVE
+        assert PlayerFeature.VOLUME_SET in snapcast_player.supported_features
+        assert PlayerFeature.VOLUME_MUTE in snapcast_player.supported_features
+
+    def test_explicit_native_config_is_overridden_while_foreign_protocol_active(
+        self,
+        provider: MockProvider,
+        snapcast_player: SnapCastPlayer,
+        sendspin_player: MockPlayer,
+        controller: PlayerController,
+    ) -> None:
+        """An explicit Native setting is set aside while Sendspin plays - deliberate."""
+        provider.mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=lambda player_id, key, default=None: (
+                PLAYER_CONTROL_NATIVE
+                if player_id == snapcast_player.player_id
+                and key in (CONF_VOLUME_CONTROL, CONF_MUTE_CONTROL)
+                else default
+            )
+        )
+        controller._players = {
+            snapcast_player.player_id: snapcast_player,
+            sendspin_player.player_id: sendspin_player,
+        }
+        snapcast_player.set_active_output_protocol(sendspin_player.player_id)
+
+        assert snapcast_player.volume_control == sendspin_player.player_id
+        assert snapcast_player.mute_control == sendspin_player.player_id
+
+    def test_volume_control_for_output_still_native_before_protocol_marked_active(
+        self,
+        snapcast_player: SnapCastPlayer,
+        sendspin_player: MockPlayer,
+        controller: PlayerController,
+    ) -> None:
+        """Known gap: volume_control_for_output still returns native before Sendspin is active."""
+        controller._players = {
+            snapcast_player.player_id: snapcast_player,
+            sendspin_player.player_id: sendspin_player,
+        }
+
+        assert snapcast_player.active_output_protocol in (None, "native")
+        assert (
+            snapcast_player.volume_control_for_output(sendspin_player.player_id)
+            == PLAYER_CONTROL_NATIVE
+        )
