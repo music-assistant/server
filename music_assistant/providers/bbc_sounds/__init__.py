@@ -1,17 +1,23 @@
-"""
-BBC Sounds music provider support for MusicAssistant.
-
-TODO implement seeking of live stream
-"""
+"""BBC Sounds music provider support for MusicAssistant."""
 
 import asyncio
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Literal
+from zoneinfo import ZoneInfo
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ProviderConfig
-from music_assistant_models.enums import ConfigEntryType, ImageType, MediaType, ProviderFeature
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    ContentType,
+    ImageType,
+    MediaType,
+    ProviderFeature,
+    QueueOption,
+    StreamType,
+)
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
+    AudioFormat,
     BrowseFolder,
     ItemMapping,
     MediaItemImage,
@@ -35,6 +41,7 @@ from sounds import (
     PlayableItem,
     PlayStatus,
     RadioShow,
+    ScheduleItem,
     Segment,
     SoundsClient,
     exceptions,
@@ -52,6 +59,13 @@ from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 from music_assistant.providers.bbc_sounds.adaptor import Adaptor
 from music_assistant.providers.bbc_sounds.constants import ValidMenuIDs, _Constants
+from music_assistant.providers.bbc_sounds.live_rewind import (
+    LIVE_SEEK_TOLERANCE,
+    LiveProgrammeId,
+    http_fetchers,
+    rewind_playlist_url,
+    stream_programme,
+)
 from music_assistant.providers.bbc_sounds.metadata import (
     _find_segment,
     _segment_to_metadata,
@@ -59,6 +73,7 @@ from music_assistant.providers.bbc_sounds.metadata import (
 )
 
 if TYPE_CHECKING:
+    from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.provider import ProviderManifest
     from sounds.models import SoundsTypes
 
@@ -176,25 +191,11 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             raise MusicAssistantError(f"Incorrect track returned for {prov_track_id}")
         return track
 
-    @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
-        # If we are requesting a previously-aired radio show, we lose access to the
-        # schedule time. The best we can find out from the API is original release
-        # date, so the stream title loses access to the air date
         """Get full podcast episode details by id."""
-        self.logger.debug("Getting podcast episode for %s", prov_episode_id)
-        episode = await self.client.streaming.get_podcast_episode(prov_episode_id)
-        ma_episode = await self.adaptor.new_object(episode, force_type=PodcastEpisode)
-        if not ma_episode:
-            raise MusicAssistantError(f"Podcast episode {prov_episode_id} not found")
-        if not isinstance(ma_episode, PodcastEpisode):
-            raise MusicAssistantError(f"Incorrect format for podcast episode {prov_episode_id}")
-        ma_episode.name = (
-            episode.network.short_title
-            if episode.network and episode.network.short_title
-            else "Unknown"
-        )
-        return ma_episode
+        if programme_id := LiveProgrammeId.parse(prov_episode_id):
+            return await self._get_live_programme_episode(programme_id)
+        return await self._get_on_demand_episode(prov_episode_id)
 
     @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
@@ -332,7 +333,9 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         is_playing: bool = False,
     ) -> None:
         """Handle callback when a (playable) media item has been played."""
-        if self.logged_in:
+        # live programme ids are not known to the BBC, even when the programme has ended and
+        # was played from its on-demand version
+        if self.logged_in and not LiveProgrammeId.parse(prov_item_id):
             if media_type != MediaType.RADIO:
                 # Handle Sounds API play status updates
                 action = None
@@ -352,6 +355,43 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                         self.logger.debug("Updated play status: %s", success)
                     except exceptions.APIResponseError:
                         self.logger.exception("Error updating play status")
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes]:
+        """
+        Return the audio of a programme on air now, from its start plus the seek position.
+
+        :param streamdetails: Stream details of the programme.
+        :param seek_position: Position within the programme to start from, in seconds.
+        """
+        programme_id = LiveProgrammeId.parse(streamdetails.item_id)
+        if programme_id is None:
+            raise MediaNotFoundError(f"Not a live programme: {streamdetails.item_id}")
+        live_url = streamdetails.data["live_url"]
+        start = programme_id.start + seek_position
+        # the core replaces the buffer on a seek it can not serve, but leaves this stream
+        # running until it goes idle; stop following the live edge once that happens.
+        # The core attaches the buffer to the stream details before starting this stream.
+        own_buffer = streamdetails.buffer
+        fetch_text, fetch_bytes = http_fetchers(self.mass.http_session)
+        async for chunk in stream_programme(
+            fetch_text=fetch_text,
+            fetch_bytes=fetch_bytes,
+            rewind_url=rewind_playlist_url(live_url),
+            live_url=live_url,
+            start=start,
+            end=programme_id.end,
+            logger=self.logger,
+            on_start=lambda actual_start: self._snap_to_live(
+                streamdetails, programme_id, start, actual_start
+            ),
+            is_superseded=lambda: streamdetails.buffer is not own_buffer,
+        ):
+            yield chunk
+        if streamdetails.buffer is own_buffer:
+            # the programme is over: carry on with the station live, as the BBC players do
+            self.mass.create_task(self._continue_with_station(streamdetails, programme_id))
 
     @property
     def _menu_is_stale(self) -> bool:
@@ -541,6 +581,8 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a track/radio."""
         self.logger.debug("Getting stream details for %s (%s)", item_id, media_type)
+        if programme_id := LiveProgrammeId.parse(item_id):
+            return await self._live_programme_stream_details(programme_id)
         if media_type in [MediaType.PODCAST_EPISODE, MediaType.TRACK]:
             return await self._catch_up_stream_details(item_id, media_type)
         return await self._get_station_stream_details(item_id)
@@ -862,3 +904,142 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                 if isinstance(folder, RecommendationFolder):
                     folders.append(folder)
         return folders
+
+    @use_cache(expiration=_Constants.SHORT_EXPIRATION)
+    async def _get_live_programme_episode(self, programme_id: LiveProgrammeId) -> PodcastEpisode:
+        """Get the episode of a programme that is (or was) played from the live stream."""
+        date = (
+            datetime.from_utc_timestamp(programme_id.start)
+            .astimezone(ZoneInfo(_Constants.SCHEDULE_TIMEZONE))
+            .date()
+            .isoformat()
+        )
+        schedule = await self.client.schedules.get_schedule(
+            station_id=programme_id.station_id, date=date
+        )
+        # a programme that has aired is listed as a RadioShow rather than a ScheduleItem
+        for item in schedule.sub_items if schedule and schedule.sub_items else []:
+            if isinstance(item, (ScheduleItem, RadioShow)) and item.item_id == programme_id.pid:
+                return await self.adaptor.new_live_programme(item)
+        raise MediaNotFoundError(f"Programme {programme_id.pid} not found in the {date} schedule")
+
+    async def _live_programme_stream_details(self, programme_id: LiveProgrammeId) -> StreamDetails:
+        """Get stream details for a programme on air now, played from the live rewind window."""
+        if datetime.utc_timestamp() >= programme_id.end:
+            # once the programme is over its on-demand version is usually available
+            try:
+                return await self._catch_up_stream_details(
+                    programme_id.pid, MediaType.PODCAST_EPISODE
+                )
+            except MusicAssistantError, exceptions.SoundsException:
+                self.logger.debug(
+                    "No on-demand version of %s yet, using the live stream", programme_id.pid
+                )
+
+        # the rewind window is only offered on HLS, whatever the configured stream format
+        station = await self.client.stations.get_station(
+            programme_id.station_id, include_stream=True, stream_format=_Constants.HLS
+        )
+        if not station or not station.stream:
+            raise MediaNotFoundError(f"No live stream found for {programme_id.station_id}")
+        variant = await self.mass.streams.audio.get_hls_substream(str(station.stream))
+        live_url = variant.path
+        # fail here rather than once playback starts when the stream can not be rewound
+        rewind_playlist_url(live_url)
+        # no stream metadata: the queue item already describes the programme, whereas the
+        # station's current programme may be another one
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=programme_id.item_id,
+            # MPEG-TS segments, left for ffmpeg to detect
+            audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
+            media_type=MediaType.PODCAST_EPISODE,
+            stream_type=StreamType.CUSTOM,
+            duration=programme_id.duration,
+            allow_seek=True,
+            can_seek=True,
+            data={"live_url": live_url},
+            # keep these details, and the buffer seeks are checked against, for the whole
+            # programme; the live playlist URLs carry no expiring token
+            expiration=max(600, programme_id.end - int(datetime.utc_timestamp()) + 600),
+        )
+
+    @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
+    async def _get_on_demand_episode(self, prov_episode_id: str) -> PodcastEpisode:
+        """Get the details of an on-demand podcast episode or radio show by id."""
+        # If we are requesting a previously-aired radio show, we lose access to the
+        # schedule time. The best we can find out from the API is original release
+        # date, so the stream title loses access to the air date
+        self.logger.debug("Getting podcast episode for %s", prov_episode_id)
+        episode = await self.client.streaming.get_podcast_episode(prov_episode_id)
+        ma_episode = await self.adaptor.new_object(episode, force_type=PodcastEpisode)
+        if not ma_episode:
+            raise MusicAssistantError(f"Podcast episode {prov_episode_id} not found")
+        if not isinstance(ma_episode, PodcastEpisode):
+            raise MusicAssistantError(f"Incorrect format for podcast episode {prov_episode_id}")
+        ma_episode.name = (
+            episode.network.short_title
+            if episode.network and episode.network.short_title
+            else "Unknown"
+        )
+        return ma_episode
+
+    async def _continue_with_station(
+        self, streamdetails: StreamDetails, programme_id: LiveProgrammeId
+    ) -> None:
+        """
+        Queue the station's live stream after a live programme, when nothing else follows it.
+
+        :param streamdetails: Stream details of the programme that has finished streaming.
+        :param programme_id: The programme that has finished streaming.
+        """
+        if (
+            (queue := self._queue_playing(streamdetails)) is None
+            or queue.current_index is None
+            or self.mass.player_queues.get_next_item(queue.queue_id, queue.current_index)
+        ):
+            return
+        try:
+            station = await self.get_radio(programme_id.station_id)
+            await self.mass.player_queues.play_media(
+                queue.queue_id, station, option=QueueOption.ADD
+            )
+        except MusicAssistantError as err:
+            self.logger.warning(
+                "Couldn't queue %s after %s: %s", programme_id.station_id, programme_id.pid, err
+            )
+
+    def _snap_to_live(
+        self,
+        streamdetails: StreamDetails,
+        programme_id: LiveProgrammeId,
+        requested_start: float,
+        actual_start: float,
+    ) -> None:
+        """
+        Move the queue's position back to the live edge after a seek past it.
+
+        :param streamdetails: Stream details of the programme being streamed.
+        :param programme_id: The programme being streamed.
+        :param requested_start: The UTC timestamp the seek asked for.
+        :param actual_start: The UTC timestamp playback starts from.
+        """
+        if (
+            requested_start - actual_start <= LIVE_SEEK_TOLERANCE
+            or (queue := self._queue_playing(streamdetails)) is None
+        ):
+            return
+        position = max(0, int(actual_start) - programme_id.start)
+        self.logger.debug(
+            "Seek past the live edge of %s, moving to %ss", programme_id.pid, position
+        )
+        self.mass.create_task(self.mass.player_queues.seek(queue.queue_id, position))
+
+    def _queue_playing(self, streamdetails: StreamDetails) -> PlayerQueue | None:
+        """Return the queue whose current item is being streamed with these stream details."""
+        if not streamdetails.queue_id:
+            return None
+        queue = self.mass.player_queues.get(streamdetails.queue_id)
+        if queue is None or queue.current_item is None:
+            return None
+        return queue if queue.current_item.streamdetails is streamdetails else None
