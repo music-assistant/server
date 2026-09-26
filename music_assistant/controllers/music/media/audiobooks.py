@@ -427,10 +427,12 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 continue
             updated_types.add(artist_type.value)
             for artist in values:
-                if not isinstance(artist, Artist):
+                if isinstance(artist, Artist):
+                    # just to be sure
+                    artist.artist_type = artist_type
+                # a library item names its (already linked) artists as mappings
+                elif not (isinstance(artist, ItemMapping) and artist.provider == "library"):
                     continue
-                # just to be sure
-                artist.artist_type = artist_type
                 db_artist = await self._set_audiobook_author_narrator(db_id, artist=artist)
                 linked_ids.add(int(db_artist.item_id))
         if not updated_types:

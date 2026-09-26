@@ -227,3 +227,20 @@ async def test_overwriting_one_book_leaves_another_books_link_alone(
     assert await _linked(mass, narrated_id, ArtistType.AUTHOR) == {"Jane Austen"}
     assert await _linked(mass, narrated_id, ArtistType.NARRATOR) == {"New Voice"}
     assert await _stored_types(mass, "Kate Voice") == {"author"}
+
+
+async def test_overwrite_with_the_library_item_keeps_its_links(mass: MusicAssistant) -> None:
+    """A library item names its artists as library mappings, which must count as linked."""
+    db_id = await _add(
+        mass,
+        _book(
+            authors=[_artist("Jane Austen", ArtistType.AUTHOR)],
+            narrators=[_artist("Old Voice", ArtistType.NARRATOR)],
+        ),
+    )
+
+    library_item = await mass.music.audiobooks.get_library_item(db_id)
+    await mass.music.audiobooks.update_item_in_library(db_id, library_item, overwrite=True)
+
+    assert await _linked(mass, db_id, ArtistType.AUTHOR) == {"Jane Austen"}
+    assert await _linked(mass, db_id, ArtistType.NARRATOR) == {"Old Voice"}
