@@ -19,6 +19,7 @@ import aiofiles
 import shortuuid
 from aiofiles.os import wrap
 from music_assistant_models.enums import (
+    ArtistType,
     ContentType,
     EventType,
     ExternalID,
@@ -62,6 +63,7 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
+    DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
     VARIOUS_ARTISTS_MBID,
@@ -91,6 +93,7 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     AUDIOBOOK_EXTENSIONS,
+    AUTHOR_ID_PREFIX,
     AVAILABILITY_PROBE_INTERVAL,
     CACHE_CATEGORY_ALBUM_INFO,
     CACHE_CATEGORY_ARTIST_INFO,
@@ -100,6 +103,7 @@ from .constants import (
     CACHE_CATEGORY_PODCAST_EPISODES,
     CACHE_CATEGORY_PODCAST_METADATA,
     CACHE_CATEGORY_SOUND_EFFECTS,
+    CONF_AUTHOR_NARRATOR_REPARSE_DONE,
     CONF_CONTENT_TYPE,
     CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
@@ -114,6 +118,7 @@ from .constants import (
     IMAGE_EXTENSIONS,
     METADATA_FILE_CACHE_EXPIRATION,
     METADATA_FILE_EXTENSIONS,
+    NARRATOR_ID_PREFIX,
     NFO_FILENAMES,
     PARTIAL_LISTING_CACHE_EXPIRATION,
     PLAYLIST_EXTENSIONS,
@@ -217,6 +222,9 @@ class LocalFileSystemProvider(MusicProvider):
     _SYNC_CONCURRENCY: ClassVar[int] = 16
     _sync_tracks: bool = True
     _sync_playlists: bool = True
+    # set for the single sync that has to reparse an audiobook library that was
+    # indexed before authors/narrators became artists
+    _force_full_reparse: bool = False
 
     def __init__(
         self,
@@ -273,7 +281,11 @@ class LocalFileSystemProvider(MusicProvider):
         """Return the features supported by this Provider."""
         base_features = {*SUPPORTED_FEATURES}
         if self.media_content_type == "audiobooks":
-            return {ProviderFeature.LIBRARY_AUDIOBOOKS, *base_features}
+            return {
+                ProviderFeature.LIBRARY_AUDIOBOOKS,
+                ProviderFeature.LIBRARY_ARTISTS,
+                *base_features,
+            }
         if self.media_content_type == "podcasts":
             return {ProviderFeature.LIBRARY_PODCASTS, *base_features}
         if self.media_content_type == "sound_effects":
@@ -290,6 +302,13 @@ class LocalFileSystemProvider(MusicProvider):
             music_features.add(ProviderFeature.PLAYLIST_TRACKS_EDIT)
             music_features.add(ProviderFeature.PLAYLIST_CREATE)
         return music_features
+
+    @property
+    def supported_artist_types(self) -> set[ArtistType]:
+        """Supported artist types."""
+        if self.media_content_type == "audiobooks":
+            return {ArtistType.AUTHOR, ArtistType.NARRATOR}
+        return {ArtistType.SINGER}
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -507,6 +526,10 @@ class LocalFileSystemProvider(MusicProvider):
         elif self.media_content_type == "audiobooks":
             if not self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS.key):
                 return
+            self._force_full_reparse = not self.mass.config.get_raw_provider_config_value(
+                self.instance_id, CONF_AUTHOR_NARRATOR_REPARSE_DONE, False
+            )
+
         elif self.media_content_type == "podcasts":
             if not self.config.get_value(CONF_ENTRY_LIBRARY_SYNC_PODCASTS.key):
                 return
@@ -681,11 +704,24 @@ class LocalFileSystemProvider(MusicProvider):
             await self._process_deletions(deleted_files)
             await self._process_orphaned_albums_and_artists()
 
+        # disable a full rescan after promoting authors/ narrators to artists once the scan completed without errors
+        if self._force_full_reparse and not scan_errors.incomplete:
+            self._force_full_reparse = False
+            self._update_config_value(CONF_AUTHOR_NARRATOR_REPARSE_DONE, True, immediate=True)
+
         # flag provider as available again if an earlier sync had marked it down
         self._set_available(True)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
+        if prov_artist_id.startswith(AUTHOR_ID_PREFIX):
+            return self._parse_audiobook_artist(
+                prov_artist_id.removeprefix(AUTHOR_ID_PREFIX), ArtistType.AUTHOR
+            )
+        if prov_artist_id.startswith(NARRATOR_ID_PREFIX):
+            return self._parse_audiobook_artist(
+                prov_artist_id.removeprefix(NARRATOR_ID_PREFIX), ArtistType.NARRATOR
+            )
         db_artist = await self.mass.music.artists.get_library_item_by_prov_id(
             prov_artist_id, self.instance_id
         )
@@ -1332,7 +1368,7 @@ class LocalFileSystemProvider(MusicProvider):
         else:
             prev_checksum = file_checksums.get(item.relative_path)
             checksum_matches = item_checksum == prev_checksum
-        if checksum_matches:
+        if checksum_matches and not self._force_full_reparse:
             # unchanged, just record it as still present
             cur_filenames.add(item.relative_path)
             if is_cue:
@@ -2293,12 +2329,13 @@ class LocalFileSystemProvider(MusicProvider):
         ):
             await self.mass.music.albums.remove_item_from_library(db_row["item_id"])
 
-        # Remove artists without any tracks or albums
+        # Remove artists without any tracks, albums or audiobooks.
         query = (
             f"SELECT item_id FROM {DB_TABLE_ARTISTS} "
             f"WHERE item_id not in "
             f"( select artist_id from {DB_TABLE_TRACK_ARTISTS} "
-            f"UNION SELECT artist_id from {DB_TABLE_ALBUM_ARTISTS} ) "
+            f"UNION SELECT artist_id from {DB_TABLE_ALBUM_ARTISTS} "
+            f"UNION SELECT artist_id from {DB_TABLE_AUDIOBOOK_ARTISTS} ) "
             f"AND item_id in ( SELECT item_id from {DB_TABLE_PROVIDER_MAPPINGS} "
             f"WHERE provider_instance = '{self.instance_id}' and media_type = 'artist' )"
         )
@@ -2713,6 +2750,30 @@ class LocalFileSystemProvider(MusicProvider):
             None,
         )
 
+    def _parse_audiobook_artist(self, name: str, artist_type: ArtistType) -> Artist:
+        """
+        Build the Artist for an audiobook author or narrator.
+
+        :param name: The name as tagged on the audiobook file.
+        :param artist_type: Author or narrator.
+        """
+        prefix = AUTHOR_ID_PREFIX if artist_type == ArtistType.AUTHOR else NARRATOR_ID_PREFIX
+        prov_artist_id = f"{prefix}{name}"
+        return Artist(
+            item_id=prov_artist_id,
+            provider=self.instance_id,
+            name=name,
+            artist_type=artist_type,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=prov_artist_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    in_library=True,
+                )
+            },
+        )
+
     async def _parse_artist(
         self,
         name: str,
@@ -2909,7 +2970,14 @@ class LocalFileSystemProvider(MusicProvider):
             )
 
         # parse other info
-        audio_book.authors.set(tags.writers or tags.album_artists or tags.artists)
+        author_names = tags.authors
+        narrator_names = tags.narrators
+        audio_book.authors.set(
+            [self._parse_audiobook_artist(name, ArtistType.AUTHOR) for name in author_names]
+        )
+        audio_book.narrators.set(
+            [self._parse_audiobook_artist(name, ArtistType.NARRATOR) for name in narrator_names]
+        )
         audio_book.metadata.genres = (
             set(tags.genres) if tags.genres else {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
         )
