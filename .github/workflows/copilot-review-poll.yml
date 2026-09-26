@@ -1,0 +1,124 @@
+name: Copilot review after CI (poll)
+
+# Scheduled requester: every ~5 minutes, request a Copilot review on each open, non-draft PR whose
+# head commit has passed the required checks (`lint` and `test`) and has no Copilot review yet. A
+# push moves the head, so the new commit is reviewed once its CI is green again. This replaces the
+# `copilot_code_review` rule in dev's ruleset, which reviews on open and on every push, drafts
+# included, before CI has had a say.
+#
+# The review depth (Lite / Balanced) is not set here: requests pick it up from the repository's
+# Copilot code review settings.
+#
+# Why a poller and not `workflow_run` + `ready_for_review`: `workflow_run` carries no PR for runs
+# from forks, and a scheduled run executes as a trusted actor with the bot token — the same reasons
+# critical-gate-poll.yml polls. The cost is up to one poll interval of latency.
+
+on:  # yamllint disable-line rule:truthy
+  schedule:
+    # Off the round minutes, where GitHub's scheduler is busiest and delays or drops runs.
+    - cron: "2-59/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Only consider this PR number (for testing)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_APP_SLUG: musicassistant-bot
+  EXPECTED_APP_INSTALLATION_ID: "146062122"
+
+concurrency:
+  group: copilot-review-poll
+  cancel-in-progress: false
+
+jobs:
+  request:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🔑 Create musicassistant-bot token
+        id: bot_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-pull-requests: write
+          permission-checks: read
+
+      - name: 🤖 Verify GitHub App identity
+        env:
+          APP_SLUG: ${{ steps.bot_token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.bot_token.outputs.installation-id }}
+        run: |
+          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
+             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
+            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
+            exit 1
+          fi
+
+      - name: Request Copilot review on green, non-draft PRs
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          ONLY_PR: ${{ inputs.pr }}
+        with:
+          github-token: ${{ steps.bot_token.outputs.token }}
+          script: |
+            const { owner, repo } = context.repo;
+            const BASES = ['dev', 'stable'];
+            const REQUIRED = ['lint', 'test'];      // dev ruleset's required status checks
+            const ACTIONS_APP_ID = 15368;           // their integration_id: GitHub Actions
+            const PASSING = ['success', 'skipped']; // `test` is skipped on docs-only PRs
+            // REST reports the reviewer as the bot, a pending request as the Copilot user.
+            const COPILOT = new Set(['copilot-pull-request-reviewer[bot]', 'Copilot']);
+
+            async function checksGreen(sha) {
+              const runs = await github.paginate(github.rest.checks.listForRef,
+                { owner, repo, ref: sha, app_id: ACTIONS_APP_ID, filter: 'latest', per_page: 100 });
+              return REQUIRED.every(name => runs.some(r =>
+                r.name === name && r.status === 'completed' && PASSING.includes(r.conclusion)));
+            }
+
+            async function copilotPendingOrDone(pr) {
+              const requested = await github.rest.pulls.listRequestedReviewers(
+                { owner, repo, pull_number: pr.number });
+              if (requested.data.users.some(u => COPILOT.has(u.login))) return true;
+              const reviews = await github.paginate(github.rest.pulls.listReviews,
+                { owner, repo, pull_number: pr.number, per_page: 100 });
+              return reviews.some(r => r.user && COPILOT.has(r.user.login) && r.commit_id === pr.head.sha);
+            }
+
+            let prs;
+            if (process.env.ONLY_PR) {
+              const { data } = await github.rest.pulls.get(
+                { owner, repo, pull_number: Number(process.env.ONLY_PR) });
+              prs = data.state === 'open' ? [data] : [];
+            } else {
+              prs = await github.paginate(github.rest.pulls.list,
+                { owner, repo, state: 'open', per_page: 100 });
+            }
+
+            let failed = false, requested = 0;
+            for (const pr of prs) {
+              try {
+                if (pr.draft || !BASES.includes(pr.base.ref)) continue;
+                if (!(await checksGreen(pr.head.sha))) continue;
+                if (await copilotPendingOrDone(pr)) continue;
+
+                await github.rest.pulls.requestReviewers({
+                  owner, repo, pull_number: pr.number,
+                  reviewers: ['copilot-pull-request-reviewer[bot]'],
+                });
+                requested++;
+                core.info(`PR #${pr.number}: requested Copilot review of ${pr.head.sha.slice(0, 8)}.`);
+              } catch (e) {
+                failed = true;
+                core.error(`PR #${pr.number}: ${e.message}`);
+              }
+            }
+            core.info(`Scanned ${prs.length} open PRs; requested ${requested} reviews.`);
+            if (failed) core.setFailed('One or more review requests failed; see errors above.');
