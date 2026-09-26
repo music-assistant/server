@@ -90,6 +90,7 @@ class RadioController(MediaControllerBase[Radio]):
         SELECT
             {self._summary_base_columns()},
             {self.db_table}.is_dynamic,
+            {self.db_table}.is_endless,
             json_extract({self.db_table}.metadata, '$.description') AS description,
             {self._provider_mappings_query()} AS provider_mappings
             FROM {self.db_table}"""
@@ -97,14 +98,18 @@ class RadioController(MediaControllerBase[Radio]):
 
     async def radio_tracks(self, item_id: str, provider_instance_id_or_domain: str) -> list[Track]:
         """
-        Return a fresh batch of tracks for a dynamic radio station.
+        Return the preview/listing for a tracklisted radio station, dynamic or finite.
 
         :param item_id: The provider (or library) item id of the station.
         :param provider_instance_id_or_domain: The provider instance id or domain the
             item id belongs to ("library" for a library item).
         """
         radio = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-        return await self.dynamic_tracks(radio)
+        if radio.is_dynamic:
+            return await self.dynamic_tracks(radio)
+        if not radio.is_endless:
+            return await self.tracks(radio)
+        raise UnsupportedFeaturedException(f"{radio.name} has no tracklist")
 
     async def dynamic_tracks(self, radio: Radio) -> list[Track]:
         """
@@ -124,6 +129,29 @@ class RadioController(MediaControllerBase[Radio]):
         return await cast("MusicProvider | PluginProvider", provider).get_dynamic_radio_tracks(
             item_id
         )
+
+    async def tracks(self, radio: Radio) -> list[Track]:
+        """
+        Return the complete tracklist of an already resolved finite radio station.
+
+        :param radio: The finite station to fetch the tracklist for.
+        """
+        if radio.is_dynamic or radio.is_endless:
+            raise UnsupportedFeaturedException(f"{radio.name} has no finite tracklist")
+        provider_instance_id_or_domain, item_id = (
+            self._select_provider_id(radio)
+            if radio.provider == "library"
+            else (radio.provider, radio.item_id)
+        )
+        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
+            raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
+        provider = cast("MusicProvider | PluginProvider", provider)
+        tracks: list[Track] = []
+        page = 0
+        while batch := await provider.get_radio_tracks(item_id, page):
+            tracks.extend(batch)
+            page += 1
+        return tracks
 
     async def export_radios(self) -> str:
         """Export all library radio stations to M3U8 format."""
@@ -174,8 +202,9 @@ class RadioController(MediaControllerBase[Radio]):
     ) -> list[Radio]:
         """Return all versions of a radio station we can find on all providers."""
         radio = await self.get(item_id, provider_instance_id_or_domain)
-        if radio.is_dynamic:
-            # a dynamic station is its provider's own, so a same-named station is a different one
+        if radio.is_dynamic or not radio.is_endless:
+            # a tracklisted station (dynamic or finite) is its provider's own, so a
+            # same-named station is a different one
             return []
         # perform a search on all provider(types) to collect all versions/variants
         all_versions = {
@@ -242,8 +271,8 @@ class RadioController(MediaControllerBase[Radio]):
         """
         if db_radio.provider != "library":
             return  # Matching only supported for database items
-        if db_radio.is_dynamic:
-            # matching a dynamic station by name would link an unrelated radio stream to it
+        if db_radio.is_dynamic or not db_radio.is_endless:
+            # matching a tracklisted station by name would link an unrelated stream to it
             return
 
         # try to find match on all providers
@@ -279,6 +308,7 @@ class RadioController(MediaControllerBase[Radio]):
                 ),
                 "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
                 "is_dynamic": item.is_dynamic,
+                "is_endless": item.is_endless,
             },
         )
         # update/set external id lookup table
@@ -314,6 +344,7 @@ class RadioController(MediaControllerBase[Radio]):
                 if update.date_added
                 else UNSET,
                 "is_dynamic": update.is_dynamic,
+                "is_endless": update.is_endless,
             },
         )
         # update/set external id lookup table
@@ -333,6 +364,7 @@ class RadioController(MediaControllerBase[Radio]):
         """Parse a raw summary db row into a RadioSummary object."""
         item = cast("RadioSummary", super()._parse_summary_row(db_row))
         item.is_dynamic = bool(db_row["is_dynamic"])
+        item.is_endless = bool(db_row["is_endless"])
         item.metadata.description = db_row["description"]
         return item
 
