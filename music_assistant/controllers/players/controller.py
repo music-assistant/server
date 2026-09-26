@@ -3989,9 +3989,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     continue
                 try:
                     await self._handle_cmd_power(member.player_id, False)
-                except Exception:
-                    self.logger.exception(
-                        "Error while powering off group member %s", member.display_name
+                except MusicAssistantError as err:
+                    self.logger.warning(
+                        "Could not power off group member %s: %s", member.display_name, err
                     )
 
         # handle actual power command
