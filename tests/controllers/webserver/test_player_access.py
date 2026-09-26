@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.auth import User, UserRole
 
@@ -19,6 +20,9 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     player_access_filter,
     sendspin_player_id,
 )
+
+if TYPE_CHECKING:
+    from music_assistant.models.player import Player
 
 ALLOWED_PLAYER = "kitchen"
 OTHER_PLAYER = "living_room"
@@ -30,9 +34,9 @@ def _user(role: UserRole, player_filter: list[str]) -> User:
     return User(user_id="user_1", username="tester", role=role, player_filter=player_filter)
 
 
-def _player(player_id: str, *, private: bool) -> SimpleNamespace:
+def _player(player_id: str, *, private: bool) -> Player:
     """Build a stand-in player carrying just what the access rule reads."""
-    return SimpleNamespace(player_id=player_id, private=private)
+    return cast("Player", SimpleNamespace(player_id=player_id, private=private))
 
 
 @contextmanager

@@ -40,6 +40,7 @@ from music_assistant.helpers.provider_access import access_allows, with_derived_
 from .helpers.auth_middleware import (
     has_scope,
     is_request_from_ingress,
+    player_access_filter,
     resolve_command_impersonation,
     set_current_client_id,
     set_current_token,
@@ -573,9 +574,9 @@ class WebsocketClientHandler:
 
         def handle_event(event: MassEvent) -> None:
             # filter events for objects the user has no access to
+            player_filter = player_access_filter(self._authenticated_user)
             if (
-                self._authenticated_user
-                and self._authenticated_user.player_filter
+                player_filter is not None
                 and event.event
                 in (
                     EventType.PLAYER_ADDED,
@@ -588,7 +589,8 @@ class WebsocketClientHandler:
                     EventType.QUEUE_UPDATED,
                 )
                 and event.object_id
-                and event.object_id not in self._authenticated_user.player_filter
+                and event.object_id not in player_filter
+                # the private client player this connection announced is always allowed
                 and event.object_id != self._sendspin_player_id
             ):
                 return
