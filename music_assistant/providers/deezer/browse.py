@@ -68,6 +68,7 @@ from .parsers import (
     get_gw_item_image,
     parse_album,
     parse_artist,
+    parse_date,
     parse_gw_item,
     parse_gw_track,
     parse_playlist,
@@ -1117,11 +1118,17 @@ class DeezerBrowseManager:
             if result is None:
                 break
             all_edges.extend(result.tracks.edges)
-        return [
-            parse_track(self.provider, edge.node, position=idx)
-            for idx, edge in enumerate(all_edges, 1)
-            if edge.node is not None
-        ]
+        tracks: list[Track] = []
+        for idx, edge in enumerate(all_edges, 1):
+            if edge.node is None:
+                continue
+            track = parse_track(self.provider, edge.node, position=idx)
+            # when the track was added to the playlist, not to the library; getattr
+            # until the deezer-python-gql requirement includes added_at
+            added_at = getattr(edge, "added_at", None)
+            track.date_added = parse_date(added_at) if added_at else None
+            tracks.append(track)
+        return tracks
 
     @use_cache(3600)
     async def _get_flow_cover(self) -> str | None:
