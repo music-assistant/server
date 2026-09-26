@@ -2099,6 +2099,53 @@ class TestFormWaitsForLeaderUnsynced:
         assert sgp.sync_leader is None
 
 
+class TestFormReconcilesIncompatibleMembers:
+    """The form checks the tracked members against the settled leader."""
+
+    @pytest.mark.asyncio
+    async def test_form_drops_member_leader_cannot_group_with(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A member the settled leader can not group with is dropped with a warning."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        sgp.logger = logging.getLogger("test.sync_group")
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        leader.state.can_group_with = {"m2"}
+        member = _make_mock_player("m2", provider_domain="sonos")
+        incompatible = _make_mock_player("x", provider_domain="airplay")
+        mass.players.get_player = _player_lookup(
+            {"leader": leader, "m2": member, "x": incompatible}
+        )
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "m2", "x"]
+
+        with patch.object(sgp, "update_state"), caplog.at_level(logging.WARNING):
+            await sgp._form_syncgroup()
+
+        assert sgp._attr_group_members == ["leader", "m2"]
+        assert "Removing x from group" in caplog.text
+        mass.players._handle_set_members.assert_awaited_once_with(leader, player_ids_to_add=["m2"])
+
+    @pytest.mark.asyncio
+    async def test_form_keeps_members_when_leader_reports_nothing(self) -> None:
+        """A leader with an empty compatibility list has no say: nothing is dropped."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        leader.state.can_group_with = set()
+        member = _make_mock_player("m2", provider_domain="sonos")
+        mass.players.get_player = _player_lookup({"leader": leader, "m2": member})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "m2"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._form_syncgroup()
+
+        assert sgp._attr_group_members == ["leader", "m2"]
+        mass.players._handle_set_members.assert_awaited_once_with(leader, player_ids_to_add=["m2"])
+
+
 class TestWaitMemberUnsynced:
     """The helper that waits for a member's synced_to to clear (with recovery)."""
 

@@ -483,8 +483,9 @@ class SyncGroupPlayer(Player):
         final_players_to_add: list[str] = []
         can_group_with = sync_leader.state.can_group_with.copy() if sync_leader else set()
         # A leader that still reports being slaved has no compatibility list yet (it is
-        # empty while synced), so it can't tell us anything about the other joiners —
-        # the (re-)form validates them instead.
+        # empty while synced), so it can't tell us anything about the other joiners.
+        # Accept them here and let the form drop the incompatible ones again once the
+        # leader has settled and can be asked.
         leader_settling = bool(
             sync_leader and not sync_leader.state.can_group_with and sync_leader.state.synced_to
         )
@@ -514,8 +515,8 @@ class SyncGroupPlayer(Player):
                 and member_id not in can_group_with
             ):
                 # incompatible with the current leader's protocols - do NOT register
-                # the member or it will linger in _attr_group_members forever without
-                # ever actually being synced.
+                # the member or it would sit in _attr_group_members, reported as part
+                # of the group, without ever actually being synced.
                 self.logger.debug(
                     f"Cannot add {member.display_name} to group {self.display_name} since it's "
                     f"not compatible with the (current) sync leader"
@@ -748,6 +749,23 @@ class SyncGroupPlayer(Player):
                 # the group was dissolved or re-led while we waited —
                 # this form attempt is stale, abort
                 return
+        # The leader is settled now, so its compatibility list is meaningful: drop the
+        # members it can not play in sync with (e.g. one that joined while the leader
+        # was still slaved and set_members had nothing to validate against). A leader
+        # that still reports an empty list tells us nothing, so leave the members be.
+        if leader.state.can_group_with:
+            for member_id in [
+                x
+                for x in self._attr_group_members
+                if x != leader.player_id and x not in leader.state.can_group_with
+            ]:
+                self.logger.warning(
+                    "Removing %s from group %s: it can not be grouped with %s",
+                    member_id,
+                    self.display_name,
+                    leader.display_name,
+                )
+                self._attr_group_members.remove(member_id)
         # Translate the leader's group_members (may be protocol IDs) to parent IDs
         # so we can compare against our _attr_group_members (always parent IDs)
         already_synced = set(self._translate_to_parent_ids(leader.state.group_members))
