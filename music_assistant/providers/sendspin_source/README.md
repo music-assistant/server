@@ -73,6 +73,27 @@ playing silence indefinitely.
 Devices without `line_sense` have no trigger to offer, so they get no setting
 and stay manual.
 
+## Listing sources and following changes
+
+Clients list the current sources with `music/browse` on path
+`<instance_id>://`. The result contains the `audio_source` items the user's
+player filter allows, after any `..` back entry.
+
+When the set of listed sources changes, the provider emits a
+`PROVIDER_EVENT`:
+
+- `object_id`: `<instance_id>/sources`
+- `data`: `{"event": "sources_updated"}`
+
+This happens when a source client connects, disconnects or is removed, or when
+pairing or a trust change turns a client's source role on or off. A reconnect
+that leaves the set unchanged emits nothing. The event goes to every
+connected client, so it names no source. Treat it as a signal to re-fetch the
+browse listing, which applies the user's player filter. Nothing is emitted
+when the provider loads, because clients learn about that from
+`PROVIDERS_UPDATED`. When the provider unloads, it emits the event once if
+any sources were listed.
+
 ## Out of scope (for now)
 
 - Per-source latency overrides; the target latency is a provider-level
