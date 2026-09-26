@@ -753,12 +753,15 @@ class SyncGroupPlayer(Player):
         # members it can not play in sync with (e.g. one that joined while the leader
         # was still slaved and set_members had nothing to validate against). A leader
         # that still reports an empty list tells us nothing, so leave the members be.
+        # The list only holds available players, so an offline member is missing from
+        # it for that reason alone and stays in the group until it is back.
         if leader.state.can_group_with:
-            for member_id in [
-                x
-                for x in self._attr_group_members
-                if x != leader.player_id and x not in leader.state.can_group_with
-            ]:
+            for member_id in list(self._attr_group_members):
+                if member_id == leader.player_id or member_id in leader.state.can_group_with:
+                    continue
+                member = self.mass.players.get_player(member_id)
+                if member is None or not member.state.available:
+                    continue
                 self.logger.warning(
                     "Removing %s from group %s: it can not be grouped with %s",
                     member_id,

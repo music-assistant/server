@@ -2128,6 +2128,28 @@ class TestFormReconcilesIncompatibleMembers:
         mass.players._handle_set_members.assert_awaited_once_with(leader, player_ids_to_add=["m2"])
 
     @pytest.mark.asyncio
+    async def test_form_keeps_an_unavailable_member(self) -> None:
+        """An offline member is absent from the leader's list for that reason only: kept."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        leader.state.can_group_with = {"m2"}
+        member = _make_mock_player("m2", provider_domain="sonos")
+        offline = _make_mock_player("off", provider_domain="sonos")
+        offline.state.available = False
+        mass.players.get_player = _player_lookup({"leader": leader, "m2": member, "off": offline})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "m2", "off"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._form_syncgroup()
+
+        assert sgp._attr_group_members == ["leader", "m2", "off"]
+        mass.players._handle_set_members.assert_awaited_once_with(
+            leader, player_ids_to_add=["m2", "off"]
+        )
+
+    @pytest.mark.asyncio
     async def test_form_keeps_members_when_leader_reports_nothing(self) -> None:
         """A leader with an empty compatibility list has no say: nothing is dropped."""
         mass = _make_mock_mass()
