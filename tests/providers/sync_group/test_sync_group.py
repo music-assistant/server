@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import time
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -572,17 +574,6 @@ class TestActiveProtocolDomain:
 
         mass.players._handle_set_members.assert_not_awaited()
         mass.players._handle_cmd_stop.assert_not_awaited()
-
-
-class TestControllerLockCategory:
-    """Test that the controller's lock categories serialize correctly."""
-
-    def test_play_lock_key_format(self) -> None:
-        """Lock key for play category uses 'play_{player_id}' format."""
-        # The decorator uses lock category string as prefix
-        # play_media, set_members, enqueue_next_media all use "play" category
-        lock_key = "play_test_player_123"
-        assert lock_key.startswith("play_")
 
 
 class TestDynamicLeaderSwitch:
@@ -2372,7 +2363,7 @@ class TestDebouncedReform:
 
     @pytest.mark.asyncio
     async def test_reform_aborts_when_all_members_left(self) -> None:
-        """When the window drains the whole group, the re-form fires as a no-op."""
+        """When the window drains the whole group, the pending re-form is dropped at once."""
         mass = _make_mock_mass()
         sgp = self._setup_group(mass, members=["leader", "m2"])
 
@@ -2382,15 +2373,42 @@ class TestDebouncedReform:
             patch.object(sgp, "play", new=AsyncMock()) as play,
         ):
             await sgp.set_members(player_ids_to_remove=["leader"])
+            pending = sgp._reform_task
+            assert pending is not None
             await sgp.set_members(player_ids_to_remove=["m2"])
+
+            # no need to wait out the debounce window: an empty group has nothing
+            # to re-form for, so the members are released immediately
+            assert sgp._reform_task is None
+            assert sgp.is_active_session is False
+
+            await asyncio.gather(pending, return_exceptions=True)
+
+        play.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_skipped_reform_logs_why(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A re-form that finds nothing to do says so instead of returning silently."""
+        mass = _make_mock_mass()
+        sgp = self._setup_group(mass, members=["leader", "m2"])
+        sgp.logger = logging.getLogger("test.sync_group")
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+            patch.object(sgp, "play", new=AsyncMock()) as play,
+            caplog.at_level(logging.DEBUG),
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
             task = sgp._reform_task
             assert task is not None
+            # the group was re-formed by something else while the window was running
+            sgp.sync_leader = mass.players.get_player("m2")
 
             await task
 
         play.assert_not_awaited()
-        assert sgp._reform_task is None
-        assert sgp.is_active_session is False
+        assert "the group was re-formed meanwhile" in caplog.text
 
     @pytest.mark.asyncio
     async def test_explicit_play_supersedes_pending_reform(self) -> None:
@@ -2442,6 +2460,111 @@ class TestDebouncedReform:
         assert sgp.sync_leader is not None
         assert sgp.sync_leader.player_id == "m2"
         assert sgp._reform_task is None
+
+
+def _lock_with_side_effect(on_enter: Callable[[], None]) -> MagicMock:
+    """Build a get_player_lock mock that mutates state while the lock is being awaited."""
+    ctx = AsyncMock()
+
+    async def _enter(*_args: Any) -> None:
+        on_enter()
+
+    ctx.__aenter__.side_effect = _enter
+    ctx.__aexit__.return_value = False
+    return MagicMock(return_value=ctx)
+
+
+class TestLeaderChangedWhileWaitingForItsLock:
+    """A member change is dropped when the leader it was meant for is gone."""
+
+    def _setup_group(self, mass: MagicMock) -> tuple[SyncGroupPlayer, MagicMock]:
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="wiim")
+        leader.state.can_group_with = {"m2", "m3"}
+        members = {
+            "leader": leader,
+            "m2": _make_mock_player("m2", provider_domain="wiim"),
+            "m3": _make_mock_player("m3", provider_domain="wiim"),
+        }
+        mass.players.get_player = _player_lookup(members)
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "m2"]
+        sgp._attr_playback_state = PlaybackState.PLAYING
+        return sgp, leader
+
+    @pytest.mark.asyncio
+    async def test_member_change_is_dropped_when_the_leader_was_dissolved(self) -> None:
+        """A leader that dissolved while we waited for its lock is not commanded."""
+        mass = _make_mock_mass()
+        sgp, _ = self._setup_group(mass)
+        sgp._reform_task = None
+        mass.players.get_player_lock = _lock_with_side_effect(
+            lambda: setattr(sgp, "sync_leader", None)
+        )
+
+        with patch.object(sgp, "update_state"):
+            await sgp.set_members(player_ids_to_add=["m3"])
+
+        mass.players._handle_set_members.assert_not_awaited()
+        # the member is recorded, so the next form picks it up
+        assert "m3" in sgp._attr_group_members
+        assert sgp._reform_task is None
+
+    @pytest.mark.asyncio
+    async def test_leader_swapped_under_the_lock_is_not_commanded(self) -> None:
+        """A leader that was replaced while we waited for its lock is not commanded either."""
+        mass = _make_mock_mass()
+        sgp, _ = self._setup_group(mass)
+        sgp._reform_task = MagicMock()  # a re-form is pending
+        new_leader = _make_mock_player("m2", provider_domain="wiim")
+        mass.players.get_player_lock = _lock_with_side_effect(
+            lambda: setattr(sgp, "sync_leader", new_leader)
+        )
+
+        with (
+            patch.object(sgp, "update_state"),
+            patch.object(sgp, "_schedule_reform_timer") as schedule_reform,
+        ):
+            await sgp.set_members(player_ids_to_add=["m3"])
+
+        mass.players._handle_set_members.assert_not_awaited()
+        assert sgp.sync_leader is new_leader
+        # a re-form only runs on a leaderless group, so re-arming it would be a no-op
+        schedule_reform.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_pending_reform_is_rearmed_for_the_final_member_list(self) -> None:
+        """The pending re-form is the retry: it re-forms with the newly added member."""
+        mass = _make_mock_mass()
+        sgp, _ = self._setup_group(mass)
+        mass.create_task = MagicMock(
+            side_effect=lambda coro, *_a, **_k: asyncio.Task(
+                coro, loop=asyncio.get_running_loop(), eager_start=True
+            )
+        )
+        mass.players.get_player_lock = _lock_with_side_effect(
+            lambda: setattr(sgp, "sync_leader", None)
+        )
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+            patch.object(sgp, "play", new=AsyncMock()) as play,
+        ):
+            sgp._schedule_reform_timer()
+            pending = sgp._reform_task
+            assert pending is not None
+
+            await sgp.set_members(player_ids_to_add=["m3"])
+
+            rearmed = sgp._reform_task
+            assert rearmed is not None
+            assert rearmed is not pending
+
+            await asyncio.gather(pending, rearmed, return_exceptions=True)
+
+        play.assert_awaited_once()
+        assert "m3" in sgp._attr_group_members
 
 
 class TestReformResumeGate:
