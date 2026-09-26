@@ -1,5 +1,6 @@
 """Tests for player queue sort functionality."""
 
+from datetime import UTC, datetime
 from typing import cast
 
 from music_assistant_models.media_items import Album, Artist, Track
@@ -42,6 +43,7 @@ def _make_track(
     track_number: int = 1,
     disc_number: int = 1,
     item_id: str | None = None,
+    date_added: datetime | None = None,
 ) -> Track:
     artist = _make_artist(artist_name)
     album = _make_album(album_name)
@@ -56,6 +58,7 @@ def _make_track(
         track_number=track_number,
         disc_number=disc_number,
         provider_mappings=_make_provider_mappings(),
+        date_added=date_added,
     )
 
 
@@ -144,6 +147,31 @@ class TestSortTracks:
         ]
         result = sort_tracks(tracks, "position_desc")
         assert [t.position for t in result] == [3, 2, 1]
+
+    def test_sort_by_date_added(self) -> None:
+        """Tracks are sorted by when they were added, oldest or newest first."""
+        tracks: list[PlaylistPlayableItem] = [
+            _make_track("Middle", date_added=datetime(2024, 3, 1, tzinfo=UTC)),
+            _make_track("Newest", date_added=datetime(2024, 5, 10, tzinfo=UTC)),
+            _make_track("Oldest", date_added=datetime(2024, 1, 15, tzinfo=UTC)),
+        ]
+        result = sort_tracks(tracks, "timestamp_added")
+        assert [t.name for t in result] == ["Oldest", "Middle", "Newest"]
+        result = sort_tracks(tracks, "timestamp_added_desc")
+        assert [t.name for t in result] == ["Newest", "Middle", "Oldest"]
+
+    def test_sort_by_date_added_desc_keeps_batches_in_order(self) -> None:
+        """Tracks added together keep their playlist order, and undated ones go last."""
+        batch = datetime(2024, 3, 1, 12, 0, 0, tzinfo=UTC)
+        tracks: list[PlaylistPlayableItem] = [
+            _make_track("Batch1", date_added=batch),
+            _make_track("Undated"),
+            _make_track("Batch2", date_added=batch),
+            _make_track("Newer", date_added=datetime(2024, 5, 10, tzinfo=UTC)),
+            _make_track("Batch3", date_added=batch),
+        ]
+        result = sort_tracks(tracks, "timestamp_added_desc")
+        assert [t.name for t in result] == ["Newer", "Batch1", "Batch2", "Batch3", "Undated"]
 
     def test_sort_by_track_number(self) -> None:
         """Tracks are sorted by disc then track number."""
