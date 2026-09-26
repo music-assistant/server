@@ -1473,13 +1473,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             for mapping in self._write_target_mappings(full_item.provider_mappings)
         }
         for prov_mapping in full_item.provider_mappings:
+            if prov_mapping.provider_instance not in write_targets:
+                # somebody else's account: the mapping stays for matching and playback, but
+                # the item is not in that account's library and nothing is written there
+                continue
             # we optimistically set in library to True to prevent items
             # from disappearing when the provider doesn't support library edit
             # or 2-way sync is disabled.
             prov_mapping.in_library = True
-            if prov_mapping.provider_instance not in write_targets:
-                # somebody else's account: the library row is this user's, the write is not
-                continue
             provider = exact_provider(self.mass, prov_mapping.provider_instance)
             if not isinstance(provider, MusicProvider) or not self.library_edit_supported(
                 provider, full_item.media_type

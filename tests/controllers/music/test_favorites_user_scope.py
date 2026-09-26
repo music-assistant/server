@@ -344,7 +344,7 @@ async def test_remove_item_from_library_writes_only_to_the_own_source(
 async def test_add_item_to_library_writes_only_to_the_own_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The provider-side add goes to the own account; every mapping still reads in_library."""
+    """The provider-side add goes to the own account, and only that mapping reads in_library."""
     _as_user(monkeypatch, _user())
     controller = _controller(THREE_ACCOUNTS)
     mappings = [_mapping(MINE, "mine-42"), _mapping(THEIRS, "theirs-42")]
@@ -360,7 +360,7 @@ async def test_add_item_to_library_writes_only_to_the_own_source(
     seen = controller.providers_seen  # type: ignore[attr-defined]
     assert seen[MINE].library_add.call_count == 1
     assert THEIRS not in seen
-    assert all(m.in_library for m in mappings)
+    assert [m.in_library for m in mappings] == [True, False]
 
 
 async def test_a_down_own_source_is_skipped_rather_than_served_by_a_sibling(
