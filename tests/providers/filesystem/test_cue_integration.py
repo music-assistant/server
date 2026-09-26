@@ -976,3 +976,56 @@ class TestClassifyScanItemCue:
         )
         assert items == [(cue_item, None)]
         assert unchanged == []
+
+
+class TestBrowseCueSheets:
+    """Tests for how browse lists folders that contain CUE sheets."""
+
+    @staticmethod
+    def _file_item(tmp_path: Path, name: str) -> FileSystemItem:
+        """Build a FileSystemItem for a file that already exists under tmp_path."""
+        file_path = tmp_path / name
+        return FileSystemItem(
+            filename=name,
+            relative_path=name,
+            absolute_path=str(file_path),
+            is_dir=False,
+            checksum="1",
+            file_size=file_path.stat().st_size,
+            created_at=1700000000,
+        )
+
+    async def _browse(self, tmp_path: Path, names: list[str]) -> list[str]:
+        """Browse the folder holding the given files and return the listed item ids."""
+        provider = _make_provider(base_path=str(tmp_path))
+        items = [self._file_item(tmp_path, name) for name in names]
+        provider._scandir = AsyncMock(return_value=items)  # type: ignore[method-assign]
+        provider.mass.music.tracks.get_library_item_by_prov_id = AsyncMock(  # type: ignore[method-assign]
+            return_value=None
+        )
+        result = await provider.browse("filesystem_local--test://")
+        return [item.item_id for item in result]
+
+    @pytest.mark.asyncio
+    async def test_cue_with_missing_audio_is_skipped(self, tmp_path: Path) -> None:
+        """A CUE sheet whose audio file is gone adds no tracks and hides nothing."""
+        (tmp_path / "album.cue").write_text(SAMPLE_CUE, encoding="utf-8")
+        (tmp_path / "01 - Down to the Waterline.flac").write_bytes(b"fake")
+        (tmp_path / "02 - Six Blade Knife.flac").write_bytes(b"fake")
+
+        item_ids = await self._browse(
+            tmp_path,
+            ["album.cue", "01 - Down to the Waterline.flac", "02 - Six Blade Knife.flac"],
+        )
+
+        assert item_ids == ["01 - Down to the Waterline.flac", "02 - Six Blade Knife.flac"]
+
+    @pytest.mark.asyncio
+    async def test_cue_with_audio_lists_cue_tracks(self, tmp_path: Path) -> None:
+        """A CUE sheet with its audio file present lists its tracks and hides the audio file."""
+        (tmp_path / "album.cue").write_text(SAMPLE_CUE, encoding="utf-8")
+        (tmp_path / "album.flac").write_bytes(b"fake")
+
+        item_ids = await self._browse(tmp_path, ["album.cue", "album.flac"])
+
+        assert item_ids == [make_cue_track_id("album.cue", number) for number in (1, 2, 3)]
