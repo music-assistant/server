@@ -192,18 +192,16 @@ class AudiobookSyncDetails(LibraryItemSyncDetails):
     fully_played: bool | None
     resume_position_ms: int | None
 
-    def authors_narrators_changed(self, prov_item: MediaItemType) -> bool:
+    def authors_narrators_changed(self, audiobook: Audiobook) -> bool:
         """
         Return True when the provider's authors/narrators differ from the stored ones.
 
-        :param prov_item: The audiobook as the provider currently reports it.
+        :param audiobook: The audiobook as the provider currently reports it.
         """
-        if not isinstance(prov_item, Audiobook):
-            return False
-        instance_id = prov_item.provider
+        instance_id = audiobook.provider
         roles = (
-            (ArtistType.AUTHOR, self.authors, prov_item.authors),
-            (ArtistType.NARRATOR, self.narrators, prov_item.narrators),
+            (ArtistType.AUTHOR, self.authors, audiobook.authors),
+            (ArtistType.NARRATOR, self.narrators, audiobook.narrators),
         )
         # a provider reporting nobody does not mean the book has nobody
         covered = {artist_type.value for artist_type, _, prov_values in roles if prov_values}
