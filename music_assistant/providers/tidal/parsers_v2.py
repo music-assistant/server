@@ -32,7 +32,12 @@ from music_assistant_models.media_items import (
 
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 
-from .constants import SKIPPABLE_ITEM_ERRORS
+from .constants import (
+    BIT_DEPTH_HIRES,
+    BIT_DEPTH_LOSSLESS,
+    MEDIA_TAG_HIRES_LOSSLESS,
+    SKIPPABLE_ITEM_ERRORS,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -133,7 +138,9 @@ def parse_album(provider: TidalProvider, doc: JsonApiDocument, resource: dict[st
                 item_id=album_id,
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
-                audio_format=AudioFormat(content_type=ContentType.FLAC),
+                audio_format=AudioFormat(
+                    content_type=ContentType.FLAC, bit_depth=_bit_depth(attributes)
+                ),
                 url=f"https://tidal.com/album/{album_id}",
                 available=available,
             )
@@ -179,7 +186,6 @@ def parse_track(provider: TidalProvider, doc: JsonApiDocument, resource: dict[st
     name, version = _split_title_version(
         attributes.get("title", "Unknown"), attributes.get("version") or None
     )
-    hi_res_lossless = "HIRES_LOSSLESS" in (attributes.get("mediaTags") or [])
     availability = attributes.get("availability")
     available = "STREAM" in availability if availability is not None else True
     track = Track(
@@ -195,7 +201,7 @@ def parse_track(provider: TidalProvider, doc: JsonApiDocument, resource: dict[st
                 provider_instance=provider.instance_id,
                 audio_format=AudioFormat(
                     content_type=ContentType.FLAC,
-                    bit_depth=24 if hi_res_lossless else 16,
+                    bit_depth=_bit_depth(attributes),
                 ),
                 url=f"https://tidal.com/track/{track_id}",
                 available=available,
@@ -490,3 +496,10 @@ def _select_image_url(files: list[dict[str, Any]]) -> str | None:
         return (below, distance)
 
     return str(min(usable, key=sort_key)["href"])
+
+
+def _bit_depth(attributes: Mapping[str, Any]) -> int:
+    """Return the bit depth implied by a resource's media tags."""
+    if MEDIA_TAG_HIRES_LOSSLESS in (attributes.get("mediaTags") or []):
+        return BIT_DEPTH_HIRES
+    return BIT_DEPTH_LOSSLESS
