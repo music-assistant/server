@@ -482,6 +482,12 @@ class SyncGroupPlayer(Player):
         # handle additions
         final_players_to_add: list[str] = []
         can_group_with = sync_leader.state.can_group_with.copy() if sync_leader else set()
+        # A leader that still reports being slaved has no compatibility list yet (it is
+        # empty while synced), so it can't tell us anything about the other joiners —
+        # the (re-)form validates them instead.
+        leader_settling = bool(
+            sync_leader and not sync_leader.state.can_group_with and sync_leader.state.synced_to
+        )
         for member_id in player_ids_to_add or []:
             if member_id == self.player_id:
                 continue  # can not add self as member
@@ -502,7 +508,11 @@ class SyncGroupPlayer(Player):
                 if member_id not in self._attr_group_members:
                     self._attr_group_members.append(member_id)
                 continue
-            if member_id != sync_leader.player_id and member_id not in can_group_with:
+            if (
+                member_id != sync_leader.player_id
+                and not leader_settling
+                and member_id not in can_group_with
+            ):
                 # incompatible with the current leader's protocols - do NOT register
                 # the member or it will linger in _attr_group_members forever without
                 # ever actually being synced.

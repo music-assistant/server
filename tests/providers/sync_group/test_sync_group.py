@@ -1177,6 +1177,30 @@ class TestSetMembersDoesNotRegisterIncompatible:
         assert kwargs.get("player_ids_to_add") == ["compatible"]
 
     @pytest.mark.asyncio
+    async def test_incompatible_member_is_refused_by_a_leader_that_reports_compatibility(
+        self,
+    ) -> None:
+        """A prospective leader that does report a compatibility list still refuses joiners."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        # still slaved, but it already reports what it can group with
+        registered = _make_mock_player("registered", provider_domain="sonos")
+        registered.state.can_group_with = {"registered", "compatible"}
+        registered.state.synced_to = "old_leader"
+        incompatible = _make_mock_player("incompatible", provider_domain="alien_protocol")
+
+        mass.players.get_player = _player_lookup(
+            {"registered": registered, "incompatible": incompatible}
+        )
+        sgp.sync_leader = None
+        sgp._attr_group_members = ["registered"]
+
+        await sgp.set_members(player_ids_to_add=["incompatible"])
+
+        assert sgp._attr_group_members == ["registered"]
+
+    @pytest.mark.asyncio
     async def test_member_added_when_no_leader_yet(self) -> None:
         """Adding to an empty/unformed group must register the member regardless."""
         mass = _make_mock_mass()
@@ -2631,6 +2655,61 @@ class TestDebouncedReform:
 
         assert sgp.sync_leader is m2
         mass.players._handle_play_media.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_second_join_after_dissolve_is_registered_too(self) -> None:
+        """
+        Two speakers re-joining in the same window both end up in the group.
+
+        Regression: the first (still slaved) re-joiner was picked as prospective
+        leader and reports no compatible players at all, so the second speaker
+        was silently dropped as "incompatible".
+        """
+        mass = _make_mock_mass()
+        sgp = self._setup_group(mass, members=["leader", "m2", "m3"])
+        mass.players.cmd_resume = AsyncMock()
+        m2 = mass.players.get_player("m2")
+        m3 = mass.players.get_player("m3")
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+        ):
+            # the leader is powered off and the other members leave right after
+            await sgp.set_members(player_ids_to_remove=["leader"])
+            await sgp.set_members(player_ids_to_remove=["m2"])
+            await sgp.set_members(player_ids_to_remove=["m3"])
+            assert sgp._attr_group_members == []
+
+            # both still report the old sync state (Sonos propagates group state async)
+            for member in (m2, m3):
+                member.state.synced_to = "leader"
+                member.state.can_group_with = set()
+                member.state.active_group = sgp.player_id
+                member.synced_to = "leader"
+            mass.players.iter_players = MagicMock(return_value=[m2, m3])
+
+            # the controller only forwards a join when the group offers the player
+            assert "m2" in sgp.can_group_with
+            await sgp.set_members(player_ids_to_add=["m2"])
+            assert "m3" in sgp.can_group_with
+            await sgp.set_members(player_ids_to_add=["m3"])
+
+            assert sgp._attr_group_members == ["m2", "m3"]
+            assert sgp._reform_task is not None
+
+            # the sync state settles before the debounced re-form fires
+            for member in (m2, m3):
+                member.state.synced_to = None
+                member.synced_to = None
+            await sgp._reform_task
+
+        mass.players.cmd_resume.assert_awaited_once()
+        assert sgp.sync_leader is m2
+        assert any(
+            call.kwargs.get("player_ids_to_add") == ["m3"]
+            for call in mass.players._handle_set_members.await_args_list
+        )
 
 
 def _lock_with_side_effect(on_enter: Callable[[], None]) -> MagicMock:
