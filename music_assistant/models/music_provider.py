@@ -1558,7 +1558,7 @@ class MusicProvider(Provider):
                         lib_resume_position_ms = library_item.resume_position_ms
                     elif self._library_item_needs_update(
                         sync_details, prov_item
-                    ) or sync_details.details_changed(prov_item):
+                    ) or sync_details.authors_narrators_changed(prov_item):
                         library_item = await self.mass.music.audiobooks.update_item_in_library(
                             sync_details.item_id, prov_item
                         )

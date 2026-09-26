@@ -192,7 +192,7 @@ class AudiobookSyncDetails(LibraryItemSyncDetails):
     fully_played: bool | None
     resume_position_ms: int | None
 
-    def details_changed(self, prov_item: MediaItemType) -> bool:
+    def authors_narrators_changed(self, prov_item: MediaItemType) -> bool:
         """
         Return True when the provider's authors/narrators differ from the stored ones.
 

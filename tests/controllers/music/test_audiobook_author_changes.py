@@ -126,7 +126,10 @@ async def _settled(mass: MusicAssistant, provider: _Provider, book: Audiobook) -
     """Return True when a further sync of the same book finds nothing to update."""
     details = await mass.music.audiobooks.get_library_item_sync_details(book.provider_mappings)
     assert isinstance(details, AudiobookSyncDetails)
-    return not (provider._library_item_needs_update(details, book) or details.details_changed(book))
+    return not (
+        provider._library_item_needs_update(details, book)
+        or details.authors_narrators_changed(book)
+    )
 
 
 async def _linked(mass: MusicAssistant, db_id: int, artist_type: ArtistType) -> set[str]:
