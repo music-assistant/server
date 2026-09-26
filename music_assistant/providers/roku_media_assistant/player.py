@@ -215,6 +215,9 @@ class MediaAssistantPlayer(Player):
             )
             self._attr_powered = True
             self._attr_current_media = media
+            # A new stream restarts the Roku's position (at the seek position after a
+            # seek); None, not 0, so the next poll doesn't read that as an advance.
+            self._attr_elapsed_time = None
             self.update_state()
         except Exception:
             self.logger.error("Failed to Play Media on: %s", self.name)

@@ -80,7 +80,8 @@ class MediaAssistantprovider(PlayerProvider):
         if self.roku_players is None:
             return  # type: ignore[unreachable]
         async with TaskManager(self.mass) as tg:
-            for roku_player in self.roku_players.values():
+            # each disconnect removes its player from roku_players
+            for roku_player in list(self.roku_players.values()):
                 tg.create_task(self._device_disconnect(roku_player))
 
     async def on_upnp_service_discovered(
