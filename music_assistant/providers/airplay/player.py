@@ -628,16 +628,12 @@ class AirPlayPlayer(Player):
                         return
                     # warm replacement failed; fall through to a cold restart
 
-                # Cold path: stop any existing stream and set up from scratch
+                # Cold path: stop any existing stream and set up from scratch. The
+                # publication is left in place: the new session's _start_client
+                # stops and replaces whatever is published under the spawn lock, so
+                # that teardown stays the only place a publication is dropped.
                 if self.stream and self.stream.running and self.stream.session:
-                    stopped_stream = self.stream
                     await self.stream.session.stop()
-                    # Only drop what this call stopped: tearing a group session down
-                    # awaits every member, and a bridge can publish its own stream
-                    # here. Erasing that would leave the start below with nothing to
-                    # displace and a live process still on the speaker.
-                    if self.stream is stopped_stream:
-                        self.stream = None
 
                 # select audio source
                 audio_source = self.mass.streams.get_stream(
