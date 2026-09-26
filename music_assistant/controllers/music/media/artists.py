@@ -54,7 +54,7 @@ from music_assistant.helpers.compare import (
 )
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.music_provider import PROVIDER_FETCH_ERRORS, MusicProvider
 
 from .base import MediaControllerBase
 
@@ -423,12 +423,25 @@ class ArtistsController(MediaControllerBase[Artist]):
             if artist_type == ArtistType.AUTHOR
             else self.get_provider_narrator_audiobooks
         )
+        provider_error: Exception | None = None
         for provider_mapping in library_artist.provider_mappings:
             if provider_mapping.provider_instance not in unique_providers:
                 continue
-            provider_audiobooks = await audiobook_method(
-                provider_mapping.item_id, provider_mapping.provider_instance
-            )
+            try:
+                provider_audiobooks = await audiobook_method(
+                    provider_mapping.item_id, provider_mapping.provider_instance
+                )
+            except PROVIDER_FETCH_ERRORS as err:
+                # one failing provider must not take the whole listing down: the audiobooks
+                # from the library and the other providers are still playable
+                provider_error = err
+                self.logger.warning(
+                    "Unable to fetch audiobooks for %s from provider %s: %s",
+                    library_artist.name,
+                    provider_mapping.provider_instance,
+                    err,
+                )
+                continue
             for provider_audiobook in provider_audiobooks:
                 unique_id = f"{provider_audiobook.name}.{provider_audiobook.version}"
                 if unique_id in unique_ids:
@@ -441,6 +454,9 @@ class ArtistsController(MediaControllerBase[Artist]):
                     result.append(db_item)
                 elif not in_library_only:
                     result.append(provider_audiobook)
+        if provider_error is not None and not any(item.available for item in result):
+            # nothing could be played at all, so surface the reason instead of an empty list
+            raise provider_error
         return result
 
     async def get_library_author_narrator_audiobooks(
@@ -722,13 +738,29 @@ class ArtistsController(MediaControllerBase[Artist]):
         # fallback: enumerate (and dedupe) the tracks of all the artist's albums on the provider
         result: list[Track] = []
         unique_ids: set[str] = set()
+        provider_error: Exception | None = None
         for album in await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain):
-            for track in await self.mass.music.albums.tracks(album.item_id, album.provider):
+            try:
+                album_tracks = await self.mass.music.albums.tracks(album.item_id, album.provider)
+            except PROVIDER_FETCH_ERRORS as err:
+                # one failing album must not drop the artist's other tracks on this provider
+                provider_error = err
+                self.logger.warning(
+                    "Unable to fetch tracks for album %s from provider %s: %s",
+                    album.name,
+                    provider_instance_id_or_domain,
+                    err,
+                )
+                continue
+            for track in album_tracks:
                 unique_id = f"{track.name}.{track.version}"
                 if unique_id in unique_ids:
                     continue
                 unique_ids.add(unique_id)
                 result.append(track)
+        if provider_error is not None and not result:
+            # nothing could be listed at all, so surface the reason instead of an empty list
+            raise provider_error
         return result
 
     async def get_library_artist_tracks(

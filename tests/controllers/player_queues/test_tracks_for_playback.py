@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import Audiobook, MediaCollection, Track, UniqueList
+from music_assistant_models.media_items import (
+    Audiobook,
+    MediaCollection,
+    ProviderMapping,
+    Track,
+    UniqueList,
+)
 
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver
 
@@ -16,7 +22,9 @@ if TYPE_CHECKING:
 
 
 def _trk(item_id: str) -> Track:
-    return Track(item_id=item_id, provider="library", name=item_id, provider_mappings=set())
+    # a mapping is needed for the track to count as available
+    mapping = ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
+    return Track(item_id=item_id, provider="library", name=item_id, provider_mappings={mapping})
 
 
 def _resolver() -> MediaResolver:
