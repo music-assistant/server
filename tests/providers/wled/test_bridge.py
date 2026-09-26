@@ -1,0 +1,621 @@
+"""Tests for the WLED sync-zone bridge's stream lifecycle and send loop."""
+
+from __future__ import annotations
+
+import asyncio
+import struct
+from dataclasses import dataclass, field
+from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import AsyncMock, Mock
+
+import numpy as np
+import pytest
+from aiosendspin.server.roles.visualizer.features import ExtractedFrame
+from music_assistant_models.errors import SetupFailedError
+
+import music_assistant.providers.wled.bridge as bridge_module
+from music_assistant.providers.sendspin.playback import _PRODUCER_BUFFER_LIMIT_US
+from music_assistant.providers.wled.bridge import WledBridge, WledBridgeManager
+from music_assistant.providers.wled.constants import (
+    PENDING_FRAMES_MAX_SECONDS,
+    SEND_RATE_HZ,
+    SPECTRUM_BINS,
+)
+
+# How far ahead of the playhead a frame can reach this bridge. Deliberately read from
+# the Sendspin playback module rather than hardcoded: that producer limit is what
+# actually sets the lead, so if it is ever raised past the WLED queue's window these
+# tests fail instead of the zone silently going dark on real hardware.
+_MAX_LEAD_S = _PRODUCER_BUFFER_LIMIT_US / 1_000_000
+
+
+class _FakeClock:
+    """Minimal stand-in for SendspinServer.clock."""
+
+    def __init__(self, now_us: int = 0) -> None:
+        self._now_us = now_us
+
+    def now_us(self) -> int:
+        return self._now_us
+
+
+class _FakeSendspinServer:
+    """Minimal stand-in for the parts of SendspinServer the bridge touches directly."""
+
+    def __init__(self) -> None:
+        self.clock = _FakeClock()
+        self.remove_client = AsyncMock()
+        self.clients: dict[str, Any] = {}
+        client = Mock(client_id="wled-zone-11988")
+        client.roles_by_family = Mock(return_value=[])
+        self.register_external_player = Mock(return_value=client)
+
+    def get_client(self, client_id: str) -> Any:
+        """Look up an already-registered client, as the real server does."""
+        return self.clients.get(client_id)
+
+    def claim_ids_on_register(self) -> None:
+        """
+        Make register_external_player behave like the real one: the id is what it claims.
+
+        The real server resolves the hello's client_id through get_or_create_client(), so a
+        second registration under the same id takes the first client over rather than
+        failing. Tests for the duplicate-port guard need that, or they would pass against
+        a fake that cannot express the eviction being guarded against.
+        """
+
+        def _register(hello: Any, **_kwargs: Any) -> Any:
+            if (client := self.clients.get(hello.client_id)) is None:
+                client = Mock(client_id=hello.client_id)
+                client.roles_by_family = Mock(return_value=[])
+                self.clients[hello.client_id] = client
+            return client
+
+        self.register_external_player = Mock(side_effect=_register)
+
+
+@dataclass
+class _BridgeFixture:
+    """A WledBridge plus untyped handles to its fakes, so assertions skip static typing."""
+
+    bridge: WledBridge
+    call_later: Mock = field(default_factory=lambda: Mock(return_value=Mock()))
+    sendspin_server: _FakeSendspinServer = field(default_factory=_FakeSendspinServer)
+
+
+def _make_bridge(**kwargs: Any) -> _BridgeFixture:
+    """Build a WledBridge with fake provider/mass/sendspin_server, bypassing start()."""
+    call_later = Mock(return_value=Mock())
+    mass = SimpleNamespace(
+        loop=SimpleNamespace(call_later=call_later, create_datagram_endpoint=AsyncMock()),
+        get_provider=Mock(return_value=None),
+    )
+    provider: Any = SimpleNamespace(mass=mass)
+    sendspin_server = _FakeSendspinServer()
+    bridge = WledBridge(
+        provider, port=11988, sendspin_server=cast("Any", sendspin_server), **kwargs
+    )
+    return _BridgeFixture(bridge=bridge, call_later=call_later, sendspin_server=sendspin_server)
+
+
+def _set_transport(bridge: WledBridge, transport: Mock) -> None:
+    """
+    Attach a mock transport to the bridge.
+
+    Cast to Any: assigning the Mock directly narrows the attribute's inferred type past
+    the call boundary of a later ``await bridge.stop()``/``_render_tick()``, which makes
+    mypy treat a subsequent ``is None`` assert on it (after that type has been reset back
+    to ``None`` inside the real method) as unreachable.
+    """
+    bridge._transport = cast("Any", transport)
+
+
+def _dirty_bridge_state(bridge: WledBridge) -> None:
+    """Populate the bridge's cached feature state as if mid-stream."""
+    bridge._latest_loudness = 12345
+    bridge._latest_spectrum = [100] * SPECTRUM_BINS
+    bridge._latest_f_peak_freq = 440
+    bridge._latest_f_peak_amp = 5000
+    bridge._peak_pending = True
+
+
+class TestStreamLifecycleResetsFeatureState:
+    """A seek or new stream must not leak the previous stream's feature values."""
+
+    def test_stream_start_resets_stale_feature_state(self) -> None:
+        """A new stream must not reuse the previous stream's cached values."""
+        bridge = _make_bridge().bridge
+        _dirty_bridge_state(bridge)
+        bridge._on_stream_start()
+        assert bridge._latest_loudness == 0
+        assert bridge._latest_spectrum == [0] * SPECTRUM_BINS
+        assert bridge._latest_f_peak_freq == 0
+        assert bridge._latest_f_peak_amp == 0
+        assert bridge._peak_pending is False
+
+    def test_stream_clear_resets_stale_feature_state(self) -> None:
+        """A seek must not keep sending pre-seek loudness/spectrum/peak values."""
+        bridge = _make_bridge().bridge
+        _dirty_bridge_state(bridge)
+        bridge._on_stream_clear()
+        assert bridge._latest_loudness == 0
+        assert bridge._latest_spectrum == [0] * SPECTRUM_BINS
+        assert bridge._latest_f_peak_freq == 0
+        assert bridge._latest_f_peak_amp == 0
+        assert bridge._peak_pending is False
+
+    def test_stream_clear_also_drops_queued_frames(self) -> None:
+        """A seek must discard not-yet-promoted frames from before it too."""
+        bridge = _make_bridge().bridge
+        bridge._is_streaming = True
+        bridge._on_frame(ExtractedFrame(timestamp_us=0, loudness=1000))
+        assert len(bridge._pending_frames) == 1
+        bridge._on_stream_clear()
+        assert len(bridge._pending_frames) == 0
+
+
+class TestDrainPending:
+    """Frames should only be promoted once their timestamp has passed."""
+
+    def test_drain_promotes_frames_up_to_now(self) -> None:
+        """Only frames whose timestamp has passed should update the sendable state."""
+        bridge = _make_bridge().bridge
+        bridge._is_streaming = True
+        bridge._on_frame(
+            ExtractedFrame(
+                timestamp_us=1000,
+                loudness=30000,
+                spectrum=np.array([1] * SPECTRUM_BINS),
+                f_peak_freq=440,
+                f_peak_amp=2000,
+                peak=200,
+            )
+        )
+        bridge._on_frame(ExtractedFrame(timestamp_us=5000, loudness=50000))
+
+        bridge._drain_pending(now_us=1000)
+        assert bridge._latest_loudness == 30000
+        assert bridge._peak_pending is True
+        assert len(bridge._pending_frames) == 1  # the 5000us frame is still in the future
+
+        bridge._drain_pending(now_us=5000)
+        assert bridge._latest_loudness == 50000
+        assert len(bridge._pending_frames) == 0
+
+
+class TestRenderTick:
+    """The fixed-rate send loop should send exactly one packet per tick and never crash it."""
+
+    def test_sends_packet_when_transport_present(self) -> None:
+        """A drained frame should be sent as a 44-byte packet on the next tick."""
+        bridge = _make_bridge().bridge
+        bridge._is_streaming = True
+        transport = Mock()
+        _set_transport(bridge, transport)
+        bridge._on_frame(ExtractedFrame(timestamp_us=0, loudness=40000))
+
+        bridge._render_tick()
+
+        transport.sendto.assert_called_once()
+        (packet,) = transport.sendto.call_args.args
+        assert len(packet) == 44
+
+    def test_does_nothing_when_not_streaming(self) -> None:
+        """A tick that fires after streaming stopped must not send anything."""
+        bridge = _make_bridge().bridge
+        bridge._is_streaming = False
+        transport = Mock()
+        _set_transport(bridge, transport)
+
+        bridge._render_tick()
+
+        transport.sendto.assert_not_called()
+
+    def test_send_failure_is_logged_not_raised_and_loop_reschedules(self) -> None:
+        """One bad tick must not kill the loop or propagate out of the callback."""
+        fixture = _make_bridge()
+        fixture.bridge._is_streaming = True
+        transport = Mock()
+        transport.sendto.side_effect = OSError("network unreachable")
+        _set_transport(fixture.bridge, transport)
+
+        fixture.bridge._render_tick()  # must not raise
+
+        fixture.call_later.assert_called_once()
+
+
+class TestStop:
+    """Stopping the bridge must not leak the UDP transport even if teardown fails partway."""
+
+    async def test_closes_transport_even_when_remove_client_fails(self) -> None:
+        """A failed client removal must not leak the UDP transport."""
+        fixture = _make_bridge()
+        transport = Mock()
+        _set_transport(fixture.bridge, transport)
+        fixture.bridge._sendspin_client = cast("Any", SimpleNamespace(client_id="wled-zone-11988"))
+        fixture.sendspin_server.remove_client.side_effect = RuntimeError("boom")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await fixture.bridge.stop()
+
+        transport.close.assert_called_once()
+        assert fixture.bridge._transport is None
+        assert fixture.bridge._sendspin_client is None
+
+    async def test_closes_transport_on_clean_shutdown(self) -> None:
+        """The normal shutdown path removes the client and closes the transport."""
+        fixture = _make_bridge()
+        transport = Mock()
+        _set_transport(fixture.bridge, transport)
+        fixture.bridge._sendspin_client = cast("Any", SimpleNamespace(client_id="wled-zone-11988"))
+
+        await fixture.bridge.stop()
+
+        fixture.sendspin_server.remove_client.assert_awaited_once_with("wled-zone-11988")
+        transport.close.assert_called_once()
+        assert fixture.bridge._transport is None
+
+
+class TestBridgeStart:
+    """Registration and transport setup, and what a failure between them leaves behind."""
+
+    async def test_registers_a_client_and_opens_the_transport(self) -> None:
+        """The happy path registers with Sendspin and opens the multicast transport."""
+        fixture = _make_bridge()
+        transport = Mock()
+        fixture.bridge.mass.loop.create_datagram_endpoint = AsyncMock(  # type: ignore[method-assign]
+            return_value=(transport, Mock())
+        )
+
+        await fixture.bridge.start()
+
+        fixture.sendspin_server.register_external_player.assert_called_once()
+        assert fixture.bridge._transport is transport
+
+    async def test_a_failed_transport_leaves_no_registered_client_behind(self) -> None:
+        """
+        A bind failure after registration must be recoverable by stopping the bridge.
+
+        start() registers the Sendspin client before it opens the UDP transport, so the
+        client outlives a failure in between -- WledBridgeManager.start() stops the
+        bridge for exactly this reason, and that teardown has to actually unregister it.
+        """
+        fixture = _make_bridge()
+        fixture.bridge.mass.loop.create_datagram_endpoint = AsyncMock(  # type: ignore[method-assign]
+            side_effect=OSError("address already in use")
+        )
+
+        with pytest.raises(OSError, match="address already in use"):
+            await fixture.bridge.start()
+
+        # the client is registered but the transport never opened: exactly the state the
+        # manager's cleanup has to unwind
+        assert fixture.bridge._sendspin_client is not None
+        assert fixture.bridge._transport is None
+
+        await fixture.bridge.stop()
+
+        fixture.sendspin_server.remove_client.assert_awaited_once_with("wled-zone-11988")
+        assert fixture.bridge._sendspin_client is None
+
+
+class TestZonePortIsClaimedAtomically:
+    """
+    One zone per port has to hold at the point the Sendspin client id is claimed.
+
+    WledProvider.handle_async_init scans the sibling configs for a duplicate port, but that
+    scan suspends and reads stored ports, so it cannot be the whole guard: two instances
+    loading at once, or one whose stored port has moved on while its zone is still live on
+    the old one, would both arrive here. register_external_player() resolves an existing id
+    to that client, so the loser of such a race would silently take the winner's zone over.
+    """
+
+    async def test_a_port_another_zone_already_claimed_is_refused(self) -> None:
+        """An id already in the registry means another zone holds this port: fail loudly."""
+        fixture = _make_bridge()
+        fixture.sendspin_server.clients["wled-zone-11988"] = Mock()
+
+        with pytest.raises(SetupFailedError, match="wled-zone-11988"):
+            await fixture.bridge.start()
+
+        # nothing claimed and nothing to unwind: the other zone keeps its client
+        fixture.sendspin_server.register_external_player.assert_not_called()
+        assert fixture.bridge._sendspin_client is None
+
+    async def test_concurrent_starts_on_one_port_leave_a_single_zone(self) -> None:
+        """
+        Two zones starting on the same port at once: exactly one wins, the other raises.
+
+        The transport opens with an await, so the two starts really do interleave here --
+        what keeps them apart is that nothing suspends between the id check and the claim.
+        """
+        server = _FakeSendspinServer()
+        server.claim_ids_on_register()
+
+        async def _open_transport(*_args: Any, **_kwargs: Any) -> tuple[Mock, Mock]:
+            await asyncio.sleep(0)
+            return (Mock(), Mock())
+
+        mass = SimpleNamespace(
+            loop=SimpleNamespace(
+                call_later=Mock(return_value=Mock()), create_datagram_endpoint=_open_transport
+            ),
+            get_provider=Mock(return_value=None),
+        )
+        provider: Any = SimpleNamespace(mass=mass)
+        bridges = [
+            WledBridge(provider, port=11988, sendspin_server=cast("Any", server)) for _ in range(2)
+        ]
+
+        results = await asyncio.gather(*(b.start() for b in bridges), return_exceptions=True)
+
+        failures = [r for r in results if isinstance(r, BaseException)]
+        assert len(failures) == 1
+        assert isinstance(failures[0], SetupFailedError)
+        assert server.register_external_player.call_count == 1
+        assert [b._sendspin_client is not None for b in bridges].count(True) == 1
+
+
+def _make_manager(monkeypatch: pytest.MonkeyPatch, bridge: Mock) -> WledBridgeManager:
+    """Return a manager whose start() builds the given (mock) bridge on a fake server."""
+    provider: Any = SimpleNamespace(mass=Mock())
+    manager = WledBridgeManager(provider)
+    monkeypatch.setattr(bridge_module, "WledBridge", Mock(return_value=bridge))
+    return manager
+
+
+class TestBridgeManagerStart:
+    """A half-started bridge must never be left registered or adopted by the manager."""
+
+    async def test_failed_start_tears_the_bridge_down_and_reraises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """
+        A failure partway through start() must not leak the Sendspin registration.
+
+        start() registers the client before opening the UDP transport, so a bind
+        failure in between would otherwise leave a virtual player with nothing driving
+        it -- and mass only logs an exception raised from this post-load hook, so no
+        unload comes to clean it up.
+        """
+        bridge = Mock()
+        bridge.start = AsyncMock(side_effect=OSError("address already in use"))
+        bridge.stop = AsyncMock()
+        manager = _make_manager(monkeypatch, bridge)
+
+        with pytest.raises(OSError, match="address already in use"):
+            await manager.start(11988)
+
+        bridge.stop.assert_awaited_once()
+        assert manager._bridge is None
+
+    async def test_cleanup_failure_does_not_mask_the_startup_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The startup error is the actionable one, so a failed cleanup must not replace it."""
+        bridge = Mock()
+        bridge.start = AsyncMock(side_effect=OSError("address already in use"))
+        bridge.stop = AsyncMock(side_effect=RuntimeError("teardown also broke"))
+        manager = _make_manager(monkeypatch, bridge)
+
+        with pytest.raises(OSError, match="address already in use"):
+            await manager.start(11988)
+
+        assert manager._bridge is None
+
+    async def test_successful_start_adopts_the_bridge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bridge that came up fully is kept, and start() reports success."""
+        bridge = Mock()
+        bridge.start = AsyncMock()
+        manager = _make_manager(monkeypatch, bridge)
+
+        assert await manager.start(11988) is True
+        assert manager._bridge is bridge
+
+
+class TestBridgeManagerConcurrency:
+    """
+    Startup and teardown must not interleave.
+
+    start() suspends while it registers the Sendspin client and opens the UDP transport,
+    and loaded_in_mass runs as a post-load task that unload_provider never awaits -- so an
+    unload really can land mid-startup, and must not leave the zone live afterwards.
+    """
+
+    async def test_unload_during_startup_still_tears_the_bridge_down(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stop() arriving while start() is suspended must not silently do nothing."""
+        gate = asyncio.Event()
+        bridge = Mock(port=11988)
+
+        async def _suspend_until_gated() -> None:
+            await gate.wait()
+
+        bridge.start = AsyncMock(side_effect=_suspend_until_gated)
+        bridge.stop = AsyncMock()
+        manager = _make_manager(monkeypatch, bridge)
+
+        start_task = asyncio.create_task(manager.start(11988))
+        await asyncio.sleep(0)  # let start() reach the suspended bridge.start()
+        stop_task = asyncio.create_task(manager.stop())
+        await asyncio.sleep(0)  # stop() is now queued behind the lock
+        gate.set()
+        await start_task
+        await stop_task
+
+        bridge.stop.assert_awaited_once()
+        assert manager._bridge is None
+
+    async def test_startup_queued_behind_an_unload_does_not_bring_a_zone_back_up(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The reverse order must not start a bridge for an already-unloaded provider."""
+        bridge = Mock()
+        bridge.start = AsyncMock()
+        manager = _make_manager(monkeypatch, bridge)
+
+        await manager.stop()
+
+        assert await manager.start(11988) is False
+        bridge.start.assert_not_awaited()
+        assert manager._bridge is None
+
+
+class TestBridgeManagerStop:
+    """Teardown must not block provider unload, but must not hide real bugs either."""
+
+    async def test_expected_teardown_error_is_logged_not_raised(self) -> None:
+        """A closing transport or an already-gone client must not break unload."""
+        provider: Any = SimpleNamespace(mass=Mock())
+        manager = WledBridgeManager(provider)
+        bridge = Mock(port=11988)
+        bridge.stop = AsyncMock(side_effect=OSError("transport already closed"))
+        manager._bridge = bridge
+
+        await manager.stop()  # must not raise
+
+        assert manager._bridge is None
+
+    async def test_unexpected_error_propagates_but_still_clears_the_bridge(self) -> None:
+        """Anything outside the expected teardown errors is a bug worth surfacing."""
+        provider: Any = SimpleNamespace(mass=Mock())
+        manager = WledBridgeManager(provider)
+        bridge = Mock(port=11988)
+        bridge.stop = AsyncMock(side_effect=ValueError("programming error"))
+        manager._bridge = bridge
+
+        with pytest.raises(ValueError, match="programming error"):
+            await manager.stop()
+
+        assert manager._bridge is None
+
+
+# Wire format of the packet the bridge sends; mirrors packet._STRUCT_FORMAT.
+_PACKET_FORMAT = "<6s2sffBB16sHff"
+
+
+def _drive_stream(
+    bridge: WledBridge, *, lead_s: float, duration_s: float
+) -> list[tuple[float, list[int]]]:
+    """
+    Run a stream end to end and return the (sample, fft bands) of every packet sent.
+
+    Models how the server actually feeds the bridge: on each tick it hands over the
+    feature frame for audio that will play ``lead_s`` from now, and the bridge is
+    expected to hold that frame until the playhead reaches it.
+
+    :param bridge: The bridge to drive; its fake clock is advanced tick by tick.
+    :param lead_s: The stream's send-ahead lead, in seconds.
+    :param duration_s: How long to run, in seconds of playback.
+    """
+    transport = Mock()
+    _set_transport(bridge, transport)
+    bridge._on_stream_start()
+    period_us = 1_000_000 // SEND_RATE_HZ
+    lead_us = int(lead_s * 1_000_000)
+    for tick in range(int(duration_s * SEND_RATE_HZ)):
+        now_us = tick * period_us
+        bridge.sendspin_server.clock._now_us = now_us  # type: ignore[attr-defined]
+        bridge._on_frame(
+            ExtractedFrame(
+                timestamp_us=now_us + lead_us,
+                loudness=40000,
+                spectrum=np.array([8000] * SPECTRUM_BINS),
+                f_peak_freq=440,
+                f_peak_amp=30000,
+                peak=200,
+            )
+        )
+        bridge._render_tick()
+    sent = []
+    for call in transport.sendto.call_args_list:
+        (packet,) = call.args
+        _hdr, _pad, sample_raw, _smth, _peak, _fc, fft, _zc, _mag, _freq = struct.unpack(
+            _PACKET_FORMAT, packet
+        )
+        sent.append((sample_raw, list(fft)))
+    return sent
+
+
+class TestFeaturesSurviveTheSendAheadLead:
+    """
+    A zone must still send audio when features arrive well ahead of their playback time.
+
+    Frames arrive a whole send-ahead lead before their playback time, and _drain_pending
+    only promotes one once the playhead reaches it. So the pending queue has to span that
+    entire lead. Sized below it, every frame is evicted before its time comes and the zone
+    transmits well-formed all-zero packets forever -- valid sync, no audio, no error
+    anywhere. That is invisible to any test that drains frames whose timestamp has already
+    passed, which is why these drive the clock instead.
+    """
+
+    def test_the_full_producer_buffer_lead_still_produces_audio(self) -> None:
+        """At the deepest lead the producer allows, packets must carry real feature data."""
+        bridge = _make_bridge(latency_ms=0).bridge
+
+        sent = _drive_stream(bridge, lead_s=_MAX_LEAD_S, duration_s=_MAX_LEAD_S + 5)
+
+        assert sent, "no packets sent at all"
+        assert any(sample > 0 for sample, _fft in sent), (
+            "every packet carried a zero sample: features were dropped before their "
+            "playback time, so the zone is sending silence"
+        )
+        assert any(any(fft) for _sample, fft in sent), "every packet carried an all-zero spectrum"
+
+    def test_the_queue_cap_covers_the_producer_buffer_limit(self) -> None:
+        """
+        The queue window must cover however far Sendspin's producer is allowed to run ahead.
+
+        This is the coupling that actually broke: the window was five seconds while the
+        producer was free to buffer thirty, so every frame aged out before its playback
+        time. Asserting against the real constant means raising that limit fails here,
+        rather than on hardware as a zone that reports a healthy sync stream and shows
+        nothing.
+        """
+        assert PENDING_FRAMES_MAX_SECONDS >= _MAX_LEAD_S, (
+            f"WLED queues {PENDING_FRAMES_MAX_SECONDS}s of frames but the Sendspin "
+            f"producer may run {_MAX_LEAD_S}s ahead; frames will be dropped before "
+            "their playback time and the zone will send silence"
+        )
+
+    def test_the_queue_cap_matches_the_configured_window(self) -> None:
+        """The bridge must actually apply the configured window."""
+        bridge = _make_bridge(latency_ms=0).bridge
+        assert bridge._pending_frames_max == SEND_RATE_HZ * PENDING_FRAMES_MAX_SECONDS
+
+    def test_an_undersized_queue_still_sends_audio_rather_than_silence(self) -> None:
+        """
+        A cap shorter than the lead must degrade to gaps, never to a silent zone.
+
+        Sending every frame is not the goal -- a packet only earns its place by matching
+        what is being heard right now. So when the queue cannot hold the whole lead, the
+        frames to sacrifice are the ones furthest from being heard, keeping those about
+        to come due. Evicting the head instead (what deque(maxlen=...) does) means no
+        frame is ever due and the zone goes dark while still sending valid packets.
+        """
+        bridge = _make_bridge(latency_ms=0).bridge
+        bridge._pending_frames_max = SEND_RATE_HZ * 2  # far short of the lead below
+
+        sent = _drive_stream(bridge, lead_s=_MAX_LEAD_S, duration_s=_MAX_LEAD_S + 5)
+
+        assert any(sample > 0 for sample, _fft in sent), (
+            "an undersized queue produced nothing but silence; it must drop the "
+            "furthest-future frames and keep the ones about to be heard"
+        )
+
+    def test_saturating_the_queue_warns_once(self) -> None:
+        """Dropping frames is survivable but never silent -- it has to reach the log."""
+        bridge = _make_bridge(latency_ms=0).bridge
+        bridge.logger = Mock()
+        bridge._is_streaming = True
+        for i in range(bridge._pending_frames_max + 5):
+            bridge._on_frame(ExtractedFrame(timestamp_us=10**12 + i, loudness=40000))
+
+        bridge.logger.warning.assert_called_once()
+        assert "gaps" in bridge.logger.warning.call_args.args[0]
+        # the cap is a cap, not a suggestion
+        assert len(bridge._pending_frames) == bridge._pending_frames_max
