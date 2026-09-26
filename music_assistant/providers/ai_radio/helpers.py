@@ -9,7 +9,12 @@ from typing import Any
 
 from music_assistant_models.errors import InsufficientPermissions, MusicAssistantError
 
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+)
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    has_player_access as user_has_player_access,
+)
 from music_assistant.helpers.datetime import utc
 
 from .constants import EMPTY_SECTION_ID
@@ -148,7 +153,7 @@ def coerce_float(value: Any, default: float) -> float:
     """Convert arbitrary value to float with a safe fallback."""
     try:
         return float(value)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return default
 
 
@@ -156,7 +161,7 @@ def coerce_int(value: Any, default: int) -> int:
     """Convert arbitrary value to int with a safe fallback."""
     try:
         return int(value)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return default
 
 
@@ -167,9 +172,11 @@ def has_player_access(*player_ids: str | None) -> bool:
     :param player_ids: The players or queues to check, None entries are skipped.
     """
     user = get_current_user()
-    if not user or not user.player_filter:
-        return True
-    return all(player_id in user.player_filter for player_id in player_ids if player_id is not None)
+    return all(
+        user_has_player_access(user, player_id)
+        for player_id in player_ids
+        if player_id is not None
+    )
 
 
 def check_player_access(*player_ids: str | None) -> None:
