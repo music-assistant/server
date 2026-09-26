@@ -44,10 +44,14 @@ from music_assistant.helpers.compare import (
     strip_album_retail_suffix,
 )
 from music_assistant.helpers.database import UNSET
-from music_assistant.helpers.external_ids import barcode_to_upc, is_valid_barcode
+from music_assistant.helpers.external_ids import (
+    barcode_to_upc,
+    is_valid_barcode,
+)
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
 
+from .album_tracks import album_track_backfills, select_album_tracks
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
@@ -399,7 +403,7 @@ class AlbumsController(MediaControllerBase[Album]):
         db_items = await self.get_library_album_tracks(
             library_album.item_id, provider_filter=allowed_providers
         )
-        result: list[Track] = list(db_items)
+        all_tracks: list[Track] = []
         if in_library_only:
             # return in-library items only
             return sorted(db_items, key=lambda x: (x.disc_number, x.track_number))
@@ -407,13 +411,6 @@ class AlbumsController(MediaControllerBase[Album]):
         # return all (unique) items from all providers
         # because we are returning the items from all providers combined,
         # we need to make sure that we don't return duplicates
-        unique_ids: set[str] = {f"{x.disc_number}.{x.track_number}" for x in db_items}
-        unique_ids.update({f"{x.name.lower()}.{x.version.lower()}" for x in db_items})
-        for db_item in db_items:
-            unique_ids.update(x.item_id for x in db_item.provider_mappings)
-        # where each provider track landed in the result, so a playable copy from another
-        # provider can take the place of an unplayable one
-        provider_slots: dict[str, int] = {}
         for provider_mapping in library_album.provider_mappings:
             if (
                 allowed_providers is not None
@@ -423,51 +420,23 @@ class AlbumsController(MediaControllerBase[Album]):
             provider_tracks = await self._get_provider_album_tracks(
                 provider_mapping.item_id, provider_mapping.provider_instance
             )
-            for provider_track in provider_tracks:
-                # In some cases (looking at you YTM) the disc/track number is not obtained from
-                # library_tracks. Ensure to update the disc/track number when interacting with
-                # album tracks
-                db_track = next(
-                    (
-                        x
-                        for x in db_items
-                        if x.sort_name == provider_track.sort_name
-                        and x.version == provider_track.version
-                    ),
-                    None,
-                )
-                if (
-                    db_track
-                    and db_track.track_number == 0
-                    and db_track.track_number != provider_track.track_number
-                ):
-                    await self._set_album_track(
-                        db_id=int(library_album.item_id),
-                        db_track_id=int(db_track.item_id),
-                        track=provider_track,
-                    )
-                if provider_track.item_id in unique_ids:
-                    continue
-                unique_id = f"{provider_track.disc_number}.{provider_track.track_number}"
-                if unique_id in unique_ids:
-                    continue
-                unique_id = f"{provider_track.name.lower()}.{provider_track.version.lower()}"
-                slot = provider_slots.get(unique_id)
-                if unique_id in unique_ids and (
-                    slot is None or result[slot].available or not provider_track.available
-                ):
-                    continue
-                unique_ids.add(unique_id)
-                provider_track.album = library_album
-                # always prefer album image
-                album_images = [library_album.image] if library_album.image else []
-                track_images: list[MediaItemImage] = provider_track.metadata.images or []
-                provider_track.metadata.images = UniqueList(album_images + track_images)
-                if slot is None:
-                    provider_slots[unique_id] = len(result)
-                    result.append(provider_track)
-                else:
-                    result[slot] = provider_track
+            all_tracks.extend(provider_tracks)
+        for db_track, source in album_track_backfills(db_items, all_tracks):
+            await self._set_album_track(
+                db_id=int(library_album.item_id),
+                db_track_id=int(db_track.item_id),
+                track=source,
+            )
+            db_track.disc_number = source.disc_number
+            db_track.track_number = source.track_number
+        result: list[Track] = list(db_items)
+        for provider_track in select_album_tracks(db_items, all_tracks):
+            provider_track.album = library_album
+            # always prefer album image
+            album_images = [library_album.image] if library_album.image else []
+            track_images: list[MediaItemImage] = provider_track.metadata.images or []
+            provider_track.metadata.images = UniqueList(album_images + track_images)
+            result.append(provider_track)
         # NOTE: we need to return the results sorted on disc/track here
         # to ensure the correct order at playback
         return sorted(result, key=lambda x: (x.disc_number, x.track_number))

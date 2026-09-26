@@ -16,6 +16,8 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.controllers.music.media.album_tracks import select_album_tracks
+
 from .helpers import create_album, create_track
 
 if TYPE_CHECKING:
@@ -226,7 +228,12 @@ async def test_merge_update_keeps_the_stored_year_and_version(mass: MusicAssista
 
 def _album_track(provider_instance: str, name: str, track_number: int, available: bool) -> Track:
     """Return a provider album track, playable or not."""
-    track = create_track(provider_instance, f"{provider_instance}_{track_number}", name=name)
+    track = create_track(
+        provider_instance,
+        f"{provider_instance}_{track_number}",
+        name=name,
+        isrc=f"GBAYC21{track_number:05d}",
+    )
     track.track_number = track_number
     for mapping in track.provider_mappings:
         mapping.available = available
@@ -234,7 +241,10 @@ def _album_track(provider_instance: str, name: str, track_number: int, available
 
 
 @pytest.mark.parametrize("unplayable", ["qobuz_1", "spotify_1"])
-async def test_album_tracks_prefer_a_playable_copy(mass: MusicAssistant, unplayable: str) -> None:
+@pytest.mark.parametrize("with_isrc", ["shared", "absent", "different"])
+async def test_album_tracks_prefer_a_playable_copy(
+    mass: MusicAssistant, unplayable: str, with_isrc: str
+) -> None:
     """A track one provider cannot play is filled in from another provider that can."""
     playable = "spotify_1" if unplayable == "qobuz_1" else "qobuz_1"
     album = create_album("qobuz_1", "album_q")
@@ -250,6 +260,13 @@ async def test_album_tracks_prefer_a_playable_copy(mass: MusicAssistant, unplaya
         ],
         playable: [_album_track(playable, "Shared", 1, available=True)],
     }
+    if with_isrc == "absent":
+        for listing in provider_tracks.values():
+            for track in listing:
+                track.external_ids = set()
+    elif with_isrc == "different":
+        provider_tracks[playable][0].external_ids = {(ExternalID.ISRC, "GBAYC2100002")}
+        provider_tracks[unplayable][0].external_ids = {(ExternalID.ISRC, "GBAYC2100001")}
 
     with patch.object(
         mass.music.albums,
@@ -263,6 +280,81 @@ async def test_album_tracks_prefer_a_playable_copy(mass: MusicAssistant, unplaya
         ("Shared", playable, True),
         ("Bonus", unplayable, False),
     ]
+
+
+@pytest.mark.parametrize("same_provider", [True, False])
+@pytest.mark.parametrize("same_isrc", [True, False])
+@pytest.mark.parametrize("position", [1, 2])
+def test_album_track_slots(same_provider: bool, same_isrc: bool, position: int) -> None:
+    """Listing positions, not recording identifiers, determine album slots."""
+    base = create_track("qobuz_1", "first", name="I. Allegro")
+    candidate = create_track(
+        "qobuz_1" if same_provider else "spotify_1", "second", name="I. Allegro"
+    )
+    base.track_number, candidate.track_number = 1, position
+    base.external_ids = {(ExternalID.ISRC, "GBAYC2100001")}
+    candidate.external_ids = {(ExternalID.ISRC, "GBAYC2100001" if same_isrc else "GBAYC2100002")}
+    assert len(select_album_tracks([], [base, candidate])) == position
+
+
+async def test_album_tracks_keep_distinct_classical_movements(mass: MusicAssistant) -> None:
+    """Distinct IDs and ISRCs preserve repeated movement names across two discs."""
+    album = await mass.music.albums.add_item_to_library(create_album("qobuz_1", "kbiz0u05dkexb"))
+    names = [
+        "I. Allegro",
+        "II. Andante",
+        "III. Allegro",
+        "IV. Finale",
+        "V. Finale",
+        "VI. Finale",
+        "VII. Finale",
+        "Introduction",
+        "I. Allegro",
+        "II. Andante",
+        "III. Rondo",
+        "Interlude",
+        "I. Allegro",
+        "II. Andante",
+    ]
+    # Synthetic identifiers reproduce the observed 14 distinct IDs/ISRCs, not recordings
+    # shared by the repeated movement titles (disc 2 tracks 2, 3, 6 and 7).
+    provider_tracks = []
+    for index, name in enumerate(names):
+        track = create_track("qobuz_1", str(index + 1), name=name)
+        track.disc_number = index // 7 + 1
+        track.track_number = index % 7 + 1
+        track.external_ids = {(ExternalID.ISRC, f"GBAYC21{index + 1:05d}")}
+        provider_tracks.append(track)
+    with patch.object(
+        mass.music.albums, "_get_provider_album_tracks", AsyncMock(return_value=provider_tracks)
+    ):
+        tracks = await mass.music.albums.tracks(album.item_id, "library")
+    assert [track.item_id for track in tracks] == [track.item_id for track in provider_tracks]
+
+
+async def test_album_tracks_keep_library_copy_and_provider_filter(mass: MusicAssistant) -> None:
+    """Provider copies cannot replace a library entry or bypass the user's filter."""
+    album = create_album("qobuz_1", "album_q")
+    album.provider_mappings.add(_tidal_mapping())
+    library_track = create_track("library", "42", name="I. Allegro")
+    provider_track = _album_track("qobuz_1", "I. Allegro", 1, available=True)
+    library_track.provider_mappings = provider_track.provider_mappings
+    library_track.track_number = 1
+    fetch = AsyncMock(return_value=[provider_track])
+    library_fetch = AsyncMock(return_value=[library_track])
+    with (
+        patch.object(
+            mass.music.albums, "get_library_item_by_prov_id", AsyncMock(return_value=album)
+        ),
+        patch.object(mass.music.albums, "get_library_album_tracks", library_fetch),
+        patch.object(mass.music.albums, "_ensure_provider_filter", return_value={"qobuz_1"}),
+        patch.object(mass.music.albums, "_get_provider_album_tracks", fetch),
+    ):
+        tracks = await mass.music.albums.tracks("album_q", "qobuz_1")
+    assert len(tracks) == 1
+    assert tracks[0] is library_track
+    fetch.assert_awaited_once_with("album_q", "qobuz_1")
+    library_fetch.assert_awaited_once_with(album.item_id, provider_filter={"qobuz_1"})
 
 
 def test_album_from_library_item_mapping_has_no_self_mapping(mass: MusicAssistant) -> None:
