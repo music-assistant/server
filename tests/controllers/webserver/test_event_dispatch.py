@@ -15,6 +15,8 @@ from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 
 if TYPE_CHECKING:
+    import pytest
+
     from music_assistant.mass import MusicAssistant
 
 
@@ -95,3 +97,92 @@ async def test_provider_event_delivered_to_guest_clients(
     msg_admin = get_written_message(admin)
     assert msg_guest == msg_admin
     assert "music_quiz--abcd/game_state" in msg_guest
+
+
+def _restricted_client(
+    webserver: WebserverController,
+    *,
+    player_filter: list[str],
+    own_client: str | None = None,
+) -> WebsocketClientHandler:
+    """Create a websocket client for a restricted (non-admin) user with a player filter."""
+    client = create_ws_client(webserver, "restricted", role=UserRole.USER)
+    client._authenticated_user = User(
+        user_id="restricted",
+        username="restricted",
+        role=UserRole.USER,
+        player_filter=player_filter,
+    )
+    client._sendspin_player_id = own_client
+    return client
+
+
+def _stub_players(monkeypatch: pytest.MonkeyPatch, mass: MusicAssistant, **players: bool) -> None:
+    """Stub the player registry with the given players, mapping id -> is_private."""
+    registry = {
+        player_id: SimpleNamespace(player_id=player_id, private=private)
+        for player_id, private in players.items()
+    }
+    monkeypatch.setattr(mass, "players", SimpleNamespace(get_player=registry.get), raising=False)
+
+
+async def test_player_events_honor_the_user_player_filter(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A restricted user only receives events for players in their filter."""
+    _stub_players(monkeypatch, mass_minimal, kitchen=False, living_room=False)
+    client = _restricted_client(webserver, player_filter=["kitchen"])
+
+    mass_minimal.signal_event(EventType.PLAYER_UPDATED, "kitchen", {"name": "Kitchen"})
+    await drain_event_callbacks()
+    assert "kitchen" in get_written_message(client)
+
+    mass_minimal.signal_event(EventType.PLAYER_UPDATED, "living_room", {"name": "Living room"})
+    await drain_event_callbacks()
+    assert client._to_write.empty()
+
+
+async def test_own_private_client_player_events_are_delivered(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A restricted user receives events for the private client player they connected on."""
+    _stub_players(monkeypatch, mass_minimal, browser=True)
+    client = _restricted_client(webserver, player_filter=["kitchen"], own_client="browser")
+
+    mass_minimal.signal_event(EventType.PLAYER_UPDATED, "browser", {"name": "Browser"})
+    await drain_event_callbacks()
+    assert "browser" in get_written_message(client)
+
+
+async def test_shared_speaker_claimed_as_client_stays_filtered(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Announcing a shared speaker's id as the client id does not unlock its events."""
+    _stub_players(monkeypatch, mass_minimal, living_room=False)
+    # the client claims the shared speaker's id as its own client player
+    client = _restricted_client(webserver, player_filter=["kitchen"], own_client="living_room")
+
+    mass_minimal.signal_event(EventType.PLAYER_UPDATED, "living_room", {"name": "Living room"})
+    await drain_event_callbacks()
+    assert client._to_write.empty()
+
+
+async def test_full_access_user_receives_events_outside_their_filter(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+) -> None:
+    """A full-access (admin) user is never limited by a stored player filter."""
+    admin = create_ws_client(webserver, "admin1")
+    admin._authenticated_user = User(
+        user_id="admin1", username="admin1", role=UserRole.ADMIN, player_filter=["kitchen"]
+    )
+
+    mass_minimal.signal_event(EventType.PLAYER_UPDATED, "living_room", {"name": "Living room"})
+    await drain_event_callbacks()
+    assert "living_room" in get_written_message(admin)

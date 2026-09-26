@@ -39,6 +39,7 @@ from music_assistant.helpers.provider_access import access_allows, with_derived_
 
 from .helpers.auth_middleware import (
     has_scope,
+    is_private_client_player,
     is_request_from_ingress,
     player_access_filter,
     resolve_command_impersonation,
@@ -590,8 +591,11 @@ class WebsocketClientHandler:
                 )
                 and event.object_id
                 and event.object_id not in player_filter
-                # the private client player this connection announced is always allowed
-                and event.object_id != self._sendspin_player_id
+                # the private client player this connection announced is always allowed,
+                # but only when it really is private so a shared speaker id cannot unlock it
+                and not is_private_client_player(
+                    self.mass.players.get_player(event.object_id), self._sendspin_player_id
+                )
             ):
                 return
 

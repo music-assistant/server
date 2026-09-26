@@ -374,7 +374,25 @@ def is_own_client_player(player: Player | None) -> bool:
 
     :param player: The player to check, or None.
     """
-    return player is not None and player.private and player.player_id == get_sendspin_player_id()
+    return is_private_client_player(player, get_sendspin_player_id())
+
+
+def is_private_client_player(player: Player | None, sendspin_player_id: str | None) -> bool:
+    """
+    Return whether the player is the private client player announced by the given connection.
+
+    Only a private player whose id matches the connection's announced client player id
+    qualifies, so a shared speaker can never be claimed by announcing its id.
+
+    :param player: The player to check, or None.
+    :param sendspin_player_id: The client player id the connection announced, or None.
+    """
+    return (
+        player is not None
+        and player.private
+        and sendspin_player_id is not None
+        and player.player_id == sendspin_player_id
+    )
 
 
 def player_access_filter(user: User | None) -> list[str] | None:
