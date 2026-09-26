@@ -48,6 +48,7 @@ class MediaAssistantPlayer(Player):
         self._attr_volume_muted = False
         self._attr_volume_level = 100
         self.lock = asyncio.Lock()  # Held when connecting or disconnecting the device
+        self._position_last_moved: float | None = None  # end-of-stream detector
 
     async def setup(self) -> None:
         """Set up player in MA."""
@@ -150,6 +151,11 @@ class MediaAssistantPlayer(Player):
             logger.info("Received STOP command on player %s", self.display_name)
             self._attr_playback_state = PlaybackState.IDLE
             self._attr_current_media = None
+            # the stop above is itself a new (blank) deeplink, which also
+            # clears the app's queued slot - mirror it here.
+            self.queued = None
+            self._attr_elapsed_time = None
+            self._attr_elapsed_time_last_updated = None
             self.update_state()
         except Exception:
             self.logger.error("Failed to send stop signal to: %s", self.name)
@@ -215,6 +221,14 @@ class MediaAssistantPlayer(Player):
             )
             self._attr_powered = True
             self._attr_current_media = media
+            # the app drops its queued slot on every new play
+            # (mediaplayer.brs handleDeepLink: m.queuedDeeplink = Invalid), so drop ours
+            # too, and restart the elapsed-time tracker so the first poll of the new stream
+            # cannot look like a "jump to the queued item" (see poll()).
+            self.queued = None
+            self._attr_elapsed_time = 0
+            self._attr_elapsed_time_last_updated = time.time()
+            self._position_last_moved = time.time()
             self.update_state()
         except Exception:
             self.logger.error("Failed to Play Media on: %s", self.name)
@@ -223,17 +237,28 @@ class MediaAssistantPlayer(Player):
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next (queue) item on the player."""
         stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
-        try:
-            device_info = await self.roku.update()
+        # Music Assistant hands the next item over exactly once and never
+        # retries (player_queues/stream_feeder._enqueue_next_item), so one failed POST used
+        # to mean the app ran out of audio at the end of the track. Retry here, and say
+        # what happened at INFO so a missed handover is visible in the normal log.
+        for attempt in range(1, 4):
+            try:
+                device_info = await self.roku.update()
 
-            app_running = False
+                app_running = False
 
-            if device_info.app is not None:
-                app_running = device_info.app.app_id == self.provider.config.get_value(
-                    CONF_ROKU_APP_ID
-                )
+                if device_info.app is not None:
+                    app_running = device_info.app.app_id == self.provider.config.get_value(
+                        CONF_ROKU_APP_ID
+                    )
 
-            if app_running:
+                if not app_running:
+                    self.logger.warning(
+                        "Not enqueuing %s on %s: Media Assistant app is not running",
+                        media.title,
+                        self.name,
+                    )
+                    return
                 await self.roku_input(
                     {
                         "u": stream_url,
@@ -248,9 +273,13 @@ class MediaAssistantPlayer(Player):
                     },
                 )
                 self.queued = media
-        except Exception:
-            self.logger.error("Failed to Enqueue Media on: %s", self.name)
-            return
+                self.logger.info("Enqueued %s on %s", media.title, self.name)
+                return
+            except Exception:
+                self.logger.error(
+                    "Failed to Enqueue Media on: %s (attempt %d/3)", self.name, attempt
+                )
+                await asyncio.sleep(2)
 
     async def poll(self) -> None:
         """Poll player for state updates."""
@@ -288,11 +317,51 @@ class MediaAssistantPlayer(Player):
                 if "position" in media_state:
                     try:
                         position = int(media_state["position"].split(" ", 1)[0]) / 1000
-                        if self._attr_elapsed_time is not None:
-                            if abs(position - self._attr_elapsed_time) > 10:
-                                self._attr_current_media = self.queued
+                        prev_position = self._attr_elapsed_time
+                        now = time.time()
+                        # the app only ever moves on to the item we enqueued,
+                        # and that shows as the position falling back towards 0. Only then
+                        # is "current media = queued" true: never on a plain jump (which
+                        # every fresh play produced) and never when nothing is queued
+                        # (which used to blank the current track and freeze the queue).
+                        if (
+                            prev_position is not None
+                            and self.queued is not None
+                            and position < prev_position - 10
+                        ):
+                            self._attr_current_media = self.queued
+                            self.queued = None
+                            self.logger.info(
+                                "%s moved on to enqueued item %s",
+                                self.name,
+                                self._attr_current_media.title,
+                            )
+                        # The app has no end-of-track signal: when its buffer drains it sits
+                        # in state "play" with position == duration for ever. Report a
+                        # position frozen at the end of the stream as IDLE, so Music
+                        # Assistant can finish the queue, and a real stall shows as one.
+                        duration = (
+                            int(media_state["duration"].split(" ", 1)[0]) / 1000
+                            if "duration" in media_state
+                            else None
+                        )
+                        if position != prev_position or self._position_last_moved is None:
+                            self._position_last_moved = now
+                        elif (
+                            self._attr_playback_state == PlaybackState.PLAYING
+                            and duration is not None
+                            and position >= duration - 1.5
+                            and now - self._position_last_moved >= 10
+                        ):
+                            self._attr_playback_state = PlaybackState.IDLE
+                            self.logger.info(
+                                "%s stream ended (position frozen at %.1fs for %.0fs)",
+                                self.name,
+                                position,
+                                now - self._position_last_moved,
+                            )
                         self._attr_elapsed_time = position
-                        self._attr_elapsed_time_last_updated = time.time()
+                        self._attr_elapsed_time_last_updated = now
                     except Exception:
                         self.logger.info(
                             "Playback Position received from %s Was Invalid", self.name
