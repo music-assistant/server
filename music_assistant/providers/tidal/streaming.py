@@ -32,6 +32,16 @@ _DASH_ROUTE_IDLE_BUFFER: int = 300
 _MANIFEST_DASH = "application/dash+xml"
 _MANIFEST_BTS = "application/vnd.tidal.bts"
 
+# ReplayGain 2.0 reference level; Tidal's replay gain values are relative to it.
+_REPLAYGAIN_REFERENCE_LUFS = -18.0
+
+
+def _loudness_from_gain(value: float | None) -> float | None:
+    """Convert a ReplayGain value to absolute loudness in LUFS."""
+    if value is None:
+        return None
+    return _REPLAYGAIN_REFERENCE_LUFS - value
+
 
 class TidalStreamingManager:
     """Manages Tidal streaming operations."""
@@ -155,6 +165,19 @@ class TidalStreamingManager:
             audio_mode=stream_data.get("audioMode", "STEREO"),
         )
 
+        loudness = _loudness_from_gain(stream_data.get("trackReplayGain"))
+        loudness_album = _loudness_from_gain(stream_data.get("albumReplayGain"))
+
+        if loudness is not None:
+            self.mass.create_task(
+                self.mass.streams.audio_analysis.set_track_loudness(
+                    item_id=track.item_id,
+                    provider_instance_id_or_domain=self.provider.instance_id,
+                    loudness=loudness,
+                    loudness_album=loudness_album,
+                )
+            )
+
         return StreamDetails(
             item_id=track.item_id,
             provider=self.provider.instance_id,
@@ -164,6 +187,8 @@ class TidalStreamingManager:
             path=url,
             can_seek=True,
             allow_seek=True,
+            loudness=loudness,
+            loudness_album=loudness_album,
         )
 
     async def _fetch_playback_info(self, track_id: str, quality: Any) -> dict[str, Any]:

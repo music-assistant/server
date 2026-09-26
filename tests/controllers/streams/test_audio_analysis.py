@@ -657,7 +657,7 @@ async def test_find_candidates_query_gates_on_current_version(
 
 
 @pytest.mark.asyncio
-async def test_run_background_scan_concurrency_semaphore(
+async def test_run_background_scan_caps_in_flight_tracks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """At most CONF_BACKGROUND_SCAN_CONCURRENCY tracks run concurrently."""
@@ -714,6 +714,68 @@ async def test_run_background_scan_concurrency_semaphore(
     await controller._run_background_scan()
 
     assert max_in_flight == 2
+
+
+@pytest.mark.asyncio
+async def test_run_background_scan_bounds_worker_task_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The scan fans out a fixed worker pool, so task count tracks concurrency not library size."""
+    controller = _make_controller()
+    concurrency = 3
+    monkeypatch.setattr(controller, "_get_scan_concurrency", lambda: concurrency)
+
+    p1 = _make_aa_provider("prov-1", available=True)
+    p1.domain = "p1"
+    p1.start_analysis = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        controller.__class__,
+        "providers",
+        property(lambda _self: [p1]),
+    )
+
+    candidate_count = 50
+    candidates = [
+        {
+            "item_id": f"track-{i}",
+            "provider_instance": "filesystem_local",
+            "missing_domains": ["p1"],
+        }
+        for i in range(candidate_count)
+    ]
+    monkeypatch.setattr(
+        controller, "_find_candidates_missing_analysis", AsyncMock(return_value=candidates)
+    )
+
+    streamdetails_list = [
+        _make_streamdetails(path=f"/music/{c['item_id']}.flac") for c in candidates
+    ]
+    for sd in streamdetails_list:
+        sd.stream_type = StreamType.LOCAL_FILE
+    music_prov = MagicMock()
+    music_prov.available = True
+    music_prov.get_stream_details = AsyncMock(side_effect=streamdetails_list)
+    music_prov.instance_id = "filesystem_local"
+    controller.mass.get_provider = MagicMock(return_value=music_prov)  # type: ignore[method-assign]
+
+    peak_worker_tasks = 0
+    outer_tasks = set(asyncio.all_tasks())
+
+    async def _track_streaming(
+        _streamdetails: MagicMock, _providers: object, **_kwargs: object
+    ) -> None:
+        nonlocal peak_worker_tasks
+        peak_worker_tasks = max(peak_worker_tasks, len(asyncio.all_tasks() - outer_tasks))
+        # yield so every worker reaches this point within the same run
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(controller, "_run_background_streaming_for_track", _track_streaming)
+
+    await controller._run_background_scan()
+
+    # The old per-candidate implementation would spawn one task per candidate here.
+    assert peak_worker_tasks == concurrency
+    assert music_prov.get_stream_details.await_count == candidate_count
 
 
 @pytest.mark.asyncio

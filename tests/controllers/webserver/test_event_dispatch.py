@@ -6,7 +6,6 @@ import asyncio
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
-import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.auth import User, UserRole
@@ -16,28 +15,14 @@ from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 
 if TYPE_CHECKING:
+    import pytest
+
     from music_assistant.mass import MusicAssistant
 
 
 async def drain_event_callbacks() -> None:
     """Yield to the event loop so pending event subscriber callbacks run."""
     await asyncio.sleep(0)
-
-
-@pytest.fixture
-def webserver(mass_minimal: MusicAssistant) -> WebserverController:
-    """Return a WebserverController with stubbed serialization dependencies."""
-    # stub the controllers referenced by the serialization resolvers
-    # (mass_minimal does not set up metadata/translations/tasks)
-    mass_minimal.metadata = SimpleNamespace(  # type: ignore[assignment]
-        compute_image_id=lambda provider, path: f"{provider}--{path}"
-    )
-    mass_minimal.translations = SimpleNamespace(  # type: ignore[assignment]
-        get_translation=lambda _key, **_kwargs: None
-    )
-    webserver = WebserverController(mass_minimal)
-    mass_minimal.webserver = webserver
-    return webserver
 
 
 def create_ws_client(
@@ -112,3 +97,149 @@ async def test_provider_event_delivered_to_guest_clients(
     msg_admin = get_written_message(admin)
     assert msg_guest == msg_admin
     assert "music_quiz--abcd/game_state" in msg_guest
+
+
+def _restricted_client(
+    webserver: WebserverController,
+    *,
+    player_filter: list[str],
+) -> WebsocketClientHandler:
+    """Create a websocket client for a restricted (non-admin) user with a player filter."""
+    client = create_ws_client(webserver, "restricted", role=UserRole.USER)
+    client._authenticated_user = User(
+        user_id="restricted",
+        username="restricted",
+        role=UserRole.USER,
+        player_filter=player_filter,
+    )
+    return client
+
+
+def _stub_players(monkeypatch: pytest.MonkeyPatch, mass: MusicAssistant, **players: bool) -> None:
+    """Stub the player registry with the given players, mapping id -> is_private."""
+    registry = {
+        player_id: SimpleNamespace(player_id=player_id, private=private)
+        for player_id, private in players.items()
+    }
+    monkeypatch.setattr(mass, "players", SimpleNamespace(get_player=registry.get), raising=False)
+
+
+async def test_player_events_honor_the_user_player_filter(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+) -> None:
+    """A restricted user only receives events for players in their filter."""
+    client = _restricted_client(webserver, player_filter=["kitchen"])
+
+    mass_minimal.signal_event(EventType.PLAYER_UPDATED, "kitchen", {"name": "Kitchen"})
+    await drain_event_callbacks()
+    assert "kitchen" in get_written_message(client)
+
+    mass_minimal.signal_event(EventType.PLAYER_UPDATED, "living_room", {"name": "Living room"})
+    await drain_event_callbacks()
+    assert client._to_write.empty()
+
+
+async def test_own_private_client_player_events_are_delivered(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A restricted user receives events for the private client player they connected on."""
+    _stub_players(monkeypatch, mass_minimal, browser=True)
+    client = _restricted_client(webserver, player_filter=["kitchen"])
+    client.bind_sendspin_player("browser")
+
+    mass_minimal.signal_event(EventType.PLAYER_UPDATED, "browser", {"name": "Browser"})
+    await drain_event_callbacks()
+    assert "browser" in get_written_message(client)
+
+
+async def test_events_reach_own_client_bound_before_registration(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Binding can precede registration; once the player exists its events reach the owner."""
+    _stub_players(monkeypatch, mass_minimal)  # player not registered yet at bind time
+    client = _restricted_client(webserver, player_filter=["kitchen"])
+    client.bind_sendspin_player("browser")
+
+    _stub_players(monkeypatch, mass_minimal, browser=True)  # player now registered
+    mass_minimal.signal_event(EventType.PLAYER_ADDED, "browser", {"name": "Browser"})
+    await drain_event_callbacks()
+    assert "browser" in get_written_message(client)
+
+
+async def test_own_private_client_removal_event_is_delivered(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The own private client still gets its removal event after it left the registry."""
+    _stub_players(monkeypatch, mass_minimal, browser=True)
+    client = _restricted_client(webserver, player_filter=["kitchen"])
+    client.bind_sendspin_player("browser")
+    # an event while the player exists latches its private status
+    mass_minimal.signal_event(EventType.PLAYER_ADDED, "browser", {"name": "Browser"})
+    await drain_event_callbacks()
+    assert "browser" in get_written_message(client)
+
+    _stub_players(monkeypatch, mass_minimal)  # player has left the registry
+    mass_minimal.signal_event(EventType.PLAYER_REMOVED, "browser", {})
+    await drain_event_callbacks()
+    assert "browser" in get_written_message(client)
+
+
+async def test_own_client_removal_delivered_after_becoming_restricted(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client restricted only after registering still receives its own removal event."""
+    _stub_players(monkeypatch, mass_minimal, browser=True)
+    client = _restricted_client(webserver, player_filter=[])  # unrestricted for now
+    client.bind_sendspin_player("browser")
+    # while unrestricted, the registration event latches the private status
+    mass_minimal.signal_event(EventType.PLAYER_ADDED, "browser", {"name": "Browser"})
+    await drain_event_callbacks()
+    assert "browser" in get_written_message(client)
+
+    # the user is restricted later and the player then leaves the registry
+    client._authenticated_user = User(
+        user_id="restricted", username="restricted", role=UserRole.USER, player_filter=["kitchen"]
+    )
+    _stub_players(monkeypatch, mass_minimal)
+    mass_minimal.signal_event(EventType.PLAYER_REMOVED, "browser", {})
+    await drain_event_callbacks()
+    assert "browser" in get_written_message(client)
+
+
+async def test_shared_speaker_claimed_as_client_stays_filtered(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Announcing a shared speaker's id as the client id does not unlock its events."""
+    _stub_players(monkeypatch, mass_minimal, living_room=False)
+    client = _restricted_client(webserver, player_filter=["kitchen"])
+    client.bind_sendspin_player("living_room")  # a shared, non-private speaker
+
+    mass_minimal.signal_event(EventType.PLAYER_UPDATED, "living_room", {"name": "Living room"})
+    await drain_event_callbacks()
+    assert client._to_write.empty()
+
+
+async def test_full_access_user_receives_events_outside_their_filter(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+) -> None:
+    """A full-access (admin) user is never limited by a stored player filter."""
+    admin = create_ws_client(webserver, "admin1")
+    admin._authenticated_user = User(
+        user_id="admin1", username="admin1", role=UserRole.ADMIN, player_filter=["kitchen"]
+    )
+
+    mass_minimal.signal_event(EventType.PLAYER_UPDATED, "living_room", {"name": "Living room"})
+    await drain_event_callbacks()
+    assert "living_room" in get_written_message(admin)

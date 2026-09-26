@@ -43,7 +43,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.helpers.wake_on_lan import send_magic_packet
-from music_assistant.models.player import Player, PlayerSource
+from music_assistant.models.player import AnnouncementFeature, Player, PlayerSource
 from music_assistant.providers.sonos.const import (
     DEVICE_FEATURE_WAKEABLE,
     NON_HIRES_MODELS,
@@ -149,6 +149,11 @@ class SonosPlayer(Player):
             for x in self._attr_source_list
             if x.id in PLAYER_SOURCE_MAP or x.id == self._attr_active_source
         ]
+
+    @property
+    def announcement_features(self) -> set[AnnouncementFeature]:
+        """Return SUPPORTS_VOLUME and COORDINATES_START: clips honour the level and start in step."""
+        return {AnnouncementFeature.SUPPORTS_VOLUME, AnnouncementFeature.COORDINATES_START}
 
     @property
     def group_controller(self) -> SonosGroup:
