@@ -18,7 +18,8 @@ To add a new player provider to Music Assistant, you need to create a new folder
 in the providers folder with the name of your provider (e.g. 'my_player_provider').
 In that folder you should create (at least) a __init__.py file and a manifest.json file.
 
-Optional is an icon.svg file that will be used as the icon for the provider in the UI,
+Optional is an icon.svg file that will be used as the icon for the provider in the UI
+(plus icon_monochrome.svg, and icon_dark.svg when icon.svg does not read on a dark background),
 but we also support that you specify a material design icon in the manifest.json file.
 
 IMPORTANT NOTE:

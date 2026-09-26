@@ -29,8 +29,9 @@ constants.py and provider.py. Other often used files are helpers.py, parsers.py 
 streaming.py
 
 Optional, but strongly desired, are icon.svg and icon_monochrome.svg files that will be used
-as the icon for the provider in the UI, but if this is not possible then we also support
-a material design icon in the manifest.json file.
+as the icon for the provider in the UI (plus icon_dark.svg when icon.svg does not read on a
+dark background), but if this is not possible then we also support a material design icon
+in the manifest.json file.
 
 IMPORTANT NOTE:
 We strongly recommend developing on either macOS or Linux and start your development
