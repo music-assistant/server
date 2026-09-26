@@ -121,6 +121,34 @@ ATTR_HOST_ID = "ai_radio_host_id"
 ATTR_QUEUE_DJ = "ai_radio_queue_dj"
 ATTR_GAP_NEXT_ID = "ai_radio_gap_next_id"
 ATTR_WEATHER_REQUIRED = "ai_radio_weather_required"
+# per-section opt-in: a break from a section that allows it may be split so its tail
+# carries over the next record's intro (a "post")
+ATTR_ALLOW_POST = "ai_radio_allow_post"
+
+# A post is the tail of one continuous break mixed over the next record's intro. With a
+# break of B seconds and W seconds of intro before the vocal:
+#
+#   overlap = min(W - POST_TAIL_GAP, B - POST_MIN_HEAD_SECONDS)
+#
+# the break airs alone for B - overlap seconds, then the record starts underneath it and
+# the same recording's last `overlap` seconds play over the intro.
+POST_TAIL_GAP = 0.4  # seconds of music between the end of the voice and the vocal entry
+POST_MIN_SECONDS = 1.5  # shortest overlap worth doing; below it the break plays whole
+POST_MIN_HEAD_SECONDS = 1.0  # the break keeps at least this much for its own queue item
+# MA's lyrics lookup walks every metadata provider; past this budget the break plays whole
+POST_LYRICS_TIMEOUT = 8.0
+# a postable break is rendered once into a local, levelled copy; a render this slow is wedged
+POST_STAGE_TIMEOUT = 20
+# staged copies: their file name prefix, and the age past which one is a leftover to delete
+POST_CLIP_PREFIX = "ma_ai_radio_post_"
+POST_CLIP_MAX_AGE = 3600
+# the staged copy is the clip's PCM wrapped in WAV, so ffmpeg reads it without format hints
+POST_STAGED_FORMAT = AudioFormat(
+    content_type=ContentType.WAV,
+    sample_rate=TTS_CLIP_PCM_FORMAT.sample_rate,
+    bit_depth=TTS_CLIP_PCM_FORMAT.bit_depth,
+    channels=TTS_CLIP_PCM_FORMAT.channels,
+)
 
 # placeholders resolved at render time rather than at plan time, so the aired script
 # reflects the moment it plays

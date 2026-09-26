@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         Track,
     )
     from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
+    from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamDetails
 
 
@@ -69,6 +70,21 @@ class AIEngine(PluginEngine):
 @dataclass(kw_only=True)
 class TTSEngine(PluginEngine):
     """An engine that renders speech, invoked through ``PluginProvider.get_tts_message``."""
+
+
+@dataclass(kw_only=True)
+class VoiceOver:
+    """
+    Speech a plugin's item carries over the start of the queue item after it.
+
+    Returned by ``PluginProvider.get_voice_over``. Server-side only: never serialized to
+    clients.
+    """
+
+    path: str  # local file holding the speech
+    start: float  # second of the next item at which the voice begins
+    end: float  # second of the next item at which the voice ends
+    offset: float = 0.0  # second of the file to start reading from
 
 
 class PluginProvider(Provider):
@@ -197,6 +213,32 @@ class PluginProvider(Provider):
         :param streamdetails: Stream details of the active AudioSource.
         """
         return None
+
+    async def get_voice_over(
+        self, streamdetails: StreamDetails, next_item: QueueItem
+    ) -> VoiceOver | None:
+        """
+        Return speech from this plugin's item to mix over the start of the item after it.
+
+        Called when a queue item starts streaming straight after one of this plugin's
+        items. The voice-over's times are measured from the start of that item, which is
+        why a seeked item never gets one, and the music is ducked under the voice. Every
+        voice-over handed out is settled with a call to ``on_voice_over_ended``, unless the
+        stream is cut short: a player that fetches the item again then gets asked again.
+
+        :param streamdetails: Stream details of this plugin's item, which played right before.
+        :param next_item: The queue item about to stream.
+        """
+        return None
+
+    async def on_voice_over_ended(self, streamdetails: StreamDetails, aired: bool) -> None:
+        """
+        Handle callback when a voice-over from ``get_voice_over`` is done with.
+
+        :param streamdetails: Stream details of this plugin's item the voice-over came from.
+        :param aired: True when the next item streamed to its end with the voice mixed in,
+            False when it could not air with this playback.
+        """
 
     async def on_source_control(
         self,

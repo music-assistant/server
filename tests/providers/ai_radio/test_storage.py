@@ -113,6 +113,30 @@ def test_normalize_section_normalizes_invalid_web_search_and_constraints() -> No
     assert normalized["constraints"] == {"max_chars": 450}
 
 
+@pytest.mark.parametrize(
+    ("section_fields", "expected"),
+    [
+        pytest.param({"allow_post": True}, {"allow_post": True}, id="on"),
+        pytest.param({"allow_post": 1}, {"allow_post": True}, id="truthy becomes a real bool"),
+        pytest.param({"allow_post": False}, {}, id="off is not stored"),
+        pytest.param({"allow_post": None}, {}, id="none is not stored"),
+        pytest.param({}, {}, id="never set"),
+    ],
+)
+def test_normalize_section_stores_allow_post_only_when_on(
+    section_fields: dict[str, Any], expected: dict[str, Any]
+) -> None:
+    """A section that never opted in comes back without the key, as the presets do."""
+    storage = DummyStorage()
+
+    normalized = storage._normalize_section(
+        {"id": "back_announce", "name": "Back announce", "type": "ai_text", "prompt": "Talk."}
+        | section_fields
+    )
+
+    assert {key: normalized[key] for key in normalized if key == "allow_post"} == expected
+
+
 def test_normalize_station_rejects_missing_source_playlist_id() -> None:
     """Reject stations without a source playlist reference."""
     storage = DummyStorage()
