@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
@@ -186,6 +186,14 @@ def parse_album(
         album.artists = album_artists
     if release_date := attributes.get("releaseDate"):
         album.year = int(release_date.split("-")[0])
+        # Apple sends the full date (YYYY-MM-DD) when it is known; for pre-added
+        # albums this is the expected release date in the future, so clients can
+        # surface upcoming releases instead of only the (misleading) year.
+        if len(release_date) == 10:
+            with suppress(ValueError):
+                album.metadata.release_date = datetime.strptime(release_date, "%Y-%m-%d").replace(
+                    tzinfo=UTC
+                )
     if genres := attributes.get("genreNames"):
         album.metadata.genres = set(genres)
     if image := parse_artwork_image(provider, MediaType.ALBUM, album_id, attributes):
