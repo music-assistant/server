@@ -580,18 +580,26 @@ class SyncGroupPlayer(Player):
             async with self.mass.players.get_player_lock(
                 leader.player_id, PlayerLockPurpose.PLAYBACK
             ):
-                if self.sync_leader is not leader:
+                current_leader: Player | None = self.sync_leader
+                if current_leader is not leader:
                     # the group dissolved or picked another leader while we waited for
                     # this one's lock, so the member change no longer applies to it.
-                    # The recorded member list is what the next (re-)form picks up.
+                    # A (re-)form syncs the recorded member list, which covers the
+                    # additions but not the removal of a member that was grouped to
+                    # the leader outside of MA.
                     self.logger.debug(
                         "Sync leader of group %s changed from %s to %s while waiting for its "
                         "lock; leaving the member change to the (re-)form",
                         self.display_name,
                         leader.display_name,
-                        self.sync_leader.display_name if self.sync_leader else None,
+                        current_leader.display_name if current_leader else None,
                     )
-                    if self._reform_task is not None and self._attr_group_members:
+                    if (
+                        current_leader is None
+                        and self._reform_task is not None
+                        and self._attr_group_members
+                    ):
+                        # a re-form only runs while the group is leaderless
                         self._schedule_reform_timer()
                 else:
                     await self.mass.players._handle_set_members(
@@ -605,11 +613,8 @@ class SyncGroupPlayer(Player):
                 # so re-arm the window — the re-form picks up the final member list.
                 self._schedule_reform_timer()
             else:
-                # nothing left to re-form for: releasing the pending re-form also
-                # ends the session, so the members are released right away
-                self.logger.debug(
-                    "Last member left group %s, dropping the pending re-form", self.display_name
-                )
+                # nothing left to re-form for: dropping the pending re-form also
+                # ends the group's claim on the session
                 self._cancel_reform_timer()
         # NOTE: If we weren't playing before, we don't need to do anything else,
         # since the syncing will be done once playback starts

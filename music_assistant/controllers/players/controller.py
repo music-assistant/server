@@ -108,7 +108,6 @@ from music_assistant.helpers.colors import get_palette_for_url
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.plugin_engines import create_tts_engine_config_entries
 from music_assistant.helpers.util import (
-    TaskManager,
     enrich_device_mac_address,
     is_valid_mac_address,
 )
@@ -869,18 +868,25 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param player_id: player_id of the player to handle the command.
         :param powered: bool if player should be powered on or off.
         """
-        # Power is serialized with PLAYBACK because powering on a sync/group player
-        # forms the group (and powering off dissolves it) - this must not race with
-        # play_media / cmd_resume / cmd_set_members on the same player.
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
         async with contextlib.AsyncExitStack() as stack:
-            # A power off detaches this player from its (sync)group, which ends up in
-            # cmd_set_members on that group - and that takes the group's lock before
-            # this player's. The same two locks are taken here, so they must be taken
-            # in the same order or the two commands lock each other out
-            # (see get_player_lock).
+            # Power is serialized with PLAYBACK because powering on a sync/group player
+            # forms the group (and powering off dissolves it) - this must not race with
+            # play_media / cmd_resume / cmd_set_members on the same player.
+            # A power off also detaches this player from its (sync)group, which ends up
+            # in cmd_set_members on that group - and that takes the group's lock before
+            # this player's. The same two locks are taken here, so they must be taken in
+            # the same order or the two commands lock each other out (see get_player_lock).
             if not powered and (parent_id := (player.state.active_group or player.state.synced_to)):
+                if (
+                    (parent := self.get_player(parent_id))
+                    and parent.type != PlayerType.GROUP
+                    and parent.state.active_group
+                ):
+                    # cmd_set_members redirects a captured sync leader to its group
+                    # player, so that group is the lock it will actually take
+                    parent_id = parent.state.active_group
                 await stack.enter_async_context(
                     self.get_player_lock(parent_id, PlayerLockPurpose.PLAYBACK)
                 )
@@ -3975,11 +3981,18 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             and player_state.type in UNGROUP_ON_POWER_OFF_TYPES
             and player_state.group_members
         ):
-            async with TaskManager(self.mass) as tg:
-                for member in self.iter_group_members(player, True):
-                    if member.power_control == PLAYER_CONTROL_NONE:
-                        continue
-                    tg.create_task(self._handle_cmd_power(member.player_id, False))
+            # Sequential and in this very task: a member's power off detaches it from
+            # this leader and so needs the locks this power off already holds, and
+            # get_player_lock is only re-entrant within a single task.
+            for member in self.iter_group_members(player, True):
+                if member.power_control == PLAYER_CONTROL_NONE:
+                    continue
+                try:
+                    await self._handle_cmd_power(member.player_id, False)
+                except Exception:
+                    self.logger.exception(
+                        "Error while powering off group member %s", member.display_name
+                    )
 
         # handle actual power command
         if player_state.power_control == PLAYER_CONTROL_NONE:

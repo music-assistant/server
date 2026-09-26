@@ -2515,17 +2515,22 @@ class TestLeaderChangedWhileWaitingForItsLock:
         """A leader that was replaced while we waited for its lock is not commanded either."""
         mass = _make_mock_mass()
         sgp, _ = self._setup_group(mass)
-        sgp._reform_task = None
+        sgp._reform_task = MagicMock()  # a re-form is pending
         new_leader = _make_mock_player("m2", provider_domain="wiim")
         mass.players.get_player_lock = _lock_with_side_effect(
             lambda: setattr(sgp, "sync_leader", new_leader)
         )
 
-        with patch.object(sgp, "update_state"):
+        with (
+            patch.object(sgp, "update_state"),
+            patch.object(sgp, "_schedule_reform_timer") as schedule_reform,
+        ):
             await sgp.set_members(player_ids_to_add=["m3"])
 
         mass.players._handle_set_members.assert_not_awaited()
         assert sgp.sync_leader is new_leader
+        # a re-form only runs on a leaderless group, so re-arming it would be a no-op
+        schedule_reform.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_pending_reform_is_rearmed_for_the_final_member_list(self) -> None:
