@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import Track
 
 from .helpers.utils import is_catalog_id, is_library_id, translate_media_type_to_apple_type
@@ -222,17 +222,30 @@ class AppleMusicLibraryManager:
         )
         raise MusicAssistantError(message)
 
-    async def set_favorite(self, prov_item_id: str, media_type: MediaType, favorite: bool) -> None:
-        """Set the favorite status of an item."""
-        data = {
-            "type": "ratings",
-            "attributes": {"value": 1 if favorite else -1},
-        }
+    async def set_favorite(
+        self, prov_item_id: str, media_type: MediaType, favorite: bool | None
+    ) -> None:
+        """
+        Set the favorite status of an item.
+
+        :param prov_item_id: The Apple Music item id to rate.
+        :param media_type: Media type of the item.
+        :param favorite: True to rate it up, False to rate it down, None to drop the rating.
+        """
         item_type = translate_media_type_to_apple_type(media_type)
         if is_catalog_id(prov_item_id):
             endpoint = f"me/ratings/{item_type}/{prov_item_id}"
         else:
             endpoint = f"me/ratings/library-{item_type}/{prov_item_id}"
+        if favorite is None:
+            # an item that was never rated has no rating to delete
+            with suppress(MediaNotFoundError):
+                await self.api.delete_data(endpoint)
+            return
+        data = {
+            "type": "ratings",
+            "attributes": {"value": 1 if favorite else -1},
+        }
         await self.api.put_data(endpoint, data=data)
 
     async def _flush_catalog_tracks(
@@ -360,7 +373,7 @@ class AppleMusicLibraryManager:
                         continue
 
                 # Found a match! Update favorite status and return
-                track.favorite = is_favourite or False
+                track.favorite = True if is_favourite else None
                 self.logger.debug(
                     "Found replacement catalog track %s for deprecated library track %s",
                     track.item_id,

@@ -104,6 +104,7 @@ class AlbumsController(MediaControllerBase[Album]):
         SELECT
             albums.*,
             {self._external_ids_query()} AS external_ids,
+            {self._favorite_query()} AS favorite,
             {self._provider_mappings_query()} AS provider_mappings,
             (SELECT JSON_GROUP_ARRAY(
                 json_object(
@@ -181,7 +182,7 @@ class AlbumsController(MediaControllerBase[Album]):
         """
         Get in-database albums.
 
-        :param favorite: Filter by favorite status.
+        :param favorite: Only include the current user's likes (True) or dislikes (False).
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
@@ -299,14 +300,14 @@ class AlbumsController(MediaControllerBase[Album]):
         Restricted to the providers the current user is allowed to see when that user
         has a provider filter set.
 
-        :param favorite_only: Only count albums marked as favorite.
+        :param favorite_only: Only count the albums the current user likes.
         :param album_types: Only count albums of these types.
         """
         sql_query = f"SELECT item_id FROM {self.db_table}"
         query_parts: list[str] = []
         query_params: dict[str, Any] = {}
         if favorite_only:
-            query_parts.append("favorite = 1")
+            query_parts.append(self._favorite_filter_clause(query_params, True))
         if album_types:
             query_parts.append("albums.album_type IN :album_types")
             query_params["album_types"] = [x.value for x in album_types]
@@ -618,7 +619,6 @@ class AlbumsController(MediaControllerBase[Album]):
                 "name": item.name,
                 "sort_name": item.sort_name,
                 "version": item.version,
-                "favorite": item.favorite,
                 "album_type": item.album_type,
                 "year": item.year,
                 "metadata": serialize_to_json(item.metadata),

@@ -478,7 +478,6 @@ class StorytelHelper:
                     provider_instance=self.provider_id,
                 )
             },
-            favorite=False,
             total_episodes=episode_count,
         )
 
@@ -1166,7 +1165,6 @@ class StorytelHelper:
                 )
             },
             publisher=publisher,
-            favorite=False,
         )
         chapters = await self._fetch_chapters(consumable_id=consumable_id)
         chapters_list = self._parse_chapters(chapters)
@@ -1227,7 +1225,6 @@ class StorytelHelper:
                     provider_instance=self.provider_id,
                 )
             },
-            favorite=False,
         )
         if authors:
             media_item.authors.set(authors)

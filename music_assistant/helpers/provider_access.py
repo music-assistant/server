@@ -150,6 +150,20 @@ def source_owner(mass: MusicAssistant, instance_id: str) -> str | None:
     return access.owner if access else None
 
 
+def music_source_owners(mass: MusicAssistant) -> dict[str, str | None]:
+    """
+    Return the owner of every configured music source, by instance id.
+
+    A None owner means a source of the whole home.
+
+    :param mass: The MusicAssistant instance.
+    """
+    return {
+        source.instance_id: source.access.owner if source.access else None
+        for source in _music_sources(mass)
+    }
+
+
 def exact_provider(mass: MusicAssistant, instance_id: str) -> ProviderInstanceType | None:
     """
     Return the loaded and available provider with exactly this instance id, if there is one.

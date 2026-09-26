@@ -271,7 +271,6 @@ class RadioController(MediaControllerBase[Radio]):
             {
                 "name": item.name,
                 "sort_name": item.sort_name,
-                "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(
@@ -405,4 +404,6 @@ class RadioController(MediaControllerBase[Radio]):
         # the refetch also discards anything set on the object passed in, so the exported
         # favorite goes onto the library item
         if (item.metadata or {}).get("favorite") == "true":
-            await self.set_favorite(library_item.item_id, True)
+            await self.set_favorite(
+                library_item.item_id, True, await self.mass.music.acting_user_ids()
+            )

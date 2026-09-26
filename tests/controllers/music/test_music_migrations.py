@@ -7,20 +7,24 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ExternalID
+from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.enums import ExternalID, ProviderSharing
 from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
+    DB_TABLE_FAVORITES,
     DB_TABLE_PLAYLOG,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_SETTINGS,
 )
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.music.favorites import PENDING_USER_ID
 from music_assistant.controllers.music.migrations import migrate_database
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.mass import MusicAssistant
+from tests.common import set_music_source_access
 
 from .helpers import ISRC, create_track
 
@@ -594,3 +598,120 @@ async def test_migration_drops_none_provider_mappings(database: DatabaseConnecti
         f"SELECT item_id, provider_domain, provider_instance FROM {DB_TABLE_PROVIDER_MAPPINGS}"
     )
     assert [(r["provider_domain"], r["provider_instance"]) for r in rows] == [("qobuz", "qobuz--1")]
+
+
+async def _create_pre_61_favorites(database: DatabaseConnection) -> None:
+    """Give the tracks table the favorite column (and its index) a pre-61 database has."""
+    await database.execute("ALTER TABLE tracks ADD COLUMN favorite BOOLEAN NOT NULL DEFAULT 0")
+    await database.execute(
+        "ALTER TABLE tracks ADD COLUMN timestamp_modified INTEGER NOT NULL DEFAULT 0"
+    )
+    await database.execute("CREATE INDEX tracks_favorite_idx on tracks(favorite)")
+    await database.execute(
+        f"CREATE TABLE {DB_TABLE_PROVIDER_MAPPINGS}([media_type] TEXT, [item_id] INTEGER, "
+        "[provider_domain] TEXT, [provider_instance] TEXT, [provider_item_id] TEXT, "
+        "[in_library] BOOLEAN NOT NULL DEFAULT 0)"
+    )
+    # 1: favorited on a source user-a owns; 2: favorited on a source of the whole home;
+    # 3: favorited with no source holding it in a library; 4: not favorited
+    await database.execute(
+        "INSERT INTO tracks (item_id, favorite, timestamp_modified) VALUES "
+        "(1, 1, 111), (2, 1, 222), (3, 1, 333), (4, 0, 444)"
+    )
+    await database.execute(
+        f"INSERT INTO {DB_TABLE_PROVIDER_MAPPINGS} "
+        "(media_type, item_id, provider_domain, provider_instance, provider_item_id, in_library) "
+        "VALUES ('track', 1, 'spotify', 'spotify--1', 's1', 1), "
+        "('track', 2, 'subsonic', 'subsonic--1', 'n2', 1), "
+        "('track', 3, 'spotify', 'spotify--1', 's3', 0), "
+        "('track', 4, 'spotify', 'spotify--1', 's4', 1)"
+    )
+    await database.commit()
+
+
+async def _favorite_rows(database: DatabaseConnection) -> list[tuple[str, int, int, int]]:
+    """Return the favorites table as (user_id, item_id, favorite, timestamp) tuples."""
+    return [
+        (row["user_id"], row["item_id"], row["favorite"], row["timestamp"])
+        for row in await database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_FAVORITES} WHERE media_type = 'track' "
+            "ORDER BY user_id, item_id",
+            limit=0,
+        )
+    ]
+
+
+async def test_migration_moves_favorites_to_the_users_that_hold_them(
+    database: DatabaseConnection,
+) -> None:
+    """Favorites become per-user rows; a second pass over the same database changes nothing."""
+    await _create_pre_61_favorites(database)
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    set_music_source_access(
+        mass,
+        {
+            "spotify--1": ProviderAccess(owner="user-a", sharing=ProviderSharing.PRIVATE),
+            # a source of the whole home carries no access record at all
+            "subsonic--1": None,
+        },
+    )
+    for _ in range(2):
+        await migrate_database(
+            mass,
+            database,
+            MagicMock(),
+            prev_version=60,
+            create_tables=AsyncMock(),
+        )
+
+    assert await _favorite_rows(database) == [
+        # the household source and the item no source holds wait for every user
+        (PENDING_USER_ID, 2, 1, 222),
+        (PENDING_USER_ID, 3, 1, 333),
+        # the owner of the source that holds it gets the like, timestamped with the row's
+        ("user-a", 1, 1, 111),
+    ]
+    # the shared column and its index are gone
+    assert "favorite" not in await _table_columns(database, "tracks")
+    assert not await database.get_rows_from_query(
+        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'tracks_favorite_idx'"
+    )
+
+
+async def test_migration_gives_favorites_to_everyone_without_an_owned_source(
+    database: DatabaseConnection,
+) -> None:
+    """With no owned music source every favorite is one of the whole home."""
+    await _create_pre_61_favorites(database)
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    set_music_source_access(mass, {"spotify--1": None, "subsonic--1": None})
+    await migrate_database(mass, database, MagicMock(), prev_version=60, create_tables=AsyncMock())
+
+    assert await _favorite_rows(database) == [
+        (PENDING_USER_ID, 1, 1, 111),
+        (PENDING_USER_ID, 2, 1, 222),
+        (PENDING_USER_ID, 3, 1, 333),
+    ]
+
+
+async def test_migration_survives_a_favorite_without_any_provider_mapping_table(
+    database: DatabaseConnection,
+) -> None:
+    """A database whose provider mappings are missing still keeps its favorites."""
+    await database.execute("ALTER TABLE tracks ADD COLUMN favorite BOOLEAN NOT NULL DEFAULT 0")
+    await database.execute("INSERT INTO tracks (item_id, favorite) VALUES (1, 1), (2, 0)")
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    set_music_source_access(
+        mass, {"spotify--1": ProviderAccess(owner="user-a", sharing=ProviderSharing.PRIVATE)}
+    )
+    await migrate_database(mass, database, MagicMock(), prev_version=60, create_tables=AsyncMock())
+
+    assert await _favorite_rows(database) == [(PENDING_USER_ID, 1, 1, 0)]
+    assert "favorite" not in await _table_columns(database, "tracks")

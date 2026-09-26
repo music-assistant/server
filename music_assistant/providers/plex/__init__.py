@@ -1114,13 +1114,21 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
 
         return await asyncio.to_thread(_refresh_plex_token)
 
-    async def set_favorite(self, prov_item_id: str, media_type: MediaType, favorite: bool) -> None:
-        """Set favorite status by setting rating in Plex."""
-        if favorite:
-            # Set like rating
+    async def set_favorite(
+        self, prov_item_id: str, media_type: MediaType, favorite: bool | None
+    ) -> None:
+        """
+        Set favorite status by setting rating in Plex.
+
+        :param prov_item_id: The Plex item id to rate.
+        :param media_type: Media type of the item.
+        :param favorite: True for the like rating, False for the unlike rating, None to
+            clear the rating altogether.
+        """
+        rating: float | None = None
+        if favorite is True:
             rating = cast("float", self.config.get_value(CONF_PLEX_LIKE_RATING))
-        else:
-            # Set unlike rating
+        elif favorite is False:
             rating = cast("float", self.config.get_value(CONF_PLEX_UNLIKE_RATING))
 
         if media_type == MediaType.TRACK:
@@ -1129,6 +1137,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             plex_item = await self._get_data(prov_item_id, PlexAlbum)
         else:
             return
+        # plexapi resets the item's rating when it is given none
         await self._run_async(plex_item.rate, rating)
         self.logger.debug(
             "Set Plex rating to %s for %s with ID %s (ratingKey: %s)",

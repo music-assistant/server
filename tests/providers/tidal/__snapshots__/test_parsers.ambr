@@ -8,7 +8,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '12345',
         'media_type': 'artist',
@@ -85,7 +85,7 @@
         '123456789012',
       ]),
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '67890',
     'media_type': 'album',
@@ -162,7 +162,7 @@
     'date_added': '2024-06-10T12:00:00+00:00',
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '12345',
     'media_type': 'artist',
@@ -238,7 +238,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_dynamic': False,
     'is_editable': False,
     'is_playable': True,
@@ -322,7 +322,7 @@
     'date_added': '2024-06-10T12:00:00+00:00',
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_dynamic': False,
     'is_editable': False,
     'is_playable': True,
@@ -424,7 +424,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '12345',
         'media_type': 'artist',
@@ -504,7 +504,7 @@
         'US1234567890',
       ]),
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '112233',
     'last_played': 0,

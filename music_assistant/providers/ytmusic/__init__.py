@@ -936,7 +936,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     url=f"{YTM_DOMAIN}/playlist?list={album_obj.get('audioPlaylistId')}",
                 )
             },
-            favorite=album_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
+            favorite=True if album_obj.get("likeStatus") == "LIKE" else None,
         )
         if album_obj.get("year") and album_obj["year"].isdigit():
             album.year = album_obj["year"]
@@ -996,7 +996,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     url=f"{YTM_DOMAIN}/channel/{artist_id}",
                 )
             },
-            favorite=artist_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
+            favorite=True if artist_obj.get("likeStatus") == "LIKE" else None,
         )
         if "description" in artist_obj:
             artist.metadata.description = artist_obj["description"]
@@ -1029,7 +1029,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 )
             },
             is_editable=is_editable,
-            favorite=playlist_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
+            favorite=True if playlist_obj.get("likeStatus") == "LIKE" else None,
         )
         if "description" in playlist_obj:
             playlist.metadata.description = playlist_obj["description"]
@@ -1071,7 +1071,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     ),
                 )
             },
-            favorite=track_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
+            favorite=True if track_obj.get("likeStatus") == "LIKE" else None,
             # Disc info is not available in YTM, assume a single disc
             disc_number=1,
             # Track number is "sometimes" available in the track object, otherwise approach

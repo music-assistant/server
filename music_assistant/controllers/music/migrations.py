@@ -23,6 +23,7 @@ from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
+    DB_TABLE_FAVORITES,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
@@ -39,9 +40,11 @@ from music_assistant.constants import (
     MEDIA_ITEM_DB_TABLES,
 )
 from music_assistant.controllers.music.constants import DB_SCHEMA_VERSION
+from music_assistant.controllers.music.favorites import PENDING_USER_ID
 from music_assistant.controllers.music.media.genres import GenreController
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
 from music_assistant.helpers.lyrics import normalize_lrc_lyrics
+from music_assistant.helpers.provider_access import music_source_owners
 
 if TYPE_CHECKING:
     import logging
@@ -1026,6 +1029,112 @@ async def migrate_database(  # noqa: PLR0915
                 f"DELETE FROM {DB_TABLE_PROVIDER_MAPPINGS} "
                 "WHERE provider_domain = 'None' OR provider_instance = 'None'"
             )
+
+    if prev_version <= 60:
+        # favorites move from one shared column on every media item table to a row per user
+        # in the favorites table. An existing favorite becomes a like for the owners of the
+        # music sources that hold the item in their library, and a like for everyone when it
+        # comes from a source of the whole home. The users live in another database that is
+        # not open yet, so the ones that go to everyone are parked under a placeholder user
+        # id and handed out by expand_pending() once the webserver is up.
+        await database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_FAVORITES}(
+                [user_id] TEXT NOT NULL,
+                [media_type] TEXT NOT NULL,
+                [item_id] INTEGER NOT NULL,
+                [favorite] BOOLEAN,
+                [timestamp] INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(user_id, media_type, item_id));"""
+        )
+        await database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_FAVORITES}_item_idx "
+            f"on {DB_TABLE_FAVORITES}(media_type,item_id);"
+        )
+        owner_by_instance = music_source_owners(mass)
+        # bound one by one: the plain execute() below has no list parameter support
+        owned_instances = {
+            f"owned_instance_{idx}": instance_id
+            for idx, (instance_id, owner) in enumerate(owner_by_instance.items())
+            if owner
+        }
+        mappings_table_exists = bool(
+            await database.get_rows_from_query(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :table_name",
+                {"table_name": DB_TABLE_PROVIDER_MAPPINGS},
+                limit=1,
+            )
+        )
+        for media_type, table in (
+            (MediaType.ARTIST, DB_TABLE_ARTISTS),
+            (MediaType.ALBUM, DB_TABLE_ALBUMS),
+            (MediaType.TRACK, DB_TABLE_TRACKS),
+            (MediaType.PLAYLIST, DB_TABLE_PLAYLISTS),
+            (MediaType.RADIO, DB_TABLE_RADIOS),
+            (MediaType.AUDIOBOOK, DB_TABLE_AUDIOBOOKS),
+            (MediaType.PODCAST, DB_TABLE_PODCASTS),
+            (MediaType.GENRE, DB_TABLE_GENRES),
+        ):
+            table_columns = {
+                column["name"]
+                for column in await database.get_rows_from_query(
+                    f"PRAGMA table_info({table})", limit=0
+                )
+            }
+            if "favorite" not in table_columns:
+                # a table (re)created by an earlier migration step already has the column gone
+                continue
+            # the moment of the favorite is unknown; the item's last change is the best guess
+            timestamp = (
+                f"COALESCE({table}.timestamp_modified, 0)"
+                if "timestamp_modified" in table_columns
+                else "0"
+            )
+            insert = (
+                f"INSERT OR IGNORE INTO {DB_TABLE_FAVORITES}"
+                "(user_id, media_type, item_id, favorite, timestamp) "
+                f"SELECT :user_id, :media_type, {table}.item_id, 1, {timestamp} "
+                f"FROM {table} WHERE {table}.favorite = 1"
+            )
+            in_library_on = (
+                f"SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} pm "
+                "WHERE pm.media_type = :media_type "
+                f"AND pm.item_id = {table}.item_id AND pm.in_library = 1"
+            )
+            if mappings_table_exists and owned_instances:
+                for instance_id in owned_instances.values():
+                    await database.execute(
+                        f"{insert} AND EXISTS({in_library_on} "
+                        "AND pm.provider_instance = :instance_id)",
+                        {
+                            "user_id": owner_by_instance[instance_id],
+                            "media_type": media_type.value,
+                            "instance_id": instance_id,
+                        },
+                    )
+                # a favorite on a source of the whole home, or one no source holds anymore
+                owned_placeholders = ", ".join(f":{name}" for name in owned_instances)
+                pending_condition = (
+                    f" AND (NOT EXISTS({in_library_on}) OR EXISTS({in_library_on} "
+                    f"AND pm.provider_instance NOT IN ({owned_placeholders})))"
+                )
+            else:
+                # without an owned source every favorite belongs to the whole home
+                pending_condition = ""
+            await database.execute(
+                f"{insert}{pending_condition}",
+                {
+                    "user_id": PENDING_USER_ID,
+                    "media_type": media_type.value,
+                    **owned_instances,
+                },
+            )
+            # the column must not be indexed for DROP COLUMN to succeed
+            await database.execute(f"DROP INDEX IF EXISTS {table}_favorite_idx")
+            try:
+                await database.execute(f"ALTER TABLE {table} DROP COLUMN favorite")
+            except Exception as err:
+                if "no such column" not in str(err):
+                    raise
 
     # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
     # with the current code/schema, so the external_ids column must be gone first.

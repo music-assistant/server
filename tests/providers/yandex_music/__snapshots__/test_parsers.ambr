@@ -7,7 +7,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '300',
     'media_type': 'album',
@@ -76,7 +76,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '100',
     'media_type': 'artist',
@@ -144,7 +144,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '200',
     'media_type': 'artist',
@@ -220,7 +220,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_dynamic': False,
     'is_editable': True,
     'is_playable': True,
@@ -296,7 +296,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_dynamic': False,
     'is_editable': False,
     'is_playable': True,
@@ -377,7 +377,7 @@
     'duration': 180,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '400',
     'last_played': 0,
@@ -450,7 +450,7 @@
       'date_added': None,
       'external_ids': list([
       ]),
-      'favorite': False,
+      'favorite': None,
       'is_playable': True,
       'item_id': '20',
       'media_type': 'album',
@@ -526,7 +526,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '10',
         'media_type': 'artist',
@@ -594,7 +594,7 @@
     'duration': 240,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '500',
     'last_played': 0,

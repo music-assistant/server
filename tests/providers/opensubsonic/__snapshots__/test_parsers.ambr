@@ -184,7 +184,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': 'fake_artist_unknown',
         'media_type': 'artist',
@@ -336,7 +336,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': 'fake_artist_unknown',
         'media_type': 'artist',
@@ -1563,7 +1563,7 @@
     'duration': 1878,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'fully_played': None,
     'is_playable': True,
     'item_id': 'pd-5$!$pe-1860',
@@ -1610,7 +1610,7 @@
       'date_added': None,
       'external_ids': list([
       ]),
-      'favorite': False,
+      'favorite': None,
       'is_playable': True,
       'item_id': 'pd-5',
       'media_type': 'podcast',
@@ -1717,7 +1717,7 @@
     'duration': 0,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'fully_played': None,
     'is_playable': True,
     'item_id': 'pd-5$!$pe-1860',
@@ -1764,7 +1764,7 @@
       'date_added': None,
       'external_ids': list([
       ]),
-      'favorite': False,
+      'favorite': None,
       'is_playable': True,
       'item_id': 'pd-5',
       'media_type': 'podcast',
@@ -1871,7 +1871,7 @@
     'duration': 0,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'fully_played': None,
     'is_playable': True,
     'item_id': 'pd-5$!$pe-1860',
@@ -1918,7 +1918,7 @@
       'date_added': None,
       'external_ids': list([
       ]),
-      'favorite': False,
+      'favorite': None,
       'is_playable': True,
       'item_id': 'pd-5',
       'media_type': 'podcast',
@@ -2025,7 +2025,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_dynamic': False,
     'is_editable': True,
     'is_playable': True,
@@ -2108,7 +2108,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'pd-5',
     'media_type': 'podcast',
@@ -2186,7 +2186,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'pd-5',
     'media_type': 'podcast',
@@ -2283,7 +2283,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': 'fake_artist_unknown',
         'media_type': 'artist',
@@ -2574,7 +2574,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': 'fake_artist_unknown',
         'media_type': 'artist',
@@ -2749,7 +2749,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': 'MA-NAVIDROME-The New Deal',
         'media_type': 'artist',
@@ -3040,7 +3040,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': 'MA-NAVIDROME-The New Deal',
         'media_type': 'artist',

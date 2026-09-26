@@ -8,7 +8,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
@@ -73,7 +73,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '527007',
     'media_type': 'album',
@@ -151,7 +151,7 @@
           'date_added': None,
           'external_ids': list([
           ]),
-          'favorite': False,
+          'favorite': None,
           'is_playable': True,
           'item_id': '68461151',
           'media_type': 'artist',
@@ -216,7 +216,7 @@
       'date_added': None,
       'external_ids': list([
       ]),
-      'favorite': False,
+      'favorite': None,
       'is_playable': True,
       'item_id': '527007',
       'media_type': 'album',
@@ -292,7 +292,7 @@
             'date_added': None,
             'external_ids': list([
             ]),
-            'favorite': False,
+            'favorite': None,
             'is_playable': True,
             'item_id': '68461151',
             'media_type': 'artist',
@@ -373,7 +373,7 @@
         'duration': 2,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': 'sm45285955',
         'last_played': 0,
@@ -468,7 +468,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
@@ -533,7 +533,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '527007',
     'media_type': 'album',
@@ -607,7 +607,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '4',
     'media_type': 'artist',
@@ -688,7 +688,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '68461151',
     'media_type': 'artist',
@@ -772,7 +772,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
@@ -853,7 +853,7 @@
     'duration': 2,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'sm45285955',
     'last_played': 0,
@@ -946,7 +946,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
@@ -1027,7 +1027,7 @@
     'duration': 2,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'sm45285955',
     'last_played': 0,
@@ -1117,7 +1117,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_dynamic': False,
     'is_editable': False,
     'is_playable': True,
@@ -1206,7 +1206,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_dynamic': False,
     'is_editable': True,
     'is_playable': True,
@@ -1296,7 +1296,7 @@
       'date_added': None,
       'external_ids': list([
       ]),
-      'favorite': False,
+      'favorite': None,
       'is_dynamic': False,
       'is_editable': True,
       'is_playable': True,
@@ -1387,7 +1387,7 @@
             'date_added': None,
             'external_ids': list([
             ]),
-            'favorite': False,
+            'favorite': None,
             'is_playable': True,
             'item_id': '68461151',
             'media_type': 'artist',
@@ -1468,7 +1468,7 @@
         'duration': 2,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': 'sm45285955',
         'last_played': 0,
@@ -1560,7 +1560,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_dynamic': False,
     'is_editable': True,
     'is_playable': True,
@@ -1652,7 +1652,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
@@ -1717,7 +1717,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '527007',
     'media_type': 'album',
@@ -1794,7 +1794,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
@@ -1875,7 +1875,7 @@
     'duration': 2,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'sm45285955',
     'last_played': 0,
@@ -1968,7 +1968,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
@@ -2049,7 +2049,7 @@
     'duration': 2,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'sm45285955',
     'last_played': 0,
@@ -2180,7 +2180,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
@@ -2261,7 +2261,7 @@
     'duration': 2,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'sm45285955',
     'last_played': 0,
@@ -2354,7 +2354,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
@@ -2435,7 +2435,7 @@
     'duration': 2,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'sm45285955',
     'last_played': 0,
@@ -2529,7 +2529,7 @@
           'date_added': None,
           'external_ids': list([
           ]),
-          'favorite': False,
+          'favorite': None,
           'is_playable': True,
           'item_id': '68461151',
           'media_type': 'artist',
@@ -2607,7 +2607,7 @@
       'date_added': None,
       'external_ids': list([
       ]),
-      'favorite': False,
+      'favorite': None,
       'is_playable': True,
       'item_id': '527007',
       'media_type': 'album',
@@ -2680,7 +2680,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
@@ -2761,7 +2761,7 @@
     'duration': 2,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'sm45285955',
     'last_played': 0,
