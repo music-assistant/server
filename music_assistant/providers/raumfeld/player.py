@@ -37,16 +37,17 @@ IDLE_POLL_INTERVAL = 15
 # How long (seconds) after a play/resume command to keep polling fast, so MA catches
 # the device actually starting playback (Raumfeld renderers buffer before they start).
 STARTUP_POLL_WINDOW = 20
-# Only re-anchor MA's elapsed-time clock when the reconstructed flow position diverges
-# from the expected (extrapolated) position by more than this many seconds. Keeps the
+# Only re-anchor MA's elapsed-time clock when the reported flow position diverges from
+# the expected (extrapolated) position by more than this many seconds. Keeps the
 # progress bar smooth despite the device's 1-second position granularity while a real
 # divergence (a seek, a stall) is still corrected promptly.
 POSITION_DRIFT_THRESHOLD = 1.0
-# The whole queue plays as one continuous flow stream, but the host resets the zone's
-# clock to zero on every ICY track change (that reset is what makes the Raumfeld app show
-# per-track time). MA needs the *continuous* flow position to map it back to queue items,
-# so it is rebuilt by summing each finished track's played time; a drop of more than this
-# many seconds between polls is a track boundary rather than the clock ticking backwards.
+# In flow mode the zone clock runs on continuously across the whole queue - ICY updates the
+# title only, not the clock (measured) - and that is the cumulative stream-time MA maps back
+# to queue items. Only a new play command restarts it, and that restarts MA's side too.
+# Should it still drop mid-flow, MA would map back to an earlier item, so the part already
+# played is banked instead. A drop of more than this many seconds counts as one; less is
+# the device's whole-second rounding.
 FLOW_RESET_THRESHOLD = 3.0
 # When a room has no addressable zone (e.g. it just detached during a group leadership
 # handover), how many times to (re)create a single-room zone and how long to wait between
@@ -89,9 +90,9 @@ class RaumfeldPlayer(Player):
         self._attr_poll_interval = FAST_POLL_INTERVAL
         # timestamp of the last play/resume command, used to poll fast during startup
         self._play_started_at = 0.0
-        # the continuous flow position is rebuilt across the host's per-track clock resets:
-        # how much of the flow belongs to already-finished tracks, and the last raw clock
-        # value seen (a drop below it by more than FLOW_RESET_THRESHOLD is a track boundary)
+        # the zone clock is the cumulative flow position MA needs; this guards it against a
+        # mid-flow drop: how much has been banked, and the last raw clock value seen (a drop
+        # below it by more than FLOW_RESET_THRESHOLD is banked, see _apply_position)
         self._flow_offset = 0.0
         self._last_reltime = 0.0
         self._attr_device_info = DeviceInfo(model="Raumfeld", manufacturer="Teufel")
@@ -385,8 +386,8 @@ class RaumfeldPlayer(Player):
             self._attr_playback_state = _map_transport_state(transport.get("CurrentTransportState"))
             playing = self._attr_playback_state == PlaybackState.PLAYING
 
-        # MA advances the queue inside the flow, so the provider only reflects the
-        # position (rebuilt across the host's per-track clock resets, see _apply_position)
+        # MA advances the queue inside the flow, so the provider only reports the
+        # (cumulative) flow position, see _apply_position
         if position is not None:
             self._apply_position(position, playing)
 
@@ -403,7 +404,7 @@ class RaumfeldPlayer(Player):
         self.update_state()
 
     def _apply_position(self, pos: dict[str, str], playing: bool) -> None:
-        """Report the flow position to MA, rebuilt across the host's per-track clock resets."""
+        """Report the device position to MA (in flow mode: the cumulative flow position)."""
         device_uri = pos.get("TrackURI", "") or ""
         our_stream = device_uri.startswith(self.mass.streams.base_url)
         # Line-In is an external source with no queue item behind it, so reflect what the
@@ -424,10 +425,10 @@ class RaumfeldPlayer(Player):
         if raw_elapsed is None or not playing:
             return
         if our_stream:
-            # The host resets the zone clock to zero on every ICY track change, so the raw
-            # value is per-track. MA maps the *continuous* flow position to queue items, so
-            # rebuild it: when the clock drops (a boundary), bank the finished track's played
-            # time; the flow position is that running total plus the current per-track clock.
+            # The zone clock runs on across the whole queue (ICY changes only the title), so
+            # it already is the cumulative stream-time MA maps to queue items. Guard it: a new
+            # play command restarts it and resets this state, so a drop without one would
+            # make MA map back to an earlier item - bank what was played so it keeps climbing.
             if raw_elapsed + FLOW_RESET_THRESHOLD < self._last_reltime:
                 self._flow_offset += self._last_reltime
             self._last_reltime = raw_elapsed
@@ -489,8 +490,8 @@ class RaumfeldPlayer(Player):
         """Record a play/resume command and switch to fast polling."""
         self._play_started_at = time.time()
         self._attr_poll_interval = FAST_POLL_INTERVAL
-        # a fresh play/resume restarts the flow from zero, so the rebuilt flow position
-        # starts over too
+        # a fresh play/resume restarts the flow and the zone clock from zero, so nothing
+        # stays banked
         self._flow_offset = 0.0
         self._last_reltime = 0.0
         # reset the position: on resume MA adds a seek offset, so a stale pre-pause

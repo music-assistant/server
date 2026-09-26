@@ -44,13 +44,13 @@ def test_flow_position_is_continuous_within_a_track() -> None:
     assert player._flow_offset == 0.0
 
 
-def test_flow_position_survives_a_per_track_reset() -> None:
-    """An ICY track change resets the zone clock; the flow position must keep climbing."""
+def test_flow_position_survives_a_mid_flow_drop() -> None:
+    """If the zone clock drops back mid-flow, the position MA sees must keep climbing."""
     player = _flow_player()
     # first track plays up to 3:00
     player._apply_position(_pos("0:03:00"), playing=True)
     assert player._attr_elapsed_time == 180.0
-    # ICY changes the track: the host resets the zone clock to ~0
+    # the zone clock unexpectedly drops back to ~0 without a new play command
     player._apply_position(_pos("0:00:02"), playing=True)
     # the finished track's 180s is banked, so the flow position is 180 + 2
     assert player._flow_offset == 180.0
@@ -58,7 +58,7 @@ def test_flow_position_survives_a_per_track_reset() -> None:
 
 
 def test_flow_position_ignores_sub_threshold_dips() -> None:
-    """A tiny backwards step (device jitter) is not treated as a track boundary."""
+    """A tiny backwards step (whole-second rounding) is not banked as a drop."""
     player = _flow_player()
     player._apply_position(_pos("0:01:00"), playing=True)
     dip = f"0:00:{60 - int(FLOW_RESET_THRESHOLD):02d}"  # within the threshold

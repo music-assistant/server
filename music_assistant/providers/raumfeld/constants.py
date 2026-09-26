@@ -73,11 +73,11 @@ PLAYER_CONFIG_ENTRIES = [
             "hidden": True,
         }
     ),
-    # Force ICY metadata on. The host parses the ICY StreamTitle out of the relayed stream
-    # and, on each change, updates the room's now-playing title and resets its per-track
-    # clock - which is how the Raumfeld app follows the queue across the gapless boundaries
-    # (the one thing it cannot get any other way: the stream itself never changes). Hidden
-    # and locked.
+    # Force ICY metadata on. The stream itself never changes - it is one flow for the whole
+    # queue - so the only way the Raumfeld app can follow the queue is the ICY StreamTitle,
+    # which the host parses out of the relayed stream to update the room's now-playing
+    # title. It carries the title only: the app's clock and duration do not follow along.
+    # Hidden and locked.
     ConfigEntry.from_dict(
         {
             **CONF_ENTRY_ENABLE_ICY_METADATA.to_dict(),
