@@ -1,14 +1,15 @@
-"""Tests for the Teufel Raumfeld flow-position and transport-read helpers."""
+"""Tests for the Teufel Raumfeld player: position, grouping state and transport reads."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 from music_assistant_models.enums import PlaybackState
 
 from music_assistant.providers.raumfeld.player import (
-    FLOW_RESET_THRESHOLD,
+    IDLE_POLL_INTERVAL,
+    PLAYING_POLL_INTERVAL,
     RaumfeldPlayer,
     _map_transport_state,
 )
@@ -22,8 +23,6 @@ BASE_URL = "http://mass.local:8097"
 def _flow_player() -> RaumfeldPlayer:
     """Build a RaumfeldPlayer with just the state the position path touches."""
     player = RaumfeldPlayer.__new__(RaumfeldPlayer)
-    player._flow_offset = 0.0
-    player._last_reltime = 0.0
     player._attr_elapsed_time = None
     player._attr_elapsed_time_last_updated = None
     mass = MagicMock()
@@ -36,34 +35,21 @@ def _pos(reltime: str, uri: str = f"{BASE_URL}/flow/x/y/z.flac") -> dict[str, st
     return {"TrackURI": uri, "RelTime": reltime, "TrackDuration": "0:00:00"}
 
 
-def test_flow_position_is_continuous_within_a_track() -> None:
-    """While a track plays, the reported position tracks the zone clock."""
+def test_flow_position_follows_the_zone_clock() -> None:
+    """The zone clock runs on across the queue and is reported as the flow position."""
     player = _flow_player()
     player._apply_position(_pos("0:00:10"), playing=True)
     assert player._attr_elapsed_time == 10.0
-    assert player._flow_offset == 0.0
+    player._apply_position(_pos("0:07:30"), playing=True)
+    assert player._attr_elapsed_time == 450.0
 
 
-def test_flow_position_survives_a_mid_flow_drop() -> None:
-    """If the zone clock drops back mid-flow, the position MA sees must keep climbing."""
+def test_flow_position_follows_a_drop_instead_of_jumping_ahead() -> None:
+    """A clock that drops (the stream replayed) is followed, never banked into a jump ahead."""
     player = _flow_player()
-    # first track plays up to 3:00
     player._apply_position(_pos("0:03:00"), playing=True)
-    assert player._attr_elapsed_time == 180.0
-    # the zone clock unexpectedly drops back to ~0 without a new play command
     player._apply_position(_pos("0:00:02"), playing=True)
-    # the finished track's 180s is banked, so the flow position is 180 + 2
-    assert player._flow_offset == 180.0
-    assert player._attr_elapsed_time == 182.0
-
-
-def test_flow_position_ignores_sub_threshold_dips() -> None:
-    """A tiny backwards step (whole-second rounding) is not banked as a drop."""
-    player = _flow_player()
-    player._apply_position(_pos("0:01:00"), playing=True)
-    dip = f"0:00:{60 - int(FLOW_RESET_THRESHOLD):02d}"  # within the threshold
-    player._apply_position(_pos(dip), playing=True)
-    assert player._flow_offset == 0.0
+    assert player._attr_elapsed_time == 2.0
 
 
 def test_external_source_position_is_used_directly() -> None:
@@ -109,3 +95,64 @@ def test_transport_state_mapping() -> None:
     assert _map_transport_state("PAUSED_PLAYBACK") == PlaybackState.PAUSED
     assert _map_transport_state("STOPPED") == PlaybackState.IDLE
     assert _map_transport_state(None) == PlaybackState.IDLE
+
+
+def test_requires_flow_mode() -> None:
+    """The provider always plays through flow mode."""
+    assert RaumfeldPlayer.__new__(RaumfeldPlayer).requires_flow_mode is True
+
+
+def _follower(leader_state: PlaybackState) -> RaumfeldPlayer:
+    """Build a grouped follower whose leader reports the given playback state."""
+    player = RaumfeldPlayer.__new__(RaumfeldPlayer)
+    player.room = "Bank"
+    player._player_id = "raumfeld_follower"
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_poll_interval = PLAYING_POLL_INTERVAL
+    provider = MagicMock()
+    provider.host.async_get_room_volume = AsyncMock(return_value=30)
+    player._provider = provider
+    leader = MagicMock()
+    leader.playback_state = leader_state
+    mass = MagicMock()
+    mass.players.get_player = MagicMock(return_value=leader)
+    player.mass = mass
+    return player
+
+
+async def test_follower_mirrors_a_stopped_leader() -> None:
+    """A follower of a stopped group reads as idle and slows down, not as playing."""
+    player = _follower(PlaybackState.IDLE)
+    with (
+        patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock) as synced_to,
+        patch.object(RaumfeldPlayer, "update_state"),
+    ):
+        synced_to.return_value = "raumfeld_leader"
+        await player.poll()
+    assert player._attr_playback_state == PlaybackState.IDLE
+    assert player._attr_poll_interval == IDLE_POLL_INTERVAL
+    assert player._attr_volume_level == 30
+
+
+async def test_follower_mirrors_a_playing_leader() -> None:
+    """A follower of a playing group reads as playing at the playing poll rate."""
+    player = _follower(PlaybackState.PLAYING)
+    with (
+        patch.object(RaumfeldPlayer, "synced_to", new_callable=PropertyMock) as synced_to,
+        patch.object(RaumfeldPlayer, "update_state"),
+    ):
+        synced_to.return_value = "raumfeld_leader"
+        await player.poll()
+    assert player._attr_playback_state == PlaybackState.PLAYING
+    assert player._attr_poll_interval == PLAYING_POLL_INTERVAL
+
+
+def test_player_id_to_room_ignores_other_providers() -> None:
+    """Only a Raumfeld player resolves to a room, not any player with a room attribute."""
+    player = RaumfeldPlayer.__new__(RaumfeldPlayer)
+    foreign = MagicMock()
+    foreign.room = "Kitchen"
+    mass = MagicMock()
+    mass.players.get_player = MagicMock(return_value=foreign)
+    player.mass = mass
+    assert player._player_id_to_room("dlna_kitchen") is None

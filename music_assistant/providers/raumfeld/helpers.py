@@ -31,11 +31,33 @@ def serial_to_player_id(serial: str) -> str:
 
 def room_udn_to_player_id(room_udn: str) -> str:
     """
-    Derive the legacy (room UDN based) player_id, for migrating an existing config.
+    Derive a room-UDN based player_id, for a room whose serial another room already uses.
 
     :param room_udn: The room UDN (e.g. ``uuid:1234...``).
     """
     return f"{PLAYER_ID_PREFIX}_{room_udn.removeprefix('uuid:')}"
+
+
+def parse_serial_number(description_xml: str | None) -> str | None:
+    """
+    Return the ``serialNumber`` from a UPnP device description, or ``None``.
+
+    Malformed or empty XML, or a description without a serial, yields ``None``.
+
+    :param description_xml: The renderer's device description XML.
+    """
+    if not description_xml or not description_xml.strip():
+        return None
+    try:
+        root = DefusedET.fromstring(description_xml)
+    except DefusedET.ParseError, ValueError:
+        return None
+    # the description is namespaced (urn:schemas-upnp-org:device-1-0); the root device's
+    # serial comes first, ahead of any embedded devices
+    for element in root.iter():
+        if element.tag.rsplit("}", 1)[-1] == "serialNumber":
+            return (element.text or "").strip() or None
+    return None
 
 
 def parse_didl_metadata(didl_xml: str | None) -> dict[str, str | None]:

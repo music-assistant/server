@@ -19,7 +19,6 @@ so hassfeld's long-polling can't flood the log while the host is offline.
 from __future__ import annotations
 
 import asyncio
-import re
 from typing import TYPE_CHECKING, cast
 from urllib.parse import urlparse
 
@@ -28,10 +27,7 @@ import hassfeld
 
 from music_assistant.constants import (
     CONF_ENABLE_ICY_METADATA,
-    CONF_FLOW_MODE,
-    CONF_HTTP_PROFILE,
     CONF_IP_ADDRESS,
-    CONF_PLAYERS,
     CONF_PORT,
 )
 from music_assistant.models.player_provider import PlayerProvider
@@ -44,7 +40,12 @@ from .constants import (
     LINE_IN_OBJECT_ID,
     RECONNECT_INTERVAL,
 )
-from .helpers import parse_line_in, room_udn_to_player_id, serial_to_player_id
+from .helpers import (
+    parse_line_in,
+    parse_serial_number,
+    room_udn_to_player_id,
+    serial_to_player_id,
+)
 from .player import RaumfeldPlayer
 
 if TYPE_CHECKING:
@@ -65,6 +66,10 @@ class RaumfeldPlayerProvider(PlayerProvider):
     # room name -> renderer hardware serial, the basis for the player_id. Read from the
     # device once and kept, so a resync does not refetch a description per room.
     _room_serials: dict[str, str]
+    # room name -> player_id, derived from _room_serials on every sync (see _assign_room_ids)
+    _room_ids: dict[str, str]
+    # rooms already warned about sharing a serial, so the warning goes out once per room
+    _shared_serial_warned: set[str]
 
     @property
     def host_address(self) -> str:
@@ -87,6 +92,8 @@ class RaumfeldPlayerProvider(PlayerProvider):
         self._host_port = cast("int", self.get_setup_value(CONF_PORT) or DEFAULT_PORT)
         self._line_in = {}
         self._room_serials = {}
+        self._room_ids = {}
+        self._shared_serial_warned = set()
         # a background supervisor owns the connection so a missing or (temporarily)
         # unreachable host never leaves the provider permanently unavailable
         self._supervisor_task = self.mass.create_task(self._supervise())
@@ -168,6 +175,10 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 raise
             except HOST_ERRORS as err:
                 self.logger.debug("Raumfeld supervisor error: %r", err)
+            except Exception:
+                # anything else (say a hassfeld change that raises something new) must not
+                # end the supervisor, or the provider would never reconnect this session
+                self.logger.exception("Unexpected error in the Raumfeld connection supervisor")
             await asyncio.sleep(RECONNECT_INTERVAL)
 
     async def _try_connect(self) -> None:
@@ -237,12 +248,15 @@ class RaumfeldPlayerProvider(PlayerProvider):
     async def _sync_rooms(self) -> None:
         """Register (or re-activate) a Music Assistant player for every Raumfeld room."""
         # ``get_rooms`` returns the list of room names currently known to the host.
-        present: set[str] = set()
-        for room in self.host.get_rooms():
-            # the id comes from the renderer's hardware serial, which has to be read from
-            # the device once; a room whose serial we cannot read yet is skipped rather
-            # than registered under a fallback id that would later have to change
+        rooms = self.host.get_rooms()
+        # the id comes from the renderer's hardware serial, which has to be read from the
+        # device once; a room whose serial we cannot read yet is skipped for now rather than
+        # registered under an id that would have to change once the serial comes in
+        for room in rooms:
             await self._ensure_room_serial(room)
+        self._assign_room_ids()
+        present: set[str] = set()
+        for room in rooms:
             if (player_id := self._room_player_id(room)) is None:
                 continue
             present.add(player_id)
@@ -253,14 +267,12 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 if isinstance(existing, RaumfeldPlayer):
                     existing.set_room(room)
                     existing.set_available(True)
-                # re-assert the forced values, so a value changed in an upgrade heals
-                self._enforce_forced_config(player_id)
+                self._ensure_icy_default(player_id)
                 continue
-            await self._migrate_legacy_config(room, player_id)
             player = RaumfeldPlayer(provider=self, player_id=player_id, room=room)
             await self.mass.players.register(player)
-            # the config now exists (created in Player.__init__); lock in the forced values
-            self._enforce_forced_config(player_id)
+            # the config exists now (created in Player.__init__)
+            self._ensure_icy_default(player_id)
             self.logger.debug("Registered Raumfeld room '%s' as player %s", room, player_id)
         # a room whose UDN the host no longer lists (e.g. a speaker that dropped to deep
         # standby or left the network) is gone until it returns; show it as unavailable.
@@ -295,9 +307,50 @@ class RaumfeldPlayerProvider(PlayerProvider):
                 player.set_group_members([])
 
     def _room_player_id(self, room: str) -> str | None:
-        """Return the stable player_id for a room, or ``None`` if its serial is unknown."""
-        serial = self._room_serials.get(room)
-        return serial_to_player_id(serial) if serial else None
+        """Return the player_id for a room, or ``None`` if its serial is not known yet."""
+        return self._room_ids.get(room)
+
+    def _assign_room_ids(self) -> None:
+        """Derive each room's player_id from its serial, falling back to its room UDN."""
+        # The host runs virtual renderers that inherit its own serial, so two rooms can end
+        # up reporting the same one. Only one of them can use it as its id; the other falls
+        # back to its room UDN so it still shows up. Taking the rooms in a fixed order (by
+        # room UDN) makes the same room keep the serial on every start, so ids - and the
+        # player config stored under them - do not swap between restarts.
+        ids: dict[str, str] = {}
+        claimed: set[str] = set()
+        for room in sorted(self._room_serials, key=self._room_sort_key):
+            serial = self._room_serials[room]
+            if serial not in claimed:
+                claimed.add(serial)
+                ids[room] = serial_to_player_id(serial)
+                continue
+            room_udn = self._room_udn(room)
+            if room_udn is None:
+                continue
+            ids[room] = room_udn_to_player_id(room_udn)
+            if room not in self._shared_serial_warned:
+                self._shared_serial_warned.add(room)
+                self.logger.warning(
+                    "Room %s reports the same serial (%s) as another room; using its room "
+                    "UDN for its player id instead, which a rebuild of the Raumfeld system "
+                    "would change",
+                    room,
+                    serial,
+                )
+        self._room_ids = ids
+
+    def _room_udn(self, room: str) -> str | None:
+        """Return the room UDN the host reports for a room, or ``None``."""
+        try:
+            udn: str | None = self.host.resolve["room_to_udn"].get(room)
+        except KeyError, AttributeError:
+            return None
+        return udn
+
+    def _room_sort_key(self, room: str) -> str:
+        """Return a stable sort key for a room: its UDN, or its name if that is unknown."""
+        return self._room_udn(room) or room
 
     async def _ensure_room_serial(self, room: str) -> str | None:
         """Read (and remember) the hardware serial of a room's renderer."""
@@ -313,69 +366,30 @@ class RaumfeldPlayerProvider(PlayerProvider):
         except HOST_ERRORS as err:
             self.logger.debug("Failed to read device description of %s: %r", room, err)
             return None
-        match = re.search(r"<serialNumber>(.*?)</serialNumber>", description)
-        if match is None or not match.group(1).strip():
+        if (serial := parse_serial_number(description)) is None:
             self.logger.debug("Renderer of room %s reports no serial number", room)
-            return None
-        serial = match.group(1).strip()
-        # The host runs virtual renderers that inherit its own serial, so a room resolving
-        # to one of those would collide with the room the host device itself belongs to -
-        # and the second room would quietly take over the first one's player (and config).
-        # Rather than register a duplicate, leave the room out until it resolves uniquely.
-        if claimed := next((r for r, s in self._room_serials.items() if s == serial), None):
-            self.logger.warning(
-                "Room %s reports the same serial (%s) as room %s; not registering it",
-                room,
-                serial,
-                claimed,
-            )
             return None
         self._room_serials[room] = serial
         return serial
 
-    def _enforce_forced_config(self, player_id: str) -> None:
+    def _ensure_icy_default(self, player_id: str) -> None:
         """
-        Persist the flow / chunked / ICY values the provider needs to play correctly.
+        Store the ICY-metadata default for a player that has none stored yet.
 
-        :param player_id: The player whose stored config to assert the values on.
+        :param player_id: The player whose stored config to check.
         """
-        # Flow mode and the HTTP profile are read from the merged config entries, so the
-        # hidden forced entries carry them - but the ICY-metadata preference is read
-        # straight from stored config (get_raw_player_config_value), which never consults
-        # those entries. So write all three into stored config, only when a value differs,
-        # so every read path sees them and a value changed in a later version heals itself
-        # on the next connect rather than needing a migration.
-        desired: dict[str, str | bool] = {
-            CONF_FLOW_MODE: True,
-            CONF_HTTP_PROFILE: "chunked",
-            CONF_ENABLE_ICY_METADATA: "full",
-        }
-        for key, value in desired.items():
-            if self.mass.config.get_raw_player_config_value(player_id, key) != value:
-                self.mass.config.set_raw_player_config_value(player_id, key, value)
-
-    async def _migrate_legacy_config(self, room: str, player_id: str) -> None:
-        """Carry an existing player config over from the legacy (room UDN based) id."""
-        # Player ids used to be derived from the room UDN, which a rebuild of the Raumfeld
-        # system replaces - orphaning volume, grouping and enabled state. Move that config
-        # across once, matched through the room the host still reports. Best effort: an
-        # install that cannot be matched simply starts with defaults rather than failing.
-        try:
-            room_udn = self.host.resolve["room_to_udn"].get(room)
-        except KeyError, AttributeError:
-            return
-        if not room_udn:
-            return
-        legacy_id = room_udn_to_player_id(room_udn)
-        if legacy_id == player_id:
-            return
-        legacy_conf = self.mass.config.get(f"{CONF_PLAYERS}/{legacy_id}")
-        if not legacy_conf or self.mass.config.get(f"{CONF_PLAYERS}/{player_id}"):
-            return
-        migrated = {**legacy_conf, "player_id": player_id}
-        self.mass.config.set(f"{CONF_PLAYERS}/{player_id}", migrated)
-        self.mass.config.remove(f"{CONF_PLAYERS}/{legacy_id}")
-        self.logger.info("Migrated config of room '%s' from %s to %s", room, legacy_id, player_id)
+        # Flow mode and the chunked profile come from the player and its config entries.
+        # The ICY preference, however, is read straight from stored config with the base
+        # entry's own default ("disabled"), so the "full" default this provider's entry
+        # declares would only take effect once the user saves the player's settings. Store
+        # it once - only while nothing is stored, so a value the user picks later stays.
+        if (
+            self.mass.config.get_raw_player_config_value(player_id, CONF_ENABLE_ICY_METADATA)
+            is None
+        ):
+            self.mass.config.set_raw_player_config_value(
+                player_id, CONF_ENABLE_ICY_METADATA, "full"
+            )
 
     def _zone_rooms_leader_first(self, zone_rooms: list[str]) -> list[str]:
         """Return the zone's rooms ordered with the coordinator (leader) first."""

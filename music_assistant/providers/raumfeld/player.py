@@ -27,8 +27,8 @@ if TYPE_CHECKING:
 
     from .provider import RaumfeldPlayerProvider
 
-# Poll interval (seconds) for the fast window: right after a play/resume command and in the
-# final seconds of a track, so a finish (and the next track) is caught promptly.
+# Poll interval (seconds) for the fast window right after a play/resume command, so MA sees
+# the device actually start playing (Raumfeld renderers buffer before they start).
 FAST_POLL_INTERVAL = 1
 # Relaxed interval while playing steadily, and the slow interval while idle, to keep the
 # request rate on the Raumfeld host low.
@@ -42,13 +42,6 @@ STARTUP_POLL_WINDOW = 20
 # progress bar smooth despite the device's 1-second position granularity while a real
 # divergence (a seek, a stall) is still corrected promptly.
 POSITION_DRIFT_THRESHOLD = 1.0
-# In flow mode the zone clock runs on continuously across the whole queue - ICY updates the
-# title only, not the clock (measured) - and that is the cumulative stream-time MA maps back
-# to queue items. Only a new play command restarts it, and that restarts MA's side too.
-# Should it still drop mid-flow, MA would map back to an earlier item, so the part already
-# played is banked instead. A drop of more than this many seconds counts as one; less is
-# the device's whole-second rounding.
-FLOW_RESET_THRESHOLD = 3.0
 # When a room has no addressable zone (e.g. it just detached during a group leadership
 # handover), how many times to (re)create a single-room zone and how long to wait between
 # attempts for the host to actually publish it before giving up.
@@ -90,11 +83,6 @@ class RaumfeldPlayer(Player):
         self._attr_poll_interval = FAST_POLL_INTERVAL
         # timestamp of the last play/resume command, used to poll fast during startup
         self._play_started_at = 0.0
-        # the zone clock is the cumulative flow position MA needs; this guards it against a
-        # mid-flow drop: how much has been banked, and the last raw clock value seen (a drop
-        # below it by more than FLOW_RESET_THRESHOLD is banked, see _apply_position)
-        self._flow_offset = 0.0
-        self._last_reltime = 0.0
         self._attr_device_info = DeviceInfo(model="Raumfeld", manufacturer="Teufel")
         # Raumfeld renderers are hi-res capable; declaring the rates lets MA output each
         # source at its native quality (up to 24-bit/192kHz) without manual configuration
@@ -145,6 +133,14 @@ class RaumfeldPlayer(Player):
     def raumfeld(self) -> RaumfeldPlayerProvider:
         """Return the owning provider (typed)."""
         return cast("RaumfeldPlayerProvider", self.provider)
+
+    @property
+    def requires_flow_mode(self) -> bool:
+        """Return if the player requires flow mode (it always does)."""
+        # The zone renderer has no SetNextAVTransportURI, so a stream per queue item tears
+        # the transport down at every track boundary. One continuous flow stream, relayed by
+        # the host to every room in the zone, is what makes playback gapless - in groups too.
+        return True
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return the player-specific config entries (sample-rate / bit-depth options)."""
@@ -232,10 +228,9 @@ class RaumfeldPlayer(Player):
             # wake any room in (manual) standby first: a manually-standby renderer does not
             # auto-power-on for playback and the host answers "Please turn on a device"
             await self._wake_rooms(zone)
-            # only stop first when replacing a currently-playing stream (a seek or a user
-            # track switch): re-pointing a playing renderer needs a clean stop. At track
-            # end the renderer is already stopped, so skipping the redundant stop avoids
-            # tearing the transport down and clipping the start of the next track.
+            # re-pointing a zone that is still playing (a seek, a track picked by the user, or
+            # MA restarting the flow) needs a clean stop first; a stopped zone takes the new
+            # stream directly.
             if self._attr_playback_state == PlaybackState.PLAYING:
                 await self.raumfeld.host.async_zone_stop(zone)
             await self.raumfeld.host.async_set_av_transport_uri(zone, url, didl_metadata)
@@ -347,12 +342,18 @@ class RaumfeldPlayer(Player):
         """Poll the Raumfeld host for this room's current state."""
         host = self.raumfeld.host
         # a grouped follower shares the zone's transport/position with its leader, so it
-        # polls only its own (per-room) volume; the zone owner reads the shared state once
+        # polls only its own (per-room) volume and mirrors the leader's state: without that a
+        # stopped group would leave the follower reading as playing until it is ungrouped
         if self.synced_to and self.synced_to != self.player_id:
             volume = await self._read_volume(host)
             if volume is not None:
                 self._attr_volume_level = volume
-            self._attr_poll_interval = PLAYING_POLL_INTERVAL
+            leader = self.mass.players.get_player(self.synced_to)
+            self._attr_playback_state = leader.playback_state if leader else PlaybackState.IDLE
+            if self._attr_playback_state == PlaybackState.PLAYING:
+                self._attr_poll_interval = PLAYING_POLL_INTERVAL
+            else:
+                self._attr_poll_interval = IDLE_POLL_INTERVAL
             self.update_state()
             return
 
@@ -404,7 +405,7 @@ class RaumfeldPlayer(Player):
         self.update_state()
 
     def _apply_position(self, pos: dict[str, str], playing: bool) -> None:
-        """Report the device position to MA (in flow mode: the cumulative flow position)."""
+        """Report the device position to MA (in flow mode: the position within the flow)."""
         device_uri = pos.get("TrackURI", "") or ""
         our_stream = device_uri.startswith(self.mass.streams.base_url)
         # Line-In is an external source with no queue item behind it, so reflect what the
@@ -424,17 +425,10 @@ class RaumfeldPlayer(Player):
         raw_elapsed = parse_duration(pos.get("RelTime"))
         if raw_elapsed is None or not playing:
             return
-        if our_stream:
-            # The zone clock runs on across the whole queue (ICY changes only the title), so
-            # it already is the cumulative stream-time MA maps to queue items. Guard it: a new
-            # play command restarts it and resets this state, so a drop without one would
-            # make MA map back to an earlier item - bank what was played so it keeps climbing.
-            if raw_elapsed + FLOW_RESET_THRESHOLD < self._last_reltime:
-                self._flow_offset += self._last_reltime
-            self._last_reltime = raw_elapsed
-            elapsed = self._flow_offset + raw_elapsed
-        else:
-            elapsed = float(raw_elapsed)
+        # In flow mode the zone clock runs on across the whole queue (ICY changes only the
+        # title, measured), which already is the cumulative stream-time MA maps back to the
+        # queue item that is playing; a new play command restarts both sides together.
+        elapsed = float(raw_elapsed)
         # The device reports whole seconds, so re-anchor MA's smooth clock only when it
         # really diverges (a seek, a stall) and otherwise let it extrapolate.
         now = time.time()
@@ -462,8 +456,8 @@ class RaumfeldPlayer(Player):
         """Read the zone's GetTransportInfo response, or ``None`` if it could not be read."""
         try:
             # hassfeld swallows a UPnP timeout and returns None, so an unanswered read has
-            # to stay distinguishable from a real one: as an empty dict it would report the
-            # zone as idle and, worse, clear the playing-state that auto-advance needs.
+            # to stay distinguishable from a real one: as an empty dict it would report a
+            # playing zone as idle for a poll.
             return await host.async_get_transport_info(zone) or None
         except HOST_ERRORS as err:
             self.logger.debug("Failed to read transport info for zone %s: %r", zone, err)
@@ -490,10 +484,6 @@ class RaumfeldPlayer(Player):
         """Record a play/resume command and switch to fast polling."""
         self._play_started_at = time.time()
         self._attr_poll_interval = FAST_POLL_INTERVAL
-        # a fresh play/resume restarts the flow and the zone clock from zero, so nothing
-        # stays banked
-        self._flow_offset = 0.0
-        self._last_reltime = 0.0
         # reset the position: on resume MA adds a seek offset, so a stale pre-pause
         # position here would be double-counted until the next poll re-anchors to the real
         # position
@@ -574,4 +564,4 @@ class RaumfeldPlayer(Player):
     def _player_id_to_room(self, player_id: str) -> str | None:
         """Resolve a MA player_id of this provider back to its Raumfeld room name."""
         player = self.mass.players.get_player(player_id)
-        return getattr(player, "room", None)
+        return player.room if isinstance(player, RaumfeldPlayer) else None
