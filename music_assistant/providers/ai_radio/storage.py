@@ -195,6 +195,9 @@ class AIRadioStorageMixin:
                     ) from err
             if max_chars > 0:
                 normalized["constraints"] = {"max_chars": max_chars}
+            # only stored when on, like the constraints: a missing key reads as off everywhere
+            if section.get("allow_post"):
+                normalized["allow_post"] = True
         for passthrough_key in ("cover_image",):
             if passthrough_key in section:
                 normalized[passthrough_key] = section[passthrough_key]
