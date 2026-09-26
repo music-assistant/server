@@ -6,7 +6,6 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncGenerator
-from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import (
@@ -41,12 +40,15 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant import MusicAssistant
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.datetime import from_iso_string
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.models.music_provider import MusicProvider
 
 from .api_client import PocketCastsClient
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
@@ -567,7 +569,7 @@ class PocketCastsProvider(MusicProvider):
             episode_item.metadata.label = title
         if published := episode_data.get("published"):
             with contextlib.suppress(ValueError, TypeError):
-                episode_item.metadata.release_date = datetime.fromisoformat(published)
+                episode_item.metadata.release_date = from_iso_string(published)
         details = show_notes or {}
         if description := details.get("description"):
             episode_item.metadata.description = description
