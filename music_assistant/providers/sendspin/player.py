@@ -73,10 +73,9 @@ from music_assistant_models.media_items import Album, Artist, is_track
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
-from music_assistant.constants import HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.helpers.util import is_valid_mac_address, join_task
-from music_assistant.models.player import Player, PlayerMedia
+from music_assistant.models.player import AnnouncementFeature, Player, PlayerMedia
 from music_assistant.models.setup_flow import FINISH_STEP_SILENT, AbortFlow, StepExpiredError
 
 from .bridge_role import BridgePlayerRole
@@ -240,6 +239,11 @@ _SECRET_HINT_LABELS = {
     PairMethod.DYNAMIC_PIN: {
         "display": "dynamic_pin_channel_display",
         "speaker": "dynamic_pin_channel_speaker",
+    },
+    PairMethod.PAIRING_PSK: {
+        "device": "pairing_psk_location_device",
+        "leaflet": "pairing_psk_location_leaflet",
+        "operator": "pairing_psk_location_operator",
     },
 }
 
@@ -480,7 +484,7 @@ class SendspinBasePlayer(Player):
             await session.finish({})
             return
         if not options:
-            raise AbortFlow(self._no_options_abort_reason(provider))
+            raise AbortFlow("no_pair_methods")
         if len(options) == 1:
             method = options[0]
         else:
@@ -986,15 +990,6 @@ class SendspinBasePlayer(Player):
             options.append(PAIR_METHOD_TOKEN)
         return options
 
-    def _no_options_abort_reason(self, provider: SendspinProvider) -> str:
-        """Say whether the device offers nothing at all, or only the server-side method."""
-        pair_methods = effective_pair_methods(
-            self.api.info_or_none, provider.pairing_config_snapshot(self.player_id)
-        )
-        if any(descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods):
-            return "token_pairing_only"
-        return "no_pair_methods"
-
     async def _pairing_succeeded(
         self, provider: SendspinProvider, pin_session: PinPairingSession
     ) -> bool:
@@ -1111,7 +1106,14 @@ class SendspinBasePlayer(Player):
         errors: dict[str, str] | None = None
         while True:
             token_values = await session.form(
-                [ConfigEntry(key=CONF_PAIRING_TOKEN, type=ConfigEntryType.STRING, required=True)],
+                [
+                    ConfigEntry(
+                        key=CONF_PAIRING_TOKEN,
+                        type=ConfigEntryType.STRING,
+                        required=True,
+                        translation_key=self._secret_hint_key(provider, PairMethod.PAIRING_PSK),
+                    )
+                ],
                 step_id="enter_token",
                 errors=errors,
             )
@@ -1277,6 +1279,13 @@ class SendspinPlayer(SendspinBasePlayer):
         else:
             self._attr_supported_features.discard(PlayerFeature.PLAY_ANNOUNCEMENT)
 
+    @property
+    def announcement_features(self) -> set[AnnouncementFeature]:
+        """Drop SUPPORTS_VOLUME while relaying: the HA announce pipeline ignores the level."""
+        if self._hass_announce_entity_id is not None:
+            return set()
+        return {AnnouncementFeature.SUPPORTS_VOLUME}
+
     async def play_announcement(
         self, announcement: PlayerMedia, volume_level: int | None = None
     ) -> None:
@@ -1293,8 +1302,8 @@ class SendspinPlayer(SendspinBasePlayer):
             self.display_name,
         )
         if volume_level is not None:
-            # the device's announcement pipeline plays at its own volume;
-            # the announce volume config entries are hidden for this player
+            # the HA announce pipeline plays at its own volume; a requested level is
+            # applied through the builtin path instead, so it should not reach here
             self.logger.debug("Ignoring announcement volume level for player %s", self.display_name)
         await hass.play_announcement_on_entity(entity_id, announcement)
         self.logger.debug("Playing announcement on %s completed", self.display_name)
@@ -1713,11 +1722,6 @@ class SendspinPlayer(SendspinBasePlayer):
                     advanced=False,
                 )
             )
-
-        if self._hass_announce_entity_id is not None:
-            # announcements are relayed to the device via Home Assistant,
-            # which has no volume control for announcements
-            entries.extend(HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES)
 
         return entries
 
