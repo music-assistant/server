@@ -55,3 +55,19 @@ PEAK_MIN_STRENGTH: Final[int] = 100
 
 # Send rate for the UDP audio-sync packet stream.
 SEND_RATE_HZ: Final[int] = 40
+
+# How much of the *future* the pending-frame queue can hold, in seconds.
+#
+# Extracted frames arrive a whole send-ahead lead before their playback time, and
+# WledBridge._drain_pending only promotes one once the playhead reaches its
+# timestamp, so this window has to span that entire lead. The lead is set by how
+# far Sendspin's producer is allowed to run ahead before backpressure -- see
+# _PRODUCER_BUFFER_LIMIT_US in providers/sendspin/playback.py, currently 30s -- not
+# by any aiosendspin constant (its own DEFAULT_REQUIRED_LEAD_TIME_US floor is just
+# 250ms). Keep this at or above that limit; tests/providers/wled/test_bridge.py
+# asserts the relationship so raising one without the other fails there.
+#
+# This is a backstop against unbounded growth if draining ever stalls, not a
+# latency knob: draining is by timestamp, so a larger window costs nothing but
+# memory (~1MB here) and never delays a packet.
+PENDING_FRAMES_MAX_SECONDS: Final[int] = 60

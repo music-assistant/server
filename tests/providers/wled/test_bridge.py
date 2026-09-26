@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import struct
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, cast
@@ -14,8 +15,19 @@ from aiosendspin.server.roles.visualizer.features import ExtractedFrame
 from music_assistant_models.errors import SetupFailedError
 
 import music_assistant.providers.wled.bridge as bridge_module
+from music_assistant.providers.sendspin.playback import _PRODUCER_BUFFER_LIMIT_US
 from music_assistant.providers.wled.bridge import WledBridge, WledBridgeManager
-from music_assistant.providers.wled.constants import SPECTRUM_BINS
+from music_assistant.providers.wled.constants import (
+    PENDING_FRAMES_MAX_SECONDS,
+    SEND_RATE_HZ,
+    SPECTRUM_BINS,
+)
+
+# How far ahead of the playhead a frame can reach this bridge. Deliberately read from
+# the Sendspin playback module rather than hardcoded: that producer limit is what
+# actually sets the lead, so if it is ever raised past the WLED queue's window these
+# tests fail instead of the zone silently going dark on real hardware.
+_MAX_LEAD_S = _PRODUCER_BUFFER_LIMIT_US / 1_000_000
 
 
 class _FakeClock:
@@ -480,3 +492,130 @@ class TestBridgeManagerStop:
             await manager.stop()
 
         assert manager._bridge is None
+
+
+# Wire format of the packet the bridge sends; mirrors packet._STRUCT_FORMAT.
+_PACKET_FORMAT = "<6s2sffBB16sHff"
+
+
+def _drive_stream(
+    bridge: WledBridge, *, lead_s: float, duration_s: float
+) -> list[tuple[float, list[int]]]:
+    """
+    Run a stream end to end and return the (sample, fft bands) of every packet sent.
+
+    Models how the server actually feeds the bridge: on each tick it hands over the
+    feature frame for audio that will play ``lead_s`` from now, and the bridge is
+    expected to hold that frame until the playhead reaches it.
+
+    :param bridge: The bridge to drive; its fake clock is advanced tick by tick.
+    :param lead_s: The stream's send-ahead lead, in seconds.
+    :param duration_s: How long to run, in seconds of playback.
+    """
+    transport = Mock()
+    _set_transport(bridge, transport)
+    bridge._on_stream_start()
+    period_us = 1_000_000 // SEND_RATE_HZ
+    lead_us = int(lead_s * 1_000_000)
+    for tick in range(int(duration_s * SEND_RATE_HZ)):
+        now_us = tick * period_us
+        bridge.sendspin_server.clock._now_us = now_us  # type: ignore[attr-defined]
+        bridge._on_frame(
+            ExtractedFrame(
+                timestamp_us=now_us + lead_us,
+                loudness=40000,
+                spectrum=np.array([8000] * SPECTRUM_BINS),
+                f_peak_freq=440,
+                f_peak_amp=30000,
+                peak=200,
+            )
+        )
+        bridge._render_tick()
+    sent = []
+    for call in transport.sendto.call_args_list:
+        (packet,) = call.args
+        _hdr, _pad, sample_raw, _smth, _peak, _fc, fft, _zc, _mag, _freq = struct.unpack(
+            _PACKET_FORMAT, packet
+        )
+        sent.append((sample_raw, list(fft)))
+    return sent
+
+
+class TestFeaturesSurviveTheSendAheadLead:
+    """
+    A zone must still send audio when features arrive well ahead of their playback time.
+
+    Frames arrive a whole send-ahead lead before their playback time, and _drain_pending
+    only promotes one once the playhead reaches it. So the pending queue has to span that
+    entire lead. Sized below it, every frame is evicted before its time comes and the zone
+    transmits well-formed all-zero packets forever -- valid sync, no audio, no error
+    anywhere. That is invisible to any test that drains frames whose timestamp has already
+    passed, which is why these drive the clock instead.
+    """
+
+    def test_the_full_producer_buffer_lead_still_produces_audio(self) -> None:
+        """At the deepest lead the producer allows, packets must carry real feature data."""
+        bridge = _make_bridge(latency_ms=0).bridge
+
+        sent = _drive_stream(bridge, lead_s=_MAX_LEAD_S, duration_s=_MAX_LEAD_S + 5)
+
+        assert sent, "no packets sent at all"
+        assert any(sample > 0 for sample, _fft in sent), (
+            "every packet carried a zero sample: features were dropped before their "
+            "playback time, so the zone is sending silence"
+        )
+        assert any(any(fft) for _sample, fft in sent), "every packet carried an all-zero spectrum"
+
+    def test_the_queue_cap_covers_the_producer_buffer_limit(self) -> None:
+        """
+        The queue window must cover however far Sendspin's producer is allowed to run ahead.
+
+        This is the coupling that actually broke: the window was five seconds while the
+        producer was free to buffer thirty, so every frame aged out before its playback
+        time. Asserting against the real constant means raising that limit fails here,
+        rather than on hardware as a zone that reports a healthy sync stream and shows
+        nothing.
+        """
+        assert PENDING_FRAMES_MAX_SECONDS >= _MAX_LEAD_S, (
+            f"WLED queues {PENDING_FRAMES_MAX_SECONDS}s of frames but the Sendspin "
+            f"producer may run {_MAX_LEAD_S}s ahead; frames will be dropped before "
+            "their playback time and the zone will send silence"
+        )
+
+    def test_the_queue_cap_matches_the_configured_window(self) -> None:
+        """The bridge must actually apply the configured window."""
+        bridge = _make_bridge(latency_ms=0).bridge
+        assert bridge._pending_frames_max == SEND_RATE_HZ * PENDING_FRAMES_MAX_SECONDS
+
+    def test_an_undersized_queue_still_sends_audio_rather_than_silence(self) -> None:
+        """
+        A cap shorter than the lead must degrade to gaps, never to a silent zone.
+
+        Sending every frame is not the goal -- a packet only earns its place by matching
+        what is being heard right now. So when the queue cannot hold the whole lead, the
+        frames to sacrifice are the ones furthest from being heard, keeping those about
+        to come due. Evicting the head instead (what deque(maxlen=...) does) means no
+        frame is ever due and the zone goes dark while still sending valid packets.
+        """
+        bridge = _make_bridge(latency_ms=0).bridge
+        bridge._pending_frames_max = SEND_RATE_HZ * 2  # far short of the lead below
+
+        sent = _drive_stream(bridge, lead_s=_MAX_LEAD_S, duration_s=_MAX_LEAD_S + 5)
+
+        assert any(sample > 0 for sample, _fft in sent), (
+            "an undersized queue produced nothing but silence; it must drop the "
+            "furthest-future frames and keep the ones about to be heard"
+        )
+
+    def test_saturating_the_queue_warns_once(self) -> None:
+        """Dropping frames is survivable but never silent -- it has to reach the log."""
+        bridge = _make_bridge(latency_ms=0).bridge
+        bridge.logger = Mock()
+        bridge._is_streaming = True
+        for i in range(bridge._pending_frames_max + 5):
+            bridge._on_frame(ExtractedFrame(timestamp_us=10**12 + i, loudness=40000))
+
+        bridge.logger.warning.assert_called_once()
+        assert "gaps" in bridge.logger.warning.call_args.args[0]
+        # the cap is a cap, not a suggestion
+        assert len(bridge._pending_frames) == bridge._pending_frames_max

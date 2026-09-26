@@ -34,6 +34,7 @@ from .constants import (
     DEFAULT_GAIN_DB,
     DEFAULT_LATENCY_MS,
     PEAK_MIN_STRENGTH,
+    PENDING_FRAMES_MAX_SECONDS,
     SEND_RATE_HZ,
     SPECTRUM_BINS,
     SPECTRUM_F_MAX,
@@ -107,11 +108,15 @@ class WledBridge:
         self._gain_db: float = gain_db
         self._scaling_mode: ScalingMode = scaling_mode
 
-        # Bounded as a backstop against unbounded growth if draining ever stalls
-        # (e.g. an exception in a render tick) -- a few seconds at the visualizer
-        # frame rate is far more headroom than the queued-by-timestamp draining
-        # in _drain_pending should ever need.
-        self._pending_frames: deque[ExtractedFrame] = deque(maxlen=SEND_RATE_HZ * 5)
+        # Capped as a backstop against unbounded growth if draining ever stalls (e.g.
+        # an exception in a render tick). The cap has to cover the whole send-ahead
+        # lead, not just "a few frames" -- see PENDING_FRAMES_MAX_SECONDS. Overflow is
+        # handled by hand in _on_frame rather than with deque(maxlen=...), which evicts
+        # exactly the wrong end; the cap is kept separately because a plain deque has
+        # no maxlen to read back.
+        self._pending_frames: deque[ExtractedFrame] = deque()
+        self._pending_frames_max: int = SEND_RATE_HZ * PENDING_FRAMES_MAX_SECONDS
+        self._pending_saturated = False
         self._latest_loudness: int = 0
         self._latest_spectrum: list[int] = [0] * SPECTRUM_BINS
         self._latest_f_peak_freq: int = 0
@@ -230,6 +235,7 @@ class WledBridge:
     def _on_stream_start(self) -> None:
         """Handle stream start — reset state and begin the send loop."""
         self._pending_frames.clear()
+        self._pending_saturated = False
         self._reset_latest_features()
         self._is_streaming = True
         self._start_render_loop()
@@ -237,6 +243,7 @@ class WledBridge:
     def _on_stream_clear(self) -> None:
         """Handle seek — queued and already-promoted features belong to pre-seek audio."""
         self._pending_frames.clear()
+        self._pending_saturated = False
         self._reset_latest_features()
 
     def _on_stream_end(self) -> None:
@@ -247,6 +254,23 @@ class WledBridge:
     def _on_frame(self, frame: ExtractedFrame) -> None:
         """Queue an extracted feature frame for the sender."""
         if not self._is_streaming:
+            return
+        if len(self._pending_frames) >= self._pending_frames_max:
+            if not self._pending_saturated:
+                self._pending_saturated = True
+                self.logger.warning(
+                    "Zone port %d: pending frame queue hit its %ds cap, so features are "
+                    "being dropped and this zone will have gaps. The stream's send-ahead "
+                    "lead exceeds the cap; raise PENDING_FRAMES_MAX_SECONDS.",
+                    self.port,
+                    PENDING_FRAMES_MAX_SECONDS,
+                )
+            # Drop this frame -- the one furthest from being heard -- and keep the head.
+            # A packet is only worth sending if it matches the audio playing right now,
+            # so the frames nearest their playback time are the ones worth keeping.
+            # deque(maxlen=...) would evict the head instead, which means nothing ever
+            # becomes due and the zone transmits well-formed silence forever rather than
+            # degrading to gaps.
             return
         self._pending_frames.append(frame)
 
