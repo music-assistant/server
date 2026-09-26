@@ -12,27 +12,32 @@ INSTANCE_ID = "test--1"
 BOOK_ID = "book_1"
 
 
-def _mapping(item_id: str) -> set[ProviderMapping]:
+def _mapping(item_id: str, instance_id: str = INSTANCE_ID) -> set[ProviderMapping]:
     """Return a single provider mapping for the given provider item id."""
     return {
         ProviderMapping(
             item_id=item_id,
             provider_domain="test",
-            provider_instance=INSTANCE_ID,
+            provider_instance=instance_id,
             in_library=True,
         )
     }
 
 
-def _artist(name: str, artist_type: ArtistType, item_id: str | None = None) -> Artist:
+def _artist(
+    name: str,
+    artist_type: ArtistType,
+    item_id: str | None = None,
+    instance_id: str = INSTANCE_ID,
+) -> Artist:
     """Return an author or narrator as a provider reports it, by default with a per-role id."""
     item_id = item_id or f"{artist_type.value}-{name}"
     return Artist(
         item_id=item_id,
-        provider=INSTANCE_ID,
+        provider=instance_id,
         name=name,
         artist_type=artist_type,
-        provider_mappings=_mapping(item_id),
+        provider_mappings=_mapping(item_id, instance_id),
     )
 
 
@@ -40,10 +45,14 @@ def _book(
     authors: list[Artist] | None = None,
     narrators: list[Artist] | None = None,
     book_id: str = BOOK_ID,
+    instance_id: str = INSTANCE_ID,
 ) -> Audiobook:
     """Return an audiobook as a provider reports it."""
     book = Audiobook(
-        item_id=book_id, provider=INSTANCE_ID, name=book_id, provider_mappings=_mapping(book_id)
+        item_id=book_id,
+        provider=instance_id,
+        name=book_id,
+        provider_mappings=_mapping(book_id, instance_id),
     )
     book.authors.set(authors or [])
     book.narrators.set(narrators or [])
@@ -114,15 +123,19 @@ async def test_a_type_the_update_omits_is_left_alone(mass: MusicAssistant) -> No
     assert await _linked(mass, db_id, ArtistType.NARRATOR) == {"Old Voice"}
 
 
-async def test_without_overwrite_nothing_is_removed(mass: MusicAssistant) -> None:
-    """Only an overwrite replaces links, a plain update never drops one."""
+async def test_without_overwrite_another_providers_links_stay(mass: MusicAssistant) -> None:
+    """A plain update only replaces the links of the provider reporting it."""
     db_id = await _add(mass, _book(narrators=[_artist("Old Voice", ArtistType.NARRATOR)]))
 
     await mass.music.audiobooks.update_item_in_library(
-        db_id, _book(narrators=[_artist("New Voice", ArtistType.NARRATOR)])
+        db_id,
+        _book(
+            narrators=[_artist("New Voice", ArtistType.NARRATOR, instance_id="test--2")],
+            instance_id="test--2",
+        ),
     )
 
-    assert "Old Voice" in await _linked(mass, db_id, ArtistType.NARRATOR)
+    assert await _linked(mass, db_id, ArtistType.NARRATOR) == {"Old Voice", "New Voice"}
 
 
 async def test_a_narrator_who_became_the_author_is_linked_as_author(
@@ -214,3 +227,20 @@ async def test_overwriting_one_book_leaves_another_books_link_alone(
     assert await _linked(mass, narrated_id, ArtistType.AUTHOR) == {"Jane Austen"}
     assert await _linked(mass, narrated_id, ArtistType.NARRATOR) == {"New Voice"}
     assert await _stored_types(mass, "Kate Voice") == {"author"}
+
+
+async def test_overwrite_with_the_library_item_keeps_its_links(mass: MusicAssistant) -> None:
+    """A library item names its artists as library mappings, which must count as linked."""
+    db_id = await _add(
+        mass,
+        _book(
+            authors=[_artist("Jane Austen", ArtistType.AUTHOR)],
+            narrators=[_artist("Old Voice", ArtistType.NARRATOR)],
+        ),
+    )
+
+    library_item = await mass.music.audiobooks.get_library_item(db_id)
+    await mass.music.audiobooks.update_item_in_library(db_id, library_item, overwrite=True)
+
+    assert await _linked(mass, db_id, ArtistType.AUTHOR) == {"Jane Austen"}
+    assert await _linked(mass, db_id, ArtistType.NARRATOR) == {"Old Voice"}

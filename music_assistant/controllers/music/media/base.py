@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, final, overload
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
+    ArtistType,
     EventType,
     ExternalID,
     ImageType,
@@ -29,6 +30,8 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.helpers import create_safe_string, get_global_cache_value
 from music_assistant_models.media_items import (
+    Artist,
+    Audiobook,
     AudioFormat,
     ItemMapping,
     ItemMappingSummary,
@@ -181,10 +184,54 @@ class TrackSyncDetails(LibraryItemSyncDetails):
 class AudiobookSyncDetails(LibraryItemSyncDetails):
     """Lightweight sync snapshot of a library audiobook."""
 
-    author_is_str: bool
-    narrator_is_str: bool
+    # (artist_id, artist_type, provider_instance, provider_item_id) per linked artist mapping
+    artist_links: frozenset[tuple[int, str, str, str]]
+    # the plain names stored on the audiobook itself
+    authors: tuple[str, ...]
+    narrators: tuple[str, ...]
     fully_played: bool | None
     resume_position_ms: int | None
+
+    def authors_narrators_changed(self, audiobook: Audiobook) -> bool:
+        """
+        Return True when the provider's authors/narrators differ from the stored ones.
+
+        :param audiobook: The audiobook as the provider currently reports it.
+        """
+        instance_id = audiobook.provider
+        roles = (
+            (ArtistType.AUTHOR, self.authors, audiobook.authors),
+            (ArtistType.NARRATOR, self.narrators, audiobook.narrators),
+        )
+        # a provider reporting nobody does not mean the book has nobody
+        covered = {artist_type.value for artist_type, _, prov_values in roles if prov_values}
+        prov_ids = {
+            value.item_id
+            for _, _, prov_values in roles
+            for value in prov_values
+            if isinstance(value, Artist)
+        }
+        # mirrors the replacement on update: the links this provider reports, in any role,
+        # as one artist may serve as author and narrator and have several ids
+        reported: dict[int, tuple[str, set[str]]] = {}
+        for artist_id, artist_type, inst, item_id in self.artist_links:
+            if inst == instance_id:
+                reported.setdefault(artist_id, (artist_type, set()))[1].add(item_id)
+        if not prov_ids <= {x for _, ids in reported.values() for x in ids}:
+            return True
+        if any(
+            not ids & prov_ids and (len(covered) == 2 or artist_type in covered)
+            for artist_type, ids in reported.values()
+        ):
+            return True
+        # plain names are shared by all providers of the book, so only a sole one owns them
+        if {x.provider_instance for x in self.provider_mappings} != {instance_id}:
+            return False
+        for _, stored_names, prov_values in roles:
+            prov_names = tuple(value for value in prov_values if isinstance(value, str))
+            if prov_names and prov_names != stored_names:
+                return True
+        return False
 
 
 class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):

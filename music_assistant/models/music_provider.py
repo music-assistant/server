@@ -1540,7 +1540,7 @@ class MusicProvider(Provider):
                 f" item {prov_item.name} does not exclusively provide strings."
             )
 
-    async def _sync_library_audiobooks(self) -> set[int]:  # noqa: PLR0915
+    async def _sync_library_audiobooks(self) -> set[int]:
         """Sync Library Audiobooks to Music Assistant library."""
         self.logger.debug("Start sync of Audiobooks to Music Assistant library.")
         cur_db_ids: set[int] = set()
@@ -1572,7 +1572,9 @@ class MusicProvider(Provider):
                         favorite = library_item.favorite
                         lib_fully_played = library_item.fully_played
                         lib_resume_position_ms = library_item.resume_position_ms
-                    elif self._library_item_needs_update(sync_details, prov_item):
+                    elif self._library_item_needs_update(
+                        sync_details, prov_item
+                    ) or sync_details.authors_narrators_changed(prov_item):
                         library_item = await self.mass.music.audiobooks.update_item_in_library(
                             sync_details.item_id, prov_item
                         )
@@ -1581,25 +1583,10 @@ class MusicProvider(Provider):
                         lib_fully_played = library_item.fully_played
                         lib_resume_position_ms = library_item.resume_position_ms
                     else:
-                        # Detect, if stored authors/narrators are plain strings but the provider
-                        # now supplies full Artist objects, i.e. artist support changed.
-                        prov_author = prov_item.authors[0] if prov_item.authors else None
-                        prov_narrator = prov_item.narrators[0] if prov_item.narrators else None
-                        if (sync_details.author_is_str and not isinstance(prov_author, str)) or (
-                            sync_details.narrator_is_str and not isinstance(prov_narrator, str)
-                        ):
-                            library_item = await self.mass.music.audiobooks.update_item_in_library(
-                                sync_details.item_id, prov_item
-                            )
-                            db_id = int(library_item.item_id)
-                            favorite = library_item.favorite
-                            lib_fully_played = library_item.fully_played
-                            lib_resume_position_ms = library_item.resume_position_ms
-                        else:
-                            db_id = sync_details.item_id
-                            favorite = sync_details.favorite
-                            lib_fully_played = sync_details.fully_played
-                            lib_resume_position_ms = sync_details.resume_position_ms
+                        db_id = sync_details.item_id
+                        favorite = sync_details.favorite
+                        lib_fully_played = sync_details.fully_played
+                        lib_resume_position_ms = sync_details.resume_position_ms
 
                     cur_db_ids.add(db_id)
                     if not favorite and prov_item.favorite:
