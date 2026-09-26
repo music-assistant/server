@@ -7,15 +7,20 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 from music_assistant_models.enums import PlaybackState
 
+from music_assistant.constants import CONF_FLOW_MODE
+from music_assistant.providers.raumfeld.constants import PLAYER_CONFIG_ENTRIES
 from music_assistant.providers.raumfeld.player import (
+    ADVANCE_WATCH_ATTEMPTS,
     IDLE_POLL_INTERVAL,
     PLAYING_POLL_INTERVAL,
     RaumfeldPlayer,
     _map_transport_state,
+    _near_track_end,
 )
 
 if TYPE_CHECKING:
     import hassfeld
+    from music_assistant_models.player import PlayerMedia
 
 BASE_URL = "http://mass.local:8097"
 
@@ -97,9 +102,119 @@ def test_transport_state_mapping() -> None:
     assert _map_transport_state(None) == PlaybackState.IDLE
 
 
-def test_requires_flow_mode() -> None:
-    """The provider always plays through flow mode."""
-    assert RaumfeldPlayer.__new__(RaumfeldPlayer).requires_flow_mode is True
+def test_flow_mode_is_on_by_default() -> None:
+    """Flow mode is a setting now, and it defaults to on."""
+    entry = next(e for e in PLAYER_CONFIG_ENTRIES if e.key == CONF_FLOW_MODE)
+    assert entry.default_value is True
+    assert not entry.hidden
+
+
+def test_near_track_end() -> None:
+    """Near the end within the window, or when the duration is unknown."""
+    assert _near_track_end({"RelTime": "0:03:55", "TrackDuration": "0:04:00"}) is True
+    assert _near_track_end({"RelTime": "0:01:00", "TrackDuration": "0:04:00"}) is False
+    assert _near_track_end({"RelTime": "0:01:00", "TrackDuration": "0:00:00"}) is True
+    assert _near_track_end({"TrackDuration": "0:04:00"}) is False
+
+
+def _media() -> PlayerMedia:
+    return cast("PlayerMedia", MagicMock())
+
+
+def _advancing_player() -> tuple[RaumfeldPlayer, MagicMock]:
+    """Build a player playing one queue item (flow mode off) with the next one queued."""
+    player = RaumfeldPlayer.__new__(RaumfeldPlayer)
+    player._advance_armed = True
+    player._prev_playing = True
+    player._near_end = True
+    player._next_media = _media()
+    player._advance_task_id = "raumfeld_advance_test"
+    mass = MagicMock()
+    player.mass = mass
+    player.play_media = MagicMock()  # type: ignore[method-assign]
+    return player, mass
+
+
+def test_advances_when_the_track_ends() -> None:
+    """A stop near the end with a queued item starts that item."""
+    player, mass = _advancing_player()
+    queued = player._next_media
+    player._maybe_advance(playing=False, ended=True)
+    player.play_media.assert_called_once_with(queued)  # type: ignore[attr-defined]
+    mass.create_task.assert_called_once()
+    assert player._next_media is None
+
+
+def test_no_advance_on_a_pause_mid_track() -> None:
+    """A pause (not a stop) away from the end never skips to the next item."""
+    player, mass = _advancing_player()
+    player._near_end = False
+    player._maybe_advance(playing=False, ended=False)
+    mass.create_task.assert_not_called()
+    assert player._next_media is not None
+
+
+def test_no_advance_during_the_startup_gap() -> None:
+    """The not-yet-playing gap after a play command is not taken for a finished track."""
+    player, mass = _advancing_player()
+    player._prev_playing = False  # as _mark_play_started leaves it
+    player._maybe_advance(playing=False, ended=True)
+    mass.create_task.assert_not_called()
+
+
+def test_disarms_when_the_last_track_ends() -> None:
+    """A track ending with nothing queued disarms instead of restarting anything."""
+    player, mass = _advancing_player()
+    player._next_media = None
+    player._maybe_advance(playing=False, ended=True)
+    mass.create_task.assert_not_called()
+    assert player._advance_armed is False
+
+
+def _watching_player(state: str) -> tuple[RaumfeldPlayer, MagicMock]:
+    """Build an advancing player whose zone reports the given transport state."""
+    player, mass = _advancing_player()
+    player._active_zone = MagicMock(return_value=["Bar"])  # type: ignore[method-assign]
+    player._read_transport = AsyncMock(  # type: ignore[method-assign]
+        return_value={"CurrentTransportState": state}
+    )
+    player._provider = MagicMock()
+    return player, mass
+
+
+async def test_end_watch_advances_as_soon_as_the_track_stops() -> None:
+    """The end watch starts the next item on the stop without waiting for a poll."""
+    player, mass = _watching_player("STOPPED")
+    await player._watch_for_track_end(0)
+    mass.create_task.assert_called_once()
+    assert player._next_media is None
+    # claimed, so a poll landing in between cannot disarm the advance
+    assert player._prev_playing is False
+
+
+async def test_end_watch_waits_while_the_track_still_plays() -> None:
+    """A track running past its metadata duration is not cut short."""
+    player, mass = _watching_player("PLAYING")
+    await player._watch_for_track_end(0)
+    mass.create_task.assert_not_called()
+    mass.call_later.assert_called_once()
+
+
+async def test_end_watch_gives_up_after_the_last_attempt() -> None:
+    """After the window closes the polled fallback takes over, rather than looping."""
+    player, mass = _watching_player("PLAYING")
+    await player._watch_for_track_end(ADVANCE_WATCH_ATTEMPTS - 1)
+    mass.call_later.assert_not_called()
+    mass.create_task.assert_not_called()
+
+
+def test_clear_next_disarms_and_cancels_the_watch() -> None:
+    """A stop or a new item drops the queued item and any pending end watch."""
+    player, mass = _advancing_player()
+    player._clear_next()
+    assert player._advance_armed is False
+    assert player._next_media is None
+    mass.cancel_timer.assert_called_once_with("raumfeld_advance_test")
 
 
 def _follower(leader_state: PlaybackState) -> RaumfeldPlayer:

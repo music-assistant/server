@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import aiohttp
+from music_assistant_models.config_entries import ConfigEntry
 
 from music_assistant.constants import (
+    CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_HTTP_PROFILE_FORCED_1,
     CONF_ENTRY_ICY_METADATA_DEFAULT_FULL,
 )
@@ -46,9 +48,14 @@ SUPPORTED_SAMPLE_RATES = [
     for bit_depth in (16, 24)
 ]
 
-# Per-player config entries. Flow mode itself needs no entry: the player reports
-# requires_flow_mode, so MA leaves the flow toggle out and adds the flow sample-rate entry.
+# Per-player config entries (MA adds the flow sample-rate entry itself).
 PLAYER_CONFIG_ENTRIES = [
+    # Flow mode on by default. The zone renderer has no SetNextAVTransportURI, so a stream
+    # per queue item tears the transport down at every track boundary: a short gap. One
+    # continuous flow stream, relayed by the host to every room in the zone, is gapless - in
+    # groups too. Switched off, each item plays as its own stream: a gap between tracks, but
+    # the Raumfeld app then shows each track's own elapsed time and duration.
+    ConfigEntry.from_dict({**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": True}),
     # Chunked, hidden. The host's stream relay reconnects and replays the stream from the
     # start whenever the response carries a finite Content-Length (measured, and
     # forced_content_length reproduces it); a chunked response carries none, so the host
