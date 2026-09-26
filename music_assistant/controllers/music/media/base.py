@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, final, overload
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
+    ArtistType,
     EventType,
     ExternalID,
     ImageType,
@@ -29,6 +30,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.helpers import create_safe_string, get_global_cache_value
 from music_assistant_models.media_items import (
+    Artist,
     Audiobook,
     AudioFormat,
     ItemMapping,
@@ -190,11 +192,11 @@ class TrackSyncDetails(LibraryItemSyncDetails):
 class AudiobookSyncDetails(LibraryItemSyncDetails):
     """Lightweight sync snapshot of a library audiobook."""
 
-    # sorted: the linked artist records have no order of their own
+    # (artist_id, artist_type, provider_instance, provider_item_id) per linked artist mapping
+    artist_links: frozenset[tuple[int, str, str, str]]
+    # the plain names stored on the audiobook itself
     authors: tuple[str, ...]
     narrators: tuple[str, ...]
-    author_is_str: bool
-    narrator_is_str: bool
     fully_played: bool | None
     resume_position_ms: int | None
 
@@ -206,19 +208,38 @@ class AudiobookSyncDetails(LibraryItemSyncDetails):
         """
         if not isinstance(prov_item, Audiobook):
             return False
-        for stored_names, stored_is_str, prov_values in (
-            (self.authors, self.author_is_str, prov_item.authors),
-            (self.narrators, self.narrator_is_str, prov_item.narrators),
+        instance_id = prov_item.provider
+        roles = (
+            (ArtistType.AUTHOR, self.authors, prov_item.authors),
+            (ArtistType.NARRATOR, self.narrators, prov_item.narrators),
+        )
+        # a provider reporting nobody does not mean the book has nobody
+        covered = {artist_type.value for artist_type, _, prov_values in roles if prov_values}
+        prov_ids = {
+            value.item_id
+            for _, _, prov_values in roles
+            for value in prov_values
+            if isinstance(value, Artist)
+        }
+        # mirrors the replacement on update: the links this provider reports, in any role,
+        # as one artist may serve as author and narrator and have several ids
+        reported: dict[int, tuple[str, set[str]]] = {}
+        for artist_id, artist_type, inst, item_id in self.artist_links:
+            if inst == instance_id:
+                reported.setdefault(artist_id, (artist_type, set()))[1].add(item_id)
+        if not prov_ids <= {x for _, ids in reported.values() for x in ids}:
+            return True
+        if any(
+            not ids & prov_ids and (len(covered) == 2 or artist_type in covered)
+            for artist_type, ids in reported.values()
         ):
-            if not prov_values:
-                continue
-            if stored_is_str != all(isinstance(value, str) for value in prov_values):
-                # plain names and Artist items are stored in different places
-                return True
-            prov_names = tuple(
-                sorted(value if isinstance(value, str) else value.name for value in prov_values)
-            )
-            if stored_names != prov_names:
+            return True
+        # plain names are shared by all providers of the book, so only a sole one owns them
+        if {x.provider_instance for x in self.provider_mappings} != {instance_id}:
+            return False
+        for _, stored_names, prov_values in roles:
+            prov_names = tuple(value for value in prov_values if isinstance(value, str))
+            if prov_names and prov_names != stored_names:
                 return True
         return False
 
