@@ -14,6 +14,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
+from urllib.parse import urlparse
 
 from aiohttp import ClientError
 from aiosonos.api.models import Container, ContainerType, MusicService, SonosCapability
@@ -56,6 +57,7 @@ from music_assistant.providers.sonos.const import (
 
 if TYPE_CHECKING:
     from aiosonos.api.models import DiscoveryInfo as SonosDiscoveryInfo
+    from aiosonos.api.models import PlaybackError
     from aiosonos.group import SonosGroup
     from music_assistant_models.config_entries import ConfigEntry
     from music_assistant_models.queue_item import QueueItem
@@ -118,6 +120,11 @@ class SonosPlayer(Player):
         # failures already logged, so the speaker's resends are not logged again
         self.reported_playback_errors: deque[str] = deque(maxlen=REPORTED_ERROR_HISTORY)
         self._announcement_media: PlayerMedia | None = None
+
+    @property
+    def coordinates_announcement_start(self) -> bool:
+        """Return True: audio clips fired at the members together start close enough together."""
+        return True
 
     @property
     def group_controller(self) -> SonosGroup:
@@ -203,6 +210,9 @@ class SonosPlayer(Player):
                     SonosEventType.PLAYER_UPDATED,
                 ),
             )
+        )
+        self._on_unload_callbacks.append(
+            self.client.subscribe(self._on_playback_error, SonosEventType.PLAYBACK_ERROR)
         )
 
     async def get_config_entries(self) -> list[ConfigEntry]:
@@ -997,6 +1007,31 @@ class SonosPlayer(Player):
         if self.client:
             await self.client.disconnect()
         self.logger.debug("Disconnected from player API")
+
+    def _on_playback_error(self, event: SonosEvent) -> None:
+        """Log a playback failure the speaker reported for the item it tried to play."""
+        if self.synced_to:
+            # the coordinator plays for the whole group and reports for it
+            return
+        error = cast("PlaybackError", event.data)
+        stream_server = urlparse(self.mass.streams.base_url).netloc
+        if error.get("httpStatus") == 404 and error.get("serviceName") == stream_server:
+            # our own stream server refused the item: a track the queue moved past or no
+            # longer holds. The speaker tries each track it cached before reading the
+            # queue again, so these come in bursts
+            self.logger.debug(
+                "Speaker %s was refused %s by the stream server",
+                self.display_name,
+                error.get("itemId"),
+            )
+            return
+        self.logger.warning(
+            "Speaker %s could not play %s and reported %s (%s)",
+            self.display_name,
+            error.get("trackName") or error.get("itemId"),
+            error["errorCode"],
+            error.get("reason", "no reason given"),
+        )
 
     async def _player_media_for_speaker(self, queue_item: QueueItem) -> PlayerMedia:
         """Return the media for a queue item, with its stream URL resolved for this player."""
