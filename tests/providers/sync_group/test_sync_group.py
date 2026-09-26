@@ -2657,8 +2657,8 @@ class TestDebouncedReform:
         assert sgp._reform_task is None
 
     @pytest.mark.asyncio
-    async def test_join_after_dissolve_registers_stale_member_and_resumes(self) -> None:
-        """A player re-joining while it still reports the dissolved group re-forms it."""
+    async def test_join_after_dissolve_registers_stale_member(self) -> None:
+        """A player re-joining while it still reports the dissolved group is registered."""
         mass = _make_mock_mass()
         sgp = self._setup_group(mass, members=["leader", "m2"])
         mass.players.cmd_resume = AsyncMock()
@@ -2668,11 +2668,12 @@ class TestDebouncedReform:
             patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
             patch.object(sgp, "update_state"),
         ):
-            # the leader is powered off and the remaining member leaves right after
+            # the leader is powered off and the remaining member leaves right after,
+            # which drops the pending re-form: an empty group has nothing to resume
             await sgp.set_members(player_ids_to_remove=["leader"])
             await sgp.set_members(player_ids_to_remove=["m2"])
             assert sgp._attr_group_members == []
-            assert sgp._reform_task is not None
+            assert sgp._reform_task is None
 
             # m2 still reports the old sync state (Sonos propagates group state async)
             m2.state.synced_to = "leader"
@@ -2684,14 +2685,12 @@ class TestDebouncedReform:
             # the controller only forwards a join when the group offers the player
             assert "m2" in sgp.can_group_with
             await sgp.set_members(player_ids_to_add=["m2"])
-
             assert sgp._attr_group_members == ["m2"]
-            assert sgp._reform_task is not None
 
-            # the sync state settles before the debounced re-form fires
+            # the sync state settles, then the next play forms the group with it
             m2.state.synced_to = None
             m2.synced_to = None
-            await sgp._reform_task
+            await sgp.play()
 
         mass.players.cmd_resume.assert_awaited_once()
         assert sgp.sync_leader is m2
@@ -2763,15 +2762,13 @@ class TestDebouncedReform:
             await sgp.set_members(player_ids_to_add=["m2"])
             assert "m3" in sgp.can_group_with
             await sgp.set_members(player_ids_to_add=["m3"])
-
             assert sgp._attr_group_members == ["m2", "m3"]
-            assert sgp._reform_task is not None
 
-            # the sync state settles before the debounced re-form fires
+            # the sync state settles, then the next play forms the group with both
             for member in (m2, m3):
                 member.state.synced_to = None
                 member.synced_to = None
-            await sgp._reform_task
+            await sgp.play()
 
         mass.players.cmd_resume.assert_awaited_once()
         assert sgp.sync_leader is m2
