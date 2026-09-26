@@ -370,6 +370,75 @@ def test_migrate_provider_setup_data_moves_and_encrypts(monkeypatch: pytest.Monk
     assert cfg["setup_data"]["port"] == 8096
 
 
+def test_migrate_yandex_disk_setup_data_and_legacy_root() -> None:
+    """Yandex Disk setup fields move encrypted and root_path becomes folder_id."""
+    data: dict[str, Any] = {
+        "providers": {
+            "filesystem_yandex_disk--1": {
+                "domain": "filesystem_yandex_disk",
+                "values": {
+                    "content_type": "music",
+                    "client_id": "client",
+                    "client_secret": "secret",
+                    "refresh_token": "refresh",
+                    "root_path": "disk:/Legacy",
+                    "library_sync_tracks": True,
+                },
+            }
+        }
+    }
+
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    config = data["providers"]["filesystem_yandex_disk--1"]
+    assert config["values"] == {"library_sync_tracks": True}
+    assert config["setup_data"] == {
+        "content_type": ENCRYPT_SUFFIX + "music",
+        "client_id": ENCRYPT_SUFFIX + "client",
+        "client_secret": ENCRYPT_SUFFIX + "secret",
+        "refresh_token": ENCRYPT_SUFFIX + "refresh",
+        "folder_id": ENCRYPT_SUFFIX + "disk:/Legacy",
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is False
+
+
+def test_migrate_yandex_disk_root_preserves_setup_destination() -> None:
+    """An existing setup_data folder_id wins while the stale root_path is removed."""
+    data: dict[str, Any] = {
+        "providers": {
+            "filesystem_yandex_disk--1": {
+                "domain": "filesystem_yandex_disk",
+                "values": {"root_path": "disk:/Legacy"},
+                "setup_data": {"folder_id": ENCRYPT_SUFFIX + "disk:/Canonical"},
+            }
+        }
+    }
+
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    config = data["providers"]["filesystem_yandex_disk--1"]
+    assert config["values"] == {}
+    assert config["setup_data"]["folder_id"] == ENCRYPT_SUFFIX + "disk:/Canonical"
+
+
+def test_migrate_yandex_disk_root_preserves_value_destination() -> None:
+    """A canonical folder_id in values wins over the legacy root_path source."""
+    data: dict[str, Any] = {
+        "providers": {
+            "filesystem_yandex_disk--1": {
+                "domain": "filesystem_yandex_disk",
+                "values": {
+                    "folder_id": "disk:/Canonical",
+                    "root_path": "disk:/Legacy",
+                },
+            }
+        }
+    }
+
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    config = data["providers"]["filesystem_yandex_disk--1"]
+    assert config["values"] == {}
+    assert config["setup_data"]["folder_id"] == ENCRYPT_SUFFIX + "disk:/Canonical"
+
+
 def test_migrate_provider_setup_data_moves_spotify_credentials() -> None:
     """
     A spotify instance configured before setup flows gets its credentials into setup_data.

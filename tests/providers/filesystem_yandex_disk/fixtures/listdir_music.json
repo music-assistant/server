@@ -1,0 +1,5 @@
+[
+  ["disk:/Music/Album", "Album", true, "", null, null],
+  ["disk:/Music/track1.flac", "track1.flac", false, "md5aaa", 10485760, "2026-08-28T07:00:00Z"],
+  ["disk:/Music/track2.mp3", "track2.mp3", false, "md5bbb", 5242880, "2026-08-28T07:00:00Z"]
+]

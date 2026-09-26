@@ -107,6 +107,7 @@ wiim==0.1.8
 xmltodict==1.0.4
 ya-dialogs-api==2.4.0
 ya-passport-auth[ma]==2.0.1
+yadisk==3.4.1
 yandex-music==3.0.0
 yappi @ git+https://github.com/sumerc/yappi@d6593ea0bce0a13c65bd44511c3cee858b5985e8
 yoto-api==4.4.1
