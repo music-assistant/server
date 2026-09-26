@@ -153,7 +153,7 @@ def coerce_float(value: Any, default: float) -> float:
     """Convert arbitrary value to float with a safe fallback."""
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -161,7 +161,7 @@ def coerce_int(value: Any, default: int) -> int:
     """Convert arbitrary value to int with a safe fallback."""
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -173,9 +173,7 @@ def has_player_access(*player_ids: str | None) -> bool:
     """
     user = get_current_user()
     return all(
-        user_has_player_access(user, player_id)
-        for player_id in player_ids
-        if player_id is not None
+        user_has_player_access(user, player_id) for player_id in player_ids if player_id is not None
     )
 
 
