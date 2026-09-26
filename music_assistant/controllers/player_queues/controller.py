@@ -898,7 +898,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue = self._queue_data[queue_id].queue
         queue_items = self._queue_data[queue_id].items
         resume_item = queue.current_item
-        if queue.state == PlaybackState.PLAYING:
+        queue_player = self.mass.players.get_player(queue_id)
+        # Queue can still look PLAYING during announce.
+        # Don't trust the wall clock — use the parked resume_pos instead.
+        announcement_in_progress = bool(
+            queue_player and queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
+        )
+        if queue.state == PlaybackState.PLAYING and not announcement_in_progress:
             # resume requested while already playing,
             # use current position as resume position
             resume_pos = queue.corrected_elapsed_time
@@ -920,7 +926,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             resume_pos = 0
 
         if resume_item is not None:
-            queue_player = self.mass.players.get_player(queue_id)
             if queue_player is None:
                 raise PlayerUnavailableError(f"Player {queue_id} is not available")
             if (

@@ -61,6 +61,8 @@ from .helpers import AnnounceData, handle_player_command
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from music_assistant_models.player_queue import PlayerQueue
+
     from music_assistant import MusicAssistant
     from music_assistant.controllers.streams.announcements import AnnouncementRender
 
@@ -98,6 +100,10 @@ class AnnouncementsMixin:
         def get_player(  # noqa: D102
             self, player_id: str, raise_unavailable: bool = False
         ) -> Player | None: ...
+
+        def get_active_queue(  # noqa: D102
+            self, player: Player
+        ) -> PlayerQueue | None: ...
 
         def iter_group_members(  # noqa: D102
             self,
@@ -296,6 +302,8 @@ class AnnouncementsMixin:
             # use fallback/default implementation
             await self._play_announcement(player, announcement, volume_level)
         finally:
+            # Cleared after restore finishes.
+            # Resume during announce still needs the parked position while this is set.
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
             await self.mass.streams.announcement_renderer.unregister(player_id, render)
 
@@ -760,7 +768,12 @@ class AnnouncementsMixin:
                 player.state.name,
                 prev_media_name,
             )
-            await self._handle_cmd_stop(player.player_id)
+            # Stop the queue (not just the device) so resume_pos is saved.
+            # _handle_stop skips the user permission check on this internal path.
+            if active_queue := self.get_active_queue(player):
+                await self.mass.player_queues._handle_stop(active_queue.queue_id)
+            else:
+                await self._handle_cmd_stop(player.player_id)
             # wait for the player to stop
             await self._wait_for_playback_state(player, PlaybackState.IDLE, 10, 0.4)
         # unmute and adjust volume if needed
