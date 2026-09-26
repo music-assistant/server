@@ -1021,8 +1021,8 @@ def test_ensure_provider_filter_allows_explicit_non_music_provider() -> None:
     assert result == ["smart_playlist_1"]
 
 
-def test_ensure_provider_filter_does_not_auto_allow_other_non_music_providers() -> None:
-    """Test that only plugin providers are auto-allowed when user filter is active."""
+def test_ensure_provider_filter_auto_allows_non_music_providers() -> None:
+    """Non-music providers (metadata, plugin) are household-wide and always kept."""
     ctrl = Mock(spec=MediaControllerBase)
     ctrl.mass = Mock()
     ctrl.mass.providers = [
@@ -1042,7 +1042,7 @@ def test_ensure_provider_filter_does_not_auto_allow_other_non_music_providers() 
     assert result is not None
     assert "spotify_1" in result
     assert "smart_playlist_1" in result
-    assert "meta_1" not in result
+    assert "meta_1" in result
 
 
 def _mock_provider_lookup(providers: dict[str, Mock]) -> Mock:

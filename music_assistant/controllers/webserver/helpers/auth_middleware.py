@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from aiohttp import web
 
     from music_assistant import MusicAssistant
+    from music_assistant.models.player import Player
 
 # Context key for storing authenticated user in request
 USER_CONTEXT_KEY = "authenticated_user"
@@ -360,6 +361,51 @@ def get_current_user() -> User | None:
     if impersonated_user := get_impersonated_user():
         return impersonated_user
     return current_user.get()
+
+
+def is_own_client_player(player: Player | None) -> bool:
+    """
+    Return whether the given player is the private client player the caller connected on.
+
+    A private client player (browser session, desktop or mobile app) is bound to the
+    connection that announced it, so its owner may always use it regardless of their
+    player filter. Only private players qualify, so a shared speaker cannot be claimed
+    by announcing its id.
+
+    :param player: The player to check, or None.
+    """
+    return player is not None and player.private and player.player_id == get_sendspin_player_id()
+
+
+def player_access_filter(user: User | None) -> list[str] | None:
+    """
+    Return the player ids the user is limited to, or None when unrestricted.
+
+    An empty player_filter, or the full-access Scope.ALL, leaves the user unrestricted.
+    The private client player exemption is per player and not reflected here; use
+    has_player_access for an access decision that honors it.
+
+    :param user: The user to check, or None for an unauthenticated caller.
+    """
+    if user is None or has_scope(user, Scope.ALL):
+        return None
+    return user.player_filter or None
+
+
+def has_player_access(user: User | None, player_id: str, player: Player | None = None) -> bool:
+    """
+    Return whether the given user may use the player (or queue) with the given id.
+
+    A user limited to a player_filter may only use the players in it; an empty filter,
+    or the full-access Scope.ALL, leaves the user unrestricted. A user may always use the
+    private client player they connected on, even when it is not in their filter.
+
+    :param user: The user to check, or None for an unauthenticated caller.
+    :param player_id: The id of the player (or queue) to check access to.
+    :param player: The resolved player, when available, to honor the private client exemption.
+    """
+    allowed = player_access_filter(user)
+    return allowed is None or player_id in allowed or is_own_client_player(player)
 
 
 def set_current_user(user: User | None) -> None:

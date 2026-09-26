@@ -101,7 +101,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
-    has_scope,
+    has_player_access,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.colors import get_palette_for_url
@@ -120,7 +120,7 @@ from music_assistant.models.plugin import PluginProvider, SourceControlValue
 from .announcements import AnnouncementsMixin
 from .audio_sources import AudioSourceMixin, AudioSourceSession
 from .constants import PlayerLockPurpose
-from .helpers import handle_player_command, is_own_client_player, wait_for_power_on
+from .helpers import handle_player_command, wait_for_power_on
 from .protocol_linking import ProtocolLinkingMixin
 
 if TYPE_CHECKING:
@@ -393,11 +393,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :return: List of Player objects.
         """
         current_user = get_current_user()
-        user_filter = (
-            current_user.player_filter
-            if current_user and not has_scope(current_user, Scope.ALL)
-            else None
-        )
         return [
             player
             for player in self.iter_players(
@@ -406,7 +401,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 provider_filter=provider_filter,
                 return_protocol_players=return_protocol_players,
             )
-            if not user_filter or player.player_id in user_filter or is_own_client_player(player)
+            if has_player_access(current_user, player.player_id, player)
         ]
 
     @api_command("players/all", required_scope=Scope.PLAYERS_READ)
@@ -477,16 +472,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :return: Player object or None.
         """
         current_user = get_current_user()
-        user_filter = (
-            current_user.player_filter
-            if current_user and not has_scope(current_user, Scope.ALL)
-            else None
-        )
-        if (
-            current_user
-            and user_filter
-            and player_id not in user_filter
-            and not is_own_client_player(self.get_player(player_id))
+        if current_user and not has_player_access(
+            current_user, player_id, self.get_player(player_id)
         ):
             msg = f"{current_user.username} does not have access to player {player_id}"
             raise InsufficientPermissions(msg)
@@ -538,18 +525,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :return: PlayerState object or None.
         """
         current_user = get_current_user()
-        user_filter = (
-            current_user.player_filter
-            if current_user and not has_scope(current_user, Scope.ALL)
-            else None
-        )
         if player := self.get_player_by_name(name):
-            if (
-                current_user
-                and user_filter
-                and player.player_id not in user_filter
-                and not is_own_client_player(player)
-            ):
+            if current_user and not has_player_access(current_user, player.player_id, player):
                 msg = f"{current_user.username} does not have access to player {player.player_id}"
                 raise InsufficientPermissions(msg)
             return player.state
@@ -2981,9 +2958,14 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             or player.state.type not in PLAYBACK_TARGET_TYPES
         ):
             return
-        if player.state.synced_to or player.state.active_group or player.state.group_members:
-            # a grouped player is detached from its group instead, which ends the
-            # group's queue through the group's own power off
+        if (
+            player.state.synced_to
+            or player.state.active_group
+            or (player.state.group_members and player.state.type in UNGROUP_ON_POWER_OFF_TYPES)
+        ):
+            # a player that is a member of a group, or a sync leader handing its
+            # leadership on, is detached instead and the group's own power off ends the
+            # queue. a group player leads its own members, so its queue is ended here.
             return
         # a device that powers itself off may report its stop in this very update, so
         # judge on the playback state as it was before it - which is also the snapshot
@@ -3950,7 +3932,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # ungroup player at power off
         player_was_sync_child = bool(player.state.synced_to or player.state.active_group)
         if (
-            (player_was_sync_child or player.group_members)
+            (player_was_sync_child or player_state.group_members)
             and player.type in UNGROUP_ON_POWER_OFF_TYPES
             and not powered
         ):
