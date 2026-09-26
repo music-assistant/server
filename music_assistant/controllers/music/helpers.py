@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import fields
 from typing import TYPE_CHECKING, Any, Final
 
+from music_assistant_models.enums import ExternalID
+from music_assistant_models.errors import InvalidProviderID, InvalidProviderURI
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Artist,
@@ -16,10 +18,15 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.helpers.uri import canonical_provider_url, discogs_id_from_url, parse_uri
+
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
+    from collections.abc import Set as AbstractSet
 
     from music_assistant_models.enums import MediaType
+
+    from music_assistant.mass import MusicAssistant
 
 # the trigram tokenizer of the FTS5 search index cannot match
 # search terms shorter than 3 characters
@@ -162,3 +169,68 @@ def provider_mappings_for_update(
         *update,
         *(mapping for mapping in stored if mapping.provider_instance not in updated_instances),
     }
+
+
+async def provider_mappings_from_urls(
+    mass: MusicAssistant,
+    urls: Iterable[str],
+    media_type: MediaType,
+    exclude_domains: AbstractSet[str],
+) -> list[ProviderMapping]:
+    """
+    Return provider mappings for the streaming service links of a media item.
+
+    A link only becomes a mapping when it names an item on a loaded music provider
+    unambiguously: a provider linked to several different items is left out, as is one
+    that is not loaded.
+
+    :param mass: MusicAssistant instance.
+    :param urls: Public URLs of the item on streaming services (e.g. MusicBrainz URL relations).
+    :param media_type: Media type the URLs must point to.
+    :param exclude_domains: Provider domains to leave out, e.g. those the item is already
+        mapped to.
+    """
+    # the ids a provider is linked with, each with the URL it came from
+    ids_by_domain: dict[str, dict[str, str]] = {}
+    for url in urls:
+        try:
+            url_media_type, domain, item_id = await parse_uri(url)
+        except InvalidProviderURI, InvalidProviderID:
+            continue
+        if domain == "builtin" or url_media_type != media_type or domain in exclude_domains:
+            continue
+        ids_by_domain.setdefault(domain, {}).setdefault(item_id, url)
+    mappings: list[ProviderMapping] = []
+    for domain, item_ids in sorted(ids_by_domain.items()):
+        if len(item_ids) != 1:
+            continue
+        instances = mass.music.get_provider_instances(domain, return_unavailable=True)
+        if not instances:
+            continue
+        ((item_id, url),) = item_ids.items()
+        mappings.append(
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=domain,
+                provider_instance=min(provider.instance_id for provider in instances),
+                available=True,
+                in_library=False,
+                url=canonical_provider_url(domain, media_type, item_id) or url,
+            )
+        )
+    return mappings
+
+
+def discogs_external_id(
+    urls: Iterable[str], media_type: MediaType
+) -> tuple[ExternalID, str] | None:
+    """
+    Return the Discogs external id among the links of a media item, if any.
+
+    :param urls: Public URLs of the item (e.g. MusicBrainz URL relations).
+    :param media_type: Media type of the item: ARTIST or ALBUM.
+    """
+    for url in urls:
+        if discogs_id := discogs_id_from_url(url, media_type):
+            return (ExternalID.DISCOGS, discogs_id)
+    return None

@@ -6,10 +6,26 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.enums import AlbumType, ExternalID, MediaType
 from music_assistant_models.errors import InvalidDataError, RateLimited
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    ItemMapping,
+    ProviderMapping,
+    Track,
+    UniqueList,
+)
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID
-from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
+from music_assistant.providers.musicbrainz.models import (
+    MusicBrainzArtist,
+    MusicBrainzBarcodeRelease,
+    MusicBrainzRecording,
+    MusicBrainzRelation,
+    MusicBrainzReleaseGroup,
+)
+from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider, relation_urls
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -63,13 +79,13 @@ async def test_release_year_parses_all_date_precisions() -> None:
         assert await provider.get_release_year_by_isrc("GBAYE8600477") == 1986
 
 
-async def test_release_year_uses_bare_isrc_lookup() -> None:
-    """Look the recording up on the isrc resource without inc parameters."""
+async def test_release_year_looks_up_the_normalized_isrc() -> None:
+    """Look the recording up on the isrc resource, with its credits and links."""
     provider, get_data = _provider(_recordings("1986"))
 
     await provider.get_release_year_by_isrc("GB-AYE-86-00477")
 
-    get_data.assert_awaited_once_with("isrc/GBAYE8600477")
+    get_data.assert_awaited_once_with("isrc/GBAYE8600477?inc=isrcs+artist-credits+url-rels")
 
 
 async def test_release_year_returns_earliest_of_multiple_recordings() -> None:
@@ -738,3 +754,944 @@ async def test_releases_by_barcode_abstains_on_truncated_result() -> None:
 
     with pytest.raises(InvalidDataError):
         await provider.get_releases_by_barcode("888072439412")
+
+
+# ---------------------------------------------------------------------------
+# identity lookups: models, reverse URL lookup, browse and resolvers
+# ---------------------------------------------------------------------------
+
+RADIOHEAD_MBID = "a74b1b7f-71a5-4011-9441-d0b5e4122711"
+SPOTIFY_ARTIST_URL = "https://open.spotify.com/artist/4Z8W4fKeB5YxbusRsdQVPb"
+SPOTIFY_ALBUM_URL = "https://open.spotify.com/album/7eyQXxuf2nGj9d2367Gi5f"
+SPOTIFY_TRACK_URL = "https://open.spotify.com/track/2Ex8hBvUhZjXjJpZjJZ0aA"
+QOBUZ_ALBUM_URL = "https://www.qobuz.com/us-en/album/in-rainbows-radiohead/0634904032432"
+BARCODE = "634904032463"
+ISRC = "GBSTK0700001"
+
+
+def _routed_provider(routes: dict[str, Any]) -> tuple[MusicbrainzProvider, AsyncMock]:
+    """
+    Return a MusicbrainzProvider whose API client answers each request from a routing table.
+
+    A lookup is keyed by its endpoint path (without inc parameters), a url lookup by the
+    looked-up resource, a search by ``<endpoint>?query`` and a release group browse by
+    ``release?release-group``. Anything not routed is answered like a 404.
+    """
+    with patch.object(MusicbrainzProvider, "__init__", lambda *_a, **_kw: None):
+        provider = MusicbrainzProvider.__new__(MusicbrainzProvider)
+
+    async def _answer(endpoint: str, **kwargs: Any) -> Any:
+        if endpoint == "url":
+            return routes.get(kwargs["resource"])
+        if "query" in kwargs:
+            return routes.get(f"{endpoint}?query")
+        if "release-group" in kwargs:
+            return routes.get("release?release-group")
+        return routes.get(endpoint.split("?", maxsplit=1)[0])
+
+    get_data = AsyncMock(side_effect=_answer)
+    api_client = MagicMock()
+    api_client.get_data = get_data
+    provider._api_client = api_client
+    return provider, get_data
+
+
+def _requested(get_data: AsyncMock) -> list[str]:
+    """Return the endpoint paths (or url resources) requested, in order."""
+    requested: list[str] = []
+    for call in get_data.await_args_list:
+        endpoint = call.args[0]
+        if endpoint == "url":
+            requested.append(call.kwargs["resource"])
+        elif "query" in call.kwargs:
+            requested.append(f"{endpoint}?query")
+        elif "release-group" in call.kwargs:
+            requested.append("release?release-group")
+        else:
+            requested.append(endpoint.split("?")[0])
+    return requested
+
+
+def _url_relation(
+    resource: str, ended: bool = False, type_: str = "free streaming"
+) -> dict[str, Any]:
+    """Return one URL relation as MusicBrainz lists it."""
+    return {"type": type_, "ended": ended, "url": {"id": f"url-{resource}", "resource": resource}}
+
+
+def _radiohead_credit() -> dict[str, Any]:
+    """Return the Radiohead artist credit, with an alias."""
+    return {
+        "name": "Radiohead",
+        "artist": {
+            "id": RADIOHEAD_MBID,
+            "name": "Radiohead",
+            "sort-name": "Radiohead",
+            "aliases": [{"name": "レディオヘッド", "sort-name": "Radiohead"}],
+        },
+    }
+
+
+def _edition(
+    release_id: str,
+    *,
+    title: str = "In Rainbows",
+    status: str | None = "Official",
+    media_format: str | None = "Digital Media",
+    track_counts: tuple[int, ...] = (10,),
+    country: str | None = "XW",
+    date: str | None = "2016-05-06",
+    spotify_id: str | None = None,
+    credit: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return one release as a barcode search or release group browse lists it."""
+    edition: dict[str, Any] = {
+        "id": release_id,
+        "title": title,
+        "status": status,
+        "date": date,
+        "country": country,
+        "barcode": BARCODE,
+        "release-group": {"id": "rg-in-rainbows", "title": "In Rainbows", "primary-type": "Album"},
+        "artist-credit": [credit or _radiohead_credit()],
+        "media": [
+            {"format": media_format, "track-count": count, "position": position}
+            for position, count in enumerate(track_counts, start=1)
+        ],
+        "relations": [],
+    }
+    if spotify_id:
+        edition["relations"].append(_url_relation(f"https://open.spotify.com/album/{spotify_id}"))
+    return edition
+
+
+def _release_lookup(release_id: str, **overrides: Any) -> dict[str, Any]:
+    """Return a full release lookup response, as the mirror answers it."""
+    release: dict[str, Any] = {
+        "id": release_id,
+        "title": "In Rainbows",
+        "status": "Official",
+        "status-id": "4e304316-386d-3409-af2e-78857eec5cfe",
+        "date": "2016-05-06",
+        "country": "XW",
+        "barcode": BARCODE,
+        "asin": None,
+        "disambiguation": "",
+        "release-group": {
+            "id": "rg-in-rainbows",
+            "title": "In Rainbows",
+            "primary-type": "Album",
+            "secondary-types": [],
+            "first-release-date": "2007-10-10",
+            "genres": [{"id": "g1", "name": "alternative rock", "count": 5, "disambiguation": ""}],
+        },
+        "artist-credit": [_radiohead_credit()],
+        "label-info": [
+            {"catalog-number": "XLDA324", "label": {"id": "label-xl", "name": "XL Recordings"}}
+        ],
+        "relations": [
+            _url_relation(SPOTIFY_ALBUM_URL),
+            _url_relation(QOBUZ_ALBUM_URL, ended=True, type_="purchase for download"),
+        ],
+        "media": [
+            {
+                "position": 1,
+                "format": None,
+                "track-count": 10,
+                "track-offset": 0,
+                "title": "",
+                "tracks": [
+                    {
+                        "id": "track-15-step",
+                        "number": "1",
+                        "position": 1,
+                        "length": 237000,
+                        "title": "15 Step",
+                        "recording": {
+                            "id": "rec-15-step",
+                            "title": "15 Step",
+                            "length": 238000,
+                            "isrcs": [ISRC],
+                            "disambiguation": "",
+                            "video": False,
+                        },
+                    }
+                ],
+            }
+        ],
+        "genres": [],
+    }
+    release.update(overrides)
+    return release
+
+
+def _recording_lookup(
+    recording_id: str,
+    *,
+    title: str = "15 Step",
+    length: int | None = 238000,
+    credit: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return one recording as an isrc lookup or recording lookup lists it."""
+    return {
+        "id": recording_id,
+        "title": title,
+        "length": length,
+        "disambiguation": "",
+        "video": False,
+        "isrcs": [ISRC],
+        "artist-credit": [credit or _radiohead_credit()],
+        "relations": [_url_relation(SPOTIFY_TRACK_URL)],
+    }
+
+
+def _artist_lookup(artist_id: str = RADIOHEAD_MBID, name: str = "Radiohead") -> dict[str, Any]:
+    """Return an artist lookup response."""
+    return {
+        "id": artist_id,
+        "name": name,
+        "sort-name": name,
+        "type": "Group",
+        "genres": [{"id": "g1", "name": "alternative rock", "count": 5, "disambiguation": ""}],
+        "relations": [_url_relation(SPOTIFY_ARTIST_URL)],
+    }
+
+
+def _url_lookup(entity: str, *ids: str) -> dict[str, Any]:
+    """Return a url lookup response linking the url to the given entities."""
+    return {
+        "id": "url-1",
+        "resource": "resource",
+        "relations": [
+            {"type": "free streaming", "ended": False, entity: {"id": entity_id, "name": "x"}}
+            for entity_id in ids
+        ],
+    }
+
+
+def _mapping(domain: str, item_id: str, url: str | None = None) -> ProviderMapping:
+    """Return a provider mapping of the given domain."""
+    return ProviderMapping(
+        item_id=item_id, provider_domain=domain, provider_instance=f"{domain}_1", url=url
+    )
+
+
+def _artist_item(
+    name: str = "Radiohead",
+    *,
+    mappings: set[ProviderMapping] | None = None,
+    external_ids: set[tuple[ExternalID, str]] | None = None,
+) -> Artist:
+    """Return a library artist."""
+    return Artist(
+        item_id="1",
+        provider="library",
+        name=name,
+        provider_mappings=mappings or set(),
+        external_ids=external_ids or set(),
+    )
+
+
+def _album_item(
+    name: str = "In Rainbows",
+    *,
+    artist: str | None = "Radiohead",
+    mappings: set[ProviderMapping] | None = None,
+    external_ids: set[tuple[ExternalID, str]] | None = None,
+) -> Album:
+    """Return a library album."""
+    artists: UniqueList[Artist | ItemMapping] = UniqueList()
+    if artist:
+        artists.append(
+            ItemMapping(media_type=MediaType.ARTIST, item_id="a", provider="library", name=artist)
+        )
+    return Album(
+        item_id="1",
+        provider="library",
+        name=name,
+        artists=artists,
+        provider_mappings=mappings or set(),
+        external_ids=external_ids or set(),
+    )
+
+
+def _track_item(
+    name: str = "15 Step",
+    *,
+    artist: str | None = "Radiohead",
+    album: str | None = "In Rainbows",
+    duration: int = 237,
+    mappings: set[ProviderMapping] | None = None,
+    external_ids: set[tuple[ExternalID, str]] | None = None,
+) -> Track:
+    """Return a library track."""
+    artists: UniqueList[Artist | ItemMapping] = UniqueList()
+    if artist:
+        artists.append(
+            ItemMapping(media_type=MediaType.ARTIST, item_id="a", provider="library", name=artist)
+        )
+    return Track(
+        item_id="1",
+        provider="library",
+        name=name,
+        duration=duration,
+        artists=artists,
+        album=ItemMapping(media_type=MediaType.ALBUM, item_id="b", provider="library", name=album)
+        if album
+        else None,
+        provider_mappings=mappings or set(),
+        external_ids=external_ids or set(),
+    )
+
+
+async def test_release_details_parses_a_full_release_lookup() -> None:
+    """Parse tracklist, recordings, labels, links and identity off a release lookup."""
+    provider, get_data = _routed_provider({"release/rel-1": _release_lookup("rel-1")})
+
+    release = await provider.get_release_details("rel-1")
+
+    get_data.assert_awaited_once_with(
+        "release/rel-1?inc=artist-credits+aliases+labels+release-groups"
+        "+recordings+isrcs+url-rels+genres"
+    )
+    assert release.count is None
+    assert release.barcode == BARCODE
+    assert release.asin is None
+    assert release.release_group is not None
+    assert release.release_group.first_release_date == "2007-10-10"
+    assert [genre.name for genre in release.release_group.genres or []] == ["alternative rock"]
+    assert release.artist_credit[0].artist.aliases is not None
+    assert release.label_info is not None
+    assert release.label_info[0].label is not None
+    assert (release.label_info[0].label.name, release.label_info[0].catalog_number) == (
+        "XL Recordings",
+        "XLDA324",
+    )
+    assert [(r.url.resource if r.url else None, r.ended) for r in release.relations or []] == [
+        (SPOTIFY_ALBUM_URL, False),
+        (QOBUZ_ALBUM_URL, True),
+    ]
+    medium = release.media[0]
+    assert medium.format is None
+    assert medium.track_count == 10
+    track = medium.tracks[0]
+    assert (track.position, track.length, track.title) == (1, 237000, "15 Step")
+    assert track.recording is not None
+    assert (track.recording.id, track.recording.isrcs) == ("rec-15-step", [ISRC])
+
+
+def test_models_parse_genres_and_ignore_their_extra_keys() -> None:
+    """MusicBrainz genres carry more keys than a tag; only name and count are kept."""
+    genres = [{"id": "g1", "name": "rock", "count": 3, "disambiguation": ""}]
+    artist = MusicBrainzArtist.from_raw({**_artist_lookup(), "genres": genres})
+    recording = MusicBrainzRecording.from_raw({**_recording_lookup("rec-1"), "genres": genres})
+    release_group = MusicBrainzReleaseGroup.from_raw(
+        {"id": "rg", "title": "In Rainbows", "genres": genres}
+    )
+
+    for item in (artist, recording, release_group):
+        assert item.genres is not None
+        assert [(genre.name, genre.count) for genre in item.genres] == [("rock", 3)]
+    assert recording.relations is not None
+    assert recording.relations[0].url is not None
+    assert recording.relations[0].url.resource == SPOTIFY_TRACK_URL
+
+
+def test_barcode_release_parses_the_edition_data_of_a_listing() -> None:
+    """A listed release carries the status, country, media and links an edition is told by."""
+    release = MusicBrainzBarcodeRelease.from_raw(
+        _edition("rel-1", track_counts=(10, 8), spotify_id="7eyQXxuf2nGj9d2367Gi5f")
+    )
+
+    assert (release.status, release.country, release.date) == ("Official", "XW", "2016-05-06")
+    assert [(medium.format, medium.track_count) for medium in release.media] == [
+        ("Digital Media", 10),
+        ("Digital Media", 8),
+    ]
+    assert relation_urls(release.relations) == [SPOTIFY_ALBUM_URL]
+    assert release.artist_credit is not None
+    assert release.artist_credit[0].artist.id == RADIOHEAD_MBID
+
+
+async def test_artist_and_recording_details_request_links_and_genres() -> None:
+    """Request the aliases, genres and URL relations the identity lookups build on."""
+    provider, get_data = _routed_provider(
+        {
+            f"artist/{RADIOHEAD_MBID}": _artist_lookup(),
+            "recording/rec-1": _recording_lookup("rec-1"),
+        }
+    )
+
+    artist = await provider.get_artist_details(RADIOHEAD_MBID)
+    recording = await provider.get_recording_details("rec-1")
+
+    assert [call.args[0] for call in get_data.await_args_list] == [
+        f"artist/{RADIOHEAD_MBID}?inc=aliases+tags+genres+url-rels",
+        "recording/rec-1?inc=artists+releases+isrcs+url-rels+genres",
+    ]
+    assert relation_urls(artist.relations) == [SPOTIFY_ARTIST_URL]
+    assert relation_urls(recording.relations) == [SPOTIFY_TRACK_URL]
+
+
+async def test_mbid_by_url_returns_the_single_linked_entity() -> None:
+    """Resolve a streaming service URL to the one entity it is linked to, per entity kind."""
+    provider, get_data = _routed_provider(
+        {
+            SPOTIFY_ARTIST_URL: _url_lookup("artist", RADIOHEAD_MBID),
+            SPOTIFY_ALBUM_URL: _url_lookup("release", "rel-1"),
+            SPOTIFY_TRACK_URL: _url_lookup("recording", "rec-1"),
+        }
+    )
+
+    assert await provider.get_mbid_by_url(SPOTIFY_ARTIST_URL, MediaType.ARTIST) == RADIOHEAD_MBID
+    assert await provider.get_mbid_by_url(SPOTIFY_ALBUM_URL, MediaType.ALBUM) == "rel-1"
+    assert await provider.get_mbid_by_url(SPOTIFY_TRACK_URL, MediaType.TRACK) == "rec-1"
+    assert [call.kwargs["inc"] for call in get_data.await_args_list] == [
+        "artist-rels",
+        "release-rels",
+        "recording-rels",
+    ]
+    assert get_data.await_args_list[0].args == ("url",)
+    assert get_data.await_args_list[0].kwargs["resource"] == SPOTIFY_ARTIST_URL
+
+
+async def test_mbid_by_url_is_none_for_an_unknown_or_ambiguous_url() -> None:
+    """An unknown URL, or one linked to several entities, identifies nothing."""
+    provider, _ = _routed_provider(
+        {
+            SPOTIFY_ARTIST_URL: _url_lookup("artist", RADIOHEAD_MBID, "artist-other"),
+            SPOTIFY_ALBUM_URL: _url_lookup("release", "rel-1", "rel-1"),
+        }
+    )
+
+    assert (
+        await provider.get_mbid_by_url("https://open.spotify.com/artist/unknown", MediaType.ARTIST)
+        is None
+    )
+    assert await provider.get_mbid_by_url(SPOTIFY_ARTIST_URL, MediaType.ARTIST) is None
+    # the same entity linked twice is no ambiguity
+    assert await provider.get_mbid_by_url(SPOTIFY_ALBUM_URL, MediaType.ALBUM) == "rel-1"
+
+
+async def test_browse_releases_by_release_group_lists_every_edition() -> None:
+    """Browse a release group's releases with their media and links in one request."""
+    listing = {
+        "release-count": 2,
+        "release-offset": 0,
+        "releases": [_edition("rel-1", spotify_id="a"), _edition("rel-2", media_format="CD")],
+    }
+    provider, get_data = _routed_provider({"release?release-group": listing})
+
+    releases = await provider.browse_releases_by_release_group("rg-in-rainbows")
+
+    get_data.assert_awaited_once_with(
+        "release",
+        **{"release-group": "rg-in-rainbows"},
+        inc="url-rels+media+release-groups",
+        limit="25",
+    )
+    assert [release.id for release in releases] == ["rel-1", "rel-2"]
+    assert relation_urls(releases[0].relations) == ["https://open.spotify.com/album/a"]
+    assert releases[1].media[0].format == "CD"
+
+
+async def test_browse_releases_by_release_group_is_empty_without_a_complete_listing() -> None:
+    """An unknown group, or one with more releases than listed, yields no releases at all."""
+    for listing in (
+        None,
+        {"release-count": 0, "releases": []},
+        {"release-count": 30, "release-offset": 0, "releases": [_edition("rel-1")]},
+        {"release-count": 1, "release-offset": 0, "releases": [{"title": "no id"}]},
+    ):
+        provider, _ = _routed_provider({"release?release-group": listing})
+        assert await provider.browse_releases_by_release_group("rg-in-rainbows") == []
+
+
+# resolve_release
+
+
+async def test_resolve_release_by_musicbrainz_id() -> None:
+    """A known release id is looked up directly, nothing else is asked."""
+    provider, get_data = _routed_provider({"release/rel-1": _release_lookup("rel-1")})
+    album = _album_item(
+        external_ids={(ExternalID.MB_ALBUM, "rel-1"), (ExternalID.BARCODE, BARCODE)},
+        mappings={_mapping("spotify", "7eyQXxuf2nGj9d2367Gi5f")},
+    )
+
+    release = await provider.resolve_release(album)
+
+    assert release is not None
+    assert release.id == "rel-1"
+    assert _requested(get_data) == ["release/rel-1"]
+
+
+async def test_resolve_release_by_streaming_service_link() -> None:
+    """A provider mapping is reverse-looked up through the URL MusicBrainz links the album with."""
+    provider, get_data = _routed_provider(
+        {
+            SPOTIFY_ALBUM_URL: _url_lookup("release", "rel-1"),
+            "release/rel-1": _release_lookup("rel-1"),
+        }
+    )
+    album = _album_item(
+        mappings={
+            _mapping("spotify", "7eyQXxuf2nGj9d2367Gi5f"),
+            _mapping("qobuz", "0634904032432"),
+        },
+        external_ids={(ExternalID.BARCODE, BARCODE)},
+    )
+
+    release = await provider.resolve_release(album)
+
+    assert release is not None
+    assert release.id == "rel-1"
+    assert _requested(get_data) == [SPOTIFY_ALBUM_URL, "release/rel-1"]
+
+
+async def test_resolve_release_by_barcode_prefers_the_official_worldwide_digital_edition() -> None:
+    """Of a barcode's releases, the official digital worldwide one is fetched first and taken."""
+    candidates = {
+        "count": 3,
+        "releases": [
+            _edition("rel-cd", media_format="CD", country="GB", date="2007-12-31"),
+            _edition("rel-promo", status="Promotion"),
+            _edition("rel-xw"),
+        ],
+    }
+    provider, get_data = _routed_provider(
+        {"release?query": candidates, "release/rel-xw": _release_lookup("rel-xw")}
+    )
+    album = _album_item(external_ids={(ExternalID.BARCODE, BARCODE)})
+
+    release = await provider.resolve_release(album)
+
+    assert release is not None
+    assert release.id == "rel-xw"
+    assert _requested(get_data) == ["release?query", "release/rel-xw"]
+
+
+async def test_resolve_release_by_barcode_rejects_another_album_and_stops_after_two() -> None:
+    """A release that is not the album by title or artist is skipped; two are fetched at most."""
+    candidates = {
+        "count": 3,
+        "releases": [
+            _edition("rel-1", title="OK Computer"),
+            _edition("rel-2", credit=_credit("Muse", "artist-muse")),
+            _edition("rel-3"),
+        ],
+    }
+    provider, get_data = _routed_provider(
+        {
+            "release?query": candidates,
+            "release/rel-1": _release_lookup("rel-1", title="OK Computer"),
+            "release/rel-2": _release_lookup(
+                "rel-2", **{"artist-credit": [_credit("Muse", "artist-muse")]}
+            ),
+            "release/rel-3": _release_lookup("rel-3"),
+        }
+    )
+    album = _album_item(external_ids={(ExternalID.BARCODE, BARCODE)})
+
+    assert await provider.resolve_release(album) is None
+    assert _requested(get_data) == ["release?query", "release/rel-1", "release/rel-2"]
+
+
+async def test_resolve_release_by_barcode_accepts_various_artists_and_artistless_albums() -> None:
+    """A compilation credited to Various Artists, or an album without artists, matches on title."""
+    various = _credit("Various Artists", VARIOUS_ARTISTS_MBID)
+    provider, _ = _routed_provider(
+        {
+            "release?query": {"count": 1, "releases": [_edition("rel-1", credit=various)]},
+            "release/rel-1": _release_lookup("rel-1", **{"artist-credit": [various]}),
+        }
+    )
+
+    for album in (
+        _album_item(artist="Some Compilation Artist", external_ids={(ExternalID.BARCODE, BARCODE)}),
+        _album_item(artist=None, external_ids={(ExternalID.BARCODE, BARCODE)}),
+    ):
+        release = await provider.resolve_release(album)
+        assert release is not None
+        assert release.id == "rel-1"
+
+
+async def test_resolve_release_by_release_group_needs_a_single_digital_edition() -> None:
+    """A release group identifies the album only when one official digital edition fits."""
+    listing: dict[str, Any] = {
+        "release-count": 3,
+        "release-offset": 0,
+        "releases": [
+            _edition("rel-cd", media_format="CD"),
+            _edition("rel-10", spotify_id="a"),
+            _edition("rel-18", track_counts=(10, 8), spotify_id="b"),
+        ],
+    }
+    album = _album_item(external_ids={(ExternalID.MB_RELEASEGROUP, "rg-in-rainbows")})
+
+    provider, get_data = _routed_provider({"release?release-group": listing})
+    assert await provider.resolve_release(album) is None
+    assert _requested(get_data) == ["release?release-group"]
+
+    provider, get_data = _routed_provider(
+        {"release?release-group": listing, "release/rel-18": _release_lookup("rel-18")}
+    )
+    release = await provider.resolve_release(album, library_track_count=18)
+    assert release is not None
+    assert release.id == "rel-18"
+    assert _requested(get_data) == ["release?release-group", "release/rel-18"]
+
+    listing["releases"].pop()
+    listing["release-count"] = 2
+    provider, _ = _routed_provider(
+        {"release?release-group": listing, "release/rel-10": _release_lookup("rel-10")}
+    )
+    release = await provider.resolve_release(album)
+    assert release is not None
+    assert release.id == "rel-10"
+
+
+async def test_resolve_release_tries_the_release_group_after_an_unknown_barcode() -> None:
+    """A barcode MusicBrainz does not know falls through to the release group."""
+    provider, get_data = _routed_provider(
+        {
+            "release?release-group": {"release-count": 1, "releases": [_edition("rel-1")]},
+            "release/rel-1": _release_lookup("rel-1"),
+        }
+    )
+    album = _album_item(
+        external_ids={(ExternalID.BARCODE, BARCODE), (ExternalID.MB_RELEASEGROUP, "rg")}
+    )
+
+    release = await provider.resolve_release(album)
+
+    assert release is not None
+    assert _requested(get_data) == ["release?query", "release?release-group", "release/rel-1"]
+
+
+async def test_resolve_release_is_none_without_any_evidence() -> None:
+    """An album without ids, barcodes or streaming links is never searched by name."""
+    provider, get_data = _routed_provider({})
+
+    assert await provider.resolve_release(_album_item()) is None
+    get_data.assert_not_awaited()
+
+
+# resolve_recording
+
+
+async def test_resolve_recording_by_musicbrainz_id_or_link() -> None:
+    """A known recording id is looked up directly, a streaming link reverse-looked up."""
+    provider, get_data = _routed_provider(
+        {
+            "recording/rec-1": _recording_lookup("rec-1"),
+            SPOTIFY_TRACK_URL: _url_lookup("recording", "rec-1"),
+        }
+    )
+
+    by_id = await provider.resolve_recording(
+        _track_item(external_ids={(ExternalID.MB_RECORDING, "rec-1"), (ExternalID.ISRC, ISRC)})
+    )
+    by_link = await provider.resolve_recording(
+        _track_item(mappings={_mapping("spotify", "2Ex8hBvUhZjXjJpZjJZ0aA")})
+    )
+
+    assert by_id is not None
+
+    assert by_id.id == "rec-1"
+    assert by_link is not None
+    assert by_link.id == "rec-1"
+    assert _requested(get_data) == ["recording/rec-1", SPOTIFY_TRACK_URL, "recording/rec-1"]
+
+
+async def test_resolve_recording_by_isrc_picks_the_matching_recording() -> None:
+    """Of an ISRC's recordings, only one close in length and title counts, the artist's first."""
+    isrc_lookup = {
+        "isrc": ISRC,
+        "recordings": [
+            _recording_lookup("rec-long", length=300000),
+            _recording_lookup("rec-live", title="15 Step (Live)"),
+            _recording_lookup("rec-cover", credit=_credit("Some Cover Band", "artist-cover")),
+            _recording_lookup("rec-radiohead"),
+        ],
+    }
+    provider, get_data = _routed_provider(
+        {f"isrc/{ISRC}": isrc_lookup, "recording/rec-radiohead": _recording_lookup("rec-radiohead")}
+    )
+
+    recording = await provider.resolve_recording(
+        _track_item(external_ids={(ExternalID.ISRC, ISRC)})
+    )
+
+    assert recording is not None
+    assert recording.id == "rec-radiohead"
+    assert _requested(get_data) == [f"isrc/{ISRC}", "recording/rec-radiohead"]
+
+
+async def test_resolve_recording_by_isrc_takes_the_first_fit_without_an_artist_match() -> None:
+    """Without a recording credited to the track's artist, the first fitting one is taken."""
+    isrc_lookup = {
+        "isrc": ISRC,
+        "recordings": [
+            _recording_lookup("rec-cover", credit=_credit("Some Cover Band", "artist-cover")),
+            _recording_lookup("rec-other", credit=_credit("Other Band", "artist-other")),
+        ],
+    }
+    provider, _ = _routed_provider(
+        {f"isrc/{ISRC}": isrc_lookup, "recording/rec-cover": _recording_lookup("rec-cover")}
+    )
+
+    recording = await provider.resolve_recording(
+        _track_item(external_ids={(ExternalID.ISRC, ISRC)})
+    )
+
+    assert recording is not None
+    assert recording.id == "rec-cover"
+
+
+async def test_resolve_recording_falls_back_to_a_name_search() -> None:
+    """A track with an album and artist but no ids is searched by name as the last resort."""
+    search_result = {
+        "count": 1,
+        "recordings": [
+            {
+                **_recording_lookup("rec-1"),
+                "releases": [
+                    {
+                        "id": "rel-1",
+                        "title": "In Rainbows",
+                        "release-group": {"id": "rg", "title": "In Rainbows"},
+                    }
+                ],
+            }
+        ],
+    }
+    provider, get_data = _routed_provider(
+        {"recording?query": search_result, "recording/rec-1": _recording_lookup("rec-1")}
+    )
+
+    recording = await provider.resolve_recording(_track_item())
+
+    assert recording is not None
+    assert recording.id == "rec-1"
+    assert _requested(get_data) == ["recording?query", "recording/rec-1"]
+    assert await provider.resolve_recording(_track_item(album=None)) is None
+
+
+# resolve_artist
+
+
+async def test_resolve_artist_by_musicbrainz_id_or_various_artists_name() -> None:
+    """A known id, or the Various Artists name, costs only the artist lookup itself."""
+    provider, get_data = _routed_provider(
+        {
+            f"artist/{RADIOHEAD_MBID}": _artist_lookup(),
+            f"artist/{VARIOUS_ARTISTS_MBID}": _artist_lookup(
+                VARIOUS_ARTISTS_MBID, "Various Artists"
+            ),
+        }
+    )
+    known = _artist_item(
+        external_ids={(ExternalID.MB_ARTIST, RADIOHEAD_MBID)},
+        mappings={_mapping("spotify", "4Z8W4fKeB5YxbusRsdQVPb")},
+    )
+
+    radiohead = await provider.resolve_artist(known, [_album_item()], [_track_item()])
+    various = await provider.resolve_artist(_artist_item("Various Artists"), [], [])
+
+    assert radiohead is not None
+
+    assert radiohead.id == RADIOHEAD_MBID
+    assert relation_urls(radiohead.relations) == [SPOTIFY_ARTIST_URL]
+    assert various is not None
+    assert various.id == VARIOUS_ARTISTS_MBID
+    assert _requested(get_data) == [f"artist/{RADIOHEAD_MBID}", f"artist/{VARIOUS_ARTISTS_MBID}"]
+
+
+async def test_resolve_artist_reverse_looks_up_at_most_three_links_in_a_fixed_order() -> None:
+    """Streaming links are tried Spotify, Deezer, Tidal first and never more than three."""
+    provider, get_data = _routed_provider({})
+    artist = _artist_item(
+        mappings={
+            _mapping("ytmusic", "UCr_iyUANcn9OX_yy9piYoLw"),
+            _mapping("apple_music", "657515", "https://music.apple.com/gb/artist/radiohead/657515"),
+            _mapping("tidal", "64518"),
+            _mapping("deezer", "399"),
+            _mapping("spotify", "4Z8W4fKeB5YxbusRsdQVPb"),
+        }
+    )
+
+    assert await provider.resolve_artist(artist, [], []) is None
+    assert _requested(get_data) == [
+        SPOTIFY_ARTIST_URL,
+        "https://www.deezer.com/artist/399",
+        "https://tidal.com/artist/64518",
+    ]
+
+
+async def test_resolve_artist_by_apple_music_link_uses_the_mapping_storefront() -> None:
+    """An Apple Music mapping is looked up on the storefront its URL names."""
+    apple_url = "https://music.apple.com/gb/artist/657515"
+    provider, get_data = _routed_provider(
+        {
+            apple_url: _url_lookup("artist", RADIOHEAD_MBID),
+            f"artist/{RADIOHEAD_MBID}": _artist_lookup(),
+        }
+    )
+    artist = _artist_item(
+        mappings={
+            _mapping("apple_music", "657515", "https://music.apple.com/gb/artist/radiohead/657515")
+        }
+    )
+
+    resolved = await provider.resolve_artist(artist, [], [])
+
+    assert resolved is not None
+
+    assert resolved.id == RADIOHEAD_MBID
+    assert _requested(get_data) == [apple_url, f"artist/{RADIOHEAD_MBID}"]
+
+
+async def test_resolve_artist_through_reference_items() -> None:
+    """A reference album's release group, or a reference track's ISRC, names the artist."""
+    provider, get_data = _routed_provider(
+        {
+            "release-group/rg": {
+                "id": "rg",
+                "title": "In Rainbows",
+                "artist-credit": [_radiohead_credit()],
+            },
+            f"artist/{RADIOHEAD_MBID}": _artist_lookup(),
+        }
+    )
+    ref_album = _album_item(external_ids={(ExternalID.MB_RELEASEGROUP, "rg")})
+
+    resolved = await provider.resolve_artist(_artist_item(), [ref_album], [])
+
+    assert resolved is not None
+
+    assert resolved.id == RADIOHEAD_MBID
+    assert _requested(get_data) == ["release-group/rg", f"artist/{RADIOHEAD_MBID}"]
+
+    provider, get_data = _routed_provider(
+        {
+            f"isrc/{ISRC}": {"isrc": ISRC, "recordings": [_recording_lookup("rec-1")]},
+            f"artist/{RADIOHEAD_MBID}": _artist_lookup(),
+        }
+    )
+    ref_track = _track_item(external_ids={(ExternalID.ISRC, ISRC)})
+
+    # the alias matches too
+    resolved = await provider.resolve_artist(_artist_item("レディオヘッド"), [], [ref_track])
+
+    assert resolved is not None
+
+    assert resolved.id == RADIOHEAD_MBID
+    assert _requested(get_data) == [f"isrc/{ISRC}", f"artist/{RADIOHEAD_MBID}"]
+
+
+async def test_resolve_artist_by_barcode_matches_the_release_credit() -> None:
+    """A reference album's barcode names the artist through the release's credit."""
+    provider, get_data = _routed_provider(
+        {
+            "release?query": {"count": 1, "releases": [_edition("rel-1")]},
+            f"artist/{RADIOHEAD_MBID}": _artist_lookup(),
+        }
+    )
+    ref_album = _album_item(external_ids={(ExternalID.BARCODE, BARCODE)})
+
+    resolved = await provider.resolve_artist(_artist_item(), [ref_album], [])
+
+    assert resolved is not None
+
+    assert resolved.id == RADIOHEAD_MBID
+    assert _requested(get_data) == ["release?query", f"artist/{RADIOHEAD_MBID}"]
+    # a release credited to someone else is no evidence
+    provider, _ = _routed_provider(
+        {
+            "release?query": {
+                "count": 1,
+                "releases": [_edition("rel-1", credit=_credit("Muse", "m"))],
+            }
+        }
+    )
+    assert await provider.resolve_artist(_artist_item(), [ref_album], []) is None
+
+
+async def test_resolve_artist_spends_a_bounded_number_of_requests_per_leg() -> None:
+    """However many reference items there are, each lookup leg tries three at most, in order."""
+    provider, get_data = _routed_provider({})
+    ref_albums = [
+        _album_item(
+            f"Album {i}",
+            external_ids={(ExternalID.MB_RELEASEGROUP, f"rg-{i}"), (ExternalID.BARCODE, BARCODE)},
+        )
+        for i in range(10)
+    ]
+    ref_tracks = [
+        _track_item(
+            f"Track {i}",
+            external_ids={(ExternalID.MB_RECORDING, f"rec-{i}"), (ExternalID.ISRC, ISRC)},
+        )
+        for i in range(10)
+    ]
+
+    assert await provider.resolve_artist(_artist_item(), ref_albums, ref_tracks) is None
+
+    assert _requested(get_data) == [
+        "release-group/rg-0",
+        "release-group/rg-1",
+        "release-group/rg-2",
+        "recording/rec-0",
+        "recording/rec-1",
+        "recording/rec-2",
+        "release?query",
+        "release?query",
+        "release?query",
+        f"isrc/{ISRC}",
+        f"isrc/{ISRC}",
+        f"isrc/{ISRC}",
+        # the name search tries a strict and a loose query per track
+        *["recording?query"] * 6,
+    ]
+
+
+def test_relation_urls_skips_ended_links_and_duplicates() -> None:
+    """Only current links count, each once, whatever relation type they carry."""
+    relations = [
+        MusicBrainzRelation.from_dict({"type": "free streaming", "url": {"resource": "a"}}),
+        MusicBrainzRelation.from_dict({"type": "streaming", "url": {"resource": "a"}}),
+        MusicBrainzRelation.from_dict(
+            {"type": "streaming", "url": {"resource": "b"}, "ended": True}
+        ),
+        MusicBrainzRelation.from_dict({"type": "member of band"}),
+        MusicBrainzRelation.from_dict({"type": "discogs", "url": {"resource": "c"}}),
+    ]
+
+    assert relation_urls(relations) == ["a", "c"]
+    assert relation_urls(None) == []
+
+
+@pytest.mark.parametrize(
+    ("primary_type", "secondary_types", "expected"),
+    [
+        ("Album", None, AlbumType.ALBUM),
+        ("Album", [], AlbumType.ALBUM),
+        ("Single", None, AlbumType.SINGLE),
+        ("EP", None, AlbumType.EP),
+        ("Album", ["Compilation"], AlbumType.COMPILATION),
+        ("Album", ["Soundtrack"], AlbumType.SOUNDTRACK),
+        ("Album", ["Live"], AlbumType.LIVE),
+        ("Album", ["Live", "Compilation"], AlbumType.COMPILATION),
+        ("Album", ["Remix"], AlbumType.ALBUM),
+        ("Other", None, AlbumType.UNKNOWN),
+        (None, None, AlbumType.UNKNOWN),
+    ],
+)
+def test_album_type_from_release_group(
+    primary_type: str | None, secondary_types: list[str] | None, expected: AlbumType
+) -> None:
+    """Map a release group's types to an album type, a secondary type taking precedence."""
+    release_group = MusicBrainzReleaseGroup(
+        id="rg", title="x", primary_type=primary_type, secondary_types=secondary_types
+    )
+    assert MusicbrainzProvider.album_type_from_release_group(release_group) == expected
