@@ -9,7 +9,7 @@ from uuid import UUID
 
 import pychromecast
 from music_assistant_models.dashboard import DashboardDevice
-from music_assistant_models.enums import DashboardType
+from music_assistant_models.enums import DashboardType, PlaybackState
 from music_assistant_models.errors import PlayerUnavailableError
 from pychromecast.const import CAST_TYPE_CHROMECAST
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_LOST
@@ -144,15 +144,26 @@ class ChromecastDashboards:
         """
         player = self.mass.players.get_player(device_id)
         castplayer = player if isinstance(player, ChromecastPlayer) else None
-        force_launch = False
+        release_on_the_wire = False
         if castplayer is not None:
             # an earlier stop on the player may still have a release of the receiver
             # app pending, which would close the dashboard we are about to show
             castplayer.cancel_pending_app_quit()
             # a release that is already on the wire will close the app anyway, so the
             # receiver's 'already running' short-circuit has to be bypassed
-            force_launch = castplayer.app_quit_sent
-        url = await self.mass.dashboard.resolve_dashboard_url(dashboard, player_id)
+            release_on_the_wire = castplayer.app_quit_sent
+        # also launch fresh when we track no active cast on the device: an "already
+        # running" receiver may be backgrounded (Android TV's launcher hides it) and
+        # only a real launch brings it back to the foreground. never force past playback
+        # though: relaunching tears it down, and a playing device is showing the receiver
+        # anyway. a paused one may well be backgrounded, so it is worth the relaunch
+        is_playing = castplayer is not None and castplayer.playback_state == PlaybackState.PLAYING
+        force_launch = release_on_the_wire or (
+            device_id not in self._active_casts and not is_playing
+        )
+        url = await self.mass.dashboard.resolve_dashboard_url(
+            dashboard, player_id, dashboard_id=f"chromecast_{device_id}"
+        )
         chromecast = await self._get_or_create_chromecast(device_id)
         try:
             await self.mass.loop.run_in_executor(
@@ -168,7 +179,7 @@ class ChromecastDashboards:
                 translation_args=[chromecast.name],
             ) from err
 
-        if force_launch and castplayer is not None:
+        if release_on_the_wire and castplayer is not None:
             # this launch replaced the session the recorded release was closing
             castplayer.app_quit_sent = False
 

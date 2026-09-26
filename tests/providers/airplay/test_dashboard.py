@@ -277,6 +277,7 @@ async def test_on_show_party_launch_uri_needs_no_player() -> None:
     controller.logger = MagicMock()
     controller._dashboards = {}
     controller._sessions = {}
+    controller._session_owners = {}
 
     dashboards = _make_dashboards()
     dashboards.mass.dashboard = controller

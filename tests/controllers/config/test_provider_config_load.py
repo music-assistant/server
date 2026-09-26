@@ -204,6 +204,23 @@ async def test_dependent_scan_failure_is_not_blamed_on_loaded_provider(
     assert _provider_status(_prov_conf(instance), is_loaded=True) == ProviderStatus.LOADED
 
 
+async def test_remove_provider_config_value_removes_a_stored_false(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A stored ``False`` (falsy but present) must still be removed, not mistaken for absent."""
+    config = mass_minimal.config
+    instance = "spotify--test"
+    config.set(
+        f"{CONF_PROVIDERS}/{instance}",
+        {"domain": "spotify", "type": "music", "instance_id": instance, "enabled": True},
+    )
+    config.set_raw_provider_config_value(instance, "color_tint", False)
+
+    await config.remove_provider_config_value(instance, "color_tint")
+
+    assert config.get_raw_provider_config_value(instance, "color_tint") is None
+
+
 async def test_immediate_flush_for_rotated_token(mass_minimal: MusicAssistant) -> None:
     """Storing a raw provider value with immediate=True flushes without waiting for the debounce."""
     config = mass_minimal.config
