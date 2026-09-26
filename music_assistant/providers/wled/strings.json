@@ -2,7 +2,7 @@
   "config_entries": {
     "port": {
       "label": "Zone port",
-      "description": "UDP port for this sync zone. This is not a device address -- it identifies a group of WLED devices, not one specific device. On each WLED device you want in this zone, set the matching port under Usermods > Audio Reactive > Sync Settings > 'UDP Sound Sync Port', and enable 'Receive'. Use a different port for each independent zone (e.g. 11988, 11989, ...) so they don't interfere with each other."
+      "description": "UDP port for this sync zone. This is not a device address -- it identifies a group of WLED devices, not one specific device. On each WLED device you want in this zone, go to Config > Usermods > AudioReactive > Sync, set 'Port' to this port and 'Mode' to 'Receive'. Use a different port for each independent zone (e.g. 11988, 11989, ...) so they don't interfere with each other."
     },
     "latency_ms": {
       "label": "Sync latency (ms)",
@@ -20,7 +20,7 @@
   "setup_flow": {
     "user": {
       "title": "Add WLED sync zone",
-      "description": "Pick a UDP port to identify this sync zone (pre-filled with the next unused one). WLED devices join by setting this same port as their own audioSyncPort under Usermods > Audio Reactive > Sync Settings."
+      "description": "Pick a UDP port to identify this sync zone (pre-filled with the next unused one). WLED devices join by setting this same port under Config > Usermods > AudioReactive > Sync > 'Port', with 'Mode' set to 'Receive'."
     }
   },
   "manifest": {
