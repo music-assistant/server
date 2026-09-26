@@ -1525,6 +1525,7 @@ class TestPresetMembersInDynamicGroup:
         result = sgp.can_group_with
 
         assert {"online_member", "friend"} <= result
+        assert "stranger" not in result
         mass.players.iter_players.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1545,6 +1546,23 @@ class TestPresetMembersInDynamicGroup:
         candidate.type = PlayerType.PLAYER
         candidate.state.can_group_with = set()
         candidate.state.synced_to = "old_leader"
+        candidate.state.active_group = sgp.player_id
+        mass.players.get_player = _player_lookup({"wasruimte": candidate})
+        mass.players.iter_players = MagicMock(return_value=[candidate])
+
+        assert "wasruimte" in sgp.can_group_with
+
+    @pytest.mark.asyncio
+    async def test_can_group_with_offers_a_member_that_still_claims_this_group(self) -> None:
+        """A player whose sync settled but whose active_group still points here is offered."""
+        mass = _make_mock_mass()
+        sgp = self._make_dynamic_group_with_preset(mass, [])
+        await sgp.on_config_updated()
+
+        candidate = _make_mock_player("wasruimte")
+        candidate.type = PlayerType.PLAYER
+        candidate.state.can_group_with = {"other"}
+        candidate.state.synced_to = None
         candidate.state.active_group = sgp.player_id
         mass.players.get_player = _player_lookup({"wasruimte": candidate})
         mass.players.iter_players = MagicMock(return_value=[candidate])
@@ -1584,6 +1602,32 @@ class TestPresetMembersInDynamicGroup:
         mass.players.iter_players = MagicMock(return_value=[candidate])
 
         assert "solo_only" not in sgp.can_group_with
+
+    @pytest.mark.asyncio
+    async def test_can_group_with_ignores_a_member_that_is_still_slaved(self) -> None:
+        """
+        A member that is still slaved must not narrow down what the group offers.
+
+        Regression: once one speaker had rejoined after a dissolve, it was the only
+        candidate the group offered (a slaved player reports no compatible players),
+        so the next speaker's join was refused.
+        """
+        mass = _make_mock_mass()
+        sgp = self._make_dynamic_group_with_preset(mass, [])
+        await sgp.on_config_updated()
+
+        rejoined = _make_mock_player("m2")
+        candidate = _make_mock_player("m3")
+        for player in (rejoined, candidate):
+            player.type = PlayerType.PLAYER
+            player.state.can_group_with = set()
+            player.state.synced_to = "old_leader"
+            player.state.active_group = sgp.player_id
+        mass.players.get_player = _player_lookup({"m2": rejoined, "m3": candidate})
+        mass.players.iter_players = MagicMock(return_value=[rejoined, candidate])
+        sgp._attr_group_members = ["m2"]
+
+        assert "m3" in sgp.can_group_with
 
 
 class TestGetConfigEntriesMemberPicker:
@@ -2560,8 +2604,8 @@ class TestDebouncedReform:
         assert sgp.sync_leader is m2
 
     @pytest.mark.asyncio
-    async def test_play_after_join_following_dissolve_forms_the_group(self) -> None:
-        """A play command right after such a join forms the group instead of finding it empty."""
+    async def test_play_media_after_join_following_dissolve_forms_the_group(self) -> None:
+        """Starting playback right after such a join forms the group instead of finding it empty."""
         mass = _make_mock_mass()
         sgp = self._setup_group(mass, members=["leader", "m2"])
         m2 = mass.players.get_player("m2")

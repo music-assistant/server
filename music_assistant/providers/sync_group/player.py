@@ -235,17 +235,21 @@ class SyncGroupPlayer(Player):
         can_group_with: set[str] = set()
         for member_id in member_ids:
             member_player = self.mass.players.get_player(member_id)
-            if member_player and member_player.state.available:
-                can_group_with.add(member_player.player_id)
-                can_group_with.update(member_player.state.can_group_with)
+            if not member_player or not member_player.state.available:
+                continue
+            if not member_player.state.can_group_with and member_player.state.synced_to:
+                # slaved: its compatibility list is empty for now, it can tell us nothing
+                continue
+            can_group_with.add(member_player.player_id)
+            can_group_with.update(member_player.state.can_group_with)
         if can_group_with:
             return {
                 pid
                 for pid in can_group_with
                 if pid in current_members or self._is_member_allowed(pid)
             }
-        # Without any available member to derive compatibility from (empty group or
-        # all members offline), offer any compatible player.
+        # Without any member that can report its compatibility (empty group, all members
+        # offline or all of them still slaved), offer any compatible player.
         # Actual compatibility is validated when adding members
         can_group_with = set()
         for player in self.mass.players.iter_players(return_unavailable=False):
@@ -255,13 +259,13 @@ class SyncGroupPlayer(Player):
             if PlayerFeature.SET_MEMBERS not in player.state.supported_features:
                 continue
             if (active_group := player.state.active_group) and active_group != self.player_id:
-                # captured by another group player
+                # captured by another group player. A (possibly stale) claim by this group
+                # itself is fine: a former member keeps reporting it for a few seconds
+                # after the group dissolved.
                 continue
-            # A slaved player reports an empty can_group_with while it is synced, but it
-            # is group-capable all the same (see the same exemption in get_config_entries).
-            # Right after this group dissolved, its former members keep reporting the old
-            # sync state for a few seconds (Sonos propagates group state asynchronously),
-            # and excluding them here is what makes a re-join in that window fail.
+            # A slaved player reports an empty can_group_with while it is synced, but it is
+            # group-capable all the same and joining it takes it over from its current
+            # leader (see the same exemption in get_config_entries).
             if not (player.state.can_group_with or player.state.synced_to):
                 continue
             can_group_with.add(player.player_id)
