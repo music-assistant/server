@@ -37,6 +37,11 @@ DEFAULT_MP3_BIT_RATE: Final[int] = 320
 # restores its original level. _get_channel_conform_filter avoids the same loss on the
 # main decode path by duplicating the channel instead.
 _MONO_WIDEN_COMPENSATION: Final[float] = 2**0.5
+# A voice-over is someone talking over the start of a track, such as a DJ over a record's
+# intro. The music ducks under it with a single trapezoidal `volume` expression (ramp down,
+# hold, ramp up), measured at -8 dB inside the voice and 0 dB outside it.
+VOICE_OVER_DUCK_DEPTH: Final = 0.60  # fraction of the level removed under the voice
+VOICE_OVER_DUCK_RAMP: Final = 0.4  # seconds, each side
 
 # FFmpeg applies these to the single input they precede, not to the command as a whole,
 # so every input we open has to bring its own copy.
@@ -461,29 +466,45 @@ async def get_ffmpeg_overlay_stream(
     :param pcm_format: PCM format of both the main input and the mixed output.
     :param chunk_size: Optional exact chunk size for the yielded audio.
     """
-    async with FFMpeg(
-        audio_input=audio_input,
-        # ffmpeg mirrors the metadata it probes from the input onto input_format,
-        # so hand it a copy to keep that mutation off the caller's format.
-        input_format=copy(pcm_format),
-        output_format=pcm_format,
-        filter_params=[_build_overlay_mixer(overlay_input, pcm_format, overlay_volume)],
-        collect_log_history=True,
-    ) as ffmpeg_proc:
-        iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
-        async for chunk in iterator:
-            yield chunk
-        # reap the process before trusting returncode: a stream aborted mid-decode (e.g.
-        # excessive decode errors) closes stdout early, which ends the loop above before
-        # the OS process has actually exited, leaving returncode as None if checked directly
-        with suppress(TimeoutError):
-            await ffmpeg_proc.wait_with_timeout(5)
-    if ffmpeg_proc.returncode not in (None, 0):
-        # unclean exit of ffmpeg - raise error with log tail
-        log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[-5:])
-        raise AudioError(log_tail)
-    if feeder_exception := ffmpeg_proc.stdin_feeder_exception:
-        raise AudioError("Error while feeding audio to FFmpeg") from feeder_exception
+    async for chunk in _iter_mixed_stream(
+        audio_input,
+        pcm_format,
+        [_build_overlay_mixer(overlay_input, pcm_format, overlay_volume)],
+        chunk_size,
+    ):
+        yield chunk
+
+
+async def get_ffmpeg_voice_over_stream(
+    audio_input: AsyncGenerator[bytes],
+    voice_path: str,
+    pcm_format: AudioFormat,
+    voice_start: float,
+    voice_end: float,
+    voice_offset: float = 0.0,
+    chunk_size: int | None = None,
+) -> AsyncGenerator[bytes]:
+    """
+    Mix a one-shot voice clip into a PCM stream, ducking the music under it.
+
+    The clip mixes in at its own level, and the mixed output keeps the main input's PCM
+    format and duration.
+
+    :param audio_input: The music stream (raw PCM in ``pcm_format``).
+    :param voice_path: Local path of the voice clip.
+    :param pcm_format: PCM format of both the main input and the mixed output.
+    :param voice_start: Second at which the voice begins, relative to the music.
+    :param voice_end: Second at which the voice ends.
+    :param voice_offset: Second of the clip to start reading from.
+    :param chunk_size: Optional exact chunk size for the yielded audio.
+    """
+    filter_params: list[str | ComplexFilter] = [
+        # the duck applies to the music alone, so it precedes the two-input mixer
+        _build_voice_over_duck_filter(voice_start, voice_end),
+        _build_voice_over_mixer(voice_path, pcm_format, voice_start, voice_offset),
+    ]
+    async for chunk in _iter_mixed_stream(audio_input, pcm_format, filter_params, chunk_size):
+        yield chunk
 
 
 def get_ffmpeg_resample_filter(
@@ -826,6 +847,56 @@ def _get_overlay_volume_filter(overlay_volume: int, output_channels: int) -> str
     return f"volume={gain}*{_MONO_WIDEN_COMPENSATION}^not(nb_channels-1)"
 
 
+def _build_voice_over_duck_filter(voice_start: float, voice_end: float) -> str:
+    """
+    Build the volume envelope that ducks the music under a voice-over.
+
+    :param voice_start: Second at which the voice begins, relative to the music.
+    :param voice_end: Second at which the voice ends.
+    """
+    # a voice already talking at t=0 gives a negative start, which the expression's own
+    # clamping turns into a full duck from the first sample
+    duck_start = voice_start - VOICE_OVER_DUCK_RAMP
+    duck_end = voice_end + VOICE_OVER_DUCK_RAMP
+    # commas are ffmpeg argument separators, so the ones inside the expression are escaped
+    envelope = (
+        rf"1-{VOICE_OVER_DUCK_DEPTH:.4f}*max(0\,min(1\,min("
+        rf"(t-{duck_start:.3f})/{VOICE_OVER_DUCK_RAMP:.3f}\,"
+        rf"({duck_end:.3f}-t)/{VOICE_OVER_DUCK_RAMP:.3f})))"
+    )
+    return f"volume=eval=frame:volume='{envelope}'"
+
+
+def _build_voice_over_mixer(
+    voice_path: str, pcm_format: AudioFormat, voice_start: float, voice_offset: float = 0.0
+) -> ComplexFilter:
+    """
+    Build the filter mixing a one-shot voice clip into the music at an offset.
+
+    :param voice_path: Local path of the voice clip, already at the level it mixes in at.
+    :param pcm_format: PCM format of the main input and the mixed output.
+    :param voice_start: Second of the music at which the voice should begin.
+    :param voice_offset: Second of the clip to start reading from.
+    """
+    input_args = ["-ss", f"{voice_offset:.3f}"] if voice_offset > 0 else []
+    layout = _get_channel_layout_name(pcm_format.channels)
+    conform = f",aformat=channel_layouts={layout}" if layout else ""
+    delay_ms = max(0, round(voice_start * 1000))
+    return ComplexFilter(
+        # duration=first: the clip can never extend the music
+        body="amix=inputs=2:duration=first:normalize=0",
+        inputs=[
+            ComplexFilterInput(
+                path=voice_path,
+                # brought to the music's rate ahead of amix, so its negotiation never
+                # touches the music
+                filters=f"aresample={pcm_format.sample_rate}{conform},adelay={delay_ms}:all=1",
+                input_args=input_args,
+            )
+        ],
+    )
+
+
 def _build_overlay_mixer(
     overlay_input: str, pcm_format: AudioFormat, overlay_volume: int
 ) -> ComplexFilter:
@@ -874,6 +945,45 @@ def _build_overlay_mixer(
             )
         ],
     )
+
+
+async def _iter_mixed_stream(
+    audio_input: AsyncGenerator[bytes],
+    pcm_format: AudioFormat,
+    filter_params: list[str | ComplexFilter],
+    chunk_size: int | None,
+) -> AsyncGenerator[bytes]:
+    """
+    Run a PCM stream through a mixing filtergraph that keeps its format and duration.
+
+    :param audio_input: The main audio stream (raw PCM in ``pcm_format``).
+    :param pcm_format: PCM format of both the main input and the mixed output.
+    :param filter_params: The filters doing the mixing.
+    :param chunk_size: Optional exact chunk size for the yielded audio.
+    """
+    async with FFMpeg(
+        audio_input=audio_input,
+        # ffmpeg mirrors the metadata it probes from the input onto input_format,
+        # so hand it a copy to keep that mutation off the caller's format.
+        input_format=copy(pcm_format),
+        output_format=pcm_format,
+        filter_params=filter_params,
+        collect_log_history=True,
+    ) as ffmpeg_proc:
+        iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
+        async for chunk in iterator:
+            yield chunk
+        # reap the process before trusting returncode: a stream aborted mid-decode (e.g.
+        # excessive decode errors) closes stdout early, which ends the loop above before
+        # the OS process has actually exited, leaving returncode as None if checked directly
+        with suppress(TimeoutError):
+            await ffmpeg_proc.wait_with_timeout(5)
+    if ffmpeg_proc.returncode not in (None, 0):
+        # unclean exit of ffmpeg - raise error with log tail
+        log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[-5:])
+        raise AudioError(log_tail)
+    if feeder_exception := ffmpeg_proc.stdin_feeder_exception:
+        raise AudioError("Error while feeding audio to FFmpeg") from feeder_exception
 
 
 def _build_filtergraph_args(

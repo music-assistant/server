@@ -140,6 +140,7 @@ from music_assistant.helpers.ffmpeg import (
     FFMpeg,
     get_ffmpeg_overlay_stream,
     get_ffmpeg_stream,
+    get_ffmpeg_voice_over_stream,
 )
 from music_assistant.helpers.named_pipe import read_named_pipe
 from music_assistant.helpers.playlists import (
@@ -162,6 +163,7 @@ from music_assistant.helpers.util import (
     remove_file,
 )
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
+from music_assistant.models.plugin import PluginProvider, VoiceOver
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import ProviderMapping
@@ -171,7 +173,6 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
-    from music_assistant.models.plugin import PluginProvider
     from music_assistant.models.provider import Provider
 
 # ruff: noqa: PLR0915
@@ -575,6 +576,11 @@ class StreamsAudio:
         self._audio_buffer_locks: WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
             WeakValueDictionary()
         )
+        # queue_id -> (queue_item_id, stream details of the item its voice-over came from),
+        # kept until the voice-over is settled. A repeat fetch of the item (a probe, then
+        # the real request) finds itself as the last item served, not its source. One entry
+        # per queue: only the item served last can be fetched again this way.
+        self._voice_over_sources: dict[str, tuple[str, StreamDetails]] = {}
 
     def setup(self) -> None:
         """Set up the audio sub-controller (called after all core controllers are created)."""
@@ -2685,6 +2691,12 @@ class StreamsAudio:
                         prepared_buffer=incoming_audio_buffer,
                     )
 
+                # a voice-over carried over from the item before wraps the item stream here
+                # as well as on the per-item route. A failure ends this track, not the flow.
+                item_stream = self.get_voice_over_mixed_stream(
+                    queue_track, item_stream, pcm_format, raise_on_error=False
+                )
+
                 # closing here releases the decoders on an early exit,
                 # instead of leaving them to the garbage collector
                 async with aclosing(item_stream):
@@ -3045,6 +3057,61 @@ class StreamsAudio:
             # inform the queue controller that all audio data has been generated
             # so it can handle the case where new items were added after the flow stream ended
             self.mass.player_queues.queue_buffer_completed(queue.queue_id, queue_exhausted)
+
+    async def get_voice_over_mixed_stream(
+        self,
+        queue_item: QueueItem,
+        audio_input: AsyncGenerator[bytes],
+        pcm_format: AudioFormat,
+        raise_on_error: bool = True,
+    ) -> AsyncGenerator[bytes]:
+        """
+        Mix in the voice-over the item before carries over the start of this one, if any.
+
+        The plugin that served the item before is asked for it, and the music is ducked
+        under the voice. It only airs when that item is what played right before. Any other
+        input passes through untouched.
+
+        :param queue_item: The item being streamed.
+        :param audio_input: The item's audio (raw PCM in ``pcm_format``).
+        :param pcm_format: PCM format of both the input and the mixed output.
+        :param raise_on_error: Raise when the mixer fails; when False the failure is
+            logged and the item's stream just ends.
+        """
+        resolved = await self._resolve_voice_over(queue_item)
+        if resolved is None:
+            # closed here so an early exit does not leave the decoders to the garbage collector
+            async with aclosing(audio_input):
+                async for chunk in audio_input:
+                    yield chunk
+            return
+        provider, source, voice_over = resolved
+        self.logger.debug(
+            "Voice-over on %s: voice %.2f-%.2fs", queue_item.name, voice_over.start, voice_over.end
+        )
+        try:
+            async with aclosing(
+                get_ffmpeg_voice_over_stream(
+                    audio_input=audio_input,
+                    voice_path=voice_over.path,
+                    pcm_format=pcm_format,
+                    voice_start=voice_over.start,
+                    voice_end=voice_over.end,
+                    voice_offset=voice_over.offset,
+                    chunk_size=pcm_format.pcm_sample_size,
+                )
+            ) as mixed:
+                async for chunk in mixed:
+                    yield chunk
+        except AudioError as err:
+            await self._settle_voice_over(queue_item, provider, source, aired=False)
+            if raise_on_error:
+                raise
+            self.logger.error("Voice-over on %s failed to mix: %s", queue_item.name, err)
+            return
+        # a stream cut short leaves the voice-over unsettled: a player that fetches an item
+        # twice (a probe, then the real request) still has to get it on the second request
+        await self._settle_voice_over(queue_item, provider, source, aired=True)
 
     async def get_overlay_mixed_stream(
         self,
@@ -4908,3 +4975,79 @@ class StreamsAudio:
             )
             return None
         return streamdetails.path
+
+    async def _resolve_voice_over(
+        self, queue_item: QueueItem
+    ) -> tuple[PluginProvider, StreamDetails, VoiceOver] | None:
+        """
+        Return the voice-over the item before carries over this one, with where it came from.
+
+        Returns None when there is none, or one that must not air with this playback; that
+        one is settled with its plugin as not aired.
+
+        :param queue_item: The item being streamed.
+        """
+        queue_id, item_id = queue_item.queue_id, queue_item.queue_item_id
+        queue_data = self.mass.player_queues.queue_data_or_none(queue_id)
+        last_served = queue_data.last_served_item_id if queue_data else None
+        # The last item served is what played right before, following repeat and skipping
+        # unavailable items the way the queue does. Every explicit play resets it, so a
+        # skipped item, a replay or a restored queue has no item before to ask.
+        source: StreamDetails | None = None
+        if last_served == item_id:
+            if (stored := self._voice_over_sources.get(queue_id)) and stored[0] == item_id:
+                source = stored[1]
+        elif previous := self.mass.player_queues.get_item(queue_id, last_served):
+            source = previous.streamdetails
+        if source is None:
+            return None
+        provider = self.mass.get_provider(source.provider)
+        if not isinstance(provider, PluginProvider):
+            return None
+        if (voice_over := await provider.get_voice_over(source, queue_item)) is None:
+            self._voice_over_sources.pop(queue_id, None)
+            return None
+        if (reason := await self._voice_over_unusable_reason(queue_item, voice_over)) is not None:
+            self.logger.info(
+                "Voice-over on %s dropped, playing the item clean: %s", queue_item.name, reason
+            )
+            await self._settle_voice_over(queue_item, provider, source, aired=False)
+            return None
+        self._voice_over_sources[queue_id] = (item_id, source)
+        return provider, source, voice_over
+
+    async def _voice_over_unusable_reason(
+        self, queue_item: QueueItem, voice_over: VoiceOver
+    ) -> str | None:
+        """
+        Return why a voice-over must not air with this playback, or None if it may.
+
+        :param queue_item: The item being streamed.
+        :param voice_over: The voice-over its plugin handed out.
+        """
+        # every offset is measured from the start of the item
+        if queue_item.streamdetails and queue_item.streamdetails.seek_position:
+            return "the item was seeked"
+        if not 0.0 <= voice_over.start < voice_over.end:
+            return f"no usable window ({voice_over.start:.2f}-{voice_over.end:.2f}s)"
+        if not await aiofiles.os.path.isfile(voice_over.path):
+            return f"{voice_over.path} is gone"
+        return None
+
+    async def _settle_voice_over(
+        self,
+        queue_item: QueueItem,
+        provider: PluginProvider,
+        source: StreamDetails,
+        aired: bool,
+    ) -> None:
+        """
+        Tell a plugin its voice-over is done with, and forget where it came from.
+
+        :param queue_item: The item the voice-over was for.
+        :param provider: The plugin that handed it out.
+        :param source: Stream details of the plugin's item it came from.
+        :param aired: Whether it was mixed in.
+        """
+        self._voice_over_sources.pop(queue_item.queue_id, None)
+        await provider.on_voice_over_ended(source, aired=aired)
