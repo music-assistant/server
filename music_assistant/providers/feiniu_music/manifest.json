@@ -1,0 +1,10 @@
+{
+  "type": "music",
+  "domain": "feiniu_music",
+  "stage": "experimental",
+  "name": "FeiNiu Music",
+  "description": "Read your personal library from the native FeiNiu Music service.",
+  "codeowners": ["@neqq3"],
+  "requirements": [],
+  "multi_instance": true
+}
