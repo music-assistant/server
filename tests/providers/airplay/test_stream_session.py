@@ -917,7 +917,7 @@ async def test_start_player_ffmpeg_wires_persistent_cli_stdin() -> None:
             "music_assistant.providers.airplay.stream_session.FFMpeg", return_value=new_ffmpeg
         ) as ffmpeg_factory,
     ):
-        await session._start_player_ffmpeg(player, MagicMock())
+        await session._start_player_ffmpeg(player, MagicMock(), stream)
 
     # the old ffmpeg is closed, never killing the shared cli stdin
     old_ffmpeg.close.assert_awaited_once()
@@ -925,6 +925,48 @@ async def test_start_player_ffmpeg_wires_persistent_cli_stdin() -> None:
     assert ffmpeg_factory.call_args.kwargs["audio_output"] == 77
     new_ffmpeg.start.assert_awaited_once()
     assert session._player_ffmpeg[player.player_id] is new_ffmpeg
+
+
+@pytest.mark.asyncio
+async def test_start_player_ffmpeg_uses_the_passed_stream() -> None:
+    """The ffmpeg is wired to the stream passed in, never a re-read of player.stream."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+
+    passed_stream = _stream_defaults(MagicMock())
+    passed_stream.pcm_format = session.pcm_format
+    passed_cli = MagicMock()
+    passed_cli.proc.stdin.transport.get_extra_info.return_value.fileno.return_value = 77
+    passed_stream._cli_proc = passed_cli
+
+    # a displacement has swapped player.stream onto a different cli process
+    stale_stream = _stream_defaults(MagicMock())
+    stale_stream.pcm_format = session.pcm_format
+    stale_cli = MagicMock()
+    stale_cli.proc.stdin.transport.get_extra_info.return_value.fileno.return_value = 99
+    stale_stream._cli_proc = stale_cli
+    player.stream = stale_stream
+
+    new_ffmpeg = MagicMock()
+    new_ffmpeg.start = AsyncMock(return_value=None)
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.stream_session.get_final_output_format",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "music_assistant.providers.airplay.stream_session.get_media_session_id",
+            return_value="session-id",
+        ),
+        patch(
+            "music_assistant.providers.airplay.stream_session.FFMpeg", return_value=new_ffmpeg
+        ) as ffmpeg_factory,
+    ):
+        await session._start_player_ffmpeg(player, MagicMock(), passed_stream)
+
+    # wired to the passed stream's cli stdin fd (77), never the stale 99
+    assert ffmpeg_factory.call_args.kwargs["audio_output"] == 77
 
 
 @pytest.mark.asyncio

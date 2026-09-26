@@ -97,12 +97,13 @@ async def test_cold_restart_keeps_a_stream_published_while_it_was_stopping(
     airplay_player: AirPlayPlayer,
 ) -> None:
     """
-    A cold restart only drops the stream it stopped, not one published meanwhile.
+    A cold restart leaves the current publication in place for the new session.
 
     Tearing a group session down awaits every member, which is long enough for a
-    Sendspin bridge to take the speaker and publish its own stream. Dropping that
-    reference would leave the start that follows with nothing to displace and a
-    live process still on the speaker.
+    Sendspin bridge to take the speaker and publish its own stream. The cold path
+    never drops that reference: the new session's start displaces whatever is
+    published under the spawn lock, so nothing is left with a live process on the
+    speaker and nothing to displace.
     """
     old_session = MagicMock()
     old_stream = MagicMock(running=True, superseded=False)
