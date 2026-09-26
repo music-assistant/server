@@ -17,7 +17,6 @@ from music_assistant_models.auth import User, UserRole
 
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     has_player_access,
-    is_private_client_player,
     player_access_filter,
     sendspin_player_id,
 )
@@ -91,18 +90,3 @@ def test_shared_speaker_claimed_as_the_client_player_is_refused() -> None:
     user = _user(UserRole.USER, [ALLOWED_PLAYER])
     with _connected_on(OTHER_PLAYER):
         assert not has_player_access(user, OTHER_PLAYER, _player(OTHER_PLAYER, private=False))
-
-
-def test_private_client_player_check_matches_own_private_player() -> None:
-    """A private player whose id matches the connection's announced id qualifies."""
-    assert is_private_client_player(_player(OWN_CLIENT, private=True), OWN_CLIENT)
-
-
-def test_private_client_player_check_rejects_a_shared_speaker() -> None:
-    """A non-private player is never a client player, even when its id is announced."""
-    assert not is_private_client_player(_player(OTHER_PLAYER, private=False), OTHER_PLAYER)
-
-
-def test_private_client_player_check_needs_a_connection_id() -> None:
-    """Without an announced client id there is no exemption."""
-    assert not is_private_client_player(_player(OWN_CLIENT, private=True), None)

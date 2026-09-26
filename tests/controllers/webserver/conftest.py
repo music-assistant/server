@@ -40,6 +40,10 @@ async def webserver(mass_minimal: MusicAssistant) -> AsyncIterator[WebserverCont
     mass_minimal.translations = SimpleNamespace(  # type: ignore[assignment]
         get_translation=lambda _key, **_kwargs: None
     )
+    # sendspin binding resolves the player to record whether it is a private client
+    mass_minimal.players = SimpleNamespace(  # type: ignore[assignment]
+        get_player=lambda _player_id, *_args, **_kwargs: None
+    )
     webserver = WebserverController(mass_minimal)
     mass_minimal.webserver = webserver
     yield webserver

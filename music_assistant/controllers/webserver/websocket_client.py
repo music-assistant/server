@@ -39,7 +39,6 @@ from music_assistant.helpers.provider_access import access_allows, with_derived_
 
 from .helpers.auth_middleware import (
     has_scope,
-    is_private_client_player,
     is_request_from_ingress,
     player_access_filter,
     resolve_command_impersonation,
@@ -78,6 +77,7 @@ class WebsocketClientHandler:
         self._current_token: str | None = None  # Will be set after auth command
         self._token_id: str | None = None  # Will be set after auth for tracking revocation
         self._sendspin_player_id: str | None = None  # Set if client is a sendspin web player
+        self._sendspin_player_is_private = False  # whether that bound player is a private client
         self._locale: str | None = None  # UI locale declared by the client (auth arg / set_locale)
         self._is_ingress = is_request_from_ingress(request)
         self._events_unsub_callback: Any = None  # Will be set after authentication
@@ -122,6 +122,12 @@ class WebsocketClientHandler:
         :param player_id: Id of the sendspin player this connection owns.
         """
         self._sendspin_player_id = player_id
+        # Capture privacy now, while the player still exists: the own-client event
+        # exemption must survive the player being removed (its owner still needs the
+        # PLAYER_REMOVED event), and a shared speaker id announced here is not private
+        # so it never gains that exemption.
+        player = self.mass.players.get_player(player_id)
+        self._sendspin_player_is_private = player is not None and player.private
 
     async def disconnect(self) -> None:
         """Disconnect client and wait for its writer to finish."""
@@ -591,10 +597,10 @@ class WebsocketClientHandler:
                 )
                 and event.object_id
                 and event.object_id not in player_filter
-                # the private client player this connection announced is always allowed,
-                # but only when it really is private so a shared speaker id cannot unlock it
-                and not is_private_client_player(
-                    self.mass.players.get_player(event.object_id), self._sendspin_player_id
+                # the private client player this connection announced is always allowed;
+                # privacy was validated at bind time so this holds even once it is removed
+                and not (
+                    self._sendspin_player_is_private and event.object_id == self._sendspin_player_id
                 )
             ):
                 return

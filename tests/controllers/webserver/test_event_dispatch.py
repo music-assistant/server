@@ -103,7 +103,6 @@ def _restricted_client(
     webserver: WebserverController,
     *,
     player_filter: list[str],
-    own_client: str | None = None,
 ) -> WebsocketClientHandler:
     """Create a websocket client for a restricted (non-admin) user with a player filter."""
     client = create_ws_client(webserver, "restricted", role=UserRole.USER)
@@ -113,7 +112,6 @@ def _restricted_client(
         role=UserRole.USER,
         player_filter=player_filter,
     )
-    client._sendspin_player_id = own_client
     return client
 
 
@@ -129,10 +127,8 @@ def _stub_players(monkeypatch: pytest.MonkeyPatch, mass: MusicAssistant, **playe
 async def test_player_events_honor_the_user_player_filter(
     mass_minimal: MusicAssistant,
     webserver: WebserverController,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A restricted user only receives events for players in their filter."""
-    _stub_players(monkeypatch, mass_minimal, kitchen=False, living_room=False)
     client = _restricted_client(webserver, player_filter=["kitchen"])
 
     mass_minimal.signal_event(EventType.PLAYER_UPDATED, "kitchen", {"name": "Kitchen"})
@@ -151,9 +147,26 @@ async def test_own_private_client_player_events_are_delivered(
 ) -> None:
     """A restricted user receives events for the private client player they connected on."""
     _stub_players(monkeypatch, mass_minimal, browser=True)
-    client = _restricted_client(webserver, player_filter=["kitchen"], own_client="browser")
+    client = _restricted_client(webserver, player_filter=["kitchen"])
+    client.bind_sendspin_player("browser")
 
     mass_minimal.signal_event(EventType.PLAYER_UPDATED, "browser", {"name": "Browser"})
+    await drain_event_callbacks()
+    assert "browser" in get_written_message(client)
+
+
+async def test_own_private_client_removal_event_is_delivered(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The own private client still gets its removal event after it left the registry."""
+    _stub_players(monkeypatch, mass_minimal, browser=True)
+    client = _restricted_client(webserver, player_filter=["kitchen"])
+    client.bind_sendspin_player("browser")  # privacy captured while the player exists
+    _stub_players(monkeypatch, mass_minimal)  # player already removed from the registry
+
+    mass_minimal.signal_event(EventType.PLAYER_REMOVED, "browser", {})
     await drain_event_callbacks()
     assert "browser" in get_written_message(client)
 
@@ -165,8 +178,8 @@ async def test_shared_speaker_claimed_as_client_stays_filtered(
 ) -> None:
     """Announcing a shared speaker's id as the client id does not unlock its events."""
     _stub_players(monkeypatch, mass_minimal, living_room=False)
-    # the client claims the shared speaker's id as its own client player
-    client = _restricted_client(webserver, player_filter=["kitchen"], own_client="living_room")
+    client = _restricted_client(webserver, player_filter=["kitchen"])
+    client.bind_sendspin_player("living_room")  # a shared, non-private speaker
 
     mass_minimal.signal_event(EventType.PLAYER_UPDATED, "living_room", {"name": "Living room"})
     await drain_event_callbacks()
