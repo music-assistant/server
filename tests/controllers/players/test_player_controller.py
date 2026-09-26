@@ -2089,6 +2089,58 @@ class TestSyncLeaderPowerOffUngroup:
 
         follower.power.assert_awaited_once_with(False)
 
+    @pytest.mark.asyncio
+    async def test_ma_power_off_ungroups_a_leader_synced_over_a_linked_protocol(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        An MA power off ungroups a leader whose session lives on a linked output protocol.
+
+        The leader's own group_members are empty; the followers exist only through its
+        active output protocol and surface on the resolved state. An external power off
+        already reads that resolved state, so an MA power off must ungroup it too.
+        """
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_player_config_stub())
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_powered = True
+        leader_proto = MockPlayer(
+            provider, "leader_proto", "Leader Proto", player_type=PlayerType.PROTOCOL
+        )
+        leader_proto.set_protocol_parent_id("leader")
+        leader_proto._attr_group_members = ["leader_proto", "follower_proto"]
+        follower = MockPlayer(provider, "follower", "Follower")
+        follower_proto = MockPlayer(
+            provider, "follower_proto", "Follower Proto", player_type=PlayerType.PROTOCOL
+        )
+        follower_proto.set_protocol_parent_id("follower")
+        controller._players = {
+            p.player_id: p for p in (leader, leader_proto, follower, follower_proto)
+        }
+        mock_mass.players = controller
+        for player in (leader, leader_proto, follower, follower_proto):
+            player.set_initialized()
+            player._cache.clear()
+            player.update_state(signal_event=False)
+        leader.set_active_output_protocol("leader_proto")
+        controller._forward_state_update = MagicMock()  # type: ignore[method-assign]
+
+        # the session lives on the protocol: the raw list is empty, the resolved one is not
+        assert leader.group_members == []
+        assert leader.state.group_members == ["leader", "follower"]
+
+        ungrouped: list[str] = []
+
+        async def _ungroup(player_id: str) -> None:
+            ungrouped.append(player_id)
+
+        controller.cmd_ungroup = _ungroup  # type: ignore[method-assign]
+
+        await controller._handle_cmd_power("leader", False)
+
+        assert ungrouped == ["leader"]
+
 
 class TestExternalPowerOffUnsync:
     """
