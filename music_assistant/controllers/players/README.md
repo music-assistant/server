@@ -95,6 +95,12 @@ Contains standalone helper functions and decorators:
 - `handle_player_command` decorator for command validation
 - `AnnounceData` type definition
 
+## Lock Ordering
+
+Player commands are serialized per player with `get_player_lock`. A group player always locks its members from under its own lock (forming, dissolving and member changes all go through the leader), so **a command that needs both locks must take the group's lock first**.
+
+A command that locks a member and only then reaches the group — a power off detaching the player from its group is the typical one — has to acquire the group's lock up front. Taking them the other way round deadlocks against any concurrent command on that group. Nested acquisitions within the same task are re-entrant, so locking the group up front costs nothing further down the call chain.
+
 ## Player Types
 
 Players in Music Assistant have different types based on their capabilities:

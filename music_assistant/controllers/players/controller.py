@@ -223,6 +223,11 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         If the lock can't be acquired within 30s the body runs anyway, to keep
         the player responsive when a previous holder is stuck on a hung command.
 
+        Ordering rule: when a command needs both a group/leader lock and a member
+        lock, it must take the group's first. The group players themselves always
+        lock their members from under their own lock, so a member-first
+        acquisition is an inversion and will deadlock.
+
         :param player_id: The player to lock.
         :param purpose: Lock category. Commands with different purposes can run
             concurrently on the same player.
@@ -856,7 +861,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         raise UnsupportedFeaturedException(msg)
 
     @api_command("players/cmd/power", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
+    @handle_player_command
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """
         Send POWER command to given player.
@@ -867,7 +872,22 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # Power is serialized with PLAYBACK because powering on a sync/group player
         # forms the group (and powering off dissolves it) - this must not race with
         # play_media / cmd_resume / cmd_set_members on the same player.
-        await self._handle_cmd_power(player_id, powered)
+        player = self.get_player(player_id, True)
+        assert player is not None  # for type checking
+        async with contextlib.AsyncExitStack() as stack:
+            # A power off detaches this player from its (sync)group, which ends up in
+            # cmd_set_members on that group - and that takes the group's lock before
+            # this player's. The same two locks are taken here, so they must be taken
+            # in the same order or the two commands lock each other out
+            # (see get_player_lock).
+            if not powered and (parent_id := (player.state.active_group or player.state.synced_to)):
+                await stack.enter_async_context(
+                    self.get_player_lock(parent_id, PlayerLockPurpose.PLAYBACK)
+                )
+            await stack.enter_async_context(
+                self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK)
+            )
+            await self._handle_cmd_power(player_id, powered)
 
     @api_command("players/cmd/volume_set", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command

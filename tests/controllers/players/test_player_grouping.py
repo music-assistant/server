@@ -11,12 +11,17 @@ This module tests the core grouping behavior including:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+from contextlib import AbstractAsyncContextManager
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.models.player import LinkedOutputProtocol
 from tests.common import MockPlayer, MockProvider
 
@@ -540,6 +545,114 @@ class TestFinalActiveGroupNewModel:
         member.update_state(signal_event=False)
 
         assert member.state.active_group == "g1"
+
+
+class _LockingGroup(MockPlayer):
+    """Group player that locks its sync leader from inside set_members, like a syncgroup."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Initialize the group player."""
+        super().__init__(*args, **kwargs)
+        self.leader_id = ""
+        # entered/release let a test hold this group inside set_members, standing in
+        # for the power-on of a joining member that the real controller awaits there
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def set_members(
+        self,
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        """Apply the member change on the sync leader, under the leader's lock."""
+        self.entered.set()
+        await self.release.wait()
+        async with self.mass.players.get_player_lock(self.leader_id, PlayerLockPurpose.PLAYBACK):
+            await super().set_members(player_ids_to_add, player_ids_to_remove)
+
+
+class TestGroupAndMemberLockOrder:
+    """
+    A power off of a group member takes the group's lock before the member's own.
+
+    The group's own set_members locks its sync leader, so a command that locks a
+    member first and only then reaches the group ends up in the opposite order and
+    the two commands lock each other out.
+    """
+
+    def _setup(
+        self, mock_mass: MagicMock
+    ) -> tuple[PlayerController, _LockingGroup, MockPlayer, MockPlayer]:
+        controller = PlayerController(mock_mass)
+        group_provider = MockProvider("test_group", instance_id="test_group", mass=mock_mass)
+        member_provider = MockProvider("test", instance_id="test", mass=mock_mass)
+
+        group = _LockingGroup(group_provider, "g1", "Group", player_type=PlayerType.GROUP)
+        group._attr_powered = True
+        group._attr_group_members = ["member"]
+        group._attr_supported_features = {PlayerFeature.SET_MEMBERS}
+        group._attr_can_group_with = {"member", "joiner"}
+        group.leader_id = "member"
+
+        member = MockPlayer(member_provider, "member", "Member")
+        joiner = MockPlayer(member_provider, "joiner", "Joiner")
+
+        controller._players = {"g1": group, "member": member, "joiner": joiner}
+        mock_mass.players = controller
+        for player in controller._players.values():
+            player._cache.clear()
+            player.set_initialized()
+            player.update_state(signal_event=False)
+
+        assert member.state.active_group == "g1"
+        return controller, group, member, joiner
+
+    async def test_a_power_off_and_a_join_do_not_lock_each_other_out(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Powering off the sync leader while another player joins must not deadlock."""
+        controller, group, _, _ = self._setup(mock_mass)
+
+        join = asyncio.create_task(controller.cmd_set_members("g1", player_ids_to_add=["joiner"]))
+        power_off: asyncio.Task[None] | None = None
+        try:
+            # the join holds the group's lock and is parked inside set_members
+            await group.entered.wait()
+            power_off = asyncio.create_task(controller.cmd_power("member", False))
+            # let the power off get as far as it can before the join continues
+            for _ in range(10):
+                await asyncio.sleep(0)
+            group.release.set()
+            # the join now wants the member's lock: a deadlock never resolves,
+            # so a timeout here is the assertion
+            async with asyncio.timeout(2):
+                await asyncio.gather(join, power_off)
+        finally:
+            for task in (join, power_off):
+                if task is not None and not task.done():
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+
+    async def test_a_power_off_takes_the_group_lock_first(self, mock_mass: MagicMock) -> None:
+        """The group's lock is acquired before the member's own, never the other way round."""
+        controller, group, _, _ = self._setup(mock_mass)
+        group.release.set()
+
+        lock_keys: list[str] = []
+        acquire_lock = controller.get_player_lock
+
+        def _record(
+            player_id: str, purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
+        ) -> AbstractAsyncContextManager[None]:
+            lock_keys.append(f"{purpose.value}_{player_id}")
+            return acquire_lock(player_id, purpose)
+
+        controller.get_player_lock = _record  # type: ignore[assignment]
+
+        await controller.cmd_power("member", False)
+
+        assert lock_keys[:2] == ["playback_g1", "playback_member"]
 
 
 class TestPlayerBaseIsActiveSession:
