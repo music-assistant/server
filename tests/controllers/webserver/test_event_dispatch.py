@@ -155,6 +155,22 @@ async def test_own_private_client_player_events_are_delivered(
     assert "browser" in get_written_message(client)
 
 
+async def test_events_reach_own_client_bound_before_registration(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Binding can precede registration; once the player exists its events reach the owner."""
+    _stub_players(monkeypatch, mass_minimal)  # player not registered yet at bind time
+    client = _restricted_client(webserver, player_filter=["kitchen"])
+    client.bind_sendspin_player("browser")
+
+    _stub_players(monkeypatch, mass_minimal, browser=True)  # player now registered
+    mass_minimal.signal_event(EventType.PLAYER_ADDED, "browser", {"name": "Browser"})
+    await drain_event_callbacks()
+    assert "browser" in get_written_message(client)
+
+
 async def test_own_private_client_removal_event_is_delivered(
     mass_minimal: MusicAssistant,
     webserver: WebserverController,
@@ -163,9 +179,13 @@ async def test_own_private_client_removal_event_is_delivered(
     """The own private client still gets its removal event after it left the registry."""
     _stub_players(monkeypatch, mass_minimal, browser=True)
     client = _restricted_client(webserver, player_filter=["kitchen"])
-    client.bind_sendspin_player("browser")  # privacy captured while the player exists
-    _stub_players(monkeypatch, mass_minimal)  # player already removed from the registry
+    client.bind_sendspin_player("browser")
+    # an event while the player exists latches its private status
+    mass_minimal.signal_event(EventType.PLAYER_ADDED, "browser", {"name": "Browser"})
+    await drain_event_callbacks()
+    assert "browser" in get_written_message(client)
 
+    _stub_players(monkeypatch, mass_minimal)  # player has left the registry
     mass_minimal.signal_event(EventType.PLAYER_REMOVED, "browser", {})
     await drain_event_callbacks()
     assert "browser" in get_written_message(client)

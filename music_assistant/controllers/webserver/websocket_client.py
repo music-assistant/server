@@ -122,12 +122,7 @@ class WebsocketClientHandler:
         :param player_id: Id of the sendspin player this connection owns.
         """
         self._sendspin_player_id = player_id
-        # Capture privacy now, while the player still exists: the own-client event
-        # exemption must survive the player being removed (its owner still needs the
-        # PLAYER_REMOVED event), and a shared speaker id announced here is not private
-        # so it never gains that exemption.
-        player = self.mass.players.get_player(player_id)
-        self._sendspin_player_is_private = player is not None and player.private
+        self._sendspin_player_is_private = False
 
     async def disconnect(self) -> None:
         """Disconnect client and wait for its writer to finish."""
@@ -573,6 +568,24 @@ class WebsocketClientHandler:
             # The token authentication happens in _handle_auth_message
             self._logger.debug("Ingress connection without user headers, expecting token auth")
 
+    def _is_own_private_player(self, object_id: str | None) -> bool:
+        """
+        Return whether the object is the private client player this connection announced.
+
+        Binding can happen before the sendspin player registers, so the private status is
+        latched the first time an event for the bound id arrives while the player exists,
+        and kept afterwards so the owner still receives its player's removal event. A
+        shared speaker announced as the client id never latches, so it stays filtered.
+
+        :param object_id: The event's object id (a player or queue id), or None.
+        """
+        if object_id is None or object_id != self._sendspin_player_id:
+            return False
+        if not self._sendspin_player_is_private:
+            player = self.mass.players.get_player(object_id)
+            self._sendspin_player_is_private = player is not None and player.private
+        return self._sendspin_player_is_private
+
     def _subscribe_to_events(self) -> None:
         """Subscribe to Mass events and forward them to the client."""
         if self._events_unsub_callback is not None:
@@ -597,11 +610,8 @@ class WebsocketClientHandler:
                 )
                 and event.object_id
                 and event.object_id not in player_filter
-                # the private client player this connection announced is always allowed;
-                # privacy was validated at bind time so this holds even once it is removed
-                and not (
-                    self._sendspin_player_is_private and event.object_id == self._sendspin_player_id
-                )
+                # the private client player this connection announced is always allowed
+                and not self._is_own_private_player(event.object_id)
             ):
                 return
 
