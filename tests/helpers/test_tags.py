@@ -1168,3 +1168,102 @@ async def test_audiobook_author_is_never_the_unknown_artist() -> None:
 
     assert _tags.artists == (UNKNOWN_ARTIST,)
     assert _tags.authors == ()
+
+
+async def test_audiobook_series_is_read_from_an_m4b_file(tmp_path: pathlib.Path) -> None:
+    """The series atoms of an m4b are freeform, which ffprobe only sometimes surfaces."""
+    dest = tmp_path / "book.m4b"
+    shutil.copy(FILE_M4A, dest)
+    mp4 = MP4(str(dest))  # type: ignore[no-untyped-call]
+    mp4["----:com.apple.iTunes:Series"] = [MP4FreeForm(b"The Expanse")]  # type: ignore[no-untyped-call]
+    mp4["----:com.apple.iTunes:Series-Part"] = [MP4FreeForm(b"3")]  # type: ignore[no-untyped-call]
+    mp4.save()  # type: ignore[no-untyped-call]
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert (_tags.series, _tags.series_part) == ("The Expanse", 3.0)
+
+
+async def test_audiobook_series_is_read_from_an_mp3_file(tmp_path: pathlib.Path) -> None:
+    """MP3 keeps the series in user defined frames."""
+    dest = tmp_path / "book.mp3"
+    shutil.copy(FILE_MP3, dest)
+    id3 = ID3(str(dest))  # type: ignore[no-untyped-call]
+    id3.add(TXXX(encoding=3, desc="SERIES", text=["The Expanse"]))  # type: ignore[no-untyped-call]
+    id3.add(TXXX(encoding=3, desc="SERIES-PART", text=["3"]))  # type: ignore[no-untyped-call]
+    id3.save(v2_version=4)
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert (_tags.series, _tags.series_part) == ("The Expanse", 3.0)
+
+
+async def test_audiobook_series_is_read_from_a_flac_file(tmp_path: pathlib.Path) -> None:
+    """Vorbis comments name the series fields directly."""
+    dest = tmp_path / "book.flac"
+    shutil.copy(FILE_FLAC, dest)
+    flac = FLAC(str(dest))  # type: ignore[no-untyped-call]
+    flac["SERIES"] = ["The Expanse"]
+    flac["SERIES-PART"] = ["3"]
+    flac.save()
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert (_tags.series, _tags.series_part) == ("The Expanse", 3.0)
+
+
+def test_audiobook_series_is_read_from_a_wavpack_file(tmp_path: pathlib.Path) -> None:
+    """
+    APEv2 names the series fields directly too.
+
+    Uses parse_tags_mutagen directly since the minimal WavPack fixture
+    does not contain valid audio data for ffprobe to parse.
+    """
+    dest = tmp_path / "book.wv"
+    shutil.copy(FILE_WV, dest)
+    ape = APEv2(str(dest))  # type: ignore[no-untyped-call]
+    ape["SERIES"] = "The Expanse"
+    ape["SERIES-PART"] = "3"
+    ape.save(str(dest))
+
+    result = parse_tags_mutagen(str(dest))
+
+    assert result.get("series") == "The Expanse"
+    assert result.get("seriespart") == "3"
+
+
+async def test_audiobook_series_sequence_may_be_fractional(tmp_path: pathlib.Path) -> None:
+    """A novella between two books is tagged 1.5."""
+    dest = tmp_path / "book.m4b"
+    shutil.copy(FILE_M4A, dest)
+    mp4 = MP4(str(dest))  # type: ignore[no-untyped-call]
+    mp4["----:com.apple.iTunes:Series"] = [MP4FreeForm(b"The Expanse")]  # type: ignore[no-untyped-call]
+    mp4["----:com.apple.iTunes:Series-Part"] = [MP4FreeForm(b"1.5")]  # type: ignore[no-untyped-call]
+    mp4.save()  # type: ignore[no-untyped-call]
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert _tags.series_part == 1.5
+
+
+async def test_audiobook_series_sequence_keeps_a_non_numeric_value(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Not every tagger numbers the parts."""
+    dest = tmp_path / "book.m4b"
+    shutil.copy(FILE_M4A, dest)
+    mp4 = MP4(str(dest))  # type: ignore[no-untyped-call]
+    mp4["----:com.apple.iTunes:Series"] = [MP4FreeForm(b"Discworld")]  # type: ignore[no-untyped-call]
+    mp4["----:com.apple.iTunes:Series-Part"] = [MP4FreeForm(b"Guards")]  # type: ignore[no-untyped-call]
+    mp4.save()  # type: ignore[no-untyped-call]
+
+    _tags = await tags.async_parse_tags(str(dest))
+
+    assert _tags.series_part == "Guards"
+
+
+async def test_audiobook_without_a_series_tag_has_none() -> None:
+    """No series tag must not end up clearing what is stored."""
+    _tags = await tags.async_parse_tags(FILE_M4A)
+
+    assert (_tags.series, _tags.series_part) == (None, None)

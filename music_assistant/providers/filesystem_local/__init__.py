@@ -43,6 +43,7 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
     MediaItemChapter,
+    MediaItemCollection,
     MediaItemImage,
     MediaItemType,
     Playlist,
@@ -2978,6 +2979,14 @@ class LocalFileSystemProvider(MusicProvider):
         audio_book.narrators.set(
             [self._parse_audiobook_artist(name, ArtistType.NARRATOR) for name in narrator_names]
         )
+        if series := tags.series:
+            audio_book.metadata.collections = UniqueList(
+                [MediaItemCollection(title=series, sequence=tags.series_part)]
+            )
+        else:
+            # clean up removed collections
+            audio_book.metadata.collections = UniqueList([])
+
         audio_book.metadata.genres = (
             set(tags.genres) if tags.genres else {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
         )
