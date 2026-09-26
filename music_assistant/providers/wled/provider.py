@@ -78,7 +78,7 @@ class WledProvider(PluginProvider):
 
     Each instance represents one sync zone, identified by a UDP port: any
     number of physical WLED devices join the zone by setting their own
-    audioSyncPort (WLED's Usermods -> Audio Reactive -> Sync Settings) to
+    audioSyncPort (WLED's Config -> Usermods -> AudioReactive -> Sync) to
     match. Grouping the resulting virtual player with a real speaker player
     is what makes that zone's lights react to that speaker's audio.
     """
@@ -147,6 +147,12 @@ class WledProvider(PluginProvider):
         instances sharing a port would silently fight over the same Sendspin
         client_id (derived from the port) instead of failing loudly -- the
         second instance's registration kicks the first one's connection.
+
+        This scan is the check that can name the conflicting instance, but it
+        is not what makes the rule hold: it suspends, and it reads stored
+        ports, so a concurrent load or a port that has moved on in config while
+        its zone is still live can slip past it. WledBridge.start() re-checks
+        the client id at the moment it claims it, which is atomic.
         """
         port = _port_from_config(self.mass, self.config)
         siblings = await self.mass.config.get_provider_configs(

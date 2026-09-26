@@ -22,6 +22,7 @@ from aiosendspin.models.visualizer import (
     ClientHelloVisualizerSupport,
 )
 from music_assistant_models.enums import PlayerType
+from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.mass import LOGGER
 from music_assistant.providers.sendspin.bridge_role import (
@@ -118,8 +119,27 @@ class WledBridge:
         self._peak_pending: bool = False
 
     async def start(self) -> None:
-        """Start the bridge — register as an in-process Sendspin visualizer client."""
+        """
+        Start the bridge — register as an in-process Sendspin visualizer client.
+
+        :raises SetupFailedError: If another zone already holds this port's Sendspin
+            client id.
+        """
         client_id = f"wled-zone-{self.port}"
+
+        # Last line of defence for the one-zone-per-port rule. The config scan in
+        # WledProvider.handle_async_init is the one that reports a duplicate port nicely,
+        # but it suspends and it reads *stored* ports, so it can miss a sibling that is
+        # live on this port right now under a config value that has already moved on.
+        # register_external_player() below resolves the id through get_or_create_client()
+        # and would silently take that sibling's client over, leaving its zone dark with
+        # nothing raised. Everything from here to that call is synchronous, so on a single
+        # threaded loop no other load can slip between this check and the claim.
+        if self.sendspin_server.get_client(client_id) is not None:
+            raise SetupFailedError(
+                f"Sendspin client '{client_id}' is already registered: another WLED zone "
+                f"is using port {self.port}. Each WLED instance needs its own port."
+            )
 
         # Register this client as a LIGHT player type with the Sendspin provider
         # so the resulting virtual player shows up correctly in the UI.

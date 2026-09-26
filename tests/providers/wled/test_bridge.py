@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, Mock
 import numpy as np
 import pytest
 from aiosendspin.server.roles.visualizer.features import ExtractedFrame
+from music_assistant_models.errors import SetupFailedError
 
 import music_assistant.providers.wled.bridge as bridge_module
 from music_assistant.providers.wled.bridge import WledBridge, WledBridgeManager
@@ -33,9 +34,33 @@ class _FakeSendspinServer:
     def __init__(self) -> None:
         self.clock = _FakeClock()
         self.remove_client = AsyncMock()
+        self.clients: dict[str, Any] = {}
         client = Mock(client_id="wled-zone-11988")
         client.roles_by_family = Mock(return_value=[])
         self.register_external_player = Mock(return_value=client)
+
+    def get_client(self, client_id: str) -> Any:
+        """Look up an already-registered client, as the real server does."""
+        return self.clients.get(client_id)
+
+    def claim_ids_on_register(self) -> None:
+        """
+        Make register_external_player behave like the real one: the id is what it claims.
+
+        The real server resolves the hello's client_id through get_or_create_client(), so a
+        second registration under the same id takes the first client over rather than
+        failing. Tests for the duplicate-port guard need that, or they would pass against
+        a fake that cannot express the eviction being guarded against.
+        """
+
+        def _register(hello: Any, **_kwargs: Any) -> Any:
+            if (client := self.clients.get(hello.client_id)) is None:
+                client = Mock(client_id=hello.client_id)
+                client.roles_by_family = Mock(return_value=[])
+                self.clients[hello.client_id] = client
+            return client
+
+        self.register_external_player = Mock(side_effect=_register)
 
 
 @dataclass
@@ -261,6 +286,63 @@ class TestBridgeStart:
 
         fixture.sendspin_server.remove_client.assert_awaited_once_with("wled-zone-11988")
         assert fixture.bridge._sendspin_client is None
+
+
+class TestZonePortIsClaimedAtomically:
+    """
+    One zone per port has to hold at the point the Sendspin client id is claimed.
+
+    WledProvider.handle_async_init scans the sibling configs for a duplicate port, but that
+    scan suspends and reads stored ports, so it cannot be the whole guard: two instances
+    loading at once, or one whose stored port has moved on while its zone is still live on
+    the old one, would both arrive here. register_external_player() resolves an existing id
+    to that client, so the loser of such a race would silently take the winner's zone over.
+    """
+
+    async def test_a_port_another_zone_already_claimed_is_refused(self) -> None:
+        """An id already in the registry means another zone holds this port: fail loudly."""
+        fixture = _make_bridge()
+        fixture.sendspin_server.clients["wled-zone-11988"] = Mock()
+
+        with pytest.raises(SetupFailedError, match="wled-zone-11988"):
+            await fixture.bridge.start()
+
+        # nothing claimed and nothing to unwind: the other zone keeps its client
+        fixture.sendspin_server.register_external_player.assert_not_called()
+        assert fixture.bridge._sendspin_client is None
+
+    async def test_concurrent_starts_on_one_port_leave_a_single_zone(self) -> None:
+        """
+        Two zones starting on the same port at once: exactly one wins, the other raises.
+
+        The transport opens with an await, so the two starts really do interleave here --
+        what keeps them apart is that nothing suspends between the id check and the claim.
+        """
+        server = _FakeSendspinServer()
+        server.claim_ids_on_register()
+
+        async def _open_transport(*_args: Any, **_kwargs: Any) -> tuple[Mock, Mock]:
+            await asyncio.sleep(0)
+            return (Mock(), Mock())
+
+        mass = SimpleNamespace(
+            loop=SimpleNamespace(
+                call_later=Mock(return_value=Mock()), create_datagram_endpoint=_open_transport
+            ),
+            get_provider=Mock(return_value=None),
+        )
+        provider: Any = SimpleNamespace(mass=mass)
+        bridges = [
+            WledBridge(provider, port=11988, sendspin_server=cast("Any", server)) for _ in range(2)
+        ]
+
+        results = await asyncio.gather(*(b.start() for b in bridges), return_exceptions=True)
+
+        failures = [r for r in results if isinstance(r, BaseException)]
+        assert len(failures) == 1
+        assert isinstance(failures[0], SetupFailedError)
+        assert server.register_external_player.call_count == 1
+        assert [b._sendspin_client is not None for b in bridges].count(True) == 1
 
 
 def _make_manager(monkeypatch: pytest.MonkeyPatch, bridge: Mock) -> WledBridgeManager:
