@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from datetime import UTC, datetime
 from json import loads as json_loads
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
@@ -416,51 +415,34 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
     ) -> None:
         # update artist mappings - the sync method in the provider model raises an exception
         # if not all entries are either of type str or Artist
-        await self._set_artist_mappings_of_type(db_id, item.authors, ArtistType.AUTHOR, overwrite)
-        await self._set_artist_mappings_of_type(
-            db_id, item.narrators, ArtistType.NARRATOR, overwrite
-        )
-
-    async def _set_artist_mappings_of_type(
-        self,
-        db_id: int,
-        values: Iterable[Artist | ItemMapping | str],
-        artist_type: ArtistType,
-        overwrite: bool,
-    ) -> None:
-        """
-        Store the authors, or the narrators, of an audiobook.
-
-        :param db_id: Database id of the audiobook the artists belong to.
-        :param values: The audiobook's authors or narrators as the provider supplied them.
-        :param artist_type: Which of the two ``values`` holds.
-        :param overwrite: Replace the stored links of this type instead of adding to them.
-        """
-        artists = [artist for artist in values if isinstance(artist, Artist)]
-        for artist in artists:
-            # just to be sure
-            artist.artist_type = artist_type
-        if not artists:
-            return
-        if overwrite:
-            # only this type: the other one may not be part of this update at all
-            await self.mass.music.database.delete(
-                DB_TABLE_AUDIOBOOK_ARTISTS,
-                query=f"WHERE audiobook_id = {db_id} AND artist_id IN "
-                f"(SELECT item_id FROM {DB_TABLE_ARTISTS} "
-                f"WHERE artist_type = '{artist_type.value}')",
+        linked_ids: set[int] = set()
+        updated_types: list[ArtistType] = []
+        for values, artist_type in (
+            (item.authors, ArtistType.AUTHOR),
+            (item.narrators, ArtistType.NARRATOR),
+        ):
+            artists = [artist for artist in values if isinstance(artist, Artist)]
+            if not artists:
+                continue
+            updated_types.append(artist_type)
+            for artist in artists:
+                # just to be sure
+                artist.artist_type = artist_type
+                db_artist = await self._set_audiobook_author_narrator(db_id, artist=artist)
+                linked_ids.add(int(db_artist.item_id))
+        if overwrite and updated_types:
+            # links carry no role, one artist row may serve as author and narrator
+            query = (
+                f"WHERE audiobook_id = {db_id} "
+                f"AND artist_id NOT IN ({','.join(str(x) for x in linked_ids)})"
             )
-        await self._set_audiobook_authors_narrators(db_id, artists)
-
-    async def _set_audiobook_authors_narrators(
-        self,
-        db_id: int,
-        artists: Iterable[Artist | ItemMapping],
-        overwrite: bool = False,
-    ) -> None:
-        """Write audiobook id and author/ narrator id to DB_TABLE_AUDIOBOOK_ARTISTS."""
-        for artist in artists:
-            await self._set_audiobook_author_narrator(db_id, artist=artist, overwrite=overwrite)
+            if len(updated_types) == 1:
+                # a role the update omits says nothing about its stored links
+                query += (
+                    f" AND artist_id IN (SELECT item_id FROM {DB_TABLE_ARTISTS} "
+                    f"WHERE artist_type = '{updated_types[0].value}')"
+                )
+            await self.mass.music.database.delete(DB_TABLE_AUDIOBOOK_ARTISTS, query=query)
 
     async def _set_audiobook_author_narrator(
         self, db_id: int, artist: Artist | ItemMapping, overwrite: bool = False
@@ -474,13 +456,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         ):
             db_artist = existing
 
-        # stale links are removed by the stored type, so a changed role must be stored
-        role_changed = (
-            isinstance(db_artist, Artist)
-            and isinstance(artist, Artist)
-            and db_artist.artist_type != artist.artist_type
-        )
-        if not db_artist or overwrite or role_changed:
+        if not db_artist or overwrite:
             # Convert ItemMapping to Artist if needed
             artist_to_add = (
                 self.mass.music.artists.artist_from_item_mapping(artist)
