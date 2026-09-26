@@ -252,12 +252,19 @@ class SyncGroupPlayer(Player):
             if not player.available or player.type == PlayerType.GROUP:
                 # let's avoid showing group players as options to group with
                 continue
-            if (
-                PlayerFeature.SET_MEMBERS in player.state.supported_features
-                and player.state.can_group_with
-                and not player.state.active_group
-            ):
-                can_group_with.add(player.player_id)
+            if PlayerFeature.SET_MEMBERS not in player.state.supported_features:
+                continue
+            if (active_group := player.state.active_group) and active_group != self.player_id:
+                # captured by another group player
+                continue
+            # A slaved player reports an empty can_group_with while it is synced, but it
+            # is group-capable all the same (see the same exemption in get_config_entries).
+            # Right after this group dissolved, its former members keep reporting the old
+            # sync state for a few seconds (Sonos propagates group state asynchronously),
+            # and excluding them here is what makes a re-join in that window fail.
+            if not (player.state.can_group_with or player.state.synced_to):
+                continue
+            can_group_with.add(player.player_id)
         return {pid for pid in can_group_with if self._is_member_allowed(pid)}
 
     @property
