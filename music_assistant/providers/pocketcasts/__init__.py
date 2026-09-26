@@ -530,7 +530,7 @@ class PocketCastsProvider(MusicProvider):
         # show notes are supplementary, so a failure here must never break episode
         # resolution. The failure itself is not cached, so the next call tries again.
         try:
-            return await self._fetch_show_notes(prov_podcast_id)
+            show_notes = await self._fetch_show_notes(prov_podcast_id)
         except (
             LoginFailed,
             ProviderUnavailableError,
@@ -539,6 +539,27 @@ class PocketCastsProvider(MusicProvider):
         ) as err:
             self.logger.debug("Could not retrieve show notes for %s: %s", prov_podcast_id, err)
             return None
+        if not await self._has_paid_plan():
+            return show_notes
+        # generated transcripts are a Plus and Patron perk, used only where the publisher's
+        # own transcript (which overrides the key when present) is missing
+        return {
+            uuid: {"transcripts": details.get("generated_transcripts"), **details}
+            for uuid, details in show_notes.items()
+        }
+
+    async def _has_paid_plan(self) -> bool:
+        """Return whether the account is on a paid plan, or False when that cannot be read."""
+        try:
+            return await self._fetch_has_paid_plan()
+        except (
+            LoginFailed,
+            ProviderUnavailableError,
+            ResourceTemporarilyUnavailable,
+            RetriesExhausted,
+        ) as err:
+            self.logger.debug("Could not retrieve the Pocket Casts plan: %s", err)
+            return False
 
     @staticmethod
     def _has_transcript(
@@ -550,6 +571,11 @@ class PocketCastsProvider(MusicProvider):
         if show_notes is None:
             return None
         return bool(details and details.get("transcripts"))
+
+    @use_cache(3600 * 24)
+    async def _fetch_has_paid_plan(self) -> bool:
+        """Return whether the account is on a paid Pocket Casts plan."""
+        return await self._client.has_paid_plan()
 
     @use_cache(3600 * 24)
     async def _fetch_show_notes(self, prov_podcast_id: str) -> dict[str, dict[str, Any]]:
