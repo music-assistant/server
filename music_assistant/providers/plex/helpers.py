@@ -16,6 +16,7 @@ from music_assistant_models.media_items import MediaItemImage, UniqueList
 from plexapi.gdm import GDM
 from plexapi.library import LibrarySection as PlexLibrarySection
 from plexapi.library import MusicSection as PlexMusicSection
+from plexapi.myplex import MyPlexAccount
 from plexapi.server import PlexServer
 
 from music_assistant.providers.plex.constants import AUTH_TOKEN_UNAUTH
@@ -142,6 +143,58 @@ def extract_library_name(conf_value: str) -> str:
     return conf_value.strip()
 
 
+def resolve_server_auth_token(
+    auth_token: str,
+    local_server_ip: str,
+    local_server_port: str | int,
+    myplex_account: MyPlexAccount | None = None,
+) -> str:
+    """
+    Return the token to authenticate directly against this specific Plex server.
+
+    The account-level MyPlex token only authenticates against servers this account owns.
+    A server shared with the account (e.g. through a Plex Home managed/shared user) needs
+    that resource's own access token instead - see
+    https://github.com/music-assistant/support/issues/4892.
+
+    Falls back to `auth_token` unchanged if the configured server can't be matched against
+    the account's resources for any reason, so every setup that already works today (an
+    owned server, or plex.tv being unreachable) keeps working exactly as before.
+
+    :param auth_token: The account-level MyPlex token, also used as the fallback return value.
+    :param local_server_ip: The server address as configured in this provider.
+    :param local_server_port: The server port as configured in this provider.
+    :param myplex_account: An already-authenticated MyPlexAccount to reuse, if available.
+    """
+    try:
+        account = myplex_account or MyPlexAccount(token=auth_token)
+        for resource in account.resources():
+            if "server" not in (resource.provides or ""):
+                continue
+            for conn in resource.connections:
+                if conn.address == local_server_ip and int(conn.port) == int(local_server_port):
+                    if resource.owned:
+                        return auth_token
+                    resource_token: str | None = resource.accessToken
+                    if not resource_token:
+                        break
+                    LOGGER.debug(
+                        "Plex server %s:%s is shared with this account (not owned) - "
+                        "using its own access token instead of the account token",
+                        local_server_ip,
+                        local_server_port,
+                    )
+                    return resource_token
+    except Exception:
+        LOGGER.debug(
+            "Could not resolve a per-server Plex token for %s:%s, using the account token",
+            local_server_ip,
+            local_server_port,
+            exc_info=True,
+        )
+    return auth_token
+
+
 async def get_section_info(
     mass: MusicAssistant,
     auth_token: str | None,
@@ -178,7 +231,10 @@ async def get_section_info(
                 # local (unauthenticated) connection, not via plex.tv
                 plex_server = PlexServer(plex_url, session=session)
             else:
-                plex_server = PlexServer(plex_url, auth_token, session=session)
+                server_token = resolve_server_auth_token(
+                    auth_token, local_server_ip, local_server_port
+                )
+                plex_server = PlexServer(plex_url, server_token, session=session)
         except requests.exceptions.ConnectionError as err:
             LOGGER.warning(
                 "Could not connect to Plex server at %s:%s: %s",
