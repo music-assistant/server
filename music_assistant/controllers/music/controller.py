@@ -114,7 +114,8 @@ from music_assistant.controllers.tasks.context import (
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
-    has_scope,
+    has_player_access,
+    player_access_filter,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.collections import get_collection_item_media_type_from_item_id
@@ -2612,16 +2613,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # bound sources honor the calling user's player access filter, so a
         # restricted user cannot discover sources of players hidden from them
         current_user = get_current_user()
-        player_filter = (
-            current_user.player_filter
-            if current_user and not has_scope(current_user, Scope.ALL)
-            else None
-        )
         if player_id is not None:
-            if player_filter and player_id not in player_filter:
+            if not has_player_access(current_user, player_id):
                 return []
             return provider.get_player_audio_sources(player_id) or []
-        if not player_filter:
+        player_filter = player_access_filter(current_user)
+        if player_filter is None:
             return await provider.get_audio_sources()
         sources: list[AudioSource] = []
         for allowed_player_id in player_filter:

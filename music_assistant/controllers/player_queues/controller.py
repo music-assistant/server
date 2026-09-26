@@ -84,8 +84,10 @@ from music_assistant.controllers.player_queues.queue_loader import QueueLoaderMi
 from music_assistant.controllers.player_queues.smart_shuffle import SmartShuffle
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.player_queues.stream_feeder import StreamFeederMixin
-from music_assistant.controllers.players.helpers import is_own_client_player
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    has_player_access,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.uri import parse_uri
@@ -1860,12 +1862,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :raises InsufficientPermissions: If the user lacks access.
         """
         current_user = get_current_user()
-        if (
-            current_user
-            and current_user.player_filter
-            and queue_id not in current_user.player_filter
-            # a user may always control the private client player they connected on
-            and not is_own_client_player(self.mass.players.get_player(queue_id))
+        if current_user and not has_player_access(
+            current_user, queue_id, self.mass.players.get_player(queue_id)
         ):
             msg = f"{current_user.username} does not have access to player {queue_id}"
             raise InsufficientPermissions(msg)
