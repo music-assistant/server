@@ -26,7 +26,6 @@ from music_assistant_models.media_items import (
     Audiobook,
     BrowseFolder,
     ItemMapping,
-    MediaItem,
     MediaItemType,
     Playlist,
     Podcast,
@@ -1557,7 +1556,9 @@ class MusicProvider(Provider):
                         favorite = library_item.favorite
                         lib_fully_played = library_item.fully_played
                         lib_resume_position_ms = library_item.resume_position_ms
-                    elif self._library_item_needs_update(sync_details, prov_item):
+                    elif self._library_item_needs_update(
+                        sync_details, prov_item
+                    ) or sync_details.details_changed(prov_item):
                         library_item = await self.mass.music.audiobooks.update_item_in_library(
                             sync_details.item_id, prov_item
                         )
@@ -1985,9 +1986,6 @@ class MusicProvider(Provider):
         """Return True if the library item needs an update from the given provider item."""
         if not self._check_provider_mappings(library_item, prov_item, True):
             # provider mapping doesn't match the library item
-            return True
-        if not isinstance(library_item, MediaItem) and library_item.details_changed(prov_item):
-            # whatever else the media type tracks, e.g. an audiobook's authors/narrators
             return True
         # the item's date_added changed on the provider
         return bool(prov_item.date_added and library_item.date_added != prov_item.date_added)

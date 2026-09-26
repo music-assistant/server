@@ -15,6 +15,7 @@ from music_assistant.constants import (
     DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
 )
+from music_assistant.controllers.music.media.base import AudiobookSyncDetails
 from music_assistant.helpers.json import json_loads
 from music_assistant.models.music_provider import MusicProvider
 
@@ -124,8 +125,8 @@ async def _sync(provider: _Provider, book: Audiobook) -> int:
 async def _settled(mass: MusicAssistant, provider: _Provider, book: Audiobook) -> bool:
     """Return True when a further sync of the same book finds nothing to update."""
     details = await mass.music.audiobooks.get_library_item_sync_details(book.provider_mappings)
-    assert details is not None
-    return not provider._library_item_needs_update(details, book)
+    assert isinstance(details, AudiobookSyncDetails)
+    return not (provider._library_item_needs_update(details, book) or details.details_changed(book))
 
 
 async def _linked(mass: MusicAssistant, db_id: int, artist_type: ArtistType) -> set[str]:

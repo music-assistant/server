@@ -171,14 +171,6 @@ class LibraryItemSyncDetails:
     date_added: datetime
     provider_mappings: set[ProviderMapping]
 
-    def details_changed(self, prov_item: MediaItemType) -> bool:
-        """
-        Return True when state this snapshot carries beyond the common fields changed.
-
-        :param prov_item: The item as the provider currently reports it.
-        """
-        return False
-
 
 @dataclass(slots=True)
 class TrackSyncDetails(LibraryItemSyncDetails):
