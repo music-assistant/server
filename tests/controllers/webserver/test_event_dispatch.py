@@ -191,6 +191,30 @@ async def test_own_private_client_removal_event_is_delivered(
     assert "browser" in get_written_message(client)
 
 
+async def test_own_client_removal_delivered_after_becoming_restricted(
+    mass_minimal: MusicAssistant,
+    webserver: WebserverController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client restricted only after registering still receives its own removal event."""
+    _stub_players(monkeypatch, mass_minimal, browser=True)
+    client = _restricted_client(webserver, player_filter=[])  # unrestricted for now
+    client.bind_sendspin_player("browser")
+    # while unrestricted, the registration event latches the private status
+    mass_minimal.signal_event(EventType.PLAYER_ADDED, "browser", {"name": "Browser"})
+    await drain_event_callbacks()
+    assert "browser" in get_written_message(client)
+
+    # the user is restricted later and the player then leaves the registry
+    client._authenticated_user = User(
+        user_id="restricted", username="restricted", role=UserRole.USER, player_filter=["kitchen"]
+    )
+    _stub_players(monkeypatch, mass_minimal)
+    mass_minimal.signal_event(EventType.PLAYER_REMOVED, "browser", {})
+    await drain_event_callbacks()
+    assert "browser" in get_written_message(client)
+
+
 async def test_shared_speaker_claimed_as_client_stays_filtered(
     mass_minimal: MusicAssistant,
     webserver: WebserverController,

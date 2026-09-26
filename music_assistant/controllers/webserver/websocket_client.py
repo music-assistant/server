@@ -593,6 +593,10 @@ class WebsocketClientHandler:
             return
 
         def handle_event(event: MassEvent) -> None:
+            # Latch the bound player's private status on every event, before applying the
+            # filter: the user may be unrestricted now and restricted later, and the flag
+            # must already be set so the owner still receives the player's removal event.
+            own_private_player = self._is_own_private_player(event.object_id)
             # filter events for objects the user has no access to
             player_filter = player_access_filter(self._authenticated_user)
             if (
@@ -611,7 +615,7 @@ class WebsocketClientHandler:
                 and event.object_id
                 and event.object_id not in player_filter
                 # the private client player this connection announced is always allowed
-                and not self._is_own_private_player(event.object_id)
+                and not own_private_player
             ):
                 return
 
