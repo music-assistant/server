@@ -124,6 +124,12 @@ THREE_MAPPINGS = [
     _mapping(THEIRS, "theirs-42"),
     _mapping(A_THIRD, "third-42"),
 ]
+# the same track as a library item: in the library on every account
+THREE_LIBRARY_MAPPINGS = [
+    _mapping(MINE, "mine-42", in_library=True),
+    _mapping(THEIRS, "theirs-42", in_library=True),
+    _mapping(A_THIRD, "third-42", in_library=True),
+]
 
 
 def test_a_write_reaches_only_the_source_the_user_owns(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -276,7 +282,7 @@ async def test_add_item_to_favorites_writes_only_to_the_own_source(
         provider="library",
         item_id="42",
         media_type=MediaType.TRACK,
-        provider_mappings=THREE_MAPPINGS,
+        provider_mappings=THREE_LIBRARY_MAPPINGS,
     )
     controller.get_item = AsyncMock(return_value=full_item)  # type: ignore[method-assign]
     ctrl = Mock(set_favorite=AsyncMock())
@@ -302,7 +308,7 @@ async def test_remove_item_from_favorites_writes_only_to_the_own_source(
         provider="library",
         item_id="42",
         media_type=MediaType.TRACK,
-        provider_mappings=THREE_MAPPINGS,
+        provider_mappings=THREE_LIBRARY_MAPPINGS,
     )
     controller.get_item = AsyncMock(return_value=full_item)  # type: ignore[method-assign]
     ctrl = Mock(set_favorite=AsyncMock(), get_library_item=AsyncMock(return_value=full_item))
@@ -372,7 +378,7 @@ async def test_add_item_to_library_writes_only_to_the_own_source(
 async def test_a_dislike_on_a_provider_item_pulls_it_into_the_library(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A dislike needs a library item too, and reaches only the user's own account."""
+    """A dislike needs a library row, but never a library add on a music source."""
     _as_user(monkeypatch, _user())
     controller = _controller(THREE_ACCOUNTS)
     prov_item = Mock(
@@ -385,18 +391,78 @@ async def test_a_dislike_on_a_provider_item_pulls_it_into_the_library(
         provider_mappings=THREE_MAPPINGS,
     )
     controller.get_item = AsyncMock(return_value=prov_item)  # type: ignore[method-assign]
-    controller.add_item_to_library = AsyncMock(return_value=library_item)  # type: ignore[method-assign]
-    ctrl = Mock(set_favorite=AsyncMock())
+    controller.add_item_to_library = AsyncMock()  # type: ignore[method-assign]
+    ctrl = Mock(set_favorite=AsyncMock(), add_item_to_library=AsyncMock(return_value=library_item))
     controller.get_controller = Mock(return_value=ctrl)  # type: ignore[method-assign]
     controller.library_favorites_edit_supported = Mock(return_value=True)  # type: ignore[method-assign]
 
     await controller.set_item_favorite(prov_item, False)
 
-    controller.add_item_to_library.assert_awaited_once_with(prov_item)
+    # the row is written straight to the library, the source's library is left alone
+    ctrl.add_item_to_library.assert_awaited_once_with(prov_item)
+    controller.add_item_to_library.assert_not_awaited()
     ctrl.set_favorite.assert_awaited_once_with("42", False, [ME])
     seen = controller.providers_seen  # type: ignore[attr-defined]
     seen[MINE].set_favorite.assert_called_once_with("mine-42", MediaType.TRACK, False)
     assert THEIRS not in seen
+
+
+async def test_a_like_after_a_dislike_puts_the_item_in_the_library(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The row a dislike left behind is not in any library; a like adds it for real."""
+    _as_user(monkeypatch, _user())
+    controller = _controller(THREE_ACCOUNTS)
+    disliked_row = Mock(
+        provider="library",
+        item_id="42",
+        media_type=MediaType.TRACK,
+        provider_mappings={_mapping(MINE, "mine-42", in_library=False)},
+    )
+    library_item = Mock(
+        provider="library",
+        item_id="42",
+        media_type=MediaType.TRACK,
+        provider_mappings={_mapping(MINE, "mine-42", in_library=True)},
+    )
+    controller.get_item = AsyncMock(return_value=disliked_row)  # type: ignore[method-assign]
+    controller.add_item_to_library = AsyncMock(return_value=library_item)  # type: ignore[method-assign]
+    ctrl = Mock(set_favorite=AsyncMock())
+    controller.get_controller = Mock(return_value=ctrl)  # type: ignore[method-assign]
+    controller.library_favorites_edit_supported = Mock(return_value=True)  # type: ignore[method-assign]
+
+    await controller.set_item_favorite(disliked_row, True)
+
+    controller.add_item_to_library.assert_awaited_once_with(disliked_row)
+    ctrl.set_favorite.assert_awaited_once_with("42", True, [ME])
+    seen = controller.providers_seen  # type: ignore[attr-defined]
+    seen[MINE].set_favorite.assert_awaited_once_with("mine-42", MediaType.TRACK, True)
+
+
+async def test_a_like_adds_the_item_to_the_own_library_when_only_another_member_holds_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Another member's library holding the item does not make it the user's own."""
+    _as_user(monkeypatch, _user())
+    controller = _controller(THREE_ACCOUNTS)
+    row = Mock(
+        provider="library",
+        item_id="42",
+        media_type=MediaType.TRACK,
+        provider_mappings={
+            _mapping(MINE, "mine-42", in_library=False),
+            _mapping(THEIRS, "theirs-42", in_library=True),
+        },
+    )
+    controller.get_item = AsyncMock(return_value=row)  # type: ignore[method-assign]
+    controller.add_item_to_library = AsyncMock(return_value=row)  # type: ignore[method-assign]
+    ctrl = Mock(set_favorite=AsyncMock())
+    controller.get_controller = Mock(return_value=ctrl)  # type: ignore[method-assign]
+    controller.library_favorites_edit_supported = Mock(return_value=True)  # type: ignore[method-assign]
+
+    await controller.set_item_favorite(row, True)
+
+    controller.add_item_to_library.assert_awaited_once_with(row)
 
 
 async def test_clearing_a_favorite_on_a_provider_item_changes_nothing(
@@ -434,7 +500,7 @@ async def test_a_down_own_source_is_skipped_rather_than_served_by_a_sibling(
         provider="library",
         item_id="42",
         media_type=MediaType.TRACK,
-        provider_mappings=THREE_MAPPINGS,
+        provider_mappings=THREE_LIBRARY_MAPPINGS,
     )
     controller.get_item = AsyncMock(return_value=full_item)  # type: ignore[method-assign]
     ctrl = Mock(set_favorite=AsyncMock())
