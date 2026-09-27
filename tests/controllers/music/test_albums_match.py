@@ -256,6 +256,7 @@ def _harness(
         return provider if (return_unavailable or provider.available) else None
 
     mass = Mock()
+    mass.metadata.link_providers_via_musicbrainz = True
     mass.get_provider = Mock(side_effect=_get_provider)
     mass.music.providers = list(providers)
     ctrl = AlbumsController.__new__(AlbumsController)

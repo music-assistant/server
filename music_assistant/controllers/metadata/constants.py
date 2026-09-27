@@ -74,10 +74,11 @@ CONF_ENABLE_RADIO_METADATA_LOOKUP = "enable_radio_metadata_lookup"
 
 CONF_LINK_PROVIDERS_VIA_MUSICBRAINZ = "link_providers_via_musicbrainz"
 
-# core config key holding, per music provider MusicBrainz links to, since when it is loaded;
+# core config key holding, per music provider MusicBrainz links to, since when it is enabled;
 # items looked up on MusicBrainz before that still lack its links
 CONF_MUSICBRAINZ_LINKED_DOMAINS = "musicbrainz_linked_domains"
 
+# keeps its historical artist-only id (and task domain) so existing schedules survive
 MISSING_METADATA_SCAN_TASK_ID = "metadata_missing_artist_metadata_scan_v2"
 
 PLAYLIST_METADATA_SCAN_TASK_ID = "metadata_playlist_metadata_scan_v2"
@@ -102,7 +103,8 @@ MUSICBRAINZ_LINK_ITEM_INTERVAL = 2.0
 # seconds one item of a MusicBrainz link run may take before it is given up on
 MUSICBRAINZ_LINK_ITEM_TIMEOUT = 60
 
-# music providers MusicBrainz links artists and releases to
+# music providers MusicBrainz links artists and releases to; their share URLs are parsed
+# by the hosts in helpers/uri.py
 MUSICBRAINZ_LINK_DOMAINS = ("spotify", "deezer", "apple_music", "tidal", "qobuz", "ytmusic")
 
 CONF_THUMB_CACHE_MAX_SIZE = "thumb_cache_max_size"

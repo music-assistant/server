@@ -10,7 +10,7 @@
     },
     "link_providers_via_musicbrainz": {
       "label": "Link items to your other music services through MusicBrainz",
-      "description": "Use the links MusicBrainz keeps to find the artists, albums and tracks of your library on your other music services, instead of searching each service for them.\n\nThis runs in the background, a small batch at a time, right after a library sync and once every hour. Identifying items on MusicBrainz itself always happens, as the other metadata providers rely on it."
+      "description": "Use the links MusicBrainz keeps to find the artists, albums and tracks of your library on your other music services, instead of searching each service for them.\n\nWhen enabled, a background task works through your library in small batches, right after a library sync and once every hour, and items are also linked whenever their metadata is refreshed. Identifying items on MusicBrainz itself still happens on every metadata refresh, as the other metadata providers rely on it, so items refreshed while this was disabled are linked at their next metadata refresh."
     },
     "prefer_local_genres": {
       "label": "Use local genre metadata only when available",

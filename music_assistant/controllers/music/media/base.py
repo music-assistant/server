@@ -85,7 +85,7 @@ from music_assistant.helpers.util import guard_single_request, parse_optional_bo
 from music_assistant.providers.musicbrainz.provider import relation_urls
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Coroutine, Mapping
+    from collections.abc import AsyncGenerator, Callable, Coroutine, Mapping
 
     from music_assistant import MusicAssistant
     from music_assistant.models.music_provider import MusicProvider
@@ -1890,17 +1890,17 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     async def _link_musicbrainz_entity(
         self,
         db_item: ItemCls,
-        resolve: Coroutine[Any, Any, MusicBrainzArtist | MusicBrainzRelease | None],
+        resolve: Callable[[], Coroutine[Any, Any, MusicBrainzArtist | MusicBrainzRelease | None]],
     ) -> set[str]:
         """
         Link a library item to the providers MusicBrainz knows it on, before any is searched.
 
         :param db_item: The library item under match.
-        :param resolve: The MusicBrainz lookup identifying the item.
+        :param resolve: Starts the MusicBrainz lookup identifying the item.
         :return: The provider domains linked, for the search to skip.
         """
         try:
-            if (entity := await resolve) is None:
+            if (entity := await resolve()) is None:
                 return set()
             added = await self.link_musicbrainz_mappings(db_item, relation_urls(entity.relations))
         except (MusicAssistantError, aiohttp.ClientError, TimeoutError) as err:

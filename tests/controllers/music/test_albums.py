@@ -288,6 +288,46 @@ async def test_album_tracks_survive_a_dead_provider_mapping(mass: MusicAssistant
     assert [(track.name, track.provider) for track in tracks] == [("Shared", "qobuz_1")]
 
 
+async def test_album_tracks_raise_when_no_provider_lists_the_album(mass: MusicAssistant) -> None:
+    """With nothing in the library and every provider failing, the caller learns why."""
+    album = create_album("qobuz_1", "album_q")
+    album.provider_mappings.add(
+        ProviderMapping(item_id="album_s", provider_domain="spotify", provider_instance="spotify_1")
+    )
+    library_album = await mass.music.albums.add_item_to_library(album)
+    await set_global_cache_values({"available_providers": {"qobuz_1", "spotify_1"}})
+
+    with (
+        patch.object(
+            mass.music.albums,
+            "_get_provider_album_tracks",
+            AsyncMock(side_effect=MediaNotFoundError("album withdrawn")),
+        ),
+        pytest.raises(MediaNotFoundError),
+    ):
+        await mass.music.albums.tracks(library_album.item_id, "library")
+
+
+async def test_album_tracks_fall_back_to_the_library_when_every_provider_fails(
+    mass: MusicAssistant,
+) -> None:
+    """The in-library tracks are still listed when no provider answers."""
+    library_album = await mass.music.albums.add_item_to_library(create_album("qobuz_1", "album_q"))
+    track = create_track("qobuz_1", "track_q", name="Kept")
+    track.album = create_album("qobuz_1", "album_q")
+    await mass.music.tracks.add_item_to_library(track)
+    await set_global_cache_values({"available_providers": {"qobuz_1"}})
+
+    with patch.object(
+        mass.music.albums,
+        "_get_provider_album_tracks",
+        AsyncMock(side_effect=MediaNotFoundError("album withdrawn")),
+    ):
+        tracks = await mass.music.albums.tracks(library_album.item_id, "library")
+
+    assert [track.name for track in tracks] == ["Kept"]
+
+
 def test_album_from_library_item_mapping_has_no_self_mapping(mass: MusicAssistant) -> None:
     """A library item mapping has no provider of its own, so it gets no provider mapping."""
     item = ItemMapping(item_id="42", provider="library", name="Test Album")

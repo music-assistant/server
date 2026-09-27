@@ -177,6 +177,14 @@ class MetaDataController(
                 default_value=True,
                 advanced=True,
             ),
+            # state of the MusicBrainz link run; declared so a config save carries it over
+            ConfigEntry(
+                key=CONF_MUSICBRAINZ_LINKED_DOMAINS,
+                type=ConfigEntryType.STRING,
+                required=False,
+                multi_value=True,
+                hidden=True,
+            ),
             ConfigEntry(
                 key=CONF_PREFER_LOCAL_GENRES,
                 type=ConfigEntryType.BOOLEAN,
@@ -462,6 +470,7 @@ class MetaDataController(
             schedule=desired_schedule,
             translation_key="scan_missing_metadata",
             translation_owner=self.translation_owner,
+            # the task domain keeps its historical artist-only name along with the task id
             metadata={"task_domain": "metadata_missing_artist_metadata_scan"},
             allow_retry=True,
         )
@@ -648,13 +657,10 @@ class MetaDataController(
 
     async def _link_library_to_musicbrainz(self) -> None:
         """Identify a batch of library items on MusicBrainz and link them to the music providers."""
-        musicbrainz = self._musicbrainz_provider()
-        linking = musicbrainz is not None and self.link_providers_via_musicbrainz
-        linked_domains = self._refresh_musicbrainz_linked_domains(linking)
-        if musicbrainz is None:
+        if (musicbrainz := self._musicbrainz_provider()) is None:
             update_current_task_progress_text("The MusicBrainz provider is not loaded")
             return
-        if not linking:
+        if not self.link_providers_via_musicbrainz:
             update_current_task_progress_text("Linking through MusicBrainz is disabled")
             return
         if self.mass.music.active_sync_tasks:
@@ -662,8 +668,9 @@ class MetaDataController(
             # completed sync to queue it again
             update_current_task_progress_text("Waiting for music sync completion")
             return
+        linked_domains = await self._refresh_musicbrainz_linked_domains()
         processed: dict[str, int] = {}
-        linked = not_found = 0
+        linked = not_found = failed = 0
         rate_limited = False
         budget = MUSICBRAINZ_LINK_BATCH_SIZE
         for phase in self._musicbrainz_link_phases(linked_domains):
@@ -687,8 +694,11 @@ class MetaDataController(
                     )
                     rate_limited = True
                     break
+                if processed:
+                    # the pause between two items, so the run's first one starts right away
+                    await asyncio.sleep(MUSICBRAINZ_LINK_ITEM_INTERVAL)
                 update_current_task_progress_from_index(
-                    MUSICBRAINZ_LINK_BATCH_SIZE - budget,
+                    MUSICBRAINZ_LINK_BATCH_SIZE - budget + 1,
                     MUSICBRAINZ_LINK_BATCH_SIZE,
                     f"Identifying {item.media_type.value} on MusicBrainz: {item.name}",
                 )
@@ -697,6 +707,7 @@ class MetaDataController(
                     async with asyncio.timeout(MUSICBRAINZ_LINK_ITEM_TIMEOUT):
                         await self.link_item_to_musicbrainz(item)
                 except _SCAN_ITEM_ERRORS as err:
+                    failed += 1
                     report_current_task_failure(f"{item.name}: {err}")
                     self.logger.warning(
                         "Error while identifying %s %s on MusicBrainz: %s",
@@ -706,23 +717,30 @@ class MetaDataController(
                         exc_info=err if self.logger.isEnabledFor(10) else None,
                     )
                 else:
-                    linked += len(item.provider_mappings) > mapping_count
-                    not_found += item.mbid is None
+                    if item.metadata.last_musicbrainz_lookup is None:
+                        # the identity step logged why it gave up and left the marker unset,
+                        # so the item heads the selection again next run
+                        failed += 1
+                        report_current_task_failure(f"{item.name}: lookup failed")
+                    else:
+                        linked += len(item.provider_mappings) > mapping_count
+                        not_found += item.mbid is None
                 processed[phase.name] = processed.get(phase.name, 0) + 1
                 budget -= 1
-                await asyncio.sleep(MUSICBRAINZ_LINK_ITEM_INTERVAL)
         self._musicbrainz_link_summary = {
             "finished_at": int(time()),
             "processed": cast("SerializableType", processed),
             "linked": linked,
             "not_found": not_found,
+            "failed": failed,
             "stopped_on_rate_limit": rate_limited,
         }
         self.logger.debug(
-            "MusicBrainz link run processed %s, linked %d, not found %d%s",
+            "MusicBrainz link run processed %s, linked %d, not found %d, failed %d%s",
             ", ".join(f"{count} {name}" for name, count in processed.items()) or "nothing",
             linked,
             not_found,
+            failed,
             ", stopped on rate limit" if rate_limited else "",
         )
         update_current_task_progress(100, f"Processed {sum(processed.values())} item(s)")
@@ -731,7 +749,7 @@ class MetaDataController(
         """
         Return the selections a MusicBrainz link run works through, in order.
 
-        :param linked_domains: Since when each linked music provider has been loaded, by domain.
+        :param linked_domains: Since when each linked music provider has been enabled, by domain.
         """
         albums, artists = self.mass.music.albums, self.mass.music.artists
         phases = [
@@ -747,7 +765,7 @@ class MetaDataController(
                 "tracks", self.mass.music.tracks, DB_TABLE_TRACKS, _tracks_to_identify_query(), {}
             ),
         ]
-        # a provider loaded after an item was looked up still lacks its (cached) links
+        # a provider enabled after an item was looked up still lacks its (cached) links
         for domain, first_seen in linked_domains.items():
             params = {"domain": domain, "seen": first_seen}
             phases.append(
@@ -770,40 +788,37 @@ class MetaDataController(
             )
         return phases
 
-    def _refresh_musicbrainz_linked_domains(self, linking: bool) -> dict[str, int]:
+    async def _refresh_musicbrainz_linked_domains(self) -> dict[str, int]:
         """
-        Return since when each loaded music provider MusicBrainz links to has been linked.
+        Return since when each enabled music provider MusicBrainz links to has been linked.
 
-        A provider loaded since the previous run starts now and one no longer loaded is
-        dropped. While linking is inactive every provider is dropped, so all of them start
-        over once it resumes.
-
-        :param linking: Whether this run links items to the music providers.
+        A provider enabled since the previous run starts now and one no longer enabled is
+        dropped. The very first run seeds the providers present with 0, as the library was
+        linked to those while it was identified.
         """
         # persisted as "domain:epoch" entries, the map itself not being a config value type
-        entries = (
-            cast(
-                "list[str] | None",
-                self.mass.config.get_raw_core_config_value(
-                    self.domain, CONF_MUSICBRAINZ_LINKED_DOMAINS
-                ),
-            )
-            or []
+        entries = cast(
+            "list[str] | None",
+            self.mass.config.get_raw_core_config_value(
+                self.domain, CONF_MUSICBRAINZ_LINKED_DOMAINS
+            ),
         )
         stored: dict[str, int] = {}
-        for entry in entries:
+        for entry in entries or []:
             domain, _, seen = entry.partition(":")
-            stored[domain] = int(seen)
-        loaded: set[str] = set()
-        if linking:
-            loaded = {
-                provider.domain
-                for provider in self.mass.get_providers_for_user(None, ProviderType.MUSIC)
-                if provider.domain in MUSICBRAINZ_LINK_DOMAINS
-            }
-        now = int(time())
-        linked = {domain: stored.get(domain, now) for domain in sorted(loaded)}
-        if linked != stored:
+            if seen.isdigit():
+                stored[domain] = int(seen)
+        present = {
+            config.domain
+            for config in await self.mass.config.get_provider_configs(
+                provider_type=ProviderType.MUSIC
+            )
+            if config.enabled and config.domain in MUSICBRAINZ_LINK_DOMAINS
+        }
+        first_seen = 0 if entries is None else int(time())
+        linked = {domain: stored.get(domain, first_seen) for domain in sorted(present)}
+        # an empty map is persisted too: it tells the first run apart from a later one
+        if entries is None or linked != stored:
             self.mass.config.set_raw_core_config_value(
                 self.domain,
                 CONF_MUSICBRAINZ_LINKED_DOMAINS,
@@ -1010,8 +1025,8 @@ def _relink_query(table: str, media_type: MediaType, id_type: ExternalID) -> str
     """
     Return a query part selecting identified items that miss the links of a music provider.
 
-    Selects items looked up before the provider (param ``domain``) was loaded (param ``seen``)
-    and not mapped to it.
+    Selects items not mapped to the provider (param ``domain``) that were looked up before
+    it was enabled (param ``seen``) or never looked up at all.
 
     :param table: The library table to select from.
     :param media_type: Media type of the items.
@@ -1024,7 +1039,9 @@ def _relink_query(table: str, media_type: MediaType, id_type: ExternalID) -> str
         f"AND {DB_TABLE_PROVIDER_MAPPINGS}.item_id = {table}.item_id "
         f"AND {DB_TABLE_PROVIDER_MAPPINGS}.provider_domain = :domain)"
     )
-    return f"({identified} AND NOT {mapped} AND {_musicbrainz_lookup_marker(table)} < :seen)"
+    marker = _musicbrainz_lookup_marker(table)
+    # an id taken from tags or a local server leaves the marker unset: never linked at all
+    return f"({identified} AND NOT {mapped} AND ({marker} ISNULL OR {marker} <= :seen))"
 
 
 def _valid_metadata_guard(table: str) -> str:

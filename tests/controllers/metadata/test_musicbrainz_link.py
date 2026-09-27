@@ -21,10 +21,12 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.constants import DB_TABLE_ALBUMS
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.metadata.constants import (
     CONF_LINK_PROVIDERS_VIA_MUSICBRAINZ,
     CONF_MUSICBRAINZ_LINKED_DOMAINS,
+    CONF_THUMB_CACHE_MAX_SIZE,
     MUSICBRAINZ_LINK_BATCH_SIZE,
     MUSICBRAINZ_LINK_TASK_ID,
     REFRESH_INTERVAL,
@@ -90,7 +92,8 @@ def _controller(
     linking: bool = True,
     musicbrainz: Mock | None = None,
     linked_domains: dict[str, int] | None = None,
-    loaded_domains: Sequence[str] = (),
+    enabled_domains: Sequence[str] = (),
+    disabled_domains: Sequence[str] = (),
     stub_link: bool = True,
 ) -> MetaDataController:
     """
@@ -98,8 +101,10 @@ def _controller(
 
     :param linking: The state of the provider linking toggle.
     :param musicbrainz: The MusicBrainz provider, a fresh stub when not given.
-    :param linked_domains: The persisted map of linked provider domains to first-seen epochs.
-    :param loaded_domains: Domains of the loaded music providers.
+    :param linked_domains: The persisted map of linked provider domains to first-seen epochs,
+        None when no run has persisted one yet.
+    :param enabled_domains: Domains of the enabled music provider configs.
+    :param disabled_domains: Domains of the disabled music provider configs.
     :param stub_link: Whether to replace the per-item link step by a stub.
     """
     ctrl = MetaDataController.__new__(MetaDataController)
@@ -115,10 +120,17 @@ def _controller(
         controller.get_library_items_by_query = AsyncMock(return_value=[])
         controller.update_item_in_library = AsyncMock()
     mass.music.active_sync_tasks = []
-    stored = [f"{domain}:{seen}" for domain, seen in (linked_domains or {}).items()]
-    mass.config.get_raw_core_config_value = Mock(return_value=stored or None)
-    mass.get_providers_for_user = Mock(
-        return_value=[Mock(domain=domain) for domain in loaded_domains]
+    stored = (
+        None
+        if linked_domains is None
+        else [f"{domain}:{seen}" for domain, seen in linked_domains.items()]
+    )
+    mass.config.get_raw_core_config_value = Mock(return_value=stored)
+    mass.config.get_provider_configs = AsyncMock(
+        return_value=[
+            *(Mock(domain=domain, enabled=True) for domain in enabled_domains),
+            *(Mock(domain=domain, enabled=False) for domain in disabled_domains),
+        ]
     )
     mass.get_provider = Mock(return_value=musicbrainz or _musicbrainz())
     ctrl.mass = mass
@@ -137,6 +149,8 @@ def _item(
     item.media_type = media_type
     item.mbid = mbid
     item.provider_mappings = set()
+    # what the (stubbed) link step leaves behind once it has looked the item up
+    item.metadata.last_musicbrainz_lookup = NOW
     return item
 
 
@@ -187,6 +201,11 @@ def _linked(ctrl: MetaDataController) -> AsyncMock:
 def _mass(ctrl: MetaDataController) -> Mock:
     """Return the stubbed MusicAssistant instance of a controller."""
     return cast("Mock", ctrl.mass)
+
+
+def _provider_configs(*domains: str) -> AsyncMock:
+    """Return a stand-in for the enabled music provider configs of the given domains."""
+    return AsyncMock(return_value=[Mock(domain=domain, enabled=True) for domain in domains])
 
 
 # --------------------------------------------------------------------------- #
@@ -263,7 +282,33 @@ async def test_link_run_summarizes_what_it_found_and_linked() -> None:
     assert ctrl._musicbrainz_link_summary is not None
     assert ctrl._musicbrainz_link_summary["linked"] == 1
     assert ctrl._musicbrainz_link_summary["not_found"] == 1
+    assert ctrl._musicbrainz_link_summary["failed"] == 0
     assert ctrl._musicbrainz_link_summary["stopped_on_rate_limit"] is False
+
+
+async def test_link_run_paces_between_items_but_not_around_the_last() -> None:
+    """The pause separates two lookups; the first item starts right away and the last ends the run."""
+    ctrl = _controller()
+    _queue(ctrl, albums=_albums(3))
+
+    with patch(f"{_CONTROLLER}.asyncio.sleep", AsyncMock()) as sleep:
+        await ctrl._link_library_to_musicbrainz()
+
+    assert sleep.await_count == 2
+
+
+async def test_link_run_counts_its_progress_from_one() -> None:
+    """The first item reads as item 1 of the batch, like the other scans."""
+    ctrl = _controller()
+    _queue(ctrl, albums=_albums(2))
+
+    with patch(f"{_CONTROLLER}.update_current_task_progress_from_index") as progress:
+        await ctrl._link_library_to_musicbrainz()
+
+    assert [call.args[:2] for call in progress.call_args_list] == [
+        (1, MUSICBRAINZ_LINK_BATCH_SIZE),
+        (2, MUSICBRAINZ_LINK_BATCH_SIZE),
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -290,6 +335,25 @@ async def test_link_run_isolates_a_failing_item(error: Exception) -> None:
 
     report_failure.assert_called_once_with(f"Failing Album: {error}")
     assert _linked(ctrl).await_count == 2
+    assert ctrl._musicbrainz_link_summary is not None
+    assert ctrl._musicbrainz_link_summary["failed"] == 1
+
+
+async def test_link_run_reports_an_item_whose_lookup_gave_up() -> None:
+    """An item left without its lookup marker is reported: it heads the next run again."""
+    ctrl = _controller()
+    stuck = _item(MediaType.ALBUM, "1", "Stuck Album")
+    stuck.metadata.last_musicbrainz_lookup = None
+    _queue(ctrl, albums=[stuck, _item(MediaType.ALBUM, "2", "Fine Album", mbid=RELEASE_ID)])
+
+    with patch(_REPORT_FAILURE) as report_failure:
+        await ctrl._link_library_to_musicbrainz()
+
+    report_failure.assert_called_once_with("Stuck Album: lookup failed")
+    assert ctrl._musicbrainz_link_summary is not None
+    assert ctrl._musicbrainz_link_summary["processed"] == {"albums": 2}
+    assert ctrl._musicbrainz_link_summary["failed"] == 1
+    assert ctrl._musicbrainz_link_summary["not_found"] == 0
 
 
 async def test_link_run_stops_when_musicbrainz_starts_rate_limiting() -> None:
@@ -320,11 +384,12 @@ async def test_link_run_waits_while_a_library_sync_is_active() -> None:
 
     assert queried == []
     progress_text.assert_called_once_with("Waiting for music sync completion")
+    _mass(ctrl).config.set_raw_core_config_value.assert_not_called()
 
 
-async def test_link_run_with_linking_disabled_returns_early_and_forgets_the_domains() -> None:
-    """With the toggle off nothing is selected and every provider starts over once it is on."""
-    ctrl = _controller(linking=False, linked_domains={"spotify": 100}, loaded_domains=["spotify"])
+async def test_link_run_with_linking_disabled_returns_early_and_keeps_the_domains() -> None:
+    """With the toggle off nothing is selected and the persisted map is left as it is."""
+    ctrl = _controller(linking=False, linked_domains={"spotify": 100}, enabled_domains=["spotify"])
     queried = _queue(ctrl, albums=_albums(1))
 
     with patch(_PROGRESS_TEXT) as progress_text:
@@ -332,9 +397,7 @@ async def test_link_run_with_linking_disabled_returns_early_and_forgets_the_doma
 
     assert queried == []
     progress_text.assert_called_once_with("Linking through MusicBrainz is disabled")
-    _mass(ctrl).config.set_raw_core_config_value.assert_called_once_with(
-        "metadata", CONF_MUSICBRAINZ_LINKED_DOMAINS, []
-    )
+    _mass(ctrl).config.set_raw_core_config_value.assert_not_called()
 
 
 async def test_link_run_without_a_musicbrainz_provider_returns_early() -> None:
@@ -348,6 +411,7 @@ async def test_link_run_without_a_musicbrainz_provider_returns_early() -> None:
 
     assert queried == []
     progress_text.assert_called_once_with("The MusicBrainz provider is not loaded")
+    _mass(ctrl).config.set_raw_core_config_value.assert_not_called()
 
 
 # --------------------------------------------------------------------------- #
@@ -355,11 +419,12 @@ async def test_link_run_without_a_musicbrainz_provider_returns_early() -> None:
 # --------------------------------------------------------------------------- #
 
 
-async def test_link_run_relinks_for_a_provider_loaded_since_the_previous_run() -> None:
-    """A new provider starts now, an unloaded one is dropped, and each gets a relink phase."""
+async def test_link_run_relinks_for_a_provider_enabled_since_the_previous_run() -> None:
+    """A new provider starts now, a disabled one is dropped, and each kept gets a relink phase."""
     ctrl = _controller(
         linked_domains={"spotify": 100, "deezer": 200},
-        loaded_domains=["tidal", "spotify", "filesystem_local"],
+        enabled_domains=["tidal", "spotify", "filesystem_local"],
+        disabled_domains=["deezer"],
     )
     queried = _queue(ctrl)
 
@@ -396,12 +461,115 @@ async def test_link_run_relinks_for_a_provider_loaded_since_the_previous_run() -
 
 async def test_link_run_keeps_the_linked_domains_when_nothing_changed() -> None:
     """The persisted map is only rewritten when a provider came or went."""
-    ctrl = _controller(linked_domains={"spotify": 100}, loaded_domains=["spotify"])
+    ctrl = _controller(linked_domains={"spotify": 100}, enabled_domains=["spotify"])
     _queue(ctrl)
 
     await ctrl._link_library_to_musicbrainz()
 
     _mass(ctrl).config.set_raw_core_config_value.assert_not_called()
+
+
+async def test_link_run_keeps_the_first_seen_of_a_provider_that_is_reloading() -> None:
+    """A provider whose instance is absent while its config is enabled is not new."""
+    musicbrainz = _musicbrainz()
+    ctrl = _controller(
+        musicbrainz=musicbrainz, linked_domains={"spotify": 100}, enabled_domains=["spotify"]
+    )
+    _mass(ctrl).get_provider = Mock(
+        side_effect=lambda domain, **_kwargs: musicbrainz if domain == "musicbrainz" else None
+    )
+    _queue(ctrl)
+
+    await ctrl._link_library_to_musicbrainz()
+
+    _mass(ctrl).config.set_raw_core_config_value.assert_not_called()
+    relink = _mass(ctrl).music.albums.get_library_items_by_query.await_args_list[1]
+    assert relink.kwargs["extra_query_params"] == {"domain": "spotify", "seen": 100}
+
+
+async def test_first_link_run_seeds_the_present_providers_with_zero() -> None:
+    """Nothing persisted yet: the providers present start at 0, so no item predates them."""
+    ctrl = _controller(enabled_domains=["spotify"])
+    _queue(ctrl)
+
+    with patch(f"{_CONTROLLER}.time", return_value=float(NOW)):
+        await ctrl._link_library_to_musicbrainz()
+
+    _mass(ctrl).config.set_raw_core_config_value.assert_called_once_with(
+        "metadata", CONF_MUSICBRAINZ_LINKED_DOMAINS, ["spotify:0"]
+    )
+    relink = _mass(ctrl).music.albums.get_library_items_by_query.await_args_list[1]
+    assert relink.kwargs["extra_query_params"] == {"domain": "spotify", "seen": 0}
+
+
+async def test_first_link_run_without_a_linked_provider_persists_an_empty_map() -> None:
+    """A first run without any linkable provider still leaves its mark for the next runs."""
+    ctrl = _controller()
+    _queue(ctrl)
+
+    await ctrl._link_library_to_musicbrainz()
+
+    _mass(ctrl).config.set_raw_core_config_value.assert_called_once_with(
+        "metadata", CONF_MUSICBRAINZ_LINKED_DOMAINS, []
+    )
+
+
+async def test_link_run_starts_a_provider_enabled_after_the_first_run_now() -> None:
+    """A provider enabled once the map exists starts now: all identified before it is relinked."""
+    ctrl = _controller(linked_domains={}, enabled_domains=["spotify"])
+    _queue(ctrl)
+
+    with patch(f"{_CONTROLLER}.time", return_value=float(NOW)):
+        await ctrl._link_library_to_musicbrainz()
+
+    _mass(ctrl).config.set_raw_core_config_value.assert_called_once_with(
+        "metadata", CONF_MUSICBRAINZ_LINKED_DOMAINS, [f"spotify:{NOW}"]
+    )
+
+
+async def test_link_run_skips_a_malformed_linked_domain_entry() -> None:
+    """An entry without a usable epoch is dropped, so its provider starts over like a new one."""
+    ctrl = _controller(
+        linked_domains={"spotify": 100}, enabled_domains=["spotify", "deezer", "tidal"]
+    )
+    _mass(ctrl).config.get_raw_core_config_value.return_value = [
+        "spotify:100",
+        "deezer",
+        "tidal:soon",
+    ]
+    _queue(ctrl)
+
+    with patch(f"{_CONTROLLER}.time", return_value=float(NOW)):
+        await ctrl._link_library_to_musicbrainz()  # must not raise
+
+    _mass(ctrl).config.set_raw_core_config_value.assert_called_once_with(
+        "metadata",
+        CONF_MUSICBRAINZ_LINKED_DOMAINS,
+        [f"deezer:{NOW}", "spotify:100", f"tidal:{NOW}"],
+    )
+
+
+# --------------------------------------------------------------------------- #
+#  persistence of the linked domains                                           #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("entries", [["spotify:100"], []])
+async def test_linked_domains_survive_a_core_config_save(
+    metadata_controller: MetaDataController, entries: list[str]
+) -> None:
+    """The map is a declared, hidden setting, so saving the metadata settings carries it over."""
+    mass = metadata_controller.mass
+    mass.config.set_raw_core_config_value("metadata", CONF_MUSICBRAINZ_LINKED_DOMAINS, entries)
+
+    await mass.config.save_core_config("metadata", {CONF_THUMB_CACHE_MAX_SIZE: 1000})
+
+    assert (
+        mass.config.get_raw_core_config_value("metadata", CONF_MUSICBRAINZ_LINKED_DOMAINS)
+        == entries
+    )
+    config = await mass.config.get_core_config("metadata")
+    assert config.values[CONF_MUSICBRAINZ_LINKED_DOMAINS].hidden
 
 
 # --------------------------------------------------------------------------- #
@@ -533,6 +701,22 @@ async def _add_album(
     )
 
 
+async def _add_artist(mass: MusicAssistant, *, looked_up: int | None) -> Artist:
+    """Add an identified library artist mapped to qobuz with the given MusicBrainz lookup marker."""
+    return await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Radiohead",
+            provider_mappings={
+                ProviderMapping(item_id="rh", provider_domain="qobuz", provider_instance="qobuz_1")
+            },
+            external_ids={(ExternalID.MB_ARTIST, ARTIST_ID)},
+            metadata=MediaItemMetadata(last_musicbrainz_lookup=looked_up),
+        )
+    )
+
+
 async def _linked_ids(mass: MusicAssistant) -> set[str]:
     """Run the link run against the real library and return the item ids it picked up."""
     with (
@@ -577,23 +761,45 @@ async def test_link_run_relinks_identified_items_that_miss_a_new_providers_links
         mass, "Mapped", looked_up=now - 20, mbid=RELEASE_ID, domains=("qobuz", "spotify")
     )
     await _add_album(mass, "Recent", looked_up=now, mbid=RELEASE_ID)
-    artist = await mass.music.artists.add_item_to_library(
-        Artist(
-            item_id="0",
-            provider="library",
-            name="Radiohead",
-            provider_mappings={
-                ProviderMapping(item_id="rh", provider_domain="qobuz", provider_instance="qobuz_1")
-            },
-            external_ids={(ExternalID.MB_ARTIST, ARTIST_ID)},
-            metadata=MediaItemMetadata(last_musicbrainz_lookup=now - 20),
-        )
-    )
+    artist = await _add_artist(mass, looked_up=now - 20)
     mass.config.set_raw_core_config_value(
         "metadata", CONF_MUSICBRAINZ_LINKED_DOMAINS, [f"spotify:{now - 10}"]
     )
 
-    with patch.object(mass, "get_providers_for_user", Mock(return_value=[Mock(domain="spotify")])):
+    with patch.object(mass.config, "get_provider_configs", _provider_configs("spotify")):
         linked = await _linked_ids(mass)
 
     assert linked == {unlinked.item_id, artist.item_id}
+
+
+async def test_first_link_run_against_an_identified_library_relinks_nothing(
+    mass: MusicAssistant,
+) -> None:
+    """Items identified before the first run were linked as they were looked up: nothing is owed."""
+    now = int(time())
+    await _add_album(mass, "Identified", looked_up=now - 20, mbid=RELEASE_ID)
+    await _add_artist(mass, looked_up=now - 20)
+
+    with patch.object(mass.config, "get_provider_configs", _provider_configs("spotify")):
+        linked = await _linked_ids(mass)
+
+    assert linked == set()
+    assert mass.config.get_raw_core_config_value("metadata", CONF_MUSICBRAINZ_LINKED_DOMAINS) == [
+        "spotify:0"
+    ]
+
+
+async def test_relink_query_selects_identified_items_never_looked_up(mass: MusicAssistant) -> None:
+    """An id from tags leaves the marker unset; such an item was never linked and is selected."""
+    now = int(time())
+    tagged = await _add_album(mass, "Tagged", looked_up=None, mbid=RELEASE_ID)
+    early = await _add_album(mass, "Early", looked_up=now - 20, mbid=RELEASE_ID)
+    await _add_album(mass, "Late", looked_up=now, mbid=RELEASE_ID)
+    await _add_album(mass, "Unidentified", looked_up=None)
+
+    selected = await mass.music.albums.get_library_items_by_query(
+        extra_query_parts=[_relink_query(DB_TABLE_ALBUMS, MediaType.ALBUM, ExternalID.MB_ALBUM)],
+        extra_query_params={"domain": "spotify", "seen": now - 10},
+    )
+
+    assert {album.item_id for album in selected} == {tagged.item_id, early.item_id}
