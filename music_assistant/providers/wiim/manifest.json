@@ -4,7 +4,7 @@
   "stage": "stable",
   "name": "WiiM / LinkPlay",
   "description": "Discover and control WiiM, Audio Pro and other compatible LinkPlay speakers, including generic LinkPlay devices such as Edifier.",
-  "codeowners": ["@davidanthoff", "@music-assistant"],
+  "codeowners": ["@music-assistant"],
   "requirements": ["wiim==0.1.7", "pywiim==2.3.0"],
   "documentation": "https://music-assistant.io/player-support/wiim/",
   "mdns_discovery": ["_linkplay._tcp.local."]
