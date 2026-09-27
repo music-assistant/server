@@ -40,6 +40,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
+from music_assistant.controllers.music.favorites import filter_disliked
 from music_assistant.controllers.player_queues.autoplay import (
     AUTOPLAY_EXCLUDED_MEDIA_TYPES,
     AUTOPLAY_SERIES_MEDIA_TYPES,
@@ -74,6 +75,7 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items.metadata import MediaItemImage
     from music_assistant_models.queue_item import QueueItem
 
+    from music_assistant import MusicAssistant
     from music_assistant.controllers.player_queues.state import PlayerQueueData
     from music_assistant.providers.radio_playlist import RadioPlaylistProvider
 
@@ -531,6 +533,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # the tail cap below is a defensive ceiling so the unplayed tail never grows past
         # MANAGED_POOL_MAX.
         pool_tracks = await self._managed_pool.fill(queue_id, is_initial=False)
+        pool_tracks = await _without_disliked_tracks(self.mass, queue_data.userid, pool_tracks)
         if self._queue_data.get(queue_id) is not queue_data:
             # the queue was removed or re-registered while tracks were fetched
             return
@@ -680,6 +683,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         tracks = gate_tracks(
             [track for track in tracks if isinstance(track, Track)], snapshot, windows
         )
+        tracks = await _without_disliked_tracks(self.mass, queue_data.userid, tracks)
         queue_items = [build_queue_item(queue_id, x) for x in tracks if x.available]
         if not queue_items:
             self.logger.info("Autoplay found no new tracks to add for queue %s", queue.display_name)
@@ -1127,6 +1131,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # Drop anything already queued/played
         queued_set = set(queue_track_items)
         tracks = [track for track in dynamic_tracks if track not in queued_set]
+        tracks = await _without_disliked_tracks(self.mass, queue_data.userid, tracks)
         if allowed is None:
             return tracks
         # steering is only a preference, so drop what the user has no music source for
@@ -1199,3 +1204,21 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # the cancelled buffer stays attached: it marks the source as aborted for
         # the flow stream's accounting and fails is_valid() for any later reuse
         await audio_buffer.clear()
+
+
+async def _without_disliked_tracks(
+    mass: MusicAssistant, userid: str | None, tracks: list[Track]
+) -> list[Track]:
+    """
+    Drop the tracks the given user disliked.
+
+    Only for playback Music Assistant picks itself: what the user asks for by name is never
+    filtered.
+
+    :param mass: The Music Assistant instance.
+    :param userid: The queue's playback user; an anonymous queue (None) is not filtered.
+    :param tracks: The candidate tracks.
+    """
+    if not userid or not tracks:
+        return tracks
+    return filter_disliked(tracks, await mass.music.favorites.disliked_track_keys(userid))
