@@ -567,6 +567,24 @@ async def test_provider_tracks_are_matched_by_isrc_before_position() -> None:
     harness.provider_album_tracks.assert_awaited_once_with("sp-album", "spotify_1")
 
 
+async def test_local_server_tracklists_are_left_alone() -> None:
+    """A local server pushes its own track mappings when it syncs, so its tracklist is not fetched."""
+    plex_album = ProviderMapping(
+        item_id="plex-album", provider_domain="plex", provider_instance="plex_1"
+    )
+    db_tracks = [_library_track("t1", 1)]
+    local_server = Mock()
+    local_server.is_streaming_provider = False
+    with (
+        _album_harness({"plex-album": [_provider_track("px-1", 1)]}) as harness,
+        patch.object(harness.ctrl.mass, "get_provider", return_value=local_server),
+    ):
+        await harness.ctrl.link_album_tracks(_library_album("1", plex_album), db_tracks, None)
+
+    harness.provider_album_tracks.assert_not_awaited()
+    assert harness.linked() == []
+
+
 async def test_provider_tracks_sharing_an_isrc_still_need_a_close_duration() -> None:
     """A reused ISRC does not link a provider track whose length is far off."""
     db_tracks = [_library_track("t1", 1, isrcs=["GBSTK0700001"])]

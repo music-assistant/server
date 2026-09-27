@@ -576,12 +576,18 @@ class AlbumsController(MediaControllerBase[Album]):
         """
         if not db_tracks:
             return
-        # one tracklist per provider domain: the first mapping of each stands for it
+        # one tracklist per streaming service, its first mapping standing for it; a local
+        # server pushes its own track mappings when it syncs, so its tracklist is left alone
         album_mappings: dict[str, ProviderMapping] = {}
         for mapping in sorted(
             album.provider_mappings,
             key=lambda x: (x.provider_domain, x.provider_instance, x.item_id),
         ):
+            provider = self.mass.get_provider(
+                mapping.provider_instance, provider_type=MusicProvider
+            )
+            if provider is None or not provider.is_streaming_provider:
+                continue
             album_mappings.setdefault(mapping.provider_domain, mapping)
         track_domains = [
             {x.provider_domain for x in track.provider_mappings} for track in db_tracks
