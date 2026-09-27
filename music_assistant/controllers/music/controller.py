@@ -1259,7 +1259,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # a release group listed in an artist's discography is resolved, on demand, to
             # the album on one of the music providers
             if media_type == MediaType.ALBUM:
-                return await self.albums.resolve_musicbrainz_release_group(item_id)
+                return await self.albums.resolve_musicbrainz_release_group(
+                    item_id, allow_update_metadata=allow_update_metadata
+                )
             raise MediaNotFoundError(
                 f"MusicBrainz {media_type.value} {item_id} can not be resolved"
             )

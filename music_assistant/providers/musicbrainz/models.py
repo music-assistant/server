@@ -21,6 +21,16 @@ def replace_hyphens(
     return data
 
 
+def release_year(date: str | None) -> int | None:
+    """
+    Read the year off a MusicBrainz date of any precision.
+
+    :param date: MusicBrainz date, as a year, year-month or full date, if known.
+    :return: The year, or None if the date is absent or unparsable.
+    """
+    return int(year) if date and (year := date[:4]).isdigit() else None
+
+
 @dataclass
 class MusicBrainzTag(DataClassDictMixin):
     """Model for a (basic) Tag object as received from the MusicBrainz API."""
@@ -132,8 +142,7 @@ class MusicBrainzReleaseGroup(DataClassDictMixin):
     @property
     def first_release_year(self) -> int | None:
         """Return the year the release group was first released, if MusicBrainz knows it."""
-        year = (self.first_release_date or "")[:4]
-        return int(year) if year.isdigit() else None
+        return release_year(self.first_release_date)
 
 
 @dataclass

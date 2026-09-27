@@ -22,6 +22,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
@@ -32,7 +33,6 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaCollection,
     MediaItemImage,
-    MediaItemMetadata,
     ProviderMapping,
     Track,
     UniqueList,
@@ -60,15 +60,15 @@ from music_assistant.helpers.compare import (
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.coverartarchive import CAA_BASE_URL
 
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
+    from music_assistant.providers.coverartarchive import CoverArtArchiveMetadataProvider
     from music_assistant.providers.musicbrainz import MusicbrainzProvider, MusicBrainzReleaseGroup
 
 
@@ -271,9 +271,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
         return await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain)
 
-    async def discography(
-        self, item_id: str, provider_instance_id_or_domain: str
-    ) -> UniqueList[Album]:
+    async def discography(self, item_id: str, provider_instance_id_or_domain: str) -> list[Album]:
         """
         Return the discography of a library artist as MusicBrainz knows it, newest first.
 
@@ -290,39 +288,58 @@ class ArtistsController(MediaControllerBase[Artist]):
         artist = await self.get_library_item(item_id)
         musicbrainz = cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
         if musicbrainz is None:
-            return UniqueList()
-        if not artist.mbid:
-            await self.mass.metadata.link_item_to_musicbrainz(artist)
-            artist = await self.get_library_item(item_id)
-        # the Various Artists entity is nobody's discography
-        if not artist.mbid or artist.mbid == VARIOUS_ARTISTS_MBID:
-            return UniqueList()
-        release_groups = await musicbrainz.browse_release_groups_by_artist(artist.mbid)
-        if not release_groups:
-            return UniqueList()
+            return []
         library_albums = await self.albums(item_id, "library")
-        albums_by_release_group = {
-            album.get_external_id(ExternalID.MB_RELEASEGROUP): album
-            for album in await self.mass.music.albums.get_library_items_by_external_ids(
-                {(ExternalID.MB_RELEASEGROUP, group.id) for group in release_groups}
-            )
-        }
+        mbid = artist.mbid
+        if not mbid:
+            # an artist not yet identified on MusicBrainz is identified for this listing only;
+            # storing the id is left to the background linking, a read writes nothing
+            mb_artist = await musicbrainz.resolve_artist(artist, library_albums, [])
+            mbid = mb_artist.id if mb_artist else None
+        # the Various Artists entity is nobody's discography
+        if not mbid or mbid == VARIOUS_ARTISTS_MBID:
+            return []
+        release_groups = await musicbrainz.browse_release_groups_by_artist(mbid)
+        if not release_groups:
+            return []
+        albums_by_release_group: dict[str, Album] = {}
+        unidentified_albums: list[Album] = []
+        for album in library_albums:
+            if release_group_id := album.get_external_id(ExternalID.MB_RELEASEGROUP):
+                albums_by_release_group[release_group_id] = album
+            else:
+                unidentified_albums.append(album)
         artist_mapping = ItemMapping.from_item(artist)
-        discography: UniqueList[Album] = UniqueList()
+        discography: list[Album] = []
         for group in release_groups:
-            library_album = albums_by_release_group.get(group.id) or next(
-                (album for album in library_albums if compare_album_name(album.name, group.title)),
-                None,
-            )
+            library_album = albums_by_release_group.get(group.id)
+            if library_album is None:
+                # a library album not identified on MusicBrainz is the first group of its name
+                # and that one only: a same-titled live album or reissue is its own entry
+                library_album = next(
+                    (
+                        album
+                        for album in unidentified_albums
+                        if compare_album_name(album.name, group.title)
+                    ),
+                    None,
+                )
+                if library_album is not None:
+                    unidentified_albums.remove(library_album)
             if library_album is not None:
-                # a reissue or a bundled single is a second group for one library album,
-                # which the unique list keeps once
                 discography.append(library_album)
                 continue
             discography.append(
                 _album_from_release_group(
                     group, artist_mapping, musicbrainz.album_type_from_release_group(group)
                 )
+            )
+        coverartarchive = cast(
+            "CoverArtArchiveMetadataProvider | None", self.mass.get_provider("coverartarchive")
+        )
+        if coverartarchive is not None:
+            await _add_cover_art(
+                coverartarchive, [album for album in discography if album.provider == "musicbrainz"]
             )
         return discography
 
@@ -1304,16 +1321,30 @@ def _album_from_release_group(
         album_type=album_type,
         external_ids={(ExternalID.MB_RELEASEGROUP, release_group.id)},
         provider_mappings=set(),
-        metadata=MediaItemMetadata(
-            images=UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=f"{CAA_BASE_URL}/release-group/{release_group.id}/front-500",
-                        provider="coverartarchive",
-                        remotely_accessible=True,
-                    )
-                ]
-            )
-        ),
     )
+
+
+async def _add_cover_art(
+    coverartarchive: CoverArtArchiveMetadataProvider, albums: Sequence[Album]
+) -> None:
+    """Give each MusicBrainz album the front cover the Cover Art Archive has for it, if any."""
+    limiter = asyncio.Semaphore(4)
+
+    async def _cover_url(album: Album) -> str | None:
+        async with limiter:
+            try:
+                return await coverartarchive.get_release_group_cover_url(album.item_id)
+            except ResourceTemporarilyUnavailable:
+                # an archive that cannot be asked right now costs the listing a cover, no more
+                return None
+
+    for album, url in zip(albums, await asyncio.gather(*map(_cover_url, albums)), strict=True):
+        if url:
+            album.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=url,
+                    provider=coverartarchive.domain,
+                    remotely_accessible=True,
+                )
+            )

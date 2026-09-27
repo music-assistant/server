@@ -38,7 +38,6 @@ from music_assistant.models.metadata_provider import MetadataProvider
 from .api_client import MusicBrainzAPIClient
 from .constants import (
     DISCOGRAPHY_MAX_PAGES,
-    DISCOGRAPHY_PAGE_SIZE,
     DISCOGRAPHY_PRIMARY_TYPES,
     LUCENE_SPECIAL,
     MAX_BARCODE_DETAIL_FETCHES,
@@ -65,6 +64,7 @@ from .models import (
     MusicBrainzRelease,
     MusicBrainzReleaseGroup,
     MusicBrainzTag,
+    release_year,
 )
 from .recommendations import MusicBrainzRecommendationManager
 
@@ -479,7 +479,7 @@ class MusicbrainzProvider(MetadataProvider):
         years = [
             year
             for recording in recordings
-            if (year := _release_year(recording.first_release_date or "")) is not None
+            if (year := release_year(recording.first_release_date)) is not None
         ]
         return min(years, default=None)
 
@@ -580,8 +580,8 @@ class MusicbrainzProvider(MetadataProvider):
             result = await self._api_client.get_browse_data(
                 "release-group",
                 artist=artist_mbid,
-                limit=str(DISCOGRAPHY_PAGE_SIZE),
-                offset=str(page * DISCOGRAPHY_PAGE_SIZE),
+                limit=str(RELEASE_GROUP_BROWSE_LIMIT),
+                offset=str(page * RELEASE_GROUP_BROWSE_LIMIT),
             )
             if not result or not (listing := result.get("release-groups")):
                 break
@@ -591,7 +591,7 @@ class MusicbrainzProvider(MetadataProvider):
                     release_group = MusicBrainzReleaseGroup.from_raw(entry)
                     if release_group.primary_type in DISCOGRAPHY_PRIMARY_TYPES:
                         release_groups.append(release_group)
-            offset = result.get("release-group-offset", page * DISCOGRAPHY_PAGE_SIZE)
+            offset = result.get("release-group-offset", page * RELEASE_GROUP_BROWSE_LIMIT)
             if offset + len(listing) >= result.get("release-group-count", 0):
                 break
         # a date sorts after the empty string, so undated groups end up last
@@ -707,7 +707,7 @@ class MusicbrainzProvider(MetadataProvider):
         if not result or not (release_groups := result[1]):
             return None
         # the release groups are sorted oldest first, and undated ones sort last
-        release_year = _release_year(release_groups[0][1])
+        searched_year = release_year(release_groups[0][1])
         # the release found already dates the song, so a lookup that fails costs this song
         # precision rather than the year the search already supplied
         first_release_year: int | None = None
@@ -716,12 +716,12 @@ class MusicbrainzProvider(MetadataProvider):
                 [release_group.id for release_group, _ in release_groups]
             )
         if first_release_year is None:
-            return release_year
-        if release_year is None:
+            return searched_year
+        if searched_year is None:
             return first_release_year
-        if release_year - first_release_year > MIN_FIRST_RELEASE_CORRECTION_YEARS:
+        if searched_year - first_release_year > MIN_FIRST_RELEASE_CORRECTION_YEARS:
             return first_release_year
-        return release_year
+        return searched_year
 
     @staticmethod
     def _link_type_for_relation(relation: MusicBrainzRelation) -> LinkType | None:
@@ -918,7 +918,7 @@ class MusicbrainzProvider(MetadataProvider):
         years = [
             year
             for release_group in result.get("release-groups", [])
-            if (year := _release_year(release_group.get("first-release-date") or "")) is not None
+            if (year := release_year(release_group.get("first-release-date"))) is not None
         ]
         return min(years, default=None)
 
@@ -988,7 +988,7 @@ class MusicbrainzProvider(MetadataProvider):
             release
             for release in await self.browse_releases_by_release_group(release_group_id)
             if release.status == "Official"
-            and _is_digital(release)
+            and is_digital_release(release)
             and (library_track_count is None or _track_count(release) == library_track_count)
         ]
         if len(editions) != 1:
@@ -1074,6 +1074,15 @@ def relation_urls(relations: Iterable[MusicBrainzRelation] | None) -> list[str]:
     return urls
 
 
+def is_digital_release(release: MusicBrainzBarcodeRelease) -> bool:
+    """
+    Return whether a MusicBrainz release has a digital medium.
+
+    :param release: The release as a barcode search or a release group browse lists it.
+    """
+    return any(medium.format == "Digital Media" for medium in release.media)
+
+
 def _is_public_catalog_url(url: str) -> bool:
     """Return whether a URL points at a public catalog host MusicBrainz links to as given."""
     if not url.startswith(("http://", "https://")):
@@ -1115,15 +1124,10 @@ def _edition_rank(release: MusicBrainzBarcodeRelease) -> tuple[bool, bool, bool,
     """Return the sort key ranking a barcode's releases, the likeliest edition first."""
     return (
         release.status != "Official",
-        not _is_digital(release),
+        not is_digital_release(release),
         release.country not in ("XW", "XE"),
         release.date or "9999",
     )
-
-
-def _is_digital(release: MusicBrainzBarcodeRelease) -> bool:
-    """Return whether a release has a digital medium."""
-    return any(medium.format == "Digital Media" for medium in release.media)
 
 
 def _track_count(release: MusicBrainzBarcodeRelease) -> int:
@@ -1182,16 +1186,6 @@ def _is_various_artists_release(release: dict[str, Any]) -> bool:
         (credit.get("artist") or {}).get("id") == VARIOUS_ARTISTS_MBID
         for credit in release.get("artist-credit") or ()
     )
-
-
-def _release_year(release_date: str) -> int | None:
-    """
-    Read the year off a MusicBrainz date of any precision.
-
-    :param release_date: MusicBrainz date, as a year, year-month or full date.
-    :return: The year, or None if the date is absent or unparsable.
-    """
-    return int(year) if (year := release_date[:4]).isdigit() else None
 
 
 def _release_datetime(release_date: str | None) -> datetime | None:

@@ -68,13 +68,13 @@ REVERSE_URL_HOSTS: tuple[str, ...] = (
 MAX_REVERSE_URL_LOOKUPS = 3
 MAX_REF_ITEMS = 3
 MAX_BARCODE_DETAIL_FETCHES = 2
-# MusicBrainz' per-request maximum: a release group with more editions than fit on one
-# page is not identified at all, so the page is as large as it can be.
+# MusicBrainz' per-request maximum. A release group with more editions than fit on one
+# page is not identified at all, and an artist's discography is browsed in pages of this
+# size, so the page is as large as it can be.
 RELEASE_GROUP_BROWSE_LIMIT = 100
 
-# An artist's discography is browsed in pages of MusicBrainz' per-request maximum and cut
-# off after this many pages; only a catalog-like artist has more release groups than that.
-DISCOGRAPHY_PAGE_SIZE = 100
+# An artist's discography is cut off after this many pages; only a catalog-like artist has
+# more release groups than that.
 DISCOGRAPHY_MAX_PAGES = 5
 # The release group types that make up a discography: a broadcast or other type is noise.
 DISCOGRAPHY_PRIMARY_TYPES: tuple[str, ...] = ("Album", "EP", "Single")

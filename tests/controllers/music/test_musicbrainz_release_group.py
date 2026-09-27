@@ -122,7 +122,7 @@ def _harness(
     editions: Sequence[MusicBrainzBarcodeRelease] = (),
     releases: Sequence[MusicBrainzRelease] = (),
     loaded: dict[str, list[str]] | None = None,
-    providers: Sequence[Mock] = (),
+    providers: Sequence[Mock] | None = None,
     albums: dict[tuple[str, str], Album] | None = None,
 ) -> Iterator[_Harness]:
     """
@@ -131,7 +131,8 @@ def _harness(
     :param editions: The releases MusicBrainz lists for the release group.
     :param releases: The full release lookups MusicBrainz answers, by release id.
     :param loaded: Provider instance ids per loaded provider domain, for the links.
-    :param providers: The music providers the user may see, asked by barcode.
+    :param providers: The music providers the user may see, asked by barcode; every loaded
+        instance unless given.
     :param albums: The album each (provider instance, item id) resolves to; others are missing.
     """
     releases_by_id = {release.id: release for release in releases}
@@ -151,6 +152,12 @@ def _harness(
             _instance(instance_id) for instance_id in (loaded or {}).get(domain, [])
         ]
     )
+    if providers is None:
+        providers = [
+            _music_provider(instance_id)
+            for instance_ids in (loaded or {}).values()
+            for instance_id in instance_ids
+        ]
     ctrl.mass.music.providers = list(providers)
 
     async def _get(item_id: str, instance: str, **_kwargs: object) -> Album:
@@ -200,7 +207,7 @@ async def test_resolve_takes_the_links_of_the_official_digital_edition() -> None
     assert album is spotify_album
     harness.musicbrainz.browse_releases_by_release_group.assert_awaited_once_with(RELEASE_GROUP_ID)
     harness.musicbrainz.get_release_details.assert_awaited_once_with("rel-digital")
-    harness.get.assert_awaited_once_with(SPOTIFY_ALBUM_ID, "spotify_1")
+    harness.get.assert_awaited_once_with(SPOTIFY_ALBUM_ID, "spotify_1", allow_update_metadata=True)
 
 
 async def test_resolve_moves_on_to_the_next_linked_provider() -> None:
@@ -216,9 +223,61 @@ async def test_resolve_moves_on_to_the_next_linked_provider() -> None:
 
     assert album is tidal_album
     assert harness.get.await_args_list == [
-        call(SPOTIFY_ALBUM_ID, "spotify_1"),
-        call(TIDAL_ALBUM_ID, "tidal_1"),
+        call(SPOTIFY_ALBUM_ID, "spotify_1", allow_update_metadata=True),
+        call(TIDAL_ALBUM_ID, "tidal_1", allow_update_metadata=True),
     ]
+
+
+async def test_resolve_keeps_to_the_music_sources_the_user_may_see() -> None:
+    """A link to a source the user may not see is passed over, however well it resolves."""
+    spotify_album = create_album("spotify_1", SPOTIFY_ALBUM_ID)
+    tidal_album = create_album("tidal_1", TIDAL_ALBUM_ID)
+    albums = {
+        ("spotify_1", SPOTIFY_ALBUM_ID): spotify_album,
+        ("tidal_1", TIDAL_ALBUM_ID): tidal_album,
+    }
+    with _harness(
+        editions=[_edition("rel-digital", urls=[SPOTIFY_ALBUM_URL])],
+        releases=[_release("rel-digital", urls=[SPOTIFY_ALBUM_URL, TIDAL_ALBUM_URL])],
+        loaded={"spotify": ["spotify_1"], "tidal": ["tidal_1"]},
+        providers=[_music_provider("tidal_1")],
+        albums=albums,
+    ) as harness:
+        album = await harness.resolve()
+
+    assert album is tidal_album
+    harness.get.assert_awaited_once_with(TIDAL_ALBUM_ID, "tidal_1", allow_update_metadata=True)
+
+    with (
+        _harness(
+            editions=[_edition("rel-digital", urls=[SPOTIFY_ALBUM_URL])],
+            releases=[_release("rel-digital", urls=[SPOTIFY_ALBUM_URL])],
+            loaded={"spotify": ["spotify_1"]},
+            providers=[],
+            albums=albums,
+        ) as harness,
+        pytest.raises(MediaNotFoundError),
+    ):
+        await harness.resolve()
+
+    harness.get.assert_not_awaited()
+
+
+async def test_resolve_asks_by_barcode_only_when_no_link_resolves() -> None:
+    """The barcode fan-out over the providers is spent only when none of the links resolves."""
+    spotify_album = create_album("spotify_1", SPOTIFY_ALBUM_ID)
+    tidal = _music_provider("tidal_1", album=create_album("tidal_1", TIDAL_ALBUM_ID))
+    with _harness(
+        editions=[_edition("rel-digital", urls=[SPOTIFY_ALBUM_URL])],
+        releases=[_release("rel-digital", urls=[SPOTIFY_ALBUM_URL])],
+        loaded={"spotify": ["spotify_1"]},
+        providers=[_music_provider("spotify_1"), tidal],
+        albums={("spotify_1", SPOTIFY_ALBUM_ID): spotify_album},
+    ) as harness:
+        album = await harness.resolve()
+
+    assert album is spotify_album
+    tidal.get_album_by_external_id.assert_not_awaited()
 
 
 async def test_resolve_asks_the_unlinked_providers_by_barcode() -> None:
@@ -244,8 +303,8 @@ async def test_resolve_asks_the_unlinked_providers_by_barcode() -> None:
     deezer.get_album_by_external_id.assert_awaited_once_with(BARCODE, ExternalID.BARCODE)
     tidal.get_album_by_external_id.assert_awaited_once_with(BARCODE, ExternalID.BARCODE)
     assert harness.get.await_args_list == [
-        call(SPOTIFY_ALBUM_ID, "spotify_1"),
-        call(TIDAL_ALBUM_ID, "tidal_1"),
+        call(SPOTIFY_ALBUM_ID, "spotify_1", allow_update_metadata=True),
+        call(TIDAL_ALBUM_ID, "tidal_1", allow_update_metadata=True),
     ]
 
 
@@ -306,7 +365,11 @@ async def test_get_item_resolves_a_musicbrainz_album_on_demand() -> None:
     assert await controller.get_item(MediaType.ALBUM, RELEASE_GROUP_ID, "musicbrainz") is album
     assert await controller.get_item_by_uri(f"musicbrainz://album/{RELEASE_GROUP_ID}") is album
 
-    assert resolve.await_args_list == [call(RELEASE_GROUP_ID), call(RELEASE_GROUP_ID)]
+    # the metadata flag is handed on: a lookup by id refreshes by default, one by uri does not
+    assert resolve.await_args_list == [
+        call(RELEASE_GROUP_ID, allow_update_metadata=True),
+        call(RELEASE_GROUP_ID, allow_update_metadata=False),
+    ]
 
 
 async def test_get_item_knows_no_other_musicbrainz_items() -> None:
@@ -335,7 +398,7 @@ async def test_add_item_to_library_takes_a_musicbrainz_album_uri(mass: MusicAssi
             f"musicbrainz://album/{RELEASE_GROUP_ID}"
         )
 
-    resolve.assert_awaited_once_with(RELEASE_GROUP_ID)
+    resolve.assert_awaited_once_with(RELEASE_GROUP_ID, allow_update_metadata=False)
     assert isinstance(library_album, Album)
     assert library_album.provider == "library"
     assert {(m.provider_domain, m.item_id) for m in library_album.provider_mappings} == {

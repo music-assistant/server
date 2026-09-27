@@ -58,7 +58,7 @@ from music_assistant.helpers.external_ids import (
 )
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.musicbrainz.provider import relation_urls
+from music_assistant.providers.musicbrainz.provider import is_digital_release, relation_urls
 
 from .base import EXTERNAL_ID_LOOKUP_ERRORS, MAX_EXTERNAL_ID_MATCH_LOOKUPS, MediaControllerBase
 
@@ -546,16 +546,20 @@ class AlbumsController(MediaControllerBase[Album]):
                     result.extend(await provider.get_album_versions(mapped_id))
         return result
 
-    async def resolve_musicbrainz_release_group(self, release_group_id: str) -> Album:
+    async def resolve_musicbrainz_release_group(
+        self, release_group_id: str, allow_update_metadata: bool = True
+    ) -> Album:
         """
-        Return the album a MusicBrainz release group is, on one of the music providers.
+        Return the album a MusicBrainz release group is, on one of the user's music providers.
 
         The group's official digital edition is taken from the first music provider that has
-        it, found through the links MusicBrainz keeps or by the edition's barcode. An album
-        already in the library is returned as the library album.
+        it, found through the links MusicBrainz keeps or, failing those, by the edition's
+        barcode. An album already in the library is returned as the library album.
 
         :param release_group_id: MusicBrainz release group id.
-        :raises MediaNotFoundError: No music provider has the album.
+        :param allow_update_metadata: Whether the album's metadata may be refreshed on the way.
+        :raises ProviderUnavailableError: The MusicBrainz provider is not loaded.
+        :raises MediaNotFoundError: None of the user's music providers has the album.
         """
         musicbrainz = cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
         if musicbrainz is None:
@@ -565,30 +569,35 @@ class AlbumsController(MediaControllerBase[Album]):
             for release in await musicbrainz.browse_releases_by_release_group(release_group_id)
             if release.status == "Official"
         ]
-        candidates: list[ProviderMapping] = []
         if editions:
             # the digital editions of one group carry different ids on the providers, so the
             # links of a single chosen edition are taken, never those of the whole group
             release = await musicbrainz.get_release_details(
                 min(editions, key=_streaming_edition_rank).id
             )
-            candidates = await provider_mappings_from_urls(
-                self.mass, relation_urls(release.relations), MediaType.ALBUM, set()
-            )
-            candidates += await self._album_candidates_by_barcode(
-                release.barcode, {candidate.provider_domain for candidate in candidates}
-            )
-        for candidate in candidates:
-            try:
-                return await self.get(candidate.item_id, candidate.provider_instance)
-            except (MusicAssistantError, aiohttp.ClientError, TimeoutError) as err:
-                self.logger.debug(
-                    "Release group %s is not available as album %s on %s: %s",
-                    release_group_id,
-                    candidate.item_id,
-                    candidate.provider_instance,
-                    err,
+            # a link names an instance of any loaded provider, while the user may only be
+            # handed an album from a music source it may see
+            visible_instances = {provider.instance_id for provider in self.mass.music.providers}
+            linked = [
+                candidate
+                for candidate in await provider_mappings_from_urls(
+                    self.mass, relation_urls(release.relations), MediaType.ALBUM, set()
                 )
+                if candidate.provider_instance in visible_instances
+            ]
+            if album := await self._first_available_album(
+                linked, release_group_id, allow_update_metadata
+            ):
+                return album
+            # a barcode lookup fans out over every other provider, so it is spent only when
+            # none of the links resolves
+            by_barcode = await self._album_candidates_by_barcode(
+                release.barcode, {candidate.provider_domain for candidate in linked}
+            )
+            if album := await self._first_available_album(
+                by_barcode, release_group_id, allow_update_metadata
+            ):
+                return album
         msg = f"Release group {release_group_id} is not available on any music provider"
         raise MediaNotFoundError(
             msg,
@@ -1068,6 +1077,30 @@ class AlbumsController(MediaControllerBase[Album]):
                 candidates.extend(prov_album.provider_mappings)
         return candidates
 
+    async def _first_available_album(
+        self,
+        candidates: Sequence[ProviderMapping],
+        release_group_id: str,
+        allow_update_metadata: bool,
+    ) -> Album | None:
+        """Return the first candidate its provider still serves as an album, if any."""
+        for candidate in candidates:
+            try:
+                return await self.get(
+                    candidate.item_id,
+                    candidate.provider_instance,
+                    allow_update_metadata=allow_update_metadata,
+                )
+            except (MusicAssistantError, aiohttp.ClientError, TimeoutError) as err:
+                self.logger.debug(
+                    "Release group %s is not available as album %s on %s: %s",
+                    release_group_id,
+                    candidate.item_id,
+                    candidate.provider_instance,
+                    err,
+                )
+        return None
+
     async def _resolve_album_evidence(
         self,
         db_album: Album,
@@ -1314,7 +1347,7 @@ def _canonical_album_barcodes(album: Album) -> set[str]:
 def _streaming_edition_rank(release: MusicBrainzBarcodeRelease) -> tuple[bool, bool, bool, str]:
     """Return the sort key ranking a group's official editions, the one the services carry first."""
     return (
-        not any(medium.format == "Digital Media" for medium in release.media),
+        not is_digital_release(release),
         not relation_urls(release.relations),
         release.country not in ("XW", "XE"),
         release.date or "9999",

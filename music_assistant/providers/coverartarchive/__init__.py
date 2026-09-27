@@ -59,7 +59,7 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
         if not mbid:
             return None
 
-        image_url = await self._get_cover_art_url(mbid)
+        image_url = await self.get_release_group_cover_url(mbid)
         if not image_url:
             return None
 
@@ -78,11 +78,12 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
         )
 
     @use_cache(86400 * 30)
-    async def _get_cover_art_url(self, release_group_id: str) -> str | None:
+    async def get_release_group_cover_url(self, release_group_id: str) -> str | None:
         """
-        Retrieve cover art URL for a release group.
+        Return the URL of a release group's front cover, or None if the archive has none.
 
         :param release_group_id: MusicBrainz release group ID.
+        :raises ResourceTemporarilyUnavailable: The archive could not be asked right now.
         """
         # Try 1200px first, fall back to 500px
         try:

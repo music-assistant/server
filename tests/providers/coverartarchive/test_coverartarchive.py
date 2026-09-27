@@ -36,7 +36,7 @@ def _response_cm(response: MagicMock) -> MagicMock:
     return cm
 
 
-async def test_get_cover_art_url_returns_url_on_success(
+async def test_release_group_cover_url_is_the_resolved_url_on_success(
     provider: CoverArtArchiveMetadataProvider,
 ) -> None:
     """A 200 response returns the resolved cover art URL."""
@@ -47,11 +47,11 @@ async def test_get_cover_art_url_returns_url_on_success(
         return_value=_response_cm(response)
     )
 
-    result = await provider._get_cover_art_url("mbid")
+    result = await provider.get_release_group_cover_url("mbid")
     assert result == "https://coverartarchive.org/release-group/mbid/front-1200"
 
 
-async def test_get_cover_art_url_returns_none_when_missing(
+async def test_release_group_cover_url_is_none_when_missing(
     provider: CoverArtArchiveMetadataProvider,
 ) -> None:
     """A 404 for every size means there is genuinely no cover art, so None is returned."""
@@ -61,10 +61,10 @@ async def test_get_cover_art_url_returns_none_when_missing(
         return_value=_response_cm(response)
     )
 
-    assert await provider._get_cover_art_url("mbid") is None
+    assert await provider.get_release_group_cover_url("mbid") is None
 
 
-async def test_get_cover_art_url_propagates_transient_error(
+async def test_release_group_cover_url_propagates_a_transient_error(
     provider: CoverArtArchiveMetadataProvider,
 ) -> None:
     """A 5xx failure surfaces as ResourceTemporarilyUnavailable, not cached as 'no cover art'."""
@@ -76,4 +76,4 @@ async def test_get_cover_art_url_propagates_transient_error(
     )
 
     with pytest.raises(ResourceTemporarilyUnavailable):
-        await provider._get_cover_art_url("mbid")
+        await provider.get_release_group_cover_url("mbid")
