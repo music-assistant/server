@@ -66,7 +66,7 @@ def _appended(loader: Any) -> list[str]:
     return [x.media_item.item_id for x in loader.load.await_args.args[1]]
 
 
-def _pool(*, userid: str | None) -> tuple[ManagedPool, Any]:
+def _pool() -> tuple[ManagedPool, Any]:
     """Build a managed pool over a queue stand-in whose user disliked the DISLIKED track."""
     queues = MagicMock()
     queues.get_dynamic_source_tracks = AsyncMock(return_value=[_track(DISLIKED), _track(LIKED)])
@@ -78,7 +78,7 @@ def _pool(*, userid: str | None) -> tuple[ManagedPool, Any]:
 
 async def test_a_dynamic_batch_of_the_pool_skips_a_disliked_track() -> None:
     """The batch a station or mix hands the pool, first or later, has no disliked track."""
-    pool, _ = _pool(userid=USER_ID)
+    pool, _ = _pool()
 
     tracks = await pool._fetch_dynamic(MagicMock(), USER_ID)
 
@@ -87,7 +87,7 @@ async def test_a_dynamic_batch_of_the_pool_skips_a_disliked_track() -> None:
 
 async def test_a_dynamic_batch_of_only_disliked_tracks_is_empty() -> None:
     """The gate is hard: rather than play a dislike, the batch is empty."""
-    pool, queues = _pool(userid=USER_ID)
+    pool, queues = _pool()
     queues.get_dynamic_source_tracks = AsyncMock(return_value=[_track(DISLIKED)])
 
     assert await pool._fetch_dynamic(MagicMock(), USER_ID) == []
@@ -136,7 +136,7 @@ async def test_the_similar_tracks_fill_skips_a_disliked_track() -> None:
 
 async def test_an_anonymous_queue_is_not_filtered() -> None:
     """A queue nobody owns has no dislikes to apply, so nothing is looked up or dropped."""
-    pool, queues = _pool(userid=None)
+    pool, queues = _pool()
 
     tracks = await pool._fetch_dynamic(MagicMock(), None)
 
