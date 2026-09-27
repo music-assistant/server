@@ -42,7 +42,8 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
     """
 
     # the archive allows a client one request per second
-    throttler = ThrottlerManager(rate_limit=1, period=1)
+    # a thumbnail request must not hang on an archive outage: two attempts, then a 404
+    throttler = ThrottlerManager(rate_limit=1, period=1, retry_attempts=2, initial_backoff=2)
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
