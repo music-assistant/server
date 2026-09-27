@@ -2376,9 +2376,8 @@ class LocalFileSystemProvider(MusicProvider):
             and not await self.exists(mapping.url)
         ]
         # the item still has library tracks, so never drop its last mapping
-        if len(stale_mappings) < len(library_item.provider_mappings):
-            for prov_item_id in stale_mappings:
-                await controller.remove_provider_mapping(item_id, self.instance_id, prov_item_id)
+        for prov_item_id in stale_mappings[: len(library_item.provider_mappings) - 1]:
+            await controller.remove_provider_mapping(item_id, self.instance_id, prov_item_id)
         stale_images = {
             image.path
             for image in library_item.metadata.images or []

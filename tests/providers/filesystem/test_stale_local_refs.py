@@ -94,6 +94,26 @@ async def test_prune_never_drops_the_last_mapping(tmp_path: Path) -> None:
     controller.remove_provider_images.assert_not_called()
 
 
+async def test_prune_keeps_one_mapping_when_all_are_stale(tmp_path: Path) -> None:
+    """When every mapping points at a missing folder, all but one are dropped."""
+    provider = _make_provider(str(tmp_path))
+    library_item = MagicMock(
+        provider_mappings=[
+            _mapping("Artist/OldFolder1", "Artist/OldFolder1"),
+            _mapping("Artist/OldFolder2", "Artist/OldFolder2"),
+        ],
+        metadata=MagicMock(images=[]),
+    )
+    controller = MagicMock()
+    controller.get_library_item = AsyncMock(return_value=library_item)
+    controller.remove_provider_mapping = AsyncMock()
+    controller.remove_provider_images = AsyncMock()
+
+    await provider._prune_missing_local_refs(controller, 3)
+
+    controller.remove_provider_mapping.assert_awaited_once_with(3, INSTANCE_ID, "Artist/OldFolder1")
+
+
 async def test_process_deletions_prunes_survivors_not_removed_albums(tmp_path: Path) -> None:
     """A surviving album is pruned; an album emptied by the same deletion is removed instead."""
     provider = _make_provider(str(tmp_path))
