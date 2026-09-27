@@ -2057,16 +2057,20 @@ for more details.
         self, book: AbsLibraryItemExpandedBook
     ) -> set[NarratorHelper]:
         """Get narrators of an audiobook from its own metadata."""
-        if not book.media.metadata.narrators:
+        narrator_names = book.media.metadata.narrators
+        if not narrator_names:
             return set()
-        if (name_to_id := self._narrator_ids.get(book.library_id)) is None:
-            # a book carries narrator names only, so take their ABS ids from the library
+        name_to_id = self._narrator_ids.get(book.library_id)
+        # a book carries narrator names only, so take their ABS ids from the library. An
+        # unknown name means the library gained a narrator since we last looked, which is
+        # what a book reaching us over the socket does.
+        if name_to_id is None or not all(name in name_to_id for name in narrator_names):
             narrators = await self._client.get_library_narrators(library_id=book.library_id)
             name_to_id = {x.name: x.id_ for x in narrators}
             self._narrator_ids[book.library_id] = name_to_id
         return {
             NarratorHelper(id_=narrator_id, name=name)
-            for name in book.media.metadata.narrators
+            for name in narrator_names
             if (narrator_id := name_to_id.get(name))
         }
 
