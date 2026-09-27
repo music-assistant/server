@@ -15,9 +15,11 @@ from music_assistant_models.media_items import (
     MediaItemType,
     ProviderMapping,
     SearchResults,
+    Track,
 )
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.helpers.external_ids import is_valid_isrc
 from music_assistant.helpers.uri import canonical_provider_url, discogs_id_from_url, parse_uri
 
 if TYPE_CHECKING:
@@ -27,6 +29,7 @@ if TYPE_CHECKING:
     from music_assistant_models.enums import MediaType
 
     from music_assistant.mass import MusicAssistant
+    from music_assistant.providers.musicbrainz.models import MusicBrainzRecording
 
 # the trigram tokenizer of the FTS5 search index cannot match
 # search terms shorter than 3 characters
@@ -241,3 +244,19 @@ def discogs_external_id(
     if len(discogs_ids) != 1:
         return None
     return (ExternalID.DISCOGS, discogs_ids.pop())
+
+
+def fill_track_from_recording(track: Track, recording: MusicBrainzRecording) -> None:
+    """
+    Fill a track's MusicBrainz recording id and ISRCs in from its recording.
+
+    A recording id the track already carries is kept.
+
+    :param track: The track to fill in.
+    :param recording: The MusicBrainz recording the track is.
+    """
+    if not track.mbid:
+        track.mbid = recording.id
+    for isrc in recording.isrcs or ():
+        if is_valid_isrc(isrc):
+            track.add_external_id(ExternalID.ISRC, isrc)
