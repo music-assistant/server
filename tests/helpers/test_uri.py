@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import InvalidProviderURI
+from music_assistant_models.errors import InvalidProviderID, InvalidProviderURI
 
 from music_assistant.helpers.uri import (
     apple_storefront_from_url,
@@ -141,6 +141,34 @@ def test_canonical_provider_url(
 ) -> None:
     """Build the URL MusicBrainz links an item with, only where the provider has one."""
     assert canonical_provider_url(domain, media_type, SPOTIFY_ID, storefront) == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"https://open.spotify.com/artist/{SPOTIFY_ID[:10]}",
+        "https://tidal.com/artist/not-a-number",
+        "https://music.apple.com/us/artist/radiohead",
+    ],
+)
+async def test_parse_uri_rejects_a_malformed_id_when_validating(url: str) -> None:
+    """A share URL whose id the provider cannot have is rejected as an invalid id."""
+    with pytest.raises(InvalidProviderID):
+        await parse_uri(url, validate_id=True)
+
+
+async def test_parse_uri_validation_leaves_non_numeric_playlist_ids_alone() -> None:
+    """Tidal and Apple Music playlists carry non-numeric ids, only their catalog items are numeric."""
+    tidal_playlist = "7ab5d2b6-93fb-4181-a008-a1d18e2cebfa"
+    apple_playlist = "pl.f4d106fed2bd41149aaacabb233eb5eb"
+    assert await parse_uri(f"https://tidal.com/playlist/{tidal_playlist}", validate_id=True) == (
+        MediaType.PLAYLIST,
+        "tidal",
+        tidal_playlist,
+    )
+    assert await parse_uri(
+        f"https://music.apple.com/us/playlist/todays-hits/{apple_playlist}", validate_id=True
+    ) == (MediaType.PLAYLIST, "apple_music", apple_playlist)
 
 
 async def test_canonical_provider_url_round_trips_through_parse_uri() -> None:

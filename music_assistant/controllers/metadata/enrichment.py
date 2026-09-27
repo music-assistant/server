@@ -43,7 +43,6 @@ _MUSICBRAINZ_ID_TYPES = {
     ExternalID.MB_ALBUM,
     ExternalID.MB_RELEASEGROUP,
     ExternalID.MB_RECORDING,
-    ExternalID.MB_TRACK,
 }
 
 

@@ -255,6 +255,8 @@ async def test_artist_mbid_is_resolved_through_the_best_library_items() -> None:
     ]
     tracks = [
         _library_track("plain"),
+        # a track id from a cue sheet is not looked up, so it ranks with the plain tracks
+        _library_track("cue", {(ExternalID.MB_TRACK, MBID)}),
         _library_track("isrc", {(ExternalID.ISRC, "GBSTK0700001")}),
         _library_track("recording", {(ExternalID.MB_RECORDING, MBID)}),
         _library_track("plain-2"),

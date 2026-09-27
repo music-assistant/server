@@ -74,8 +74,12 @@ async def test_an_available_instance_is_preferred() -> None:
 
 async def test_malformed_ids_and_non_http_links_are_dropped() -> None:
     """A link naming an id the provider cannot have, or that is no web link at all, is no mapping."""
-    mass = _mass({"spotify": ["spotify_1"]})
-    urls = ["https://open.spotify.com/artist/abcdefghij", "mailto:info@radiohead.com"]
+    mass = _mass({"spotify": ["spotify_1"], "tidal": ["tidal_1"]})
+    urls = [
+        "https://open.spotify.com/artist/abcdefghij",
+        "https://tidal.com/artist/not-a-number",
+        "mailto:info@radiohead.com",
+    ]
 
     mappings = await provider_mappings_from_urls(mass, urls, MediaType.ARTIST, set())
 

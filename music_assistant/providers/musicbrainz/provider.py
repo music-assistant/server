@@ -593,7 +593,7 @@ class MusicbrainzProvider(MetadataProvider):
         ids = {
             target["id"]
             for relation in result.get("relations", [])
-            if (target := relation.get(entity)) and target.get("id")
+            if not relation.get("ended") and (target := relation.get(entity)) and target.get("id")
         }
         # a URL linked to several entities identifies none of them
         return ids.pop() if len(ids) == 1 else None

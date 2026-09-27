@@ -1160,6 +1160,21 @@ async def test_mbid_by_url_returns_the_single_linked_entity() -> None:
     assert get_data.await_args_list[0].kwargs["resource"] == SPOTIFY_ARTIST_URL
 
 
+async def test_mbid_by_url_ignores_ended_relations() -> None:
+    """A link MusicBrainz marks as ended no longer identifies the entity it once pointed to."""
+    reassigned = _url_lookup("artist", "former-owner", RADIOHEAD_MBID)
+    reassigned["relations"][0]["ended"] = True
+    provider, _ = _routed_provider({SPOTIFY_ARTIST_URL: reassigned})
+
+    assert await provider.get_mbid_by_url(SPOTIFY_ARTIST_URL, MediaType.ARTIST) == RADIOHEAD_MBID
+
+    dead = _url_lookup("artist", "former-owner")
+    dead["relations"][0]["ended"] = True
+    provider, _ = _routed_provider({SPOTIFY_ARTIST_URL: dead})
+
+    assert await provider.get_mbid_by_url(SPOTIFY_ARTIST_URL, MediaType.ARTIST) is None
+
+
 async def test_mbid_by_url_is_none_for_an_unknown_or_ambiguous_url() -> None:
     """An unknown URL, or one linked to several entities, identifies nothing."""
     provider, _ = _routed_provider(

@@ -19,6 +19,8 @@ BUILTIN_URL_SCHEMES: Final[tuple[str, ...]] = ("http://", "https://", "rtsp://",
 _CANONICAL_URL_TYPES: Final[frozenset[MediaType]] = frozenset(
     {MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK}
 )
+# providers whose artist, album and track ids are plain numbers
+_NUMERIC_ID_PROVIDERS: Final[frozenset[str]] = frozenset({"tidal", "deezer", "apple_music"})
 
 # share URL hosts of the form open.<provider>.com, by provider domain
 _OPEN_HOSTS: Final[dict[str, str]] = {
@@ -67,10 +69,12 @@ def valid_base62_length22(item_id: str) -> bool:
     return bool(base62_length22_id_pattern.match(item_id))
 
 
-def valid_id(provider: str, item_id: str) -> bool:
+def valid_id(provider: str, media_type: MediaType, item_id: str) -> bool:
     """Validate Provider ID."""
     if provider == "spotify":
         return valid_base62_length22(item_id)
+    if provider in _NUMERIC_ID_PROVIDERS and media_type in _CANONICAL_URL_TYPES:
+        return item_id.isdigit()
     return True
 
 
@@ -110,7 +114,7 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
         # IndexError covers truncated share URLs with no path segments.
         msg = f"Not a valid Music Assistant uri: {uri}"
         raise InvalidProviderURI(msg) from err
-    if validate_id and not valid_id(provider_instance_id_or_domain, item_id):
+    if validate_id and not valid_id(provider_instance_id_or_domain, media_type, item_id):
         msg = f"Invalid {provider_instance_id_or_domain} ID: {item_id} found in URI: {uri}"
         raise InvalidProviderID(msg)
     return (media_type, provider_instance_id_or_domain, item_id)
