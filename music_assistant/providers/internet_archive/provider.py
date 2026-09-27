@@ -933,7 +933,6 @@ class InternetArchiveProvider(MusicProvider):
                 )
             },
         )
-        podcast.metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
 
         for i, file_info in enumerate(audio_files, 1):
             filename = file_info.get("name", "")
