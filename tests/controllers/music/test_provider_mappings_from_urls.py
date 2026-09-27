@@ -21,23 +21,26 @@ DISCOGS_ARTIST = "https://www.discogs.com/artist/3840"
 BANDCAMP = "https://radiohead.bandcamp.com/"
 
 
-def _instance(instance_id: str) -> MagicMock:
+def _instance(instance_id: str, available: bool) -> MagicMock:
     """Return a loaded provider instance stub."""
     instance = MagicMock()
     instance.instance_id = instance_id
+    instance.available = available
     return instance
 
 
-def _mass(loaded: dict[str, list[str]]) -> MagicMock:
+def _mass(loaded: dict[str, list[str]], unavailable: set[str] | None = None) -> MagicMock:
     """
     Return a MusicAssistant stub with the given music provider instances loaded.
 
     :param loaded: Provider instance ids per provider domain.
+    :param unavailable: The loaded instances that are currently unavailable.
     """
     mass = MagicMock()
     mass.music.get_provider_instances = MagicMock(
         side_effect=lambda domain, **_kwargs: [
-            _instance(instance_id) for instance_id in loaded.get(domain, [])
+            _instance(instance_id, instance_id not in (unavailable or set()))
+            for instance_id in loaded.get(domain, [])
         ]
     )
     return mass
@@ -46,7 +49,7 @@ def _mass(loaded: dict[str, list[str]]) -> MagicMock:
 async def test_one_mapping_per_loaded_provider_on_its_first_instance() -> None:
     """Map each linked provider once, on its first instance, as an available non-library item."""
     mass = _mass({"spotify": ["spotify_2", "spotify_1"], "tidal": ["tidal_1"]})
-    urls = [SPOTIFY_ARTIST, TIDAL_ARTIST, DISCOGS_ARTIST, BANDCAMP]
+    urls = [TIDAL_ARTIST, SPOTIFY_ARTIST, DISCOGS_ARTIST, BANDCAMP]
 
     mappings = await provider_mappings_from_urls(mass, urls, MediaType.ARTIST, set())
 
@@ -56,6 +59,28 @@ async def test_one_mapping_per_loaded_provider_on_its_first_instance() -> None:
     ]
     assert all(m.available is True and m.in_library is False for m in mappings)
     assert [m.url for m in mappings] == [SPOTIFY_ARTIST, TIDAL_ARTIST]
+
+
+async def test_an_available_instance_is_preferred() -> None:
+    """An unavailable instance is passed over for an available one, taken when it is the only one."""
+    mass = _mass({"spotify": ["spotify_1", "spotify_2"]}, unavailable={"spotify_1"})
+    mappings = await provider_mappings_from_urls(mass, [SPOTIFY_ARTIST], MediaType.ARTIST, set())
+    assert [m.provider_instance for m in mappings] == ["spotify_2"]
+
+    mass = _mass({"spotify": ["spotify_1"]}, unavailable={"spotify_1"})
+    mappings = await provider_mappings_from_urls(mass, [SPOTIFY_ARTIST], MediaType.ARTIST, set())
+    assert [m.provider_instance for m in mappings] == ["spotify_1"]
+
+
+async def test_malformed_ids_and_non_http_links_are_dropped() -> None:
+    """A link naming an id the provider cannot have, or that is no web link at all, is no mapping."""
+    mass = _mass({"spotify": ["spotify_1"]})
+    urls = ["https://open.spotify.com/artist/abcdefghij", "mailto:info@radiohead.com"]
+
+    mappings = await provider_mappings_from_urls(mass, urls, MediaType.ARTIST, set())
+
+    assert mappings == []
+    mass.music.get_provider_instances.assert_not_called()
 
 
 async def test_mapping_keeps_the_linked_url_without_a_canonical_form() -> None:

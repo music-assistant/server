@@ -20,6 +20,12 @@ _CANONICAL_URL_TYPES: Final[frozenset[MediaType]] = frozenset(
     {MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK}
 )
 
+# share URL hosts of the form open.<provider>.com, by provider domain
+_OPEN_HOSTS: Final[dict[str, str]] = {
+    "open.spotify.com": "spotify",
+    "open.qobuz.com": "qobuz",
+}
+
 _APPLE_TYPE_MAP: Final[dict[str, MediaType]] = {
     "station": MediaType.PLAYLIST,
     "playlist": MediaType.PLAYLIST,
@@ -147,7 +153,11 @@ def apple_storefront_from_url(url: str) -> str | None:
     parsed = urlsplit(url)
     if parsed.netloc.lower() not in _APPLE_HOSTS:
         return None
-    return next((segment for segment in parsed.path.split("/") if segment), None)
+    # a storefront is a two-letter country code; a URL without one starts with the type
+    storefront = next((segment for segment in parsed.path.split("/") if segment), "")
+    if len(storefront) == 2 and storefront.isascii() and storefront.isalpha():
+        return storefront
+    return None
 
 
 def discogs_id_from_url(url: str, media_type: MediaType) -> str | None:
@@ -183,13 +193,13 @@ def _parse_share_url(uri: str) -> tuple[MediaType, str, str] | None:
     host = parsed.netloc.lower()
     path = [segment for segment in parsed.path.split("/") if segment]
     query = parse_qs(parsed.query)
-    if host.startswith("open."):
-        # public share URL whose host names the provider (Spotify, Qobuz)
+    if domain := _OPEN_HOSTS.get(host):
         # https://open.spotify.com/playlist/5lH9NjOeJvctAO92ZrKQNB?si=04a63c8234ac413e
         # https://open.spotify.com/intl-de/track/4cOdK2wGLETKBW3PvgPWqT
+        # https://open.qobuz.com/album/0634904032432
         if path and path[0].startswith("intl-"):
             path = path[1:]
-        return (MediaType(path[0]), host.split(".")[1], path[1])
+        return (MediaType(path[0]), domain, path[1])
     if host in ("tidal.com", "listen.tidal.com"):
         # https://tidal.com/browse/track/123456
         # https://tidal.com/track/123456

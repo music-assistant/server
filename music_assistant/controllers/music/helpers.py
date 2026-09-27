@@ -193,8 +193,10 @@ async def provider_mappings_from_urls(
     # the ids a provider is linked with, each with the URL it came from
     ids_by_domain: dict[str, dict[str, str]] = {}
     for url in urls:
+        if not url.startswith(("http://", "https://")):
+            continue
         try:
-            url_media_type, domain, item_id = await parse_uri(url)
+            url_media_type, domain, item_id = await parse_uri(url, validate_id=True)
         except InvalidProviderURI, InvalidProviderID:
             continue
         if domain == "builtin" or url_media_type != media_type or domain in exclude_domains:
@@ -207,12 +209,14 @@ async def provider_mappings_from_urls(
         instances = mass.music.get_provider_instances(domain, return_unavailable=True)
         if not instances:
             continue
+        # an available instance is preferred, an unavailable one still maps the item
+        available = [provider for provider in instances if provider.available]
         ((item_id, url),) = item_ids.items()
         mappings.append(
             ProviderMapping(
                 item_id=item_id,
                 provider_domain=domain,
-                provider_instance=min(provider.instance_id for provider in instances),
+                provider_instance=min(provider.instance_id for provider in available or instances),
                 available=True,
                 in_library=False,
                 url=canonical_provider_url(domain, media_type, item_id) or url,

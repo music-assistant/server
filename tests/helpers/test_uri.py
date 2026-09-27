@@ -32,6 +32,10 @@ SPOTIFY_ID = "4Z8W4fKeB5YxbusRsdQVPb"
             f"https://open.spotify.com/intl-de/album/{SPOTIFY_ID}",
             (MediaType.ALBUM, "spotify", SPOTIFY_ID),
         ),
+        (
+            "https://open.spotify.com/playlist/5lH9NjOeJvctAO92ZrKQNB?si=04a63c8234ac413e",
+            (MediaType.PLAYLIST, "spotify", "5lH9NjOeJvctAO92ZrKQNB"),
+        ),
         # tidal
         ("https://tidal.com/artist/64518", (MediaType.ARTIST, "tidal", "64518")),
         ("https://tidal.com/browse/track/123456", (MediaType.TRACK, "tidal", "123456")),
@@ -86,6 +90,10 @@ SPOTIFY_ID = "4Z8W4fKeB5YxbusRsdQVPb"
         (
             "https://radiohead.bandcamp.com/",
             (MediaType.UNKNOWN, "builtin", "https://radiohead.bandcamp.com/"),
+        ),
+        (
+            f"https://open.spotify.example/track/{SPOTIFY_ID}",
+            (MediaType.UNKNOWN, "builtin", f"https://open.spotify.example/track/{SPOTIFY_ID}"),
         ),
     ],
 )
@@ -154,6 +162,7 @@ def test_apple_storefront_from_url() -> None:
         apple_storefront_from_url("https://music.apple.com/us/album/in-rainbows/1109714933") == "us"
     )
     assert apple_storefront_from_url("https://music.apple.com/gb/artist/657515") == "gb"
+    assert apple_storefront_from_url("https://music.apple.com/album/123") is None
     assert apple_storefront_from_url("https://music.apple.com/") is None
     assert apple_storefront_from_url("https://open.spotify.com/artist/x") is None
 

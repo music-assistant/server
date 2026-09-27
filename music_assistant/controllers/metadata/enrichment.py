@@ -554,6 +554,10 @@ class MetadataEnrichmentMixin:
         musicbrainz: MusicbrainzProvider = cast("MusicbrainzProvider", musicbrainz_provider)
         if TYPE_CHECKING:
             assert isinstance(musicbrainz, MusicbrainzProvider)
+        # the artist's own streaming service links cost neither a database read nor a
+        # provider request, so they are tried on their own first
+        if mb_artist := await musicbrainz.resolve_artist(artist, [], []):
+            return mb_artist.id
         # the library's own albums and tracks carry the MusicBrainz ids, barcodes and ISRCs
         # the lookup keys on, so those come before anything a provider has to be asked for
         ref_albums = _identifying_first(
@@ -562,11 +566,22 @@ class MetadataEnrichmentMixin:
         ref_tracks = _identifying_first(
             await self.mass.music.artists.tracks(artist.item_id, artist.provider)
         )
-        if not ref_albums and not ref_tracks:
-            ref_tracks = _identifying_first(
-                await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
-            )
         if mb_artist := await musicbrainz.resolve_artist(artist, ref_albums, ref_tracks):
+            return mb_artist.id
+        # last resort for library items without identifiers: the providers' top tracks
+        tried = {track.uri for track in ref_tracks}
+        top_tracks = _identifying_first(
+            [
+                track
+                for track in await self.mass.music.artists.top_tracks(
+                    artist.item_id, artist.provider
+                )
+                if track.uri not in tried
+            ]
+        )
+        if top_tracks and (
+            mb_artist := await musicbrainz.resolve_artist(artist, ref_albums, top_tracks)
+        ):
             return mb_artist.id
 
         # lookup failed

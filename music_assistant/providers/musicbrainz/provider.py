@@ -177,7 +177,7 @@ class MusicbrainzProvider(MetadataProvider):
             if mbid := await self.get_mbid_by_url(url, MediaType.ALBUM):
                 with suppress(InvalidDataError):
                     return await self.get_release_details(mbid)
-        for barcode in _external_ids(album, ExternalID.BARCODE, is_valid_barcode):
+        for barcode in _external_ids(album, ExternalID.BARCODE, is_valid_barcode)[:MAX_REF_ITEMS]:
             if release := await self._release_by_barcode(barcode, album):
                 return release
         if release_group_id := album.get_external_id(ExternalID.MB_RELEASEGROUP):
@@ -202,7 +202,7 @@ class MusicbrainzProvider(MetadataProvider):
             if mbid := await self.get_mbid_by_url(url, MediaType.TRACK):
                 with suppress(InvalidDataError):
                     return await self.get_recording_details(mbid)
-        for isrc in _external_ids(track, ExternalID.ISRC, is_valid_isrc):
+        for isrc in _external_ids(track, ExternalID.ISRC, is_valid_isrc)[:MAX_REF_ITEMS]:
             if recording := await self._recording_by_isrc(isrc, track):
                 return recording
         if track.album and track.artists:
@@ -859,10 +859,9 @@ class MusicbrainzProvider(MetadataProvider):
             releases: list[MusicBrainzBarcodeRelease] = []
             with suppress(InvalidDataError):
                 releases = await self.get_releases_by_barcode(barcode)
-            if releases and (
-                mb_artist := _matching_artist_credit(releases[0].artist_credit or [], artist.name)
-            ):
-                return mb_artist.id
+            for release in releases:
+                if mb_artist := _matching_artist_credit(release.artist_credit or [], artist.name):
+                    return mb_artist.id
         for ref_track in _first(ref_tracks, _has_isrc):
             isrc = _external_ids(ref_track, ExternalID.ISRC, is_valid_isrc)[0]
             for recording in await self.get_recordings_by_isrc(isrc):
@@ -938,20 +937,30 @@ class MusicbrainzProvider(MetadataProvider):
 
     @staticmethod
     def _reverse_lookup_urls(item: Artist | Album | Track) -> list[str]:
-        """Return the canonical streaming service URLs of an item's provider mappings."""
+        """
+        Return the streaming service URLs to reverse-look up an item by, a few at most.
+
+        The canonical URL of one mapping per provider comes first (so no single provider
+        crowds out the others), then the remaining mappings' own URLs.
+        """
+        mappings = sorted(
+            item.provider_mappings, key=lambda mapping: (mapping.provider_domain, mapping.item_id)
+        )
         urls: list[str] = []
         for domain in REVERSE_URL_DOMAINS:
-            mappings = sorted(
-                (m for m in item.provider_mappings if m.provider_domain == domain),
-                key=lambda mapping: mapping.item_id,
-            )
-            for mapping in mappings:
-                storefront = None
-                if domain == "apple_music" and mapping.url:
-                    storefront = apple_storefront_from_url(mapping.url)
-                url = canonical_provider_url(domain, item.media_type, mapping.item_id, storefront)
-                if url and url not in urls:
-                    urls.append(url)
+            if not (mapping := next((m for m in mappings if m.provider_domain == domain), None)):
+                continue
+            storefront = None
+            if domain == "apple_music" and mapping.url:
+                storefront = apple_storefront_from_url(mapping.url)
+            if url := canonical_provider_url(domain, item.media_type, mapping.item_id, storefront):
+                urls.append(url)
+                # the mapping's own URL is the same item in a form MusicBrainz may not store
+                mappings.remove(mapping)
+        for mapping in mappings:
+            url = mapping.url or ""
+            if url.startswith(("http://", "https://")) and url not in urls:
+                urls.append(url)
         return urls[:MAX_REVERSE_URL_LOOKUPS]
 
 

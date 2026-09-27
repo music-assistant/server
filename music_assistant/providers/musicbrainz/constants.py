@@ -53,7 +53,9 @@ REVERSE_URL_DOMAINS: tuple[str, ...] = ("spotify", "deezer", "tidal", "apple_mus
 MAX_REVERSE_URL_LOOKUPS = 3
 MAX_REF_ITEMS = 3
 MAX_BARCODE_DETAIL_FETCHES = 2
-RELEASE_GROUP_BROWSE_LIMIT = 25
+# MusicBrainz' per-request maximum: a release group with more editions than fit on one
+# page is not identified at all, so the page is as large as it can be.
+RELEASE_GROUP_BROWSE_LIMIT = 100
 
 # A recording's length may deviate this much from the track's duration and still be it.
 RECORDING_LENGTH_TOLERANCE_MS = 8000
