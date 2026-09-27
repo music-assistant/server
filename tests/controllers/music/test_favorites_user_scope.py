@@ -439,6 +439,32 @@ async def test_a_like_after_a_dislike_puts_the_item_in_the_library(
     seen[MINE].set_favorite.assert_awaited_once_with("mine-42", MediaType.TRACK, True)
 
 
+async def test_a_like_adds_the_item_to_the_own_library_when_only_another_member_holds_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Another member's library holding the item does not make it the user's own."""
+    _as_user(monkeypatch, _user())
+    controller = _controller(THREE_ACCOUNTS)
+    row = Mock(
+        provider="library",
+        item_id="42",
+        media_type=MediaType.TRACK,
+        provider_mappings={
+            _mapping(MINE, "mine-42", in_library=False),
+            _mapping(THEIRS, "theirs-42", in_library=True),
+        },
+    )
+    controller.get_item = AsyncMock(return_value=row)  # type: ignore[method-assign]
+    controller.add_item_to_library = AsyncMock(return_value=row)  # type: ignore[method-assign]
+    ctrl = Mock(set_favorite=AsyncMock())
+    controller.get_controller = Mock(return_value=ctrl)  # type: ignore[method-assign]
+    controller.library_favorites_edit_supported = Mock(return_value=True)  # type: ignore[method-assign]
+
+    await controller.set_item_favorite(row, True)
+
+    controller.add_item_to_library.assert_awaited_once_with(row)
+
+
 async def test_clearing_a_favorite_on_a_provider_item_changes_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
