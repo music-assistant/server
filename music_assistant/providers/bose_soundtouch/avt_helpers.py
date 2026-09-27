@@ -13,8 +13,8 @@ from music_assistant.helpers.upnp import (
 )
 from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.models.player import PlayerMedia
+from music_assistant.providers.bose_soundtouch.client import STRING_ENCODING
 from music_assistant.providers.bose_soundtouch.const import (
-    STRING_ENCODING,
     UPNP_CONTROL_ENDPOINT,
     UPNP_PORT,
 )

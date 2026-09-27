@@ -1,13 +1,22 @@
 """Client."""
 
+import asyncio
 import logging
+from collections.abc import AsyncGenerator, Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
 from xml.etree.ElementTree import Element, ParseError
 
-from aiohttp import ClientResponseError
+from aiohttp import ClientError, ClientResponseError, WSMsgType
 from defusedxml import ElementTree
 
+from music_assistant.providers.bose_soundtouch.client.const import (
+    NOTIFICATION_PORT,
+    RECONNECT_DELAY,
+    STRING_ENCODING,
+    WS_HEARTBEAT,
+    WS_SUBPROTOCOLS,
+)
 from music_assistant.providers.bose_soundtouch.client.exceptions import (
     ApiError,
     NotFoundError,
@@ -24,7 +33,6 @@ from music_assistant.providers.bose_soundtouch.client.schema.models import (
     Volume,
     Zone,
 )
-from music_assistant.providers.bose_soundtouch.const import STRING_ENCODING
 
 from .session_configuration import SessionConfiguration
 
@@ -291,6 +299,43 @@ class SoundtouchDevice:
         """Plays notification as in previous client."""
         xml = create_notification_xml(app_key, url, volume)
         await self._post("speaker", xml)
+
+    async def websocket_notification_loop(
+        self, on_connect: Callable[[], None] | None = None
+    ) -> AsyncGenerator[str]:
+        """
+        Yield the speaker's push notifications as raw xml, reconnecting as needed.
+
+        Runs until the consumer stops iterating, so the caller owns the task and ends the
+        stream by cancelling it or closing the iterator.
+
+        :param on_connect: Called every time the channel is (re)established.
+        """
+        while True:
+            # read the address on every attempt: it can change while we are connected
+            uri = f"ws://{self.session_config.ip}:{NOTIFICATION_PORT}"
+            try:
+                async with self.session_config.session.ws_connect(
+                    uri, protocols=WS_SUBPROTOCOLS, heartbeat=WS_HEARTBEAT
+                ) as websocket:
+                    self.logger.debug("Connected to SoundTouch websocket: %s", uri)
+                    if on_connect is not None:
+                        on_connect()
+                    async for msg in websocket:
+                        if msg.type == WSMsgType.TEXT:
+                            yield msg.data
+                        elif msg.type == WSMsgType.BINARY:
+                            yield msg.data.decode(STRING_ENCODING)
+                        elif msg.type in (WSMsgType.ERROR, WSMsgType.CLOSE, WSMsgType.CLOSED):
+                            break
+            except (ClientError, OSError, TimeoutError, UnicodeDecodeError) as err:
+                self.logger.debug(
+                    "SoundTouch websocket error for %s: %s. Reconnecting in %ss",
+                    self.session_config.ip,
+                    err,
+                    RECONNECT_DELAY,
+                )
+            await asyncio.sleep(RECONNECT_DELAY)
 
     async def _add_or_remove_zone_members(self, zone: Zone, *, add_members: bool = True) -> None:
         """Add or remove members to a zone."""
