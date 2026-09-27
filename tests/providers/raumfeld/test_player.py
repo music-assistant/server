@@ -271,3 +271,19 @@ def test_player_id_to_room_ignores_other_providers() -> None:
     mass.players.get_player = MagicMock(return_value=foreign)
     player.mass = mass
     assert player._player_id_to_room("dlna_kitchen") is None
+
+
+async def test_unload_cancels_both_timers() -> None:
+    """Unloading cancels the end watch and the group resync, which mass would otherwise run."""
+    player, mass = _advancing_player()
+    player._resync_task_id = "raumfeld_resync_test"
+    player._on_unload_callbacks = []
+
+    await player.on_unload()
+
+    assert {call.args[0] for call in mass.cancel_timer.call_args_list} == {
+        "raumfeld_advance_test",
+        "raumfeld_resync_test",
+    }
+    assert player._advance_armed is False
+    assert player._next_media is None

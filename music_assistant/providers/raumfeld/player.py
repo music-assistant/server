@@ -122,6 +122,7 @@ class RaumfeldPlayer(Player):
         self._prev_playing = False
         self._near_end = False
         self._advance_task_id = f"raumfeld_advance_{player_id}"
+        self._resync_task_id = f"raumfeld_resync_{player_id}"
         self._attr_device_info = DeviceInfo(model="Raumfeld", manufacturer="Teufel")
         # Raumfeld renderers are hi-res capable; declaring the rates lets MA output each
         # source at its native quality (up to 24-bit/192kHz) without manual configuration
@@ -180,6 +181,15 @@ class RaumfeldPlayer(Player):
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return the player-specific config entries (sample-rate / bit-depth options)."""
         return [*PLAYER_CONFIG_ENTRIES]
+
+    async def on_unload(self) -> None:
+        """Handle logic when the player is unloaded from the Player controller."""
+        await super().on_unload()
+        # both timers are held by mass, not by this player, so they would otherwise fire
+        # after it is gone: the end watch against a dropped player, the resync against a
+        # queue whose player no longer exists
+        self._clear_next()
+        self.mass.cancel_timer(self._resync_task_id)
 
     def set_available(self, available: bool) -> None:
         """
@@ -382,7 +392,7 @@ class RaumfeldPlayer(Player):
                     1,
                     self.mass.player_queues.resume,
                     queue.queue_id,
-                    task_id=f"raumfeld_resync_{self.player_id}",
+                    task_id=self._resync_task_id,
                 )
 
     async def poll(self) -> None:
