@@ -5,6 +5,7 @@ import functools
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from contextlib import suppress
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Concatenate
 from urllib.parse import urlparse
 from xml.etree.ElementTree import ParseError
@@ -16,6 +17,7 @@ from async_upnp_client.exceptions import UpnpError, UpnpResponseError
 from async_upnp_client.profiles.dlna import DmrDevice, TransportState
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerUnavailableError
+from music_assistant_models.player import PlayerSource
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.upnp import create_didl_metadata
@@ -196,6 +198,7 @@ class DLNAPlayer(Player):
             duration=int(media_duration) if media_duration is not None else None,
         )
 
+        self._attr_source_list = []
         # Let player controller determine active source, only override for known external sources
         if _device_uri and _device_uri.startswith(self.mass.streams.base_url):
             # MA stream - let controller determine source
@@ -203,6 +206,16 @@ class DLNAPlayer(Player):
         elif "spotify" in _device_uri:
             # Spotify or Spotify Connect
             self._attr_active_source = "spotify"
+            self._attr_source_list = [
+                PlayerSource(
+                    id="spotify",
+                    name="Spotify",
+                    passive=True,
+                    can_play_pause=self.device.has_pause,
+                    can_seek=self.device.has_seek_rel_time,
+                    can_next_previous=self.device.has_next and self.device.has_previous,
+                )
+            ]
         elif _device_uri:
             # External HTTP source
             self._attr_active_source = "http"
@@ -315,6 +328,24 @@ class DLNAPlayer(Player):
         stop_action = self.device._action("AVT", "Stop")
         if stop_action is not None:
             await stop_action.async_call(InstanceID=0)
+
+    @catch_request_errors
+    async def next_track(self) -> None:
+        """Send NEXT TRACK command to given player."""
+        assert self.device is not None  # for type checking
+        await self.device.async_next()
+
+    @catch_request_errors
+    async def previous_track(self) -> None:
+        """Send PREVIOUS TRACK command to given player."""
+        assert self.device is not None  # for type checking
+        await self.device.async_previous()
+
+    @catch_request_errors
+    async def seek(self, position: int) -> None:
+        """Send SEEK command to given player."""
+        assert self.device is not None  # for type checking
+        await self.device.async_seek_rel_time(timedelta(seconds=position))
 
     @catch_request_errors
     async def volume_set(self, volume_level: int) -> None:
@@ -516,6 +547,10 @@ class DLNAPlayer(Player):
             supported_features.add(PlayerFeature.VOLUME_MUTE)
         if self.device.has_pause:
             supported_features.add(PlayerFeature.PAUSE)
+        if self.device.has_next and self.device.has_previous:
+            supported_features.add(PlayerFeature.NEXT_PREVIOUS)
+        if self.device.has_seek_rel_time:
+            supported_features.add(PlayerFeature.SEEK)
         self._attr_supported_features = supported_features
 
     def _is_raumfeld_zone_renderer(self) -> bool:

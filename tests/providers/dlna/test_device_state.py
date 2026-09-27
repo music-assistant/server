@@ -7,11 +7,11 @@ import time
 from collections.abc import Coroutine
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from async_upnp_client.profiles.dlna import TransportState
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import PlaybackState, PlayerFeature
 
 from music_assistant.providers.dlna.player import DLNAPlayer
 from tests.common import MockProvider
@@ -232,3 +232,58 @@ async def test_unknown_mute_state_stays_unknown() -> None:
     player = await _updated_player(is_volume_muted=None)
 
     assert player.volume_muted is None
+
+
+@pytest.mark.parametrize("capable", [True, False])
+async def test_spotify_connect_is_exposed_as_controllable_source(capable: bool) -> None:
+    """A Spotify Connect session on the device offers the transport controls the device has."""
+    player = await _updated_player(
+        current_track_uri="spotify:track:4uLU6hMCjMI75M1A2tKUQC",
+        has_pause=True,
+        has_next=capable,
+        has_previous=capable,
+        has_seek_rel_time=capable,
+    )
+
+    assert player.active_source == "spotify"
+    assert len(player.source_list) == 1
+    source = player.source_list[0]
+    assert source.id == "spotify"
+    assert source.passive
+    assert source.can_play_pause
+    assert source.can_next_previous is capable
+    assert source.can_seek is capable
+
+
+async def test_spotify_source_is_dropped_when_the_session_ends() -> None:
+    """Once the device plays something else, the Spotify source is no longer listed."""
+    device = _mock_device(current_track_uri="spotify:track:4uLU6hMCjMI75M1A2tKUQC")
+    player = _player(device)
+    await player.set_dynamic_attributes()
+    device.current_track_uri = "http://192.168.1.2:8097/flow/stream.flac"
+    await player.set_dynamic_attributes()
+
+    assert player.active_source is None
+    assert player.source_list == []
+
+
+async def test_transport_features_follow_device_capabilities() -> None:
+    """Next/previous and seek are advertised only when the device has those actions."""
+    capable = _player(_mock_device(has_next=True, has_previous=True, has_seek_rel_time=True))
+    capable.set_static_attributes()
+    limited = _player(_mock_device(has_next=True, has_previous=False, has_seek_rel_time=False))
+    limited.set_static_attributes()
+
+    assert {PlayerFeature.NEXT_PREVIOUS, PlayerFeature.SEEK} <= capable.supported_features
+    assert PlayerFeature.NEXT_PREVIOUS not in limited.supported_features
+    assert PlayerFeature.SEEK not in limited.supported_features
+
+
+async def test_seek_sends_relative_time() -> None:
+    """Seeking sends the position to the device as a relative time."""
+    device = _mock_device(async_seek_rel_time=AsyncMock())
+    player = _player(device)
+
+    await player.seek(83)
+
+    device.async_seek_rel_time.assert_awaited_once_with(timedelta(seconds=83))
