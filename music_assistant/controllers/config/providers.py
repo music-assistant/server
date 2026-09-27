@@ -45,7 +45,6 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_PROVIDERS,
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
-    HOMEASSISTANT_SYSTEM_USER,
 )
 from music_assistant.controllers.config.constants import BASE_KEYS, _ConfigValueT
 from music_assistant.controllers.config.helpers import (
@@ -363,7 +362,7 @@ class ProviderConfigMixin:
 
         :param instance_id: The music source (provider instance) to set the access of.
         :param sharing: Who, besides its owner, may use the source.
-        :param owner: User id of the member owning the source, None for a household source.
+        :param owner: User id of the member owning the source, None for a source of the whole home.
         :param shared_users: The user ids the source is shared with, SELECTED sharing only.
         """
         raw_conf = self.get(f"{CONF_PROVIDERS}/{instance_id}")
@@ -427,10 +426,13 @@ class ProviderConfigMixin:
         self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.providers)
         return await self.get_provider_config(instance_id)
 
-    @api_command("config/providers/share_candidates", required_scope=Scope.CONFIG_PROVIDERS_OWN)
+    @api_command(
+        "config/providers/share_candidates",
+        required_scope=(Scope.CONFIG_PROVIDERS_OWN, Scope.LIBRARY_WRITE),
+    )
     async def get_share_candidates(self) -> list[UserSummary]:
         """
-        Return the users a music source can be shared with.
+        Return the users a music source or playlist can be shared with.
 
         Every enabled member and the Home Assistant system user are listed, without their role
         or settings. Guests are left out.
@@ -868,7 +870,7 @@ class ProviderConfigMixin:
             return None
         user, manages_all_sources = self._access_caller()
         if user is None or manages_all_sources:
-            # an admin (or the server itself) sets up a source for the entire household
+            # an admin (or the server itself) sets up a source for the whole home
             return None
         return ProviderAccess(owner=user.user_id, sharing=ProviderSharing.PRIVATE)
 
@@ -925,17 +927,20 @@ class ProviderConfigMixin:
         :param on_record: Whether the user already owns the source; a disabled account is
             then accepted.
         """
-        user = await self._validate_access_user(user_id, on_record)
-        if user is not None and not self._is_member(user):
-            raise InvalidDataError(
-                "Only a member can own a music source",
-                translation_key="source_owner_must_be_member",
-            )
+        # imported here: the webserver helpers pull in the full auth stack,
+        # which must not be imported with the config controller at startup
+        from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
+            has_scope,
+        )
 
-    @staticmethod
-    def _is_member(user: User) -> bool:
-        """Return whether the user is a household member: not a guest nor the HA system user."""
-        return user.role != UserRole.GUEST and user.username != HOMEASSISTANT_SYSTEM_USER
+        user = await self._validate_access_user(user_id, on_record)
+        # config.providers.own is the scope a member needs to manage its own sources, so only a
+        # role that holds it may own one (this matches the role-change guard in update_user_role)
+        if user is not None and not has_scope(user, Scope.CONFIG_PROVIDERS_OWN):
+            raise InvalidDataError(
+                "This role can not own a music source.",
+                translation_key="role_can_not_own_music_sources",
+            )
 
     async def _resolve_provider_config_entries(self, provider: Provider) -> list[ConfigEntry]:
         """Return the full config-entry set for a (loaded) provider instance."""

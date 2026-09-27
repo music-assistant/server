@@ -40,6 +40,7 @@ from music_assistant.helpers.provider_access import access_allows, with_derived_
 from .helpers.auth_middleware import (
     has_scope,
     is_request_from_ingress,
+    player_access_filter,
     resolve_command_impersonation,
     set_current_client_id,
     set_current_token,
@@ -76,6 +77,7 @@ class WebsocketClientHandler:
         self._current_token: str | None = None  # Will be set after auth command
         self._token_id: str | None = None  # Will be set after auth for tracking revocation
         self._sendspin_player_id: str | None = None  # Set if client is a sendspin web player
+        self._sendspin_player_is_private = False  # whether that bound player is a private client
         self._locale: str | None = None  # UI locale declared by the client (auth arg / set_locale)
         self._is_ingress = is_request_from_ingress(request)
         self._events_unsub_callback: Any = None  # Will be set after authentication
@@ -120,6 +122,7 @@ class WebsocketClientHandler:
         :param player_id: Id of the sendspin player this connection owns.
         """
         self._sendspin_player_id = player_id
+        self._sendspin_player_is_private = False
 
     async def disconnect(self) -> None:
         """Disconnect client and wait for its writer to finish."""
@@ -287,7 +290,7 @@ class WebsocketClientHandler:
                     ErrorResultMessage(
                         msg.message_id,
                         InsufficientPermissions.error_code,
-                        f"This command requires the {handler.required_scope} scope",
+                        f"This command requires the {handler.required_scope_label} scope",
                         translation_key="insufficient_permissions",
                     )
                 )
@@ -565,6 +568,24 @@ class WebsocketClientHandler:
             # The token authentication happens in _handle_auth_message
             self._logger.debug("Ingress connection without user headers, expecting token auth")
 
+    def _is_own_private_player(self, object_id: str | None) -> bool:
+        """
+        Return whether the object is the private client player this connection announced.
+
+        Binding can happen before the sendspin player registers, so the private status is
+        latched the first time an event for the bound id arrives while the player exists,
+        and kept afterwards so the owner still receives its player's removal event. A
+        shared speaker announced as the client id never latches, so it stays filtered.
+
+        :param object_id: The event's object id (a player or queue id), or None.
+        """
+        if object_id is None or object_id != self._sendspin_player_id:
+            return False
+        if not self._sendspin_player_is_private:
+            player = self.mass.players.get_player(object_id)
+            self._sendspin_player_is_private = player is not None and player.private
+        return self._sendspin_player_is_private
+
     def _subscribe_to_events(self) -> None:
         """Subscribe to Mass events and forward them to the client."""
         if self._events_unsub_callback is not None:
@@ -572,10 +593,14 @@ class WebsocketClientHandler:
             return
 
         def handle_event(event: MassEvent) -> None:
+            # Latch the bound player's private status on every event, before applying the
+            # filter: the user may be unrestricted now and restricted later, and the flag
+            # must already be set so the owner still receives the player's removal event.
+            own_private_player = self._is_own_private_player(event.object_id)
             # filter events for objects the user has no access to
+            player_filter = player_access_filter(self._authenticated_user)
             if (
-                self._authenticated_user
-                and self._authenticated_user.player_filter
+                player_filter is not None
                 and event.event
                 in (
                     EventType.PLAYER_ADDED,
@@ -588,8 +613,9 @@ class WebsocketClientHandler:
                     EventType.QUEUE_UPDATED,
                 )
                 and event.object_id
-                and event.object_id not in self._authenticated_user.player_filter
-                and event.object_id != self._sendspin_player_id
+                and event.object_id not in player_filter
+                # the private client player this connection announced is always allowed
+                and not own_private_player
             ):
                 return
 

@@ -12,7 +12,9 @@ and makes the lights react to the music in real time.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
+
+from music_assistant.helpers.util import import_module_in_thread
 
 LOGGER = logging.getLogger(__name__)
 
@@ -33,9 +35,13 @@ async def setup(
     config: ProviderConfig,
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    from .provider import HueEntertainmentProvider  # noqa: PLC0415
-
+    module = await import_module_in_thread(
+        ".provider", "music_assistant.providers.hue_entertainment"
+    )
     # bridge pairing (and thus the credentials) is handled by the setup flow; an
     # instance only exists once pairing succeeded. A provider that somehow lacks
     # credentials degrades to unavailable in loaded_in_mass rather than failing here.
-    return HueEntertainmentProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    return cast(
+        "ProviderInstanceType",
+        module.HueEntertainmentProvider(mass, manifest, config, SUPPORTED_FEATURES),
+    )

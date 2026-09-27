@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -18,12 +19,14 @@ from music_assistant_models.setup_flow import SetupFlowStep
 from music_assistant.controllers.config.flows import SetupFlowAccess, SetupFlowMixin
 from music_assistant.controllers.config.providers import ProviderConfigMixin
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    custom_role_scopes,
     get_current_client_id,
     get_current_token,
     get_current_user,
     set_current_client_id,
     set_current_token,
     set_current_user,
+    set_custom_role_scopes,
 )
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from music_assistant.helpers.api import APICommandHandler
@@ -60,7 +63,7 @@ def _create_client(
 
 
 def _command_handler(
-    required_scope: Scope | None = None,
+    required_scope: Scope | tuple[Scope, ...] | None = None,
     authenticated: bool = True,
 ) -> APICommandHandler:
     """Create an API command handler with the given auth requirements."""
@@ -73,11 +76,20 @@ def _command_handler(
 
 
 def _sent_error_code(client: Any) -> str | None:
-    """Return the error code of the last sent error message, if any."""
+    """Return the error code of the first sent error message, if any."""
     for call in client._send_message.await_args_list:
         message = call.args[0]
         if isinstance(message, ErrorResultMessage):
             return str(message.error_code)
+    return None
+
+
+def _sent_error_details(client: Any) -> str | None:
+    """Return the message text of the first sent error message, if any."""
+    for call in client._send_message.await_args_list:
+        message = call.args[0]
+        if isinstance(message, ErrorResultMessage):
+            return message.details
     return None
 
 
@@ -123,7 +135,6 @@ SELF_SERVICE_COMMANDS = [
     pytest.param(ProviderConfigMixin.invoke_provider_config_action, id="invoke_action"),
     pytest.param(ProviderConfigMixin.save_provider_config, id="save"),
     pytest.param(ProviderConfigMixin.set_provider_access, id="set_access"),
-    pytest.param(ProviderConfigMixin.get_share_candidates, id="share_candidates"),
     pytest.param(ProviderConfigMixin.remove_provider_config, id="remove"),
     pytest.param(ProviderConfigMixin._reload_provider, id="reload"),
     pytest.param(SetupFlowMixin.setup_provider, id="setup"),
@@ -132,6 +143,32 @@ SELF_SERVICE_COMMANDS = [
 
 # the owner of the flow the member-owned setup flow tests resolve
 FLOW_OWNER = "user_1"
+
+# the custom roles the scope tests sign in as, by role id
+CUSTOM_ROLES = {
+    "librarian": [Scope.LIBRARY_WRITE],
+    "player_tinkerer": [Scope.CONFIG_PLAYERS_WRITE],
+}
+
+# who may ask which members a music source or a playlist can be shared with
+SHARE_CANDIDATE_CALLERS = [
+    pytest.param(UserRole.ADMIN, True, id="admin"),
+    pytest.param(UserRole.USER, True, id="user"),
+    pytest.param(UserRole.SERVICE, True, id="service"),
+    pytest.param(UserRole.GUEST, False, id="guest"),
+    pytest.param("librarian", True, id="custom_role_with_library_write"),
+    pytest.param("player_tinkerer", False, id="custom_role_without_either_scope"),
+]
+
+
+@pytest.fixture
+def custom_roles() -> Generator[None]:
+    """Grant the custom roles the scope tests sign in as, dropping them again afterwards."""
+    set_custom_role_scopes(
+        {role_id: custom_role_scopes(scopes) for role_id, scopes in CUSTOM_ROLES.items()}
+    )
+    yield
+    set_custom_role_scopes({})
 
 
 @pytest.mark.asyncio
@@ -205,6 +242,49 @@ async def test_self_service_command_allows_admin_and_user(role: str) -> None:
 
     assert _sent_error_code(client) is None
     client.mass.create_task.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("custom_roles")
+@pytest.mark.parametrize(("role", "allowed"), SHARE_CANDIDATE_CALLERS)
+async def test_whoever_may_share_reaches_the_share_candidates(role: str, allowed: bool) -> None:
+    """
+    Every caller that may share a music source or a playlist reaches the share candidates.
+
+    :param role: Role id of the calling user.
+    :param allowed: Whether the role holds one of the scopes the command lists.
+    """
+    scope = getattr(ProviderConfigMixin.get_share_candidates, "api_required_scope", None)
+    assert scope == (Scope.CONFIG_PROVIDERS_OWN, Scope.LIBRARY_WRITE)
+    client = _create_client(role, _command_handler(required_scope=scope))
+
+    await client._handle_command(CommandMessage(message_id="1", command="test/protected"))
+
+    if allowed:
+        assert _sent_error_code(client) is None
+        client.mass.create_task.assert_called_once()
+    else:
+        assert _sent_error_code(client) == PERMISSION_DENIED
+        client.mass.create_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_an_any_of_scoped_command_allows_a_holder_of_either_scope() -> None:
+    """A command listing several scopes runs for a caller holding one of them, and names them."""
+    scopes = (Scope.USERS_INVITE, Scope.USERS_MANAGE)
+    client = _create_client(UserRole.USER, _command_handler(required_scope=scopes))
+    guest = _create_client(UserRole.GUEST, _command_handler(required_scope=scopes))
+
+    await client._handle_command(CommandMessage(message_id="1", command="test/protected"))
+    await guest._handle_command(CommandMessage(message_id="1", command="test/protected"))
+
+    assert _sent_error_code(client) is None
+    client.mass.create_task.assert_called_once()
+    assert _sent_error_code(guest) == PERMISSION_DENIED
+    assert _sent_error_details(guest) == (
+        "This command requires the users.invite or users.manage scope"
+    )
+    guest.mass.create_task.assert_not_called()
 
 
 @pytest.mark.asyncio

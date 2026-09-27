@@ -26,6 +26,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_dumps, json_loads
+from music_assistant.helpers.provider_access import own_music_sources
 from tests.common import set_music_source_access
 
 if TYPE_CHECKING:
@@ -101,6 +102,14 @@ def test_the_user_role_may_own_music_sources_and_the_service_role_may_not() -> N
         Scope.USERS_READ,
         Scope.USERS_IMPERSONATE,
     }
+
+
+def test_a_tuple_of_scopes_is_held_when_the_role_holds_one_of_them() -> None:
+    """A command may list several scopes, of which the caller needs one."""
+    any_of = (Scope.CONFIG_PROVIDERS_OWN, Scope.LIBRARY_WRITE)
+    assert has_scope(_user(UserRole.USER), any_of)
+    assert has_scope(_user(UserRole.SERVICE), any_of)
+    assert not has_scope(_user(UserRole.GUEST), any_of)
 
 
 def test_every_user_may_list_the_roles_but_only_a_user_manager_may_change_them() -> None:
@@ -376,7 +385,7 @@ async def test_a_user_can_be_created_with_a_custom_role(
 async def test_a_user_can_be_given_a_custom_role(auth_manager: AuthenticationManager) -> None:
     """A user may be given a custom role, which may own music sources as any member."""
     await _sign_in_admin(auth_manager)
-    role = await auth_manager.create_role("Kids", [])
+    role = await auth_manager.create_role("Kids", [Scope.CONFIG_PROVIDERS_OWN])
     member = await auth_manager.create_user(username="member", role=UserRole.USER)
     set_music_source_access(
         auth_manager.mass,
@@ -394,6 +403,58 @@ async def test_a_user_can_be_given_a_custom_role(auth_manager: AuthenticationMan
     stored_member = await auth_manager.get_user(member.user_id)
     assert stored_member is not None
     assert stored_member.role == role.role_id
+
+
+async def test_a_source_owner_can_only_be_given_a_role_that_may_own_music_sources(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    A user owning a music source can only be given a role that may own one.
+
+    A role may own a music source when it holds config.providers.own, the scope a member
+    needs to manage its own sources, so a role without it (a custom one here) is refused.
+    """
+    admin = await _sign_in_admin(auth_manager)
+    listeners = await auth_manager.create_role("Listeners", [])
+    managers = await auth_manager.create_role("Managers", [Scope.CONFIG_PROVIDERS_OWN])
+    owner = await auth_manager.create_user(username="owner", role=UserRole.USER)
+    set_music_source_access(
+        auth_manager.mass,
+        {"spotify--owned": ProviderAccess(owner=owner.user_id, sharing=ProviderSharing.PRIVATE)},
+    )
+
+    with pytest.raises(InvalidDataError) as excinfo:
+        await auth_manager.update_user_role(owner.user_id, listeners.role_id, admin)
+    assert excinfo.value.translation_key == "role_can_not_own_music_sources"
+
+    assert await auth_manager.update_user_role(owner.user_id, managers.role_id, admin)
+    stored_owner = await auth_manager.get_user(owner.user_id)
+    assert stored_owner is not None
+    assert stored_owner.role == managers.role_id
+
+
+async def test_dropping_the_own_scope_from_a_role_its_owners_hold_is_allowed(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Editing a role to drop config.providers.own is not blocked when a holder owns a source.
+
+    The owner keeps the source and an admin can still manage or reassign it, so unlike handing
+    an owner such a role, the edit is deliberately left through.
+    """
+    managers = await auth_manager.create_role("Managers", [Scope.CONFIG_PROVIDERS_OWN])
+    owner = await auth_manager.create_user(username="owner", role=managers.role_id)
+    set_music_source_access(
+        auth_manager.mass,
+        {"spotify--owned": ProviderAccess(owner=owner.user_id, sharing=ProviderSharing.PRIVATE)},
+    )
+
+    updated = await auth_manager.update_role(managers.role_id, scopes=[])
+
+    assert Scope.CONFIG_PROVIDERS_OWN not in updated.scopes
+    assert not has_scope(_user(managers.role_id), Scope.CONFIG_PROVIDERS_OWN)
+    # the owner keeps the source it can no longer manage
+    assert own_music_sources(auth_manager.mass, owner) == ["spotify--owned"]
 
 
 async def test_the_last_admin_can_not_give_up_the_admin_role(

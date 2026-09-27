@@ -2,8 +2,8 @@
 
 import asyncio
 import logging
-from typing import cast
-from unittest.mock import AsyncMock, MagicMock
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import ConnectionTimeoutError
@@ -12,17 +12,20 @@ from aiosonos.api.models import PlayBackState as SonosPlayBackState
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import PlaybackErrorEvent
 from aiosonos.exceptions import CannotConnect, FailedCommand
+from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import PlaybackState, RepeatMode
+from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import EXTERNAL_PAUSE_IDLE_TIMEOUT
 from music_assistant.mass import MusicAssistant
+from music_assistant.models.player import AnnouncementFeature
 from music_assistant.providers.sonos.const import (
     PLAYER_SOURCE_MAP,
     SOURCE_LINE_IN,
     SOURCE_SPOTIFY,
 )
-from music_assistant.providers.sonos.player import SonosPlayer
+from music_assistant.providers.sonos.player import SonosPlayer, _is_wakeable
 
 
 def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMock]:
@@ -35,6 +38,11 @@ def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMo
     player._player_id = "sonos_player"
     player._listen_task = None
     player.connected = False
+    player._connect_lock = asyncio.Lock()
+    player._wakeable = False
+    player._wol_mac = None
+    player._marked_asleep = False
+    player._woken_from_sleep = False
     player.client = client
     player._on_unload_callbacks = []
     player.update_state = MagicMock()  # type: ignore[misc, method-assign]
@@ -381,6 +389,16 @@ def test_a_paused_connect_session_is_handed_to_the_stale_source_check() -> None:
     # so the speaker only has to opt in and let the state calculation see it
     assert player._attr_external_pause_idle_timeout == EXTERNAL_PAUSE_IDLE_TIMEOUT
     player.update_state.assert_called_once()  # type: ignore[attr-defined]
+
+
+def test_the_player_reports_its_announcement_features() -> None:
+    """Test the clips honour the requested level and are fired together across members."""
+    player, _ = _make_player()
+
+    assert player.announcement_features == {
+        AnnouncementFeature.SUPPORTS_VOLUME,
+        AnnouncementFeature.COORDINATES_START,
+    }
 
 
 @pytest.mark.asyncio
@@ -730,3 +748,153 @@ def test_a_service_we_did_not_map_leaves_the_source_list_when_it_is_given_up_on(
 
     assert player._attr_active_source is None
     assert player.source_list == [PLAYER_SOURCE_MAP[SOURCE_LINE_IN]]
+
+
+def _wakeable_player() -> tuple[SonosPlayer, MagicMock]:
+    """Create a bound player that advertises Wake-on-LAN support."""
+    player, mass = _make_player()
+    player._wakeable = True
+    player._wol_mac = "C4:38:75:0D:18:9C"
+    player._cache = {}
+    player._attr_name = "Portable"
+    player._config = MagicMock()
+    player._config.name = None
+    player._provider = MagicMock(instance_id="sonos")
+    return player, mass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("powered", "connected"), [(False, True), (True, True), (False, False)])
+async def test_power_without_a_wake_only_updates_local_state(
+    powered: bool, connected: bool
+) -> None:
+    """Test power off, and power on while connected, send no packet."""
+    player, _ = _wakeable_player()
+    player.connected = connected
+
+    with patch(
+        "music_assistant.providers.sonos.player.send_magic_packet", new_callable=AsyncMock
+    ) as wol:
+        await player.power(powered)
+
+    wol.assert_not_awaited()
+    assert player._attr_powered is powered
+    player.update_state.assert_called_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_power_on_wakes_a_sleeping_speaker() -> None:
+    """Test power on sends the magic packet, waits for the radio and connects."""
+    player, _ = _wakeable_player()
+    player._is_reachable = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    async def _connect(_retry_on_fail: int = 0) -> None:
+        player.connected = True
+
+    player._connect = AsyncMock(side_effect=_connect)  # type: ignore[method-assign]
+    with patch(
+        "music_assistant.providers.sonos.player.send_magic_packet", new_callable=AsyncMock
+    ) as wol:
+        await player.power(True)
+
+    wol.assert_awaited_once_with("C4:38:75:0D:18:9C")
+    player._connect.assert_awaited_once()
+    assert player._attr_powered is True
+    assert player._woken_from_sleep is True
+
+
+@pytest.mark.asyncio
+async def test_power_on_gives_up_when_the_radio_never_answers() -> None:
+    """Test a speaker that never comes back is reported unavailable without a connect attempt."""
+    player, _ = _wakeable_player()
+    player._is_reachable = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    player._connect = AsyncMock()  # type: ignore[method-assign]
+
+    with (
+        patch("music_assistant.providers.sonos.player.send_magic_packet", new_callable=AsyncMock),
+        patch("music_assistant.providers.sonos.player.WAKE_TIMEOUT", 0.05),
+        pytest.raises(PlayerUnavailableError),
+    ):
+        await player.power(True)
+
+    player._connect.assert_not_awaited()
+    assert player._attr_powered is not True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("power_control", [PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE])
+async def test_a_goodbye_reads_as_sleep_only_when_we_control_power(power_control: str) -> None:
+    """Test a withdrawn announcement puts a natively controlled portable to sleep."""
+    player, _ = _wakeable_player()
+    player.connected = True
+    player._attr_powered = True
+    player._attr_playback_state = PlaybackState.PAUSED
+    player._disconnect = AsyncMock()  # type: ignore[method-assign]
+
+    with patch.object(SonosPlayer, "power_control", power_control):
+        await player.on_mdns_goodbye()
+
+    if power_control == PLAYER_CONTROL_NATIVE:
+        player._disconnect.assert_awaited_once()
+        assert player._attr_powered is False
+        assert player._attr_available is True
+        assert player._attr_playback_state == PlaybackState.IDLE
+        assert player._marked_asleep is True
+    else:
+        player._disconnect.assert_not_awaited()
+        assert player._attr_powered is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("marked_asleep", [True, False])
+async def test_reconnecting_only_powers_on_after_a_confirmed_sleep(
+    marked_asleep: bool, timer_mass: MusicAssistant
+) -> None:
+    """Test a reconnect wakes a sleeping player but leaves a local power off alone."""
+    player, client = _bind_player(timer_mass)
+    player._wakeable = True
+    player._attr_powered = False
+    player._marked_asleep = marked_asleep
+
+    with patch.object(SonosPlayer, "power_control", PLAYER_CONTROL_NATIVE):
+        await _connect_player(player, client)
+
+    assert player._attr_powered is marked_asleep
+    assert player._woken_from_sleep is marked_asleep
+    assert player._marked_asleep is False
+    assert player._listen_task is not None
+    player._listen_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_connect_puts_a_portable_to_sleep_without_retrying() -> None:
+    """Test a portable that stops answering reads as asleep instead of being retried."""
+    player, mass = _wakeable_player()
+    player.client.connect = AsyncMock(  # type: ignore[method-assign]
+        side_effect=CannotConnect(OSError("no route to host"))
+    )
+
+    with patch.object(SonosPlayer, "power_control", PLAYER_CONTROL_NATIVE):
+        await player._connect(retry_on_fail=5)
+
+    assert player._attr_powered is False
+    assert player._attr_available is True
+    assert player._marked_asleep is True
+    mass.call_later.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("features", "expected"),
+    [
+        ([{"name": "WAKEABLE"}, {"name": "BLE"}], True),
+        ([{"name": "BLE"}], False),
+        (None, False),
+        (["WAKEABLE"], False),
+    ],
+)
+def test_is_wakeable_reads_the_advertised_device_features(
+    features: list[Any] | None, expected: bool
+) -> None:
+    """Test the WAKEABLE device feature is read defensively from the discovery info."""
+    device: dict[str, Any] = {} if features is None else {"deviceFeatures": features}
+    assert _is_wakeable(cast("Any", {"device": device})) is expected

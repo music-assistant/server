@@ -155,11 +155,14 @@ Manages individual WebSocket connections:
 ### First-Time Setup Flow
 
 1. **Initial State**: No users exist
-2. **Setup Required**: User is redirected to `/setup`
-3. **Admin Creation**: User creates the first admin account with username/password
-4. **Setup completes** User gets redirected to the frontend
-5. **Onboarding wizard** The frontend shows the onboarding wizard if it detects 'onboard_done' is False
-4. **Onboarding Complete**: User completes onboarding and the `onboard_done` flag is set to `true`
+2. **Setup Required**: User is redirected to `/setup`, which serves the frontend; the query string
+   travels along so a client's `return_url` and `device_name` survive a reload
+3. **Admin Creation**: The frontend opens its setup wizard on the "Create your account" step,
+   which posts username, password and display name to `POST /setup`; the server creates the
+   first admin and answers with a token (or, for a trusted `return_url`, where to hand it back)
+4. **Onboarding wizard** The frontend signs in with the token and continues the wizard on the
+   same page; `POST /setup` answers 409 from then on
+5. **Onboarding Complete**: User completes onboarding and the `onboard_done` flag is set to `true`
 
 ### First-Time Setup Flow when HA Ingress is used
 
@@ -461,7 +464,7 @@ Remote Client → WebRTC Data Channel → Gateway → Local WebSocket API
 
 1. Define route handler in [controller.py](controller.py) (for HTTP endpoints)
 2. Use `@api_command()` decorator for WebSocket commands (in respective controllers)
-3. Specify authentication requirements: `authenticated=True` and/or `required_scope=Scope.<SCOPE>`
+3. Specify authentication requirements: `authenticated=True` and/or `required_scope=Scope.<SCOPE>` (or a tuple of scopes, one of which the caller needs)
 4. Optionally set `allow_impersonation=True` to let callers execute the command on behalf of
    another user via the injected `user` argument (requires the `users.impersonate` scope
    when targeting another user)
@@ -509,6 +512,9 @@ async def admin_command():
     # Only users whose role grants the config.core.write scope can call this
     pass
 ```
+
+A tuple of scopes (`required_scope=(Scope.CONFIG_PROVIDERS_OWN, Scope.LIBRARY_WRITE)`) means the
+caller needs one of them.
 
 Scopes are granted to users through their role, see `ROLE_SCOPES` in
 [helpers/auth_middleware.py](helpers/auth_middleware.py) for the builtin role definitions.

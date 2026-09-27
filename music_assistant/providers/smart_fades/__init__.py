@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from music_assistant.helpers.util import verify_system_meets_requirements
+from music_assistant.helpers.util import import_module_in_thread, verify_system_meets_requirements
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -39,6 +39,9 @@ async def setup(
         min_cpu_cores=MIN_CPU_CORES,
         require_ml_inference=True,
     )
-    from .provider import SmartFadesProvider  # noqa: PLC0415
-
-    return SmartFadesProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    # the torch/beat_this stack takes many seconds to import, which would stall the event
+    # loop for the whole duration, so hand it to the import thread like any other module
+    module = await import_module_in_thread(".provider", "music_assistant.providers.smart_fades")
+    return cast(
+        "SmartFadesProvider", module.SmartFadesProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    )

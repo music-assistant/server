@@ -239,9 +239,11 @@ jobs:
               if grep -q "\"$VERSION\"" /tmp/pypi_response.json; then
                 echo "✅ Package $PACKAGE version $VERSION is available on PyPI"
 
-                # Additional verification: try to download the package
-                if python3 -m pip download --no-deps "$PACKAGE==$VERSION" > /dev/null 2>&1; then
-                  echo "✅ Package $PACKAGE==$VERSION can be installed"
+                # Additional verification: try to download the package.
+                # --ignore-requires-python so the check is not tied to the
+                # runner's Python; we only verify the artifact is fetchable.
+                if python3 -m pip download --no-deps --ignore-requires-python "$PACKAGE==$VERSION" > /dev/null 2>&1; then
+                  echo "✅ Package $PACKAGE==$VERSION can be downloaded"
                   exit 0
                 else
                   echo "⚠️  Package found in PyPI API but pip download failed, retrying..."

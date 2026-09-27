@@ -8,7 +8,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import requests
 from music_assistant_models.enums import ImageType, MediaType, ProviderFeature
@@ -327,6 +327,22 @@ def parse_plex_lyrics_payload(content: str) -> tuple[str, bool] | None:
     if _LRC_TIMESTAMP_RE.search(content):
         return content.strip(), True
     return content.strip(), False
+
+
+def is_library_scan_finished(notification: dict[str, Any]) -> bool:
+    """
+    Return whether a Plex server notification reports that a library scan finished.
+
+    :param notification: A decoded message from the Plex notification websocket.
+    """
+    container = notification.get("NotificationContainer", {})
+    if container.get("type") != "activity":
+        return False
+    return any(
+        entry.get("event") == "ended"
+        and entry.get("Activity", {}).get("type") == "library.update.section"
+        for entry in container.get("ActivityNotification", [])
+    )
 
 
 def _is_plex_lyrics_json(content: str) -> bool:

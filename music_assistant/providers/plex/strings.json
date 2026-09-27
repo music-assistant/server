@@ -50,6 +50,10 @@
       "label": "Plex rating when unliking in Music Assistant",
       "description": "When you unlike a track or album in Music Assistant, set this rating value in Plex (0.0 = unrated/clear rating, 10.0 = 5 stars)."
     },
+    "sync_on_library_change": {
+      "label": "Sync when the Plex library changes",
+      "description": "Start a sync as soon as Plex finishes scanning new or changed music into this library, instead of waiting for the next scheduled sync."
+    },
     "hub_items_limit": {
       "label": "Items per hub",
       "description": "Maximum number of items to load from each hub (default: 10)"

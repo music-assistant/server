@@ -258,10 +258,12 @@ async def test_get_report(mass: MusicAssistant) -> None:
     except RuntimeError:
         logging.getLogger("music_assistant.test").exception("probe failed")
     report = await mass.diagnostics.get_report()
-    assert report["schema_version"] == 2
+    assert report["schema_version"] == 3
     assert "redaction_notice" in report
     assert report["system"]["python_version"]
     assert report["system"]["counts"]["threads"] > 0
+    # child process counts by name (a dict on Linux, None where /proc is unavailable)
+    assert "child_processes" in report["system"]["counts"]
     assert isinstance(report["install"]["providers"], list)
     assert isinstance(report["install"]["library"]["tracks"], int)
     assert isinstance(report["exceptions"], list)

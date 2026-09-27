@@ -665,6 +665,7 @@ def test_dependency_auto_merge_enforces_app_bot_identity_contract() -> None:
     assert "No added version pin found" in diff_check
     availability_check = steps["Wait for package availability on PyPI"]["run"]
     assert "python3 -m pip download --no-deps" in availability_check
+    assert "--ignore-requires-python" in availability_check
     assert "--approve" in steps["Auto-approve PR"]["run"]
     assert "--auto --squash" in steps["Enable auto-merge"]["run"]
 

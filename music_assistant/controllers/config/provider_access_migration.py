@@ -20,14 +20,13 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.auth import UserRole
+from music_assistant_models.auth import Scope, User
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import ProviderSharing, ProviderType
 
 from music_assistant.constants import (
     CONF_PROVIDER_ACCESS_MIGRATED,
     CONF_PROVIDERS,
-    HOMEASSISTANT_SYSTEM_USER,
 )
 from music_assistant.helpers.json import json_loads
 
@@ -50,7 +49,8 @@ class _StoredUser:
 
     # the music sources the user is restricted to, an empty set meaning unrestricted
     sources: set[str]
-    # a guest and the Home Assistant system user may use a source but never own one
+    # a role without config.providers.own (a guest, the Home Assistant system account) may
+    # use a source but never own one
     can_own: bool
 
 
@@ -148,7 +148,13 @@ async def _stored_users(mass: MusicAssistant) -> dict[str, _StoredUser]:
 
 def _can_own_a_source(row: Mapping[str, Any]) -> bool:
     """Return whether a music source may be given to the user of the given row."""
-    return bool(row["role"] != UserRole.GUEST and row["username"] != HOMEASSISTANT_SYSTEM_USER)
+    # imported here to keep the auth stack out of this module's import chain
+    from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
+        has_scope,
+    )
+
+    user = User(user_id=str(row["user_id"]), username=row["username"], role=row["role"])
+    return has_scope(user, Scope.CONFIG_PROVIDERS_OWN)
 
 
 def _normalized_filter(row: Mapping[str, Any], known_sources: set[str]) -> set[str]:

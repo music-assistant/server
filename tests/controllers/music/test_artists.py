@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ExternalID, ImageType
 from music_assistant_models.media_items import (
     Artist,
+    ItemMapping,
     MediaItemImage,
     ProviderMapping,
     UniqueList,
@@ -15,6 +17,8 @@ from music_assistant_models.media_items import (
 from .helpers import create_track
 
 if TYPE_CHECKING:
+    import pytest
+
     from music_assistant.mass import MusicAssistant
 
 ARTIST_MBID = "aa1b2c3d-1c99-4c1b-b0f1-9f2c1b2a3d44"
@@ -109,3 +113,32 @@ async def test_overwrite_update_replaces_artist_details(mass: MusicAssistant) ->
     }
     assert refreshed.metadata.description == "A better biography"
     assert [image.path for image in refreshed.metadata.images or []] == ["http://images/new.jpg"]
+
+
+def test_artist_from_library_item_mapping_has_no_self_mapping(mass: MusicAssistant) -> None:
+    """A library item mapping has no provider of its own, so it gets no provider mapping."""
+    item = ItemMapping(item_id="42", provider="library", name="Test Artist")
+
+    artist = mass.music.artists.artist_from_item_mapping(item)
+
+    assert artist.provider == "library"
+    assert artist.item_id == "42"
+    assert artist.provider_mappings == set()
+
+
+def test_artist_from_provider_item_mapping_keeps_mapping(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider item mapping is converted into a real, resolvable provider mapping."""
+    monkeypatch.setattr(
+        mass,
+        "get_provider",
+        lambda _: SimpleNamespace(domain="spotify", instance_id="spotify_1"),
+    )
+    item = ItemMapping(item_id="abc", provider="spotify_1", name="Test Artist")
+
+    artist = mass.music.artists.artist_from_item_mapping(item)
+
+    assert artist.provider_mappings == {
+        ProviderMapping(item_id="abc", provider_domain="spotify", provider_instance="spotify_1")
+    }

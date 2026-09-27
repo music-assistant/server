@@ -120,14 +120,32 @@ class ThrottlerManager:
         self.retry_attempts = retry_attempts
         self.initial_backoff = initial_backoff
         self.throttler = Throttler(rate_limit, period)
+        self._cooldown_until: float = 0.0
 
     @asynccontextmanager
-    async def acquire(self) -> AsyncGenerator[float]:
-        """Acquire a free slot from the Throttler, returns the throttled time."""
+    async def acquire(self, honored_until: float = 0.0) -> AsyncGenerator[float]:
+        """
+        Acquire a free slot from the Throttler, returns the throttled time.
+
+        :param honored_until: Monotonic deadline the caller already waited out, so a
+            cooldown no later than it does not hold the caller back a second time.
+        """
         if BYPASS_THROTTLER.get():
             yield 0
-        else:
-            yield await self.throttler.acquire()
+            return
+        delay = 0.0
+        honored = honored_until
+        while True:
+            # each deadline is waited out once, however often it is extended meanwhile
+            while (target := self._cooldown_until) > honored:
+                delay += await self._wait_until(target)
+                honored = target
+            delay += await self.throttler.acquire()
+            # a cooldown can be armed while we wait for a free slot, so only leave
+            # the gate once it is still clear with the slot in hand
+            if self._cooldown_until <= honored:
+                break
+        yield delay
 
     @asynccontextmanager
     async def bypass(self) -> AsyncGenerator[None]:
@@ -137,6 +155,22 @@ class ThrottlerManager:
             yield None
         finally:
             BYPASS_THROTTLER.reset(token)
+
+    def set_cooldown(self, seconds: float) -> None:
+        """
+        Hold back every caller of this throttler for the given number of seconds.
+
+        :param seconds: How long the server-imposed rate limit still applies.
+        """
+        self._cooldown_until = max(self._cooldown_until, time.monotonic() + seconds)
+
+    async def _wait_until(self, deadline: float) -> float:
+        """Sleep until the given monotonic deadline, return the time waited."""
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return 0.0
+        await asyncio.sleep(remaining)
+        return remaining
 
 
 class _Throttleable(Protocol):
@@ -159,20 +193,24 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
         """Call async function using the throttler with retries."""
         throttler = self.throttler
         exp_backoff = throttler.initial_backoff
-        async with throttler.acquire() as delay:
-            if delay != 0:
-                self.logger.debug(
-                    "%s was delayed for %.3f secs due to throttling", func.__name__, delay
-                )
-            for attempt in range(throttler.retry_attempts):
+        honored_until = 0.0
+        for attempt in range(throttler.retry_attempts):
+            # every attempt goes through the gate: a cooldown another caller armed while
+            # we were backing off must hold this retry too, and a retry is a request like
+            # any other, so it takes a rate limit slot of its own
+            async with throttler.acquire(honored_until) as delay:
+                if delay != 0:
+                    self.logger.debug(
+                        "%s was delayed for %.3f secs due to throttling", func.__name__, delay
+                    )
                 try:
                     return await func(self, *args, **kwargs)
                 except ResourceTemporarilyUnavailable as e:
                     self.logger.info(
                         f"Attempt {attempt + 1}/{throttler.retry_attempts} failed: {e}"
                     )
+                    server_wait = min(max(float(e.backoff_time), 0.0), MAX_RETRY_AFTER)
                     if attempt < throttler.retry_attempts - 1:
-                        server_wait = min(max(float(e.backoff_time), 0.0), MAX_RETRY_AFTER)
                         if isinstance(e, RateLimited):
                             # Retry-After is a floor, not a target: escalate above it,
                             # jittering up only so we never retry sooner than asked
@@ -186,10 +224,18 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
                             # No server guidance — exponential backoff with jitter
                             sleep_time = min(exp_backoff * random.uniform(0.75, 1.25), MAX_BACKOFF)
                             exp_backoff = min(exp_backoff * 2, MAX_BACKOFF)
+                        if isinstance(e, RateLimited):
+                            # a rate limit applies to the whole account, so hold back every
+                            # other caller for as long as we back off ourselves
+                            throttler.set_cooldown(sleep_time)
                         self.logger.info(f"Retrying in {sleep_time:.1f} seconds...")
+                        honored_until = time.monotonic() + sleep_time
                         await asyncio.sleep(sleep_time)
-            else:  # noqa: PLW0120
-                msg = f"Retries exhausted, failed after {throttler.retry_attempts} attempts"
-                raise RetriesExhausted(msg)
+                    elif isinstance(e, RateLimited):
+                        # out of retries while still limited: keep the other callers back,
+                        # on the escalated backoff since Retry-After can be absent or low
+                        throttler.set_cooldown(max(server_wait, min(exp_backoff, MAX_BACKOFF)))
+        msg = f"Retries exhausted, failed after {throttler.retry_attempts} attempts"
+        raise RetriesExhausted(msg)
 
     return wrapper

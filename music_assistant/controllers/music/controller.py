@@ -85,6 +85,7 @@ from music_assistant.controllers.music.constants import (
     SEARCH_PROVIDER_SOFT_TIMEOUT,
     TRACK_RECONCILIATION_BATCH_SIZE,
     TRACK_RECONCILIATION_MAX_DURATION_DELTA,
+    TRACK_RECONCILIATION_MAX_TITLE_ROWS,
     TRACK_RECONCILIATION_TASK_ID,
 )
 from music_assistant.controllers.music.database import (
@@ -113,7 +114,8 @@ from music_assistant.controllers.tasks.context import (
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
-    has_scope,
+    has_player_access,
+    player_access_filter,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.collections import get_collection_item_media_type_from_item_id
@@ -135,6 +137,7 @@ from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.provider_access import (
     access_allows,
     exact_provider,
+    own_music_sources,
     playback_instance_for,
     source_owner,
     visible_music_sources,
@@ -203,14 +206,29 @@ def _album_title_match(base: str, other: str) -> str:
 # normalize to nothing (symbol-only album names) are excluded there, as they would match
 # every other such album. Rows that already share a provider are skipped, as a provider
 # listing the same recording twice is a separate (and far riskier) case.
+# Pairing the rows of a title is quadratic in their count, and the query runs on the single
+# library connection, where anything slow holds up every other library query. The self-join
+# is therefore confined to titles held by more than one provider, shared by a bounded number
+# of rows, excluding titles whose normalized value is empty.
 _DUPLICATE_TRACK_CANDIDATES_QUERY = f"""
+WITH candidate_titles AS (
+    SELECT t.search_name
+    FROM {DB_TABLE_TRACKS} t
+    LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} pm
+      ON pm.media_type = 'track' AND pm.item_id = t.item_id
+    WHERE t.search_name != ''
+    GROUP BY t.search_name
+    HAVING count(DISTINCT pm.provider_domain) > 1
+       AND count(DISTINCT t.item_id) <= :max_title_rows
+)
 SELECT t1.item_id AS item_id_1, t2.item_id AS item_id_2
 FROM {DB_TABLE_TRACKS} t1
 JOIN {DB_TABLE_TRACKS} t2
   ON t2.search_name = t1.search_name
  AND t2.item_id > t1.item_id
  AND abs(t2.duration - t1.duration) <= :max_duration_delta
-WHERE (t1.item_id > :cursor_item_id_1
+WHERE t1.search_name IN (SELECT search_name FROM candidate_titles)
+  AND (t1.item_id > :cursor_item_id_1
        OR (t1.item_id = :cursor_item_id_1 AND t2.item_id > :cursor_item_id_2))
   AND EXISTS (
     SELECT 1 FROM {DB_TABLE_TRACK_ARTISTS} ta1
@@ -1341,12 +1359,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             full_item.item_id,
             True,
         )
-        # forward to provider(s) if needed
-        for prov_mapping in full_item.provider_mappings:
-            provider = self.mass.get_provider(
-                prov_mapping.provider_instance, provider_type=MusicProvider
-            )
-            if not provider or not self.library_favorites_edit_supported(
+        # forward to the music sources this user may write to, never to somebody else's
+        for prov_mapping in self._write_target_mappings(full_item.provider_mappings):
+            provider = exact_provider(self.mass, prov_mapping.provider_instance)
+            if not isinstance(provider, MusicProvider) or not self.library_favorites_edit_supported(
                 provider, full_item.media_type
             ):
                 continue
@@ -1367,13 +1383,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             library_item_id,
             False,
         )
-        # forward to provider(s) if needed
+        # forward to the music sources this user may write to, never to somebody else's
         full_item = await ctrl.get_library_item(library_item_id)
-        for prov_mapping in full_item.provider_mappings:
-            provider = self.mass.get_provider(
-                prov_mapping.provider_instance, provider_type=MusicProvider
-            )
-            if not provider or not self.library_favorites_edit_supported(
+        for prov_mapping in self._write_target_mappings(full_item.provider_mappings):
+            provider = exact_provider(self.mass, prov_mapping.provider_instance)
+            if not isinstance(provider, MusicProvider) or not self.library_favorites_edit_supported(
                 provider, full_item.media_type
             ):
                 continue
@@ -1392,14 +1406,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         full_item = await ctrl.get_library_item(library_item_id)
         # ctrl is chosen by media_type, so it matches full_item's runtime type
         cast("MediaControllerBase[MediaItemType]", ctrl).check_removal_allowed(full_item)
-        # remove from provider(s) library
-        for prov_mapping in full_item.provider_mappings:
+        # remove from the music sources this user may write to, never from somebody else's
+        for prov_mapping in self._write_target_mappings(full_item.provider_mappings):
             if not prov_mapping.in_library:
                 continue
-            provider = self.mass.get_provider(
-                prov_mapping.provider_instance, provider_type=MusicProvider
-            )
-            if not provider or not self.library_edit_supported(provider, full_item.media_type):
+            provider = exact_provider(self.mass, prov_mapping.provider_instance)
+            if not isinstance(provider, MusicProvider) or not self.library_edit_supported(
+                provider, full_item.media_type
+            ):
                 continue
             if not self.library_sync_back_enabled(provider, full_item.media_type):
                 continue
@@ -1455,15 +1469,23 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 f"{full_item.media_type.value} items can not be library items"
             )
         # add to provider(s) library first
+        write_targets = {
+            mapping.provider_instance
+            for mapping in self._write_target_mappings(full_item.provider_mappings)
+        }
         for prov_mapping in full_item.provider_mappings:
+            if prov_mapping.provider_instance not in write_targets:
+                # somebody else's account: the mapping stays for matching and playback, but
+                # the item is not in that account's library and nothing is written there
+                continue
             # we optimistically set in library to True to prevent items
             # from disappearing when the provider doesn't support library edit
             # or 2-way sync is disabled.
             prov_mapping.in_library = True
-            provider = self.mass.get_provider(
-                prov_mapping.provider_instance, provider_type=MusicProvider
-            )
-            if not provider or not self.library_edit_supported(provider, full_item.media_type):
+            provider = exact_provider(self.mass, prov_mapping.provider_instance)
+            if not isinstance(provider, MusicProvider) or not self.library_edit_supported(
+                provider, full_item.media_type
+            ):
                 continue
             if not self.library_sync_back_enabled(provider, full_item.media_type):
                 continue
@@ -2596,21 +2618,52 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         # bound sources honor the calling user's player access filter, so a
         # restricted user cannot discover sources of players hidden from them
         current_user = get_current_user()
-        player_filter = (
-            current_user.player_filter
-            if current_user and not has_scope(current_user, Scope.ALL)
-            else None
-        )
         if player_id is not None:
-            if player_filter and player_id not in player_filter:
+            if not has_player_access(current_user, player_id):
                 return []
             return provider.get_player_audio_sources(player_id) or []
-        if not player_filter:
+        player_filter = player_access_filter(current_user)
+        if player_filter is None:
             return await provider.get_audio_sources()
         sources: list[AudioSource] = []
         for allowed_player_id in player_filter:
             sources.extend(provider.get_player_audio_sources(allowed_player_id) or [])
         return sources
+
+    def _write_target_mappings(
+        self,
+        provider_mappings: Iterable[ProviderMapping],
+    ) -> list[ProviderMapping]:
+        """
+        Return the provider mappings a user-initiated write may reach.
+
+        A library item can map to several accounts of the same music service, one per
+        person in the house. Writing a favorite (or a library add or remove) to every
+        mapping then writes one person's choice into everybody else's account.
+
+        Ownership decides, not visibility: a source the acting user owns is written to, a
+        source of the whole home is written to when the user may see it, and a source owned
+        by somebody else never is, whatever it is shared as. Seeing another person's account
+        is what sharing is for; writing to it is not.
+
+        No current user means an internal caller (library sync, a plugin, a script), which
+        keeps writing everywhere exactly as before.
+        """
+        user = get_current_user()
+        if user is None:
+            return list(provider_mappings)
+        own = set(own_music_sources(self.mass, user))
+        visible = visible_music_sources(self.mass, user)
+        targets: list[ProviderMapping] = []
+        for mapping in provider_mappings:
+            instance_id = mapping.provider_instance
+            if instance_id in own:
+                targets.append(mapping)
+            elif source_owner(self.mass, instance_id) is not None:
+                continue
+            elif visible is None or instance_id in visible:
+                targets.append(mapping)
+        return targets
 
     def _apply_user_provider_filter(
         self,
@@ -3033,6 +3086,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             _DUPLICATE_TRACK_CANDIDATES_QUERY,
             {
                 "max_duration_delta": TRACK_RECONCILIATION_MAX_DURATION_DELTA,
+                "max_title_rows": TRACK_RECONCILIATION_MAX_TITLE_ROWS,
                 "cursor_item_id_1": cursor[0],
                 "cursor_item_id_2": cursor[1],
             },

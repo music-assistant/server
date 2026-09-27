@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.enums import ConfigEntryType, FlowStepType
 from music_assistant_models.errors import PlayerCommandFailed
+from pyatv.const import Protocol
 
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowContext, SetupSession
 from music_assistant.providers.airplay.constants import (
@@ -539,6 +540,37 @@ async def test_all_pairings_reoffered_and_skippable_when_already_paired() -> Non
     pyatv_pair.assert_not_called()
     step_ids = [step.step_id for step in _published_steps(mass) if step.type == FlowStepType.FORM]
     assert step_ids == ["streaming_repair_offer", "companion_offer", "mrp_offer"]
+
+
+async def test_cancelled_pairing_closes_the_session_it_starts() -> None:
+    """A cancelled pairing start still closes the session it ends up with."""
+    player = _control_player()
+    pairing = _pyatv_pairing("companion-creds")
+    started = asyncio.Event()
+    paired = asyncio.Event()
+
+    async def _pair(*_args: Any, **_kwargs: Any) -> MagicMock:
+        started.set()
+        await paired.wait()
+        return pairing
+
+    player.mass.create_task = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda coro, *_args, **_kwargs: asyncio.get_running_loop().create_task(coro)
+    )
+
+    with patch(_PYATV_PAIR_TARGET, side_effect=_pair):
+        task = asyncio.create_task(
+            player._begin_pyatv_pairing(player.companion_discovery_info, Protocol.Companion)
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        paired.set()
+        await asyncio.sleep(0.01)
+
+    pairing.begin.assert_not_awaited()
+    pairing.close.assert_awaited_once()
 
 
 def _password_player(
