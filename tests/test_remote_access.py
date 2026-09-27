@@ -33,6 +33,7 @@ from music_assistant.controllers.webserver.remote_access import (
 from music_assistant.controllers.webserver.remote_access.gateway import (
     DATA_CHANNEL_CHUNK_SIZE,
     HTTP_PROXY_CONCURRENCY,
+    LOCAL_WS_MAX_MSG_SIZE,
     WebRTCGateway,
     WebRTCSession,
     _is_usable_ice_url,
@@ -1216,7 +1217,9 @@ async def test_live_announcement_channel_bridges_to_the_webserver(
     try:
         await _wait_for(lambda: expected_url in http_session.websockets)
         local_ws = http_session.websockets[expected_url]
-        assert http_session.dial_kwargs == [{"ssl": False}]
+        # max_msg_size=0 disables aiohttp's 4 MiB cap: a bigger reply would otherwise
+        # be refused with close code 1009 and take the whole session down
+        assert http_session.dial_kwargs == [{"ssl": False, "max_msg_size": 0}]
 
         # the client authenticates on the route itself, so its handshake passes through
         handshake = [
@@ -2024,3 +2027,28 @@ async def test_ma_api_channel_chunks_within_the_negotiated_limit(
         channel.close()
         await asyncio.wait_for(bridge, timeout=5)
         await _wait_for(lambda: "small-limit-session" not in gateway.sessions)
+
+
+async def test_local_bridge_dial_disables_the_message_size_cap(
+    cert_pems: tuple[str, str],
+) -> None:
+    """
+    The loopback bridge must not cap an incoming message at aiohttp's 4 MiB default.
+
+    A reply over that - a large library listing, or a queue of a couple of thousand
+    items - is answered with close code 1009, which closes the bridge and takes the
+    whole remote session with it. Observed live as "got WSMsgType.ERROR (closed=True
+    code=1009) channel_open=True buffered=0": the data channel was open and idle, so it
+    was our own dial that refused the message, not the peer.
+    """
+    http_session = _FakeHttpSession()
+    gateway = _routing_gateway(cert_pems, http_session)
+    _session, pc = _register_routed_session(gateway, "cap-session")
+    channel = _FakeBidiChannel(label="live_announcement")
+    pc.offer_channel(channel)
+    try:
+        await _wait_for(lambda: bool(http_session.dial_kwargs))
+        assert http_session.dial_kwargs[0].get("max_msg_size") == 0
+        assert LOCAL_WS_MAX_MSG_SIZE == 0, "0 is what disables aiohttp's limit"
+    finally:
+        await gateway._close_session("cap-session")

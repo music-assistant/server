@@ -40,6 +40,15 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.remote_access")
 
+# aiohttp caps an incoming websocket message at 4 MiB by default and answers anything
+# larger with close code 1009. That cap guards against untrusted peers; these two dials
+# are to our own API over loopback, where the only effect is that a large reply - a big
+# library listing, or a queue of a couple of thousand items - closes the bridge and takes
+# the whole remote session with it. The reply is chunked for the data channel afterwards
+# regardless, so nothing downstream depends on this limit.
+LOCAL_WS_MAX_MSG_SIZE = 0  # 0 disables aiohttp's limit
+
+
 # Max concurrent proxied (image) fetches, so a burst of album-art requests stays bounded
 # instead of piling up local requests and the response bodies they buffer (see #4889).
 HTTP_PROXY_CONCURRENCY = 6
@@ -819,7 +828,9 @@ class WebRTCGateway:
             ws_url = f"{self.local_ws_url}?webrtc_session_id={session.session_id}"
             # TLS verification would fail on the bind address and adds nothing to a dial
             # that never leaves this host
-            session.local_ws = await self.http_session.ws_connect(ws_url, ssl=False)
+            session.local_ws = await self.http_session.ws_connect(
+                ws_url, ssl=False, max_msg_size=LOCAL_WS_MAX_MSG_SIZE
+            )
         except Exception:
             self.logger.exception("Failed to connect to local WebSocket %s", self.local_ws_url)
             channel.close()
@@ -901,7 +912,9 @@ class WebRTCGateway:
         try:
             # TLS verification would fail on the bind address and adds nothing to a dial
             # that never leaves this host (a no-op for the plain ws:// targets)
-            served.local_ws = await self.http_session.ws_connect(target.url, ssl=False)
+            served.local_ws = await self.http_session.ws_connect(
+                target.url, ssl=False, max_msg_size=LOCAL_WS_MAX_MSG_SIZE
+            )
             self.logger.debug(
                 "%s channel connected for session %s", served.label, session.session_id
             )
