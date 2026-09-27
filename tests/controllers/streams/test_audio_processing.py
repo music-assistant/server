@@ -1374,6 +1374,7 @@ async def test_duplicate_flow_producer_does_not_interleave_the_play_log() -> Non
 
     def _flow_item(item_id: str) -> Any:
         return SimpleNamespace(
+            queue_id="queue-1",
             queue_item_id=item_id,
             name=item_id,
             media_type=MediaType.TRACK,
@@ -1456,6 +1457,7 @@ async def test_flow_source_error_skips_item_without_completing_it() -> None:
         is_realtime=False,
     )
     queue_item = SimpleNamespace(
+        queue_id="queue-1",
         queue_item_id="item-1",
         name="book",
         media_type=MediaType.AUDIOBOOK,
