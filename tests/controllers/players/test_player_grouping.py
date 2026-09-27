@@ -31,6 +31,7 @@ from tests.common import MockPlayer, MockProvider, use_real_create_task
 if TYPE_CHECKING:
     from collections.abc import Coroutine
 
+    from music_assistant import MusicAssistant
     from music_assistant.controllers.player_queues import PlayerQueuesController
     from music_assistant.models.player import Player
 
@@ -604,6 +605,8 @@ def _spy_on_lock_order(controller: PlayerController) -> list[str]:
 class _PlayingQueues:
     """Queue controller stand-in exposing what handle_play_action touches."""
 
+    mass: MusicAssistant
+
     def __init__(self, mass: MagicMock, queue_id: str) -> None:
         """Initialize the stand-in with one queue."""
         self.mass = mass
@@ -611,6 +614,15 @@ class _PlayingQueues:
             queue_id=queue_id, active=True, display_name=queue_id, available=True, items=0
         )
         self._queue_data = {queue_id: PlayerQueueData(queue=queue)}
+
+    def get(self, queue_id: str) -> PlayerQueue | None:
+        """Return the queue, if it is the one held."""
+        queue_data = self._queue_data.get(queue_id)
+        return queue_data.queue if queue_data else None
+
+    @handle_play_action
+    async def resume(self, queue_id: str) -> None:
+        """Resume the queue: a play action, so it runs under the group and player lock."""
 
     def signal_update(self, queue_id: str, items_changed: bool = False) -> None:
         """Ignore the queue updates."""
@@ -901,6 +913,18 @@ class TestGroupAndMemberLockOrder:
         await _play_on_queue(queues, "member")
 
         assert lock_keys[:2] == ["playback_g1", "playback_member"]
+
+    async def test_a_resume_on_a_synced_player_and_a_join_do_not_lock_each_other_out(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Resuming a player synced to a captured leader while another player joins must not deadlock."""
+        controller, group, member, _ = self._setup(mock_mass)
+        # "extra" hears the group's queue through "member", the group's captured leader,
+        # so its resume lands on that queue and the play action takes the group's lock
+        self._add_follower(controller, member)
+        mock_mass.player_queues = _PlayingQueues(mock_mass, "g1")
+
+        await self._assert_no_lockout_with_a_join(controller, group, controller.cmd_resume("extra"))
 
 
 class TestPlayerBaseIsActiveSession:
