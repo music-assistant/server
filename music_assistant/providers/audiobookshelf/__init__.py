@@ -187,8 +187,8 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
         """Initialize the Audiobookshelf provider."""
         super().__init__(mass, manifest, config, supported_features)
         self.libraries = LibrariesHelper()
-        # libraries whose narrators were scanned since the last audiobook sync
-        self._narrators_scanned: set[str] = set()
+        # library_id -> {narrator name: ABS narrator id}, refreshed on each audiobook sync
+        self._narrator_ids: dict[str, dict[str, str]] = {}
 
     @staticmethod
     def handle_refresh_token(
@@ -427,8 +427,7 @@ for more details.
         """Obtain audiobook library ids and podcast library ids."""
         if media_type == MediaType.AUDIOBOOK:
             self.libraries.audiobooks.clear()
-            self.libraries.audiobook_narrators.clear()
-            self._narrators_scanned.clear()
+            self._narrator_ids.clear()
         elif media_type == MediaType.PODCAST:
             self.libraries.podcasts.clear()
         elif media_type == MediaType.PLAYLIST:
@@ -444,7 +443,6 @@ for more details.
         for library in libraries:
             if library.media_type == AbsLibraryMediaType.BOOK and media_type == MediaType.AUDIOBOOK:
                 self.libraries.audiobooks[library.id_] = LibraryHelper(name=library.name)
-                await self._update_book_narrators(library.id_)
             elif (
                 library.media_type == AbsLibraryMediaType.PODCAST
                 and media_type == MediaType.PODCAST
@@ -2055,39 +2053,22 @@ for more details.
                 user_initiated=False,
             )
 
-    async def _update_book_narrators(self, library_id: str) -> None:
-        # narrators are not expanded in ABS' response, so acquire them here
-        narrators = await self._client.get_library_narrators(library_id=library_id)
-        audiobook_narrators: dict[str, set[NarratorHelper]] = {}
-        for narrator in narrators:
-            async for response in self._client.get_library_items(
-                library_id=library_id, filter_str=f"narrators.{narrator.id_}"
-            ):
-                if not response.results:
-                    break
-                for item in response.results:
-                    narrator_set = audiobook_narrators.get(item.id_, set())
-                    narrator_set.add(NarratorHelper(id_=narrator.id_, name=narrator.name))
-                    audiobook_narrators[item.id_] = narrator_set
-        self.libraries.audiobook_narrators = {
-            **self.libraries.audiobook_narrators,
-            **audiobook_narrators,
-        }
-        self._narrators_scanned.add(library_id)
-
     async def _get_audiobook_narrators(
         self, book: AbsLibraryItemExpandedBook
     ) -> set[NarratorHelper]:
-        """Get narrators of an audiobook, either from cache or API calls."""
-        if cached_narrators := self.libraries.audiobook_narrators.get(book.id_):
-            return cached_narrators
-        if book.library_id in self._narrators_scanned:
-            # a scan only records books that have narrators, so a book without them stays
-            # absent from the cache - rescanning costs two requests per narrator and would
-            # not add it either
+        """Get narrators of an audiobook from its own metadata."""
+        if not book.media.metadata.narrators:
             return set()
-        await self._update_book_narrators(book.library_id)
-        return self.libraries.audiobook_narrators.get(book.id_, set())
+        if (name_to_id := self._narrator_ids.get(book.library_id)) is None:
+            # a book carries narrator names only, so take their ABS ids from the library
+            narrators = await self._client.get_library_narrators(library_id=book.library_id)
+            name_to_id = {x.name: x.id_ for x in narrators}
+            self._narrator_ids[book.library_id] = name_to_id
+        return {
+            NarratorHelper(id_=narrator_id, name=name)
+            for name in book.media.metadata.narrators
+            if (narrator_id := name_to_id.get(name))
+        }
 
     async def _cache_set_helper_libraries(self) -> None:
         await self.mass.cache.set(
