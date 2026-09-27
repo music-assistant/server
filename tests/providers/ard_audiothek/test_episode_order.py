@@ -55,10 +55,13 @@ async def test_episode_positions_run_oldest_to_newest() -> None:
     provider = _provider(episodes)
 
     with patch("music_assistant.providers.ard_audiothek._parse_podcast_episode") as parse:
-        parse.side_effect = lambda *args: Mock(item_id=args[3], position=args[5])
+        parse.side_effect = lambda *args: Mock(
+            item_id=args[2]["coreId"], podcast=Mock(item_id=args[3]), position=args[5]
+        )
         parsed = [ep async for ep in provider.get_podcast_episodes("show-1")]
 
     assert {ep.item_id: ep.position for ep in parsed} == {"a": 1, "b": 2, "c": 3}
+    assert {ep.podcast.item_id for ep in parsed} == {"show-1"}
 
 
 async def test_depublished_and_audioless_episodes_are_skipped() -> None:
@@ -72,7 +75,9 @@ async def test_depublished_and_audioless_episodes_are_skipped() -> None:
     provider = _provider(episodes)
 
     with patch("music_assistant.providers.ard_audiothek._parse_podcast_episode") as parse:
-        parse.side_effect = lambda *args: Mock(item_id=args[3], position=args[5])
+        parse.side_effect = lambda *args: Mock(
+            item_id=args[2]["coreId"], podcast=Mock(item_id=args[3]), position=args[5]
+        )
         parsed = [ep async for ep in provider.get_podcast_episodes("show-1")]
 
     assert {ep.item_id: ep.position for ep in parsed} == {"a": 1, "c": 2}
@@ -89,7 +94,9 @@ async def test_episodes_are_ranked_across_every_page() -> None:
     provider = _provider(episodes)
 
     with patch("music_assistant.providers.ard_audiothek._parse_podcast_episode") as parse:
-        parse.side_effect = lambda *args: Mock(item_id=args[3], position=args[5])
+        parse.side_effect = lambda *args: Mock(
+            item_id=args[2]["coreId"], podcast=Mock(item_id=args[3]), position=args[5]
+        )
         parsed = [ep async for ep in provider.get_podcast_episodes("show-1")]
 
     assert len(parsed) == 600
