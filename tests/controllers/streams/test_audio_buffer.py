@@ -28,6 +28,7 @@ from music_assistant.controllers.streams.audio_buffer import (
 from music_assistant.controllers.streams.constants import (
     BUFFER_SIZE_MAP,
     RADIO_BUFFER_SIZE,
+    REALTIME_COLD_START_BANK,
     SEEK_WAIT_THRESHOLD,
     BufferMode,
     BufferSize,
@@ -612,6 +613,54 @@ async def test_get_buffer_still_starts_analysis_for_track() -> None:
     await asyncio.gather(*scheduled_tasks)
     start_analysis.assert_awaited_once()
     await buffer.clear()
+
+
+@pytest.mark.parametrize(
+    ("reason", "seek_position_ms", "slots", "expected"),
+    [
+        ("prepare", 264_000, 1, REALTIME_COLD_START_BANK),
+        ("prepare", 0, 1, 1),
+        ("prepare_next", 264_000, 1, 1),
+        ("streaming", 264_000, 1, 1),
+        ("prepare", 264_000, 3, 1),
+    ],
+)
+async def test_realtime_session_start_banks_a_lead_for_a_short_first_item(
+    reason: str, seek_position_ms: int, slots: int, expected: int
+) -> None:
+    """
+    Only a session start on a single-slot realtime item with little left to play banks a lead.
+
+    A full first track builds its own lead before the first boundary, a boundary preload
+    never banks because the source's slot is still held by the playing item, and a source
+    with spare slots prewarms its next item so its boundary has no gap to bridge.
+    """
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    provider = MagicMock(spec=MusicProvider)
+    provider.max_concurrent_streams = slots
+    mass.get_provider = MagicMock(return_value=provider)
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=289, allow_seek=True)
+    streamdetails.is_realtime = True
+
+    buffer = await AudioBuffer.get_buffer(mass, streamdetails, seek_position_ms, reason=reason)
+    try:
+        assert buffer._ready_threshold == expected
+    finally:
+        await asyncio.gather(*scheduled_tasks)
+        await buffer.clear()
+
+
+async def test_cold_start_bank_is_realtime_only() -> None:
+    """A source that fills the buffer faster than playback needs no bank at all."""
+    mass, _start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=289, allow_seek=True)
+
+    buffer = await AudioBuffer.get_buffer(mass, streamdetails, 264_000, reason="prepare")
+    try:
+        assert buffer._ready_threshold == 2
+    finally:
+        await asyncio.gather(*scheduled_tasks)
+        await buffer.clear()
 
 
 @pytest.mark.asyncio
