@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterable
-from dataclasses import dataclass
 from dataclasses import dataclass, replace
 from time import time
 from typing import TYPE_CHECKING, Any, cast
@@ -17,6 +16,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
     RetriesExhausted,
 )
 from music_assistant_models.helpers import create_safe_string
@@ -52,6 +52,7 @@ from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.external_ids import (
     barcode_to_upc,
     is_valid_barcode,
+    is_valid_isrc,
     normalize_external_id,
 )
 from music_assistant.helpers.json import serialize_to_json
@@ -71,11 +72,14 @@ if TYPE_CHECKING:
     )
 
 
-# expected failures from a provider album-track lookup: a missing item or a transient
-# provider/transport outage. Either leaves that tracklist unavailable so the (best-effort,
-# multi-provider) match can continue rather than aborting the whole operation.
+# expected failures from a provider album-track lookup: a missing item, an unavailable or
+# rate limiting provider or a transient transport outage. Each leaves that tracklist
+# unavailable so the (best-effort, multi-provider) match can continue rather than aborting
+# the whole operation.
 _ALBUM_TRACK_LOOKUP_ERRORS = (
     MediaNotFoundError,
+    ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
     RetriesExhausted,
     TimeoutError,
     aiohttp.ClientError,
@@ -556,29 +560,39 @@ class AlbumsController(MediaControllerBase[Album]):
         )
 
     async def link_album_tracks(
-        self,
-        album: Album,
-        release: MusicBrainzRelease | None,
-        new_mappings: Iterable[ProviderMapping],
+        self, album: Album, db_tracks: Sequence[Track], release: MusicBrainzRelease | None
     ) -> None:
         """
-        Carry an album's MusicBrainz identity and new provider links over to its library tracks.
+        Carry an album's MusicBrainz identity and provider links over to its library tracks.
 
         The library tracks at a matching position on the release get its recording id and
-        ISRCs. The tracklists of the providers the album was just linked to are matched to
-        the library tracks by ISRC or position, and the matching provider tracks are linked.
+        ISRCs. For each provider the album is mapped to but one or more of its library
+        tracks are not, the provider's tracklist is matched to the library tracks by ISRC
+        or position and the matching provider tracks are linked.
 
         :param album: The library album.
+        :param db_tracks: The album's library tracks.
         :param release: The album's MusicBrainz release, if it was identified.
-        :param new_mappings: The provider mappings that were just added to the album.
         """
-        db_tracks = await self.get_library_album_tracks(album.item_id)
         if not db_tracks:
             return
-        if release is not None:
-            await self._link_tracks_to_release(db_tracks, release)
-        for mapping in new_mappings:
-            await self._link_tracks_to_provider_album(db_tracks, mapping)
+        # one tracklist per provider domain: the first mapping of each stands for it
+        album_mappings: dict[str, ProviderMapping] = {}
+        for mapping in sorted(
+            album.provider_mappings,
+            key=lambda x: (x.provider_domain, x.provider_instance, x.item_id),
+        ):
+            album_mappings.setdefault(mapping.provider_domain, mapping)
+        track_domains = [
+            {x.provider_domain for x in track.provider_mappings} for track in db_tracks
+        ]
+        async with self.mass.music.database.deferred_commit():
+            if release is not None:
+                await self._link_tracks_to_release(db_tracks, release)
+            for domain, mapping in album_mappings.items():
+                if all(domain in domains for domains in track_domains):
+                    continue
+                await self._link_tracks_to_provider_album(db_tracks, mapping)
 
     async def add_item_mapping_as_album_to_library(self, item: ItemMapping) -> Album:
         """
@@ -748,12 +762,12 @@ class AlbumsController(MediaControllerBase[Album]):
             await self.get_provider_item(
                 mapping.item_id, mapping.provider_instance, allow_fallback=False
             )
-        except MediaNotFoundError, ProviderUnavailableError:
+        except MusicAssistantError, aiohttp.ClientError, TimeoutError:
             return False
         return True
 
     async def _link_tracks_to_release(
-        self, db_tracks: list[Track], release: MusicBrainzRelease
+        self, db_tracks: Sequence[Track], release: MusicBrainzRelease
     ) -> None:
         """Fill the recording ids and ISRCs of a release in on the library tracks at its positions."""
         recordings = {
@@ -767,19 +781,21 @@ class AlbumsController(MediaControllerBase[Album]):
             recording = recordings.get((db_track.disc_number or 1, db_track.track_number))
             if recording is None or not _recording_matches_track(recording, db_track):
                 continue
-            fill_track_from_recording(db_track, recording)
+            changed = fill_track_from_recording(db_track, recording)
+            if not changed and db_track.metadata.last_musicbrainz_lookup is not None:
+                continue
             db_track.metadata.last_musicbrainz_lookup = int(time())
             await self.mass.music.tracks.update_item_in_library(db_track.item_id, db_track)
 
     async def _link_tracks_to_provider_album(
-        self, db_tracks: list[Track], mapping: ProviderMapping
+        self, db_tracks: Sequence[Track], mapping: ProviderMapping
     ) -> None:
-        """Link the tracks of a newly linked provider album to the library tracks they are."""
+        """Link the tracks of a provider album to the library tracks they are."""
         try:
             provider_tracks = await self._get_provider_album_tracks(
                 mapping.item_id, mapping.provider_instance
             )
-        except (*_ALBUM_TRACK_LOOKUP_ERRORS, ProviderUnavailableError) as err:
+        except _ALBUM_TRACK_LOOKUP_ERRORS as err:
             self.logger.debug(
                 "Album tracks unavailable for %s on %s: %s",
                 mapping.item_id,
@@ -1222,9 +1238,9 @@ def _matching_provider_track(db_track: Track, provider_tracks: Sequence[Track]) 
 
 
 def _isrcs(track: Track) -> set[str]:
-    """Return a track's ISRCs in canonical form."""
+    """Return a track's valid ISRCs in canonical form."""
     return {
         normalize_external_id(ExternalID.ISRC, value)
         for id_type, value in track.external_ids
-        if id_type == ExternalID.ISRC
+        if id_type == ExternalID.ISRC and is_valid_isrc(value)
     }

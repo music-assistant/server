@@ -33,7 +33,7 @@ from .constants import CONF_ENABLE_ONLINE_METADATA, CONF_PREFER_LOCAL_GENRES, RE
 
 if TYPE_CHECKING:
     import logging
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.media_items import Audiobook, Playlist, Podcast
@@ -574,6 +574,7 @@ class MetadataEnrichmentMixin:
                     err,
                     exc_info=err if self.logger.isEnabledFor(10) else None,
                 )
+                return
         artist.metadata.last_musicbrainz_lookup = int(time())
 
     async def _link_album_to_musicbrainz(self, album: Album) -> None:
@@ -588,11 +589,10 @@ class MetadataEnrichmentMixin:
             if release is None:
                 self.logger.debug("Album %s was not found on MusicBrainz", album.name)
             else:
-                _fill_album_from_release(album, release)
-                new_mappings = await self.mass.music.albums.link_musicbrainz_mappings(
-                    album, relation_urls(release.relations)
-                )
-                await self.mass.music.albums.link_album_tracks(album, release, new_mappings)
+                urls = relation_urls(release.relations)
+                _fill_album_from_release(album, release, urls)
+                await self.mass.music.albums.link_musicbrainz_mappings(album, urls)
+                await self.mass.music.albums.link_album_tracks(album, db_tracks, release)
         except Exception as err:
             self.logger.warning(
                 "Error linking Album %s through MusicBrainz: %s",
@@ -600,6 +600,7 @@ class MetadataEnrichmentMixin:
                 err,
                 exc_info=err if self.logger.isEnabledFor(10) else None,
             )
+            return
         album.metadata.last_musicbrainz_lookup = int(time())
 
     async def _link_track_to_musicbrainz(self, track: Track) -> None:
@@ -622,6 +623,7 @@ class MetadataEnrichmentMixin:
                 err,
                 exc_info=err if self.logger.isEnabledFor(10) else None,
             )
+            return
         track.metadata.last_musicbrainz_lookup = int(time())
 
     def _musicbrainz_provider(self) -> MusicbrainzProvider | None:
@@ -679,7 +681,9 @@ class MetadataEnrichmentMixin:
         return None
 
 
-def _fill_album_from_release(album: Album, release: MusicBrainzRelease) -> None:
+def _fill_album_from_release(
+    album: Album, release: MusicBrainzRelease, urls: Iterable[str]
+) -> None:
     """
     Fill an album's identifiers, year and type in from its MusicBrainz release.
 
@@ -687,6 +691,7 @@ def _fill_album_from_release(album: Album, release: MusicBrainzRelease) -> None:
 
     :param album: The library album to fill in.
     :param release: The MusicBrainz release the album is.
+    :param urls: The release's URLs on MusicBrainz (its URL relations).
     """
     if not album.mbid:
         album.mbid = release.id
@@ -702,7 +707,7 @@ def _fill_album_from_release(album: Album, release: MusicBrainzRelease) -> None:
     if release.asin and not album.get_external_id(ExternalID.ASIN):
         album.add_external_id(ExternalID.ASIN, release.asin)
     if not album.get_external_id(ExternalID.DISCOGS) and (
-        discogs := discogs_external_id(relation_urls(release.relations), MediaType.ALBUM)
+        discogs := discogs_external_id(urls, MediaType.ALBUM)
     ):
         album.add_external_id(*discogs)
     if album.year is None:

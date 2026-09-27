@@ -246,7 +246,7 @@ def discogs_external_id(
     return (ExternalID.DISCOGS, discogs_ids.pop())
 
 
-def fill_track_from_recording(track: Track, recording: MusicBrainzRecording) -> None:
+def fill_track_from_recording(track: Track, recording: MusicBrainzRecording) -> bool:
     """
     Fill a track's MusicBrainz recording id and ISRCs in from its recording.
 
@@ -254,9 +254,12 @@ def fill_track_from_recording(track: Track, recording: MusicBrainzRecording) -> 
 
     :param track: The track to fill in.
     :param recording: The MusicBrainz recording the track is.
+    :return: Whether the track gained its recording id or an ISRC.
     """
+    known_ids = set(track.external_ids)
     if not track.mbid:
         track.mbid = recording.id
     for isrc in recording.isrcs or ():
         if is_valid_isrc(isrc):
             track.add_external_id(ExternalID.ISRC, isrc)
+    return track.external_ids != known_ids

@@ -14,6 +14,7 @@ from music_assistant_models.media_items.metadata import MediaItemMetadata
 from music_assistant.constants import VARIOUS_ARTISTS_MBID
 from music_assistant.controllers.metadata.constants import CONF_ENABLE_ONLINE_METADATA
 from music_assistant.controllers.metadata.enrichment import MetadataEnrichmentMixin
+from music_assistant.controllers.music.helpers import fill_track_from_recording
 from music_assistant.providers.musicbrainz.models import (
     MusicBrainzArtist,
     MusicBrainzRecording,
@@ -451,11 +452,13 @@ async def test_album_identity_fills_ids_year_and_type_of_a_bare_album() -> None:
 
 @pytest.mark.asyncio
 async def test_album_identity_links_the_album_and_its_tracks() -> None:
-    """The release's links go to the album linker, its new mappings on to the track linker."""
+    """The release's links go to the album linker, the loaded tracks on to the track linker."""
     release = _release()
     enrichment = _enrichment(_musicbrainz(release=release))
     albums = _mass(enrichment).music.albums
     albums.link_musicbrainz_mappings = AsyncMock(return_value=[SPOTIFY_MAPPING])
+    db_tracks = [_track()]
+    albums.get_library_album_tracks = AsyncMock(return_value=db_tracks)
     album = _album()
 
     await enrichment._update_album_metadata(album, force_refresh=True)
@@ -463,7 +466,7 @@ async def test_album_identity_links_the_album_and_its_tracks() -> None:
     albums.link_musicbrainz_mappings.assert_awaited_once_with(
         album, [SPOTIFY_ALBUM_URL, DISCOGS_RELEASE_URL]
     )
-    albums.link_album_tracks.assert_awaited_once_with(album, release, [SPOTIFY_MAPPING])
+    albums.link_album_tracks.assert_awaited_once_with(album, db_tracks, release)
 
 
 @pytest.mark.asyncio
@@ -523,8 +526,8 @@ async def test_album_identity_is_skipped_without_a_musicbrainz_provider() -> Non
 
 
 @pytest.mark.asyncio
-async def test_album_identity_failure_is_logged_and_enrichment_completes() -> None:
-    """A failing MusicBrainz lookup is a warning, not the end of the album's enrichment."""
+async def test_album_identity_failure_is_logged_and_left_for_the_next_run() -> None:
+    """A failing lookup is a warning, not the end of the enrichment, and is not marked done."""
     musicbrainz = _musicbrainz()
     musicbrainz.resolve_release = AsyncMock(side_effect=aiohttp.ClientError("mirror down"))
     enrichment = _enrichment(musicbrainz)
@@ -533,7 +536,7 @@ async def test_album_identity_failure_is_logged_and_enrichment_completes() -> No
     await enrichment._update_album_metadata(album, force_refresh=True)
 
     _logger(enrichment).warning.assert_called_once()
-    assert album.metadata.last_musicbrainz_lookup is not None
+    assert album.metadata.last_musicbrainz_lookup is None
     _mass(enrichment).music.albums.update_item_in_library.assert_awaited_once()
 
 
@@ -593,6 +596,39 @@ async def test_track_identity_keeps_an_existing_recording_id_and_marks_a_miss() 
 
 
 @pytest.mark.asyncio
+async def test_track_identity_failure_is_left_for_the_next_run() -> None:
+    """A track whose lookup fails is not marked as looked up, unlike an authoritative miss."""
+    musicbrainz = _musicbrainz()
+    musicbrainz.resolve_recording = AsyncMock(side_effect=aiohttp.ClientError("mirror down"))
+    enrichment = _enrichment(musicbrainz)
+    track = _track()
+
+    await enrichment._update_track_metadata(track, force_refresh=True)
+
+    _logger(enrichment).warning.assert_called_once()
+    assert track.metadata.last_musicbrainz_lookup is None
+    _mass(enrichment).music.tracks.update_item_in_library.assert_awaited_once_with("1", track)
+
+
+def test_fill_track_from_recording_reports_whether_the_track_gained_an_id() -> None:
+    """The recording id and valid ISRCs count as a change; nothing new or invalid does not."""
+    recording = MusicBrainzRecording(id=RECORDING_ID, title="15 Step", isrcs=["GBSTK0700001"])
+
+    assert fill_track_from_recording(_track(), recording) is True
+
+    known = _track({(ExternalID.MB_RECORDING, OTHER_MBID)})
+    assert fill_track_from_recording(known, recording) is True
+    assert known.mbid == OTHER_MBID
+
+    complete = _track({(ExternalID.MB_RECORDING, RECORDING_ID), (ExternalID.ISRC, "GBSTK0700001")})
+    assert fill_track_from_recording(complete, recording) is False
+
+    placeholder = MusicBrainzRecording(id=RECORDING_ID, title="15 Step", isrcs=["unknown"])
+    assert fill_track_from_recording(complete, placeholder) is False
+    assert (ExternalID.ISRC, "unknown") not in complete.external_ids
+
+
+@pytest.mark.asyncio
 async def test_artist_identity_fills_discogs_and_links() -> None:
     """A known artist gets its Discogs id from MusicBrainz and is linked through its links."""
     details = MusicBrainzArtist(
@@ -623,6 +659,27 @@ async def test_artist_identity_fills_discogs_and_links() -> None:
     _mass(enrichment).music.artists.link_musicbrainz_mappings.assert_awaited_once_with(
         artist, [SPOTIFY_ARTIST_URL, DISCOGS_ARTIST_URL]
     )
+
+
+@pytest.mark.asyncio
+async def test_artist_identity_failure_is_left_for_the_next_run() -> None:
+    """An artist whose MusicBrainz details cannot be fetched is not marked as looked up."""
+    musicbrainz = _musicbrainz()
+    musicbrainz.get_artist_details = AsyncMock(side_effect=aiohttp.ClientError("mirror down"))
+    enrichment = _enrichment(musicbrainz)
+    artist = Artist(
+        item_id="1",
+        provider="library",
+        name="Radiohead",
+        provider_mappings=set(),
+        external_ids={(ExternalID.MB_ARTIST, OTHER_MBID)},
+    )
+
+    await enrichment._update_artist_metadata(artist, force_refresh=True)
+
+    _logger(enrichment).warning.assert_called_once()
+    assert artist.metadata.last_musicbrainz_lookup is None
+    _mass(enrichment).music.artists.link_musicbrainz_mappings.assert_not_awaited()
 
 
 @pytest.mark.asyncio

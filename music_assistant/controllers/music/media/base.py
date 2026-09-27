@@ -1271,42 +1271,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         Add provider mappings to existing library item.
 
+        A mapping that belongs to another library item merges that item into this one.
+
         :param item_id: The library item ID to add mappings to.
         :param provider_mappings: The provider mappings to add.
         """
-        db_id = int(item_id)  # ensure integer
-        mappings = set(provider_mappings)
-        if not mappings:
-            return
-        async with self._db_add_lock:
-            library_item = await self.get_library_item(db_id)
-            while True:
-                conflicting_item = None
-                for mapping in mappings:
-                    existing_item = await self.get_library_item_by_prov_id(
-                        mapping.item_id, mapping.provider_instance
-                    )
-                    if existing_item and int(existing_item.item_id) != db_id:
-                        conflicting_item = existing_item
-                        break
-                if conflicting_item is None:
-                    break
-                self.logger.debug(
-                    "merging item id %s into item id %s based on provider mapping",
-                    conflicting_item.item_id,
-                    library_item.item_id,
-                )
-                library_item = await self._merge_library_items_batched(
-                    db_id, int(conflicting_item.item_id)
-                )
-
-            new_mappings = mappings.difference(library_item.provider_mappings)
-            if not new_mappings:
-                return
-            library_item.provider_mappings.update(new_mappings)
-            self.mass.music.match_provider_instances(library_item)
-            await self.set_provider_mappings(db_id, library_item.provider_mappings)
-            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
+        await self._add_provider_mappings(int(item_id), provider_mappings, merge_conflicts=True)
 
     @final
     async def add_unclaimed_provider_mappings(
@@ -1320,28 +1290,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         :param item_id: The library item ID to add mappings to.
         :param provider_mappings: The provider mappings to add.
-        :return: The mappings that were added.
+        :return: The mappings that were added, none of which belonged to another library item.
         """
-        db_id = int(item_id)  # ensure integer
-        unclaimed: list[ProviderMapping] = []
-        for mapping in provider_mappings:
-            owner = await self.get_library_item_by_prov_id(
-                mapping.item_id, mapping.provider_instance
-            )
-            if owner is not None:
-                if int(owner.item_id) != db_id:
-                    self.logger.debug(
-                        "Not linking %s/%s to %s item id %s: it belongs to item id %s",
-                        mapping.provider_instance,
-                        mapping.item_id,
-                        self.media_type.value,
-                        db_id,
-                        owner.item_id,
-                    )
-                continue
-            unclaimed.append(mapping)
-        await self.add_provider_mappings(db_id, unclaimed)
-        return unclaimed
+        return await self._add_provider_mappings(
+            int(item_id), provider_mappings, merge_conflicts=False
+        )
 
     @final
     async def link_musicbrainz_mappings(
@@ -1367,6 +1320,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             if await self._verify_musicbrainz_mapping(candidate)
         ]
         added = await self.add_unclaimed_provider_mappings(db_item.item_id, verified)
+        db_item.provider_mappings.update(added)
         self.logger.debug(
             "Linked %s %s via MusicBrainz to: %s (already mapped: %s, unavailable: %s)",
             self.media_type.value,
@@ -2883,6 +2837,59 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             SUPPRESS_MEDIA_ITEM_UPDATES.reset(token)
 
         return source_item, merged_item
+
+    async def _add_provider_mappings(
+        self, db_id: int, provider_mappings: Iterable[ProviderMapping], merge_conflicts: bool
+    ) -> list[ProviderMapping]:
+        """
+        Add provider mappings to a library item and return the ones that were added.
+
+        :param db_id: The library item ID to add mappings to.
+        :param provider_mappings: The provider mappings to add.
+        :param merge_conflicts: Whether a mapping another library item holds merges that
+            item into this one; otherwise such a mapping is left out.
+        """
+        mappings = list(dict.fromkeys(provider_mappings))
+        if not mappings:
+            return []
+        # ownership is checked under the same lock as the write, so a mapping another
+        # item claims concurrently cannot slip through
+        async with self._db_add_lock:
+            library_item = await self.get_library_item(db_id)
+            for mapping in list(mappings):
+                existing_item = await self.get_library_item_by_prov_id(
+                    mapping.item_id, mapping.provider_instance
+                )
+                if existing_item is None or int(existing_item.item_id) == db_id:
+                    continue
+                if merge_conflicts:
+                    self.logger.debug(
+                        "merging item id %s into item id %s based on provider mapping",
+                        existing_item.item_id,
+                        library_item.item_id,
+                    )
+                    library_item = await self._merge_library_items_batched(
+                        db_id, int(existing_item.item_id)
+                    )
+                else:
+                    self.logger.debug(
+                        "Not linking %s/%s to %s item id %s: it belongs to item id %s",
+                        mapping.provider_instance,
+                        mapping.item_id,
+                        self.media_type.value,
+                        db_id,
+                        existing_item.item_id,
+                    )
+                    mappings.remove(mapping)
+
+            added = [x for x in mappings if x not in library_item.provider_mappings]
+            if not added:
+                return []
+            library_item.provider_mappings.update(added)
+            self.mass.music.match_provider_instances(library_item)
+            await self.set_provider_mappings(db_id, library_item.provider_mappings)
+            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
+            return added
 
     async def _merge_library_items_batched(self, target_id: int, source_id: int) -> ItemCls:
         """Merge library items while batching the transfer's database writes."""

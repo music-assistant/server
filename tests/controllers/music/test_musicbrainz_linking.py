@@ -6,11 +6,16 @@ import asyncio
 import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, Mock, patch
+from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
+import pytest
 from music_assistant_models.enums import ExternalID
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import Album, ProviderMapping, Track
 
 from music_assistant.controllers.music.media.albums import AlbumsController
@@ -64,12 +69,13 @@ def _library_track(
     isrcs: Sequence[str] = (),
     mbid: str | None = None,
     mappings: Sequence[ProviderMapping] = (),
+    looked_up: bool = False,
 ) -> Track:
     """Return a library album track at the given position."""
     external_ids = {(ExternalID.ISRC, isrc) for isrc in isrcs}
     if mbid:
         external_ids.add((ExternalID.MB_RECORDING, mbid))
-    return Track(
+    track = Track(
         item_id=item_id,
         provider="library",
         name=name or f"Track {number}",
@@ -79,6 +85,9 @@ def _library_track(
         external_ids=external_ids,
         provider_mappings=set(mappings),
     )
+    if looked_up:
+        track.metadata.last_musicbrainz_lookup = 1
+    return track
 
 
 def _provider_track(
@@ -172,7 +181,7 @@ def _harness(
     *,
     loaded: dict[str, list[str]],
     owners: dict[tuple[str, str], str] | None = None,
-    missing_on_provider: Sequence[str] = (),
+    provider_errors: dict[str, Exception] | None = None,
 ) -> Iterator[_Harness]:
     """
     Yield the item's controller with every IO boundary mocked.
@@ -180,7 +189,7 @@ def _harness(
     :param db_item: The library item under test; also what the controller loads by id.
     :param loaded: Provider instance ids per loaded provider domain.
     :param owners: Library item id per (provider instance, provider item id) already held.
-    :param missing_on_provider: Provider item ids the provider does not know.
+    :param provider_errors: Error the provider raises per provider item id.
     """
     ctrl: MediaControllerBase[Any]
     if isinstance(db_item, Album):
@@ -202,8 +211,8 @@ def _harness(
         return None
 
     async def _provider_item(item_id: str, _instance: str, **_kwargs: object) -> Album:
-        if item_id in missing_on_provider:
-            raise MediaNotFoundError(item_id)
+        if error := (provider_errors or {}).get(item_id):
+            raise error
         return _library_album(item_id)
 
     set_provider_mappings = AsyncMock()
@@ -265,7 +274,8 @@ async def test_linker_checks_apple_music_albums_and_trusts_the_other_providers()
     """An Apple Music album link is verified against the storefront; the rest is trusted."""
     album = _library_album("1")
     loaded = {"spotify": ["spotify_1"], "apple_music": ["apple_music_1"]}
-    with _harness(album, loaded=loaded, missing_on_provider=["1109714933"]) as harness:
+    errors: dict[str, Exception] = {"1109714933": MediaNotFoundError("gone")}
+    with _harness(album, loaded=loaded, provider_errors=errors) as harness:
         added = await harness.ctrl.link_musicbrainz_mappings(
             album, [APPLE_ALBUM_URL, SPOTIFY_ALBUM_URL]
         )
@@ -282,6 +292,22 @@ async def test_linker_checks_apple_music_albums_and_trusts_the_other_providers()
         )
 
     assert [m.provider_domain for m in added] == ["apple_music", "spotify"]
+
+
+@pytest.mark.parametrize(
+    "error", [RateLimited("slow down", backoff_time=30), ResourceTemporarilyUnavailable("busy")]
+)
+async def test_linker_treats_an_apple_music_hiccup_as_unverified(error: Exception) -> None:
+    """An Apple Music album whose check fails on the provider is not linked, nor merged."""
+    album = _library_album("1")
+    loaded = {"spotify": ["spotify_1"], "apple_music": ["apple_music_1"]}
+    with _harness(album, loaded=loaded, provider_errors={"1109714933": error}) as harness:
+        added = await harness.ctrl.link_musicbrainz_mappings(
+            album, [APPLE_ALBUM_URL, SPOTIFY_ALBUM_URL]
+        )
+
+    assert [m.provider_domain for m in added] == ["spotify"]
+    harness.merge.assert_not_awaited()
 
 
 async def test_linker_trusts_apple_music_track_links() -> None:
@@ -311,6 +337,36 @@ async def test_unclaimed_mappings_never_merge_library_items() -> None:
     harness.merge.assert_not_awaited()
 
 
+async def test_unclaimed_mappings_are_checked_and_written_under_the_add_lock() -> None:
+    """Ownership is checked and the mappings written while the add lock is held throughout."""
+    track = _library_track("1", 1)
+    free = ProviderMapping(item_id="free", provider_domain="tidal", provider_instance="tidal_1")
+    taken = ProviderMapping(item_id="taken", provider_domain="deezer", provider_instance="deezer_1")
+    locked_during: list[bool] = []
+    with _harness(track, loaded={}, owners={("deezer_1", "taken"): "7"}) as harness:
+        lock = harness.ctrl._db_add_lock
+        owner_lookup = harness.ctrl.get_library_item_by_prov_id
+        assert isinstance(owner_lookup, AsyncMock)
+        owner_side_effect = owner_lookup.side_effect
+
+        async def _owner_under_lock(item_id: str, instance: str) -> Album | None:
+            locked_during.append(lock.locked())
+            return cast("Album | None", await owner_side_effect(item_id, instance))
+
+        owner_lookup.side_effect = _owner_under_lock
+        harness.set_provider_mappings.side_effect = lambda *_args: locked_during.append(
+            lock.locked()
+        )
+
+        added = await harness.ctrl.add_unclaimed_provider_mappings("1", [taken, free])
+
+    assert added == [free]
+    assert locked_during == [True, True, True]
+    assert harness.stored_mappings() == {free}
+    harness.merge.assert_not_awaited()
+    assert not lock.locked()
+
+
 # ---------------------------------------------------------------------------
 # link_album_tracks
 # ---------------------------------------------------------------------------
@@ -336,20 +392,27 @@ class _AlbumHarness:
         ]
 
 
+SPOTIFY_ALBUM = ProviderMapping(
+    item_id="sp-album", provider_domain="spotify", provider_instance="spotify_1"
+)
+TIDAL_ALBUM = ProviderMapping(
+    item_id="td-album", provider_domain="tidal", provider_instance="tidal_1"
+)
+
+
 @contextmanager
 def _album_harness(
-    db_tracks: Sequence[Track],
     provider_tracks: dict[str, list[Track] | Exception] | None = None,
 ) -> Iterator[_AlbumHarness]:
     """
-    Yield an albums controller with the album's library tracks and provider tracklists mocked.
+    Yield an albums controller with the provider tracklists and the track writes mocked.
 
-    :param db_tracks: The library tracks of the album.
     :param provider_tracks: Provider tracklist (or error to raise) per provider album id.
     """
     ctrl = AlbumsController.__new__(AlbumsController)
     ctrl.logger = logging.getLogger("test.musicbrainz.linking")
     ctrl.mass = Mock()
+    ctrl.mass.music.database.deferred_commit = MagicMock()
     ctrl.mass.music.tracks.update_item_in_library = AsyncMock()
     ctrl.mass.music.tracks.add_unclaimed_provider_mappings = AsyncMock()
 
@@ -360,11 +423,7 @@ def _album_harness(
         return result
 
     provider_album_tracks = AsyncMock(side_effect=_tracklist)
-    with patch.multiple(
-        ctrl,
-        get_library_album_tracks=AsyncMock(return_value=list(db_tracks)),
-        _get_provider_album_tracks=provider_album_tracks,
-    ):
+    with patch.object(ctrl, "_get_provider_album_tracks", provider_album_tracks):
         yield _AlbumHarness(ctrl, ctrl.mass.music.tracks, provider_album_tracks)
 
 
@@ -377,8 +436,8 @@ async def test_release_tracks_fill_recording_ids_isrcs_and_marker_by_position() 
             _recording(OTHER_RECORDING_ID, "Track 2", None),
         ]
     )
-    with _album_harness(db_tracks) as harness:
-        await harness.ctrl.link_album_tracks(_library_album(), release, [])
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(_library_album(), db_tracks, release)
 
     updated = harness.updated_tracks()
     assert [track.item_id for track in updated] == ["t1", "t2"]
@@ -397,8 +456,8 @@ async def test_release_tracks_skip_a_length_or_title_mismatch() -> None:
     release = _release(
         [_recording(RECORDING_ID, "Track 1", 220000), _recording(OTHER_RECORDING_ID, "Other", None)]
     )
-    with _album_harness(db_tracks) as harness:
-        await harness.ctrl.link_album_tracks(_library_album(), release, [])
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(_library_album(), db_tracks, release)
 
     assert harness.updated_tracks() == []
 
@@ -407,12 +466,55 @@ async def test_release_tracks_keep_an_existing_recording_id() -> None:
     """A recording id the library track already carries wins, its ISRCs are still filled in."""
     db_tracks = [_library_track("t1", 1, mbid=OTHER_RECORDING_ID)]
     release = _release([_recording(RECORDING_ID, "Track 1", 237000, "GBSTK0700001")])
-    with _album_harness(db_tracks) as harness:
-        await harness.ctrl.link_album_tracks(_library_album(), release, [])
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(_library_album(), db_tracks, release)
 
     (updated,) = harness.updated_tracks()
     assert updated.mbid == OTHER_RECORDING_ID
     assert (ExternalID.ISRC, "GBSTK0700001") in updated.external_ids
+
+
+async def test_release_tracks_are_matched_per_disc() -> None:
+    """On a multi-disc release each disc's first track gets its own recording."""
+    db_tracks = [
+        _library_track("d1", 1, name="Opener", disc_number=1),
+        _library_track("d2", 1, name="Closer", disc_number=2),
+    ]
+    release = _release(
+        [_recording(RECORDING_ID, "Opener", None)], [_recording(OTHER_RECORDING_ID, "Closer", None)]
+    )
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(_library_album(), db_tracks, release)
+
+    assert [(track.item_id, track.mbid) for track in harness.updated_tracks()] == [
+        ("d1", RECORDING_ID),
+        ("d2", OTHER_RECORDING_ID),
+    ]
+
+
+async def test_release_tracks_without_a_disc_number_match_the_first_disc() -> None:
+    """A digital single-disc library track stored as disc 0 is a track of medium 1."""
+    db_tracks = [_library_track("t1", 1, disc_number=0)]
+    release = _release([_recording(RECORDING_ID, "Track 1", None)])
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(_library_album(), db_tracks, release)
+
+    (updated,) = harness.updated_tracks()
+    assert updated.mbid == RECORDING_ID
+
+
+async def test_release_tracks_that_gain_nothing_are_not_rewritten() -> None:
+    """A track that already carries the recording's ids is only written once, for its marker."""
+    release = _release([_recording(RECORDING_ID, "Track 1", None, "GBSTK0700001")])
+    complete = _library_track("t1", 1, isrcs=["GBSTK0700001"], mbid=RECORDING_ID)
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(_library_album(), [complete], release)
+    (updated,) = harness.updated_tracks()
+    assert updated.metadata.last_musicbrainz_lookup is not None
+
+    with _album_harness() as harness:
+        await harness.ctrl.link_album_tracks(_library_album(), [complete], release)
+    harness.tracks.update_item_in_library.assert_not_awaited()
 
 
 async def test_provider_tracks_are_matched_by_isrc_before_position() -> None:
@@ -422,17 +524,14 @@ async def test_provider_tracks_are_matched_by_isrc_before_position() -> None:
         _library_track("t2", 2, isrcs=["GBSTK0700002"]),
         _library_track("t3", 3),
     ]
-    spotify = ProviderMapping(
-        item_id="sp-album", provider_domain="spotify", provider_instance="spotify_1"
-    )
     provider_tracks = [
         # the provider lists the first two tracks in the other order
         _provider_track("sp-2", 1, name="Track 2", isrcs=["GBSTK0700002"]),
         _provider_track("sp-1", 2, name="Track 1", isrcs=["GBSTK0700001"]),
         _provider_track("sp-3", 3),
     ]
-    with _album_harness(db_tracks, {"sp-album": provider_tracks}) as harness:
-        await harness.ctrl.link_album_tracks(_library_album(), None, [spotify])
+    with _album_harness({"sp-album": provider_tracks}) as harness:
+        await harness.ctrl.link_album_tracks(_library_album("1", SPOTIFY_ALBUM), db_tracks, None)
 
     assert harness.linked() == [("t1", {"sp-1"}), ("t2", {"sp-2"}), ("t3", {"sp-3"})]
     harness.provider_album_tracks.assert_awaited_once_with("sp-album", "spotify_1")
@@ -441,18 +540,25 @@ async def test_provider_tracks_are_matched_by_isrc_before_position() -> None:
 async def test_provider_tracks_by_position_need_a_close_duration_and_title() -> None:
     """Without an ISRC, a provider track must sit at the position with the same name and length."""
     db_tracks = [_library_track("t1", 1), _library_track("t2", 2), _library_track("t3", 3)]
-    spotify = ProviderMapping(
-        item_id="sp-album", provider_domain="spotify", provider_instance="spotify_1"
-    )
     provider_tracks = [
         _provider_track("sp-1", 1, duration=243),
         _provider_track("sp-2", 2, duration=260),
         _provider_track("sp-3", 3, name="Another Track"),
     ]
-    with _album_harness(db_tracks, {"sp-album": provider_tracks}) as harness:
-        await harness.ctrl.link_album_tracks(_library_album(), None, [spotify])
+    with _album_harness({"sp-album": provider_tracks}) as harness:
+        await harness.ctrl.link_album_tracks(_library_album("1", SPOTIFY_ALBUM), db_tracks, None)
 
     assert harness.linked() == [("t1", {"sp-1"})]
+
+
+async def test_provider_tracks_ignore_a_placeholder_isrc() -> None:
+    """An invalid ISRC both sides carry, such as "unknown", never links two tracks."""
+    db_tracks = [_library_track("t1", 1, isrcs=["unknown"])]
+    provider_tracks = [_provider_track("sp-2", 2, name="Another Track", isrcs=["unknown"])]
+    with _album_harness({"sp-album": provider_tracks}) as harness:
+        await harness.ctrl.link_album_tracks(_library_album("1", SPOTIFY_ALBUM), db_tracks, None)
+
+    assert harness.linked() == []
 
 
 async def test_provider_tracks_skip_a_library_track_already_mapped_to_the_provider() -> None:
@@ -461,44 +567,66 @@ async def test_provider_tracks_skip_a_library_track_already_mapped_to_the_provid
         item_id="sp-old", provider_domain="spotify", provider_instance="spotify_2"
     )
     db_tracks = [_library_track("t1", 1, mappings=[mapped]), _library_track("t2", 2)]
-    spotify = ProviderMapping(
-        item_id="sp-album", provider_domain="spotify", provider_instance="spotify_1"
-    )
     provider_tracks = [_provider_track("sp-1", 1), _provider_track("sp-2", 2)]
-    with _album_harness(db_tracks, {"sp-album": provider_tracks}) as harness:
-        await harness.ctrl.link_album_tracks(_library_album(), None, [spotify])
+    with _album_harness({"sp-album": provider_tracks}) as harness:
+        await harness.ctrl.link_album_tracks(_library_album("1", SPOTIFY_ALBUM), db_tracks, None)
 
     assert harness.linked() == [("t2", {"sp-2"})]
+
+
+async def test_provider_tracklists_are_only_fetched_while_a_track_lacks_the_provider() -> None:
+    """An album provider every track is mapped to is done; one some track lacks is fetched."""
+    spotify_track = ProviderMapping(
+        item_id="sp-1", provider_domain="spotify", provider_instance="spotify_1"
+    )
+    tidal_track = ProviderMapping(
+        item_id="td-1", provider_domain="tidal", provider_instance="tidal_1"
+    )
+    album = _library_album("1", SPOTIFY_ALBUM, TIDAL_ALBUM)
+    db_tracks = [
+        _library_track("t1", 1, mappings=[spotify_track, tidal_track]),
+        _library_track("t2", 2, mappings=[spotify_track]),
+    ]
+    provider_tracks: dict[str, list[Track] | Exception] = {
+        "sp-album": [_provider_track("sp-1", 1), _provider_track("sp-2", 2)],
+        "td-album": [
+            _provider_track("td-1", 1, instance="tidal_1"),
+            _provider_track("td-2", 2, instance="tidal_1"),
+        ],
+    }
+    with _album_harness(provider_tracks) as harness:
+        await harness.ctrl.link_album_tracks(album, db_tracks, None)
+
+    harness.provider_album_tracks.assert_awaited_once_with("td-album", "tidal_1")
+    assert harness.linked() == [("t2", {"td-2"})]
+
+    db_tracks[1].provider_mappings.add(tidal_track)
+    with _album_harness(provider_tracks) as harness:
+        await harness.ctrl.link_album_tracks(album, db_tracks, None)
+
+    harness.provider_album_tracks.assert_not_awaited()
 
 
 async def test_provider_tracklist_failure_skips_that_provider_only() -> None:
     """A provider whose tracklist cannot be fetched is skipped; the next provider still links."""
     db_tracks = [_library_track("t1", 1)]
-    spotify = ProviderMapping(
-        item_id="sp-album", provider_domain="spotify", provider_instance="spotify_1"
-    )
-    tidal = ProviderMapping(
-        item_id="td-album", provider_domain="tidal", provider_instance="tidal_1"
-    )
     provider_tracks: dict[str, list[Track] | Exception] = {
-        "sp-album": MediaNotFoundError("gone"),
+        "sp-album": RateLimited("slow down", backoff_time=30),
         "td-album": [_provider_track("td-1", 1, instance="tidal_1")],
     }
-    with _album_harness(db_tracks, provider_tracks) as harness:
-        await harness.ctrl.link_album_tracks(_library_album(), None, [spotify, tidal])
+    with _album_harness(provider_tracks) as harness:
+        await harness.ctrl.link_album_tracks(
+            _library_album("1", SPOTIFY_ALBUM, TIDAL_ALBUM), db_tracks, None
+        )
 
     assert harness.linked() == [("t1", {"td-1"})]
 
 
 async def test_link_album_tracks_without_library_tracks_does_nothing() -> None:
     """An album without library tracks has nothing to carry its identity over to."""
-    spotify = ProviderMapping(
-        item_id="sp-album", provider_domain="spotify", provider_instance="spotify_1"
-    )
-    with _album_harness([], {"sp-album": [_provider_track("sp-1", 1)]}) as harness:
-        await harness.ctrl.link_album_tracks(
-            _library_album(), _release([_recording(RECORDING_ID, "Track 1", None)]), [spotify]
-        )
+    release = _release([_recording(RECORDING_ID, "Track 1", None)])
+    with _album_harness({"sp-album": [_provider_track("sp-1", 1)]}) as harness:
+        await harness.ctrl.link_album_tracks(_library_album("1", SPOTIFY_ALBUM), [], release)
 
     harness.provider_album_tracks.assert_not_awaited()
     assert harness.updated_tracks() == []
