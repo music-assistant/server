@@ -126,6 +126,11 @@ class MusicbrainzProvider(MetadataProvider):
         """Handle unload/close of the provider."""
         self._recommendations.cancel()
 
+    @property
+    def rate_limited(self) -> bool:
+        """Whether MusicBrainz is currently holding requests back with a rate limit."""
+        return self._api_client.throttler.cooldown_remaining > 0
+
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """Return MusicBrainz recommendation folders (artist birthdays/memorials and group founded/disbanded)."""
         return await self._recommendations.get_recommendations()

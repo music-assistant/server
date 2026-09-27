@@ -441,9 +441,20 @@ class AlbumsController(MediaControllerBase[Album]):
                 and provider_mapping.provider_instance not in allowed_providers
             ):
                 continue
-            provider_tracks = await self._get_provider_album_tracks(
-                provider_mapping.item_id, provider_mapping.provider_instance
-            )
+            try:
+                provider_tracks = await self._get_provider_album_tracks(
+                    provider_mapping.item_id, provider_mapping.provider_instance
+                )
+            except _ALBUM_TRACK_LOOKUP_ERRORS as err:
+                # one provider that no longer lists the album must not hide the other
+                # providers' tracks
+                self.logger.debug(
+                    "Album tracks unavailable for %s on %s: %s",
+                    provider_mapping.item_id,
+                    provider_mapping.provider_instance,
+                    err,
+                )
+                continue
             for provider_track in provider_tracks:
                 # In some cases (looking at you YTM) the disc/track number is not obtained from
                 # library_tracks. Ensure to update the disc/track number when interacting with
@@ -560,7 +571,11 @@ class AlbumsController(MediaControllerBase[Album]):
         )
 
     async def link_album_tracks(
-        self, album: Album, db_tracks: Sequence[Track], release: MusicBrainzRelease | None
+        self,
+        album: Album,
+        db_tracks: Sequence[Track],
+        release: MusicBrainzRelease | None,
+        link_providers: bool = True,
     ) -> None:
         """
         Carry an album's MusicBrainz identity and provider links over to its library tracks.
@@ -573,6 +588,7 @@ class AlbumsController(MediaControllerBase[Album]):
         :param album: The library album.
         :param db_tracks: The album's library tracks.
         :param release: The album's MusicBrainz release, if it was identified.
+        :param link_providers: Whether to link the tracks to the album's providers too.
         """
         if not db_tracks:
             return
@@ -595,6 +611,8 @@ class AlbumsController(MediaControllerBase[Album]):
         async with self.mass.music.database.deferred_commit():
             if release is not None:
                 await self._link_tracks_to_release(db_tracks, release)
+            if not link_providers:
+                return
             for domain, mapping in album_mappings.items():
                 if all(domain in domains for domains in track_domains):
                     continue
@@ -641,6 +659,12 @@ class AlbumsController(MediaControllerBase[Album]):
         cur_provider_domains = {
             x.provider_domain for x in db_album.provider_mappings if x.available
         }
+        # the links MusicBrainz keeps name the album on the other providers outright, so
+        # those providers are linked first and only the remaining ones are searched
+        if musicbrainz := self._musicbrainz_link_provider():
+            cur_provider_domains |= await self._link_musicbrainz_entity(
+                db_album, musicbrainz.resolve_release(db_album)
+            )
         for provider in self.mass.music.providers:
             if provider.domain in cur_provider_domains:
                 continue

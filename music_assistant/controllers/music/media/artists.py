@@ -1003,6 +1003,12 @@ class ArtistsController(MediaControllerBase[Artist]):
         cur_provider_domains = {
             x.provider_domain for x in db_artist.provider_mappings if x.available
         }
+        # the links MusicBrainz keeps name the artist on the other providers outright, so
+        # those providers are linked first and only the remaining ones are searched
+        if musicbrainz := self._musicbrainz_link_provider():
+            cur_provider_domains |= await self._link_musicbrainz_entity(
+                db_artist, musicbrainz.resolve_artist(db_artist, [], [])
+            )
         for provider in self.mass.music.providers:
             if provider.domain in cur_provider_domains:
                 continue

@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, Mock, patch
 
-from music_assistant_models.enums import ArtistType, ExternalID, MediaType
+import aiohttp
+from music_assistant_models.enums import ArtistType, ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
@@ -20,6 +21,11 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.controllers.music.media.artists import ArtistsController
+from music_assistant.providers.musicbrainz.models import (
+    MusicBrainzArtist,
+    MusicBrainzRelation,
+    MusicBrainzUrl,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -27,6 +33,7 @@ if TYPE_CHECKING:
 MB_ARTIST_ID = "11111111-1111-1111-1111-111111111111"
 OTHER_MB_ARTIST_ID = "22222222-2222-2222-2222-222222222222"
 LIBRARY_ITEM_ID = "lib1"
+SPOTIFY_ARTIST_URL = "https://open.spotify.com/artist/4Z8W4fKeB5YxbusRsdQVPb"
 # the base library artist is linked to one existing (already-loaded) provider
 BASE_MAPPING = ProviderMapping(
     item_id="base-prov", provider_domain="tidal", provider_instance="tidal_1"
@@ -156,6 +163,34 @@ def _provider() -> Mock:
     return provider
 
 
+def _streaming_provider(instance_id: str) -> Mock:
+    """Return a mock streaming provider instance eligible for artist matching."""
+    provider = Mock()
+    provider.instance_id = instance_id
+    provider.domain = instance_id.rsplit("_", 1)[0]
+    provider.supported_features = {ProviderFeature.SEARCH}
+    provider.supported_media_types = {MediaType.ARTIST}
+    provider.is_streaming_provider = True
+    return provider
+
+
+def _musicbrainz(*urls: str) -> Mock:
+    """Return a mock MusicBrainz provider resolving every artist to one linked to the given URLs."""
+    musicbrainz = Mock()
+    musicbrainz.resolve_artist = AsyncMock(
+        return_value=MusicBrainzArtist(
+            id=MB_ARTIST_ID,
+            name="Main Artist",
+            sort_name="Main Artist",
+            relations=[
+                MusicBrainzRelation(type="free streaming", url=MusicBrainzUrl(resource=url))
+                for url in urls
+            ],
+        )
+    )
+    return musicbrainz
+
+
 @dataclass
 class _Harness:
     """A controller under test together with its mocked IO boundaries."""
@@ -179,6 +214,8 @@ def _harness(
     ref_albums: Sequence[Album] = (),
     album_results: Sequence[Album] = (),
     provider_artists: Sequence[Artist] = (),
+    musicbrainz: Mock | None = None,
+    providers: Sequence[Mock] = (),
 ) -> Iterator[_Harness]:
     """
     Yield an ArtistsController with every IO boundary mocked.
@@ -188,6 +225,8 @@ def _harness(
     :param ref_albums: Reference albums of the library artist.
     :param album_results: Album search results returned by the matched provider.
     :param provider_artists: Full provider artists, resolved by their item id.
+    :param musicbrainz: Optional mock MusicBrainz provider.
+    :param providers: Loaded music provider instances that match_providers iterates.
     """
     full_artists = {artist.item_id: artist for artist in provider_artists}
 
@@ -204,6 +243,10 @@ def _harness(
     mass.music.artists.albums = AsyncMock(side_effect=_artist_albums)
     mass.music.tracks.search = track_search
     mass.music.albums.search = album_search
+    mass.music.providers = list(providers)
+    mass.get_provider = Mock(
+        side_effect=lambda domain, **_kwargs: musicbrainz if domain == "musicbrainz" else None
+    )
     ctrl = ArtistsController.__new__(ArtistsController)
     ctrl.logger = logging.getLogger("test.artists.match")
     ctrl.mass = mass
@@ -414,3 +457,79 @@ async def test_credit_owned_by_another_library_artist_does_not_match() -> None:
         matches = await harness.match(_library_artist())
 
     assert matches == []
+
+
+# ---------------------------------------------------------------------------
+# match_providers
+# ---------------------------------------------------------------------------
+
+
+def _searched_instances(match_provider: AsyncMock) -> list[str]:
+    """Return the provider instances the search leg was run against, in order."""
+    return [call.args[1].instance_id for call in match_provider.await_args_list]
+
+
+async def test_match_providers_links_musicbrainz_providers_before_searching() -> None:
+    """The providers MusicBrainz links the artist to are linked first and not searched."""
+    base = _library_artist()
+    musicbrainz = _musicbrainz(SPOTIFY_ARTIST_URL)
+    providers = [_streaming_provider("spotify_1"), _streaming_provider("deezer_1")]
+    link = AsyncMock(return_value=[CANDIDATE_MAPPING])
+    match_provider = AsyncMock(return_value=[])
+    with (
+        _harness(musicbrainz=musicbrainz, providers=providers) as harness,
+        patch.multiple(harness.ctrl, link_musicbrainz_mappings=link, match_provider=match_provider),
+    ):
+        await harness.ctrl.match_providers(base)
+
+    musicbrainz.resolve_artist.assert_awaited_once_with(base, [], [])
+    link.assert_awaited_once_with(base, [SPOTIFY_ARTIST_URL])
+    assert _searched_instances(match_provider) == ["deezer_1"]
+
+
+async def test_match_providers_searches_every_provider_with_linking_disabled() -> None:
+    """With the linking toggle off MusicBrainz is not consulted at all."""
+    musicbrainz = _musicbrainz(SPOTIFY_ARTIST_URL)
+    providers = [_streaming_provider("spotify_1"), _streaming_provider("deezer_1")]
+    link = AsyncMock(return_value=[CANDIDATE_MAPPING])
+    match_provider = AsyncMock(return_value=[])
+    with (
+        _harness(musicbrainz=musicbrainz, providers=providers) as harness,
+        patch.multiple(harness.ctrl, link_musicbrainz_mappings=link, match_provider=match_provider),
+    ):
+        cast("Mock", harness.ctrl.mass).metadata.link_providers_via_musicbrainz = False
+        await harness.ctrl.match_providers(_library_artist())
+
+    musicbrainz.resolve_artist.assert_not_awaited()
+    link.assert_not_awaited()
+    assert _searched_instances(match_provider) == ["spotify_1", "deezer_1"]
+
+
+async def test_match_providers_searches_every_provider_without_musicbrainz() -> None:
+    """Without a MusicBrainz provider the search leg behaves as before."""
+    providers = [_streaming_provider("spotify_1"), _streaming_provider("deezer_1")]
+    link = AsyncMock(return_value=[])
+    match_provider = AsyncMock(return_value=[])
+    with (
+        _harness(providers=providers) as harness,
+        patch.multiple(harness.ctrl, link_musicbrainz_mappings=link, match_provider=match_provider),
+    ):
+        await harness.ctrl.match_providers(_library_artist())
+
+    link.assert_not_awaited()
+    assert _searched_instances(match_provider) == ["spotify_1", "deezer_1"]
+
+
+async def test_match_providers_falls_back_to_searching_when_musicbrainz_fails() -> None:
+    """MusicBrainz trouble only costs the shortcut; every provider is still searched."""
+    musicbrainz = Mock()
+    musicbrainz.resolve_artist = AsyncMock(side_effect=aiohttp.ClientError("mirror down"))
+    providers = [_streaming_provider("spotify_1"), _streaming_provider("deezer_1")]
+    match_provider = AsyncMock(return_value=[])
+    with (
+        _harness(musicbrainz=musicbrainz, providers=providers) as harness,
+        patch.multiple(harness.ctrl, match_provider=match_provider),
+    ):
+        await harness.ctrl.match_providers(_library_artist())
+
+    assert _searched_instances(match_provider) == ["spotify_1", "deezer_1"]

@@ -9,8 +9,9 @@ import random
 import sqlite3
 import threading
 from collections import OrderedDict
+from dataclasses import dataclass
 from time import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import NAMESPACE_URL, uuid5
 
 import aiohttp
@@ -20,19 +21,25 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     AlbumType,
     ConfigEntryType,
+    EventType,
+    ExternalID,
     MediaType,
     ProviderFeature,
     ProviderType,
 )
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
-from music_assistant_models.media_items import BrowseFolder
+from music_assistant_models.media_items import Album, Artist, BrowseFolder, Track
 
 from music_assistant.constants import (
     CONF_LANGUAGE,
     DB_TABLE_ALBUM_ARTISTS,
+    DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
+    DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_PLAYLISTS,
+    DB_TABLE_PROVIDER_MAPPINGS,
+    DB_TABLE_TRACKS,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.tasks.context import (
@@ -57,6 +64,8 @@ from .constants import (
     ALBUM_RECONCILIATION_TASK_ID,
     CONF_ENABLE_ONLINE_METADATA,
     CONF_ENABLE_RADIO_METADATA_LOOKUP,
+    CONF_LINK_PROVIDERS_VIA_MUSICBRAINZ,
+    CONF_MUSICBRAINZ_LINKED_DOMAINS,
     CONF_PREFER_LOCAL_GENRES,
     CONF_THUMB_CACHE_MAX_SIZE,
     DEFAULT_LANGUAGE,
@@ -64,7 +73,12 @@ from .constants import (
     LOCALES,
     METADATA_LOOKUP_TASK_ID_PREFIX,
     METADATA_SCAN_BATCH_SIZE,
-    MISSING_ARTIST_METADATA_SCAN_TASK_ID,
+    MISSING_METADATA_SCAN_TASK_ID,
+    MUSICBRAINZ_LINK_BATCH_SIZE,
+    MUSICBRAINZ_LINK_DOMAINS,
+    MUSICBRAINZ_LINK_ITEM_INTERVAL,
+    MUSICBRAINZ_LINK_ITEM_TIMEOUT,
+    MUSICBRAINZ_LINK_TASK_ID,
     PLAYLIST_METADATA_SCAN_TASK_ID,
     REFRESH_INTERVAL,
     THUMB_CACHE_CLEANUP_TASK_ID,
@@ -75,20 +89,27 @@ from .radio import RadioArtworkMixin
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
-    from music_assistant_models.media_items import (
-        Album,
-        Artist,
-        Audiobook,
-        MediaItemType,
-        Playlist,
-        Podcast,
-        Track,
-    )
+    from music_assistant_models.event import MassEvent
+    from music_assistant_models.media_items import Audiobook, MediaItemType, Playlist, Podcast
 
     from music_assistant import MusicAssistant
     from music_assistant.controllers.music.media.base import MediaControllerBase
     from music_assistant.helpers.json import SerializableType
     from music_assistant.models.metadata_provider import MetadataProvider
+
+# the errors one item of a maintenance scan may fail with without ending the scan
+_SCAN_ITEM_ERRORS = (MusicAssistantError, aiohttp.ClientError, TimeoutError)
+
+
+@dataclass(frozen=True, slots=True)
+class _LinkPhase:
+    """One selection of library items a MusicBrainz link run works through."""
+
+    name: str
+    controller: MediaControllerBase[Any]
+    table: str
+    query: str
+    params: dict[str, Any]
 
 
 class MetaDataController(
@@ -128,6 +149,8 @@ class MetaDataController(
         self._image_id_lock = threading.Lock()
         # corrupt metadata rows found by the last scan pass, per table, for diagnostics
         self._corrupt_metadata_rows: dict[str, list[dict[str, str | int]]] = {}
+        # what the last MusicBrainz link run did, for diagnostics
+        self._musicbrainz_link_summary: dict[str, SerializableType] | None = None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
@@ -146,6 +169,13 @@ class MetaDataController(
                 type=ConfigEntryType.BOOLEAN,
                 required=False,
                 default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_LINK_PROVIDERS_VIA_MUSICBRAINZ,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=True,
+                advanced=True,
             ),
             ConfigEntry(
                 key=CONF_PREFER_LOCAL_GENRES,
@@ -186,6 +216,7 @@ class MetaDataController(
         self.mass.streams.register_dynamic_route("/imageproxy/*", self.handle_imageproxy)
         self.mass.webserver.register_dynamic_route("/imageproxy/*", self.handle_imageproxy)
         self._register_maintenance_tasks()
+        self.mass.subscribe(self._on_music_sync_completed, EventType.MUSIC_SYNC_COMPLETED)
 
     async def close(self) -> None:
         """Handle logic on server stop."""
@@ -212,6 +243,11 @@ class MetaDataController(
             self.domain, CONF_LANGUAGE, DEFAULT_LANGUAGE
         )
         return str(value)
+
+    @property
+    def link_providers_via_musicbrainz(self) -> bool:
+        """Whether library items are linked to the other music providers through MusicBrainz."""
+        return bool(self.config.get_value(CONF_LINK_PROVIDERS_VIA_MUSICBRAINZ))
 
     @api_command("metadata/set_default_preferred_language", required_scope=Scope.CONFIG_CORE_WRITE)
     def set_default_preferred_language(self, lang: str) -> None:
@@ -322,6 +358,27 @@ class MetaDataController(
             },
         )
 
+    async def link_item_to_musicbrainz(self, item: Artist | Album | Track) -> None:
+        """
+        Identify a library item on MusicBrainz and link it to the music providers known there.
+
+        Only the item's identifiers and provider links are filled in; the full metadata
+        refresh is left to :meth:`update_metadata`.
+
+        :param item: The library artist, album or track.
+        """
+        if isinstance(item, Artist):
+            if not item.mbid and (mbid := await self._get_artist_mbid(item)):
+                item.mbid = mbid
+            await self._link_artist_to_musicbrainz(item)
+            await self.mass.music.artists.update_item_in_library(item.item_id, item)
+        elif isinstance(item, Album):
+            await self._link_album_to_musicbrainz(item)
+            await self.mass.music.albums.update_item_in_library(item.item_id, item)
+        else:
+            await self._link_track_to_musicbrainz(item)
+            await self.mass.music.tracks.update_item_in_library(item.item_id, item)
+
     @api_command("metadata/get_track_lyrics", required_scope=Scope.LIBRARY_READ)
     async def get_track_lyrics(
         self,
@@ -339,9 +396,17 @@ class MetaDataController(
 
     async def get_diagnostics(self) -> dict[str, SerializableType] | None:
         """Return diagnostics info for this controller to include in diagnostics reports."""
-        if not self._corrupt_metadata_rows:
-            return None
-        return {"corrupt_metadata_rows": cast("SerializableType", self._corrupt_metadata_rows)}
+        diagnostics: dict[str, SerializableType] = {
+            "musicbrainz_link": {
+                "last_run": self._musicbrainz_link_summary,
+                "pending": await self._pending_musicbrainz_link_counts(),
+            }
+        }
+        if self._corrupt_metadata_rows:
+            diagnostics["corrupt_metadata_rows"] = cast(
+                "SerializableType", self._corrupt_metadata_rows
+            )
+        return diagnostics
 
     async def _get_track_lyrics(
         self,
@@ -391,11 +456,11 @@ class MetaDataController(
         utc_hour, utc_minute = divmod(random.randint(0, 24 * 60 - 1), 60)
         desired_schedule = TaskSchedule.daily(hour=utc_hour, minute=utc_minute)
         self.mass.tasks.register_scheduled_task(
-            task_id=MISSING_ARTIST_METADATA_SCAN_TASK_ID,
-            name="Scan missing artist metadata",
-            handler=self._scan_missing_artist_metadata,
+            task_id=MISSING_METADATA_SCAN_TASK_ID,
+            name="Scan missing metadata",
+            handler=self._scan_missing_metadata,
             schedule=desired_schedule,
-            translation_key="scan_missing_artist_metadata",
+            translation_key="scan_missing_metadata",
             translation_owner=self.translation_owner,
             metadata={"task_domain": "metadata_missing_artist_metadata_scan"},
             allow_retry=True,
@@ -432,43 +497,66 @@ class MetaDataController(
             metadata={"task_domain": "metadata_album_reconciliation"},
             allow_retry=True,
         )
+        # bounded to a small batch per run and paced, so it can run hourly as well
+        self.mass.tasks.register_scheduled_task(
+            task_id=MUSICBRAINZ_LINK_TASK_ID,
+            name="Link library to MusicBrainz",
+            handler=self._link_library_to_musicbrainz,
+            schedule=TaskSchedule.hourly(),
+            translation_key="link_library_to_musicbrainz",
+            translation_owner=self.translation_owner,
+            metadata={"task_domain": "metadata_musicbrainz_link"},
+            allow_retry=True,
+        )
+
+    def _on_music_sync_completed(self, _event: MassEvent) -> None:
+        """Queue the MusicBrainz link run for what a library sync has just added."""
+        # a run already pending or running is not queued twice; the hourly schedule
+        # covers whatever such a run misses
+        self.mass.tasks.run_task(MUSICBRAINZ_LINK_TASK_ID)
 
     @staticmethod
     def _get_metadata_lookup_task_id(uri: str) -> str:
         """Return deterministic task id for a metadata lookup."""
         return f"{METADATA_LOOKUP_TASK_ID_PREFIX}_{uuid5(NAMESPACE_URL, uri).hex}"
 
-    async def _scan_missing_artist_metadata(self) -> None:
-        """Scan for artists with missing metadata."""
-        update_current_task_progress_text("Searching for artists with missing metadata")
-        missing_images = (
-            f"(json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') ISNULL "
-            f"OR json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') = '[]')"
+    async def _scan_missing_metadata(self) -> None:
+        """Collect the metadata of a batch of artists and albums that never had theirs collected."""
+        update_current_task_progress_text("Searching for artists and albums with missing metadata")
+        artists = await self._get_scan_batch(
+            self.mass.music.artists,
+            DB_TABLE_ARTISTS,
+            _missing_metadata_query(DB_TABLE_ARTISTS, description=True),
         )
-        missing_description = f"json_extract({DB_TABLE_ARTISTS}.metadata,'$.description') ISNULL"
-        never_refreshed = f"json_extract({DB_TABLE_ARTISTS}.metadata,'$.last_refresh') ISNULL"
-        query = f"({missing_images} OR {missing_description}) AND {never_refreshed}"
-        artists = await self._get_scan_batch(self.mass.music.artists, DB_TABLE_ARTISTS, query)
-        if not artists:
-            update_current_task_progress_text("No artists with missing metadata found")
+        albums = await self._get_scan_batch(
+            self.mass.music.albums, DB_TABLE_ALBUMS, _missing_metadata_query(DB_TABLE_ALBUMS)
+        )
+        items: list[Artist | Album] = [*artists, *albums]
+        if not items:
+            update_current_task_progress_text("No artists or albums with missing metadata found")
             return
-        for index, artist in enumerate(artists, 1):
+        for index, item in enumerate(items, 1):
             try:
                 update_current_task_progress_from_index(
                     index,
-                    len(artists),
-                    f"Refreshing metadata for artist {index}/{len(artists)}: {artist.name}",
+                    len(items),
+                    f"Refreshing metadata for {item.media_type.value} {index}/{len(items)}: "
+                    f"{item.name}",
                 )
-                await self._update_artist_metadata(artist, force_refresh=False)
+                if isinstance(item, Artist):
+                    await self._update_artist_metadata(item, force_refresh=False)
+                else:
+                    await self._update_album_metadata(item, force_refresh=False)
             except Exception as err:
-                report_current_task_failure(f"{artist.name}: {err}")
+                report_current_task_failure(f"{item.name}: {err}")
                 self.logger.warning(
-                    "Error while updating artist metadata for %s: %s",
-                    artist.name,
+                    "Error while updating metadata for %s %s: %s",
+                    item.media_type.value,
+                    item.name,
                     str(err),
                     exc_info=err if self.logger.isEnabledFor(10) else None,
                 )
-        update_current_task_progress(100, f"Processed {len(artists)} artist(s)")
+        update_current_task_progress(100, f"Processed {len(items)} item(s)")
 
     async def _refresh_playlist_metadata_batch(self) -> None:
         """Refresh metadata for a small batch of library playlists."""
@@ -536,7 +624,7 @@ class MetaDataController(
                     # already have been merged into its duplicate earlier in the run
                     continue
                 await self.mass.music.albums.match_providers(reconciled_album)
-            except (MusicAssistantError, aiohttp.ClientError, TimeoutError) as err:
+            except _SCAN_ITEM_ERRORS as err:
                 report_current_task_failure(f"{album.name}: {err}")
                 self.logger.warning(
                     "Error while reconciling album %s: %s",
@@ -558,27 +646,212 @@ class MetaDataController(
         if removed:
             self.logger.debug("Thumbnail cache cleanup: removed %s file(s)", removed)
 
+    async def _link_library_to_musicbrainz(self) -> None:
+        """Identify a batch of library items on MusicBrainz and link them to the music providers."""
+        musicbrainz = self._musicbrainz_provider()
+        linking = musicbrainz is not None and self.link_providers_via_musicbrainz
+        linked_domains = self._refresh_musicbrainz_linked_domains(linking)
+        if musicbrainz is None:
+            update_current_task_progress_text("The MusicBrainz provider is not loaded")
+            return
+        if not linking:
+            update_current_task_progress_text("Linking through MusicBrainz is disabled")
+            return
+        if self.mass.music.active_sync_tasks:
+            # a sync is still adding items and their mappings, so the run waits for the
+            # completed sync to queue it again
+            update_current_task_progress_text("Waiting for music sync completion")
+            return
+        processed: dict[str, int] = {}
+        linked = not_found = 0
+        rate_limited = False
+        budget = MUSICBRAINZ_LINK_BATCH_SIZE
+        for phase in self._musicbrainz_link_phases(linked_domains):
+            if budget <= 0 or rate_limited:
+                break
+            update_current_task_progress_text(f"Searching for {phase.name}")
+            items: list[Artist | Album | Track] = await self._get_scan_batch(
+                phase.controller,
+                phase.table,
+                phase.query,
+                phase.params,
+                limit=budget,
+                order_by="timestamp_added_desc",
+            )
+            for item in items:
+                if musicbrainz.rate_limited:
+                    # the pacing already keeps this run within the limit, so a cooldown
+                    # means the mirror is busy: leave the rest to the next run
+                    update_current_task_progress_text(
+                        "MusicBrainz is rate limiting, resuming next run"
+                    )
+                    rate_limited = True
+                    break
+                update_current_task_progress_from_index(
+                    MUSICBRAINZ_LINK_BATCH_SIZE - budget,
+                    MUSICBRAINZ_LINK_BATCH_SIZE,
+                    f"Identifying {item.media_type.value} on MusicBrainz: {item.name}",
+                )
+                mapping_count = len(item.provider_mappings)
+                try:
+                    async with asyncio.timeout(MUSICBRAINZ_LINK_ITEM_TIMEOUT):
+                        await self.link_item_to_musicbrainz(item)
+                except _SCAN_ITEM_ERRORS as err:
+                    report_current_task_failure(f"{item.name}: {err}")
+                    self.logger.warning(
+                        "Error while identifying %s %s on MusicBrainz: %s",
+                        item.media_type.value,
+                        item.name,
+                        str(err),
+                        exc_info=err if self.logger.isEnabledFor(10) else None,
+                    )
+                else:
+                    linked += len(item.provider_mappings) > mapping_count
+                    not_found += item.mbid is None
+                processed[phase.name] = processed.get(phase.name, 0) + 1
+                budget -= 1
+                await asyncio.sleep(MUSICBRAINZ_LINK_ITEM_INTERVAL)
+        self._musicbrainz_link_summary = {
+            "finished_at": int(time()),
+            "processed": cast("SerializableType", processed),
+            "linked": linked,
+            "not_found": not_found,
+            "stopped_on_rate_limit": rate_limited,
+        }
+        self.logger.debug(
+            "MusicBrainz link run processed %s, linked %d, not found %d%s",
+            ", ".join(f"{count} {name}" for name, count in processed.items()) or "nothing",
+            linked,
+            not_found,
+            ", stopped on rate limit" if rate_limited else "",
+        )
+        update_current_task_progress(100, f"Processed {sum(processed.values())} item(s)")
+
+    def _musicbrainz_link_phases(self, linked_domains: dict[str, int]) -> list[_LinkPhase]:
+        """
+        Return the selections a MusicBrainz link run works through, in order.
+
+        :param linked_domains: Since when each linked music provider has been loaded, by domain.
+        """
+        albums, artists = self.mass.music.albums, self.mass.music.artists
+        phases = [
+            _LinkPhase(
+                "albums",
+                albums,
+                DB_TABLE_ALBUMS,
+                _albums_to_identify_query(),
+                {"stale": int(time() - REFRESH_INTERVAL)},
+            ),
+            _LinkPhase("artists", artists, DB_TABLE_ARTISTS, _artists_to_identify_query(), {}),
+            _LinkPhase(
+                "tracks", self.mass.music.tracks, DB_TABLE_TRACKS, _tracks_to_identify_query(), {}
+            ),
+        ]
+        # a provider loaded after an item was looked up still lacks its (cached) links
+        for domain, first_seen in linked_domains.items():
+            params = {"domain": domain, "seen": first_seen}
+            phases.append(
+                _LinkPhase(
+                    f"albums missing {domain}",
+                    albums,
+                    DB_TABLE_ALBUMS,
+                    _relink_query(DB_TABLE_ALBUMS, MediaType.ALBUM, ExternalID.MB_ALBUM),
+                    params,
+                )
+            )
+            phases.append(
+                _LinkPhase(
+                    f"artists missing {domain}",
+                    artists,
+                    DB_TABLE_ARTISTS,
+                    _relink_query(DB_TABLE_ARTISTS, MediaType.ARTIST, ExternalID.MB_ARTIST),
+                    params,
+                )
+            )
+        return phases
+
+    def _refresh_musicbrainz_linked_domains(self, linking: bool) -> dict[str, int]:
+        """
+        Return since when each loaded music provider MusicBrainz links to has been linked.
+
+        A provider loaded since the previous run starts now and one no longer loaded is
+        dropped. While linking is inactive every provider is dropped, so all of them start
+        over once it resumes.
+
+        :param linking: Whether this run links items to the music providers.
+        """
+        # persisted as "domain:epoch" entries, the map itself not being a config value type
+        entries = (
+            cast(
+                "list[str] | None",
+                self.mass.config.get_raw_core_config_value(
+                    self.domain, CONF_MUSICBRAINZ_LINKED_DOMAINS
+                ),
+            )
+            or []
+        )
+        stored: dict[str, int] = {}
+        for entry in entries:
+            domain, _, seen = entry.partition(":")
+            stored[domain] = int(seen)
+        loaded: set[str] = set()
+        if linking:
+            loaded = {
+                provider.domain
+                for provider in self.mass.get_providers_for_user(None, ProviderType.MUSIC)
+                if provider.domain in MUSICBRAINZ_LINK_DOMAINS
+            }
+        now = int(time())
+        linked = {domain: stored.get(domain, now) for domain in sorted(loaded)}
+        if linked != stored:
+            self.mass.config.set_raw_core_config_value(
+                self.domain,
+                CONF_MUSICBRAINZ_LINKED_DOMAINS,
+                [f"{domain}:{seen}" for domain, seen in linked.items()],
+            )
+        return linked
+
+    async def _pending_musicbrainz_link_counts(self) -> dict[str, int]:
+        """Return how many albums, artists and tracks still await their MusicBrainz lookup."""
+        counts: dict[str, int] = {}
+        stale = {"stale": int(time() - REFRESH_INTERVAL)}
+        for name, table, query in (
+            ("albums", DB_TABLE_ALBUMS, _albums_to_identify_query()),
+            ("artists", DB_TABLE_ARTISTS, _artists_to_identify_query()),
+            ("tracks", DB_TABLE_TRACKS, _tracks_to_identify_query()),
+        ):
+            counts[name] = await self.mass.music.database.get_count_from_query(
+                f"SELECT 1 FROM {table} WHERE {_valid_metadata_guard(table)} AND {query}", stale
+            )
+        return counts
+
     async def _get_scan_batch[ItemCls: MediaItemType](
         self,
         media_controller: MediaControllerBase[ItemCls],
         table: str,
         query: str,
+        query_params: dict[str, Any] | None = None,
+        *,
+        limit: int = METADATA_SCAN_BATCH_SIZE,
+        order_by: str = "random",
     ) -> list[ItemCls]:
         """Fetch a metadata-scan batch, tolerating rows with corrupt metadata JSON."""
         try:
             items = await media_controller.get_library_items_by_query(
-                limit=METADATA_SCAN_BATCH_SIZE,
-                order_by="random",
+                limit=limit,
+                order_by=order_by,
                 extra_query_parts=[query],
+                extra_query_params=query_params,
             )
         except sqlite3.OperationalError as err:
             if "malformed JSON" not in str(err):
                 raise
             await self._report_corrupt_metadata_rows(table)
             return await media_controller.get_library_items_by_query(
-                limit=METADATA_SCAN_BATCH_SIZE,
-                order_by="random",
+                limit=limit,
+                order_by=order_by,
                 extra_query_parts=[f"{_valid_metadata_guard(table)} AND {query}"],
+                extra_query_params=query_params,
             )
         # a clean scan proves the table currently holds no corrupt rows
         self._corrupt_metadata_rows.pop(table, None)
@@ -649,6 +922,109 @@ def _duplicate_album_sibling_guard() -> str:
         f"AND ({same_name}) "
         f"AND {same_title} AND {shares_artist})"
     )
+
+
+def _missing_metadata_query(table: str, *, description: bool = False) -> str:
+    """
+    Return a query part selecting never-refreshed items that lack images (or a description).
+
+    :param table: The library table to select from.
+    :param description: Whether a missing description also selects the item.
+    """
+    images = f"json_extract({table}.metadata,'$.images')"
+    missing = [f"({images} ISNULL OR {images} = '[]')"]
+    if description:
+        missing.append(f"json_extract({table}.metadata,'$.description') ISNULL")
+    never_refreshed = f"json_extract({table}.metadata,'$.last_refresh') ISNULL"
+    return f"({' OR '.join(missing)}) AND {never_refreshed}"
+
+
+def _musicbrainz_lookup_marker(table: str) -> str:
+    """Return the SQL expression of when an item was last looked up on MusicBrainz."""
+    return f"json_extract({table}.metadata,'$.last_musicbrainz_lookup')"
+
+
+def _has_musicbrainz_id(item_id: str, media_type: MediaType, id_type: ExternalID) -> str:
+    """
+    Return a query part that is true for an item carrying the given MusicBrainz id.
+
+    :param item_id: SQL expression of the library item id, e.g. ``albums.item_id``.
+    :param media_type: Media type of the item.
+    :param id_type: The MusicBrainz id type the item has to carry.
+    """
+    return (
+        f"EXISTS (SELECT 1 FROM {DB_TABLE_EXTERNAL_ID_LOOKUP} "
+        f"WHERE {DB_TABLE_EXTERNAL_ID_LOOKUP}.media_type = '{media_type.value}' "
+        f"AND {DB_TABLE_EXTERNAL_ID_LOOKUP}.external_id_type = '{id_type.value}' "
+        f"AND {DB_TABLE_EXTERNAL_ID_LOOKUP}.item_id = {item_id})"
+    )
+
+
+def _albums_to_identify_query() -> str:
+    """Return a query part selecting albums due for a MusicBrainz lookup (param ``stale``)."""
+    marker = _musicbrainz_lookup_marker(DB_TABLE_ALBUMS)
+    identified = _has_musicbrainz_id(
+        f"{DB_TABLE_ALBUMS}.item_id", MediaType.ALBUM, ExternalID.MB_ALBUM
+    )
+    # an album MusicBrainz did not know is looked up again once its lookup is stale
+    return f"({marker} ISNULL OR ({marker} < :stale AND NOT {identified}))"
+
+
+def _artists_to_identify_query() -> str:
+    """Return a query part selecting artists due for a MusicBrainz lookup."""
+    marker = _musicbrainz_lookup_marker(DB_TABLE_ARTISTS)
+    identified = _has_musicbrainz_id(
+        f"{DB_TABLE_ARTISTS}.item_id", MediaType.ARTIST, ExternalID.MB_ARTIST
+    )
+    # the credits of an identified album name the artist at the cost of a cached lookup
+    album_identified = _has_musicbrainz_id(
+        f"{DB_TABLE_ALBUM_ARTISTS}.album_id", MediaType.ALBUM, ExternalID.MB_ALBUM
+    )
+    has_identified_album = (
+        f"EXISTS (SELECT 1 FROM {DB_TABLE_ALBUM_ARTISTS} "
+        f"WHERE {DB_TABLE_ALBUM_ARTISTS}.artist_id = {DB_TABLE_ARTISTS}.item_id "
+        f"AND {album_identified})"
+    )
+    return f"({marker} ISNULL AND NOT {identified} AND {has_identified_album})"
+
+
+def _tracks_to_identify_query() -> str:
+    """Return a query part selecting tracks due for a MusicBrainz lookup."""
+    marker = _musicbrainz_lookup_marker(DB_TABLE_TRACKS)
+    identified = _has_musicbrainz_id(
+        f"{DB_TABLE_TRACKS}.item_id", MediaType.TRACK, ExternalID.MB_RECORDING
+    )
+    # the tracklist of an identified album names the track at the cost of a cached lookup
+    album_identified = _has_musicbrainz_id(
+        f"{DB_TABLE_ALBUM_TRACKS}.album_id", MediaType.ALBUM, ExternalID.MB_ALBUM
+    )
+    has_identified_album = (
+        f"EXISTS (SELECT 1 FROM {DB_TABLE_ALBUM_TRACKS} "
+        f"WHERE {DB_TABLE_ALBUM_TRACKS}.track_id = {DB_TABLE_TRACKS}.item_id "
+        f"AND {album_identified})"
+    )
+    return f"({marker} ISNULL AND NOT {identified} AND {has_identified_album})"
+
+
+def _relink_query(table: str, media_type: MediaType, id_type: ExternalID) -> str:
+    """
+    Return a query part selecting identified items that miss the links of a music provider.
+
+    Selects items looked up before the provider (param ``domain``) was loaded (param ``seen``)
+    and not mapped to it.
+
+    :param table: The library table to select from.
+    :param media_type: Media type of the items.
+    :param id_type: The MusicBrainz id type an identified item carries.
+    """
+    identified = _has_musicbrainz_id(f"{table}.item_id", media_type, id_type)
+    mapped = (
+        f"EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+        f"WHERE {DB_TABLE_PROVIDER_MAPPINGS}.media_type = '{media_type.value}' "
+        f"AND {DB_TABLE_PROVIDER_MAPPINGS}.item_id = {table}.item_id "
+        f"AND {DB_TABLE_PROVIDER_MAPPINGS}.provider_domain = :domain)"
+    )
+    return f"({identified} AND NOT {mapped} AND {_musicbrainz_lookup_marker(table)} < :seen)"
 
 
 def _valid_metadata_guard(table: str) -> str:
