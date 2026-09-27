@@ -356,6 +356,8 @@ class AnnouncementsMixin:
         announce_data: AnnounceData,
         volume_level: int | None,
         lock: AbstractAsyncContextManager[None],
+        *,
+        native_only: bool = False,
     ) -> None:
         """
         Play an announcement on a player, holding the given playback lock(s) throughout.
@@ -365,6 +367,9 @@ class AnnouncementsMixin:
         :param volume_level: Optional volume level override for the announcement.
         :param lock: The lock(s) to hold while the announcement plays and the player is
             restored afterwards.
+        :param native_only: Skip the announcement instead of using the default implementation
+            when the player does not announce natively (any more). Set for a group member
+            announcing under the group's lock, which the default implementation would need.
         """
         async with lock:
             # Register right away, so the audio is (nearly always fully) rendered by the time
@@ -398,6 +403,7 @@ class AnnouncementsMixin:
                                         self.get_player_lock(
                                             member.player_id, PlayerLockPurpose.PLAYBACK
                                         ),
+                                        native_only=True,
                                     )
                                 )
                         return
@@ -413,6 +419,15 @@ class AnnouncementsMixin:
                 )
                 native_announce_support = announce_player is not None
                 if announce_player is None:
+                    if native_only:
+                        # the member was judged on the state it had before its own lock was
+                        # taken, so a native route it lost meanwhile is not made up for here
+                        self.logger.warning(
+                            "Announcement to player %s - the player no longer announces "
+                            "natively, skipping it",
+                            player.state.name,
+                        )
+                        return
                     announce_player = player
                 # create a PlayerMedia object for the announcement so
                 # we can send a regular play-media call downstream
