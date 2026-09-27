@@ -1357,13 +1357,21 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 item.media_type, item.item_id, item.provider, allow_update_metadata=False
             ),
         )
+        ctrl = self.get_controller(item.media_type)
         if full_item.provider != "library":
             if favorite is None:
                 # nothing to clear on an item that is not in the library
                 return
-            full_item = await self.add_item_to_library(full_item)
+            if favorite:
+                full_item = await self.add_item_to_library(full_item)
+            else:
+                # a dislike needs a library row to hang on, but the item is not in the
+                # user's library on any source: no library write to a provider, and the
+                # row stays out of the library listings
+                full_item = await cast(
+                    "MediaControllerBase[MediaItemType]", ctrl
+                ).add_item_to_library(full_item)
         # set favorite in library db
-        ctrl = self.get_controller(item.media_type)
         await ctrl.set_favorite(full_item.item_id, favorite, await self.acting_user_ids())
         # forward to the music sources this user may write to, never to somebody else's
         for prov_mapping in self._write_target_mappings(full_item.provider_mappings):

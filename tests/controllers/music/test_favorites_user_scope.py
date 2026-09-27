@@ -372,7 +372,7 @@ async def test_add_item_to_library_writes_only_to_the_own_source(
 async def test_a_dislike_on_a_provider_item_pulls_it_into_the_library(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A dislike needs a library item too, and reaches only the user's own account."""
+    """A dislike needs a library row, but never a library add on a music source."""
     _as_user(monkeypatch, _user())
     controller = _controller(THREE_ACCOUNTS)
     prov_item = Mock(
@@ -385,14 +385,16 @@ async def test_a_dislike_on_a_provider_item_pulls_it_into_the_library(
         provider_mappings=THREE_MAPPINGS,
     )
     controller.get_item = AsyncMock(return_value=prov_item)  # type: ignore[method-assign]
-    controller.add_item_to_library = AsyncMock(return_value=library_item)  # type: ignore[method-assign]
-    ctrl = Mock(set_favorite=AsyncMock())
+    controller.add_item_to_library = AsyncMock()  # type: ignore[method-assign]
+    ctrl = Mock(set_favorite=AsyncMock(), add_item_to_library=AsyncMock(return_value=library_item))
     controller.get_controller = Mock(return_value=ctrl)  # type: ignore[method-assign]
     controller.library_favorites_edit_supported = Mock(return_value=True)  # type: ignore[method-assign]
 
     await controller.set_item_favorite(prov_item, False)
 
-    controller.add_item_to_library.assert_awaited_once_with(prov_item)
+    # the row is written straight to the library, the source's library is left alone
+    ctrl.add_item_to_library.assert_awaited_once_with(prov_item)
+    controller.add_item_to_library.assert_not_awaited()
     ctrl.set_favorite.assert_awaited_once_with("42", False, [ME])
     seen = controller.providers_seen  # type: ignore[attr-defined]
     seen[MINE].set_favorite.assert_called_once_with("mine-42", MediaType.TRACK, False)
