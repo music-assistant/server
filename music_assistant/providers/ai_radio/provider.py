@@ -210,6 +210,7 @@ class AIRadioProvider(
         for handle in self._unregister_handles:
             handle()
         self._unregister_handles.clear()
+        await self._discard_post_plans()
         self.logger.info(
             "AI Radio unloaded (removed=%s, cancelled_sessions=%d)",
             is_removed,

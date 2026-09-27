@@ -38,6 +38,7 @@ from music_assistant.helpers.uri import create_uri
 
 from .constants import (
     AI_QUERY_TIMEOUT_SECONDS,
+    ATTR_ALLOW_POST,
     ATTR_HOST_ID,
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
@@ -707,6 +708,7 @@ class AIRadioRuntimeMixin:
                     max_chars=max_chars,
                     web_search_mode=self._resolve_web_search_mode(section, section_id),
                     weather_required=weather_required,
+                    allow_post=bool(section.get("allow_post", False)),
                     history_events=[(section_id, slot_event(slot))],
                 )
             )
@@ -767,6 +769,12 @@ class AIRadioRuntimeMixin:
         merged_names: list[str] = []
         # a weather+news merge must still air the news half, so only all-guarded merges require it
         all_weather_required = all(section_id in weather_guarded_ids for section_id in section_ids)
+        # a merged break is one recording, so it may carry over the next record if any
+        # of the sections it was built from allows that
+        any_allow_post = any(
+            bool(section_by_id.get(section_id, {}).get("allow_post", False))
+            for section_id in section_ids
+        )
         for index, section_id in enumerate(section_ids, start=1):
             section = section_by_id.get(section_id, {})
             section_name = self._resolve_section_name(section, section_id)
@@ -807,6 +815,7 @@ class AIRadioRuntimeMixin:
             max_chars=total_max_chars,
             web_search_mode=max_web_mode,
             weather_required=all_weather_required,
+            allow_post=any_allow_post,
             history_events=history_events,
         )
 
@@ -884,6 +893,7 @@ class AIRadioRuntimeMixin:
                 ATTR_MAX_CHARS: section.max_chars,
                 ATTR_WEB_SEARCH_MODE: section.web_search_mode,
                 ATTR_WEATHER_REQUIRED: section.weather_required,
+                ATTR_ALLOW_POST: section.allow_post,
             }
         )
         return queue_item
