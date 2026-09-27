@@ -108,6 +108,16 @@ async def test_repeated_audiobook_starts_from_the_beginning() -> None:
     assert get_stream_details.call_args.kwargs["seek_position"] == 0
 
 
+async def test_repeated_single_audiobook_starts_from_the_beginning() -> None:
+    """Repeat one plays the audiobook over from its start, not from its old bookmark."""
+    items = [_book("book-a", resume_position_ms=60000), _book("book-b")]
+    controller, get_stream_details = _controller(items, repeat_mode=RepeatMode.ONE)
+
+    await controller.load_next_queue_item(QUEUE_ID, "book-a")
+
+    assert get_stream_details.call_args.kwargs["seek_position"] == 0
+
+
 async def test_next_track_starts_from_the_beginning() -> None:
     """A music track that follows an audiobook plays from its start."""
     items = [_book("book-a", resume_position_ms=60000), _track("track-b")]
