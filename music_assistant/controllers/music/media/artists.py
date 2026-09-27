@@ -72,6 +72,11 @@ if TYPE_CHECKING:
     from music_assistant.providers.musicbrainz import MusicbrainzProvider, MusicBrainzReleaseGroup
 
 
+# how many of a discography's MusicBrainz albums get a cover art lookup, newest first, so a
+# large discography opens in seconds rather than after a lookup per release
+_DISCOGRAPHY_COVER_LOOKUPS = 60
+
+
 class ArtistsController(MediaControllerBase[Artist]):
     """Controller managing MediaItems of type Artist."""
 
@@ -338,9 +343,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             "CoverArtArchiveMetadataProvider | None", self.mass.get_provider("coverartarchive")
         )
         if coverartarchive is not None:
-            await _add_cover_art(
-                coverartarchive, [album for album in discography if album.provider == "musicbrainz"]
-            )
+            musicbrainz_albums = [album for album in discography if album.provider == "musicbrainz"]
+            await _add_cover_art(coverartarchive, musicbrainz_albums[:_DISCOGRAPHY_COVER_LOOKUPS])
         return discography
 
     async def top_tracks(
@@ -1328,7 +1332,7 @@ async def _add_cover_art(
     coverartarchive: CoverArtArchiveMetadataProvider, albums: Sequence[Album]
 ) -> None:
     """Give each MusicBrainz album the front cover the Cover Art Archive has for it, if any."""
-    limiter = asyncio.Semaphore(4)
+    limiter = asyncio.Semaphore(8)
 
     async def _cover_url(album: Album) -> str | None:
         async with limiter:

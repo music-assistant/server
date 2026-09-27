@@ -14,7 +14,10 @@ from music_assistant_models.errors import InvalidDataError, ResourceTemporarilyU
 from music_assistant_models.media_items import Album, Artist, ItemMapping, ProviderMapping
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID
-from music_assistant.controllers.music.media.artists import ArtistsController
+from music_assistant.controllers.music.media.artists import (
+    _DISCOGRAPHY_COVER_LOOKUPS,
+    ArtistsController,
+)
 from music_assistant.providers.musicbrainz.models import MusicBrainzArtist, MusicBrainzReleaseGroup
 from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
 
@@ -240,6 +243,22 @@ async def test_discography_shows_the_front_cover_the_cover_art_archive_has() -> 
         request.args[0]
         for request in harness.coverartarchive.get_release_group_cover_url.await_args_list
     } == {RG_IN_RAINBOWS, RG_KARMA_POLICE}
+
+
+async def test_discography_looks_up_cover_art_for_the_newest_albums_only() -> None:
+    """A large discography only asks the archive for the covers of its newest albums."""
+    groups = [
+        _release_group(f"rg-{index:03d}", f"Single {index}", primary_type="Single")
+        for index in range(_DISCOGRAPHY_COVER_LOOKUPS + 10)
+    ]
+    with _harness(_artist(), release_groups=groups) as harness:
+        discography = await harness.discography()
+
+    looked_up = [
+        request.args[0]
+        for request in harness.coverartarchive.get_release_group_cover_url.await_args_list
+    ]
+    assert looked_up == [album.item_id for album in discography[:_DISCOGRAPHY_COVER_LOOKUPS]]
 
 
 async def test_discography_has_no_cover_art_without_the_cover_art_archive() -> None:
