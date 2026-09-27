@@ -37,6 +37,9 @@ from music_assistant.models.metadata_provider import MetadataProvider
 
 from .api_client import MusicBrainzAPIClient
 from .constants import (
+    DISCOGRAPHY_MAX_PAGES,
+    DISCOGRAPHY_PAGE_SIZE,
+    DISCOGRAPHY_PRIMARY_TYPES,
     LUCENE_SPECIAL,
     MAX_BARCODE_DETAIL_FETCHES,
     MAX_REF_ITEMS,
@@ -561,6 +564,39 @@ class MusicbrainzProvider(MetadataProvider):
             return [MusicBrainzBarcodeRelease.from_raw(release) for release in releases]
         except MissingField, InvalidFieldValue:
             return []
+
+    async def browse_release_groups_by_artist(
+        self, artist_mbid: str
+    ) -> list[MusicBrainzReleaseGroup]:
+        """
+        Get the discography of a MusicBrainz artist: the albums, EPs and singles credited to it.
+
+        :param artist_mbid: MusicBrainz artist id.
+        :return: The artist's release groups, the most recently released first and undated
+            ones last. A catalog-sized discography is cut off after a few hundred groups.
+        """
+        release_groups: list[MusicBrainzReleaseGroup] = []
+        for page in range(DISCOGRAPHY_MAX_PAGES):
+            result = await self._api_client.get_browse_data(
+                "release-group",
+                artist=artist_mbid,
+                limit=str(DISCOGRAPHY_PAGE_SIZE),
+                offset=str(page * DISCOGRAPHY_PAGE_SIZE),
+            )
+            if not result or not (listing := result.get("release-groups")):
+                break
+            for entry in listing:
+                # a single malformed entry should not sink the rest of the discography
+                with suppress(MissingField, InvalidFieldValue):
+                    release_group = MusicBrainzReleaseGroup.from_raw(entry)
+                    if release_group.primary_type in DISCOGRAPHY_PRIMARY_TYPES:
+                        release_groups.append(release_group)
+            offset = result.get("release-group-offset", page * DISCOGRAPHY_PAGE_SIZE)
+            if offset + len(listing) >= result.get("release-group-count", 0):
+                break
+        # a date sorts after the empty string, so undated groups end up last
+        release_groups.sort(key=lambda group: group.first_release_date or "", reverse=True)
+        return release_groups
 
     async def get_releasegroup_details(self, releasegroup_id: str) -> MusicBrainzReleaseGroup:
         """Get ReleaseGroup details by providing a MusicBrainz ReleaseGroup id."""

@@ -712,6 +712,7 @@
   "core.music.config_actions.reset_db.result": "The database has been reset.",
   "core.music.config_entries.reset_db.description": "This will issue a full reset of the library database and trigger a full sync. Only use this option as a last resort if you are seeing issues with the library database.",
   "core.music.config_entries.reset_db.label": "Reset library database",
+  "core.music.errors.album_not_available_on_music_services": "This album is not available on any of your music services",
   "core.music.manifest.description": "Configuration of the core music (library) management module",
   "core.music.manifest.name": "Music",
   "core.player_queues.config_entries.autoplay_enabled.description": "Each queue's player controls can still turn it on or off individually.",

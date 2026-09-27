@@ -1,0 +1,313 @@
+"""Tests for an artist's discography as MusicBrainz knows it."""
+
+from __future__ import annotations
+
+import logging
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, Mock, patch
+
+import pytest
+from music_assistant_models.enums import AlbumType, ExternalID
+from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.media_items import Album, Artist, ItemMapping, ProviderMapping
+
+from music_assistant.constants import VARIOUS_ARTISTS_MBID
+from music_assistant.controllers.music.media.artists import ArtistsController
+from music_assistant.providers.musicbrainz.models import MusicBrainzReleaseGroup
+from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
+
+    from music_assistant_models.media_items import UniqueList
+
+ARTIST_MBID = "a74b1b7f-71a5-4011-9441-d0b5e4122711"
+LIBRARY_ARTIST_ID = "12"
+RG_IN_RAINBOWS = "b1392450-e666-3926-a536-22c65f834433"
+RG_OK_COMPUTER = "b1392450-e666-3926-a536-22c65f834401"
+RG_OK_COMPUTER_REISSUE = "b1392450-e666-3926-a536-22c65f834402"
+RG_KARMA_POLICE = "b1392450-e666-3926-a536-22c65f834403"
+RG_BEST_OF = "b1392450-e666-3926-a536-22c65f834404"
+
+
+# ---------------------------------------------------------------------------
+# builders
+# ---------------------------------------------------------------------------
+
+
+def _artist(mbid: str | None = ARTIST_MBID) -> Artist:
+    """Return the library artist whose discography is listed."""
+    return Artist(
+        item_id=LIBRARY_ARTIST_ID,
+        provider="library",
+        name="Radiohead",
+        external_ids={(ExternalID.MB_ARTIST, mbid)} if mbid else set(),
+        provider_mappings={
+            ProviderMapping(
+                item_id="4Z8W4fKeB5YxbusRsdQVPb",
+                provider_domain="spotify",
+                provider_instance="spotify_1",
+            )
+        },
+    )
+
+
+def _library_album(item_id: str, name: str, release_group_id: str | None = None) -> Album:
+    """Return a library album, optionally carrying a MusicBrainz release group id."""
+    return Album(
+        item_id=item_id,
+        provider="library",
+        name=name,
+        external_ids=(
+            {(ExternalID.MB_RELEASEGROUP, release_group_id)} if release_group_id else set()
+        ),
+        provider_mappings={
+            ProviderMapping(
+                item_id=f"sp-{item_id}", provider_domain="spotify", provider_instance="spotify_1"
+            )
+        },
+    )
+
+
+def _release_group(
+    group_id: str,
+    title: str,
+    *,
+    primary_type: str = "Album",
+    secondary_types: list[str] | None = None,
+    first_release_date: str | None = "2007-10-10",
+) -> MusicBrainzReleaseGroup:
+    """Return a release group as the artist browse lists it."""
+    return MusicBrainzReleaseGroup(
+        id=group_id,
+        title=title,
+        primary_type=primary_type,
+        secondary_types=secondary_types,
+        first_release_date=first_release_date,
+    )
+
+
+@dataclass
+class _Harness:
+    """An artists controller under test together with its mocked IO boundaries."""
+
+    ctrl: ArtistsController
+    mass: Mock
+    musicbrainz: Mock
+    link: AsyncMock
+    get_library_item: AsyncMock
+
+    async def discography(self, provider: str = "library") -> UniqueList[Album]:
+        """Return the discography of the artist under test."""
+        return await self.ctrl.discography(LIBRARY_ARTIST_ID, provider)
+
+    def assert_nothing_written(self) -> None:
+        """Assert the listing stored nothing in the library."""
+        self.mass.music.albums.update_item_in_library.assert_not_called()
+        self.mass.music.albums.add_provider_mappings.assert_not_called()
+
+
+@contextmanager
+def _harness(
+    artist: Artist,
+    *,
+    release_groups: Sequence[MusicBrainzReleaseGroup] = (),
+    artist_albums: Sequence[Album] = (),
+    albums_by_release_group: Sequence[Album] = (),
+    linked_mbid: str | None = None,
+    musicbrainz_loaded: bool = True,
+) -> Iterator[_Harness]:
+    """
+    Yield an ArtistsController with every IO boundary mocked.
+
+    :param artist: The library artist under test.
+    :param release_groups: What MusicBrainz lists as the artist's discography.
+    :param artist_albums: The library albums credited to the artist.
+    :param albums_by_release_group: The library albums carrying one of the listed group ids.
+    :param linked_mbid: The MusicBrainz id the identity lookup finds for an artist without one.
+    :param musicbrainz_loaded: Whether the MusicBrainz provider is loaded.
+    """
+    musicbrainz = Mock()
+    musicbrainz.browse_release_groups_by_artist = AsyncMock(return_value=list(release_groups))
+    musicbrainz.album_type_from_release_group = MusicbrainzProvider.album_type_from_release_group
+
+    async def _link(item: Artist) -> None:
+        if linked_mbid:
+            item.mbid = linked_mbid
+
+    link = AsyncMock(side_effect=_link)
+    mass = Mock()
+    mass.get_provider = Mock(
+        side_effect=lambda domain, **_kwargs: (
+            musicbrainz if domain == "musicbrainz" and musicbrainz_loaded else None
+        )
+    )
+    mass.metadata.link_item_to_musicbrainz = link
+    mass.music.albums.get_library_items_by_external_ids = AsyncMock(
+        return_value=list(albums_by_release_group)
+    )
+    ctrl = ArtistsController.__new__(ArtistsController)
+    ctrl.logger = logging.getLogger("test.artists.discography")
+    ctrl.mass = mass
+    get_library_item = AsyncMock(return_value=artist)
+    with patch.multiple(
+        ctrl,
+        get_library_item=get_library_item,
+        albums=AsyncMock(return_value=list(artist_albums)),
+        update_item_in_library=AsyncMock(),
+    ):
+        yield _Harness(ctrl, mass, musicbrainz, link, get_library_item)
+
+
+# ---------------------------------------------------------------------------
+# tests
+# ---------------------------------------------------------------------------
+
+
+async def test_discography_lists_release_groups_the_library_lacks_as_musicbrainz_albums() -> None:
+    """An album not in the library carries what MusicBrainz knows, ready to resolve on demand."""
+    groups = [
+        _release_group(RG_IN_RAINBOWS, "In Rainbows"),
+        _release_group(
+            RG_KARMA_POLICE, "Karma Police", primary_type="Single", first_release_date="1997-08"
+        ),
+        _release_group(
+            RG_BEST_OF, "The Best Of", secondary_types=["Compilation"], first_release_date=None
+        ),
+    ]
+    with _harness(_artist(), release_groups=groups) as harness:
+        discography = await harness.discography()
+
+    assert [album.name for album in discography] == ["In Rainbows", "Karma Police", "The Best Of"]
+    assert [album.year for album in discography] == [2007, 1997, None]
+    assert [album.album_type for album in discography] == [
+        AlbumType.ALBUM,
+        AlbumType.SINGLE,
+        AlbumType.COMPILATION,
+    ]
+    in_rainbows = discography[0]
+    assert in_rainbows.provider == "musicbrainz"
+    assert in_rainbows.item_id == RG_IN_RAINBOWS
+    assert in_rainbows.uri == f"musicbrainz://album/{RG_IN_RAINBOWS}"
+    assert in_rainbows.provider_mappings == set()
+    assert in_rainbows.external_ids == {(ExternalID.MB_RELEASEGROUP, RG_IN_RAINBOWS)}
+    assert [type(credit) for credit in in_rainbows.artists] == [ItemMapping]
+    assert [credit.uri for credit in in_rainbows.artists] == [
+        f"library://artist/{LIBRARY_ARTIST_ID}"
+    ]
+    assert in_rainbows.image is not None
+    assert in_rainbows.image.path == (
+        f"https://coverartarchive.org/release-group/{RG_IN_RAINBOWS}/front-500"
+    )
+    assert in_rainbows.image.remotely_accessible is True
+    harness.musicbrainz.browse_release_groups_by_artist.assert_awaited_once_with(ARTIST_MBID)
+    harness.link.assert_not_awaited()
+    harness.assert_nothing_written()
+
+
+async def test_discography_returns_the_library_album_carrying_the_release_group_id() -> None:
+    """A library album identified as the release group is listed as that library album."""
+    library_album = _library_album("7", "In Rainbows (Disk 2 edition)", RG_IN_RAINBOWS)
+    with _harness(
+        _artist(),
+        release_groups=[_release_group(RG_IN_RAINBOWS, "In Rainbows")],
+        albums_by_release_group=[library_album],
+    ) as harness:
+        discography = await harness.discography()
+
+    assert list(discography) == [library_album]
+    assert discography[0] is library_album
+    harness.mass.music.albums.get_library_items_by_external_ids.assert_awaited_once_with(
+        {(ExternalID.MB_RELEASEGROUP, RG_IN_RAINBOWS)}
+    )
+    harness.assert_nothing_written()
+
+
+async def test_discography_returns_the_artists_library_album_of_the_same_name() -> None:
+    """Without a release group id, a library album of the artist matches by name."""
+    library_album = _library_album("7", "OK Computer")
+    with _harness(
+        _artist(),
+        release_groups=[
+            _release_group(RG_OK_COMPUTER, "OK Computer"),
+            _release_group(RG_IN_RAINBOWS, "In Rainbows"),
+        ],
+        artist_albums=[library_album],
+    ) as harness:
+        discography = await harness.discography()
+
+    assert discography[0] is library_album
+    assert discography[1].provider == "musicbrainz"
+
+
+async def test_discography_lists_a_library_album_once_for_two_release_groups() -> None:
+    """A reissue that is its own release group does not list the library album twice."""
+    library_album = _library_album("7", "OK Computer", RG_OK_COMPUTER)
+    groups = [
+        _release_group(RG_IN_RAINBOWS, "In Rainbows"),
+        _release_group(RG_OK_COMPUTER, "OK Computer", first_release_date="1997-05-21"),
+        _release_group(RG_OK_COMPUTER_REISSUE, "OK Computer", first_release_date="1997"),
+    ]
+    with _harness(
+        _artist(),
+        release_groups=groups,
+        artist_albums=[library_album],
+        albums_by_release_group=[library_album],
+    ) as harness:
+        discography = await harness.discography()
+
+    assert [album.uri for album in discography] == [
+        f"musicbrainz://album/{RG_IN_RAINBOWS}",
+        "library://album/7",
+    ]
+
+
+async def test_discography_identifies_an_artist_without_a_musicbrainz_id_first() -> None:
+    """An artist not yet identified on MusicBrainz is identified (and stored) before browsing."""
+    artist = _artist(mbid=None)
+    with _harness(
+        artist,
+        release_groups=[_release_group(RG_IN_RAINBOWS, "In Rainbows")],
+        linked_mbid=ARTIST_MBID,
+    ) as harness:
+        discography = await harness.discography()
+
+    harness.link.assert_awaited_once_with(artist)
+    assert harness.get_library_item.await_count == 2
+    harness.musicbrainz.browse_release_groups_by_artist.assert_awaited_once_with(ARTIST_MBID)
+    assert len(discography) == 1
+
+
+async def test_discography_is_empty_for_an_artist_musicbrainz_does_not_know() -> None:
+    """An artist that cannot be identified on MusicBrainz has no discography to show."""
+    with _harness(_artist(mbid=None)) as harness:
+        assert await harness.discography() == []
+
+    harness.link.assert_awaited_once()
+    harness.musicbrainz.browse_release_groups_by_artist.assert_not_awaited()
+
+
+async def test_discography_is_empty_for_various_artists() -> None:
+    """The Various Artists entity is nobody's discography."""
+    with _harness(_artist(mbid=VARIOUS_ARTISTS_MBID)) as harness:
+        assert await harness.discography() == []
+
+    harness.musicbrainz.browse_release_groups_by_artist.assert_not_awaited()
+
+
+async def test_discography_is_empty_without_the_musicbrainz_provider() -> None:
+    """Without MusicBrainz there is nothing to browse, and nothing is looked up either."""
+    with _harness(_artist(mbid=None), musicbrainz_loaded=False) as harness:
+        assert await harness.discography() == []
+
+    harness.link.assert_not_awaited()
+
+
+async def test_discography_needs_a_library_artist() -> None:
+    """A discography is only kept for artists in the library."""
+    with _harness(_artist()) as harness, pytest.raises(InvalidDataError):
+        await harness.discography("spotify_1")
+
+    harness.musicbrainz.browse_release_groups_by_artist.assert_not_awaited()

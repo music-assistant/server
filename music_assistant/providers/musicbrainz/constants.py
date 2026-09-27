@@ -72,6 +72,13 @@ MAX_BARCODE_DETAIL_FETCHES = 2
 # page is not identified at all, so the page is as large as it can be.
 RELEASE_GROUP_BROWSE_LIMIT = 100
 
+# An artist's discography is browsed in pages of MusicBrainz' per-request maximum and cut
+# off after this many pages; only a catalog-like artist has more release groups than that.
+DISCOGRAPHY_PAGE_SIZE = 100
+DISCOGRAPHY_MAX_PAGES = 5
+# The release group types that make up a discography: a broadcast or other type is noise.
+DISCOGRAPHY_PRIMARY_TYPES: tuple[str, ...] = ("Album", "EP", "Single")
+
 # A recording's length may deviate this much from the track's duration and still be it.
 RECORDING_LENGTH_TOLERANCE_MS = 8000
 

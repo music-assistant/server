@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -20,6 +21,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID
+from music_assistant.providers.musicbrainz.api_client import MusicBrainzAPIClient
 from music_assistant.providers.musicbrainz.constants import SUPPORTED_FEATURES
 from music_assistant.providers.musicbrainz.models import (
     MusicBrainzArtist,
@@ -34,6 +36,7 @@ from music_assistant.providers.musicbrainz.provider import (
     _length_matches,
     relation_urls,
 )
+from tests.common import use_real_create_task
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -1965,4 +1968,202 @@ async def test_artist_metadata_includes_genres_and_current_typed_links() -> None
     assert metadata.links == {
         MediaItemLink(type=LinkType.DISCOGS, url=DISCOGS_ARTIST_URL),
         MediaItemLink(type=LinkType.WEBSITE, url="https://radiohead.com/"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# browse_release_groups_by_artist
+# ---------------------------------------------------------------------------
+
+
+def _release_group(
+    group_id: str,
+    *,
+    primary_type: str | None = "Album",
+    secondary_types: list[str] | None = None,
+    first_release_date: str | None = "2007-10-10",
+) -> dict[str, Any]:
+    """Return one release group as an artist browse lists it."""
+    return {
+        "id": group_id,
+        "title": "In Rainbows",
+        "primary-type": primary_type,
+        "secondary-types": secondary_types or [],
+        "first-release-date": first_release_date,
+    }
+
+
+def _browse_page(groups: list[dict[str, Any]], offset: int, count: int) -> dict[str, Any]:
+    """Return one page of an artist's release group browse."""
+    return {"release-group-count": count, "release-group-offset": offset, "release-groups": groups}
+
+
+def _browsing_provider(pages: dict[str, Any]) -> tuple[MusicbrainzProvider, MagicMock]:
+    """Return a MusicbrainzProvider and its mock API client, answering a browse per offset."""
+    with patch.object(MusicbrainzProvider, "__init__", lambda *_a, **_kw: None):
+        provider = MusicbrainzProvider.__new__(MusicbrainzProvider)
+
+    async def _answer(_endpoint: str, **kwargs: Any) -> Any:
+        return pages.get(kwargs["offset"])
+
+    api_client = MagicMock()
+    api_client.get_data = AsyncMock(return_value=None)
+    api_client.get_browse_data = AsyncMock(side_effect=_answer)
+    provider._api_client = api_client
+    return provider, api_client
+
+
+async def test_browse_release_groups_pages_through_a_discography() -> None:
+    """A discography longer than a page is browsed page by page, through the browse cache."""
+    first_page = [_release_group(f"rg-{index}") for index in range(100)]
+    second_page = [_release_group(f"rg-{100 + index}") for index in range(50)]
+    provider, api_client = _browsing_provider(
+        {"0": _browse_page(first_page, 0, 150), "100": _browse_page(second_page, 100, 150)}
+    )
+
+    groups = await provider.browse_release_groups_by_artist(RADIOHEAD_MBID)
+
+    assert len(groups) == 150
+    assert [
+        (*request.args, request.kwargs) for request in api_client.get_browse_data.await_args_list
+    ] == [
+        ("release-group", {"artist": RADIOHEAD_MBID, "limit": "100", "offset": "0"}),
+        ("release-group", {"artist": RADIOHEAD_MBID, "limit": "100", "offset": "100"}),
+    ]
+    api_client.get_data.assert_not_awaited()
+
+
+async def test_browse_release_groups_stops_at_the_page_cap() -> None:
+    """A catalog-sized discography is cut off after five pages."""
+    pages = {
+        str(offset): _browse_page(
+            [_release_group(f"rg-{offset + index}") for index in range(100)], offset, 1000
+        )
+        for offset in range(0, 1000, 100)
+    }
+    provider, api_client = _browsing_provider(pages)
+
+    groups = await provider.browse_release_groups_by_artist(RADIOHEAD_MBID)
+
+    assert len(groups) == 500
+    assert api_client.get_browse_data.await_count == 5
+
+
+async def test_browse_release_groups_keeps_albums_eps_and_singles_only() -> None:
+    """Broadcasts and untyped groups are left out, while secondary types are kept."""
+    listing = [
+        _release_group("rg-album"),
+        _release_group("rg-live", secondary_types=["Live"]),
+        _release_group("rg-ep", primary_type="EP"),
+        _release_group("rg-single", primary_type="Single"),
+        _release_group("rg-broadcast", primary_type="Broadcast"),
+        _release_group("rg-other", primary_type="Other"),
+        _release_group("rg-untyped", primary_type=None),
+    ]
+    provider, _ = _browsing_provider({"0": _browse_page(listing, 0, len(listing))})
+
+    groups = await provider.browse_release_groups_by_artist(RADIOHEAD_MBID)
+
+    assert [group.id for group in groups] == ["rg-album", "rg-live", "rg-ep", "rg-single"]
+    assert MusicbrainzProvider.album_type_from_release_group(groups[1]) == AlbumType.LIVE
+
+
+async def test_browse_release_groups_sorts_newest_first_with_undated_last() -> None:
+    """The most recent release group comes first; groups without a date close the list."""
+    listing = [
+        _release_group("rg-undated", first_release_date=None),
+        _release_group("rg-1997", first_release_date="1997-05-21"),
+        _release_group("rg-2016", first_release_date="2016-05-08"),
+        _release_group("rg-2007", first_release_date="2007"),
+        _release_group("rg-blank", first_release_date=""),
+    ]
+    provider, _ = _browsing_provider({"0": _browse_page(listing, 0, len(listing))})
+
+    groups = await provider.browse_release_groups_by_artist(RADIOHEAD_MBID)
+
+    assert [group.id for group in groups] == [
+        "rg-2016",
+        "rg-2007",
+        "rg-1997",
+        "rg-undated",
+        "rg-blank",
+    ]
+    assert [group.first_release_year for group in groups] == [2016, 2007, 1997, None, None]
+
+
+async def test_browse_release_groups_skips_a_malformed_entry() -> None:
+    """One entry that cannot be parsed does not sink the rest of the discography."""
+    listing = [_release_group("rg-1"), {"id": "rg-no-title"}, _release_group("rg-2")]
+    provider, _ = _browsing_provider({"0": _browse_page(listing, 0, len(listing))})
+
+    groups = await provider.browse_release_groups_by_artist(RADIOHEAD_MBID)
+
+    assert [group.id for group in groups] == ["rg-1", "rg-2"]
+
+
+async def test_browse_release_groups_is_empty_for_an_unknown_artist() -> None:
+    """An unknown artist, or one without release groups, has no discography."""
+    for response in (None, {"release-group-count": 0, "release-groups": []}):
+        provider, api_client = _browsing_provider({"0": response})
+        assert await provider.browse_release_groups_by_artist("unknown") == []
+        assert api_client.get_browse_data.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# api client
+# ---------------------------------------------------------------------------
+
+
+class _RequestContext:
+    """Minimal async context manager standing in for an aiohttp request."""
+
+    def __init__(self, response: MagicMock) -> None:
+        self._response = response
+
+    async def __aenter__(self) -> MagicMock:
+        return self._response
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        return False
+
+
+def _api_client(payload: Any) -> tuple[MusicBrainzAPIClient, MagicMock]:
+    """Return an API client whose (mock) server answers every request with the payload."""
+    mass = MagicMock()
+    mass.version = "test"
+    mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
+    mass.cache.set = AsyncMock()
+    response = MagicMock()
+    response.status = 200
+    response.json = AsyncMock(return_value=payload)
+    mass.http_session.get = MagicMock(return_value=_RequestContext(response))
+    use_real_create_task(mass)
+    return MusicBrainzAPIClient(mass), mass
+
+
+async def test_api_client_caches_a_browse_for_a_week_and_a_lookup_for_a_month() -> None:
+    """Both entry points request the same way and share the throttler, each with its own cache."""
+    client, mass = _api_client({"release-groups": []})
+
+    with patch.object(client.throttler, "acquire", wraps=client.throttler.acquire) as acquire:
+        browsed = await client.get_browse_data("release-group", artist=RADIOHEAD_MBID, offset="0")
+        looked_up = await client.get_data(f"artist/{RADIOHEAD_MBID}")
+    await asyncio.sleep(0)
+
+    assert browsed == looked_up == {"release-groups": []}
+    assert acquire.call_count == 2
+    assert [request.args[0] for request in mass.http_session.get.call_args_list] == [
+        "https://musicbrainz-mirror.music-assistant.io/ws/2/release-group",
+        f"https://musicbrainz-mirror.music-assistant.io/ws/2/artist/{RADIOHEAD_MBID}",
+    ]
+    assert mass.http_session.get.call_args_list[0].kwargs["params"] == {
+        "artist": RADIOHEAD_MBID,
+        "offset": "0",
+        "fmt": "json",
+    }
+    assert {
+        store.kwargs["key"]: store.kwargs["expiration"] for store in mass.cache.set.await_args_list
+    } == {
+        f"get_browse_data.release-group.artist{RADIOHEAD_MBID}.offset0": 86400 * 7,
+        f"get_data.artist/{RADIOHEAD_MBID}": 86400 * 30,
     }

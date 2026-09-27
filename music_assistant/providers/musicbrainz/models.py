@@ -129,6 +129,12 @@ class MusicBrainzReleaseGroup(DataClassDictMixin):
             alt_data = cast("dict[str, Any]", alt_data)
         return MusicBrainzReleaseGroup.from_dict(alt_data)
 
+    @property
+    def first_release_year(self) -> int | None:
+        """Return the year the release group was first released, if MusicBrainz knows it."""
+        year = (self.first_release_date or "")[:4]
+        return int(year) if year.isdigit() else None
+
 
 @dataclass
 class MusicBrainzRecording(DataClassDictMixin):
