@@ -27,8 +27,10 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
 from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
 
@@ -75,6 +77,15 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     # for an item that left it would sit on a buffer no cleanup reaches
                     if self.get_item(queue_id, next_item.queue_item_id) is None:
                         return
+                if self._next_shares_single_source_slot(queue, next_item):
+                    # the playing item frees that slot only when it ends, and the end of its
+                    # stream schedules this preload again, so waiting for it here is pointless
+                    self.logger.debug(
+                        "Not preparing %s yet: the playing item holds the only %s source slot",
+                        next_item.name,
+                        next_item.streamdetails.provider,
+                    )
+                    return
                 self.logger.debug(
                     "Preparing audio buffer for next track %s on queue %s",
                     next_item.name,
@@ -348,3 +359,18 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 buffers_cleared,
                 queue_id,
             )
+
+    def _next_shares_single_source_slot(self, queue: PlayerQueue, next_item: QueueItem) -> bool:
+        """Return whether the next item's only source slot is held by the item playing now."""
+        playing = queue.current_item.streamdetails if queue.current_item else None
+        upcoming = next_item.streamdetails
+        if playing is None or upcoming is None or playing.provider != upcoming.provider:
+            return False
+        if (buffer := playing.buffer) is None or buffer.eof:
+            return False
+        provider = self.mass.get_provider(playing.provider)
+        return (
+            isinstance(provider, MusicProvider)
+            and provider.max_concurrent_streams == 1
+            and not provider.has_available_stream_slot
+        )
