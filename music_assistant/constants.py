@@ -921,7 +921,11 @@ INTERNAL_PCM_FORMAT = AudioFormat(
 )
 
 # Seconds without a new chunk before the source is treated as stalled (above ffmpeg's ~15s reconnect window).
+# Sources we read ourselves need a shorter socket timeout, see RADIO_STREAM_READ_TIMEOUT.
 STREAM_STALL_TIMEOUT: Final[int] = 20
+# Seconds a radio stream socket may stay silent before we reconnect.
+# Must stay well below STREAM_STALL_TIMEOUT so the reconnect can deliver audio in time.
+RADIO_STREAM_READ_TIMEOUT: Final[int] = 10
 # Longer budget for the first chunk to allow for connect + probe.
 STREAM_START_TIMEOUT: Final[int] = 30
 

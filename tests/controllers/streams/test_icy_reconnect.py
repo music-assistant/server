@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -18,6 +19,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
+from music_assistant.constants import RADIO_STREAM_READ_TIMEOUT, STREAM_STALL_TIMEOUT
 from music_assistant.controllers.streams.audio import StreamsAudio
 
 _META_INT = 4
@@ -101,6 +103,96 @@ async def test_icy_stream_reconnects_after_disconnect(monkeypatch: pytest.Monkey
 
     assert chunks == [b"AAAA", b"BBBB"]
     assert connect_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_icy_stream_reconnects_after_silent_socket(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A station that stops sending without closing the connection is reconnected."""
+    audio = StreamsAudio(MagicMock())
+
+    # connection #1 yields one frame then goes silent until the socket read times out
+    connections = [
+        _FakeConnCtx([b"AAAA", b"\x00", aiohttp.SocketTimeoutError("Timeout on reading data")]),
+        _FakeConnCtx([b"BBBB", b"\x00", asyncio.IncompleteReadError(b"", _META_INT)]),
+    ]
+    timeouts: list[aiohttp.ClientTimeout] = []
+
+    def _fake_connect(*_args: Any, **kwargs: Any) -> _FakeConnCtx:
+        timeouts.append(kwargs["timeout"])
+        return connections[len(timeouts) - 1]
+
+    monkeypatch.setattr(audio, "_connect_radio_stream", _fake_connect)
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+    chunks: list[bytes] = []
+    async for chunk in audio.get_icy_radio_stream(
+        "http://example.test/radio.mp3", _radio_streamdetails()
+    ):
+        chunks.append(chunk)
+        if len(chunks) == 2:
+            break
+
+    assert chunks == [b"AAAA", b"BBBB"]
+    # the socket must give up before the stall watchdog ends playback
+    assert timeouts[0].sock_read == RADIO_STREAM_READ_TIMEOUT
+    assert RADIO_STREAM_READ_TIMEOUT < STREAM_STALL_TIMEOUT
+
+
+class _FakeRadioContent:
+    """Stand-in for aiohttp StreamReader content, for readers that use iter_any."""
+
+    def __init__(self, items: list[bytes | Exception]) -> None:
+        self._items = list(items)
+
+    async def iter_any(self) -> AsyncGenerator[bytes]:
+        for item in self._items:
+            if isinstance(item, Exception):
+                raise item
+            yield item
+
+
+class _FakeRadioConnCtx:
+    """Async context manager yielding a fake plain radio response."""
+
+    def __init__(self, items: list[bytes | Exception]) -> None:
+        self._resp = MagicMock()
+        self._resp.content = _FakeRadioContent(items)
+
+    async def __aenter__(self) -> Any:
+        return self._resp
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        return False
+
+
+@pytest.mark.asyncio
+async def test_radio_stream_reconnects_after_silent_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plain radio stream that goes silent without closing is reconnected."""
+    audio = StreamsAudio(MagicMock())
+
+    connections = [
+        _FakeRadioConnCtx([b"AAAA", aiohttp.SocketTimeoutError("Timeout on reading data")]),
+        _FakeRadioConnCtx([b"BBBB"]),
+    ]
+    timeouts: list[aiohttp.ClientTimeout] = []
+
+    def _fake_connect(*_args: Any, **kwargs: Any) -> _FakeRadioConnCtx:
+        timeouts.append(kwargs["timeout"])
+        return connections[len(timeouts) - 1]
+
+    monkeypatch.setattr(audio, "_connect_radio_stream", _fake_connect)
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+    chunks: list[bytes] = []
+    async for chunk in audio.get_reconnecting_radio_stream("http://example.test/radio.ogg"):
+        chunks.append(chunk)
+        if len(chunks) == 2:
+            break
+
+    assert chunks == [b"AAAA", b"BBBB"]
+    assert timeouts[0].sock_read == RADIO_STREAM_READ_TIMEOUT
 
 
 @pytest.mark.asyncio
