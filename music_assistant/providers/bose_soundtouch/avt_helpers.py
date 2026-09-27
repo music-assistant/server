@@ -8,7 +8,6 @@ import aiohttp
 
 from music_assistant.helpers.upnp import (
     get_xml_soap_play,
-    get_xml_soap_set_next_url,
     get_xml_soap_set_url,
     get_xml_soap_stop,
 )
@@ -38,7 +37,8 @@ def get_headers(soap_action: str) -> dict[str, str]:
 
 def get_upnp_ctrl_url(device: BoseSoundTouchPlayer) -> str:
     """Get UPNP control URL."""
-    return f"http://{format_ip_for_url(device._client.session_config.ip)}:{UPNP_PORT}/{UPNP_CONTROL_ENDPOINT}"
+    host = format_ip_for_url(device.ip_address)
+    return f"http://{host}:{UPNP_PORT}/{UPNP_CONTROL_ENDPOINT}"
 
 
 async def avt_play(
@@ -65,7 +65,6 @@ async def avt_set_url(
     client: aiohttp.ClientSession,
     physical_device: BoseSoundTouchPlayer,
     player_media: PlayerMedia,
-    enqueue: bool = False,
 ) -> None:
     """
     Set Url.
@@ -73,14 +72,9 @@ async def avt_set_url(
     If device is playing, this will just continue with new media.
     """
     ctrl_url = get_upnp_ctrl_url(physical_device)
-    if enqueue:
-        xml, soap_action = get_xml_soap_set_next_url(player_media)
-        op_name = "SetNextAVTransportURI"
-    else:
-        xml, soap_action = get_xml_soap_set_url(player_media)
-        op_name = "SetAVTransportURI"
-    LOGGER.debug("AVT %s uri=%s", op_name, player_media.uri)
-    await _post_soap(client, ctrl_url, xml, soap_action, op_name)
+    xml, soap_action = get_xml_soap_set_url(player_media)
+    LOGGER.debug("AVT SetAVTransportURI uri=%s", player_media.uri)
+    await _post_soap(client, ctrl_url, xml, soap_action, "SetAVTransportURI")
 
 
 async def _post_soap(

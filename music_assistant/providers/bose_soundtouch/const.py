@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-DOMAIN = "bose_soundtouch"
 PLAYER_ID_PREFIX = "bose_soundtouch_"
 
 IDLE_POLL_INTERVAL = 30
@@ -22,11 +21,7 @@ UPNP_PORT = 8091
 UPNP_CONTROL_ENDPOINT = "AVTransport/Control"
 WS_SUBPROTOCOLS = ("gabbo",)
 WS_HEARTBEAT = 30
-REQUEST_TIMEOUT = 10
 RECONNECT_DELAY = 10
-
-# mDNS service type advertised by SoundTouch speakers on the network.
-MDNS_TYPE = "_soundtouch._tcp.local."
 
 # physical favorite/preset buttons available on the SoundTouch speakers.
 PRESET_IDS = range(1, 7)

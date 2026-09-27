@@ -3,7 +3,7 @@
 import logging
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
-from xml.etree.ElementTree import Element
+from xml.etree.ElementTree import Element, ParseError
 
 from aiohttp import ClientResponseError
 from defusedxml import ElementTree
@@ -85,6 +85,7 @@ class SoundtouchDevice:
     def __init__(self, session_configuration: SessionConfiguration) -> None:
         """Initialize."""
         self.session_config = session_configuration
+        self._now_playing_endpoint: str | None = None
 
         if self.session_config.logger is None:
             self.logger = logging.getLogger(__name__)
@@ -170,13 +171,19 @@ class SoundtouchDevice:
         """Remove zone.members from a zone."""
         await self._add_or_remove_zone_members(zone, add_members=False)
 
-    async def get_now_playing(self, endpoint: str = "nowPlaying") -> NowPlaying:
+    async def get_now_playing(self) -> NowPlaying:
         """Get now playing."""
-        try:
-            element = await self._get(endpoint)
-        except NotFoundError:
-            # both cases seem to be supported by the API
-            element = await self._get(endpoint="now_playing")
+        if self._now_playing_endpoint is None:
+            # firmware differs in which spelling it serves, so probe once and remember it:
+            # now playing is refreshed on every poll and on every push notification
+            try:
+                element = await self._get("nowPlaying")
+                self._now_playing_endpoint = "nowPlaying"
+            except NotFoundError:
+                element = await self._get("now_playing")
+                self._now_playing_endpoint = "now_playing"
+        else:
+            element = await self._get(self._now_playing_endpoint)
         d: dict[str, Any] = element.attrib
         for el in element:
             if el.tag == "ContentItem":
@@ -201,10 +208,6 @@ class SoundtouchDevice:
                 d[el.tag] = el.text
 
         return NowPlaying.from_dict(d)
-
-    async def get_track_info(self) -> NowPlaying:
-        """Get track info."""
-        return await self.get_now_playing("trackInfo")
 
     async def get_volume(self) -> Volume:
         """Get volume."""
@@ -250,13 +253,16 @@ class SoundtouchDevice:
     async def get_info(self) -> Info:
         """Get info necessary for us."""
         response = await self._get("info")
-        mac_addresses: set[str] = set()
-        ip_addresses: set[str] = set()
-        for network_info in response.findall("networkInfo"):
-            if mac := network_info.findtext("macAddress"):
-                mac_addresses.add(mac)
-            if ip := network_info.findtext("ipAddress"):
-                ip_addresses.add(ip)
+        interfaces = [
+            (network_info.findtext("macAddress"), network_info.findtext("ipAddress"))
+            for network_info in response.findall("networkInfo")
+        ]
+        # a speaker reports one entry per interface (wired and wireless). Put the one we
+        # actually talk to first: callers take the first as the device identifier, and an
+        # identifier that changes per run makes protocol linking a coin flip.
+        interfaces.sort(key=lambda interface: interface[1] != self.session_config.ip)
+        mac_addresses = list(dict.fromkeys(mac for mac, _ in interfaces if mac))
+        ip_addresses = list(dict.fromkeys(ip for _, ip in interfaces if ip))
         software_version: str | None = None
         for component in response.iter("component"):
             if version := component.findtext("softwareVersion"):
@@ -264,7 +270,8 @@ class SoundtouchDevice:
                 break
 
         # our connection ip should already be present, but just in case
-        ip_addresses.add(self.session_config.ip)
+        if self.session_config.ip not in ip_addresses:
+            ip_addresses.insert(0, self.session_config.ip)
 
         return Info(
             device_id=response.attrib.get("deviceID", ""),
@@ -300,24 +307,26 @@ class SoundtouchDevice:
         await self._post("removeZoneSlave", create_zone_xml(zone))
 
     async def _get(self, endpoint: str, params: dict[str, str | int] | None = None) -> Element[str]:
-        """GET request to abs api."""
+        """GET request to api."""
+        # the context manager releases the connection back to the pool on every path,
+        # including the error ones - an unread response would be torn down instead
+        async with self.session_config.session.get(
+            f"http://{self.session_config.ip}:{self.session_config.http_port}/{endpoint}",
+            params=params,
+            timeout=self.session_config.timeout,
+        ) as response:
+            if response.status == 404:
+                raise NotFoundError
+            if response.content_type != "text/xml" or response.status != 200:
+                raise ApiError(f"API GET call to {endpoint} failed.")
+            body = (await response.read()).decode(STRING_ENCODING)
 
-        async def _request() -> ClientResponse:
-            return await self.session_config.session.get(
-                f"http://{self.session_config.ip}:{self.session_config.http_port}/{endpoint}",
-                params=params,
-                timeout=self.session_config.timeout,
-            )
-
-        response = await _request()
-
-        status = response.status
-        if status == 404:
-            raise NotFoundError
-        if response.content_type == "text/xml" and status == 200:
-            _response = (await response.read()).decode(STRING_ENCODING)
-            return cast("Element[str]", ElementTree.fromstring(_response))
-        raise ApiError(f"API GET call to {endpoint} failed.")
+        try:
+            return cast("Element[str]", ElementTree.fromstring(body))
+        except ParseError as exc:
+            # the speakers emit truncated xml when they are under load; an ApiError keeps
+            # that inside the aiohttp.ClientError hierarchy every caller already handles
+            raise ApiError(f"API GET call to {endpoint} returned malformed xml.") from exc
 
     async def _post(
         self,
