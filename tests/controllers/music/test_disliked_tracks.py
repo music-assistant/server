@@ -96,7 +96,9 @@ async def test_disliked_track_keys_cover_albums_and_artists(
 
     item_ids, provider_keys = await store.disliked_track_keys(user_id)
 
+    # the tracks of a disliked album count as disliked tracks
     assert item_ids == {
+        (MediaType.TRACK, int(library_track.item_id)),
         (MediaType.ALBUM, int(album.item_id)),
         (MediaType.ARTIST, int(artist.item_id)),
     }
@@ -105,6 +107,28 @@ async def test_disliked_track_keys_cover_albums_and_artists(
         (MediaType.ALBUM, PROV_A, track.album.item_id),
         (MediaType.ARTIST, PROV_A, track.artists[0].item_id),
     }
+    assert await without_disliked_tracks(mass, user_id, [library_track, track]) == []
+
+
+async def test_a_disliked_album_drops_a_track_that_shows_another_album(
+    music_mass_module: MusicAssistant,
+) -> None:
+    """A track on more than one album is dropped for a dislike of the album it does not show."""
+    mass = music_mass_module
+    store = mass.music.favorites
+    user_id = uuid4().hex
+    track_id = uuid4().hex
+    track = create_track(PROV_A, track_id, name="On Two Albums", isrc=uuid4().hex)
+    track.album = create_album(PROV_A, uuid4().hex, name="Original Album")
+    await mass.music.tracks.add_item_to_library(track)
+    on_compilation = create_track(PROV_A, track_id, name="On Two Albums", isrc=uuid4().hex)
+    on_compilation.album = create_album(PROV_A, uuid4().hex, name="Compilation")
+    compilation = await mass.music.albums.add_item_to_library(on_compilation.album)
+    library_track = await mass.music.tracks.add_item_to_library(on_compilation)
+    assert library_track.album is not None
+    assert library_track.album.item_id != compilation.item_id
+    await store.set(MediaType.ALBUM, int(compilation.item_id), False, [user_id])
+
     assert await without_disliked_tracks(mass, user_id, [library_track, track]) == []
 
 

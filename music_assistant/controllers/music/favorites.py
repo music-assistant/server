@@ -19,7 +19,11 @@ from typing import TYPE_CHECKING
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import MediaItem
 
-from music_assistant.constants import DB_TABLE_FAVORITES, DB_TABLE_PROVIDER_MAPPINGS
+from music_assistant.constants import (
+    DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_FAVORITES,
+    DB_TABLE_PROVIDER_MAPPINGS,
+)
 from music_assistant.helpers.provider_access import (
     access_allows,
     music_sources_access,
@@ -131,6 +135,8 @@ class FavoritesStore:
         """
         Return the tracks, albums and artists the given user disliked, in one query.
 
+        The tracks of a disliked album are included as disliked tracks.
+
         The library ids identify them as library items, the (instance, item id) pairs
         recognize the same item when it arrives straight from a music source. Feed the result
         to :func:`filter_disliked`.
@@ -139,22 +145,29 @@ class FavoritesStore:
         """
         item_ids: set[tuple[MediaType, int]] = set()
         provider_keys: set[tuple[MediaType, str, str]] = set()
-        media_types = {
-            f"media_type_{idx}": x.value
-            for idx, x in enumerate((MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST))
-        }
-        # LEFT JOIN: a disliked item without any mapping left still counts by its library id
+        # every track of a disliked album counts as disliked itself: a library track on more
+        # than one album only carries one of them
         query = (
-            "SELECT f.media_type, f.item_id, pm.provider_instance, pm.provider_item_id "
-            f"FROM {DB_TABLE_FAVORITES} f "
-            f"LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} pm "
-            "ON pm.media_type = f.media_type AND pm.item_id = f.item_id "
-            "WHERE f.user_id = :user_id AND f.favorite = 0 "
-            f"AND f.media_type IN ({', '.join(f':{x}' for x in media_types)})"
+            "WITH disliked(media_type, item_id) AS ("
+            f"SELECT media_type, item_id FROM {DB_TABLE_FAVORITES} "
+            "WHERE user_id = :user_id AND favorite = 0 "
+            "AND media_type IN (:track, :album, :artist) "
+            "UNION "
+            f"SELECT :track, at.track_id FROM {DB_TABLE_FAVORITES} f "
+            f"JOIN {DB_TABLE_ALBUM_TRACKS} at ON at.album_id = f.item_id "
+            "WHERE f.user_id = :user_id AND f.favorite = 0 AND f.media_type = :album) "
+            # LEFT JOIN: a disliked item without any mapping left still counts by its library id
+            "SELECT d.media_type, d.item_id, pm.provider_instance, pm.provider_item_id "
+            f"FROM disliked d LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} pm "
+            "ON pm.media_type = d.media_type AND pm.item_id = d.item_id"
         )
-        for row in await self.mass.music.database.get_rows_from_query(
-            query, {"user_id": user_id, **media_types}, limit=0
-        ):
+        values = {
+            "user_id": user_id,
+            "track": MediaType.TRACK.value,
+            "album": MediaType.ALBUM.value,
+            "artist": MediaType.ARTIST.value,
+        }
+        for row in await self.mass.music.database.get_rows_from_query(query, values, limit=0):
             media_type = MediaType(row["media_type"])
             item_ids.add((media_type, int(row["item_id"])))
             if row["provider_instance"] and row["provider_item_id"]:
