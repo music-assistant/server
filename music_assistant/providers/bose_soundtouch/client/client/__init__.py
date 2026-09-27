@@ -9,6 +9,7 @@ from xml.etree.ElementTree import Element, ParseError
 
 from aiohttp import ClientError, ClientResponseError, WSMsgType
 from defusedxml import ElementTree
+from defusedxml.common import DefusedXmlException
 
 from music_assistant.providers.bose_soundtouch.client.const import (
     NOTIFICATION_PORT,
@@ -368,7 +369,7 @@ class SoundtouchDevice:
 
         try:
             return cast("Element[str]", ElementTree.fromstring(body))
-        except ParseError as exc:
+        except (ParseError, DefusedXmlException) as exc:
             # the speakers emit truncated xml when they are under load; an ApiError keeps
             # that inside the aiohttp.ClientError hierarchy every caller already handles
             raise ApiError(f"API GET call to {endpoint} returned malformed xml.") from exc
