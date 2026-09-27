@@ -278,6 +278,24 @@ class FavoritesStore:
         return self._users[1]
 
 
+async def without_disliked_tracks(
+    mass: MusicAssistant, user_id: str | None, tracks: list[Track]
+) -> list[Track]:
+    """
+    Return the given tracks without the ones the user disliked.
+
+    Only for playback Music Assistant picks itself; what a user asks for by name is never
+    filtered.
+
+    :param mass: The MusicAssistant instance.
+    :param user_id: The playback user; an anonymous queue (None) is not filtered.
+    :param tracks: The candidate tracks.
+    """
+    if not user_id or not tracks:
+        return tracks
+    return filter_disliked(tracks, await mass.music.favorites.disliked_track_keys(user_id))
+
+
 def filter_disliked(tracks: list[Track], keys: DislikedTrackKeys) -> list[Track]:
     """
     Drop the tracks a user disliked from a list of candidates.

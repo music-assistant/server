@@ -49,7 +49,10 @@ from music_assistant_models.media_items.metadata import MediaItemImage, MediaIte
 from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
 from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.music.constants import DYNAMIC_RADIO_BASE_SAMPLE_SIZE
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    set_current_user,
+)
 from music_assistant.helpers.plugin_engines import (
     create_ai_engine_config_entries,
     select_ai_engine,
@@ -370,7 +373,13 @@ class SmartPlaylistProvider(PluginProvider):
         user_provider_filter = tuple(sorted(visible)) if visible is not None else ()
         # Filter the cached sample at the boundary (not inside the cached evaluation) so a
         # recency-filtered batch from a queue refill never gets cached and served to browse.
-        sample = await self._cached_dynamic_sample(resolved_id, user_provider_filter)
+        if rules.favorites_only and user:
+            # favorites are personal, so this sample is keyed on (and evaluated as) the user
+            sample = await self._cached_dynamic_sample(
+                resolved_id, user_provider_filter, favorites_user_id=user.user_id
+            )
+        else:
+            sample = await self._cached_dynamic_sample(resolved_id, user_provider_filter)
         return filter_tracks(sample)
 
     @use_cache(
@@ -383,11 +392,23 @@ class SmartPlaylistProvider(PluginProvider):
         self,
         prov_playlist_id: str,
         user_provider_filter: tuple[str, ...] = (),
+        favorites_user_id: str | None = None,
     ) -> list[Track]:
-        """Evaluate a fresh sample for a dynamic playlist (wrapped in SWR cache)."""
+        """
+        Evaluate a fresh sample for a dynamic playlist (wrapped in SWR cache).
+
+        :param prov_playlist_id: The smart playlist to sample.
+        :param user_provider_filter: The music sources the sample is limited to.
+        :param favorites_user_id: The user whose favorites a favorites-only sample reads; a
+            background refresh has no session, so the user is restored from it.
+        """
         rules = self._rules_store.get(prov_playlist_id)
         if rules is None:
             return []
+        if favorites_user_id and (
+            user := await self.mass.webserver.auth.get_user(favorites_user_id)
+        ):
+            set_current_user(user)
         sample_rules = dc_replace(rules, limit=DYNAMIC_PLAYLIST_SAMPLE_SIZE)
         return await self._evaluate_rules(
             sample_rules, list(user_provider_filter) if user_provider_filter else None

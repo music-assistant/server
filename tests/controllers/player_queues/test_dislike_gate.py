@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from music_assistant_models.enums import QueueOption
 from music_assistant_models.media_items import ProviderMapping, Track
 
 from music_assistant.controllers.player_queues.autoplay import AutoplayMode
@@ -39,6 +40,8 @@ def _loader(*, userid: str | None) -> Any:
         display_name="Queue",
         autoplay_enabled=True,
         current_index=None,
+        index_in_buffer=None,
+        items=0,
     )
     loader.get = MagicMock(return_value=queue)
     loader._queue_data = {
@@ -69,6 +72,16 @@ async def test_the_dynamic_fill_skips_a_disliked_track() -> None:
     loader._managed_pool.fill = AsyncMock(return_value=[_track(DISLIKED), _track(LIKED)])
 
     await QueueLoaderMixin._fill_dynamic_tracks(loader, QUEUE_ID)
+
+    assert _appended(loader) == [LIKED]
+
+
+async def test_the_first_fill_of_a_dynamic_source_skips_a_disliked_track() -> None:
+    """The batch a station or mix starts with is gated like every later top-up."""
+    loader = _loader(userid=USER_ID)
+    loader._managed_pool.fill = AsyncMock(return_value=[_track(DISLIKED), _track(LIKED)])
+
+    await QueueLoaderMixin._enter_dynamic_mode(loader, QUEUE_ID, QueueOption.ADD)
 
     assert _appended(loader) == [LIKED]
 

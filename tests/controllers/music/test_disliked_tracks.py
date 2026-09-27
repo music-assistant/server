@@ -8,7 +8,11 @@ from uuid import uuid4
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ProviderMapping
 
-from music_assistant.controllers.music.favorites import DislikedTrackKeys, filter_disliked
+from music_assistant.controllers.music.favorites import (
+    DislikedTrackKeys,
+    filter_disliked,
+    without_disliked_tracks,
+)
 
 from .helpers import create_track
 
@@ -70,3 +74,18 @@ def test_filter_disliked_drops_a_track_by_library_id_or_by_mapping() -> None:
     # a user without dislikes gets the candidates back untouched
     candidates = [by_library_id, by_mapping, kept]
     assert filter_disliked(candidates, (set(), set())) is candidates
+
+
+async def test_without_disliked_drops_the_users_dislikes(music_mass_module: MusicAssistant) -> None:
+    """A candidate list is filtered for a user, and left alone for an anonymous queue."""
+    mass = music_mass_module
+    store = mass.music.favorites
+    disliked = await _add_track(mass, "Skipped For A")
+    liked = await _add_track(mass, "Kept For A")
+    await store.set(MediaType.TRACK, int(disliked.item_id), False, [USER_A])
+
+    kept = await without_disliked_tracks(mass, USER_A, [disliked, liked])
+    assert [x.item_id for x in kept] == [liked.item_id]
+
+    untouched = await without_disliked_tracks(mass, None, [disliked, liked])
+    assert [x.item_id for x in untouched] == [disliked.item_id, liked.item_id]
