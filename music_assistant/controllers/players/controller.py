@@ -909,9 +909,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # A power off also detaches this player from its (sync)group, which takes the
         # group's lock - so that one is taken first (see get_group_and_player_lock).
         lock = (
-            self.get_group_and_player_lock(player_id)
-            if not powered
-            else self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK)
+            self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK)
+            if powered
+            else self.get_group_and_player_lock(player_id)
         )
         async with lock:
             await self._handle_cmd_power(player_id, powered)
@@ -1115,10 +1115,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # player is released from its group/sync first, then plays the media
         # standalone. With the preference off, behavior falls back to the
         # legacy "redirect to group leader" path below.
-        # The release goes through cmd_set_members(group), which takes the group's
-        # lock, so it runs before this player's own lock is taken here. A queue
-        # action calling in with that lock already held took the group's lock
-        # first as well (see get_group_and_player_lock).
+        # The release reaches the group (and takes its lock through cmd_set_members
+        # for a dynamic member), so it runs before this player's own lock is taken
+        # here. A queue action calling in with that lock already held took the
+        # group's lock first as well (see get_group_and_player_lock).
         target_player = self.get_player(player_id, True)
         if target_player is not None and (
             target_player.state.synced_to or target_player.state.active_group

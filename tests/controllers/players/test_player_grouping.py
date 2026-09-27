@@ -847,7 +847,7 @@ class TestGroupAndMemberLockOrder:
     async def test_an_announcement_changes_the_membership_under_the_group_lock(
         self, mock_mass: MagicMock
     ) -> None:
-        """The member leaves and rejoins its group through the controller, under the group's lock."""
+        """The member leaves and rejoins its group through the controller, under its lock."""
         controller, group, member = self._setup_announcement(mock_mass)
         group.release.set()
         member_changes: list[tuple[str, list[str] | None, list[str] | None, bool]] = []
