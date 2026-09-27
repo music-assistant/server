@@ -587,7 +587,12 @@ class AlbumsController(MediaControllerBase[Album]):
         # the digital editions of one group carry different ids on the providers, so each
         # edition's own links and barcode are tried, never those of the whole group
         for edition in sorted(editions, key=_streaming_edition_rank)[:_MAX_EDITION_LOOKUPS]:
-            release = await musicbrainz.get_release_details(edition.id)
+            try:
+                release = await musicbrainz.get_release_details(edition.id)
+            except InvalidDataError as err:
+                # a stale edition costs nothing but its turn
+                self.logger.debug("Release %s could not be looked up: %s", edition.id, err)
+                continue
             # a link names one loaded instance of a service, while the user may only be
             # handed an album from a music source it may see
             linked = _within_sources(

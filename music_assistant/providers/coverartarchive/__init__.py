@@ -92,7 +92,6 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
         return await self.get_release_group_cover_url(path)
 
     @use_cache(86400 * 30)
-    @throttle_with_retries
     async def get_release_group_cover_url(self, release_group_id: str) -> str | None:
         """
         Return the URL of a release group's front cover, or None if the archive has none.
@@ -100,18 +99,26 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
         :param release_group_id: MusicBrainz release group ID.
         :raises RetriesExhausted: The archive could not be asked, even after retrying.
         """
-        # Try 1200px first, fall back to 500px
+        # Try 1200px first, fall back to 500px; each request takes its own throttler slot
+        for size in ("front-1200", "front-500"):
+            if url := await self._head_cover(
+                f"{CAA_BASE_URL}/release-group/{release_group_id}/{size}"
+            ):
+                return url
+        # a 404 for both sizes means this release group genuinely has no cover art
+        return None
+
+    @throttle_with_retries
+    async def _head_cover(self, url: str) -> str | None:
+        """Return the URL one cover request resolves to, or None when the archive has no such cover."""
         try:
-            for size in ("front-1200", "front-500"):
-                url = f"{CAA_BASE_URL}/release-group/{release_group_id}/{size}"
-                async with self.mass.http_session.head(url, allow_redirects=True) as response:
-                    if response.status == 200:
-                        return str(response.url)
-                    if response.status != 404:
-                        response.raise_for_status()
+            async with self.mass.http_session.head(url, allow_redirects=True) as response:
+                if response.status == 200:
+                    return str(response.url)
+                if response.status != 404:
+                    response.raise_for_status()
         except (aiohttp.ClientError, TimeoutError) as err:
             # a non-404 status (5xx, 429, ...) or network failure is transient — surface it as
             # ResourceTemporarilyUnavailable so it is retried instead of cached as "no cover art"
             raise ResourceTemporarilyUnavailable("Cover Art Archive request failed") from err
-        # a 404 for both sizes means this release group genuinely has no cover art
         return None

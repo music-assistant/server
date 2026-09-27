@@ -90,15 +90,36 @@ async def test_release_group_cover_url_retries_a_transient_error(
 async def test_release_group_cover_url_takes_a_slot_of_the_shared_throttler(
     provider: CoverArtArchiveMetadataProvider,
 ) -> None:
-    """Every lookup passes the throttler holding the archive's one request per second."""
+    """Every request passes the throttler holding the archive's one request per second."""
     assert CoverArtArchiveMetadataProvider.throttler.throttler.rate_limit == 1
     assert CoverArtArchiveMetadataProvider.throttler.throttler.period == 1
-    _answer(provider, 404)
+    _answer(provider, 200)
 
     with patch.object(provider.throttler, "acquire", wraps=provider.throttler.acquire) as acquire:
         await provider.get_release_group_cover_url("mbid")
 
     acquire.assert_called_once()
+
+
+async def test_release_group_cover_url_fallback_takes_a_slot_per_request(
+    provider: CoverArtArchiveMetadataProvider,
+) -> None:
+    """Falling back from the large to the small cover is two archive requests, two slots."""
+    missing = MagicMock()
+    missing.status = 404
+    found = MagicMock()
+    found.status = 200
+    found.url = COVER_URL
+    provider.mass.http_session.head = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda url, **_kwargs: _response_cm(
+            missing if url.endswith("front-1200") else found
+        )
+    )
+
+    with patch.object(provider.throttler, "acquire", wraps=provider.throttler.acquire) as acquire:
+        assert await provider.get_release_group_cover_url("mbid") == COVER_URL
+
+    assert acquire.call_count == 2
 
 
 async def test_resolve_image_is_the_release_groups_cover_url(

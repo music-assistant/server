@@ -6,7 +6,7 @@ import asyncio
 import logging
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
 
 import pytest
@@ -333,6 +333,36 @@ async def test_resolve_moves_on_to_the_next_edition() -> None:
     assert harness.get_provider_item.await_args_list == [
         call(SPOTIFY_ALBUM_ID, "spotify_1", **STRICT_FETCH),
         call(TIDAL_ALBUM_ID, "tidal_1", **STRICT_FETCH),
+    ]
+
+
+async def test_resolve_skips_an_edition_musicbrainz_cannot_look_up() -> None:
+    """A stale edition costs its turn only; the next likeliest edition is still tried."""
+    tidal_album = _album("tidal_1", TIDAL_ALBUM_ID)
+    with _harness(
+        editions=[
+            _edition("rel-stale", urls=[SPOTIFY_ALBUM_URL]),
+            _edition("rel-second", date="2008-01-01", urls=[TIDAL_ALBUM_URL]),
+        ],
+        releases=[_release("rel-second", urls=[TIDAL_ALBUM_URL])],
+        loaded={"tidal": ["tidal_1"]},
+        providers=[_music_provider("tidal_1")],
+        albums={("tidal_1", TIDAL_ALBUM_ID): tidal_album},
+    ) as harness:
+        lookup = harness.musicbrainz.get_release_details.side_effect
+
+        async def _details(release_id: str) -> MusicBrainzRelease:
+            if release_id == "rel-stale":
+                raise InvalidDataError("Invalid MusicBrainz Album ID provided")
+            return cast("MusicBrainzRelease", lookup(release_id))
+
+        harness.musicbrainz.get_release_details.side_effect = _details
+        album = await harness.resolve()
+
+    assert album is tidal_album
+    assert harness.musicbrainz.get_release_details.await_args_list == [
+        call("rel-stale"),
+        call("rel-second"),
     ]
 
 
