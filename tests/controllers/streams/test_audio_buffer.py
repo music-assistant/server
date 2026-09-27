@@ -645,6 +645,7 @@ async def test_realtime_session_start_banks_a_lead_for_a_short_first_item(
     buffer = await AudioBuffer.get_buffer(mass, streamdetails, seek_position_ms, reason=reason)
     try:
         assert buffer._ready_threshold == expected
+        assert buffer._ready_at_chunk == seek_position_ms // 1000 + expected
     finally:
         await asyncio.gather(*scheduled_tasks)
         await buffer.clear()
