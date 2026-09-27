@@ -146,6 +146,7 @@ class TracksController(MediaControllerBase[Track]):
         SELECT
             tracks.*,
             {self._external_ids_query()} AS external_ids,
+            {self._favorite_query()} AS favorite,
             {self._provider_mappings_query()} AS provider_mappings,
 
             (SELECT JSON_GROUP_ARRAY(
@@ -297,7 +298,7 @@ class TracksController(MediaControllerBase[Track]):
         """
         Get in-database tracks.
 
-        :param favorite: Filter by favorite status.
+        :param favorite: Only include the current user's likes (True) or dislikes (False).
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
@@ -1460,7 +1461,6 @@ class TracksController(MediaControllerBase[Track]):
                 "sort_name": item.sort_name,
                 "version": item.version,
                 "duration": item.duration,
-                "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
@@ -1674,7 +1674,6 @@ class TracksController(MediaControllerBase[Track]):
         """Parse a raw sync-details db row into a TrackSyncDetails object."""
         return TrackSyncDetails(
             item_id=db_row["item_id"],
-            favorite=bool(db_row["favorite"]),
             date_added=datetime.fromtimestamp(db_row["timestamp_added"], tz=UTC),
             provider_mappings=self._parse_sync_details_mappings(db_row),
             has_album=bool(db_row["has_album"]),

@@ -1447,7 +1447,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 else None,
                 "owner": item.owner,
                 "is_editable": item.is_editable,
-                "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),
