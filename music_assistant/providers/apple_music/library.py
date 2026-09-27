@@ -373,7 +373,7 @@ class AppleMusicLibraryManager:
                         continue
 
                 # Found a match! Update favorite status and return
-                track.favorite = True if is_favourite else None
+                track.favorite = is_favourite
                 self.logger.debug(
                     "Found replacement catalog track %s for deprecated library track %s",
                     track.item_id,

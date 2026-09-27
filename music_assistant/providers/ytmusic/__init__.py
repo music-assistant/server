@@ -936,7 +936,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     url=f"{YTM_DOMAIN}/playlist?list={album_obj.get('audioPlaylistId')}",
                 )
             },
-            favorite=True if album_obj.get("likeStatus") == "LIKE" else None,
+            favorite=_favorite_from_like_status(album_obj),
         )
         if album_obj.get("year") and album_obj["year"].isdigit():
             album.year = album_obj["year"]
@@ -996,7 +996,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     url=f"{YTM_DOMAIN}/channel/{artist_id}",
                 )
             },
-            favorite=True if artist_obj.get("likeStatus") == "LIKE" else None,
+            favorite=_favorite_from_like_status(artist_obj),
         )
         if "description" in artist_obj:
             artist.metadata.description = artist_obj["description"]
@@ -1029,7 +1029,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 )
             },
             is_editable=is_editable,
-            favorite=True if playlist_obj.get("likeStatus") == "LIKE" else None,
+            favorite=_favorite_from_like_status(playlist_obj),
         )
         if "description" in playlist_obj:
             playlist.metadata.description = playlist_obj["description"]
@@ -1071,7 +1071,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     ),
                 )
             },
-            favorite=True if track_obj.get("likeStatus") == "LIKE" else None,
+            favorite=_favorite_from_like_status(track_obj),
             # Disc info is not available in YTM, assume a single disc
             disc_number=1,
             # Track number is "sometimes" available in the track object, otherwise approach
@@ -1300,3 +1300,13 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             await import_module_in_thread("yt_dlp")
         except ImportError:
             raise SetupFailedError("Package yt_dlp failed to install")
+
+
+def _favorite_from_like_status(item: dict[str, Any]) -> bool | None:
+    """Translate the like status YouTube Music reports on an item to a favorite state."""
+    match item.get("likeStatus"):
+        case "LIKE":
+            return True
+        case "DISLIKE":
+            return False
+    return None

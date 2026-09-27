@@ -17,9 +17,15 @@ import time
 from typing import TYPE_CHECKING
 
 from music_assistant.constants import DB_TABLE_FAVORITES, DB_TABLE_PROVIDER_MAPPINGS
-from music_assistant.helpers.provider_access import music_source_owners, source_owner
+from music_assistant.helpers.provider_access import (
+    access_allows,
+    music_sources_access,
+    source_access,
+)
 
 if TYPE_CHECKING:
+    from music_assistant_models.auth import User
+    from music_assistant_models.config_entries import ProviderAccess
     from music_assistant_models.enums import MediaType
 
     from music_assistant import MusicAssistant
@@ -76,33 +82,39 @@ class FavoritesStore:
         """
         Record the state a music source reports for a library item.
 
-        Only fills in a state for a user who has never expressed one, so a choice the user
-        made (including clearing a like) is never overridden.
+        The state goes to the owner of the source, or to every user the source serves when
+        it has no owner. It only fills in a state for a user who never expressed one, so a
+        choice the user made (including clearing a like) is never overridden.
 
         :param provider_instance_id: The music source reporting the state.
         :param media_type: Media type of the library item.
         :param item_id: Library (database) id of the item.
         :param favorite: True for a like, False for a dislike.
         """
-        if owner := source_owner(self.mass, provider_instance_id):
-            user_ids = [owner]
+        access = source_access(self.mass, provider_instance_id)
+        if access and access.owner:
+            user_ids = [access.owner]
         else:
-            # a source of the whole home speaks for everyone, the rule the play log follows
-            user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
+            users = await self.mass.webserver.auth.list_users()
+            user_ids = [user.user_id for user in users if _holds_favorites_for(access, user)]
+        if not user_ids:
+            return
         timestamp = int(time.time())
-        for user_id in user_ids:
-            await self.mass.music.database.execute_write(
-                f"INSERT OR IGNORE INTO {DB_TABLE_FAVORITES}"
-                "(user_id, media_type, item_id, favorite, timestamp) "
-                "VALUES(:user_id, :media_type, :item_id, :favorite, :timestamp)",
-                {
-                    "user_id": user_id,
-                    "media_type": media_type.value,
-                    "item_id": item_id,
-                    "favorite": favorite,
-                    "timestamp": timestamp,
-                },
-            )
+        rows = ", ".join(
+            f"(:user_{idx}, :media_type, :item_id, :favorite, :timestamp)"
+            for idx in range(len(user_ids))
+        )
+        await self.mass.music.database.execute_write(
+            f"INSERT OR IGNORE INTO {DB_TABLE_FAVORITES}"
+            f"(user_id, media_type, item_id, favorite, timestamp) VALUES {rows}",
+            {
+                "media_type": media_type.value,
+                "item_id": item_id,
+                "favorite": favorite,
+                "timestamp": timestamp,
+                **{f"user_{idx}": user_id for idx, user_id in enumerate(user_ids)},
+            },
+        )
 
     async def move_item(self, media_type: MediaType, source_id: int, target_id: int) -> None:
         """
@@ -171,8 +183,8 @@ class FavoritesStore:
         Hand the favorites the library migration parked to the users they belong to.
 
         A favorite goes to the owner of every music source that holds the item in its
-        library, and to every user when a source of the whole home holds it or when no
-        source holds it at all.
+        library, or to every user such a source serves when it has no owner. A favorite
+        no configured source holds in its library goes to every user.
         """
         if not await self.mass.music.database.get_rows(
             DB_TABLE_FAVORITES, {"user_id": PENDING_USER_ID}, limit=1
@@ -181,44 +193,46 @@ class FavoritesStore:
         if not (users := await self.mass.webserver.auth.list_users()):
             # nobody to hand them to yet; leave them parked for a next start
             return
-        owned_sources = {
-            instance_id: owner
-            for instance_id, owner in music_source_owners(self.mass).items()
-            if owner
-        }
-        insert = (
-            f"INSERT OR IGNORE INTO {DB_TABLE_FAVORITES}"
-            "(user_id, media_type, item_id, favorite, timestamp) "
-            "SELECT :user_id, f.media_type, f.item_id, f.favorite, f.timestamp "
-            f"FROM {DB_TABLE_FAVORITES} f WHERE f.user_id = :pending_user_id"
-        )
+        sources = music_sources_access(self.mass)
+        # bound one by one: execute_write has no list parameter support
+        configured = {f"source_{idx}": instance_id for idx, instance_id in enumerate(sources)}
         in_library_on = (
             f"SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} pm "
             "WHERE pm.media_type = f.media_type AND pm.item_id = f.item_id AND pm.in_library = 1"
         )
-        for instance_id, owner in owned_sources.items():
-            await self.mass.music.database.execute_write(
-                f"{insert} AND EXISTS({in_library_on} AND pm.provider_instance = :instance_id)",
-                {
-                    "user_id": owner,
-                    "pending_user_id": PENDING_USER_ID,
-                    "instance_id": instance_id,
-                },
-            )
-        # bound one by one: execute_write has no list parameter support
-        owned_params = {
-            f"owned_{idx}": instance_id for idx, instance_id in enumerate(owned_sources)
-        }
-        household_condition = ""
-        if owned_params:
-            placeholders = ", ".join(f":{name}" for name in owned_params)
-            household_condition = (
-                f" AND (NOT EXISTS({in_library_on}) OR EXISTS({in_library_on} "
-                f"AND pm.provider_instance NOT IN ({placeholders})))"
-            )
         for user in users:
+            served_by = [
+                name
+                for name, instance_id in configured.items()
+                if _holds_favorites_for(sources[instance_id], user)
+            ]
+            # a mapping on a source that is no longer configured counts as one of the whole home
+            holders = [f"pm.provider_instance NOT IN ({', '.join(f':{x}' for x in configured)})"]
+            if served_by:
+                holders.append(f"pm.provider_instance IN ({', '.join(f':{x}' for x in served_by)})")
+            holds_for_user = (
+                f"EXISTS({in_library_on} AND ({' OR '.join(holders)}))"
+                if configured
+                else f"EXISTS({in_library_on})"
+            )
             await self.mass.music.database.execute_write(
-                f"{insert}{household_condition}",
-                {"user_id": user.user_id, "pending_user_id": PENDING_USER_ID, **owned_params},
+                f"INSERT OR IGNORE INTO {DB_TABLE_FAVORITES}"
+                "(user_id, media_type, item_id, favorite, timestamp) "
+                "SELECT :user_id, f.media_type, f.item_id, f.favorite, f.timestamp "
+                f"FROM {DB_TABLE_FAVORITES} f WHERE f.user_id = :pending_user_id "
+                f"AND (NOT EXISTS({in_library_on}) OR {holds_for_user})",
+                {"user_id": user.user_id, "pending_user_id": PENDING_USER_ID, **configured},
             )
         await self.release_user(PENDING_USER_ID)
+
+
+def _holds_favorites_for(access: ProviderAccess | None, user: User) -> bool:
+    """
+    Return whether a music source with this access record holds favorites of the given user.
+
+    The favorites of an owned source are the owner's alone, whoever it is shared with; a
+    source without an owner holds them for every user it serves.
+    """
+    if access and access.owner:
+        return access.owner == user.user_id
+    return access_allows(access, user)

@@ -1530,15 +1530,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         can not be resolved to a media item.
         """
         player = self._get_player_with_redirect(player_id)
+        mass_queue = self.get_active_queue(player)
         # a favorite set from a player belongs to the user the playback is for
         if (
             get_current_user() is None
-            and (active_queue := self.get_active_queue(player))
-            and (playback_user := await resolve_playback_user(self.mass, active_queue.queue_id))
+            and mass_queue
+            and (playback_user := await resolve_playback_user(self.mass, mass_queue.queue_id))
         ):
             set_current_user(playback_user)
         # handle mass player queue active
-        if mass_queue := self.get_active_queue(player):
+        if mass_queue:
             if not (current_item := mass_queue.current_item) or not current_item.media_item:
                 raise PlayerCommandFailed("No current item to add to favorites")
             # if we're playing a radio station, try to resolve the currently playing track

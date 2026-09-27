@@ -163,7 +163,9 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """Get full track details by id."""
         return await self.media_manager.get_track(prov_track_id)
 
-    async def get_playlist(self, prov_playlist_id: str, is_favourite: bool = False) -> Playlist:
+    async def get_playlist(
+        self, prov_playlist_id: str, is_favourite: bool | None = None
+    ) -> Playlist:
         """Get full playlist details by id."""
         if prov_playlist_id.startswith("ra."):
             return await self.recommendation_manager.get_station_playlist(prov_playlist_id)

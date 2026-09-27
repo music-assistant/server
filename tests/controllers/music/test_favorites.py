@@ -177,6 +177,24 @@ async def test_provider_favorite_of_a_household_source_goes_to_everyone(
     }
 
 
+async def test_provider_favorite_of_a_source_serving_nobody_goes_nowhere(
+    favorites_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A private source that lost its owner serves nobody, so its favorites reach nobody."""
+    mass = favorites_mass
+    track = await _add_track(mass, "Orphaned Source Favorite")
+    set_music_source_access(
+        mass, {PROV_OWNED: ProviderAccess(owner=None, sharing=ProviderSharing.PRIVATE)}
+    )
+    _known_users(mass, monkeypatch, USER_A, USER_B)
+
+    await mass.music.favorites.record_from_provider(
+        PROV_OWNED, MediaType.TRACK, int(track.item_id), True
+    )
+
+    assert await _favorite_rows(mass, track.item_id) == []
+
+
 async def test_provider_favorite_never_overrides_the_users_own_choice(
     favorites_mass: MusicAssistant,
 ) -> None:
@@ -217,16 +235,21 @@ async def test_settle_pending_hands_migrated_favorites_to_the_users_that_hold_th
     mass = favorites_mass
     owned = await _add_track(mass, "Owned Favorite")
     household = await _add_track(mass, "Household Favorite", PROV_HOUSEHOLD)
+    orphaned = await _add_track(mass, "Orphaned Favorite", "subsonic--2")
     set_music_source_access(
         mass,
         {
-            PROV_OWNED: ProviderAccess(owner=USER_A, sharing=ProviderSharing.PRIVATE),
+            # shared with everyone, but its favorites are the owner's alone
+            PROV_OWNED: ProviderAccess(owner=USER_A, sharing=ProviderSharing.EVERYONE),
             PROV_HOUSEHOLD: None,
+            # lost its owner and serves nobody
+            "subsonic--2": ProviderAccess(owner=None, sharing=ProviderSharing.PRIVATE),
         },
     )
     _known_users(mass, monkeypatch, USER_A, USER_B)
     await _park_favorite(mass, int(owned.item_id), 11)
     await _park_favorite(mass, int(household.item_id), 22)
+    await _park_favorite(mass, int(orphaned.item_id), 44)
     # a favorite no source holds in its library anymore
     await _park_favorite(mass, 999_999, 33)
 
@@ -239,7 +262,11 @@ async def test_settle_pending_hands_migrated_favorites_to_the_users_that_hold_th
 
     assert _by_user(await _favorite_rows(mass, owned.item_id)) == {USER_A: 11}
     assert _by_user(await _favorite_rows(mass, household.item_id)) == {USER_A: 22, USER_B: 22}
+    assert await _favorite_rows(mass, orphaned.item_id) == []
     assert _by_user(await _favorite_rows(mass, "999999")) == {USER_A: 33, USER_B: 33}
+    assert not await mass.music.database.get_rows(
+        DB_TABLE_FAVORITES, {"user_id": PENDING_USER_ID}, limit=1
+    )
 
 
 async def test_removing_an_item_drops_its_favorites(favorites_mass: MusicAssistant) -> None:

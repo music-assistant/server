@@ -3027,6 +3027,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if self.active_sync_tasks:
             return
         self.mass.signal_event(EventType.MUSIC_SYNC_COMPLETED)
+        # cached search results carry the favorite state of the moment they were filled
+        self.mass.create_task(
+            self.mass.cache.delete(
+                None, category=CACHE_CATEGORY_SEARCH_RESULTS, provider=self.domain
+            )
+        )
         # freshly synced content is the only source of new duplicates, so the reconciliation
         # pass owes the library another walk; it starts once the current one reaches the end,
         # since rewinding right now would keep re-examining the same prefix forever

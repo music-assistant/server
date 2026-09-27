@@ -1515,7 +1515,10 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         )
         # Check if album rating meets the configured threshold for favorites
         favorite_threshold = cast("float", self.config.get_value(CONF_PLEX_FAVORITE_THRESHOLD))
-        if (favorite := get_favorite_from_rating(plex_album, favorite_threshold)) is not None:
+        unlike_rating = cast("float", self.config.get_value(CONF_PLEX_UNLIKE_RATING))
+        if (
+            favorite := get_favorite_from_rating(plex_album, favorite_threshold, unlike_rating)
+        ) is not None:
             album.favorite = favorite
 
         if plex_album.year:
@@ -1749,7 +1752,10 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         )
         # Check if track rating meets the configured threshold for favorites
         favorite_threshold = cast("float", self.config.get_value(CONF_PLEX_FAVORITE_THRESHOLD))
-        if (favorite := get_favorite_from_rating(plex_track, favorite_threshold)) is not None:
+        unlike_rating = cast("float", self.config.get_value(CONF_PLEX_UNLIKE_RATING))
+        if (
+            favorite := get_favorite_from_rating(plex_track, favorite_threshold, unlike_rating)
+        ) is not None:
             track.favorite = favorite
 
         if plex_track.originalTitle and plex_track.originalTitle != plex_track.grandparentTitle:
