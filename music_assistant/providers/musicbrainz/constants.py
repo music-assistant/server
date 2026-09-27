@@ -72,6 +72,10 @@ MAX_BARCODE_DETAIL_FETCHES = 2
 # page is not identified at all, and an artist's discography is browsed in pages of this
 # size, so the page is as large as it can be.
 RELEASE_GROUP_BROWSE_LIMIT = 100
+# A heavily reissued album has more releases than fit on one page. Resolving it to the
+# music providers needs its likeliest editions only, so that browse is cut off after this
+# many pages.
+RELEASE_BROWSE_MAX_PAGES = 3
 
 # An artist's discography is cut off after this many pages: a composer's catalog runs into
 # thousands of release groups, and each page is one more request to the mirror.

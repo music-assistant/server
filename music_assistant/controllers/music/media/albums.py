@@ -58,10 +58,10 @@ from music_assistant.helpers.external_ids import (
     normalize_external_id,
 )
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.helpers.uri import is_provider_share_url
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.musicbrainz.provider import (
     is_digital_release,
-    is_public_catalog_url,
     relation_urls,
     release_matches_album,
 )
@@ -575,9 +575,13 @@ class AlbumsController(MediaControllerBase[Album]):
         musicbrainz = cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
         if musicbrainz is None:
             raise ProviderUnavailableError("MusicBrainz is not available")
+        # a heavily reissued album has more editions than one page holds, of which the
+        # likeliest few are wanted rather than the whole set
         editions = [
             release
-            for release in await musicbrainz.browse_releases_by_release_group(release_group_id)
+            for release in await musicbrainz.browse_releases_by_release_group(
+                release_group_id, complete=False
+            )
             if release.status == "Official"
         ]
         # the digital editions of one group carry different ids on the providers, so each
@@ -1383,7 +1387,7 @@ def _streaming_edition_rank(release: MusicBrainzBarcodeRelease) -> tuple[bool, b
     """Return the sort key ranking a group's official editions, the one the services carry first."""
     return (
         not is_digital_release(release),
-        not any(is_public_catalog_url(url) for url in relation_urls(release.relations)),
+        not any(is_provider_share_url(url) for url in relation_urls(release.relations)),
         release.country not in ("XW", "XE"),
         release.date or "9999",
     )

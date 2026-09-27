@@ -22,7 +22,10 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID
 from music_assistant.providers.musicbrainz.api_client import MusicBrainzAPIClient
-from music_assistant.providers.musicbrainz.constants import SUPPORTED_FEATURES
+from music_assistant.providers.musicbrainz.constants import (
+    RELEASE_BROWSE_MAX_PAGES,
+    SUPPORTED_FEATURES,
+)
 from music_assistant.providers.musicbrainz.models import (
     MusicBrainzArtist,
     MusicBrainzBarcodeRelease,
@@ -780,13 +783,19 @@ BARCODE = "634904032463"
 ISRC = "GBSTK0700001"
 
 
+def _release_browse_route(offset: int = 0) -> str:
+    """Return the routing key of a release group browse, of a later page given its offset."""
+    return f"release?release-group&offset={offset}" if offset else "release?release-group"
+
+
 def _routed_provider(routes: dict[str, Any]) -> tuple[MusicbrainzProvider, AsyncMock]:
     """
     Return a MusicbrainzProvider whose API client answers each request from a routing table.
 
     A lookup is keyed by its endpoint path (without inc parameters), a url lookup by the
     looked-up resource, a search by ``<endpoint>?query`` and a release group browse by
-    ``release?release-group``. Anything not routed is answered like a 404.
+    ``release?release-group``, a later page of it by ``release?release-group&offset=<N>``.
+    Anything not routed is answered like a 404.
     """
     with patch.object(MusicbrainzProvider, "__init__", lambda *_a, **_kw: None):
         provider = MusicbrainzProvider.__new__(MusicbrainzProvider)
@@ -797,7 +806,7 @@ def _routed_provider(routes: dict[str, Any]) -> tuple[MusicbrainzProvider, Async
         if "query" in kwargs:
             return routes.get(f"{endpoint}?query")
         if "release-group" in kwargs:
-            return routes.get("release?release-group")
+            return routes.get(_release_browse_route(int(kwargs.get("offset", 0))))
         return routes.get(endpoint.split("?", maxsplit=1)[0])
 
     get_data = AsyncMock(side_effect=_answer)
@@ -1231,6 +1240,51 @@ async def test_browse_releases_by_release_group_is_empty_without_a_complete_list
     ):
         provider, _ = _routed_provider({"release?release-group": listing})
         assert await provider.browse_releases_by_release_group("rg-in-rainbows") == []
+
+
+async def test_browse_releases_by_release_group_pages_through_a_reissued_group() -> None:
+    """Where a partial listing will do, a group with more releases than a page is browsed on."""
+    first_page = [_edition(f"rel-{index}") for index in range(100)]
+    second_page = [_edition(f"rel-{100 + index}") for index in range(50)]
+    provider, get_data = _routed_provider(
+        {
+            _release_browse_route(): {
+                "release-count": 150,
+                "release-offset": 0,
+                "releases": first_page,
+            },
+            _release_browse_route(100): {
+                "release-count": 150,
+                "release-offset": 100,
+                "releases": second_page,
+            },
+        }
+    )
+
+    releases = await provider.browse_releases_by_release_group("rg-in-rainbows", complete=False)
+
+    assert [release.id for release in releases] == [f"rel-{index}" for index in range(150)]
+    # the first page is requested as a complete browse requests it, so both share its cache entry
+    assert [request.kwargs.get("offset") for request in get_data.await_args_list] == [None, "100"]
+
+
+async def test_browse_releases_by_release_group_stops_at_the_page_cap() -> None:
+    """A group reissued hundreds of times is cut off after a few pages, not browsed to the end."""
+    provider, get_data = _routed_provider(
+        {
+            _release_browse_route(offset): {
+                "release-count": 1000,
+                "release-offset": offset,
+                "releases": [_edition(f"rel-{offset + index}") for index in range(100)],
+            }
+            for offset in range(0, 1000, 100)
+        }
+    )
+
+    releases = await provider.browse_releases_by_release_group("rg-in-rainbows", complete=False)
+
+    assert len(releases) == RELEASE_BROWSE_MAX_PAGES * 100
+    assert get_data.await_count == RELEASE_BROWSE_MAX_PAGES
 
 
 # resolve_release

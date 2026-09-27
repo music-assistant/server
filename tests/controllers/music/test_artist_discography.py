@@ -9,20 +9,17 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from music_assistant_models.enums import AlbumType, ExternalID
-from music_assistant_models.errors import InvalidDataError, ResourceTemporarilyUnavailable
+from music_assistant_models.enums import AlbumType, ExternalID, ImageType
+from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import Album, Artist, ItemMapping, ProviderMapping
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID
-from music_assistant.controllers.music.media.artists import (
-    _DISCOGRAPHY_COVER_LOOKUPS,
-    ArtistsController,
-)
+from music_assistant.controllers.music.media.artists import ArtistsController
 from music_assistant.providers.musicbrainz.models import MusicBrainzArtist, MusicBrainzReleaseGroup
 from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Iterator, Sequence
 
 ARTIST_MBID = "a74b1b7f-71a5-4011-9441-d0b5e4122711"
 LIBRARY_ARTIST_ID = "12"
@@ -32,8 +29,6 @@ RG_OK_COMPUTER_LIVE = "b1392450-e666-3926-a536-22c65f834402"
 RG_OK_COMPUTER_REISSUE = "b1392450-e666-3926-a536-22c65f834405"
 RG_KARMA_POLICE = "b1392450-e666-3926-a536-22c65f834403"
 RG_BEST_OF = "b1392450-e666-3926-a536-22c65f834404"
-IN_RAINBOWS_COVER = f"https://coverartarchive.org/release-group/{RG_IN_RAINBOWS}/front-1200"
-KARMA_POLICE_COVER = f"https://coverartarchive.org/release-group/{RG_KARMA_POLICE}/front-500"
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +95,6 @@ class _Harness:
     ctrl: ArtistsController
     mass: Mock
     musicbrainz: Mock
-    coverartarchive: Mock
     get_library_item: AsyncMock
     update_item_in_library: AsyncMock
 
@@ -123,7 +117,6 @@ def _harness(
     release_groups: Sequence[MusicBrainzReleaseGroup] = (),
     artist_albums: Sequence[Album] = (),
     resolved_mbid: str | None = None,
-    cover_urls: Mapping[str, str | Exception] | None = None,
     musicbrainz_loaded: bool = True,
     coverartarchive_loaded: bool = True,
 ) -> Iterator[_Harness]:
@@ -134,8 +127,6 @@ def _harness(
     :param release_groups: What MusicBrainz lists as the artist's discography.
     :param artist_albums: The library albums credited to the artist.
     :param resolved_mbid: The MusicBrainz id the identity lookup finds for an artist without one.
-    :param cover_urls: The front cover the Cover Art Archive has per release group id, or the
-        error asking for it raises; a group not listed has none.
     :param musicbrainz_loaded: Whether the MusicBrainz provider is loaded.
     :param coverartarchive_loaded: Whether the Cover Art Archive provider is loaded.
     """
@@ -150,15 +141,8 @@ def _harness(
         )
     )
 
-    async def _cover_url(release_group_id: str) -> str | None:
-        cover = (cover_urls or {}).get(release_group_id)
-        if isinstance(cover, Exception):
-            raise cover
-        return cover
-
-    coverartarchive = Mock()
-    coverartarchive.domain = "coverartarchive"
-    coverartarchive.get_release_group_cover_url = AsyncMock(side_effect=_cover_url)
+    # loaded, yet nothing on it may be called: a listing costs the archive no lookups
+    coverartarchive = Mock(spec=[])
     providers = {
         "musicbrainz": musicbrainz if musicbrainz_loaded else None,
         "coverartarchive": coverartarchive if coverartarchive_loaded else None,
@@ -177,9 +161,7 @@ def _harness(
         albums=AsyncMock(return_value=list(artist_albums)),
         update_item_in_library=update_item_in_library,
     ):
-        yield _Harness(
-            ctrl, mass, musicbrainz, coverartarchive, get_library_item, update_item_in_library
-        )
+        yield _Harness(ctrl, mass, musicbrainz, get_library_item, update_item_in_library)
 
 
 # ---------------------------------------------------------------------------
@@ -223,74 +205,33 @@ async def test_discography_lists_release_groups_the_library_lacks_as_musicbrainz
     harness.assert_nothing_written()
 
 
-async def test_discography_shows_the_front_cover_the_cover_art_archive_has() -> None:
-    """A MusicBrainz album gets the cover the archive resolves for it; one without stays bare."""
+async def test_discography_hands_each_musicbrainz_album_a_cover_the_image_proxy_resolves() -> None:
+    """A MusicBrainz album's cover names its release group, for the archive to resolve when shown."""
     groups = [
         _release_group(RG_IN_RAINBOWS, "In Rainbows"),
         _release_group(RG_KARMA_POLICE, "Karma Police", primary_type="Single"),
     ]
-    with _harness(
-        _artist(), release_groups=groups, cover_urls={RG_IN_RAINBOWS: IN_RAINBOWS_COVER}
-    ) as harness:
-        in_rainbows, karma_police = await harness.discography()
-
-    assert in_rainbows.image is not None
-    assert in_rainbows.image.path == IN_RAINBOWS_COVER
-    assert in_rainbows.image.provider == "coverartarchive"
-    assert in_rainbows.image.remotely_accessible is True
-    assert karma_police.image is None
-    assert {
-        request.args[0]
-        for request in harness.coverartarchive.get_release_group_cover_url.await_args_list
-    } == {RG_IN_RAINBOWS, RG_KARMA_POLICE}
-
-
-async def test_discography_looks_up_cover_art_for_the_newest_albums_only() -> None:
-    """A large discography only asks the archive for the covers of its newest albums."""
-    groups = [
-        _release_group(f"rg-{index:03d}", f"Single {index}", primary_type="Single")
-        for index in range(_DISCOGRAPHY_COVER_LOOKUPS + 10)
-    ]
     with _harness(_artist(), release_groups=groups) as harness:
         discography = await harness.discography()
 
-    looked_up = [
-        request.args[0]
-        for request in harness.coverartarchive.get_release_group_cover_url.await_args_list
-    ]
-    assert looked_up == [album.item_id for album in discography[:_DISCOGRAPHY_COVER_LOOKUPS]]
+    for album, group in zip(discography, groups, strict=True):
+        assert album.image is not None
+        assert album.image.type == ImageType.THUMB
+        assert album.image.path == group.id
+        assert album.image.provider == "coverartarchive"
+        assert album.image.remotely_accessible is False
 
 
 async def test_discography_has_no_cover_art_without_the_cover_art_archive() -> None:
-    """Without the Cover Art Archive provider no cover is looked up, the albums stay bare."""
+    """Without the Cover Art Archive provider nothing could resolve a cover, the albums stay bare."""
     with _harness(
         _artist(),
         release_groups=[_release_group(RG_IN_RAINBOWS, "In Rainbows")],
-        cover_urls={RG_IN_RAINBOWS: IN_RAINBOWS_COVER},
         coverartarchive_loaded=False,
     ) as harness:
         (in_rainbows,) = await harness.discography()
 
     assert in_rainbows.image is None
-    harness.coverartarchive.get_release_group_cover_url.assert_not_awaited()
-
-
-async def test_discography_survives_an_unreachable_cover_art_archive() -> None:
-    """An archive that cannot be asked costs an album its cover, not the listing."""
-    groups = [
-        _release_group(RG_IN_RAINBOWS, "In Rainbows"),
-        _release_group(RG_KARMA_POLICE, "Karma Police", primary_type="Single"),
-    ]
-    cover_urls: dict[str, str | Exception] = {
-        RG_IN_RAINBOWS: ResourceTemporarilyUnavailable("Cover Art Archive request failed"),
-        RG_KARMA_POLICE: KARMA_POLICE_COVER,
-    }
-    with _harness(_artist(), release_groups=groups, cover_urls=cover_urls) as harness:
-        in_rainbows, karma_police = await harness.discography()
-
-    assert in_rainbows.image is None
-    assert karma_police.image is not None
-    assert karma_police.image.path == KARMA_POLICE_COVER
 
 
 async def test_discography_returns_the_library_album_carrying_the_release_group_id() -> None:
@@ -300,7 +241,6 @@ async def test_discography_returns_the_library_album_carrying_the_release_group_
         _artist(),
         release_groups=[_release_group(RG_IN_RAINBOWS, "In Rainbows")],
         artist_albums=[library_album],
-        cover_urls={RG_IN_RAINBOWS: IN_RAINBOWS_COVER},
     ) as harness:
         discography = await harness.discography()
 
@@ -308,7 +248,6 @@ async def test_discography_returns_the_library_album_carrying_the_release_group_
     assert discography[0] is library_album
     # the artist's albums, loaded once, identify the groups; nothing is queried per group
     harness.mass.music.albums.get_library_items_by_external_ids.assert_not_called()
-    harness.coverartarchive.get_release_group_cover_url.assert_not_awaited()
     harness.assert_nothing_written()
 
 
@@ -327,7 +266,8 @@ async def test_discography_returns_the_artists_library_album_of_the_same_name() 
 
     assert discography[0] is library_album
     assert discography[1].provider == "musicbrainz"
-    harness.coverartarchive.get_release_group_cover_url.assert_awaited_once_with(RG_IN_RAINBOWS)
+    assert discography[1].image is not None
+    assert discography[1].image.path == RG_IN_RAINBOWS
 
 
 async def test_discography_keeps_every_same_titled_release_group() -> None:

@@ -22,7 +22,6 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
-    ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
@@ -64,17 +63,11 @@ from music_assistant.models.music_provider import MusicProvider
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Mapping
 
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
-    from music_assistant.providers.coverartarchive import CoverArtArchiveMetadataProvider
     from music_assistant.providers.musicbrainz import MusicbrainzProvider, MusicBrainzReleaseGroup
-
-
-# how many of a discography's MusicBrainz albums get a cover art lookup, newest first, so a
-# large discography opens in seconds rather than after a lookup per release
-_DISCOGRAPHY_COVER_LOOKUPS = 60
 
 
 class ArtistsController(MediaControllerBase[Artist]):
@@ -315,6 +308,9 @@ class ArtistsController(MediaControllerBase[Artist]):
             else:
                 unidentified_albums.append(album)
         artist_mapping = ItemMapping.from_item(artist)
+        # the Cover Art Archive provider, if loaded, fetches a cover once its image is shown,
+        # so the listing itself costs no lookups
+        cover_provider = "coverartarchive" if self.mass.get_provider("coverartarchive") else None
         discography: list[Album] = []
         for group in release_groups:
             library_album = albums_by_release_group.get(group.id)
@@ -336,15 +332,12 @@ class ArtistsController(MediaControllerBase[Artist]):
                 continue
             discography.append(
                 _album_from_release_group(
-                    group, artist_mapping, musicbrainz.album_type_from_release_group(group)
+                    group,
+                    artist_mapping,
+                    musicbrainz.album_type_from_release_group(group),
+                    cover_provider,
                 )
             )
-        coverartarchive = cast(
-            "CoverArtArchiveMetadataProvider | None", self.mass.get_provider("coverartarchive")
-        )
-        if coverartarchive is not None:
-            musicbrainz_albums = [album for album in discography if album.provider == "musicbrainz"]
-            await _add_cover_art(coverartarchive, musicbrainz_albums[:_DISCOGRAPHY_COVER_LOOKUPS])
         return discography
 
     async def top_tracks(
@@ -1313,10 +1306,21 @@ class ArtistsController(MediaControllerBase[Artist]):
 
 
 def _album_from_release_group(
-    release_group: MusicBrainzReleaseGroup, artist: ItemMapping, album_type: AlbumType
+    release_group: MusicBrainzReleaseGroup,
+    artist: ItemMapping,
+    album_type: AlbumType,
+    cover_provider: str | None,
 ) -> Album:
-    """Return a MusicBrainz release group as an album that is not (yet) on any music provider."""
-    return Album(
+    """
+    Return a MusicBrainz release group as an album that is not (yet) on any music provider.
+
+    :param release_group: The release group as the artist browse lists it.
+    :param artist: The library artist the album is credited to.
+    :param album_type: The album type the release group's types map to.
+    :param cover_provider: The metadata provider resolving the group's cover by its id once
+        the image is requested, if one is loaded.
+    """
+    album = Album(
         item_id=release_group.id,
         provider="musicbrainz",
         name=release_group.title,
@@ -1326,29 +1330,13 @@ def _album_from_release_group(
         external_ids={(ExternalID.MB_RELEASEGROUP, release_group.id)},
         provider_mappings=set(),
     )
-
-
-async def _add_cover_art(
-    coverartarchive: CoverArtArchiveMetadataProvider, albums: Sequence[Album]
-) -> None:
-    """Give each MusicBrainz album the front cover the Cover Art Archive has for it, if any."""
-    limiter = asyncio.Semaphore(8)
-
-    async def _cover_url(album: Album) -> str | None:
-        async with limiter:
-            try:
-                return await coverartarchive.get_release_group_cover_url(album.item_id)
-            except ResourceTemporarilyUnavailable:
-                # an archive that cannot be asked right now costs the listing a cover, no more
-                return None
-
-    for album, url in zip(albums, await asyncio.gather(*map(_cover_url, albums)), strict=True):
-        if url:
-            album.metadata.add_image(
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=url,
-                    provider=coverartarchive.domain,
-                    remotely_accessible=True,
-                )
+    if cover_provider:
+        album.metadata.add_image(
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=release_group.id,
+                provider=cover_provider,
+                remotely_accessible=False,
             )
+        )
+    return album

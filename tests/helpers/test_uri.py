@@ -10,6 +10,7 @@ from music_assistant.helpers.uri import (
     apple_storefront_from_url,
     canonical_provider_url,
     discogs_id_from_url,
+    is_provider_share_url,
     parse_uri,
 )
 
@@ -118,6 +119,28 @@ async def test_parse_uri_rejects_truncated_or_unsupported_share_urls(url: str) -
     """A known host with a path that names no item is invalid, not a builtin stream."""
     with pytest.raises(InvalidProviderURI):
         await parse_uri(url)
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (f"https://open.spotify.com/album/{SPOTIFY_ID}", True),
+        ("https://tidal.com/browse/album/79280548", True),
+        ("https://www.deezer.com/album/6575789", True),
+        ("https://music.apple.com/us/album/in-rainbows/1109714933", True),
+        ("https://open.qobuz.com/album/0634904032432", True),
+        ("https://www.qobuz.com/us-en/album/in-rainbows-radiohead/0634904032432", True),
+        ("https://music.youtube.com/channel/UCr_iyUANcn9OX_yy9piYoLw", True),
+        ("https://www.discogs.com/release/1157205", False),
+        ("https://www.wikidata.org/wiki/Q862203", False),
+        ("https://radiohead.bandcamp.com/album/in-rainbows", False),
+        ("https://open.spotify.com/track/", False),
+        (f"spotify://album/{SPOTIFY_ID}", False),
+    ],
+)
+def test_is_provider_share_url(url: str, expected: bool) -> None:
+    """Only the whole share URL of an item on a music service can become a provider mapping."""
+    assert is_provider_share_url(url) is expected
 
 
 @pytest.mark.parametrize(

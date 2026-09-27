@@ -10,6 +10,7 @@ from music_assistant_models.errors import ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import Album, MediaItemImage, MediaItemMetadata, UniqueList
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
@@ -39,6 +40,9 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
 
     Fetches album artwork from the Cover Art Archive using MusicBrainz release group IDs.
     """
+
+    # the archive allows a client one request per second
+    throttler = ThrottlerManager(rate_limit=1, period=1)
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
@@ -77,13 +81,23 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
             )
         )
 
+    async def resolve_image(self, path: str) -> str | None:
+        """
+        Resolve the image of a release group, given as the image path, to its front cover URL.
+
+        :param path: MusicBrainz release group ID.
+        :return: The cover URL, or None when the archive has no cover for the release group.
+        """
+        return await self.get_release_group_cover_url(path)
+
     @use_cache(86400 * 30)
+    @throttle_with_retries
     async def get_release_group_cover_url(self, release_group_id: str) -> str | None:
         """
         Return the URL of a release group's front cover, or None if the archive has none.
 
         :param release_group_id: MusicBrainz release group ID.
-        :raises ResourceTemporarilyUnavailable: The archive could not be asked right now.
+        :raises RetriesExhausted: The archive could not be asked, even after retrying.
         """
         # Try 1200px first, fall back to 500px
         try:
@@ -96,7 +110,7 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
                         response.raise_for_status()
         except (aiohttp.ClientError, TimeoutError) as err:
             # a non-404 status (5xx, 429, ...) or network failure is transient — surface it as
-            # ResourceTemporarilyUnavailable so callers degrade instead of caching "no cover art"
+            # ResourceTemporarilyUnavailable so it is retried instead of cached as "no cover art"
             raise ResourceTemporarilyUnavailable("Cover Art Archive request failed") from err
         # a 404 for both sizes means this release group genuinely has no cover art
         return None

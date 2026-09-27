@@ -46,6 +46,7 @@ from .constants import (
     MIN_FIRST_RELEASE_CORRECTION_YEARS,
     PRIMARY_TYPE_MAPPING,
     RECORDING_LENGTH_TOLERANCE_MS,
+    RELEASE_BROWSE_MAX_PAGES,
     RELEASE_GROUP_BROWSE_LIMIT,
     REVERSE_URL_DOMAINS,
     REVERSE_URL_HOSTS,
@@ -540,28 +541,42 @@ class MusicbrainzProvider(MetadataProvider):
         return parsed
 
     async def browse_releases_by_release_group(
-        self, release_group_id: str
+        self, release_group_id: str, complete: bool = True
     ) -> list[MusicBrainzBarcodeRelease]:
         """
         Get the releases (editions) of a MusicBrainz release group.
 
         :param release_group_id: MusicBrainz release group id.
+        :param complete: Whether only the whole set of releases is of use: a group with more
+            releases than fit on one page then yields none at all. Otherwise the first few
+            pages of a heavily reissued group are returned.
         :return: The group's releases with their status, media and URL relations, or an
-            empty list when the group is unknown or its listing is not complete.
+            empty list when the group is unknown.
         """
-        result = await self._api_client.get_data(
-            "release",
-            **{"release-group": release_group_id},
-            inc="url-rels+media+release-groups",
-            limit=str(RELEASE_GROUP_BROWSE_LIMIT),
-        )
-        if not result or not (releases := result.get("releases")):
-            return []
+        listing: list[dict[str, Any]] = []
+        release_count = 0
+        for page in range(1 if complete else RELEASE_BROWSE_MAX_PAGES):
+            params = {
+                "release-group": release_group_id,
+                "inc": "url-rels+media+release-groups",
+                "limit": str(RELEASE_GROUP_BROWSE_LIMIT),
+            }
+            # the first page is requested as a complete browse requests it, so both share
+            # one cache entry
+            if page:
+                params["offset"] = str(page * RELEASE_GROUP_BROWSE_LIMIT)
+            result = await self._api_client.get_data("release", **params)
+            if not result or not (releases := result.get("releases")):
+                break
+            listing.extend(releases)
+            release_count = result.get("release-count", len(listing))
+            if len(listing) >= release_count:
+                break
         # a partial listing cannot tell a group's editions apart, so it is no answer at all
-        if result.get("release-count", len(releases)) > len(releases):
+        if complete and release_count > len(listing):
             return []
         try:
-            return [MusicBrainzBarcodeRelease.from_raw(release) for release in releases]
+            return [MusicBrainzBarcodeRelease.from_raw(release) for release in listing]
         except MissingField, InvalidFieldValue:
             return []
 

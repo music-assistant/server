@@ -52,6 +52,8 @@ SPOTIFY_ALBUM_ID = "7eyQXxuf2nGj9d2367Gi5f"
 SPOTIFY_ALBUM_URL = f"https://open.spotify.com/album/{SPOTIFY_ALBUM_ID}"
 TIDAL_ALBUM_ID = "79280548"
 TIDAL_ALBUM_URL = f"https://tidal.com/album/{TIDAL_ALBUM_ID}"
+QOBUZ_ALBUM_ID = "0634904032432"
+QOBUZ_ALBUM_URL = f"https://open.qobuz.com/album/{QOBUZ_ALBUM_ID}"
 DISCOGS_RELEASE_URL = "https://www.discogs.com/release/1157205"
 # how an album is fetched from a provider: on that very instance, with no stand-in
 STRICT_FETCH = {"allow_fallback": False, "strict_provider_instance": True}
@@ -258,7 +260,9 @@ async def test_resolve_takes_the_links_of_the_official_digital_edition() -> None
         album = await harness.resolve()
 
     assert album is spotify_album
-    harness.musicbrainz.browse_releases_by_release_group.assert_awaited_once_with(RELEASE_GROUP_ID)
+    harness.musicbrainz.browse_releases_by_release_group.assert_awaited_once_with(
+        RELEASE_GROUP_ID, complete=False
+    )
     harness.musicbrainz.get_release_details.assert_awaited_once_with("rel-digital")
     harness.get_provider_item.assert_awaited_once_with(
         SPOTIFY_ALBUM_ID, "spotify_1", **STRICT_FETCH
@@ -351,6 +355,50 @@ async def test_resolve_looks_up_the_likeliest_few_editions_only() -> None:
     assert harness.musicbrainz.get_release_details.await_args_list == [
         call(edition.id) for edition in editions[:_MAX_EDITION_LOOKUPS]
     ]
+
+
+async def test_resolve_reads_a_reissued_group_past_its_first_page_of_editions() -> None:
+    """A group with more editions than one page holds is browsed for its likeliest, not given up."""
+    editions = [
+        _edition(f"rel-cd-{index:03d}", media_format="CD", date=f"{1990 + index % 30}")
+        for index in range(149)
+    ]
+    editions.append(_edition("rel-digital", urls=[SPOTIFY_ALBUM_URL]))
+    spotify_album = _album("spotify_1", SPOTIFY_ALBUM_ID)
+    with _harness(
+        editions=editions,
+        releases=[_release("rel-digital", urls=[SPOTIFY_ALBUM_URL])],
+        loaded={"spotify": ["spotify_1"]},
+        albums={("spotify_1", SPOTIFY_ALBUM_ID): spotify_album},
+    ) as harness:
+        album = await harness.resolve()
+
+    assert album is spotify_album
+    harness.musicbrainz.browse_releases_by_release_group.assert_awaited_once_with(
+        RELEASE_GROUP_ID, complete=False
+    )
+    harness.musicbrainz.get_release_details.assert_awaited_once_with("rel-digital")
+
+
+async def test_resolve_ranks_an_edition_by_any_link_a_music_source_can_take() -> None:
+    """An edition linked to a music service, Qobuz say, outranks one linked to a catalog site."""
+    qobuz_album = _album("qobuz_1", QOBUZ_ALBUM_ID)
+    with _harness(
+        editions=[
+            _edition("rel-discogs", urls=[DISCOGS_RELEASE_URL]),
+            _edition("rel-qobuz", date="2008-01-01", urls=[QOBUZ_ALBUM_URL]),
+        ],
+        releases=[
+            _release("rel-discogs", urls=[DISCOGS_RELEASE_URL]),
+            _release("rel-qobuz", urls=[QOBUZ_ALBUM_URL]),
+        ],
+        loaded={"qobuz": ["qobuz_1"]},
+        albums={("qobuz_1", QOBUZ_ALBUM_ID): qobuz_album},
+    ) as harness:
+        album = await harness.resolve()
+
+    assert album is qobuz_album
+    harness.musicbrainz.get_release_details.assert_awaited_once_with("rel-qobuz")
 
 
 async def test_resolve_ranks_an_edition_by_its_music_service_links_only() -> None:
