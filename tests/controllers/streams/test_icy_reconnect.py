@@ -196,6 +196,29 @@ async def test_radio_stream_reconnects_after_silent_socket(
 
 
 @pytest.mark.asyncio
+async def test_radio_stream_reconnects_indefinitely_while_audio_flows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reconnects that deliver audio never use up the reconnect budget."""
+    audio = StreamsAudio(MagicMock())
+    connections = 1500
+
+    def _fake_connect(*_args: Any, **_kwargs: Any) -> _FakeRadioConnCtx:
+        return _FakeRadioConnCtx([b"AAAA", aiohttp.SocketTimeoutError("Timeout on reading data")])
+
+    monkeypatch.setattr(audio, "_connect_radio_stream", _fake_connect)
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+    received = 0
+    async for _chunk in audio.get_reconnecting_radio_stream("http://example.test/radio.ogg"):
+        received += 1
+        if received == connections:
+            break
+
+    assert received == connections
+
+
+@pytest.mark.asyncio
 async def test_icy_stream_raises_on_http_404(monkeypatch: pytest.MonkeyPatch) -> None:
     """A 404 response is terminal and surfaces as MediaNotFoundError, not a reconnect."""
     audio = StreamsAudio(MagicMock())
