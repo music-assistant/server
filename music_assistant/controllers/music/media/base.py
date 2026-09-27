@@ -8,6 +8,7 @@ from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
 from contextlib import suppress
 from contextvars import ContextVar
+from copy import copy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, final, overload
@@ -2856,6 +2857,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # item claims concurrently cannot slip through
         async with self._db_add_lock:
             library_item = await self.get_library_item(db_id)
+            if not merge_conflicts:
+                # the copies for sibling provider instances must pass the ownership check as
+                # well, so they are expanded here rather than by the write below
+                mappings = self._with_sibling_instance_mappings(library_item, mappings)
             for mapping in list(mappings):
                 existing_item = await self.get_library_item_by_prov_id(
                     mapping.item_id, mapping.provider_instance
@@ -2886,10 +2891,24 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             if not added:
                 return []
             library_item.provider_mappings.update(added)
-            self.mass.music.match_provider_instances(library_item)
+            if merge_conflicts:
+                self.mass.music.match_provider_instances(library_item)
             await self.set_provider_mappings(db_id, library_item.provider_mappings)
             self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
             return added
+
+    def _with_sibling_instance_mappings(
+        self, library_item: ItemCls, mappings: list[ProviderMapping]
+    ) -> list[ProviderMapping]:
+        """Return the mappings followed by their copies for the other instances of each provider."""
+        probe = copy(library_item)
+        probe.provider_mappings = set(library_item.provider_mappings) | set(mappings)
+        self.mass.music.match_provider_instances(probe)
+        return mappings + [
+            mapping
+            for mapping in probe.provider_mappings
+            if mapping not in mappings and mapping not in library_item.provider_mappings
+        ]
 
     async def _merge_library_items_batched(self, target_id: int, source_id: int) -> ItemCls:
         """Merge library items while batching the transfer's database writes."""

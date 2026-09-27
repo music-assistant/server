@@ -367,6 +367,27 @@ async def test_unclaimed_mappings_are_checked_and_written_under_the_add_lock() -
     assert not lock.locked()
 
 
+async def test_unclaimed_sibling_instance_copies_pass_the_ownership_check_too() -> None:
+    """A mapping's copy for a sibling provider instance is dropped when another item holds it."""
+    track = _library_track("1", 1)
+    new = ProviderMapping(item_id="x", provider_domain="spotify", provider_instance="spotify_1")
+    copy_ = ProviderMapping(item_id="x", provider_domain="spotify", provider_instance="spotify_2")
+    with _harness(track, loaded={}, owners={("spotify_2", "x"): "7"}) as harness:
+
+        def _fan_out(item: Track) -> bool:
+            item.provider_mappings.add(copy_)
+            return True
+
+        fan_out = harness.ctrl.mass.music.match_provider_instances
+        assert isinstance(fan_out, Mock)
+        fan_out.side_effect = _fan_out
+        added = await harness.ctrl.add_unclaimed_provider_mappings("1", [new])
+
+    assert added == [new]
+    assert harness.stored_mappings() == {new}
+    harness.merge.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # link_album_tracks
 # ---------------------------------------------------------------------------
