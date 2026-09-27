@@ -68,6 +68,7 @@ class MusicBrainzRelation(DataClassDictMixin):
 
     # optional - only populated on url-rels (work-rels and friends have other targets)
     url: MusicBrainzUrl | None = None
+    ended: bool = False
 
 
 @dataclass
@@ -82,6 +83,7 @@ class MusicBrainzArtist(DataClassDictMixin):
     type: str | None = None
     aliases: list[MusicBrainzAlias] | None = None
     tags: list[MusicBrainzTag] | None = None
+    genres: list[MusicBrainzTag] | None = None
     relations: list[MusicBrainzRelation] | None = None
     life_span: MusicBrainzLifeSpan | None = None
 
@@ -117,6 +119,7 @@ class MusicBrainzReleaseGroup(DataClassDictMixin):
     artist_credit: list[MusicBrainzArtistCredit] | None = None
     barcode: str | None = None
     first_release_date: str | None = None
+    genres: list[MusicBrainzTag] | None = None
 
     @classmethod
     def from_raw(cls, data: Any) -> MusicBrainzReleaseGroup:
@@ -125,86 +128,6 @@ class MusicBrainzReleaseGroup(DataClassDictMixin):
         if TYPE_CHECKING:
             alt_data = cast("dict[str, Any]", alt_data)
         return MusicBrainzReleaseGroup.from_dict(alt_data)
-
-
-@dataclass
-class MusicBrainzTrack(DataClassDictMixin):
-    """Model for a (basic) Track object from MusicBrainz."""
-
-    id: str
-    number: str
-    title: str
-    length: int | None = None
-
-    @classmethod
-    def from_raw(cls, data: Any) -> MusicBrainzTrack:
-        """Instantiate object from raw api data."""
-        alt_data = replace_hyphens(data)
-        if TYPE_CHECKING:
-            alt_data = cast("dict[str, Any]", alt_data)
-        return MusicBrainzTrack.from_dict(alt_data)
-
-
-@dataclass
-class MusicBrainzMedia(DataClassDictMixin):
-    """Model for a (basic) Media object from MusicBrainz."""
-
-    format: str
-    track: list[MusicBrainzTrack]
-    position: int = 0
-    track_count: int = 0
-    track_offset: int = 0
-
-
-@dataclass
-class MusicBrainzRelease(DataClassDictMixin):
-    """Model for a (basic) Release object from MusicBrainz."""
-
-    id: str
-    status_id: str
-    count: int
-    title: str
-    status: str
-    artist_credit: list[MusicBrainzArtistCredit]
-    release_group: MusicBrainzReleaseGroup
-    track_count: int = 0
-
-    # optional fields
-    media: list[MusicBrainzMedia] = field(default_factory=list)
-    date: str | None = None
-    country: str | None = None
-    disambiguation: str | None = None  # version
-    # TODO (if needed): release-events
-
-    @classmethod
-    def from_raw(cls, data: Any) -> MusicBrainzRelease:
-        """Instantiate object from raw api data."""
-        alt_data = replace_hyphens(data)
-        if TYPE_CHECKING:
-            alt_data = cast("dict[str, Any]", alt_data)
-        return MusicBrainzRelease.from_dict(alt_data)
-
-
-@dataclass
-class MusicBrainzBarcodeRelease(DataClassDictMixin):
-    """
-    Slim release identity from a barcode search result.
-
-    A barcode search only needs each hit's release and release-group id, so this
-    deliberately ignores the summary fields a search response carries (media without a
-    tracklist, artist credits, ...) that the full release model cannot parse.
-    """
-
-    id: str
-    release_group: MusicBrainzReleaseGroup
-
-    @classmethod
-    def from_raw(cls, data: Any) -> MusicBrainzBarcodeRelease:
-        """Instantiate object from raw api data."""
-        alt_data = replace_hyphens(data)
-        if TYPE_CHECKING:
-            alt_data = cast("dict[str, Any]", alt_data)
-        return MusicBrainzBarcodeRelease.from_dict(alt_data)
 
 
 @dataclass
@@ -219,6 +142,8 @@ class MusicBrainzRecording(DataClassDictMixin):
     first_release_date: str | None = None
     isrcs: list[str] | None = None
     tags: list[MusicBrainzTag] | None = None
+    genres: list[MusicBrainzTag] | None = None
+    relations: list[MusicBrainzRelation] | None = None
     disambiguation: str | None = None  # version (e.g. live, karaoke etc.)
 
     @classmethod
@@ -228,3 +153,116 @@ class MusicBrainzRecording(DataClassDictMixin):
         if TYPE_CHECKING:
             alt_data = cast("dict[str, Any]", alt_data)
         return MusicBrainzRecording.from_dict(alt_data)
+
+
+@dataclass
+class MusicBrainzTrack(DataClassDictMixin):
+    """Model for a (basic) Track object from MusicBrainz."""
+
+    id: str
+    number: str
+    title: str
+    length: int | None = None
+    position: int | None = None
+    recording: MusicBrainzRecording | None = None
+
+    @classmethod
+    def from_raw(cls, data: Any) -> MusicBrainzTrack:
+        """Instantiate object from raw api data."""
+        alt_data = replace_hyphens(data)
+        if TYPE_CHECKING:
+            alt_data = cast("dict[str, Any]", alt_data)
+        return MusicBrainzTrack.from_dict(alt_data)
+
+
+@dataclass
+class MusicBrainzMedia(DataClassDictMixin):
+    """Model for a (basic) Media object from MusicBrainz."""
+
+    format: str | None = None
+    # a search result lists the tracks under "track", a release lookup under "tracks"
+    track: list[MusicBrainzTrack] = field(default_factory=list)
+    tracks: list[MusicBrainzTrack] = field(default_factory=list)
+    position: int = 0
+    track_count: int = 0
+    track_offset: int = 0
+
+
+@dataclass
+class MusicBrainzLabel(DataClassDictMixin):
+    """Model for a (basic) Label object from MusicBrainz."""
+
+    id: str
+    name: str
+
+
+@dataclass
+class MusicBrainzLabelInfo(DataClassDictMixin):
+    """Model for a LabelInfo object (label and catalog number) of a MusicBrainz release."""
+
+    label: MusicBrainzLabel | None = None
+    catalog_number: str | None = None
+
+
+@dataclass
+class MusicBrainzRelease(DataClassDictMixin):
+    """Model for a (basic) Release object from MusicBrainz."""
+
+    id: str
+    title: str
+
+    # optional fields
+    status: str | None = None
+    status_id: str | None = None
+    count: int | None = None
+    artist_credit: list[MusicBrainzArtistCredit] = field(default_factory=list)
+    release_group: MusicBrainzReleaseGroup | None = None
+    track_count: int = 0
+    media: list[MusicBrainzMedia] = field(default_factory=list)
+    date: str | None = None
+    country: str | None = None
+    disambiguation: str | None = None  # version
+    barcode: str | None = None
+    asin: str | None = None
+    label_info: list[MusicBrainzLabelInfo] | None = None
+    relations: list[MusicBrainzRelation] | None = None
+    genres: list[MusicBrainzTag] | None = None
+    # TODO (if needed): release-events
+
+    @classmethod
+    def from_raw(cls, data: Any) -> MusicBrainzRelease:
+        """Instantiate object from raw api data."""
+        alt_data = replace_hyphens(data)
+        if TYPE_CHECKING:
+            alt_data = cast("dict[str, Any]", alt_data)
+        return MusicBrainzRelease.from_dict(alt_data)
+
+
+@dataclass
+class MusicBrainzBarcodeRelease(DataClassDictMixin):
+    """
+    Release summary as listed by a barcode search or a release group browse.
+
+    Carries the release and release-group identity plus the edition data (status,
+    country, date, media formats and URL relations) a listing includes, but no tracklist.
+    """
+
+    id: str
+    release_group: MusicBrainzReleaseGroup
+
+    # optional fields
+    title: str | None = None
+    status: str | None = None
+    country: str | None = None
+    date: str | None = None
+    artist_credit: list[MusicBrainzArtistCredit] | None = None
+    media: list[MusicBrainzMedia] = field(default_factory=list)
+    relations: list[MusicBrainzRelation] | None = None
+
+    @classmethod
+    def from_raw(cls, data: Any) -> MusicBrainzBarcodeRelease:
+        """Instantiate object from raw api data."""
+        alt_data = replace_hyphens(data)
+        if TYPE_CHECKING:
+            alt_data = cast("dict[str, Any]", alt_data)
+        return MusicBrainzBarcodeRelease.from_dict(alt_data)

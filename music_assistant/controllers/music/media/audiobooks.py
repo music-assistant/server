@@ -85,6 +85,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         SELECT
             audiobooks.*,
             {self._external_ids_query()} AS external_ids,
+            {self._favorite_query()} AS favorite,
             {self._provider_mappings_query()} AS provider_mappings,
             (SELECT JSON_GROUP_ARRAY(
                 json_object(
@@ -220,7 +221,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         """
         Get in-database audiobooks.
 
-        :param favorite: Filter by favorite status.
+        :param favorite: Only include the current user's likes (True) or dislikes (False).
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
@@ -389,7 +390,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 "name": item.name,
                 "sort_name": item.sort_name,
                 "version": item.version,
-                "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
                 "publisher": item.publisher,
                 "authors": serialize_to_json(_authors),
@@ -675,7 +675,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         resume_position_ms = db_row["resume_position_ms"]
         return AudiobookSyncDetails(
             item_id=db_row["item_id"],
-            favorite=bool(db_row["favorite"]),
             date_added=datetime.fromtimestamp(db_row["timestamp_added"], tz=UTC),
             provider_mappings=self._parse_sync_details_mappings(db_row),
             author_is_str=not db_row["has_author_artists"]

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from music_assistant_models.enums import LinkType, ProviderFeature
+from music_assistant_models.enums import AlbumType, LinkType, MediaType, ProviderFeature
 
 LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
 
@@ -37,3 +37,50 @@ SOCIAL_HOST_MAPPING: tuple[tuple[str, LinkType], ...] = (
     ("twitter.com", LinkType.TWITTER),
     ("x.com", LinkType.TWITTER),
 )
+
+# The MusicBrainz entity a media type identifies with, as named in URL relations.
+URL_RELATION_ENTITY: dict[MediaType, str] = {
+    MediaType.ARTIST: "artist",
+    MediaType.ALBUM: "release",
+    MediaType.TRACK: "recording",
+}
+
+# Provider domains whose items MusicBrainz links to by a canonical share URL, in the
+# order they are reverse-looked up: the most widely linked services first.
+REVERSE_URL_DOMAINS: tuple[str, ...] = ("spotify", "deezer", "tidal", "apple_music", "ytmusic")
+
+# Public catalog hosts whose item URLs MusicBrainz stores as the provider hands them out, so
+# a mapping's own URL can be reverse-looked up. A local server's URL never leaves the house.
+REVERSE_URL_HOSTS: tuple[str, ...] = (
+    "open.spotify.com",
+    "tidal.com",
+    "deezer.com",
+    "music.apple.com",
+    "music.youtube.com",
+    "soundcloud.com",
+    "bandcamp.com",
+)
+
+# Bounds on the requests one identity resolution spends per lookup leg.
+MAX_REVERSE_URL_LOOKUPS = 3
+MAX_REF_ITEMS = 3
+MAX_BARCODE_DETAIL_FETCHES = 2
+# MusicBrainz' per-request maximum: a release group with more editions than fit on one
+# page is not identified at all, so the page is as large as it can be.
+RELEASE_GROUP_BROWSE_LIMIT = 100
+
+# A recording's length may deviate this much from the track's duration and still be it.
+RECORDING_LENGTH_TOLERANCE_MS = 8000
+
+# MusicBrainz release group types to album types; a secondary type (in this order of
+# precedence) overrides the primary type.
+SECONDARY_TYPE_MAPPING: dict[str, AlbumType] = {
+    "Compilation": AlbumType.COMPILATION,
+    "Soundtrack": AlbumType.SOUNDTRACK,
+    "Live": AlbumType.LIVE,
+}
+PRIMARY_TYPE_MAPPING: dict[str, AlbumType] = {
+    "Album": AlbumType.ALBUM,
+    "Single": AlbumType.SINGLE,
+    "EP": AlbumType.EP,
+}

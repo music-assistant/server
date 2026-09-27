@@ -14,7 +14,7 @@ from dataclasses import replace
 from time import time
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature
+from music_assistant_models.enums import AlbumType, ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import Album, Artist, MediaItemImage, Track
@@ -36,6 +36,14 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.providers.musicbrainz import MusicbrainzProvider
+
+# how many reference albums and tracks an artist is identified on MusicBrainz through
+MAX_MUSICBRAINZ_REF_ITEMS = 3
+_MUSICBRAINZ_ID_TYPES = {
+    ExternalID.MB_ALBUM,
+    ExternalID.MB_RELEASEGROUP,
+    ExternalID.MB_RECORDING,
+}
 
 
 class MetadataEnrichmentMixin:
@@ -545,39 +553,35 @@ class MetadataEnrichmentMixin:
         musicbrainz: MusicbrainzProvider = cast("MusicbrainzProvider", musicbrainz_provider)
         if TYPE_CHECKING:
             assert isinstance(musicbrainz, MusicbrainzProvider)
-        # first try with resource URL (e.g. streaming provider share URL)
-        for prov_mapping in artist.provider_mappings:
-            if prov_mapping.url and prov_mapping.url.startswith("http"):
-                if mb_artist := await musicbrainz.get_artist_details_by_resource_url(
-                    prov_mapping.url
-                ):
-                    return mb_artist.id
-
-        # start lookup of musicbrainz id using artist name, albums and tracks
-        ref_albums = await self.mass.music.artists.albums(artist.item_id, artist.provider)
-        # prefer the (widely supported) top tracks listing, falling back to all tracks
-        ref_tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
-        if not ref_tracks:
-            ref_tracks = await self.mass.music.artists.tracks(artist.item_id, artist.provider)
-        # try with (strict) ref track(s), using recording id
-        for ref_track in ref_tracks:
-            if mb_artist := await musicbrainz.get_artist_details_by_track(artist.name, ref_track):
-                return mb_artist.id
-        # try with (strict) ref album(s), using releasegroup id
-        for ref_album in ref_albums:
-            if mb_artist := await musicbrainz.get_artist_details_by_album(artist.name, ref_album):
-                return mb_artist.id
-        # last resort: track matching by name
-        for ref_track in ref_tracks:
-            if not ref_track.album:
-                continue
-            if result := await musicbrainz.search(
-                artistname=artist.name,
-                albumname=ref_track.album.name,
-                trackname=ref_track.name,
-                trackversion=ref_track.version,
-            ):
-                return result[0].id
+        # the artist's own streaming service links cost neither a database read nor a
+        # provider request, so they are tried on their own first
+        if mb_artist := await musicbrainz.resolve_artist(artist, [], []):
+            return mb_artist.id
+        # the library's own albums and tracks carry the MusicBrainz ids, barcodes and ISRCs
+        # the lookup keys on, so those come before anything a provider has to be asked for
+        ref_albums = _identifying_first(
+            await self.mass.music.artists.albums(artist.item_id, artist.provider)
+        )
+        ref_tracks = _identifying_first(
+            await self.mass.music.artists.tracks(artist.item_id, artist.provider)
+        )
+        if mb_artist := await musicbrainz.resolve_artist(artist, ref_albums, ref_tracks):
+            return mb_artist.id
+        # last resort for library items without identifiers: the providers' top tracks
+        tried = {track.uri for track in ref_tracks}
+        top_tracks = _identifying_first(
+            [
+                track
+                for track in await self.mass.music.artists.top_tracks(
+                    artist.item_id, artist.provider
+                )
+                if track.uri not in tried
+            ]
+        )
+        if top_tracks and (
+            mb_artist := await musicbrainz.resolve_artist(artist, ref_albums, top_tracks)
+        ):
+            return mb_artist.id
 
         # lookup failed
         ref_albums_str = "/".join(x.name for x in ref_albums) or "none"
@@ -589,3 +593,23 @@ class MetadataEnrichmentMixin:
             ref_tracks_str,
         )
         return None
+
+
+def _identifying_first[ItemT: Album | Track](items: Sequence[ItemT]) -> list[ItemT]:
+    """
+    Return the few reference items that identify an artist best on MusicBrainz.
+
+    :param items: Albums or tracks of the artist.
+    """
+
+    # a MusicBrainz id resolves in one request, a barcode or ISRC in two; anything else
+    # needs a name search
+    def _rank(item: ItemT) -> int:
+        id_types = {id_type for id_type, _ in item.external_ids}
+        if id_types & _MUSICBRAINZ_ID_TYPES:
+            return 0
+        if id_types & {ExternalID.BARCODE, ExternalID.ISRC}:
+            return 1
+        return 2
+
+    return sorted(items, key=_rank)[:MAX_MUSICBRAINZ_REF_ITEMS]
