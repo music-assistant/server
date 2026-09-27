@@ -1497,6 +1497,31 @@ async def test_get_playlist_tracks_favorites_only_sample_is_keyed_on_the_user(
     cached_dynamic_sample_mock.assert_awaited_once_with("abc", (), favorites_user_id="user-a")
 
 
+async def test_get_playlist_tracks_serves_a_cached_sample_with_the_asking_users_state(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The favorite state whoever filled a cached sample left on its tracks is not served on."""
+    mass = MagicMock()
+    mass.storage_path = str(tmp_path)
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    await plugin.handle_async_init()
+    plugin._rules_store["abc"] = SmartPlaylistRules(limit=100, is_dynamic=True)
+    cached = Track(item_id="1", provider="library", name="Cached", provider_mappings=set())
+    cached.favorite = True
+    monkeypatch.setattr(plugin, "_cached_dynamic_sample", AsyncMock(return_value=[cached]))
+    set_music_source_access(mass, {})
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.get_current_user", lambda: None)
+
+    result = await plugin.get_playlist_tracks("abc", 0)
+
+    assert [track.favorite for track in result] == [None]
+
+
 async def test_get_playlist_tracks_dynamic_cache_key_differs_by_music_sources(
     tmp_path: Any,
     monkeypatch: pytest.MonkeyPatch,

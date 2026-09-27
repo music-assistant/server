@@ -9,6 +9,7 @@ from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ProviderMapping
 
+from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.controllers.music.favorites import (
     DislikedTrackKeys,
     filter_disliked,
@@ -51,6 +52,10 @@ async def test_disliked_track_keys_are_the_users_own(music_mass_module: MusicAss
     await store.set(MediaType.TRACK, int(liked.item_id), True, [USER_A])
     # the same track the other user likes, so the query is scoped by user and by state
     await store.set(MediaType.TRACK, int(disliked.item_id), True, [USER_B])
+    # a cleared state is not a dislike, and a disliked album is not a track
+    cleared = await _add_track(mass, "Cleared Again")
+    await store.set(MediaType.TRACK, int(cleared.item_id), None, [USER_A])
+    await store.set(MediaType.ALBUM, int(liked.item_id), False, [USER_A])
 
     item_ids, provider_keys = await store.disliked_track_keys(USER_A)
 
@@ -61,6 +66,12 @@ async def test_disliked_track_keys_are_the_users_own(music_mass_module: MusicAss
     assert len(provider_keys) == 2
     # nobody's playback is gated by another user's dislike
     assert await store.disliked_track_keys(USER_B) == (set(), set())
+    # a disliked track that lost every mapping still counts by its library id
+    await mass.music.database.delete(
+        DB_TABLE_PROVIDER_MAPPINGS,
+        {"media_type": MediaType.TRACK.value, "item_id": int(disliked.item_id)},
+    )
+    assert await store.disliked_track_keys(USER_A) == ({int(disliked.item_id)}, set())
 
 
 def test_filter_disliked_drops_a_track_by_library_id_or_by_mapping() -> None:

@@ -1560,6 +1560,12 @@ class BuiltinProvider(MusicProvider):
 
     @use_cache(expiration=120, category=CACHE_CATEGORY_PLAYLISTS)
     async def _random_favorite_tracks(self, user_id: str | None) -> list[Track]:
+        """
+        Return the calling user's favorite tracks in random order, cached per user.
+
+        :param user_id: Only shapes the cache key: favorites are personal, the query reads
+            the calling user's own.
+        """
         result: list[Track] = []
         res = await self.mass.music.tracks.library_items(
             favorite=True, limit=250000, order_by="random_play_count", summary=False

@@ -1129,7 +1129,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # Drop anything already queued/played
         queued_set = set(queue_track_items)
         tracks = [track for track in dynamic_tracks if track not in queued_set]
-        tracks = await without_disliked_tracks(self.mass, queue_data.userid, tracks)
         if allowed is None:
             return tracks
         # steering is only a preference, so drop what the user has no music source for

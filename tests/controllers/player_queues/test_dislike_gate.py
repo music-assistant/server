@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -117,21 +118,27 @@ async def test_the_autoplay_fill_skips_a_disliked_track() -> None:
     assert _appended(loader) == [LIKED]
 
 
-async def test_the_similar_tracks_fill_skips_a_disliked_track() -> None:
-    """The similar-tracks continuation drops the disliked track before it is queued."""
+async def test_the_similar_tracks_autoplay_skips_a_disliked_track() -> None:
+    """Autoplay on similar tracks drops the disliked one before anything is queued."""
     loader = _loader(userid=USER_ID)
+    loader._autoplay.resolve_mode.return_value = AutoplayMode.SIMILAR
+    loader._get_similar_tracks = partial(QueueLoaderMixin._get_similar_tracks, loader)
+    loader.mass.music.recency.snapshot = AsyncMock(return_value=MagicMock())
     loader.mass.get_provider = MagicMock(
         return_value=MagicMock(
             get_dynamic_tracks=AsyncMock(return_value=[_track(DISLIKED), _track(LIKED)])
         )
     )
 
-    with patch(f"{MODULE}.playback_sources", AsyncMock(return_value=(None, None))):
-        tracks = await QueueLoaderMixin._get_similar_tracks(
-            loader, QUEUE_ID, seed_items=[_track("seed1"), _track("seed2")]
-        )
+    with (
+        patch(f"{MODULE}.gate_tracks", side_effect=lambda tracks, *_args: tracks),
+        patch(f"{MODULE}.playback_sources", AsyncMock(return_value=(None, None))),
+    ):
+        await QueueLoaderMixin._fill_autoplay_music_tracks(loader, QUEUE_ID)
 
-    assert [x.item_id for x in tracks] == [LIKED]
+    assert _appended(loader) == [LIKED]
+    # one lookup per top-up
+    loader.mass.music.favorites.disliked_track_keys.assert_awaited_once()
 
 
 async def test_an_anonymous_queue_is_not_filtered() -> None:
