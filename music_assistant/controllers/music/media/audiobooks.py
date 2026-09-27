@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from datetime import UTC, datetime
 from json import loads as json_loads
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
@@ -22,6 +21,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import (
+    DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_PLAYLOG,
@@ -415,38 +415,34 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
     ) -> None:
         # update artist mappings - the sync method in the provider model raises an exception
         # if not all entries are either of type str or Artist
-        if overwrite:
-            # on overwrite, clear the audiobook_artists table first
-            await self.mass.music.database.delete(
-                DB_TABLE_AUDIOBOOK_ARTISTS,
-                {
-                    "audiobook_id": db_id,
-                },
+        linked_ids: set[int] = set()
+        updated_types: list[ArtistType] = []
+        for values, artist_type in (
+            (item.authors, ArtistType.AUTHOR),
+            (item.narrators, ArtistType.NARRATOR),
+        ):
+            artists = [artist for artist in values if isinstance(artist, Artist)]
+            if not artists:
+                continue
+            updated_types.append(artist_type)
+            for artist in artists:
+                # just to be sure
+                artist.artist_type = artist_type
+                db_artist = await self._set_audiobook_author_narrator(db_id, artist=artist)
+                linked_ids.add(int(db_artist.item_id))
+        if overwrite and updated_types:
+            # links carry no role, one artist row may serve as author and narrator
+            query = (
+                f"WHERE audiobook_id = {db_id} "
+                f"AND artist_id NOT IN ({','.join(str(x) for x in linked_ids)})"
             )
-        if item.authors and isinstance(item.authors[0], Artist):
-            # only for type checking
-            authors = [author for author in item.authors if isinstance(author, Artist)]
-            for author in authors:
-                # just to be sure
-                author.artist_type = ArtistType.AUTHOR
-            await self._set_audiobook_authors_narrators(db_id, authors)
-        if item.narrators and isinstance(item.narrators[0], Artist):
-            # only for type checking
-            narrators = [narrator for narrator in item.narrators if isinstance(narrator, Artist)]
-            for narrator in narrators:
-                # just to be sure
-                narrator.artist_type = ArtistType.NARRATOR
-            await self._set_audiobook_authors_narrators(db_id, narrators)
-
-    async def _set_audiobook_authors_narrators(
-        self,
-        db_id: int,
-        artists: Iterable[Artist | ItemMapping],
-        overwrite: bool = False,
-    ) -> None:
-        """Write audiobook id and author/ narrator id to DB_TABLE_AUDIOBOOK_ARTISTS."""
-        for artist in artists:
-            await self._set_audiobook_author_narrator(db_id, artist=artist, overwrite=overwrite)
+            if len(updated_types) == 1:
+                # a role the update omits says nothing about its stored links
+                query += (
+                    f" AND artist_id IN (SELECT item_id FROM {DB_TABLE_ARTISTS} "
+                    f"WHERE artist_type = '{updated_types[0].value}')"
+                )
+            await self.mass.music.database.delete(DB_TABLE_AUDIOBOOK_ARTISTS, query=query)
 
     async def _set_audiobook_author_narrator(
         self, db_id: int, artist: Artist | ItemMapping, overwrite: bool = False
@@ -542,7 +538,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
         if set_playlog:
             await self._set_playlog(db_id, update)
-        await self._set_artist_mappings(update, db_id)
+        await self._set_artist_mappings(update, db_id, overwrite=overwrite)
 
     async def _update_library_item_for_merge(self, item_id: int, update: Audiobook) -> None:
         """Merge audiobook model state without applying a source resume position."""
