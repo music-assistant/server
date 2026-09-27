@@ -3090,7 +3090,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             target = active_group
         if target is not player:
             self.logger.info(
-                "Player %s is part of a group and can not accept playback related "
+                "Player %s is synced or grouped and can not accept playback related "
                 "commands itself, redirected the command to %s.",
                 player.name,
                 target.name,

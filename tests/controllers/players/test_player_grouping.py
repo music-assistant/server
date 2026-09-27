@@ -926,6 +926,20 @@ class TestGroupAndMemberLockOrder:
 
         await self._assert_no_lockout_with_a_join(controller, group, controller.cmd_resume("extra"))
 
+    async def test_a_resume_on_a_synced_player_locks_the_leader_group_not_the_leader(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A resume on a player synced to a captured leader is run under that leader's group lock."""
+        controller, _, member, _ = self._setup(mock_mass)
+        self._add_follower(controller, member)
+        mock_mass.player_queues = _PlayingQueues(mock_mass, "g1")
+        lock_keys = _spy_on_lock_order(controller)
+
+        await controller.cmd_resume("extra")
+
+        assert lock_keys[0] == "playback_g1"
+        assert "playback_member" not in lock_keys
+
 
 class TestPlayerBaseIsActiveSession:
     """The Player base class defaults is_active_session to False; only groups override it."""
