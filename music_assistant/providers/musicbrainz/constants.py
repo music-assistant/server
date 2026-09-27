@@ -16,6 +16,8 @@ MIN_FIRST_RELEASE_CORRECTION_YEARS = 5
 
 SUPPORTED_FEATURES: set[ProviderFeature] = {
     ProviderFeature.ARTIST_METADATA,
+    ProviderFeature.ALBUM_METADATA,
+    ProviderFeature.TRACK_METADATA,
     ProviderFeature.RECOMMENDATIONS,
 }
 
@@ -25,6 +27,7 @@ URL_RELATION_TYPE_MAPPING: dict[str, LinkType] = {
     "wikipedia": LinkType.WIKIPEDIA,
     "allmusic": LinkType.ALLMUSIC,
     "last.fm": LinkType.LASTFM,
+    "discogs": LinkType.DISCOGS,
     "official homepage": LinkType.WEBSITE,
 }
 

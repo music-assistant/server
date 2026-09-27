@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from contextlib import suppress
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
@@ -60,6 +61,7 @@ from .models import (
     MusicBrainzRelation,
     MusicBrainzRelease,
     MusicBrainzReleaseGroup,
+    MusicBrainzTag,
 )
 from .recommendations import MusicBrainzRecommendationManager
 
@@ -352,20 +354,48 @@ class MusicbrainzProvider(MetadataProvider):
                 end=details.life_span.end,
                 ended=details.life_span.ended,
             )
-        links: set[MediaItemLink] = set()
-        if details.relations:
-            for relation in details.relations:
-                if not relation.url:
-                    continue
-                if link_type := self._link_type_for_relation(relation):
-                    links.add(MediaItemLink(type=link_type, url=relation.url.resource))
-        if not artist_entity_type and not life_span and not links:
+        links = self._links_from_relations(details.relations)
+        genres = _genre_names(details.genres)
+        if not artist_entity_type and not life_span and not links and not genres:
             return None
         return MediaItemMetadata(
             links=links,
+            genres=genres,
             artist_entity_type=artist_entity_type,
             life_span=life_span,
         )
+
+    async def get_album_metadata(self, album: Album) -> MediaItemMetadata | None:
+        """Surface MusicBrainz genres, label, release date and links of an album's release."""
+        if not album.mbid:
+            return None
+        try:
+            release = await self.get_release_details(album.mbid)
+        except InvalidDataError:
+            return None
+        genres = _genre_names(
+            release.release_group.genres if release.release_group else None, release.genres
+        )
+        label = next((info.label.name for info in release.label_info or () if info.label), None)
+        release_date = _release_datetime(release.date)
+        links = self._links_from_relations(release.relations)
+        if not genres and not label and not release_date and not links:
+            return None
+        return MediaItemMetadata(
+            genres=genres, label=label, release_date=release_date, links=links or None
+        )
+
+    async def get_track_metadata(self, track: Track) -> MediaItemMetadata | None:
+        """Surface MusicBrainz genres of a track's recording."""
+        if not track.mbid:
+            return None
+        try:
+            recording = await self.get_recording_details(track.mbid)
+        except InvalidDataError:
+            return None
+        if not (genres := _genre_names(recording.genres)):
+            return None
+        return MediaItemMetadata(genres=genres)
 
     async def get_recording_details(self, recording_id: str) -> MusicBrainzRecording:
         """Get Recording details by providing a MusicBrainz Recording Id."""
@@ -662,6 +692,20 @@ class MusicbrainzProvider(MetadataProvider):
                 if host in url_lower:
                     return link_type
         return None
+
+    def _links_from_relations(
+        self, relations: Iterable[MusicBrainzRelation] | None
+    ) -> set[MediaItemLink]:
+        """Return the links among an entity's current URL relations that have a known type."""
+        links: set[MediaItemLink] = set()
+        for relation in relations or ():
+            if (
+                relation.url
+                and not relation.ended
+                and (link_type := self._link_type_for_relation(relation))
+            ):
+                links.add(MediaItemLink(type=link_type, url=relation.url.resource))
+        return links
 
     async def _search_release_groups_by_track_name(
         self, artist_name: str, track_name: str
@@ -1107,3 +1151,27 @@ def _release_year(release_date: str) -> int | None:
     :return: The year, or None if the date is absent or unparsable.
     """
     return int(year) if (year := release_date[:4]).isdigit() else None
+
+
+def _release_datetime(release_date: str | None) -> datetime | None:
+    """
+    Return a MusicBrainz date as a datetime, when it is a full date.
+
+    :param release_date: MusicBrainz date, as a year, year-month or full date.
+    :return: The date, or None if it is absent or not precise to the day.
+    """
+    if not release_date or len(release_date) != len("YYYY-MM-DD"):
+        return None
+    try:
+        return datetime.fromisoformat(release_date).replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def _genre_names(*genre_lists: Sequence[MusicBrainzTag] | None) -> set[str] | None:
+    """
+    Return the names of MusicBrainz genres, or None when there are none.
+
+    :param genre_lists: Genres as carried by an artist, release group, release or recording.
+    """
+    return {genre.name for genres in genre_lists for genre in genres or ()} or None

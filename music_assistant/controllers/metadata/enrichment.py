@@ -20,14 +20,20 @@ from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import Album, Artist, MediaItemImage, Track
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
+from music_assistant.controllers.music.helpers import (
+    discogs_external_id,
+    fill_track_from_recording,
+)
 from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.external_ids import is_valid_barcode
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider, relation_urls
 
 from .constants import CONF_ENABLE_ONLINE_METADATA, CONF_PREFER_LOCAL_GENRES, REFRESH_INTERVAL
 
 if TYPE_CHECKING:
     import logging
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.media_items import Audiobook, Playlist, Podcast
@@ -35,7 +41,7 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
-    from music_assistant.providers.musicbrainz import MusicbrainzProvider
+    from music_assistant.providers.musicbrainz.models import MusicBrainzRelease
 
 # how many reference albums and tracks an artist is identified on MusicBrainz through
 MAX_MUSICBRAINZ_REF_ITEMS = 3
@@ -130,6 +136,7 @@ class MetadataEnrichmentMixin:
         if not artist.mbid:
             if mbid := await self._get_artist_mbid(artist):
                 artist.mbid = mbid
+        await self._link_artist_to_musicbrainz(artist)
 
         # don't merge online genres on top of source-supplied ones; propagation-derived
         # genres also count as a local source so they survive metadata refreshes
@@ -251,6 +258,9 @@ class MetadataEnrichmentMixin:
                 if album.album_type == AlbumType.UNKNOWN:
                     album.album_type = prov_item.album_type
 
+        # identify the album on MusicBrainz before the metadata providers need its id
+        await self._link_album_to_musicbrainz(album)
+
         # don't merge online genres on top of source-supplied ones; propagation-derived
         # genres also count as a local source so they survive metadata refreshes
         prefer_local_genres = self.config.get_value(CONF_PREFER_LOCAL_GENRES) and (
@@ -321,6 +331,9 @@ class MetadataEnrichmentMixin:
                     prov_mapping.item_id, prov_mapping.provider_instance
                 )
                 track.metadata.update(prov_item.metadata)
+
+        # identify the track on MusicBrainz before the metadata providers need its id
+        await self._link_track_to_musicbrainz(track)
 
         # don't merge online genres on top of source-supplied ones
         prefer_local_genres = self.config.get_value(CONF_PREFER_LOCAL_GENRES) and bool(
@@ -540,6 +553,83 @@ class MetadataEnrichmentMixin:
         podcast.metadata.last_refresh = int(time())
         await self.mass.music.podcasts.update_item_in_library(podcast.item_id, podcast)
 
+    async def _link_artist_to_musicbrainz(self, artist: Artist) -> None:
+        """Fill in an artist's Discogs id and link it to the music providers MusicBrainz knows."""
+        if not (musicbrainz := self._musicbrainz_provider()):
+            return
+        # the Various Artists entity is nobody's discography, so it is not linked anywhere
+        if artist.mbid and artist.mbid != VARIOUS_ARTISTS_MBID:
+            try:
+                details = await musicbrainz.get_artist_details(artist.mbid)
+                urls = relation_urls(details.relations)
+                if not artist.get_external_id(ExternalID.DISCOGS) and (
+                    discogs := discogs_external_id(urls, MediaType.ARTIST)
+                ):
+                    artist.add_external_id(*discogs)
+                await self.mass.music.artists.link_musicbrainz_mappings(artist, urls)
+            except Exception as err:
+                self.logger.warning(
+                    "Error linking Artist %s through MusicBrainz: %s",
+                    artist.name,
+                    err,
+                    exc_info=err if self.logger.isEnabledFor(10) else None,
+                )
+                return
+        artist.metadata.last_musicbrainz_lookup = int(time())
+
+    async def _link_album_to_musicbrainz(self, album: Album) -> None:
+        """Identify an album on MusicBrainz, fill in what it knows and link it and its tracks."""
+        if not (musicbrainz := self._musicbrainz_provider()):
+            return
+        try:
+            db_tracks = await self.mass.music.albums.get_library_album_tracks(album.item_id)
+            release = await musicbrainz.resolve_release(
+                album, library_track_count=len(db_tracks) or None
+            )
+            if release is None:
+                self.logger.debug("Album %s was not found on MusicBrainz", album.name)
+            else:
+                urls = relation_urls(release.relations)
+                _fill_album_from_release(album, release, urls)
+                await self.mass.music.albums.link_musicbrainz_mappings(album, urls)
+                await self.mass.music.albums.link_album_tracks(album, db_tracks, release)
+        except Exception as err:
+            self.logger.warning(
+                "Error linking Album %s through MusicBrainz: %s",
+                album.name,
+                err,
+                exc_info=err if self.logger.isEnabledFor(10) else None,
+            )
+            return
+        album.metadata.last_musicbrainz_lookup = int(time())
+
+    async def _link_track_to_musicbrainz(self, track: Track) -> None:
+        """Identify a track on MusicBrainz, fill in its recording id and ISRCs and link it."""
+        if not (musicbrainz := self._musicbrainz_provider()):
+            return
+        try:
+            recording = await musicbrainz.resolve_recording(track)
+            if recording is None:
+                self.logger.debug("Track %s was not found on MusicBrainz", track.name)
+            else:
+                fill_track_from_recording(track, recording)
+                await self.mass.music.tracks.link_musicbrainz_mappings(
+                    track, relation_urls(recording.relations)
+                )
+        except Exception as err:
+            self.logger.warning(
+                "Error linking Track %s through MusicBrainz: %s",
+                track.name,
+                err,
+                exc_info=err if self.logger.isEnabledFor(10) else None,
+            )
+            return
+        track.metadata.last_musicbrainz_lookup = int(time())
+
+    def _musicbrainz_provider(self) -> MusicbrainzProvider | None:
+        """Return the MusicBrainz provider, if it is loaded."""
+        return cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
+
     async def _get_artist_mbid(self, artist: Artist) -> str | None:
         """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""
         if artist.mbid:
@@ -547,12 +637,8 @@ class MetadataEnrichmentMixin:
         if compare_strings(artist.name, VARIOUS_ARTISTS_NAME):
             return VARIOUS_ARTISTS_MBID
 
-        musicbrainz_provider = self.mass.get_provider("musicbrainz")
-        if not musicbrainz_provider:
+        if not (musicbrainz := self._musicbrainz_provider()):
             return None
-        musicbrainz: MusicbrainzProvider = cast("MusicbrainzProvider", musicbrainz_provider)
-        if TYPE_CHECKING:
-            assert isinstance(musicbrainz, MusicbrainzProvider)
         # the artist's own streaming service links cost neither a database read nor a
         # provider request, so they are tried on their own first
         if mb_artist := await musicbrainz.resolve_artist(artist, [], []):
@@ -593,6 +679,44 @@ class MetadataEnrichmentMixin:
             ref_tracks_str,
         )
         return None
+
+
+def _fill_album_from_release(
+    album: Album, release: MusicBrainzRelease, urls: Iterable[str]
+) -> None:
+    """
+    Fill an album's identifiers, year and type in from its MusicBrainz release.
+
+    Values the album already carries are kept.
+
+    :param album: The library album to fill in.
+    :param release: The MusicBrainz release the album is.
+    :param urls: The release's URLs on MusicBrainz (its URL relations).
+    """
+    if not album.mbid:
+        album.mbid = release.id
+    release_group = release.release_group
+    if release_group and not album.get_external_id(ExternalID.MB_RELEASEGROUP):
+        album.add_external_id(ExternalID.MB_RELEASEGROUP, release_group.id)
+    if (
+        release.barcode
+        and is_valid_barcode(release.barcode)
+        and not album.get_external_id(ExternalID.BARCODE)
+    ):
+        album.add_external_id(ExternalID.BARCODE, release.barcode)
+    if release.asin and not album.get_external_id(ExternalID.ASIN):
+        album.add_external_id(ExternalID.ASIN, release.asin)
+    if not album.get_external_id(ExternalID.DISCOGS) and (
+        discogs := discogs_external_id(urls, MediaType.ALBUM)
+    ):
+        album.add_external_id(*discogs)
+    if album.year is None:
+        # the release group dates the album, a reissue's own date only stands in for it
+        date = (release_group.first_release_date if release_group else None) or release.date or ""
+        if date[:4].isdigit():
+            album.year = int(date[:4])
+    if album.album_type == AlbumType.UNKNOWN and release_group:
+        album.album_type = MusicbrainzProvider.album_type_from_release_group(release_group)
 
 
 def _identifying_first[ItemT: Album | Track](items: Sequence[ItemT]) -> list[ItemT]:
