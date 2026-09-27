@@ -155,6 +155,12 @@ class MusicDatabaseSetupMixin:
                 f"AND item_id not in (select item_id from {ctrl.db_table})"
             )
             await self.mass.music.database.delete_where_query(DB_TABLE_PLAYLOG, where_clause)
+            # Cleanup removed db items from the favorites
+            query = (
+                f"media_type = '{ctrl.media_type}' "
+                f"AND item_id not in (select item_id from {ctrl.db_table})"
+            )
+            await self.mass.music.database.delete_where_query(DB_TABLE_FAVORITES, query)
         update_current_task_progress_text("Cleaning orphaned relations")
         # A relation row can outlive the item on either of its ends: the item deletions above
         # leave one behind, and so do the removal paths that only delete their own side of the

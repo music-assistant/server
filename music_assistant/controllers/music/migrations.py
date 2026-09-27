@@ -271,10 +271,10 @@ async def migrate_database(  # noqa: PLR0915
 
         genre_insert_sql = (
             f"INSERT OR IGNORE INTO {DB_TABLE_GENRES}"
-            "(name, sort_name, translation_key, description, favorite, "
+            "(name, sort_name, translation_key, description, "
             "metadata, genre_aliases, play_count, last_played, "
             "search_name, search_sort_name) "
-            "VALUES (?, ?, ?, NULL, 0, ?, ?, 0, 0, ?, ?)"
+            "VALUES (?, ?, ?, NULL, ?, ?, 0, 0, ?, ?)"
         )
         genre_select_sql = f"SELECT item_id FROM {DB_TABLE_GENRES} WHERE search_name = ?"
 
@@ -1083,11 +1083,7 @@ async def migrate_database(  # noqa: PLR0915
             )
             # the column must not be indexed for DROP COLUMN to succeed
             await database.execute(f"DROP INDEX IF EXISTS {table}_favorite_idx")
-            try:
-                await database.execute(f"ALTER TABLE {table} DROP COLUMN favorite")
-            except Exception as err:
-                if "no such column" not in str(err):
-                    raise
+            await database.execute(f"ALTER TABLE {table} DROP COLUMN favorite")
 
     # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
     # with the current code/schema, so the external_ids column must be gone first.

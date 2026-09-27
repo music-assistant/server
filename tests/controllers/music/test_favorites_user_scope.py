@@ -369,6 +369,36 @@ async def test_add_item_to_library_writes_only_to_the_own_source(
     assert [m.in_library for m in mappings] == [True, False]
 
 
+async def test_a_dislike_on_a_provider_item_pulls_it_into_the_library(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dislike needs a library item too, and reaches only the user's own account."""
+    _as_user(monkeypatch, _user())
+    controller = _controller(THREE_ACCOUNTS)
+    prov_item = Mock(
+        provider=MINE, item_id="mine-42", media_type=MediaType.TRACK, provider_mappings=set()
+    )
+    library_item = Mock(
+        provider="library",
+        item_id="42",
+        media_type=MediaType.TRACK,
+        provider_mappings=THREE_MAPPINGS,
+    )
+    controller.get_item = AsyncMock(return_value=prov_item)  # type: ignore[method-assign]
+    controller.add_item_to_library = AsyncMock(return_value=library_item)  # type: ignore[method-assign]
+    ctrl = Mock(set_favorite=AsyncMock())
+    controller.get_controller = Mock(return_value=ctrl)  # type: ignore[method-assign]
+    controller.library_favorites_edit_supported = Mock(return_value=True)  # type: ignore[method-assign]
+
+    await controller.set_item_favorite(prov_item, False)
+
+    controller.add_item_to_library.assert_awaited_once_with(prov_item)
+    ctrl.set_favorite.assert_awaited_once_with("42", False, [ME])
+    seen = controller.providers_seen  # type: ignore[attr-defined]
+    seen[MINE].set_favorite.assert_called_once_with("mine-42", MediaType.TRACK, False)
+    assert THEIRS not in seen
+
+
 async def test_a_down_own_source_is_skipped_rather_than_served_by_a_sibling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

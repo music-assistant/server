@@ -29,6 +29,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
 )
 from music_assistant_models.event import MassEvent
+from music_assistant_models.favorite_update import FavoriteUpdate
 from music_assistant_models.media_items import Playlist
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
@@ -644,6 +645,13 @@ class WebsocketClientHandler:
             if isinstance(event.data, Playlist) and not self._forward_playlist_event(
                 event, event.data
             ):
+                return
+
+            if isinstance(event.data, FavoriteUpdate) and (
+                self._authenticated_user is None
+                or event.data.user_id != self._authenticated_user.user_id
+            ):
+                # a like or dislike is the business of its own user only
                 return
 
             if event.event == EventType.TASKS_UPDATED:

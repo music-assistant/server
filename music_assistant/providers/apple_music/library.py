@@ -159,7 +159,7 @@ class AppleMusicLibraryManager:
             playlist_library_item_ids, MediaType.PLAYLIST
         )
         for item in playlist_items:
-            is_favourite = rating_library_response.get(item["id"], False)
+            is_favourite = rating_library_response.get(item["id"])
             # Fetch catalog metadata, but keep library ID for write operations.
             if item["attributes"]["hasCatalog"]:
                 playlist = await self.provider.media_manager.get_playlist(

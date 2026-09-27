@@ -27,6 +27,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
+from music_assistant_models.favorite_update import FavoriteUpdate
 from music_assistant_models.helpers import create_safe_string, get_global_cache_value
 from music_assistant_models.media_items import (
     AudioFormat,
@@ -154,6 +155,8 @@ SORT_KEYS = {
     # least played first, shuffled within equal play counts
     "random_play_count": "COALESCE(play_count, 0), RANDOM()",
 }
+# sort keys on the calling user's favorite state, built per query since they bind the user
+FAVORITE_SORT_KEYS = ("favorite_timestamp", "favorite_timestamp_desc")
 
 
 @dataclass(slots=True)
@@ -303,6 +306,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     else:
                         library_id = await self._add_library_item(item)
                         new_item = True
+        if new_item and item.favorite is not None and item.provider != "library":
+            # the state the item's own source reports, as a sync of that source would record it
+            await self.mass.music.favorites.record_from_provider(
+                item.provider, self.media_type, library_id, item.favorite
+            )
         # return final library_item
         library_item = await self.get_library_item(library_id)
         if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
@@ -1080,6 +1088,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         db_id = int(item_id)  # ensure integer
         library_item = await self.get_library_item(db_id)
+        # uri is always populated post-init, so it is never None here
+        uri = cast("str", library_item.uri)
         await self.mass.music.favorites.set(self.media_type, db_id, favorite, user_ids)
         # cached search results carry the favorite state of the user that filled them
         await self.mass.cache.delete(
@@ -1088,14 +1098,14 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         for user_id in user_ids:
             self.mass.signal_event(
                 EventType.FAVORITE_UPDATED,
-                library_item.uri,
-                {
-                    "user_id": user_id,
-                    "media_type": self.media_type.value,
-                    "item_id": str(db_id),
-                    "uri": library_item.uri,
-                    "favorite": favorite,
-                },
+                uri,
+                FavoriteUpdate(
+                    uri=uri,
+                    media_type=self.media_type,
+                    item_id=str(db_id),
+                    favorite=favorite,
+                    user_id=user_id,
+                ),
             )
 
     @guard_single_request
@@ -1842,13 +1852,25 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         query_params["favorite_user_id"] = self._favorite_user_id()
         query_params["favorite_media_type"] = self.media_type.value
         query_params["favorite"] = favorite
+        # the user's set is small next to the table, so drive the query from it
         return (
-            f"EXISTS(SELECT 1 FROM {DB_TABLE_FAVORITES} "
-            f"WHERE {DB_TABLE_FAVORITES}.user_id = :favorite_user_id "
-            f"AND {DB_TABLE_FAVORITES}.media_type = :favorite_media_type "
-            f"AND {DB_TABLE_FAVORITES}.item_id = {self.db_table}.item_id "
-            f"AND {DB_TABLE_FAVORITES}.favorite = :favorite)"
+            f"{self.db_table}.item_id IN (SELECT item_id FROM {DB_TABLE_FAVORITES} "
+            "WHERE user_id = :favorite_user_id AND media_type = :favorite_media_type "
+            "AND favorite = :favorite)"
         )
+
+    @final
+    def _favorite_sort_key(self, order_by: str | None) -> str | None:
+        """Return the ORDER BY expression for a sort on the calling user's favorite moment."""
+        if order_by not in FAVORITE_SORT_KEYS:
+            return None
+        timestamp = (
+            f"(SELECT {DB_TABLE_FAVORITES}.timestamp FROM {DB_TABLE_FAVORITES} "
+            f"WHERE {DB_TABLE_FAVORITES}.user_id = :favorite_user_id "
+            f"AND {DB_TABLE_FAVORITES}.media_type = '{self.media_type.value}' "
+            f"AND {DB_TABLE_FAVORITES}.item_id = {self.db_table}.item_id)"
+        )
+        return f"{timestamp} {'DESC' if order_by.endswith('_desc') else 'ASC'}"
 
     @final
     @staticmethod
@@ -2183,7 +2205,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             sql_query += f" GROUP BY {self.db_table}.item_id"
 
         if order_by:
-            if sort_key := SORT_KEYS.get(order_by):
+            if sort_key := SORT_KEYS.get(order_by) or self._favorite_sort_key(order_by):
                 sql_query += f" ORDER BY {sort_key}"
 
         return sql_query, base_query_params

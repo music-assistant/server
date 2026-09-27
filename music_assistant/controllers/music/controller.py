@@ -1354,9 +1354,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         full_item = cast(
             "MediaItemType",
             await self.get_item(
-                item.media_type,
-                item.item_id,
-                item.provider,
+                item.media_type, item.item_id, item.provider, allow_update_metadata=False
             ),
         )
         if full_item.provider != "library":

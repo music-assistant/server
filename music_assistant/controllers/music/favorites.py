@@ -33,6 +33,8 @@ if TYPE_CHECKING:
 # user id the library migration parks every favorite under: whose like it becomes depends on
 # the owners of the music sources and on the users, both only known once the webserver is up
 PENDING_USER_ID = "__pending__"
+# how long a resolved user list serves the reports of one library sync
+USERS_TTL = 30
 
 
 class FavoritesStore:
@@ -41,6 +43,7 @@ class FavoritesStore:
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize the favorites store."""
         self.mass = mass
+        self._users: tuple[float, list[User]] | None = None
 
     async def set(
         self,
@@ -95,7 +98,7 @@ class FavoritesStore:
         if access and access.owner:
             user_ids = [access.owner]
         else:
-            users = await self.mass.webserver.auth.list_users()
+            users = await self._recent_users()
             user_ids = [user.user_id for user in users if _holds_favorites_for(access, user)]
         if not user_ids:
             return
@@ -224,6 +227,18 @@ class FavoritesStore:
                 {"user_id": user.user_id, "pending_user_id": PENDING_USER_ID, **configured},
             )
         await self.release_user(PENDING_USER_ID)
+
+    async def _recent_users(self) -> list[User]:
+        """
+        Return the users, resolved at most once per USERS_TTL seconds.
+
+        A library sync reports one item after another; a user created in between gets what
+        it missed on the next sync, since a report only fills in what is not there yet.
+        """
+        now = time.monotonic()
+        if self._users is None or now - self._users[0] > USERS_TTL:
+            self._users = (now, await self.mass.webserver.auth.list_users())
+        return self._users[1]
 
 
 def _holds_favorites_for(access: ProviderAccess | None, user: User) -> bool:

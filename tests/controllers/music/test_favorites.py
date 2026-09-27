@@ -10,6 +10,7 @@ import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import EventType, MediaType, ProviderSharing
+from music_assistant_models.favorite_update import FavoriteUpdate
 
 from music_assistant.constants import DB_TABLE_FAVORITES
 from music_assistant.controllers.music.favorites import PENDING_USER_ID
@@ -37,6 +38,8 @@ async def favorites_mass(
 ) -> MusicAssistant:
     """Return the library-only instance with a stand-in for the (unset up) cache."""
     monkeypatch.setattr(music_mass_module.cache, "delete", AsyncMock())
+    # the store remembers the users of a sync burst; every test names its own
+    music_mass_module.music.favorites._users = None
     return music_mass_module
 
 
@@ -119,13 +122,13 @@ async def test_unset_favorite_keeps_a_row_and_announces_it(
     event_type, object_id, payload = signal_event.call_args.args
     assert event_type == EventType.FAVORITE_UPDATED
     assert object_id == track.uri
-    assert payload == {
-        "user_id": USER_A,
-        "media_type": MediaType.TRACK.value,
-        "item_id": track.item_id,
-        "uri": track.uri,
-        "favorite": None,
-    }
+    assert payload == FavoriteUpdate(
+        uri=str(track.uri),
+        media_type=MediaType.TRACK,
+        item_id=track.item_id,
+        favorite=None,
+        user_id=USER_A,
+    )
     with patch(GET_CURRENT_USER, return_value=_user(USER_A)):
         assert (await mass.music.tracks.get_library_item(track.item_id)).favorite is None
 
@@ -267,6 +270,39 @@ async def test_settle_pending_hands_migrated_favorites_to_the_users_that_hold_th
     assert not await mass.music.database.get_rows(
         DB_TABLE_FAVORITES, {"user_id": PENDING_USER_ID}, limit=1
     )
+
+
+async def test_a_new_library_item_carries_the_state_its_source_reports(
+    favorites_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An item liked on the source it is added from is liked for that source's owner."""
+    mass = favorites_mass
+    set_music_source_access(
+        mass, {PROV_OWNED: ProviderAccess(owner=USER_A, sharing=ProviderSharing.EVERYONE)}
+    )
+    _known_users(mass, monkeypatch, USER_A, USER_B)
+    track = create_track(PROV_OWNED, uuid4().hex, name="Liked At The Source", isrc=uuid4().hex)
+    track.favorite = True
+
+    library_track = await mass.music.tracks.add_item_to_library(track)
+
+    rows = {
+        row["user_id"]: row["favorite"] for row in await _favorite_rows(mass, library_track.item_id)
+    }
+    assert rows == {USER_A: 1}
+
+
+async def test_clearing_likes_keeps_the_dislikes(favorites_mass: MusicAssistant) -> None:
+    """When no source holds an item anymore its likes go, a dislike is the user's own."""
+    mass = favorites_mass
+    track = await _add_track(mass, "Gone From Every Library")
+    await mass.music.tracks.set_favorite(track.item_id, True, [USER_A])
+    await mass.music.tracks.set_favorite(track.item_id, False, [USER_B])
+
+    await mass.music.favorites.clear_likes(MediaType.TRACK, int(track.item_id))
+
+    rows = {row["user_id"]: row["favorite"] for row in await _favorite_rows(mass, track.item_id)}
+    assert rows == {USER_B: 0}
 
 
 async def test_removing_an_item_drops_its_favorites(favorites_mass: MusicAssistant) -> None:
