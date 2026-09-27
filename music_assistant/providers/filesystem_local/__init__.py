@@ -3027,6 +3027,7 @@ class LocalFileSystemProvider(MusicProvider):
             set(tags.genres) if tags.genres else {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
         )
         episode.metadata.copyright = tags.get("copyright")
+        episode.metadata.release_date = tags.release_date
         episode.metadata.lyrics = tags.lyrics
         episode.metadata.description = tags.get("comment")
         explicit_tag = tags.get("itunesadvisory")

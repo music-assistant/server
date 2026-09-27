@@ -748,6 +748,7 @@ def _parse_podcast_episode(
 
     podcast_episode.metadata.add_image(create_media_image(domain, episode["imagesList"]))
     podcast_episode.metadata.description = episode["summary"]
+    podcast_episode.metadata.release_date = _publish_date(episode)
     return podcast_episode
 
 

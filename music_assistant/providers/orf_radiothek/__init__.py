@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import AsyncGenerator, Sequence
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -59,7 +59,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.datetime import from_iso_string, utc
 from music_assistant.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -471,6 +471,7 @@ class RadiothekProvider(MusicProvider):
         sub = self._strip_html(b.get("subtitle"))
         if sub:
             ep.metadata.description = sub
+        ep.metadata.release_date = self._release_date(b.get("niceTime"))
 
         # best image
         imgs = b.get("images")
@@ -549,6 +550,16 @@ class RadiothekProvider(MusicProvider):
             return ts[:16].replace("T", " ")
         return ts
 
+    @staticmethod
+    def _release_date(ts: Any) -> datetime | None:
+        """Return the datetime of an ISO timestamp, or None when it cannot be read."""
+        if not ts:
+            return None
+        try:
+            return from_iso_string(ts)
+        except TypeError, ValueError:
+            return None
+
     def _episode_from_orf_podcast_episode_obj(
         self, ep: OrfPodcastEpisode, podcast: Podcast
     ) -> PodcastEpisode:
@@ -582,6 +593,7 @@ class RadiothekProvider(MusicProvider):
 
         if ep.description:
             pe.metadata.description = ep.description
+        pe.metadata.release_date = self._release_date(ep.published)
 
         # image (episode-level)
         if ep.image:

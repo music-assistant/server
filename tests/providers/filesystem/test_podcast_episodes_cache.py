@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import pathlib
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -522,3 +523,15 @@ async def test_no_resume_state_is_cached(provider: LocalFileSystemProvider) -> N
     assert len(cached) == 3
     assert all(x.fully_played is None for x in cached)
     assert all(not x.resume_position_ms for x in cached)
+
+
+async def test_episode_gets_the_release_date(provider: LocalFileSystemProvider) -> None:
+    """The date tag of an episode file becomes its release date."""
+    tags = _audio_tags(f"{PODCAST_FOLDER}/episode-01.mp3")
+    tags.tags["date"] = "2026-08-31"
+    parse_tags = AsyncMock(return_value=tags)
+
+    with patch(PARSE_TAGS_TARGET, new=parse_tags):
+        episode = await provider.get_podcast_episode(f"{PODCAST_FOLDER}/episode-01.mp3")
+
+    assert episode.metadata.release_date == datetime(2026, 8, 31, tzinfo=UTC)
