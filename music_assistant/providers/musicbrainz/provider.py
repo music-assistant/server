@@ -573,7 +573,7 @@ class MusicbrainzProvider(MetadataProvider):
 
         :param artist_mbid: MusicBrainz artist id.
         :return: The artist's release groups, the most recently released first and undated
-            ones last. A catalog-sized discography is cut off after a few hundred groups.
+            ones last. A catalog-sized discography is cut off after a thousand groups.
         """
         release_groups: list[MusicBrainzReleaseGroup] = []
         for page in range(DISCOGRAPHY_MAX_PAGES):
@@ -1056,7 +1056,7 @@ class MusicbrainzProvider(MetadataProvider):
                 mappings.remove(mapping)
         for mapping in mappings:
             url = mapping.url or ""
-            if _is_public_catalog_url(url) and url not in urls:
+            if is_public_catalog_url(url) and url not in urls:
                 urls.append(url)
         return urls[:MAX_REVERSE_URL_LOOKUPS]
 
@@ -1083,8 +1083,12 @@ def is_digital_release(release: MusicBrainzBarcodeRelease) -> bool:
     return any(medium.format == "Digital Media" for medium in release.media)
 
 
-def _is_public_catalog_url(url: str) -> bool:
-    """Return whether a URL points at a public catalog host MusicBrainz links to as given."""
+def is_public_catalog_url(url: str) -> bool:
+    """
+    Return whether a URL points at a public catalog host MusicBrainz links to as given.
+
+    :param url: The URL of a MusicBrainz URL relation or of a provider mapping.
+    """
     if not url.startswith(("http://", "https://")):
         return False
     host = urlsplit(url).netloc.lower()

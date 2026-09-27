@@ -2034,19 +2034,19 @@ async def test_browse_release_groups_pages_through_a_discography() -> None:
 
 
 async def test_browse_release_groups_stops_at_the_page_cap() -> None:
-    """A catalog-sized discography is cut off after five pages."""
+    """A catalog-sized discography is cut off after ten pages."""
     pages = {
         str(offset): _browse_page(
-            [_release_group(f"rg-{offset + index}") for index in range(100)], offset, 1000
+            [_release_group(f"rg-{offset + index}") for index in range(100)], offset, 2000
         )
-        for offset in range(0, 1000, 100)
+        for offset in range(0, 2000, 100)
     }
     provider, api_client = _browsing_provider(pages)
 
     groups = await provider.browse_release_groups_by_artist(RADIOHEAD_MBID)
 
-    assert len(groups) == 500
-    assert api_client.get_browse_data.await_count == 5
+    assert len(groups) == 1000
+    assert api_client.get_browse_data.await_count == 10
 
 
 async def test_browse_release_groups_keeps_albums_eps_and_singles_only() -> None:

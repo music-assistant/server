@@ -10,11 +10,19 @@ from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
 
 import pytest
 from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import Album
 
 from music_assistant.controllers.music import MusicController
-from music_assistant.controllers.music.media.albums import AlbumsController
+from music_assistant.controllers.music.media.albums import (
+    _MAX_EDITION_LOOKUPS,
+    AlbumsController,
+)
 from music_assistant.providers.musicbrainz.models import (
     MusicBrainzBarcodeRelease,
     MusicBrainzMedia,
@@ -37,6 +45,7 @@ SPOTIFY_ALBUM_ID = "7eyQXxuf2nGj9d2367Gi5f"
 SPOTIFY_ALBUM_URL = f"https://open.spotify.com/album/{SPOTIFY_ALBUM_ID}"
 TIDAL_ALBUM_ID = "79280548"
 TIDAL_ALBUM_URL = f"https://tidal.com/album/{TIDAL_ALBUM_ID}"
+DISCOGS_RELEASE_URL = "https://www.discogs.com/release/1157205"
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +235,98 @@ async def test_resolve_moves_on_to_the_next_linked_provider() -> None:
         call(SPOTIFY_ALBUM_ID, "spotify_1", allow_update_metadata=True),
         call(TIDAL_ALBUM_ID, "tidal_1", allow_update_metadata=True),
     ]
+
+
+async def test_resolve_moves_on_to_the_next_edition() -> None:
+    """An edition no provider has, by link or by barcode, gives way to the next likeliest one."""
+    tidal_album = create_album("tidal_1", TIDAL_ALBUM_ID)
+    spotify = _music_provider("spotify_1")
+    tidal = _music_provider("tidal_1")
+    with _harness(
+        editions=[
+            _edition("rel-first", urls=[SPOTIFY_ALBUM_URL]),
+            _edition("rel-second", date="2008-01-01", urls=[TIDAL_ALBUM_URL]),
+        ],
+        releases=[
+            _release("rel-first", urls=[SPOTIFY_ALBUM_URL]),
+            _release("rel-second", urls=[TIDAL_ALBUM_URL]),
+        ],
+        loaded={"spotify": ["spotify_1"], "tidal": ["tidal_1"]},
+        providers=[spotify, tidal],
+        albums={("tidal_1", TIDAL_ALBUM_ID): tidal_album},
+    ) as harness:
+        album = await harness.resolve()
+
+    assert album is tidal_album
+    assert harness.musicbrainz.get_release_details.await_args_list == [
+        call("rel-first"),
+        call("rel-second"),
+    ]
+    # the first edition's barcode is spent before the next edition is looked up at all
+    tidal.get_album_by_external_id.assert_awaited_once_with(BARCODE, ExternalID.BARCODE)
+    assert harness.get.await_args_list == [
+        call(SPOTIFY_ALBUM_ID, "spotify_1", allow_update_metadata=True),
+        call(TIDAL_ALBUM_ID, "tidal_1", allow_update_metadata=True),
+    ]
+
+
+async def test_resolve_looks_up_the_likeliest_few_editions_only() -> None:
+    """A group with more editions than the bound has the ones past it left unfetched."""
+    editions = [
+        _edition(f"rel-{index}", date=f"2007-12-{index + 1:02d}", urls=[SPOTIFY_ALBUM_URL])
+        for index in range(_MAX_EDITION_LOOKUPS + 1)
+    ]
+    with (
+        _harness(
+            editions=editions,
+            releases=[_release(edition.id, urls=[SPOTIFY_ALBUM_URL]) for edition in editions],
+            loaded={"spotify": ["spotify_1"]},
+        ) as harness,
+        pytest.raises(MediaNotFoundError),
+    ):
+        await harness.resolve()
+
+    assert harness.musicbrainz.get_release_details.await_args_list == [
+        call(edition.id) for edition in editions[:_MAX_EDITION_LOOKUPS]
+    ]
+
+
+async def test_resolve_ranks_an_edition_by_its_music_service_links_only() -> None:
+    """A link to a site that is no music service does not make an edition the likelier one."""
+    spotify_album = create_album("spotify_1", SPOTIFY_ALBUM_ID)
+    with _harness(
+        editions=[
+            _edition("rel-discogs", urls=[DISCOGS_RELEASE_URL]),
+            _edition("rel-spotify", date="2008-01-01", urls=[SPOTIFY_ALBUM_URL]),
+        ],
+        releases=[
+            _release("rel-discogs", urls=[DISCOGS_RELEASE_URL]),
+            _release("rel-spotify", urls=[SPOTIFY_ALBUM_URL]),
+        ],
+        loaded={"spotify": ["spotify_1"]},
+        albums={("spotify_1", SPOTIFY_ALBUM_ID): spotify_album},
+    ) as harness:
+        album = await harness.resolve()
+
+    assert album is spotify_album
+    harness.musicbrainz.get_release_details.assert_awaited_once_with("rel-spotify")
+
+
+async def test_resolve_surfaces_an_unexpected_provider_error() -> None:
+    """An error that is no plain miss, an expired login say, is raised rather than logged away."""
+    for error_type in (LoginFailed, InvalidDataError):
+        with _harness(
+            editions=[_edition("rel-digital", urls=[SPOTIFY_ALBUM_URL])],
+            releases=[_release("rel-digital", urls=[SPOTIFY_ALBUM_URL, TIDAL_ALBUM_URL])],
+            loaded={"spotify": ["spotify_1"], "tidal": ["tidal_1"]},
+        ) as harness:
+            harness.get.side_effect = error_type("the provider refused")
+            with pytest.raises(error_type):
+                await harness.resolve()
+
+        harness.get.assert_awaited_once_with(
+            SPOTIFY_ALBUM_ID, "spotify_1", allow_update_metadata=True
+        )
 
 
 async def test_resolve_keeps_to_the_music_sources_the_user_may_see() -> None:

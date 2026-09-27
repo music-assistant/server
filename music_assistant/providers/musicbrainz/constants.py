@@ -73,9 +73,9 @@ MAX_BARCODE_DETAIL_FETCHES = 2
 # size, so the page is as large as it can be.
 RELEASE_GROUP_BROWSE_LIMIT = 100
 
-# An artist's discography is cut off after this many pages; only a catalog-like artist has
-# more release groups than that.
-DISCOGRAPHY_MAX_PAGES = 5
+# An artist's discography is cut off after this many pages: a composer's catalog runs into
+# thousands of release groups, and each page is one more request to the mirror.
+DISCOGRAPHY_MAX_PAGES = 10
 # The release group types that make up a discography: a broadcast or other type is noise.
 DISCOGRAPHY_PRIMARY_TYPES: tuple[str, ...] = ("Album", "EP", "Single")
 

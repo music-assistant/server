@@ -58,7 +58,11 @@ from music_assistant.helpers.external_ids import (
 )
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.musicbrainz.provider import is_digital_release, relation_urls
+from music_assistant.providers.musicbrainz.provider import (
+    is_digital_release,
+    is_public_catalog_url,
+    relation_urls,
+)
 
 from .base import EXTERNAL_ID_LOOKUP_ERRORS, MAX_EXTERNAL_ID_MATCH_LOOKUPS, MediaControllerBase
 
@@ -89,6 +93,10 @@ _ALBUM_TRACK_LOOKUP_ERRORS = (
 
 # how many seconds the duration of one and the same track may differ between sources
 _TRACK_DURATION_TOLERANCE = 8
+
+# how many of a release group's official editions are looked up on the music providers,
+# likeliest first: each one costs a MusicBrainz release lookup and a barcode fan-out
+_MAX_EDITION_LOOKUPS = 3
 
 
 @dataclass
@@ -552,9 +560,10 @@ class AlbumsController(MediaControllerBase[Album]):
         """
         Return the album a MusicBrainz release group is, on one of the user's music providers.
 
-        The group's official digital edition is taken from the first music provider that has
-        it, found through the links MusicBrainz keeps or, failing those, by the edition's
-        barcode. An album already in the library is returned as the library album.
+        The group's likeliest official editions are tried in turn, and the album is the first
+        one a music provider has, found through the links MusicBrainz keeps or, failing
+        those, by the edition's barcode. An album already in the library is returned as the
+        library album.
 
         :param release_group_id: MusicBrainz release group id.
         :param allow_update_metadata: Whether the album's metadata may be refreshed on the way.
@@ -569,15 +578,13 @@ class AlbumsController(MediaControllerBase[Album]):
             for release in await musicbrainz.browse_releases_by_release_group(release_group_id)
             if release.status == "Official"
         ]
-        if editions:
-            # the digital editions of one group carry different ids on the providers, so the
-            # links of a single chosen edition are taken, never those of the whole group
-            release = await musicbrainz.get_release_details(
-                min(editions, key=_streaming_edition_rank).id
-            )
-            # a link names an instance of any loaded provider, while the user may only be
-            # handed an album from a music source it may see
-            visible_instances = {provider.instance_id for provider in self.mass.music.providers}
+        # a link names an instance of any loaded provider, while the user may only be
+        # handed an album from a music source it may see
+        visible_instances = {provider.instance_id for provider in self.mass.music.providers}
+        # the digital editions of one group carry different ids on the providers, so each
+        # edition's own links and barcode are tried, never those of the whole group
+        for edition in sorted(editions, key=_streaming_edition_rank)[:_MAX_EDITION_LOOKUPS]:
+            release = await musicbrainz.get_release_details(edition.id)
             linked = [
                 candidate
                 for candidate in await provider_mappings_from_urls(
@@ -1091,7 +1098,7 @@ class AlbumsController(MediaControllerBase[Album]):
                     candidate.provider_instance,
                     allow_update_metadata=allow_update_metadata,
                 )
-            except (MusicAssistantError, aiohttp.ClientError, TimeoutError) as err:
+            except EXTERNAL_ID_LOOKUP_ERRORS as err:
                 self.logger.debug(
                     "Release group %s is not available as album %s on %s: %s",
                     release_group_id,
@@ -1348,7 +1355,7 @@ def _streaming_edition_rank(release: MusicBrainzBarcodeRelease) -> tuple[bool, b
     """Return the sort key ranking a group's official editions, the one the services carry first."""
     return (
         not is_digital_release(release),
-        not relation_urls(release.relations),
+        not any(is_public_catalog_url(url) for url in relation_urls(release.relations)),
         release.country not in ("XW", "XE"),
         release.date or "9999",
     )
