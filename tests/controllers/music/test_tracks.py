@@ -12,6 +12,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items import (
     Album,
@@ -294,13 +295,16 @@ async def test_match_provider_without_isrc_lookup_searches(music: MusicControlle
     search.assert_awaited_once()
 
 
+@pytest.mark.parametrize(
+    "error", [ProviderUnavailableError("down"), RetriesExhausted("rate limited"), TimeoutError()]
+)
 async def test_match_provider_isrc_lookup_failure_falls_back_to_search(
-    music: MusicController,
+    music: MusicController, error: Exception
 ) -> None:
-    """An unavailable provider lookup does not end the match; the search still runs."""
+    """A provider lookup that fails or times out does not end the match; the search still runs."""
     base_track = create_track("spotify_1", "base")
     provider = _streaming_provider("qobuz_1", ProviderFeature.TRACK_BY_EXTERNAL_ID)
-    provider.get_track_by_external_id = AsyncMock(side_effect=ProviderUnavailableError("down"))
+    provider.get_track_by_external_id = AsyncMock(side_effect=error)
 
     with patch.object(music.tracks, "search", AsyncMock(return_value=[])) as search:
         mappings = await music.tracks.match_provider(base_track, provider, ref_albums=[])

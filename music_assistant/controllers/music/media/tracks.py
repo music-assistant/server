@@ -65,7 +65,12 @@ from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.lyrics import extract_lrc_lyrics, normalize_lrc_lyrics
 from music_assistant.models.music_provider import MusicProvider
 
-from .base import MAX_EXTERNAL_ID_MATCH_LOOKUPS, MediaControllerBase, TrackSyncDetails
+from .base import (
+    EXTERNAL_ID_LOOKUP_ERRORS,
+    MAX_EXTERNAL_ID_MATCH_LOOKUPS,
+    MediaControllerBase,
+    TrackSyncDetails,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -987,7 +992,7 @@ class TracksController(MediaControllerBase[Track]):
         for isrc in isrcs[:MAX_EXTERNAL_ID_MATCH_LOOKUPS]:
             try:
                 prov_track = await provider.get_track_by_external_id(isrc, ExternalID.ISRC)
-            except (NotImplementedError, MediaNotFoundError, ProviderUnavailableError) as err:
+            except EXTERNAL_ID_LOOKUP_ERRORS as err:
                 self.logger.debug(
                     "ISRC %s lookup on provider %s failed: %s", isrc, provider.name, err
                 )

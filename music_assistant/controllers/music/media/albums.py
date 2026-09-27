@@ -14,7 +14,6 @@ from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
-    ProviderUnavailableError,
     RetriesExhausted,
 )
 from music_assistant_models.helpers import create_safe_string
@@ -49,7 +48,7 @@ from music_assistant.helpers.external_ids import barcode_to_upc, is_valid_barcod
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
 
-from .base import MAX_EXTERNAL_ID_MATCH_LOOKUPS, MediaControllerBase
+from .base import EXTERNAL_ID_LOOKUP_ERRORS, MAX_EXTERNAL_ID_MATCH_LOOKUPS, MediaControllerBase
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -790,17 +789,19 @@ class AlbumsController(MediaControllerBase[Album]):
         for barcode in sorted(_canonical_album_barcodes(db_album))[:MAX_EXTERNAL_ID_MATCH_LOOKUPS]:
             try:
                 prov_album = await provider.get_album_by_external_id(barcode, ExternalID.BARCODE)
-            except (NotImplementedError, MediaNotFoundError, ProviderUnavailableError) as err:
+                if prov_album is None:
+                    continue
+                # a lookup result can be a simplified object, so fetch the full provider album
+                prov_album = await self.get_provider_item(
+                    prov_album.item_id, prov_album.provider, fallback=prov_album
+                )
+            except EXTERNAL_ID_LOOKUP_ERRORS as err:
                 self.logger.debug(
                     "Barcode %s lookup on provider %s failed: %s", barcode, provider.name, err
                 )
                 continue
-            if prov_album is None or not prov_album.available:
+            if not prov_album.available:
                 continue
-            # a lookup result can be a simplified object, so fetch the full provider album
-            prov_album = await self.get_provider_item(
-                prov_album.item_id, prov_album.provider, fallback=prov_album
-            )
             # the queried barcode is the query, not evidence: it is left out of the scored
             # copy so name, artist, year and the tracklist decide, while a second,
             # independently agreeing barcode still counts

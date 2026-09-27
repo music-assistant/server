@@ -13,7 +13,6 @@ import pytest
 from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import (
     MediaNotFoundError,
-    ProviderUnavailableError,
     RetriesExhausted,
 )
 from music_assistant_models.media_items import (
@@ -432,8 +431,9 @@ async def test_barcode_hit_without_match_evidence_falls_back_to_search() -> None
 
 
 async def test_unavailable_barcode_hit_falls_back_to_search() -> None:
-    """A barcode hit that is not available on the provider is skipped for the search."""
+    """A barcode hit whose full provider album is not available is skipped for the search."""
     base = _library_album(barcodes=[BASE_BARCODE])
+    sparse_hit = _album("s1", "spotify_1", barcodes=[BASE_BARCODE])
     unavailable = _album(
         "s1",
         "spotify_1",
@@ -448,12 +448,28 @@ async def test_unavailable_barcode_hit_falls_back_to_search() -> None:
         ],
     )
     with _harness(
-        search_results=[], provider_items={}, barcode_lookups={BASE_BARCODE: unavailable}
+        search_results=[],
+        provider_items={"s1": unavailable},
+        barcode_lookups={BASE_BARCODE: sparse_hit},
     ) as harness:
         matches = await harness.match(base)
 
     assert matches == []
-    harness.get_provider_item.assert_not_awaited()
+    harness.get_provider_item.assert_awaited_once()
+    harness.search.assert_awaited_once()
+
+
+async def test_barcode_hit_fetch_failure_falls_back_to_search() -> None:
+    """A provider that cannot deliver the full album right now is left to the search."""
+    base = _library_album(barcodes=[BASE_BARCODE])
+    sparse_hit = _album("s1", "spotify_1", barcodes=[BASE_BARCODE])
+    with _harness(
+        search_results=[], provider_items={}, barcode_lookups={BASE_BARCODE: sparse_hit}
+    ) as harness:
+        harness.get_provider_item.side_effect = RetriesExhausted("rate limited")
+        matches = await harness.match(base)
+
+    assert matches == []
     harness.search.assert_awaited_once()
 
 
@@ -475,7 +491,7 @@ async def test_barcode_lookup_failures_fall_back_to_search() -> None:
         search_results=[],
         provider_items={},
         barcode_lookups={
-            OTHER_BARCODE: ProviderUnavailableError("down"),
+            OTHER_BARCODE: RetriesExhausted("rate limited"),
             BASE_BARCODE: MediaNotFoundError("gone"),
         },
     ) as harness:

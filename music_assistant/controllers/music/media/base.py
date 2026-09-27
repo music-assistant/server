@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, final, overload
 
+import aiohttp
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
     EventType,
@@ -26,6 +27,8 @@ from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
     ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.favorite_update import FavoriteUpdate
 from music_assistant_models.helpers import create_safe_string, get_global_cache_value
@@ -127,6 +130,17 @@ PROVIDER_FEATURE_BY_MEDIA_TYPE = {
 
 # external ids tried per provider before cross-provider matching falls back to a text search
 MAX_EXTERNAL_ID_MATCH_LOOKUPS = 3
+# expected failures of a provider lookup by external id: the id is unknown or unsupported
+# there, or the provider is (temporarily) unreachable; the match then falls back to a search
+EXTERNAL_ID_LOOKUP_ERRORS = (
+    NotImplementedError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+    TimeoutError,
+    aiohttp.ClientError,
+)
 
 SORT_KEYS = {
     # sqlite has no builtin support for natural sorting
