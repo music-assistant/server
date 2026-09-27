@@ -130,7 +130,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         Restricted to the providers the current user is allowed to see when that user
         has a provider filter set.
 
-        :param favorite_only: Only count artists marked as favorite.
+        :param favorite_only: Only count the artists the current user likes.
         :param album_artists_only: Only count artists that have albums.
         :param artist_type: Only count artists of this type.
         """
@@ -140,7 +140,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if artist_type:
             query_parts.append(f"artist_type = '{artist_type}'")
         if favorite_only:
-            query_parts.append("favorite = 1")
+            query_parts.append(self._favorite_filter_clause(query_params, True))
         if album_artists_only:
             query_parts.append(
                 f"item_id in (select {DB_TABLE_ALBUM_ARTISTS}.artist_id "
@@ -174,7 +174,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         """
         Get in-database (album) artists.
 
-        :param favorite: Filter by favorite status.
+        :param favorite: Only include the current user's likes (True) or dislikes (False).
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
@@ -1003,6 +1003,12 @@ class ArtistsController(MediaControllerBase[Artist]):
         cur_provider_domains = {
             x.provider_domain for x in db_artist.provider_mappings if x.available
         }
+        # the links MusicBrainz keeps name the artist on the other providers outright, so
+        # those providers are linked first and only the remaining ones are searched
+        if musicbrainz := self._musicbrainz_link_provider():
+            cur_provider_domains |= await self._link_musicbrainz_entity(
+                db_artist, lambda: musicbrainz.resolve_artist(db_artist, [], [])
+            )
         for provider in self.mass.music.providers:
             if provider.domain in cur_provider_domains:
                 continue
@@ -1084,7 +1090,6 @@ class ArtistsController(MediaControllerBase[Artist]):
             {
                 "name": item.name,
                 "sort_name": item.sort_name,
-                "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name or "", True, True),

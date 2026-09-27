@@ -2,22 +2,25 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import AlbumType, ExternalID, MediaType
+from music_assistant_models.enums import AlbumType, ExternalID, LinkType, MediaType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, RateLimited
 from music_assistant_models.media_items import (
     Album,
     Artist,
     ItemMapping,
+    MediaItemLink,
     ProviderMapping,
     Track,
     UniqueList,
 )
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID
+from music_assistant.providers.musicbrainz.constants import SUPPORTED_FEATURES
 from music_assistant.providers.musicbrainz.models import (
     MusicBrainzArtist,
     MusicBrainzBarcodeRelease,
@@ -1847,3 +1850,119 @@ def test_album_type_from_release_group(
         id="rg", title="x", primary_type=primary_type, secondary_types=secondary_types
     )
     assert MusicbrainzProvider.album_type_from_release_group(release_group) == expected
+
+
+# ---------------------------------------------------------------------------
+# album, track and artist metadata
+# ---------------------------------------------------------------------------
+
+DISCOGS_RELEASE_URL = "https://www.discogs.com/release/1119453"
+DISCOGS_ARTIST_URL = "https://www.discogs.com/artist/3840"
+
+
+def test_metadata_features_cover_artists_albums_and_tracks() -> None:
+    """MusicBrainz offers metadata for every library item type it identifies."""
+    assert {
+        ProviderFeature.ARTIST_METADATA,
+        ProviderFeature.ALBUM_METADATA,
+        ProviderFeature.TRACK_METADATA,
+    } <= SUPPORTED_FEATURES
+
+
+async def test_album_metadata_surfaces_genres_label_release_date_and_links() -> None:
+    """An album gets the genres of its release and group, its label, date and Discogs link."""
+    provider, get_data = _routed_provider(
+        {
+            "release/rel-1": _release_lookup(
+                "rel-1",
+                genres=[{"id": "g2", "name": "art rock", "count": 2, "disambiguation": ""}],
+                relations=[
+                    _url_relation(SPOTIFY_ALBUM_URL),
+                    _url_relation(DISCOGS_RELEASE_URL, type_="discogs"),
+                    _url_relation("https://www.discogs.com/release/1", type_="discogs", ended=True),
+                ],
+            )
+        }
+    )
+    album = _album_item(external_ids={(ExternalID.MB_ALBUM, "rel-1")})
+
+    metadata = await provider.get_album_metadata(album)
+
+    assert metadata is not None
+    assert metadata.genres == {"alternative rock", "art rock"}
+    assert metadata.label == "XL Recordings"
+    assert metadata.release_date == datetime(2016, 5, 6, tzinfo=UTC)
+    assert metadata.links == {MediaItemLink(type=LinkType.DISCOGS, url=DISCOGS_RELEASE_URL)}
+    assert _requested(get_data) == ["release/rel-1"]
+
+
+async def test_album_metadata_release_date_needs_a_full_date() -> None:
+    """A release dated to the month or year gives no release date."""
+    for date in ("2016-05", "2016", "", None):
+        provider, _ = _routed_provider({"release/rel-1": _release_lookup("rel-1", date=date)})
+        metadata = await provider.get_album_metadata(
+            _album_item(external_ids={(ExternalID.MB_ALBUM, "rel-1")})
+        )
+        assert metadata is not None
+        assert metadata.release_date is None
+
+
+async def test_album_metadata_is_none_without_an_id_or_anything_to_tell() -> None:
+    """No MusicBrainz id, an unknown id or a bare release yields no metadata."""
+    provider, get_data = _routed_provider({})
+    assert await provider.get_album_metadata(_album_item()) is None
+    get_data.assert_not_awaited()
+
+    unknown = _album_item(external_ids={(ExternalID.MB_ALBUM, "rel-unknown")})
+    assert await provider.get_album_metadata(unknown) is None
+
+    bare = _release_lookup(
+        "rel-1", date="2016", relations=[], **{"label-info": [], "release-group": None}
+    )
+    provider, _ = _routed_provider({"release/rel-1": bare})
+    known = _album_item(external_ids={(ExternalID.MB_ALBUM, "rel-1")})
+    assert await provider.get_album_metadata(known) is None
+
+
+async def test_track_metadata_surfaces_the_recording_genres() -> None:
+    """A track gets the genres of its recording, nothing when the recording has none."""
+    genres = [{"id": "g1", "name": "alternative rock", "count": 5, "disambiguation": ""}]
+    provider, _ = _routed_provider(
+        {
+            "recording/rec-1": {**_recording_lookup("rec-1"), "genres": genres},
+            "recording/rec-2": _recording_lookup("rec-2"),
+        }
+    )
+
+    tagged = await provider.get_track_metadata(
+        _track_item(external_ids={(ExternalID.MB_RECORDING, "rec-1")})
+    )
+    assert tagged is not None
+    assert tagged.genres == {"alternative rock"}
+
+    plain = _track_item(external_ids={(ExternalID.MB_RECORDING, "rec-2")})
+    assert await provider.get_track_metadata(plain) is None
+    assert await provider.get_track_metadata(_track_item()) is None
+
+
+async def test_artist_metadata_includes_genres_and_current_typed_links() -> None:
+    """An artist gets its MusicBrainz genres and its current Discogs and homepage links."""
+    lookup = _artist_lookup()
+    lookup["relations"] = [
+        _url_relation(SPOTIFY_ARTIST_URL),
+        _url_relation(DISCOGS_ARTIST_URL, type_="discogs"),
+        _url_relation("https://radiohead.com/", type_="official homepage"),
+        _url_relation("https://old.example.com/", type_="official homepage", ended=True),
+    ]
+    provider, _ = _routed_provider({f"artist/{RADIOHEAD_MBID}": lookup})
+
+    metadata = await provider.get_artist_metadata(
+        _artist_item(external_ids={(ExternalID.MB_ARTIST, RADIOHEAD_MBID)})
+    )
+
+    assert metadata is not None
+    assert metadata.genres == {"alternative rock"}
+    assert metadata.links == {
+        MediaItemLink(type=LinkType.DISCOGS, url=DISCOGS_ARTIST_URL),
+        MediaItemLink(type=LinkType.WEBSITE, url="https://radiohead.com/"),
+    }

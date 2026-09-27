@@ -245,7 +245,14 @@ class AppleMusicAPIClient:
         return cast("str", result["data"][0]["id"])
 
     async def get_ratings(self, item_ids: list[str], media_type: MediaType) -> dict[str, bool]:
-        """Return a mapping of item_id → is_favourite for a list of IDs."""
+        """
+        Return the rating of each of the given items.
+
+        True is a thumbs up, False a thumbs down; an item without a rating is absent.
+
+        :param item_ids: The Apple Music item ids to look up.
+        :param media_type: Media type of the items.
+        """
         if media_type == MediaType.ARTIST:
             raise NotImplementedError(
                 "Ratings are not available for artist in the Apple Music API."

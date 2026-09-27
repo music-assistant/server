@@ -65,7 +65,7 @@ def create_mock_album(
     provider_mappings: list[ProviderMapping] | None = None,
     provider: str = "library",
     name: str = "Test Album",
-    favorite: bool = False,
+    favorite: bool | None = None,
 ) -> Mock:
     """
     Create a mock Album media item.
@@ -74,7 +74,7 @@ def create_mock_album(
     :param provider_mappings: The provider mappings to set.
     :param provider: The provider string (e.g. 'library', 'spotify').
     :param name: The album name.
-    :param favorite: Whether the item is favorited.
+    :param favorite: The favorite state the source reports, None for none.
     """
     album = Mock(spec=Album)
     album.item_id = item_id

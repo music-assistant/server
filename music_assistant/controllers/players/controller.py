@@ -102,11 +102,13 @@ from music_assistant.constants import (
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_player_access,
+    set_current_user,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.colors import get_palette_for_url
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.plugin_engines import create_tts_engine_config_entries
+from music_assistant.helpers.provider_access import resolve_playback_user
 from music_assistant.helpers.util import (
     enrich_device_mac_address,
     is_valid_mac_address,
@@ -1528,8 +1530,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         can not be resolved to a media item.
         """
         player = self._get_player_with_redirect(player_id)
+        mass_queue = self.get_active_queue(player)
+        # a favorite set from a player belongs to the user the playback is for
+        if (
+            get_current_user() is None
+            and mass_queue
+            and (playback_user := await resolve_playback_user(self.mass, mass_queue.queue_id))
+        ):
+            set_current_user(playback_user)
         # handle mass player queue active
-        if mass_queue := self.get_active_queue(player):
+        if mass_queue:
             if not (current_item := mass_queue.current_item) or not current_item.media_item:
                 raise PlayerCommandFailed("No current item to add to favorites")
             # if we're playing a radio station, try to resolve the currently playing track

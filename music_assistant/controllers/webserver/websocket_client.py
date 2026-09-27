@@ -8,6 +8,7 @@ import inspect
 import logging
 from concurrent import futures
 from contextlib import suppress
+from dataclasses import replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
@@ -29,7 +30,8 @@ from music_assistant_models.errors import (
     MusicAssistantError,
 )
 from music_assistant_models.event import MassEvent
-from music_assistant_models.media_items import Playlist
+from music_assistant_models.favorite_update import FavoriteUpdate
+from music_assistant_models.media_items import MediaItem, Playlist
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
@@ -645,6 +647,22 @@ class WebsocketClientHandler:
                 event, event.data
             ):
                 return
+
+            if isinstance(event.data, FavoriteUpdate) and (
+                self._authenticated_user is None
+                or event.data.user_id != self._authenticated_user.user_id
+            ):
+                # a like or dislike is the business of its own user only
+                return
+
+            if isinstance(event.data, MediaItem) and event.data.favorite is not None:
+                # a library item carries the favorite state of the user that touched it; every
+                # client keeps its own and learns of changes through the favorite event
+                event = MassEvent(
+                    event=event.event,
+                    object_id=event.object_id,
+                    data=replace(event.data, favorite=None),
+                )
 
             if event.event == EventType.TASKS_UPDATED:
                 if self._authenticated_user is None:
