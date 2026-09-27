@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from music_assistant_models.enums import ExternalID, ImageType
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.helpers import set_global_cache_values
 from music_assistant_models.media_items import (
     ItemMapping,
@@ -263,6 +264,68 @@ async def test_album_tracks_prefer_a_playable_copy(mass: MusicAssistant, unplaya
         ("Shared", playable, True),
         ("Bonus", unplayable, False),
     ]
+
+
+async def test_album_tracks_survive_a_dead_provider_mapping(mass: MusicAssistant) -> None:
+    """A provider that no longer lists the album does not hide the other providers' tracks."""
+    album = create_album("qobuz_1", "album_q")
+    album.provider_mappings.add(
+        ProviderMapping(item_id="album_s", provider_domain="spotify", provider_instance="spotify_1")
+    )
+    library_album = await mass.music.albums.add_item_to_library(album)
+    await set_global_cache_values({"available_providers": {"qobuz_1", "spotify_1"}})
+
+    async def _provider_tracks(_item_id: str, instance: str) -> list[Track]:
+        if instance == "spotify_1":
+            raise MediaNotFoundError("album withdrawn")
+        return [_album_track("qobuz_1", "Shared", 1, available=True)]
+
+    with patch.object(
+        mass.music.albums, "_get_provider_album_tracks", AsyncMock(side_effect=_provider_tracks)
+    ):
+        tracks = await mass.music.albums.tracks(library_album.item_id, "library")
+
+    assert [(track.name, track.provider) for track in tracks] == [("Shared", "qobuz_1")]
+
+
+async def test_album_tracks_raise_when_no_provider_lists_the_album(mass: MusicAssistant) -> None:
+    """With nothing in the library and every provider failing, the caller learns why."""
+    album = create_album("qobuz_1", "album_q")
+    album.provider_mappings.add(
+        ProviderMapping(item_id="album_s", provider_domain="spotify", provider_instance="spotify_1")
+    )
+    library_album = await mass.music.albums.add_item_to_library(album)
+    await set_global_cache_values({"available_providers": {"qobuz_1", "spotify_1"}})
+
+    with (
+        patch.object(
+            mass.music.albums,
+            "_get_provider_album_tracks",
+            AsyncMock(side_effect=MediaNotFoundError("album withdrawn")),
+        ),
+        pytest.raises(MediaNotFoundError),
+    ):
+        await mass.music.albums.tracks(library_album.item_id, "library")
+
+
+async def test_album_tracks_fall_back_to_the_library_when_every_provider_fails(
+    mass: MusicAssistant,
+) -> None:
+    """The in-library tracks are still listed when no provider answers."""
+    library_album = await mass.music.albums.add_item_to_library(create_album("qobuz_1", "album_q"))
+    track = create_track("qobuz_1", "track_q", name="Kept")
+    track.album = create_album("qobuz_1", "album_q")
+    await mass.music.tracks.add_item_to_library(track)
+    await set_global_cache_values({"available_providers": {"qobuz_1"}})
+
+    with patch.object(
+        mass.music.albums,
+        "_get_provider_album_tracks",
+        AsyncMock(side_effect=MediaNotFoundError("album withdrawn")),
+    ):
+        tracks = await mass.music.albums.tracks(library_album.item_id, "library")
+
+    assert [track.name for track in tracks] == ["Kept"]
 
 
 def test_album_from_library_item_mapping_has_no_self_mapping(mass: MusicAssistant) -> None:

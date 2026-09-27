@@ -402,16 +402,9 @@ class AlbumsController(MediaControllerBase[Album]):
             album_tracks = await self._get_provider_album_tracks(
                 item_id, provider_instance_id_or_domain
             )
-            # some album-track listings omit the parent album and its image; backfill both
-            # from the provider album so the queue shows the album name and artwork.
-            if album_tracks and (not album_tracks[0].album or not album_tracks[0].image):
-                prov_album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-                album_mapping = ItemMapping.from_item(prov_album)
-                for track in album_tracks:
-                    if prov_album.image and not track.image:
-                        track.metadata.add_image(prov_album.image)
-                    if track.album is None:
-                        track.album = album_mapping
+            await self._backfill_album_on_tracks(
+                album_tracks, item_id, provider_instance_id_or_domain
+            )
             return album_tracks
 
         # respect the current user's provider filter (if any) for both the
@@ -435,15 +428,28 @@ class AlbumsController(MediaControllerBase[Album]):
         # where each provider track landed in the result, so a playable copy from another
         # provider can take the place of an unplayable one
         provider_slots: dict[str, int] = {}
+        lookup_error: Exception | None = None
         for provider_mapping in library_album.provider_mappings:
             if (
                 allowed_providers is not None
                 and provider_mapping.provider_instance not in allowed_providers
             ):
                 continue
-            provider_tracks = await self._get_provider_album_tracks(
-                provider_mapping.item_id, provider_mapping.provider_instance
-            )
+            try:
+                provider_tracks = await self._get_provider_album_tracks(
+                    provider_mapping.item_id, provider_mapping.provider_instance
+                )
+            except _ALBUM_TRACK_LOOKUP_ERRORS as err:
+                # one provider that no longer lists the album must not hide the other
+                # providers' tracks
+                self.logger.debug(
+                    "Album tracks unavailable for %s on %s: %s",
+                    provider_mapping.item_id,
+                    provider_mapping.provider_instance,
+                    err,
+                )
+                lookup_error = err
+                continue
             for provider_track in provider_tracks:
                 # In some cases (looking at you YTM) the disc/track number is not obtained from
                 # library_tracks. Ensure to update the disc/track number when interacting with
@@ -489,6 +495,9 @@ class AlbumsController(MediaControllerBase[Album]):
                     result.append(provider_track)
                 else:
                     result[slot] = provider_track
+        if not result and lookup_error is not None:
+            # nothing else lists the album, so the failure is the caller's answer
+            raise lookup_error
         # NOTE: we need to return the results sorted on disc/track here
         # to ensure the correct order at playback
         return sorted(result, key=lambda x: (x.disc_number, x.track_number))
@@ -560,7 +569,12 @@ class AlbumsController(MediaControllerBase[Album]):
         )
 
     async def link_album_tracks(
-        self, album: Album, db_tracks: Sequence[Track], release: MusicBrainzRelease | None
+        self,
+        album: Album,
+        db_tracks: Sequence[Track],
+        release: MusicBrainzRelease | None,
+        *,
+        link_providers: bool = True,
     ) -> None:
         """
         Carry an album's MusicBrainz identity and provider links over to its library tracks.
@@ -573,6 +587,7 @@ class AlbumsController(MediaControllerBase[Album]):
         :param album: The library album.
         :param db_tracks: The album's library tracks.
         :param release: The album's MusicBrainz release, if it was identified.
+        :param link_providers: Whether to link the tracks to the album's providers too.
         """
         if not db_tracks:
             return
@@ -595,6 +610,8 @@ class AlbumsController(MediaControllerBase[Album]):
         async with self.mass.music.database.deferred_commit():
             if release is not None:
                 await self._link_tracks_to_release(db_tracks, release)
+            if not link_providers:
+                return
             for domain, mapping in album_mappings.items():
                 if all(domain in domains for domains in track_domains):
                     continue
@@ -641,6 +658,12 @@ class AlbumsController(MediaControllerBase[Album]):
         cur_provider_domains = {
             x.provider_domain for x in db_album.provider_mappings if x.available
         }
+        # the links MusicBrainz keeps name the album on the other providers outright, so
+        # those providers are linked first and only the remaining ones are searched
+        if musicbrainz := self._musicbrainz_link_provider():
+            cur_provider_domains |= await self._link_musicbrainz_entity(
+                db_album, lambda: musicbrainz.resolve_release(db_album)
+            )
         for provider in self.mass.music.providers:
             if provider.domain in cur_provider_domains:
                 continue
@@ -757,6 +780,28 @@ class AlbumsController(MediaControllerBase[Album]):
             prov = cast("MusicProvider", prov)
             return await prov.get_album_tracks(item_id)
         return []
+
+    async def _backfill_album_on_tracks(
+        self, album_tracks: list[Track], item_id: str, provider_instance_id_or_domain: str
+    ) -> None:
+        """
+        Fill in the parent album and its image on provider album tracks that omit them.
+
+        :param album_tracks: The album tracks as listed by the provider.
+        :param item_id: The provider album id.
+        :param provider_instance_id_or_domain: The provider the album tracks come from.
+        """
+        # some album-track listings omit the parent album and its image; backfill both
+        # from the provider album so the queue shows the album name and artwork.
+        if not album_tracks or (album_tracks[0].album and album_tracks[0].image):
+            return
+        prov_album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
+        album_mapping = ItemMapping.from_item(prov_album)
+        for track in album_tracks:
+            if prov_album.image and not track.image:
+                track.metadata.add_image(prov_album.image)
+            if track.album is None:
+                track.album = album_mapping
 
     async def _verify_musicbrainz_mapping(self, mapping: ProviderMapping) -> bool:
         """Return True if a linked album exists on the provider, checked for Apple Music only."""

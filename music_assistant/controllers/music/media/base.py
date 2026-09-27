@@ -26,6 +26,7 @@ from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidDataError,
     MediaNotFoundError,
+    MusicAssistantError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
@@ -81,13 +82,16 @@ from music_assistant.helpers.external_ids import (
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.provider_access import exact_provider, visible_music_sources
 from music_assistant.helpers.util import guard_single_request, parse_optional_bool
+from music_assistant.providers.musicbrainz.provider import relation_urls
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Mapping
+    from collections.abc import AsyncGenerator, Callable, Coroutine, Mapping
 
     from music_assistant import MusicAssistant
     from music_assistant.models.music_provider import MusicProvider
     from music_assistant.models.plugin import PluginProvider
+    from music_assistant.providers.musicbrainz.models import MusicBrainzArtist, MusicBrainzRelease
+    from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
 
 
 ItemCls = TypeVar("ItemCls", bound="MediaItemType")
@@ -1875,6 +1879,42 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param mapping: The candidate mapping, built from a MusicBrainz URL relation.
         """
         return True
+
+    def _musicbrainz_link_provider(self) -> MusicbrainzProvider | None:
+        """Return the MusicBrainz provider when it is loaded and linking through it is enabled."""
+        if not self.mass.metadata.link_providers_via_musicbrainz:
+            return None
+        return cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
+
+    @final
+    async def _link_musicbrainz_entity(
+        self,
+        db_item: ItemCls,
+        resolve: Callable[[], Coroutine[Any, Any, MusicBrainzArtist | MusicBrainzRelease | None]],
+    ) -> set[str]:
+        """
+        Link a library item to the providers MusicBrainz knows it on, before any is searched.
+
+        :param db_item: The library item under match.
+        :param resolve: Starts the MusicBrainz lookup identifying the item.
+        :return: The provider domains linked, for the search to skip.
+        """
+        try:
+            if (entity := await resolve()) is None:
+                return set()
+            added = await self.link_musicbrainz_mappings(db_item, relation_urls(entity.relations))
+        except (MusicAssistantError, aiohttp.ClientError, TimeoutError) as err:
+            # the search legs can still find the providers, so MusicBrainz trouble only
+            # costs the shortcut
+            self.logger.warning(
+                "Error linking %s %s through MusicBrainz: %s",
+                self.media_type.value,
+                db_item.name,
+                err,
+                exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+            )
+            return set()
+        return {mapping.provider_domain for mapping in added}
 
     def _external_ids_query(
         self, media_type: MediaType | None = None, table_alias: str | None = None

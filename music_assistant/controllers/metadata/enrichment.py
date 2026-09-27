@@ -73,6 +73,9 @@ class MetadataEnrichmentMixin:
         @property
         def providers(self) -> list[MetadataProvider]: ...  # noqa: D102
 
+        @property
+        def link_providers_via_musicbrainz(self) -> bool: ...  # noqa: D102
+
         async def create_collage_image(  # noqa: D102
             self,
             images: list[MediaItemImage],
@@ -566,7 +569,8 @@ class MetadataEnrichmentMixin:
                     discogs := discogs_external_id(urls, MediaType.ARTIST)
                 ):
                     artist.add_external_id(*discogs)
-                await self.mass.music.artists.link_musicbrainz_mappings(artist, urls)
+                if self.link_providers_via_musicbrainz:
+                    await self.mass.music.artists.link_musicbrainz_mappings(artist, urls)
             except Exception as err:
                 self.logger.warning(
                     "Error linking Artist %s through MusicBrainz: %s",
@@ -591,8 +595,12 @@ class MetadataEnrichmentMixin:
             else:
                 urls = relation_urls(release.relations)
                 _fill_album_from_release(album, release, urls)
-                await self.mass.music.albums.link_musicbrainz_mappings(album, urls)
-                await self.mass.music.albums.link_album_tracks(album, db_tracks, release)
+                link_providers = self.link_providers_via_musicbrainz
+                if link_providers:
+                    await self.mass.music.albums.link_musicbrainz_mappings(album, urls)
+                await self.mass.music.albums.link_album_tracks(
+                    album, db_tracks, release, link_providers=link_providers
+                )
         except Exception as err:
             self.logger.warning(
                 "Error linking Album %s through MusicBrainz: %s",
@@ -613,9 +621,10 @@ class MetadataEnrichmentMixin:
                 self.logger.debug("Track %s was not found on MusicBrainz", track.name)
             else:
                 fill_track_from_recording(track, recording)
-                await self.mass.music.tracks.link_musicbrainz_mappings(
-                    track, relation_urls(recording.relations)
-                )
+                if self.link_providers_via_musicbrainz:
+                    await self.mass.music.tracks.link_musicbrainz_mappings(
+                        track, relation_urls(recording.relations)
+                    )
         except Exception as err:
             self.logger.warning(
                 "Error linking Track %s through MusicBrainz: %s",

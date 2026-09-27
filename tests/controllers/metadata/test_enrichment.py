@@ -52,6 +52,7 @@ def _enrichment(musicbrainz: MagicMock | None = None) -> MetadataEnrichmentMixin
     enrichment.config.get_value = _online_metadata_only
     enrichment.preferred_language = "en"  # type: ignore[misc]
     enrichment.providers = []  # type: ignore[misc]
+    enrichment.link_providers_via_musicbrainz = True  # type: ignore[misc]
     # every music provider resolves to a stub, MusicBrainz only when it is loaded
     enrichment.mass.get_provider = MagicMock(
         side_effect=lambda domain, **_kwargs: (
@@ -466,7 +467,31 @@ async def test_album_identity_links_the_album_and_its_tracks() -> None:
     albums.link_musicbrainz_mappings.assert_awaited_once_with(
         album, [SPOTIFY_ALBUM_URL, DISCOGS_RELEASE_URL]
     )
-    albums.link_album_tracks.assert_awaited_once_with(album, db_tracks, release)
+    albums.link_album_tracks.assert_awaited_once_with(
+        album, db_tracks, release, link_providers=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_album_identity_with_linking_disabled_fills_ids_but_links_nothing() -> None:
+    """With provider linking off the album still gets its ids; no provider is linked."""
+    release = _release()
+    enrichment = _enrichment(_musicbrainz(release=release))
+    enrichment.link_providers_via_musicbrainz = False  # type: ignore[misc]
+    albums = _mass(enrichment).music.albums
+    db_tracks = [_track()]
+    albums.get_library_album_tracks = AsyncMock(return_value=db_tracks)
+    album = _album()
+
+    await enrichment._link_album_to_musicbrainz(album)
+
+    assert album.mbid == RELEASE_ID
+    assert album.metadata.last_musicbrainz_lookup is not None
+    albums.link_musicbrainz_mappings.assert_not_awaited()
+    # the release still identifies the album's tracks, only the providers are left alone
+    albums.link_album_tracks.assert_awaited_once_with(
+        album, db_tracks, release, link_providers=False
+    )
 
 
 @pytest.mark.asyncio
@@ -714,3 +739,50 @@ async def test_artist_identity_marks_an_artist_musicbrainz_does_not_know() -> No
     assert artist.metadata.last_musicbrainz_lookup is not None
     musicbrainz.get_artist_details.assert_not_awaited()
     _mass(enrichment).music.artists.link_musicbrainz_mappings.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_artist_identity_with_linking_disabled_fills_discogs_but_links_nothing() -> None:
+    """With provider linking off the artist still gets its Discogs id; no provider is linked."""
+    details = MusicBrainzArtist(
+        id=OTHER_MBID,
+        name="Radiohead",
+        sort_name="Radiohead",
+        relations=[_relation(SPOTIFY_ARTIST_URL), _relation(DISCOGS_ARTIST_URL)],
+    )
+    enrichment = _enrichment(_musicbrainz(artist=details))
+    enrichment.link_providers_via_musicbrainz = False  # type: ignore[misc]
+    artist = Artist(
+        item_id="1",
+        provider="library",
+        name="Radiohead",
+        provider_mappings=set(),
+        external_ids={(ExternalID.MB_ARTIST, OTHER_MBID)},
+    )
+
+    await enrichment._link_artist_to_musicbrainz(artist)
+
+    assert artist.get_external_id(ExternalID.DISCOGS) == "3840"
+    assert artist.metadata.last_musicbrainz_lookup is not None
+    _mass(enrichment).music.artists.link_musicbrainz_mappings.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_track_identity_with_linking_disabled_fills_ids_but_links_nothing() -> None:
+    """With provider linking off the track still gets its recording id; no provider is linked."""
+    recording = MusicBrainzRecording(
+        id=RECORDING_ID,
+        title="15 Step",
+        isrcs=["GBSTK0700001"],
+        relations=[_relation(SPOTIFY_TRACK_URL)],
+    )
+    enrichment = _enrichment(_musicbrainz(recording=recording))
+    enrichment.link_providers_via_musicbrainz = False  # type: ignore[misc]
+    track = _track()
+
+    await enrichment._link_track_to_musicbrainz(track)
+
+    assert track.mbid == RECORDING_ID
+    assert (ExternalID.ISRC, "GBSTK0700001") in track.external_ids
+    assert track.metadata.last_musicbrainz_lookup is not None
+    _mass(enrichment).music.tracks.link_musicbrainz_mappings.assert_not_awaited()
