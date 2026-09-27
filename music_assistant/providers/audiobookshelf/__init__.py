@@ -187,6 +187,8 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
         """Initialize the Audiobookshelf provider."""
         super().__init__(mass, manifest, config, supported_features)
         self.libraries = LibrariesHelper()
+        # libraries whose narrators were scanned since the last audiobook sync
+        self._narrators_scanned: set[str] = set()
 
     @staticmethod
     def handle_refresh_token(
@@ -426,6 +428,7 @@ for more details.
         if media_type == MediaType.AUDIOBOOK:
             self.libraries.audiobooks.clear()
             self.libraries.audiobook_narrators.clear()
+            self._narrators_scanned.clear()
         elif media_type == MediaType.PODCAST:
             self.libraries.podcasts.clear()
         elif media_type == MediaType.PLAYLIST:
@@ -2070,6 +2073,7 @@ for more details.
             **self.libraries.audiobook_narrators,
             **audiobook_narrators,
         }
+        self._narrators_scanned.add(library_id)
 
     async def _get_audiobook_narrators(
         self, book: AbsLibraryItemExpandedBook
@@ -2077,6 +2081,11 @@ for more details.
         """Get narrators of an audiobook, either from cache or API calls."""
         if cached_narrators := self.libraries.audiobook_narrators.get(book.id_):
             return cached_narrators
+        if book.library_id in self._narrators_scanned:
+            # a scan only records books that have narrators, so a book without them stays
+            # absent from the cache - rescanning costs two requests per narrator and would
+            # not add it either
+            return set()
         await self._update_book_narrators(book.library_id)
         return self.libraries.audiobook_narrators.get(book.id_, set())
 
