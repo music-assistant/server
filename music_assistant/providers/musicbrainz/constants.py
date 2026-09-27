@@ -49,6 +49,18 @@ URL_RELATION_ENTITY: dict[MediaType, str] = {
 # order they are reverse-looked up: the most widely linked services first.
 REVERSE_URL_DOMAINS: tuple[str, ...] = ("spotify", "deezer", "tidal", "apple_music", "ytmusic")
 
+# Public catalog hosts whose item URLs MusicBrainz stores as the provider hands them out, so
+# a mapping's own URL can be reverse-looked up. A local server's URL never leaves the house.
+REVERSE_URL_HOSTS: tuple[str, ...] = (
+    "open.spotify.com",
+    "tidal.com",
+    "deezer.com",
+    "music.apple.com",
+    "music.youtube.com",
+    "soundcloud.com",
+    "bandcamp.com",
+)
+
 # Bounds on the requests one identity resolution spends per lookup leg.
 MAX_REVERSE_URL_LOOKUPS = 3
 MAX_REF_ITEMS = 3

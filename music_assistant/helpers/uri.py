@@ -180,8 +180,8 @@ def discogs_id_from_url(url: str, media_type: MediaType) -> str | None:
     if len(path) < 2 or path[0] != _DISCOGS_TYPE_MAP.get(media_type):
         return None
     # the id may carry a name slug: https://www.discogs.com/release/1234-Artist-Title
-    match = re.match(r"\d+", path[1])
-    return match.group(0) if match else None
+    match = re.fullmatch(r"(\d+)(?:-.*)?", path[1])
+    return match.group(1) if match else None
 
 
 def _parse_share_url(uri: str) -> tuple[MediaType, str, str] | None:

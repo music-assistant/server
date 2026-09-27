@@ -149,3 +149,8 @@ def test_discogs_external_id() -> None:
         ExternalID.DISCOGS,
         "1119453",
     )
+    # links to two different Discogs artists identify neither
+    assert (
+        discogs_external_id([DISCOGS_ARTIST, "https://www.discogs.com/artist/1"], MediaType.ARTIST)
+        is None
+    )

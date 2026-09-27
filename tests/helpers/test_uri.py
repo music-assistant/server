@@ -202,6 +202,7 @@ def test_apple_storefront_from_url() -> None:
         ("https://www.discogs.com/artist/3840-Radiohead", MediaType.ARTIST, "3840"),
         ("https://www.discogs.com/release/1119453", MediaType.ALBUM, "1119453"),
         ("https://www.discogs.com/master/21491", MediaType.ALBUM, None),
+        ("https://www.discogs.com/artist/3840anything", MediaType.ARTIST, None),
         ("https://www.discogs.com/release/1119453", MediaType.ARTIST, None),
         ("https://www.discogs.com/artist/3840", MediaType.TRACK, None),
         ("https://www.wikidata.org/wiki/Q42", MediaType.ARTIST, None),

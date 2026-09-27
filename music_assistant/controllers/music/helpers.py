@@ -234,7 +234,10 @@ def discogs_external_id(
     :param urls: Public URLs of the item (e.g. MusicBrainz URL relations).
     :param media_type: Media type of the item: ARTIST or ALBUM.
     """
-    for url in urls:
-        if discogs_id := discogs_id_from_url(url, media_type):
-            return (ExternalID.DISCOGS, discogs_id)
-    return None
+    discogs_ids = {
+        discogs_id for url in urls if (discogs_id := discogs_id_from_url(url, media_type))
+    }
+    # links to several Discogs entries identify none of them
+    if len(discogs_ids) != 1:
+        return None
+    return (ExternalID.DISCOGS, discogs_ids.pop())

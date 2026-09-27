@@ -1492,8 +1492,8 @@ def test_length_matches_up_to_the_tolerance() -> None:
     assert not _length_matches(MusicBrainzRecording(id="r", title="15 Step", length=238001), track)
 
 
-async def test_resolve_recording_by_isrc_takes_the_first_fit_without_an_artist_match() -> None:
-    """Without a recording credited to the track's artist, the first fitting one is taken."""
+async def test_resolve_recording_by_isrc_needs_a_credit_for_a_named_artist() -> None:
+    """A recording crediting none of the track's artists is not the track; artistless tracks take the first fit."""
     isrc_lookup = {
         "isrc": ISRC,
         "recordings": [
@@ -1504,10 +1504,12 @@ async def test_resolve_recording_by_isrc_takes_the_first_fit_without_an_artist_m
     provider, _ = _routed_provider(
         {f"isrc/{ISRC}": isrc_lookup, "recording/rec-cover": _recording_lookup("rec-cover")}
     )
+    isrc_only = {(ExternalID.ISRC, ISRC)}
 
-    recording = await provider.resolve_recording(
-        _track_item(external_ids={(ExternalID.ISRC, ISRC)})
-    )
+    # no album, so the name search cannot answer either: the ISRC leg alone decides
+    assert await provider.resolve_recording(_track_item(album=None, external_ids=isrc_only)) is None
+
+    recording = await provider.resolve_recording(_track_item(artist=None, external_ids=isrc_only))
 
     assert recording is not None
     assert recording.id == "rec-cover"
@@ -1726,21 +1728,25 @@ def test_reverse_lookup_urls_take_one_canonical_url_per_provider_first() -> None
     ]
 
 
-def test_reverse_lookup_urls_include_the_mappings_own_web_links() -> None:
-    """Mappings without a canonical form contribute their own URL, if it is a web link at all."""
+def test_reverse_lookup_urls_include_the_mappings_own_public_links() -> None:
+    """Mappings without a canonical form contribute their own URL, public catalog hosts only."""
     artist = _artist_item(
         mappings={
             _mapping("apple_music", "657515", "https://music.apple.com/gb/artist/radiohead/657515"),
             _mapping("soundcloud", "radiohead", "https://soundcloud.com/radiohead"),
+            _mapping("bandcamp", "radiohead", "https://radiohead.bandcamp.com/"),
+            # a local server's URL, or one MusicBrainz stores differently, never goes out
             _mapping("qobuz", "43840", "https://open.qobuz.com/artist/43840"),
-            _mapping("bandcamp", "radiohead"),
-            _mapping("plex", "1", "plex://artist/1"),
+            _mapping(
+                "plex", "1", "http://192.168.1.5:32400/library/metadata/1?X-Plex-Token=s3cret"
+            ),
+            _mapping("jellyfin", "2", "plex://artist/2"),
         }
     )
 
     assert MusicbrainzProvider._reverse_lookup_urls(artist) == [
         "https://music.apple.com/gb/artist/657515",
-        "https://open.qobuz.com/artist/43840",
+        "https://radiohead.bandcamp.com/",
         "https://soundcloud.com/radiohead",
     ]
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from mashumaro.exceptions import InvalidFieldValue, MissingField
 from music_assistant_models.config_entries import ConfigEntry
@@ -44,6 +45,7 @@ from .constants import (
     RECORDING_LENGTH_TOLERANCE_MS,
     RELEASE_GROUP_BROWSE_LIMIT,
     REVERSE_URL_DOMAINS,
+    REVERSE_URL_HOSTS,
     SECONDARY_TYPE_MAPPING,
     SOCIAL_HOST_MAPPING,
     SUPPORTED_FEATURES,
@@ -922,15 +924,25 @@ class MusicbrainzProvider(MetadataProvider):
         ]
         if not candidates:
             return None
-        artist_name = track.artists[0].name if track.artists else ""
-        chosen = next(
-            (
-                recording
-                for recording in candidates
-                if artist_name and _matching_artist_credit(recording.artist_credit, artist_name)
-            ),
-            candidates[0],
+        # a reused or misassigned ISRC is told apart by the credited artist, so a track that
+        # names its artists only takes a recording crediting one of them
+        chosen = (
+            candidates[0]
+            if not track.artists
+            else next(
+                (
+                    recording
+                    for recording in candidates
+                    if any(
+                        _matching_artist_credit(recording.artist_credit, artist.name)
+                        for artist in track.artists
+                    )
+                ),
+                None,
+            )
         )
+        if chosen is None:
+            return None
         with suppress(InvalidDataError):
             return await self.get_recording_details(chosen.id)
         return None
@@ -959,7 +971,7 @@ class MusicbrainzProvider(MetadataProvider):
                 mappings.remove(mapping)
         for mapping in mappings:
             url = mapping.url or ""
-            if url.startswith(("http://", "https://")) and url not in urls:
+            if _is_public_catalog_url(url) and url not in urls:
                 urls.append(url)
         return urls[:MAX_REVERSE_URL_LOOKUPS]
 
@@ -975,6 +987,14 @@ def relation_urls(relations: Iterable[MusicBrainzRelation] | None) -> list[str]:
         if relation.url and not relation.ended and relation.url.resource not in urls:
             urls.append(relation.url.resource)
     return urls
+
+
+def _is_public_catalog_url(url: str) -> bool:
+    """Return whether a URL points at a public catalog host MusicBrainz links to as given."""
+    if not url.startswith(("http://", "https://")):
+        return False
+    host = urlsplit(url).netloc.lower()
+    return any(host == public or host.endswith(f".{public}") for public in REVERSE_URL_HOSTS)
 
 
 def _matching_artist_credit(
