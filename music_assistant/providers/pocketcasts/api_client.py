@@ -62,7 +62,9 @@ class PocketCastsClient:
     async def has_paid_plan(self) -> bool:
         """Return whether the account is on a paid Pocket Casts plan (Plus or Patron)."""
         data = await self._request("GET", f"{API_BASE_URL}/subscription/status")
-        return data.get("paid") == 1
+        paid = data.get("paid") == 1
+        self.logger.debug("Pocket Casts account is on a %s plan", "paid" if paid else "free")
+        return paid
 
     async def get_subscribed_podcasts(self) -> list[dict[str, Any]]:
         """Return the user's subscribed podcasts."""
@@ -137,7 +139,12 @@ class PocketCastsClient:
             if details:
                 show_notes[uuid] = details
         self.logger.debug(
-            "Retrieved show notes for %d episodes of podcast %s", len(show_notes), podcast_uuid
+            "Retrieved show notes for %d episodes of podcast %s "
+            "(%d with a publisher transcript, %d with a generated transcript)",
+            len(show_notes),
+            podcast_uuid,
+            sum(1 for details in show_notes.values() if "transcripts" in details),
+            sum(1 for details in show_notes.values() if "generated_transcripts" in details),
         )
         return show_notes
 
