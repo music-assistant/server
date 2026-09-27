@@ -16,13 +16,10 @@ from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
+from music_assistant.providers.sonos.cloud_queue import SonosCloudQueue, _requested_max
 from music_assistant.providers.sonos.const import PLAYBACK_STATE_MAP
 from music_assistant.providers.sonos.player import SonosPlayer, SonosQueueWindow
-from music_assistant.providers.sonos.provider import (
-    SonosPlayerProvider,
-    _refresh_task_id,
-    _requested_max,
-)
+from music_assistant.providers.sonos.provider import SonosPlayerProvider, _refresh_task_id
 
 QUEUE_ID = "party_queue"
 
@@ -304,13 +301,13 @@ async def test_refresh_survives_a_session_the_speaker_forgot() -> None:
     client.api.playback_session.refresh_cloud_queue.assert_awaited_once()
 
 
-def _make_provider() -> SonosPlayerProvider:
-    """Create a bare provider for the cloud-queue request handlers."""
+def _make_cloud_queue() -> SonosCloudQueue:
+    """Create a cloud queue backed by a bare provider for the request handlers."""
     provider = SonosPlayerProvider.__new__(SonosPlayerProvider)
     provider.mass = MagicMock()
     provider.logger = logging.getLogger("test.sonos.cloud_queue")
     provider._pending_refresh_tasks = set()
-    return provider
+    return SonosCloudQueue(provider)
 
 
 async def test_itemwindow_passes_the_speakers_request_through() -> None:
@@ -322,7 +319,7 @@ async def test_itemwindow_passes_the_speakers_request_through() -> None:
     player.build_cloud_queue_window = AsyncMock(
         return_value=SonosQueueWindow(includes_beginning=True, includes_end=False)
     )
-    provider = _make_provider()
+    cloud_queue = _make_cloud_queue()
     request = MagicMock()
     request.query = {
         "itemId": "track7@4",
@@ -331,7 +328,7 @@ async def test_itemwindow_passes_the_speakers_request_through() -> None:
         "contextVersion": "3",
     }
 
-    response = await provider._handle_sonos_queue_itemwindow(player, request)
+    response = await cloud_queue._handle_sonos_queue_itemwindow(player, request)
 
     player.build_cloud_queue_window.assert_awaited_once_with(
         "track7", max_previous=9, max_upcoming=10
@@ -349,11 +346,11 @@ async def test_itemwindow_reports_end_of_queue_when_it_cannot_be_described() -> 
     player.cloud_queue_version = 1.0
     player.cloud_queue_item_generation = 1
     player.build_cloud_queue_window = AsyncMock(side_effect=InvalidDataError("no session"))
-    provider = _make_provider()
+    cloud_queue = _make_cloud_queue()
     request = MagicMock()
     request.query = {}
 
-    response = await provider._handle_sonos_queue_itemwindow(player, request)
+    response = await cloud_queue._handle_sonos_queue_itemwindow(player, request)
 
     body = json.loads(response.text or "{}")
     assert body["items"] == []
@@ -377,7 +374,7 @@ async def test_itemwindow_logs_the_speakers_request_at_debug(
             includes_end=False,
         )
     )
-    provider = _make_provider()
+    cloud_queue = _make_cloud_queue()
     request = MagicMock()
     request.query = {
         "itemId": "track7@4",
@@ -388,7 +385,7 @@ async def test_itemwindow_logs_the_speakers_request_at_debug(
     }
 
     with caplog.at_level(logging.DEBUG, logger="test.sonos.cloud_queue"):
-        await provider._handle_sonos_queue_itemwindow(player, request)
+        await cloud_queue._handle_sonos_queue_itemwindow(player, request)
 
     assert [record.levelno for record in caplog.records] == [logging.DEBUG]
     message = caplog.records[0].getMessage()
@@ -408,12 +405,12 @@ async def test_itemwindow_logs_the_end_of_queue_fallback_at_debug(
     player.cloud_queue_version = 1.0
     player.cloud_queue_item_generation = 1
     player.build_cloud_queue_window = AsyncMock(side_effect=InvalidDataError("no session"))
-    provider = _make_provider()
+    cloud_queue = _make_cloud_queue()
     request = MagicMock()
     request.query = {}
 
     with caplog.at_level(logging.DEBUG, logger="test.sonos.cloud_queue"):
-        await provider._handle_sonos_queue_itemwindow(player, request)
+        await cloud_queue._handle_sonos_queue_itemwindow(player, request)
 
     assert [record.levelno for record in caplog.records] == [logging.DEBUG]
     message = caplog.records[0].getMessage()
@@ -428,12 +425,12 @@ async def test_version_logs_the_speakers_poll_at_debug(
     player = MagicMock(spec=SonosPlayer)
     player.player_id = "RINCON_TEST"
     player.cloud_queue_version = 12.5
-    provider = _make_provider()
+    cloud_queue = _make_cloud_queue()
     request = MagicMock()
     request.query = {"contextVersion": "1", "queueVersion": "11.0"}
 
     with caplog.at_level(logging.DEBUG, logger="test.sonos.cloud_queue"):
-        await provider._handle_sonos_queue_version(player, request)
+        await cloud_queue._handle_sonos_queue_version(player, request)
 
     assert [record.levelno for record in caplog.records] == [logging.DEBUG]
     message = caplog.records[0].getMessage()
@@ -665,11 +662,11 @@ async def test_window_items_are_served_under_the_loads_wire_id() -> None:
     """The window describes items under the same ids the load command named."""
     player, _ = _make_player([_make_queue_item("track0"), _make_queue_item("track1")])
     player.cloud_queue_item_generation = 7
-    provider = _make_provider()
+    cloud_queue = _make_cloud_queue()
     request = MagicMock()
     request.query = {"itemId": player.wire_item_id("track0")}
 
-    response = await provider._handle_sonos_queue_itemwindow(player, request)
+    response = await cloud_queue._handle_sonos_queue_itemwindow(player, request)
 
     body = json.loads(response.text or "{}")
     served = [x["id"] for x in body["items"]]
@@ -680,7 +677,7 @@ async def test_window_ids_stay_on_the_generation_the_request_started_with() -> N
     """A load landing mid-request must not relabel the old window's items."""
     player, _ = _make_player([_make_queue_item("track0")])
     player.cloud_queue_item_generation = 7
-    provider = _make_provider()
+    cloud_queue = _make_cloud_queue()
     request = MagicMock()
     request.query = {"itemId": player.wire_item_id("track0")}
 
@@ -692,7 +689,7 @@ async def test_window_ids_stay_on_the_generation_the_request_started_with() -> N
         side_effect=_bump_mid_build
     )
 
-    response = await provider._handle_sonos_queue_itemwindow(player, request)
+    response = await cloud_queue._handle_sonos_queue_itemwindow(player, request)
 
     body = json.loads(response.text or "{}")
     assert [x["id"] for x in body["items"]] == ["track0@7"]
@@ -707,13 +704,13 @@ async def test_time_played_matches_the_playing_item_through_its_wire_id() -> Non
     )
     player.current_media = MagicMock()
     player.current_media.queue_item_id = "track0"
-    provider = _make_provider()
+    cloud_queue = _make_cloud_queue()
     request = MagicMock()
     request.json = AsyncMock(
         return_value={"items": [{"type": "update", "id": "track0@3", "positionMillis": 5000}]}
     )
 
-    await provider._handle_sonos_queue_time_played(player, request)
+    await cloud_queue._handle_sonos_queue_time_played(player, request)
 
     player.update_elapsed_time.assert_called_once_with(5.0)
 
@@ -724,7 +721,7 @@ async def test_time_played_matches_the_playing_item_through_its_wire_id() -> Non
         return_value={"items": [{"type": "update", "id": "track0@2", "positionMillis": 5000}]}
     )
 
-    await provider._handle_sonos_queue_time_played(player, request)
+    await cloud_queue._handle_sonos_queue_time_played(player, request)
 
     player.update_elapsed_time.assert_not_called()
 
@@ -853,12 +850,12 @@ async def test_a_speaker_giving_up_on_an_item_is_reported(
     speaker sends the failure as both an update and a final report.
     """
     player = _player_for_error_reports()
-    provider = _make_provider()
+    cloud_queue = _make_cloud_queue()
     request = MagicMock()
     request.json = AsyncMock(return_value={"items": [_error_report(report_type)]})
 
     with caplog.at_level(logging.WARNING, logger="test.sonos.cloud_queue"):
-        await provider._handle_sonos_queue_time_played(player, request)
+        await cloud_queue._handle_sonos_queue_time_played(player, request)
 
     assert "ERROR_LSE" in caplog.text
     assert "A Strange Happening" in caplog.text
@@ -870,14 +867,14 @@ async def test_the_speakers_retry_of_a_failure_is_not_reported_again(
 ) -> None:
     """The speaker re-sends the same report until it gives up, which is one failure."""
     player = _player_for_error_reports()
-    provider = _make_provider()
+    cloud_queue = _make_cloud_queue()
     request = MagicMock()
     request.json = AsyncMock(return_value={"items": [_error_report()]})
 
     with caplog.at_level(logging.WARNING, logger="test.sonos.cloud_queue"):
-        await provider._handle_sonos_queue_time_played(player, request)
+        await cloud_queue._handle_sonos_queue_time_played(player, request)
         request.json = AsyncMock(return_value={"items": [_error_report("final")]})
-        await provider._handle_sonos_queue_time_played(player, request)
+        await cloud_queue._handle_sonos_queue_time_played(player, request)
 
     assert caplog.text.count("ERROR_LSE") == 1
 
@@ -887,15 +884,15 @@ async def test_a_batch_of_failures_resent_together_is_not_reported_again(
 ) -> None:
     """One report can carry several failures, and the speaker resends the whole batch."""
     player = _player_for_error_reports()
-    provider = _make_provider()
+    cloud_queue = _make_cloud_queue()
     batch = {"items": [_error_report(report_id="report-a"), _error_report(report_id="report-b")]}
     request = MagicMock()
     request.json = AsyncMock(return_value=batch)
 
     with caplog.at_level(logging.WARNING, logger="test.sonos.cloud_queue"):
-        await provider._handle_sonos_queue_time_played(player, request)
+        await cloud_queue._handle_sonos_queue_time_played(player, request)
         request.json = AsyncMock(return_value=batch)
-        await provider._handle_sonos_queue_time_played(player, request)
+        await cloud_queue._handle_sonos_queue_time_played(player, request)
 
     assert caplog.text.count("ERROR_LSE") == 2
 
@@ -905,14 +902,14 @@ async def test_a_later_failure_on_another_item_is_reported(
 ) -> None:
     """Only the repeat of one report is held back, never the next thing that fails."""
     player = _player_for_error_reports()
-    provider = _make_provider()
+    cloud_queue = _make_cloud_queue()
     request = MagicMock()
 
     with caplog.at_level(logging.WARNING, logger="test.sonos.cloud_queue"):
         request.json = AsyncMock(return_value={"items": [_error_report()]})
-        await provider._handle_sonos_queue_time_played(player, request)
+        await cloud_queue._handle_sonos_queue_time_played(player, request)
         request.json = AsyncMock(return_value={"items": [_error_report(report_id="report-2")]})
-        await provider._handle_sonos_queue_time_played(player, request)
+        await cloud_queue._handle_sonos_queue_time_played(player, request)
 
     assert caplog.text.count("ERROR_LSE") == 2
 
@@ -928,7 +925,7 @@ async def test_a_track_our_stream_server_refused_is_not_reported_as_a_failure(
     back as a report. Those must not bury the failures this log is for.
     """
     player = _player_for_error_reports()
-    provider = _make_provider()
+    cloud_queue = _make_cloud_queue()
     refused = {
         **_error_report("final", report_id="refused-1"),
         "error": {"type": "http", "status": status},
@@ -938,7 +935,7 @@ async def test_a_track_our_stream_server_refused_is_not_reported_as_a_failure(
     request.json = AsyncMock(return_value={"items": [refused]})
 
     with caplog.at_level(logging.DEBUG, logger="test.sonos.cloud_queue"):
-        await provider._handle_sonos_queue_time_played(player, request)
+        await cloud_queue._handle_sonos_queue_time_played(player, request)
 
     assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
     assert "refused track1@3" in caplog.text
@@ -949,13 +946,13 @@ async def test_a_track_our_stream_server_refused_is_not_reported_as_a_failure(
 async def test_another_http_error_is_still_reported(caplog: pytest.LogCaptureFixture) -> None:
     """Only a refusal is expected, any other http error the speaker hit is a real failure."""
     player = _player_for_error_reports()
-    provider = _make_provider()
+    cloud_queue = _make_cloud_queue()
     failed = {**_error_report(report_id="http-500"), "error": {"type": "http", "status": 500}}
     request = MagicMock()
     request.json = AsyncMock(return_value={"items": [failed]})
 
     with caplog.at_level(logging.WARNING, logger="test.sonos.cloud_queue"):
-        await provider._handle_sonos_queue_time_played(player, request)
+        await cloud_queue._handle_sonos_queue_time_played(player, request)
 
     assert "reported 500 (http)" in caplog.text
 
