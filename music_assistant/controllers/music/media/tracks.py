@@ -976,6 +976,7 @@ class TracksController(MediaControllerBase[Track]):
         ref_albums: list[Album],
     ) -> list[ProviderMapping]:
         """Return the mappings of the provider track one of the base track's ISRCs resolves to."""
+        # the order only makes the choice of looked-up ISRCs deterministic
         isrcs = sorted(
             {
                 normalize_external_id(ExternalID.ISRC, value)
@@ -991,10 +992,25 @@ class TracksController(MediaControllerBase[Track]):
                     "ISRC %s lookup on provider %s failed: %s", isrc, provider.name, err
                 )
                 continue
-            # the lookup result must still pass the regular track comparison
-            if prov_track and compare_track(
-                base_track, prov_track, strict=strict, track_albums=ref_albums
-            ):
+            if prov_track is None or not prov_track.available:
+                continue
+            # the hit carries the queried ISRC by construction, which the track comparison
+            # accepts on its own, so the basic comparison a search result gets is made
+            # without it: a wrongly tagged ISRC must not map an unrelated song
+            candidate = replace(
+                prov_track,
+                external_ids={
+                    (kind, value)
+                    for kind, value in prov_track.external_ids
+                    if not (
+                        kind == ExternalID.ISRC
+                        and normalize_external_id(ExternalID.ISRC, value) == isrc
+                    )
+                },
+            )
+            if not compare_media_item(base_track, candidate, strict=False):
+                continue
+            if compare_track(base_track, prov_track, strict=strict, track_albums=ref_albums):
                 return list(prov_track.provider_mappings)
         return []
 

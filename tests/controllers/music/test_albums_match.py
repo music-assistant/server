@@ -315,15 +315,15 @@ async def test_search_string_combines_artist_and_album_name() -> None:
     harness.search.assert_awaited_once_with("Sigur Rós - ( )", "spotify_1")
 
 
-async def test_album_without_artists_is_not_searched() -> None:
-    """An album that has no artists has no selective search string, so it is not searched."""
+async def test_album_without_artists_searches_on_name_only() -> None:
+    """An album that has no artists is still searchable instead of raising."""
     base = _library_album()
     base.artists = UniqueList()
     with _harness(search_results=[], provider_items={}) as harness:
         matches = await harness.match(base)
 
     assert matches == []
-    harness.search.assert_not_awaited()
+    harness.search.assert_awaited_once_with("( )", "spotify_1")
 
 
 async def test_insufficient_search_result_proceeds_to_one_full_fetch() -> None:
@@ -360,11 +360,11 @@ async def test_full_item_match_uses_no_track_or_musicbrainz_calls() -> None:
 
 
 async def test_barcode_hit_skips_the_search() -> None:
-    """A barcode lookup that yields a confirmed match never falls back to the search."""
+    """A barcode hit that agrees on the album's own metadata is mapped without any search."""
     base = _library_album(barcodes=[BASE_BARCODE])
     full = _album("s1", "spotify_1", barcodes=[BASE_BARCODE])
     with _harness(
-        search_results=[], provider_items={}, barcode_lookups={BASE_BARCODE: full}
+        search_results=[], provider_items={"s1": full}, barcode_lookups={BASE_BARCODE: full}
     ) as harness:
         matches = await harness.match(base)
 
@@ -372,7 +372,50 @@ async def test_barcode_hit_skips_the_search() -> None:
     harness.provider.get_album_by_external_id.assert_awaited_once_with(
         BASE_BARCODE, ExternalID.BARCODE
     )
+    harness.get_provider_album_tracks.assert_not_awaited()
     harness.search.assert_not_awaited()
+
+
+async def test_barcode_hit_is_fetched_in_full_before_scoring() -> None:
+    """A barcode hit is scored on the full provider album, not on the lookup's sparse result."""
+    release_id = {(ExternalID.MB_ALBUM, MB_ALBUM_ID)}
+    base = _library_album(barcodes=[BASE_BARCODE], external_ids=release_id)
+    sparse = _album("s1", "spotify_1", version="Deluxe Edition", barcodes=[BASE_BARCODE])
+    full = _album("s1", "spotify_1", barcodes=[BASE_BARCODE], external_ids=release_id)
+    with _harness(
+        search_results=[], provider_items={"s1": full}, barcode_lookups={BASE_BARCODE: sparse}
+    ) as harness:
+        matches = await harness.match(base)
+
+    assert [mapping.item_id for mapping in matches] == ["s1"]
+    harness.get_provider_item.assert_awaited_once_with("s1", "spotify_1", fallback=sparse)
+    harness.get_provider_album_tracks.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("candidate_isrc_prefix", "expected"), [("USRC17607", ["s1"]), ("USRC28718", [])]
+)
+async def test_queried_barcode_does_not_confirm_its_own_hit(
+    candidate_isrc_prefix: str, expected: list[str]
+) -> None:
+    """A hit that only agrees on the queried barcode is decided by its tracklist."""
+    base = _library_album(barcodes=[BASE_BARCODE])
+    hit = _album("s1", "spotify_1", version="Deluxe Edition", year=2019, barcodes=[BASE_BARCODE])
+    with _harness(
+        search_results=[],
+        provider_items={"s1": hit},
+        provider_album_tracks={
+            "base-prov": _tracklist(14),
+            "s1": _tracklist(14, isrc_prefix=candidate_isrc_prefix),
+        },
+        barcode_lookups={BASE_BARCODE: hit},
+    ) as harness:
+        matches = await harness.match(base)
+
+    assert [mapping.item_id for mapping in matches] == expected
+    # the shared barcode alone never settles it: the tracklists are always compared
+    assert harness.album_track_calls() == ["base-prov", "s1"]
+    assert harness.search.await_count == (0 if expected else 1)
 
 
 async def test_barcode_hit_without_match_evidence_falls_back_to_search() -> None:
@@ -380,12 +423,49 @@ async def test_barcode_hit_without_match_evidence_falls_back_to_search() -> None
     base = _library_album(barcodes=[BASE_BARCODE])
     other = _album("s1", "spotify_1", name="Takk...")
     with _harness(
-        search_results=[], provider_items={}, barcode_lookups={BASE_BARCODE: other}
+        search_results=[], provider_items={"s1": other}, barcode_lookups={BASE_BARCODE: other}
     ) as harness:
         matches = await harness.match(base)
 
     assert matches == []
     harness.search.assert_awaited_once_with("Sigur Rós - ( )", "spotify_1")
+
+
+async def test_unavailable_barcode_hit_falls_back_to_search() -> None:
+    """A barcode hit that is not available on the provider is skipped for the search."""
+    base = _library_album(barcodes=[BASE_BARCODE])
+    unavailable = _album(
+        "s1",
+        "spotify_1",
+        barcodes=[BASE_BARCODE],
+        mappings=[
+            ProviderMapping(
+                item_id="s1",
+                provider_domain="spotify",
+                provider_instance="spotify_1",
+                available=False,
+            )
+        ],
+    )
+    with _harness(
+        search_results=[], provider_items={}, barcode_lookups={BASE_BARCODE: unavailable}
+    ) as harness:
+        matches = await harness.match(base)
+
+    assert matches == []
+    harness.get_provider_item.assert_not_awaited()
+    harness.search.assert_awaited_once()
+
+
+async def test_barcode_lookup_uses_the_canonical_upc() -> None:
+    """A stored zero-padded EAN reaches the provider as its canonical 12-digit UPC."""
+    base = _library_album(barcodes=[f"0{BASE_BARCODE}"])
+    with _harness(search_results=[], provider_items={}, barcode_lookups={}) as harness:
+        await harness.match(base)
+
+    harness.provider.get_album_by_external_id.assert_awaited_once_with(
+        BASE_BARCODE, ExternalID.BARCODE
+    )
 
 
 async def test_barcode_lookup_failures_fall_back_to_search() -> None:
@@ -429,23 +509,6 @@ async def test_provider_without_barcode_lookup_goes_straight_to_search() -> None
     assert matches == []
     harness.provider.get_album_by_external_id.assert_not_awaited()
     harness.search.assert_awaited_once()
-
-
-async def test_album_without_artists_is_matched_by_barcode_only() -> None:
-    """An album that has no artists gets the barcode lookup but is never searched."""
-    # without artists the album's own metadata cannot confirm a match, so the shared
-    # release id (as tagged on local files) is what accepts the barcode hit
-    release_id = {(ExternalID.MB_ALBUM, MB_ALBUM_ID)}
-    base = _library_album(barcodes=[BASE_BARCODE], external_ids=release_id)
-    base.artists = UniqueList()
-    full = _album("s1", "spotify_1", barcodes=[BASE_BARCODE], external_ids=release_id)
-    with _harness(
-        search_results=[], provider_items={}, barcode_lookups={BASE_BARCODE: full}
-    ) as harness:
-        matches = await harness.match(base)
-
-    assert [mapping.item_id for mapping in matches] == ["s1"]
-    harness.search.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

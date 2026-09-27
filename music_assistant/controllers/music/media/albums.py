@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp
@@ -572,6 +572,8 @@ class AlbumsController(MediaControllerBase[Album]):
         """
         if db_album.provider != "library":
             return  # Matching only supported for database items
+        if not db_album.artists:
+            return  # guard
 
         # resolve the base tracklist at most once for the whole match operation
         base_tracks_memo = _BaseTracksMemo()
@@ -738,11 +740,14 @@ class AlbumsController(MediaControllerBase[Album]):
             matches = await self._match_provider_by_barcode(
                 db_album, provider, strict, base_tracks_memo
             )
-        # a barcode hit makes the search unnecessary, and an album without an artist has no
-        # search string selective enough to be worth one
+        # a barcode hit makes the search unnecessary
         search_results: list[Album] = []
-        if not matches and db_album.artists:
-            search_str = f"{db_album.artists[0].name} - {db_album.name}"
+        if not matches:
+            search_str = (
+                f"{db_album.artists[0].name} - {db_album.name}"
+                if db_album.artists
+                else db_album.name
+            )
             search_results = await self.search(search_str, provider.instance_id)
         for search_result_item in search_results:
             if not search_result_item.available:
@@ -781,6 +786,7 @@ class AlbumsController(MediaControllerBase[Album]):
         base_tracks_memo: _BaseTracksMemo,
     ) -> list[ProviderMapping]:
         """Return the mappings of the provider album one of the base album's barcodes resolves to."""
+        # the order only makes the choice of looked-up barcodes deterministic
         for barcode in sorted(_canonical_album_barcodes(db_album))[:MAX_EXTERNAL_ID_MATCH_LOOKUPS]:
             try:
                 prov_album = await provider.get_album_by_external_id(barcode, ExternalID.BARCODE)
@@ -789,11 +795,25 @@ class AlbumsController(MediaControllerBase[Album]):
                     "Barcode %s lookup on provider %s failed: %s", barcode, provider.name, err
                 )
                 continue
-            if prov_album is None:
+            if prov_album is None or not prov_album.available:
                 continue
-            # a barcode is shared across pressings, so the hit must still pass the album evidence
+            # a lookup result can be a simplified object, so fetch the full provider album
+            prov_album = await self.get_provider_item(
+                prov_album.item_id, prov_album.provider, fallback=prov_album
+            )
+            # the queried barcode is the query, not evidence: it is left out of the scored
+            # copy so name, artist, year and the tracklist decide, while a second,
+            # independently agreeing barcode still counts
+            candidate = replace(
+                prov_album,
+                external_ids={
+                    (kind, value)
+                    for kind, value in prov_album.external_ids
+                    if not (kind == ExternalID.BARCODE and barcode_to_upc(value) == barcode)
+                },
+            )
             evidence = await self._resolve_album_evidence(
-                db_album, prov_album, provider, strict, base_tracks_memo
+                db_album, candidate, provider, strict, base_tracks_memo
             )
             if evidence == AlbumMatchEvidence.MATCH:
                 return list(prov_album.provider_mappings)
