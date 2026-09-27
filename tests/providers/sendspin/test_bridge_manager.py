@@ -387,6 +387,15 @@ class TestCastBridgePolicy:
         assert await manager._try_claim_existing(cast_player) is True
         assert manager._claimed_clients == {cast_player.player_id: client_id}
 
+    def test_denied_for_stereo_pair(self) -> None:
+        """Test a Cast stereo pair is not offered the bridge, it would only play on one side."""
+        manager, _mass, cast_player = self._make_cast_environment()
+        cast_player.cast_info.is_audio_group = True
+        cast_player.cast_info.is_multichannel_group = True
+        cast_player.protocol_parent_id = None
+
+        assert manager._should_have_bridge(cast_player) is False
+
     def test_denied_after_the_device_reported_it_cannot_run_sendspin(self) -> None:
         """Test a device that failed once is not offered the bridge again at all."""
         manager, mass, cast_player = self._make_cast_environment()

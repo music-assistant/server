@@ -827,8 +827,9 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
         :param player: The Chromecast player to evaluate.
         """
         cast_player = cast("ChromecastPlayer", player)
-        # Audio groups (non-stereo-pair) have their own playback mechanism
-        if cast_player.cast_info.is_audio_group and not cast_player.cast_info.is_multichannel_group:
+        # Audio groups have their own playback mechanism, and on a stereo pair the
+        # receiver's Web Audio output only plays on the leader speaker
+        if cast_player.cast_info.is_audio_group:
             return False
 
         if not (bridge_client_id := get_bridge_client_id(cast_player)):
