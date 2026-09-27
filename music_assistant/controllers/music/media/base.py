@@ -307,10 +307,20 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         library_id = await self._add_library_item(item)
                         new_item = True
         if new_item and item.favorite is not None and item.provider != "library":
-            # the state the item's own source reports, as a sync of that source would record it
-            await self.mass.music.favorites.record_from_provider(
-                item.provider, self.media_type, library_id, item.favorite
+            # the state the item's own source reports, as a sync of that source would record
+            # it; some providers stamp the item with their domain, the mapping names the instance
+            source = next(
+                (
+                    mapping.provider_instance
+                    for mapping in item.provider_mappings
+                    if item.provider in (mapping.provider_instance, mapping.provider_domain)
+                ),
+                None,
             )
+            if source:
+                await self.mass.music.favorites.record_from_provider(
+                    source, self.media_type, library_id, item.favorite
+                )
         # return final library_item
         library_item = await self.get_library_item(library_id)
         if not SUPPRESS_MEDIA_ITEM_UPDATES.get():

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import (
+    InsufficientPermissions,
     InvalidDataError,
     MusicAssistantError,
     ProviderUnavailableError,
@@ -344,7 +345,9 @@ class RadioController(MediaControllerBase[Radio]):
         self, parsed_items: list[PlaylistItem], user_id: str | None
     ) -> None:
         """Add the parsed M3U entries to the library, one station at a time."""
-        if user_id and (user := await self.mass.webserver.auth.get_user(user_id)):
+        if user_id:
+            if (user := await self.mass.webserver.auth.get_user(user_id)) is None:
+                raise InsufficientPermissions("The user that queued this import no longer exists")
             # the task runs outside the session of the user that queued it
             set_current_user(user)
         total = len(parsed_items)
