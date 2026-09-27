@@ -31,6 +31,8 @@ from music_assistant.controllers.streams.constants import (
     CONF_BUFFER_SIZE_DEFAULT,
     DSD_BUFFER_MAX_BYTES,
     RADIO_BUFFER_SIZE,
+    REALTIME_COLD_START_BANK,
+    REALTIME_COLD_START_MAX_REMAINING,
     SEEK_WAIT_THRESHOLD,
     STREAM_SLOT_WAIT_TIMEOUT,
     BufferMode,
@@ -485,7 +487,7 @@ class AudioBuffer:
                 return existing_buffer
 
         audio_buffer, buffer_seek_seconds = _new_buffer(
-            mass, streamdetails, seek_position_ms, log_prefix
+            mass, streamdetails, seek_position_ms, log_prefix, session_start=reason == "prepare"
         )
 
         # start filling from the media stream (seek in seconds for FFmpeg)
@@ -793,6 +795,8 @@ def _new_buffer(
     streamdetails: StreamDetails,
     seek_position_ms: int,
     log_prefix: str,
+    *,
+    session_start: bool = False,
 ) -> tuple[AudioBuffer, int]:
     """
     Create the buffer for the given stream details and attach it to them.
@@ -801,6 +805,8 @@ def _new_buffer(
     :param streamdetails: The stream details the buffer belongs to.
     :param seek_position_ms: Position in milliseconds playback starts from.
     :param log_prefix: Caller context for logging.
+    :param session_start: Whether this buffer starts a playback session rather than
+        preparing the next item of one.
     :return: The buffer and the position (in seconds) its producer should start at.
     """
     # determine buffer size from config
@@ -841,6 +847,13 @@ def _new_buffer(
         # here. Only dynamic normalization, which genuinely needs lookahead, raises
         # this.
         ready_threshold = 2 if dynamic_normalization else 1
+        remaining = (streamdetails.duration or 0) - seek_seconds
+        if session_start and 0 < remaining < REALTIME_COLD_START_MAX_REMAINING:
+            # the first boundary comes before the player could build up a lead of its
+            # own, so hand it one. A preload at a boundary never banks: with the
+            # source's slot only freed by the item that just ended, it would just
+            # widen the gap the player has to bridge there.
+            ready_threshold = max(ready_threshold, REALTIME_COLD_START_BANK)
     elif crossfade_enabled:
         ready_threshold = 8
     elif dynamic_normalization:
