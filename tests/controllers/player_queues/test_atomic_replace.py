@@ -69,7 +69,7 @@ def _controller(**queue_kwargs: Any) -> Any:
     lock_cm = MagicMock()
     lock_cm.__aenter__ = AsyncMock(return_value=None)
     lock_cm.__aexit__ = AsyncMock(return_value=None)
-    ctrl.mass.players.get_player_lock = Mock(return_value=lock_cm)
+    ctrl.mass.players.get_group_and_player_lock = Mock(return_value=lock_cm)
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl.on_player_update = Mock()  # type: ignore[method-assign]
     ctrl.play_index = AsyncMock()  # type: ignore[method-assign]
