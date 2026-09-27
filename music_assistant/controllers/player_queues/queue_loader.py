@@ -532,7 +532,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # the tail cap below is a defensive ceiling so the unplayed tail never grows past
         # MANAGED_POOL_MAX.
         pool_tracks = await self._managed_pool.fill(queue_id, is_initial=False)
-        pool_tracks = await without_disliked_tracks(self.mass, queue_data.userid, pool_tracks)
         if self._queue_data.get(queue_id) is not queue_data:
             # the queue was removed or re-registered while tracks were fetched
             return
@@ -1039,7 +1038,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             queue_data.items = queue_data.items[:insert_at]
             queue.items = len(queue_data.items)
             pool_tracks = await self._managed_pool.fill(queue_id, is_initial=False)
-            pool_tracks = await without_disliked_tracks(self.mass, queue_data.userid, pool_tracks)
             queue_items = [
                 build_queue_item(queue_id, track) for track in pool_tracks if track.available
             ]

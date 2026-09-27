@@ -129,9 +129,9 @@ class FavoritesStore:
         """
         Return the tracks the given user disliked, in one query.
 
-        The library ids identify the tracks as library items, the provider keys recognize the
-        same track when it arrives straight from a music source. Feed the result to
-        :func:`filter_disliked`.
+        The library ids identify the tracks as library items, the (instance, item id) pairs
+        recognize the same track when it arrives straight from a music source. Feed the result
+        to :func:`filter_disliked`.
 
         :param user_id: The user whose dislikes are returned.
         """
@@ -139,7 +139,7 @@ class FavoritesStore:
         provider_keys: set[tuple[str, str]] = set()
         # LEFT JOIN: a disliked track without any mapping left still counts by its library id
         query = (
-            "SELECT f.item_id, pm.provider_domain, pm.provider_item_id "
+            "SELECT f.item_id, pm.provider_instance, pm.provider_item_id "
             f"FROM {DB_TABLE_FAVORITES} f "
             f"LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} pm "
             "ON pm.media_type = f.media_type AND pm.item_id = f.item_id "
@@ -151,8 +151,8 @@ class FavoritesStore:
             limit=0,
         ):
             item_ids.add(int(row["item_id"]))
-            if row["provider_domain"] and row["provider_item_id"]:
-                provider_keys.add((row["provider_domain"], row["provider_item_id"]))
+            if row["provider_instance"] and row["provider_item_id"]:
+                provider_keys.add((row["provider_instance"], row["provider_item_id"]))
         return item_ids, provider_keys
 
     async def move_item(self, media_type: MediaType, source_id: int, target_id: int) -> None:
@@ -360,6 +360,6 @@ def _is_disliked(track: Track, item_ids: set[int], provider_keys: set[tuple[str,
     if track.provider == "library" and int(track.item_id) in item_ids:
         return True
     return any(
-        (mapping.provider_domain, mapping.item_id) in provider_keys
+        (mapping.provider_instance, mapping.item_id) in provider_keys
         for mapping in track.provider_mappings
     )

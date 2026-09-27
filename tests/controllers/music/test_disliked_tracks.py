@@ -42,7 +42,7 @@ async def _add_track(mass: MusicAssistant, name: str, *, second_source: bool = F
 
 
 async def test_disliked_track_keys_are_the_users_own(music_mass_module: MusicAssistant) -> None:
-    """A dislike yields the track's library id and every provider key it is known by."""
+    """A dislike yields the track's library id and every instance key it is known by."""
     mass = music_mass_module
     disliked = await _add_track(mass, "Never Again", second_source=True)
     liked = await _add_track(mass, "Play It Again")
@@ -56,7 +56,7 @@ async def test_disliked_track_keys_are_the_users_own(music_mass_module: MusicAss
 
     assert item_ids == {int(disliked.item_id)}
     assert provider_keys == {
-        (mapping.provider_domain, mapping.item_id) for mapping in disliked.provider_mappings
+        (mapping.provider_instance, mapping.item_id) for mapping in disliked.provider_mappings
     }
     assert len(provider_keys) == 2
     # nobody's playback is gated by another user's dislike
