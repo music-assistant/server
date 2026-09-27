@@ -103,7 +103,7 @@ class BoseSoundTouchPlayer(Player):
         if not self._supported_player_options:
             self._supported_player_options.add(PlayerOptionKeys.NETWORK_NAME)
             bass_capability = await self._client.get_bass_capabilities()
-            if bass_capability.available is not None and bass_capability.available:
+            if bass_capability.available:
                 self._supported_player_options.add(PlayerOptionKeys.BASS)
         await self._refresh_options()
 
@@ -139,12 +139,12 @@ class BoseSoundTouchPlayer(Player):
             software_version=info.software_version,
         )
         self._attr_device_info.add_identifier(IdentifierType.UUID, info.device_id)
+        # DeviceInfo holds one value per identifier type, and the speaker reports one
+        # interface per entry: take the first, which is the one we are connected on
         if info.mac_addresses:
-            for mac_address in info.mac_addresses:
-                self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
+            self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, info.mac_addresses[0])
         if info.ip_addresses:
-            for ip_address in info.ip_addresses:
-                self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
+            self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, info.ip_addresses[0])
 
     async def poll(self) -> None:
         """Poll the speaker as a safety net for missed websocket events."""
@@ -282,12 +282,10 @@ class BoseSoundTouchPlayer(Player):
             members: list[ZoneMember] = []
             for player_id in player_ids:
                 player = self.mass.players.get_player(player_id)
-                if isinstance(player, BoseSoundTouchPlayer) and (
-                    ip_address := player._client.session_config.ip
-                ):
+                if isinstance(player, BoseSoundTouchPlayer) and (ip_address := player.ip_address):
                     members.append(ZoneMember(ip=ip_address, mac=player.device_id))
             return Zone(
-                leader=ZoneMember(ip=self._client.session_config.ip, mac=self._device_id),
+                leader=ZoneMember(ip=self.ip_address, mac=self._device_id),
                 members=members,
             )
 
@@ -318,6 +316,11 @@ class BoseSoundTouchPlayer(Player):
     def device_id(self) -> str:
         """Return the Bose SoundTouch device id of this player."""
         return self._device_id
+
+    @property
+    def ip_address(self) -> str:
+        """Return the address this speaker is currently reached on."""
+        return self._client.session_config.ip
 
     def update_ip_address(self, ip_address: str) -> None:
         """Update the speaker's IP address after a (re)discovery."""
@@ -396,7 +399,7 @@ class BoseSoundTouchPlayer(Player):
     async def _listen(self) -> None:
         """Connect to the speaker's notification websocket and handle push updates."""
         while not self._stop_event.is_set():
-            uri = f"ws://{self._client.session_config.ip}:{NOTIFICATION_PORT}"
+            uri = f"ws://{self.ip_address}:{NOTIFICATION_PORT}"
             try:
                 async with self.mass.http_session.ws_connect(
                     uri, protocols=WS_SUBPROTOCOLS, heartbeat=WS_HEARTBEAT
@@ -425,6 +428,14 @@ class BoseSoundTouchPlayer(Player):
                     "SoundTouch websocket error for %s: %s. Reconnecting in %ss",
                     self.name,
                     err,
+                    RECONNECT_DELAY,
+                )
+            except Exception:
+                # nothing restarts this task, so an unexpected error would silently cost
+                # the speaker its push channel for the rest of the run
+                self.logger.exception(
+                    "Unexpected SoundTouch websocket error for %s. Reconnecting in %ss",
+                    self.name,
                     RECONNECT_DELAY,
                 )
             if not self._stop_event.is_set():
@@ -510,7 +521,6 @@ class BoseSoundTouchPlayer(Player):
                 self._attr_options[index] = update_option
 
         for option in update_options:
-            # _updated_options: list[PlayerOption] = []
             match option:
                 case PlayerOptionKeys.NETWORK_NAME:
                     info = await self._client.get_info()
@@ -530,20 +540,24 @@ class BoseSoundTouchPlayer(Player):
                         if _option.key == PlayerOptionKeys.BASS:
                             old_option = _option
                             break
-                    if not old_option:
-                        bass_capability = await self._client.get_bass_capabilities()
-                        assert bass_capability.available is not None
-                        assert bass_capability.minimum is not None
-                        assert bass_capability.maximum is not None
-                        bass_min = bass_capability.minimum
-                        bass_max = bass_capability.maximum
-                    else:
-                        assert old_option.min_value is not None
-                        assert old_option.max_value is not None
+                    if (
+                        old_option
+                        and old_option.min_value is not None
+                        and old_option.max_value is not None
+                    ):
                         bass_min = int(old_option.min_value)
                         bass_max = int(old_option.max_value)
+                    else:
+                        bass_capability = await self._client.get_bass_capabilities()
+                        if bass_capability.minimum is None or bass_capability.maximum is None:
+                            self.logger.debug("Speaker %s reported no bass range", self.name)
+                            continue
+                        bass_min = bass_capability.minimum
+                        bass_max = bass_capability.maximum
                     bass = await self._client.get_bass()
-                    assert bass.actual_bass is not None
+                    if bass.actual_bass is None:
+                        self.logger.debug("Speaker %s reported no bass value", self.name)
+                        continue
                     _update_option_attr(
                         PlayerOption(
                             key=PlayerOptionKeys.BASS,

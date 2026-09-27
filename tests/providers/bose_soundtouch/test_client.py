@@ -63,10 +63,8 @@ async def test_parse_info() -> None:
     assert info.device_id == "ABC123"
     assert info.name == "Living Room"
     assert info.model == "SoundTouch 20"
-    assert isinstance(info.mac_addresses, set)
-    assert "001122334455" in info.mac_addresses
-    assert isinstance(info.ip_addresses, set)
-    assert "192.168.1.50" in info.ip_addresses
+    assert info.mac_addresses == ["001122334455"]
+    assert info.ip_addresses == ["10.0.0.9", "192.168.1.50"]
     assert info.software_version == "27.0.6.46330"
 
 
@@ -77,8 +75,7 @@ async def test_parse_info_falls_back_to_connection_ip() -> None:
         mock_get.return_value = DefusedET.fromstring('<info deviceID="X"><name>N</name></info>')
         info = await client.get_info()
 
-    assert isinstance(info.ip_addresses, set)
-    assert "10.0.0.9" in info.ip_addresses
+    assert info.ip_addresses == ["10.0.0.9"]
 
 
 async def test_parse_now_playing() -> None:
