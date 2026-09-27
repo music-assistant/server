@@ -668,7 +668,7 @@ class MetaDataController(
             # completed sync to queue it again
             update_current_task_progress_text("Waiting for music sync completion")
             return
-        linked_domains = await self._refresh_musicbrainz_linked_domains()
+        linked_domains = self._refresh_musicbrainz_linked_domains()
         processed: dict[str, int] = {}
         linked = not_found = failed = 0
         rate_limited = False
@@ -749,7 +749,7 @@ class MetaDataController(
         """
         Return the selections a MusicBrainz link run works through, in order.
 
-        :param linked_domains: Since when each linked music provider has been enabled, by domain.
+        :param linked_domains: Since when each linked music provider has been loaded, by domain.
         """
         albums, artists = self.mass.music.albums, self.mass.music.artists
         phases = [
@@ -765,7 +765,7 @@ class MetaDataController(
                 "tracks", self.mass.music.tracks, DB_TABLE_TRACKS, _tracks_to_identify_query(), {}
             ),
         ]
-        # a provider enabled after an item was looked up still lacks its (cached) links
+        # a provider loaded after an item was looked up still lacks its (cached) links
         for domain, first_seen in linked_domains.items():
             params = {"domain": domain, "seen": first_seen}
             phases.append(
@@ -788,11 +788,11 @@ class MetaDataController(
             )
         return phases
 
-    async def _refresh_musicbrainz_linked_domains(self) -> dict[str, int]:
+    def _refresh_musicbrainz_linked_domains(self) -> dict[str, int]:
         """
-        Return since when each enabled music provider MusicBrainz links to has been linked.
+        Return since when each loaded music provider MusicBrainz links to has been linked.
 
-        A provider enabled since the previous run starts now and one no longer enabled is
+        A provider loaded since the previous run starts now and one no longer loaded is
         dropped. The very first run seeds the providers present with 0, as the library was
         linked to those while it was identified.
         """
@@ -808,14 +808,16 @@ class MetaDataController(
             domain, _, seen = entry.partition(":")
             if seen.isdigit():
                 stored[domain] = int(seen)
-        present = {
-            config.domain
-            for config in await self.mass.config.get_provider_configs(
-                provider_type=ProviderType.MUSIC
-            )
-            if config.enabled and config.domain in MUSICBRAINZ_LINK_DOMAINS
-        }
+        # the providers the link step maps to: those with a loaded instance, available or not
+        present = [
+            domain
+            for domain in MUSICBRAINZ_LINK_DOMAINS
+            if self.mass.music.get_provider_instances(domain, return_unavailable=True)
+        ]
         first_seen = 0 if entries is None else int(time())
+        # a provider whose instance was gone for a run comes back as a new one: the items
+        # identified meanwhile lack its links, so its relink phase re-checks those still not
+        # mapped to it, from the MusicBrainz cache
         linked = {domain: stored.get(domain, first_seen) for domain in sorted(present)}
         # an empty map is persisted too: it tells the first run apart from a later one
         if entries is None or linked != stored:
@@ -1026,7 +1028,7 @@ def _relink_query(table: str, media_type: MediaType, id_type: ExternalID) -> str
     Return a query part selecting identified items that miss the links of a music provider.
 
     Selects items not mapped to the provider (param ``domain``) that were looked up before
-    it was enabled (param ``seen``) or never looked up at all.
+    it was loaded (param ``seen``) or never looked up at all.
 
     :param table: The library table to select from.
     :param media_type: Media type of the items.

@@ -74,7 +74,7 @@ CONF_ENABLE_RADIO_METADATA_LOOKUP = "enable_radio_metadata_lookup"
 
 CONF_LINK_PROVIDERS_VIA_MUSICBRAINZ = "link_providers_via_musicbrainz"
 
-# core config key holding, per music provider MusicBrainz links to, since when it is enabled;
+# core config key holding, per music provider MusicBrainz links to, since when it is loaded;
 # items looked up on MusicBrainz before that still lack its links
 CONF_MUSICBRAINZ_LINKED_DOMAINS = "musicbrainz_linked_domains"
 

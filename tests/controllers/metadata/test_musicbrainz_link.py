@@ -92,8 +92,8 @@ def _controller(
     linking: bool = True,
     musicbrainz: Mock | None = None,
     linked_domains: dict[str, int] | None = None,
-    enabled_domains: Sequence[str] = (),
-    disabled_domains: Sequence[str] = (),
+    loaded_domains: Sequence[str] = (),
+    unavailable_domains: Sequence[str] = (),
     stub_link: bool = True,
 ) -> MetaDataController:
     """
@@ -103,8 +103,8 @@ def _controller(
     :param musicbrainz: The MusicBrainz provider, a fresh stub when not given.
     :param linked_domains: The persisted map of linked provider domains to first-seen epochs,
         None when no run has persisted one yet.
-    :param enabled_domains: Domains of the enabled music provider configs.
-    :param disabled_domains: Domains of the disabled music provider configs.
+    :param loaded_domains: Domains with an available music provider instance.
+    :param unavailable_domains: Domains whose only music provider instance is unavailable.
     :param stub_link: Whether to replace the per-item link step by a stub.
     """
     ctrl = MetaDataController.__new__(MetaDataController)
@@ -126,12 +126,7 @@ def _controller(
         else [f"{domain}:{seen}" for domain, seen in linked_domains.items()]
     )
     mass.config.get_raw_core_config_value = Mock(return_value=stored)
-    mass.config.get_provider_configs = AsyncMock(
-        return_value=[
-            *(Mock(domain=domain, enabled=True) for domain in enabled_domains),
-            *(Mock(domain=domain, enabled=False) for domain in disabled_domains),
-        ]
-    )
+    mass.music.get_provider_instances = _provider_instances(loaded_domains, unavailable_domains)
     mass.get_provider = Mock(return_value=musicbrainz or _musicbrainz())
     ctrl.mass = mass
     if stub_link:
@@ -203,9 +198,24 @@ def _mass(ctrl: MetaDataController) -> Mock:
     return cast("Mock", ctrl.mass)
 
 
-def _provider_configs(*domains: str) -> AsyncMock:
-    """Return a stand-in for the enabled music provider configs of the given domains."""
-    return AsyncMock(return_value=[Mock(domain=domain, enabled=True) for domain in domains])
+def _provider_instances(loaded: Sequence[str] = (), unavailable: Sequence[str] = ()) -> Mock:
+    """
+    Return a stand-in for the music provider instance lookup by domain.
+
+    Like the real lookup, an unavailable instance only shows up when asked for.
+
+    :param loaded: Domains with an available instance.
+    :param unavailable: Domains whose only instance is unavailable.
+    """
+
+    def _instances(domain: str, return_unavailable: bool = False) -> list[Mock]:
+        if domain in loaded:
+            return [Mock(available=True)]
+        if domain in unavailable and return_unavailable:
+            return [Mock(available=False)]
+        return []
+
+    return Mock(side_effect=_instances)
 
 
 # --------------------------------------------------------------------------- #
@@ -389,7 +399,7 @@ async def test_link_run_waits_while_a_library_sync_is_active() -> None:
 
 async def test_link_run_with_linking_disabled_returns_early_and_keeps_the_domains() -> None:
     """With the toggle off nothing is selected and the persisted map is left as it is."""
-    ctrl = _controller(linking=False, linked_domains={"spotify": 100}, enabled_domains=["spotify"])
+    ctrl = _controller(linking=False, linked_domains={"spotify": 100}, loaded_domains=["spotify"])
     queried = _queue(ctrl, albums=_albums(1))
 
     with patch(_PROGRESS_TEXT) as progress_text:
@@ -419,12 +429,11 @@ async def test_link_run_without_a_musicbrainz_provider_returns_early() -> None:
 # --------------------------------------------------------------------------- #
 
 
-async def test_link_run_relinks_for_a_provider_enabled_since_the_previous_run() -> None:
-    """A new provider starts now, a disabled one is dropped, and each kept gets a relink phase."""
+async def test_link_run_relinks_for_a_provider_loaded_since_the_previous_run() -> None:
+    """A new provider starts now, one no longer loaded is dropped, and each kept gets a relink phase."""
     ctrl = _controller(
         linked_domains={"spotify": 100, "deezer": 200},
-        enabled_domains=["tidal", "spotify", "filesystem_local"],
-        disabled_domains=["deezer"],
+        loaded_domains=["tidal", "spotify", "filesystem_local"],
     )
     queried = _queue(ctrl)
 
@@ -461,7 +470,7 @@ async def test_link_run_relinks_for_a_provider_enabled_since_the_previous_run() 
 
 async def test_link_run_keeps_the_linked_domains_when_nothing_changed() -> None:
     """The persisted map is only rewritten when a provider came or went."""
-    ctrl = _controller(linked_domains={"spotify": 100}, enabled_domains=["spotify"])
+    ctrl = _controller(linked_domains={"spotify": 100}, loaded_domains=["spotify"])
     _queue(ctrl)
 
     await ctrl._link_library_to_musicbrainz()
@@ -469,19 +478,14 @@ async def test_link_run_keeps_the_linked_domains_when_nothing_changed() -> None:
     _mass(ctrl).config.set_raw_core_config_value.assert_not_called()
 
 
-async def test_link_run_keeps_the_first_seen_of_a_provider_that_is_reloading() -> None:
-    """A provider whose instance is absent while its config is enabled is not new."""
-    musicbrainz = _musicbrainz()
-    ctrl = _controller(
-        musicbrainz=musicbrainz, linked_domains={"spotify": 100}, enabled_domains=["spotify"]
-    )
-    _mass(ctrl).get_provider = Mock(
-        side_effect=lambda domain, **_kwargs: musicbrainz if domain == "musicbrainz" else None
-    )
+async def test_link_run_counts_an_unavailable_provider_instance_as_loaded() -> None:
+    """A provider whose instance is loaded but unavailable keeps its place: the link step maps to it."""
+    ctrl = _controller(linked_domains={"spotify": 100}, unavailable_domains=["spotify"])
     _queue(ctrl)
 
     await ctrl._link_library_to_musicbrainz()
 
+    _mass(ctrl).music.get_provider_instances.assert_any_call("spotify", return_unavailable=True)
     _mass(ctrl).config.set_raw_core_config_value.assert_not_called()
     relink = _mass(ctrl).music.albums.get_library_items_by_query.await_args_list[1]
     assert relink.kwargs["extra_query_params"] == {"domain": "spotify", "seen": 100}
@@ -489,7 +493,7 @@ async def test_link_run_keeps_the_first_seen_of_a_provider_that_is_reloading() -
 
 async def test_first_link_run_seeds_the_present_providers_with_zero() -> None:
     """Nothing persisted yet: the providers present start at 0, so no item predates them."""
-    ctrl = _controller(enabled_domains=["spotify"])
+    ctrl = _controller(loaded_domains=["spotify"])
     _queue(ctrl)
 
     with patch(f"{_CONTROLLER}.time", return_value=float(NOW)):
@@ -514,9 +518,9 @@ async def test_first_link_run_without_a_linked_provider_persists_an_empty_map() 
     )
 
 
-async def test_link_run_starts_a_provider_enabled_after_the_first_run_now() -> None:
-    """A provider enabled once the map exists starts now: all identified before it is relinked."""
-    ctrl = _controller(linked_domains={}, enabled_domains=["spotify"])
+async def test_link_run_starts_a_provider_loaded_after_the_first_run_now() -> None:
+    """A provider loaded once the map exists starts now: all identified before it is relinked."""
+    ctrl = _controller(linked_domains={}, loaded_domains=["spotify"])
     _queue(ctrl)
 
     with patch(f"{_CONTROLLER}.time", return_value=float(NOW)):
@@ -530,7 +534,7 @@ async def test_link_run_starts_a_provider_enabled_after_the_first_run_now() -> N
 async def test_link_run_skips_a_malformed_linked_domain_entry() -> None:
     """An entry without a usable epoch is dropped, so its provider starts over like a new one."""
     ctrl = _controller(
-        linked_domains={"spotify": 100}, enabled_domains=["spotify", "deezer", "tidal"]
+        linked_domains={"spotify": 100}, loaded_domains=["spotify", "deezer", "tidal"]
     )
     _mass(ctrl).config.get_raw_core_config_value.return_value = [
         "spotify:100",
@@ -766,7 +770,7 @@ async def test_link_run_relinks_identified_items_that_miss_a_new_providers_links
         "metadata", CONF_MUSICBRAINZ_LINKED_DOMAINS, [f"spotify:{now - 10}"]
     )
 
-    with patch.object(mass.config, "get_provider_configs", _provider_configs("spotify")):
+    with patch.object(mass.music, "get_provider_instances", _provider_instances(["spotify"])):
         linked = await _linked_ids(mass)
 
     assert linked == {unlinked.item_id, artist.item_id}
@@ -780,12 +784,39 @@ async def test_first_link_run_against_an_identified_library_relinks_nothing(
     await _add_album(mass, "Identified", looked_up=now - 20, mbid=RELEASE_ID)
     await _add_artist(mass, looked_up=now - 20)
 
-    with patch.object(mass.config, "get_provider_configs", _provider_configs("spotify")):
+    with patch.object(mass.music, "get_provider_instances", _provider_instances(["spotify"])):
         linked = await _linked_ids(mass)
 
     assert linked == set()
     assert mass.config.get_raw_core_config_value("metadata", CONF_MUSICBRAINZ_LINKED_DOMAINS) == [
         "spotify:0"
+    ]
+
+
+async def test_link_run_relinks_what_was_identified_while_a_provider_was_not_loaded(
+    mass: MusicAssistant,
+) -> None:
+    """A provider without an instance is dropped; back again, it relinks what was identified meanwhile."""
+    mass.config.set_raw_core_config_value(
+        "metadata", CONF_MUSICBRAINZ_LINKED_DOMAINS, ["spotify:0"]
+    )
+    with patch.object(mass.music, "get_provider_instances", _provider_instances()):
+        assert await _linked_ids(mass) == set()
+    assert mass.config.get_raw_core_config_value("metadata", CONF_MUSICBRAINZ_LINKED_DOMAINS) == []
+    unlinked = await _add_album(mass, "Unlinked", looked_up=NOW - 10, mbid=RELEASE_ID)
+    await _add_album(
+        mass, "Mapped", looked_up=NOW - 10, mbid=RELEASE_ID, domains=("qobuz", "spotify")
+    )
+
+    with (
+        patch.object(mass.music, "get_provider_instances", _provider_instances(["spotify"])),
+        patch(f"{_CONTROLLER}.time", return_value=float(NOW)),
+    ):
+        linked = await _linked_ids(mass)
+
+    assert linked == {unlinked.item_id}
+    assert mass.config.get_raw_core_config_value("metadata", CONF_MUSICBRAINZ_LINKED_DOMAINS) == [
+        f"spotify:{NOW}"
     ]
 
 
