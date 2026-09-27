@@ -289,7 +289,7 @@ async def test_add_item_to_favorites_writes_only_to_the_own_source(
     seen[MINE].set_favorite.assert_awaited_once_with("mine-42", MediaType.TRACK, True)
     assert THEIRS not in seen
     assert A_THIRD not in seen
-    ctrl.set_favorite.assert_awaited_once_with("42", True)
+    ctrl.set_favorite.assert_awaited_once_with("42", True, [ME])
 
 
 async def test_remove_item_from_favorites_writes_only_to_the_own_source(
@@ -298,7 +298,13 @@ async def test_remove_item_from_favorites_writes_only_to_the_own_source(
     """Unstarring is scoped the same way as starring."""
     _as_user(monkeypatch, _user())
     controller = _controller(THREE_ACCOUNTS)
-    full_item = Mock(media_type=MediaType.TRACK, provider_mappings=THREE_MAPPINGS)
+    full_item = Mock(
+        provider="library",
+        item_id="42",
+        media_type=MediaType.TRACK,
+        provider_mappings=THREE_MAPPINGS,
+    )
+    controller.get_item = AsyncMock(return_value=full_item)  # type: ignore[method-assign]
     ctrl = Mock(set_favorite=AsyncMock(), get_library_item=AsyncMock(return_value=full_item))
     controller.get_controller = Mock(return_value=ctrl)  # type: ignore[method-assign]
     controller.library_favorites_edit_supported = Mock(return_value=True)  # type: ignore[method-assign]
@@ -306,9 +312,9 @@ async def test_remove_item_from_favorites_writes_only_to_the_own_source(
     await controller.remove_item_from_favorites(MediaType.TRACK, "42")
 
     seen = controller.providers_seen  # type: ignore[attr-defined]
-    seen[MINE].set_favorite.assert_called_once_with("mine-42", MediaType.TRACK, False)
+    seen[MINE].set_favorite.assert_called_once_with("mine-42", MediaType.TRACK, None)
     assert THEIRS not in seen
-    ctrl.set_favorite.assert_awaited_once_with("42", False)
+    ctrl.set_favorite.assert_awaited_once_with("42", None, [ME])
 
 
 async def test_remove_item_from_library_writes_only_to_the_own_source(
@@ -390,4 +396,4 @@ async def test_a_down_own_source_is_skipped_rather_than_served_by_a_sibling(
     seen = controller.providers_seen  # type: ignore[attr-defined]
     assert all(not prov.set_favorite.called for prov in seen.values())
     # the library row is still the user's own, so the star is not lost
-    ctrl.set_favorite.assert_awaited_once_with("42", True)
+    ctrl.set_favorite.assert_awaited_once_with("42", True, [ME])

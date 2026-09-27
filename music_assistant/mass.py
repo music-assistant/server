@@ -338,10 +338,10 @@ class MusicAssistant:
         # provider load so no provider is served a record that is still to be written.
         # TODO: remove after 2.11 release
         await migrate_provider_access(self)
-        # one-off: hand out the favorites the library migration could not attribute to a
-        # single user. Needs the users from the auth database, which is not open while the
-        # library migrates, so they wait under a placeholder user id until here.
-        await self.music.favorites.expand_pending()
+        # one-off: hand the favorites the library migration parked to their users. Needs the
+        # owners of the music sources (migrated just above) and the users from the auth
+        # database, neither of which is there while the library migrates.
+        await self.music.favorites.settle_pending()
         # repair sidebar shortcuts left pointing at a provider instance that no longer exists:
         # those never resolve, so the frontend cannot render them and the user cannot remove
         # them. Reads the provider config, so it must not wait for the providers to load.

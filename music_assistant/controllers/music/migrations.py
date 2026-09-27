@@ -44,7 +44,6 @@ from music_assistant.controllers.music.favorites import PENDING_USER_ID
 from music_assistant.controllers.music.media.genres import GenreController
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
 from music_assistant.helpers.lyrics import normalize_lrc_lyrics
-from music_assistant.helpers.provider_access import music_source_owners
 
 if TYPE_CHECKING:
     import logging
@@ -1032,11 +1031,11 @@ async def migrate_database(  # noqa: PLR0915
 
     if prev_version <= 60:
         # favorites move from one shared column on every media item table to a row per user
-        # in the favorites table. An existing favorite becomes a like for the owners of the
-        # music sources that hold the item in their library, and a like for everyone when it
-        # comes from a source of the whole home. The users live in another database that is
-        # not open yet, so the ones that go to everyone are parked under a placeholder user
-        # id and handed out by expand_pending() once the webserver is up.
+        # in the favorites table. Whose like an existing favorite becomes depends on the
+        # owners of the music sources and on the users, and neither is known here: the
+        # access records are migrated and the auth database opened only once the webserver
+        # is up. Every favorite is parked under a placeholder user id, which
+        # FavoritesStore.settle_pending() hands out on that same start.
         await database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_FAVORITES}(
                 [user_id] TEXT NOT NULL,
@@ -1049,20 +1048,6 @@ async def migrate_database(  # noqa: PLR0915
         await database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_FAVORITES}_item_idx "
             f"on {DB_TABLE_FAVORITES}(media_type,item_id);"
-        )
-        owner_by_instance = music_source_owners(mass)
-        # bound one by one: the plain execute() below has no list parameter support
-        owned_instances = {
-            f"owned_instance_{idx}": instance_id
-            for idx, (instance_id, owner) in enumerate(owner_by_instance.items())
-            if owner
-        }
-        mappings_table_exists = bool(
-            await database.get_rows_from_query(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :table_name",
-                {"table_name": DB_TABLE_PROVIDER_MAPPINGS},
-                limit=1,
-            )
         )
         for media_type, table in (
             (MediaType.ARTIST, DB_TABLE_ARTISTS),
@@ -1089,44 +1074,12 @@ async def migrate_database(  # noqa: PLR0915
                 if "timestamp_modified" in table_columns
                 else "0"
             )
-            insert = (
+            await database.execute(
                 f"INSERT OR IGNORE INTO {DB_TABLE_FAVORITES}"
                 "(user_id, media_type, item_id, favorite, timestamp) "
                 f"SELECT :user_id, :media_type, {table}.item_id, 1, {timestamp} "
-                f"FROM {table} WHERE {table}.favorite = 1"
-            )
-            in_library_on = (
-                f"SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} pm "
-                "WHERE pm.media_type = :media_type "
-                f"AND pm.item_id = {table}.item_id AND pm.in_library = 1"
-            )
-            if mappings_table_exists and owned_instances:
-                for instance_id in owned_instances.values():
-                    await database.execute(
-                        f"{insert} AND EXISTS({in_library_on} "
-                        "AND pm.provider_instance = :instance_id)",
-                        {
-                            "user_id": owner_by_instance[instance_id],
-                            "media_type": media_type.value,
-                            "instance_id": instance_id,
-                        },
-                    )
-                # a favorite on a source of the whole home, or one no source holds anymore
-                owned_placeholders = ", ".join(f":{name}" for name in owned_instances)
-                pending_condition = (
-                    f" AND (NOT EXISTS({in_library_on}) OR EXISTS({in_library_on} "
-                    f"AND pm.provider_instance NOT IN ({owned_placeholders})))"
-                )
-            else:
-                # without an owned source every favorite belongs to the whole home
-                pending_condition = ""
-            await database.execute(
-                f"{insert}{pending_condition}",
-                {
-                    "user_id": PENDING_USER_ID,
-                    "media_type": media_type.value,
-                    **owned_instances,
-                },
+                f"FROM {table} WHERE {table}.favorite = 1",
+                {"user_id": PENDING_USER_ID, "media_type": media_type.value},
             )
             # the column must not be indexed for DROP COLUMN to succeed
             await database.execute(f"DROP INDEX IF EXISTS {table}_favorite_idx")

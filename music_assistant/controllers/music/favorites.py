@@ -16,16 +16,16 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
-from music_assistant.constants import DB_TABLE_FAVORITES
-from music_assistant.helpers.provider_access import source_owner
+from music_assistant.constants import DB_TABLE_FAVORITES, DB_TABLE_PROVIDER_MAPPINGS
+from music_assistant.helpers.provider_access import music_source_owners, source_owner
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import MediaType
 
     from music_assistant import MusicAssistant
 
-# user id the library migration parks a favorite under that it can not attribute yet:
-# the users live in another database that is not open while the library migrates
+# user id the library migration parks every favorite under: whose like it becomes depends on
+# the owners of the music sources and on the users, both only known once the webserver is up
 PENDING_USER_ID = "__pending__"
 
 
@@ -166,8 +166,14 @@ class FavoritesStore:
         """
         await self.mass.music.database.delete(DB_TABLE_FAVORITES, {"user_id": user_id})
 
-    async def expand_pending(self) -> None:
-        """Hand the favorites the library migration could not attribute to every user."""
+    async def settle_pending(self) -> None:
+        """
+        Hand the favorites the library migration parked to the users they belong to.
+
+        A favorite goes to the owner of every music source that holds the item in its
+        library, and to every user when a source of the whole home holds it or when no
+        source holds it at all.
+        """
         if not await self.mass.music.database.get_rows(
             DB_TABLE_FAVORITES, {"user_id": PENDING_USER_ID}, limit=1
         ):
@@ -175,12 +181,44 @@ class FavoritesStore:
         if not (users := await self.mass.webserver.auth.list_users()):
             # nobody to hand them to yet; leave them parked for a next start
             return
+        owned_sources = {
+            instance_id: owner
+            for instance_id, owner in music_source_owners(self.mass).items()
+            if owner
+        }
+        insert = (
+            f"INSERT OR IGNORE INTO {DB_TABLE_FAVORITES}"
+            "(user_id, media_type, item_id, favorite, timestamp) "
+            "SELECT :user_id, f.media_type, f.item_id, f.favorite, f.timestamp "
+            f"FROM {DB_TABLE_FAVORITES} f WHERE f.user_id = :pending_user_id"
+        )
+        in_library_on = (
+            f"SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} pm "
+            "WHERE pm.media_type = f.media_type AND pm.item_id = f.item_id AND pm.in_library = 1"
+        )
+        for instance_id, owner in owned_sources.items():
+            await self.mass.music.database.execute_write(
+                f"{insert} AND EXISTS({in_library_on} AND pm.provider_instance = :instance_id)",
+                {
+                    "user_id": owner,
+                    "pending_user_id": PENDING_USER_ID,
+                    "instance_id": instance_id,
+                },
+            )
+        # bound one by one: execute_write has no list parameter support
+        owned_params = {
+            f"owned_{idx}": instance_id for idx, instance_id in enumerate(owned_sources)
+        }
+        household_condition = ""
+        if owned_params:
+            placeholders = ", ".join(f":{name}" for name in owned_params)
+            household_condition = (
+                f" AND (NOT EXISTS({in_library_on}) OR EXISTS({in_library_on} "
+                f"AND pm.provider_instance NOT IN ({placeholders})))"
+            )
         for user in users:
             await self.mass.music.database.execute_write(
-                f"INSERT OR IGNORE INTO {DB_TABLE_FAVORITES}"
-                "(user_id, media_type, item_id, favorite, timestamp) "
-                "SELECT :user_id, media_type, item_id, favorite, timestamp "
-                f"FROM {DB_TABLE_FAVORITES} WHERE user_id = :pending_user_id",
-                {"user_id": user.user_id, "pending_user_id": PENDING_USER_ID},
+                f"{insert}{household_condition}",
+                {"user_id": user.user_id, "pending_user_id": PENDING_USER_ID, **owned_params},
             )
         await self.release_user(PENDING_USER_ID)

@@ -196,30 +196,50 @@ async def test_provider_favorite_never_overrides_the_users_own_choice(
     assert rows == {USER_A: None}
 
 
-async def test_expand_pending_hands_the_migrated_favorites_to_every_user(
-    favorites_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The favorites the library migration could not attribute end up with every user."""
-    mass = favorites_mass
-    track = await _add_track(mass, "Migrated Favorite")
+async def _park_favorite(mass: MusicAssistant, item_id: int, timestamp: int) -> None:
+    """Park a like the way the library migration does, for settle_pending to hand out."""
     await mass.music.database.insert(
         DB_TABLE_FAVORITES,
         {
             "user_id": PENDING_USER_ID,
             "media_type": MediaType.TRACK.value,
-            "item_id": int(track.item_id),
+            "item_id": item_id,
             "favorite": True,
-            "timestamp": 42,
+            "timestamp": timestamp,
+        },
+    )
+
+
+async def test_settle_pending_hands_migrated_favorites_to_the_users_that_hold_them(
+    favorites_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A parked favorite goes to the owner of the source holding it, or to everyone."""
+    mass = favorites_mass
+    owned = await _add_track(mass, "Owned Favorite")
+    household = await _add_track(mass, "Household Favorite", PROV_HOUSEHOLD)
+    set_music_source_access(
+        mass,
+        {
+            PROV_OWNED: ProviderAccess(owner=USER_A, sharing=ProviderSharing.PRIVATE),
+            PROV_HOUSEHOLD: None,
         },
     )
     _known_users(mass, monkeypatch, USER_A, USER_B)
+    await _park_favorite(mass, int(owned.item_id), 11)
+    await _park_favorite(mass, int(household.item_id), 22)
+    # a favorite no source holds in its library anymore
+    await _park_favorite(mass, 999_999, 33)
 
     # a second pass has nothing left to hand out
     for _ in range(2):
-        await mass.music.favorites.expand_pending()
+        await mass.music.favorites.settle_pending()
 
-    rows = {row["user_id"]: row["timestamp"] for row in await _favorite_rows(mass, track.item_id)}
-    assert rows == {USER_A: 42, USER_B: 42}
+    def _by_user(rows: list[dict[str, Any]]) -> dict[str, int]:
+        return {row["user_id"]: row["timestamp"] for row in rows}
+
+    assert _by_user(await _favorite_rows(mass, owned.item_id)) == {USER_A: 11}
+    assert _by_user(await _favorite_rows(mass, household.item_id)) == {USER_A: 22, USER_B: 22}
+    assert _by_user(await _favorite_rows(mass, "999999")) == {USER_A: 33, USER_B: 33}
 
 
 async def test_removing_an_item_drops_its_favorites(favorites_mass: MusicAssistant) -> None:
