@@ -17,8 +17,13 @@ import time
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType
+from music_assistant_models.media_items import MediaItem
 
-from music_assistant.constants import DB_TABLE_FAVORITES, DB_TABLE_PROVIDER_MAPPINGS
+from music_assistant.constants import (
+    DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_FAVORITES,
+    DB_TABLE_PROVIDER_MAPPINGS,
+)
 from music_assistant.helpers.provider_access import (
     access_allows,
     music_sources_access,
@@ -29,7 +34,7 @@ from music_assistant.helpers.util import parse_optional_bool
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import ProviderAccess
-    from music_assistant_models.media_items import Track
+    from music_assistant_models.media_items import ItemMapping, Track
 
     from music_assistant import MusicAssistant
 
@@ -38,9 +43,10 @@ if TYPE_CHECKING:
 PENDING_USER_ID = "__pending__"
 # how long a resolved user list serves the reports of one library sync
 USERS_TTL = 30
-# the library ids of a user's disliked tracks, and the (provider instance, item id) pairs
-# those tracks are known by, so a track straight from a music source is recognized too
-type DislikedTrackKeys = tuple[set[int], set[tuple[str, str]]]
+# the (media type, library id) pairs of a user's disliked tracks, albums and artists, and the
+# (media type, provider instance, item id) keys those items are known by, so an item straight
+# from a music source is recognized too
+type DislikedTrackKeys = tuple[set[tuple[MediaType, int]], set[tuple[MediaType, str, str]]]
 
 
 class FavoritesStore:
@@ -127,32 +133,45 @@ class FavoritesStore:
 
     async def disliked_track_keys(self, user_id: str) -> DislikedTrackKeys:
         """
-        Return the tracks the given user disliked, in one query.
+        Return the tracks, albums and artists the given user disliked, in one query.
 
-        The library ids identify the tracks as library items, the (instance, item id) pairs
-        recognize the same track when it arrives straight from a music source. Feed the result
+        The tracks of a disliked album are included as disliked tracks.
+
+        The library ids identify them as library items, the (instance, item id) pairs
+        recognize the same item when it arrives straight from a music source. Feed the result
         to :func:`filter_disliked`.
 
         :param user_id: The user whose dislikes are returned.
         """
-        item_ids: set[int] = set()
-        provider_keys: set[tuple[str, str]] = set()
-        # LEFT JOIN: a disliked track without any mapping left still counts by its library id
+        item_ids: set[tuple[MediaType, int]] = set()
+        provider_keys: set[tuple[MediaType, str, str]] = set()
+        # every track of a disliked album counts as disliked itself: a library track on more
+        # than one album only carries one of them
         query = (
-            "SELECT f.item_id, pm.provider_instance, pm.provider_item_id "
-            f"FROM {DB_TABLE_FAVORITES} f "
-            f"LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} pm "
-            "ON pm.media_type = f.media_type AND pm.item_id = f.item_id "
-            "WHERE f.user_id = :user_id AND f.media_type = :media_type AND f.favorite = 0"
+            "WITH disliked(media_type, item_id) AS ("
+            f"SELECT media_type, item_id FROM {DB_TABLE_FAVORITES} "
+            "WHERE user_id = :user_id AND favorite = 0 "
+            "AND media_type IN (:track, :album, :artist) "
+            "UNION "
+            f"SELECT :track, at.track_id FROM {DB_TABLE_FAVORITES} f "
+            f"JOIN {DB_TABLE_ALBUM_TRACKS} at ON at.album_id = f.item_id "
+            "WHERE f.user_id = :user_id AND f.favorite = 0 AND f.media_type = :album) "
+            # LEFT JOIN: a disliked item without any mapping left still counts by its library id
+            "SELECT d.media_type, d.item_id, pm.provider_instance, pm.provider_item_id "
+            f"FROM disliked d LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} pm "
+            "ON pm.media_type = d.media_type AND pm.item_id = d.item_id"
         )
-        for row in await self.mass.music.database.get_rows_from_query(
-            query,
-            {"user_id": user_id, "media_type": MediaType.TRACK.value},
-            limit=0,
-        ):
-            item_ids.add(int(row["item_id"]))
+        values = {
+            "user_id": user_id,
+            "track": MediaType.TRACK.value,
+            "album": MediaType.ALBUM.value,
+            "artist": MediaType.ARTIST.value,
+        }
+        for row in await self.mass.music.database.get_rows_from_query(query, values, limit=0):
+            media_type = MediaType(row["media_type"])
+            item_ids.add((media_type, int(row["item_id"])))
             if row["provider_instance"] and row["provider_item_id"]:
-                provider_keys.add((row["provider_instance"], row["provider_item_id"]))
+                provider_keys.add((media_type, row["provider_instance"], row["provider_item_id"]))
         return item_ids, provider_keys
 
     async def move_item(self, media_type: MediaType, source_id: int, target_id: int) -> None:
@@ -313,7 +332,7 @@ async def without_disliked_tracks(
     mass: MusicAssistant, user_id: str | None, tracks: list[Track]
 ) -> list[Track]:
     """
-    Return the given tracks without the ones the user disliked.
+    Return the given tracks without the ones the user disliked, directly or by album or artist.
 
     Only for playback Music Assistant picks itself; what a user asks for by name is never
     filtered.
@@ -329,7 +348,7 @@ async def without_disliked_tracks(
 
 def filter_disliked(tracks: list[Track], keys: DislikedTrackKeys) -> list[Track]:
     """
-    Drop the tracks a user disliked from a list of candidates.
+    Drop the tracks a user disliked, directly or by album or artist, from a list of candidates.
 
     A hard filter, unlike the advisory :func:`music_assistant.helpers.track_filter.filter_tracks`:
     an empty result is a valid answer, since a disliked track must never be played.
@@ -355,11 +374,35 @@ def _holds_favorites_for(access: ProviderAccess | None, user: User) -> bool:
     return access_allows(access, user)
 
 
-def _is_disliked(track: Track, item_ids: set[int], provider_keys: set[tuple[str, str]]) -> bool:
-    """Return whether the track is one of the disliked ones, by library id or by mapping."""
-    if track.provider == "library" and int(track.item_id) in item_ids:
-        return True
+def _is_disliked(
+    track: Track,
+    item_ids: set[tuple[MediaType, int]],
+    provider_keys: set[tuple[MediaType, str, str]],
+) -> bool:
+    """Return whether the track, its album or one of its artists is disliked."""
+    # a bare reference may lack a correct media type, so take it from its place on the track
+    refs: list[tuple[MediaType, MediaItem | ItemMapping]] = [(MediaType.TRACK, track)]
+    refs += [(MediaType.ARTIST, artist) for artist in track.artists]
+    if track.album:
+        refs.append((MediaType.ALBUM, track.album))
     return any(
-        (mapping.provider_instance, mapping.item_id) in provider_keys
-        for mapping in track.provider_mappings
+        _is_disliked_item(media_type, item, item_ids, provider_keys) for media_type, item in refs
+    )
+
+
+def _is_disliked_item(
+    media_type: MediaType,
+    item: MediaItem | ItemMapping,
+    item_ids: set[tuple[MediaType, int]],
+    provider_keys: set[tuple[MediaType, str, str]],
+) -> bool:
+    """Return whether the item is one of the disliked ones, by library id or by mapping."""
+    if item.provider == "library" and (media_type, int(item.item_id)) in item_ids:
+        return True
+    # a bare reference carries no mappings, only its own provider and id
+    if (media_type, item.provider, item.item_id) in provider_keys:
+        return True
+    return isinstance(item, MediaItem) and any(
+        (media_type, mapping.provider_instance, mapping.item_id) in provider_keys
+        for mapping in item.provider_mappings
     )

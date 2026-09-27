@@ -641,7 +641,7 @@ async def test_the_end_of_queue_refill_skips_a_disliked_track() -> None:
         return_value=User(user_id="user-a", username="a", role=UserRole.USER)
     )
     tracker.mass.music.favorites.disliked_track_keys = AsyncMock(
-        return_value=(set(), {("spotify--1", "disliked")})
+        return_value=(set(), {(MediaType.TRACK, "spotify--1", "disliked")})
     )
     tracker.load = AsyncMock()
     tracker.play_index = AsyncMock()

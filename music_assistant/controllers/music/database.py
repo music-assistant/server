@@ -687,6 +687,11 @@ class MusicDatabaseSetupMixin:
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_ALBUM_ARTISTS}_artist_id_idx "
             f"on {DB_TABLE_ALBUM_ARTISTS}(artist_id);"
         )
+        # index on album_tracks table; its unique index leads with track_id
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_ALBUM_TRACKS}_album_id_idx "
+            f"on {DB_TABLE_ALBUM_TRACKS}(album_id);"
+        )
         # indexes on genre_media_item_mapping table
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_media_idx "
