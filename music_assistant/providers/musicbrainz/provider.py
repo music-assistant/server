@@ -976,7 +976,7 @@ class MusicbrainzProvider(MetadataProvider):
         for candidate in candidates[:MAX_BARCODE_DETAIL_FETCHES]:
             with suppress(InvalidDataError):
                 release = await self.get_release_details(candidate.id)
-                if _release_matches_album(release, album):
+                if release_matches_album(release, album):
                     return release
         return None
 
@@ -1095,6 +1095,26 @@ def is_public_catalog_url(url: str) -> bool:
     return any(host == public or host.endswith(f".{public}") for public in REVERSE_URL_HOSTS)
 
 
+def release_matches_album(release: MusicBrainzRelease, album: Album) -> bool:
+    """
+    Return whether a MusicBrainz release is the given album, by title and primary artist.
+
+    :param release: The release, with its artist credits.
+    :param album: The album as a music provider or the library has it.
+    """
+    if not compare_album_name(release.title, album.name):
+        return False
+    if not album.artists:
+        return True
+    if not release.artist_credit:
+        return False
+    # MusicBrainz credits a compilation to Various Artists whatever the provider says
+    primary_credit = release.artist_credit[0]
+    return primary_credit.artist.id == VARIOUS_ARTISTS_MBID or bool(
+        _matching_artist_credit([primary_credit], album.artists[0].name)
+    )
+
+
 def _matching_artist_credit(
     artist_credits: Sequence[MusicBrainzArtistCredit], artist_name: str
 ) -> MusicBrainzArtist | None:
@@ -1107,21 +1127,6 @@ def _matching_artist_credit(
                 if compare_strings(alias.name, artist_name, strict):
                     return artist_credit.artist
     return None
-
-
-def _release_matches_album(release: MusicBrainzRelease, album: Album) -> bool:
-    """Return whether a release is the given album, by title and primary artist."""
-    if not compare_album_name(release.title, album.name):
-        return False
-    if not album.artists:
-        return True
-    if not release.artist_credit:
-        return False
-    # MusicBrainz credits a compilation to Various Artists whatever the provider says
-    primary_credit = release.artist_credit[0]
-    return primary_credit.artist.id == VARIOUS_ARTISTS_MBID or bool(
-        _matching_artist_credit([primary_credit], album.artists[0].name)
-    )
 
 
 def _edition_rank(release: MusicBrainzBarcodeRelease) -> tuple[bool, bool, bool, str]:

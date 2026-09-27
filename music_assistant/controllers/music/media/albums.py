@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
@@ -62,6 +63,7 @@ from music_assistant.providers.musicbrainz.provider import (
     is_digital_release,
     is_public_catalog_url,
     relation_urls,
+    release_matches_album,
 )
 
 from .base import EXTERNAL_ID_LOOKUP_ERRORS, MAX_EXTERNAL_ID_MATCH_LOOKUPS, MediaControllerBase
@@ -578,29 +580,25 @@ class AlbumsController(MediaControllerBase[Album]):
             for release in await musicbrainz.browse_releases_by_release_group(release_group_id)
             if release.status == "Official"
         ]
-        # a link names an instance of any loaded provider, while the user may only be
-        # handed an album from a music source it may see
-        visible_instances = {provider.instance_id for provider in self.mass.music.providers}
         # the digital editions of one group carry different ids on the providers, so each
         # edition's own links and barcode are tried, never those of the whole group
         for edition in sorted(editions, key=_streaming_edition_rank)[:_MAX_EDITION_LOOKUPS]:
             release = await musicbrainz.get_release_details(edition.id)
-            linked = [
-                candidate
-                for candidate in await provider_mappings_from_urls(
+            # a link names one loaded instance of a service, while the user may only be
+            # handed an album from a music source it may see
+            linked = _within_sources(
+                await provider_mappings_from_urls(
                     self.mass, relation_urls(release.relations), MediaType.ALBUM, set()
-                )
-                if candidate.provider_instance in visible_instances
-            ]
+                ),
+                self.mass.music.providers,
+            )
             if album := await self._first_available_album(
                 linked, release_group_id, allow_update_metadata
             ):
                 return album
-            # a barcode lookup fans out over every other provider, so it is spent only when
-            # none of the links resolves
-            by_barcode = await self._album_candidates_by_barcode(
-                release.barcode, {candidate.provider_domain for candidate in linked}
-            )
+            # a barcode lookup fans out over every provider, so it is spent only when none
+            # of the links resolves; a linked provider is asked too, as its link may be stale
+            by_barcode = await self._album_candidates_by_barcode(release)
             if album := await self._first_available_album(
                 by_barcode, release_group_id, allow_update_metadata
             ):
@@ -1056,33 +1054,52 @@ class AlbumsController(MediaControllerBase[Album]):
         return []
 
     async def _album_candidates_by_barcode(
-        self, barcode: str | None, exclude_domains: set[str]
+        self, release: MusicBrainzRelease
     ) -> list[ProviderMapping]:
         """
         Return the mappings of the albums the music providers find by a release's barcode.
 
-        :param barcode: Barcode of the release, if MusicBrainz knows it.
-        :param exclude_domains: Provider domains to leave out, e.g. those already linked.
+        Only an album that is the release, by title and primary artist, counts.
+
+        :param release: The MusicBrainz release, with its barcode and artist credits.
         """
-        if not barcode or not is_valid_barcode(barcode):
+        if not release.barcode or not is_valid_barcode(release.barcode):
             return []
-        upc = barcode_to_upc(barcode)
+        upc = barcode_to_upc(release.barcode)
+        providers = [
+            provider
+            for provider in self.mass.music.providers
+            if provider.supports_feature(ProviderFeature.ALBUM_BY_EXTERNAL_ID)
+        ]
+        hits = await asyncio.gather(
+            *(self._album_by_barcode(provider, upc) for provider in providers)
+        )
         candidates: list[ProviderMapping] = []
-        for provider in self.mass.music.providers:
-            if provider.domain in exclude_domains or not provider.supports_feature(
-                ProviderFeature.ALBUM_BY_EXTERNAL_ID
-            ):
+        for provider, hit in zip(providers, hits, strict=True):
+            if hit is None:
                 continue
-            try:
-                prov_album = await provider.get_album_by_external_id(upc, ExternalID.BARCODE)
-            except EXTERNAL_ID_LOOKUP_ERRORS as err:
+            # a barcode gets reused, and a provider answers with the first album carrying it
+            if not release_matches_album(release, hit):
                 self.logger.debug(
-                    "Barcode %s lookup on provider %s failed: %s", upc, provider.name, err
+                    "Barcode %s on provider %s is album %s, not %s",
+                    upc,
+                    provider.name,
+                    hit.name,
+                    release.title,
                 )
                 continue
-            if prov_album is not None:
-                candidates.extend(prov_album.provider_mappings)
+            candidates.extend(hit.provider_mappings)
         return candidates
+
+    async def _album_by_barcode(self, provider: MusicProvider, upc: str) -> Album | None:
+        """Return the album a provider finds by a barcode, if it has one and answers."""
+        try:
+            return await provider.get_album_by_external_id(upc, ExternalID.BARCODE)
+        except EXTERNAL_ID_LOOKUP_ERRORS as err:
+            self.logger.debug(
+                "Barcode %s lookup on provider %s failed: %s", upc, provider.name, err
+            )
+            return None
 
     async def _first_available_album(
         self,
@@ -1093,10 +1110,21 @@ class AlbumsController(MediaControllerBase[Album]):
         """Return the first candidate its provider still serves as an album, if any."""
         for candidate in candidates:
             try:
-                return await self.get(
+                if library_album := await self.get_library_item_by_prov_id(
+                    candidate.item_id, candidate.provider_instance
+                ):
+                    return await self.get(
+                        library_album.item_id,
+                        "library",
+                        allow_update_metadata=allow_update_metadata,
+                    )
+                # the candidate names one of the user's own sources, so an unavailable one
+                # must not fall back to another account of the same service
+                return await self.get_provider_item(
                     candidate.item_id,
                     candidate.provider_instance,
-                    allow_update_metadata=allow_update_metadata,
+                    allow_fallback=False,
+                    strict_provider_instance=True,
                 )
             except EXTERNAL_ID_LOOKUP_ERRORS as err:
                 self.logger.debug(
@@ -1359,6 +1387,28 @@ def _streaming_edition_rank(release: MusicBrainzBarcodeRelease) -> tuple[bool, b
         release.country not in ("XW", "XE"),
         release.date or "9999",
     )
+
+
+def _within_sources(
+    candidates: Iterable[ProviderMapping], sources: Sequence[MusicProvider]
+) -> list[ProviderMapping]:
+    """
+    Return the candidates that name one of the given music sources.
+
+    A candidate on another instance of a service the sources include moves to the first of
+    those; one on a service they do not include is left out.
+    """
+    instances = {source.instance_id for source in sources}
+    first_by_domain: dict[str, str] = {}
+    for source in sources:
+        first_by_domain.setdefault(source.domain, source.instance_id)
+    within: list[ProviderMapping] = []
+    for candidate in candidates:
+        if candidate.provider_instance in instances:
+            within.append(candidate)
+        elif instance := first_by_domain.get(candidate.provider_domain):
+            within.append(replace(candidate, provider_instance=instance))
+    return within
 
 
 def _unambiguous_release_ids(
