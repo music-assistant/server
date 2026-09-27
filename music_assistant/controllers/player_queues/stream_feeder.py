@@ -368,7 +368,8 @@ class StreamFeederMixin(_PlayerQueuesBase):
             return False
         if (buffer := playing.buffer) is None or buffer.eof:
             return False
-        provider = self.mass.get_provider(playing.provider)
+        # the exact instance: a lookup by domain may land on a sibling instance's budget
+        provider = self.mass.get_provider(playing.provider, return_unavailable=True)
         return (
             isinstance(provider, MusicProvider)
             and provider.max_concurrent_streams == 1

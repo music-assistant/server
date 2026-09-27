@@ -848,7 +848,11 @@ def _new_buffer(
         # this.
         ready_threshold = 2 if dynamic_normalization else 1
         remaining = (streamdetails.duration or 0) - seek_seconds
-        if session_start and 0 < remaining < REALTIME_COLD_START_MAX_REMAINING:
+        if (
+            session_start
+            and 0 < remaining < REALTIME_COLD_START_MAX_REMAINING
+            and _has_single_source_slot(mass, streamdetails)
+        ):
             # the first boundary comes before the player could build up a lead of its
             # own, so hand it one. A preload at a boundary never banks: with the
             # source's slot only freed by the item that just ended, it would just
@@ -927,3 +931,10 @@ def _buffer_pcm_format(streamdetails: StreamDetails) -> AudioFormat:
     :param streamdetails: The stream the buffer is for.
     """
     return decoded_pcm_format(streamdetails)
+
+
+def _has_single_source_slot(mass: MusicAssistant, streamdetails: StreamDetails) -> bool:
+    """Return whether the item's source lets only one stream run at a time."""
+    # the exact instance: a lookup by domain may land on a sibling instance's budget
+    provider = mass.get_provider(streamdetails.provider, return_unavailable=True)
+    return isinstance(provider, MusicProvider) and provider.max_concurrent_streams == 1
