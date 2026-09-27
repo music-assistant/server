@@ -85,13 +85,14 @@ def _podcast(item_id: str) -> Podcast:
     )
 
 
-def _radio(item_id: str, *, is_dynamic: bool = False) -> Radio:
-    """Build a Radio on the 'test' provider (an individual item, omitted from the wire `sources`)."""
+def _radio(item_id: str, *, is_dynamic: bool = False, is_endless: bool = True) -> Radio:
+    """Build a Radio on the 'test' provider (a live stream by default, omitted from `sources`)."""
     return Radio(
         item_id=item_id,
         provider="test",
         name=f"Radio {item_id}",
         is_dynamic=is_dynamic,
+        is_endless=is_endless,
         provider_mappings={
             ProviderMapping(item_id=item_id, provider_domain="test", provider_instance="test")
         },
@@ -499,6 +500,20 @@ def test_store_sources_keeps_a_dynamic_station_on_wire() -> None:
     ctrl.store_sources(queue, [station, live_stream])
 
     assert [mapping.uri for mapping in queue.sources] == [station.uri]
+
+
+def test_store_sources_keeps_a_finite_radio_on_wire() -> None:
+    """A finite show is a source too: its wire uri is how the AI Radio DJ recognizes it."""
+    ctrl = _controller()
+    ctrl._managed_pool = Mock()
+    queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
+    show = _radio("show", is_dynamic=False, is_endless=False)
+    live_stream = _radio("live")
+
+    ctrl.store_sources(queue, [show, live_stream])
+
+    assert [mapping.uri for mapping in queue.sources] == [show.uri]
 
 
 def _shuffled_queue(ctrl: PlayerQueuesController) -> PlayerQueue:
