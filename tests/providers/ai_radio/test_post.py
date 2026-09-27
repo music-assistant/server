@@ -546,6 +546,20 @@ async def test_clip_that_cannot_be_rendered_stages_nothing(
     assert _staged_clips(temp_dir) == []
 
 
+async def test_clip_that_cannot_be_written_stages_nothing(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A temp dir that cannot take the copy costs the post, never the break, and leaves no file."""
+    _stub_render(monkeypatch)
+
+    def _no_space(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(wave, "open", _no_space)
+    assert await BareRenderer()._stage_post_clip(_MEDIA_PATH, _CLIP_FORMAT, gain_db=-2.0) is None
+    assert _staged_clips(temp_dir) == []
+
+
 async def test_wedged_render_gives_up_instead_of_holding_up_the_break(
     temp_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -601,6 +615,15 @@ async def test_stored_synced_lyrics_are_used_without_a_lookup() -> None:
     renderer = _lyrics_renderer(lookup)
     track = _track_with_lyrics("[00:00.00]♪\n[00:09.50]First line")
     assert await renderer._resolve_vocal_onset(track) == (9.5, "")
+    lookup.assert_not_awaited()
+
+
+async def test_vocal_from_the_first_beat_is_an_onset_not_a_missing_one() -> None:
+    """Stored lyrics that start at 0.0 answer the question; no later lookup may override them."""
+    lookup = AsyncMock(return_value=(None, "[00:07.00]A different transcription"))
+    renderer = _lyrics_renderer(lookup)
+    track = _track_with_lyrics("[00:00.00]Right from the top")
+    assert await renderer._resolve_vocal_onset(track) == (0.0, "")
     lookup.assert_not_awaited()
 
 

@@ -439,18 +439,27 @@ class AIRadioRenderMixin:
         pcm = b"".join(chunks)
         if not pcm:
             return None
-        staged = await asyncio.to_thread(self._write_staged_clip, pcm)
+        try:
+            staged = await asyncio.to_thread(self._write_staged_clip, pcm)
+        except OSError as err:
+            self.logger.warning("AI Radio post clip could not be staged: %s", err)
+            return None
         return staged, len(pcm) / TTS_CLIP_PCM_FORMAT.pcm_sample_size
 
     def _write_staged_clip(self, pcm: bytes) -> str:
         """Write levelled clip audio to a uniquely named WAV file and return its path."""
         self._prune_post_clips()
         handle, staged = tempfile.mkstemp(prefix=POST_CLIP_PREFIX, suffix=".wav")
-        with os.fdopen(handle, "wb") as staged_file, wave.open(staged_file, "wb") as wav:
-            wav.setnchannels(TTS_CLIP_PCM_FORMAT.channels)
-            wav.setsampwidth(TTS_CLIP_PCM_FORMAT.bit_depth // 8)
-            wav.setframerate(TTS_CLIP_PCM_FORMAT.sample_rate)
-            wav.writeframes(pcm)
+        try:
+            with os.fdopen(handle, "wb") as staged_file, wave.open(staged_file, "wb") as wav:
+                wav.setnchannels(TTS_CLIP_PCM_FORMAT.channels)
+                wav.setsampwidth(TTS_CLIP_PCM_FORMAT.bit_depth // 8)
+                wav.setframerate(TTS_CLIP_PCM_FORMAT.sample_rate)
+                wav.writeframes(pcm)
+        except OSError:
+            # a half-written copy would play as a truncated tail
+            Path(staged).unlink(missing_ok=True)
+            raise
         return staged
 
     async def _discard_post_plans(self) -> None:
@@ -486,7 +495,7 @@ class AIRadioRenderMixin:
         media_item = queue_item.media_item
         if not isinstance(media_item, Track):
             return None, "no track details"
-        if onset := lyric_onset(media_item.metadata.lrc_lyrics):
+        if (onset := lyric_onset(media_item.metadata.lrc_lyrics)) is not None:
             return onset, ""
         try:
             # the lookup walks every metadata provider, longer than a clip about to air can wait
@@ -496,7 +505,7 @@ class AIRadioRenderMixin:
             return None, f"lyrics lookup took longer than {POST_LYRICS_TIMEOUT:.0f}s"
         except MusicAssistantError as err:
             return None, f"lyrics lookup failed ({err})"
-        if onset := lyric_onset(lrc_lyrics):
+        if (onset := lyric_onset(lrc_lyrics)) is not None:
             return onset, ""
         if lrc_lyrics:
             return None, "synced lyrics have no sung line"

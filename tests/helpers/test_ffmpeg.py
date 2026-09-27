@@ -23,6 +23,7 @@ from music_assistant.helpers.ffmpeg import (
     _INPUT_READ_ARGS,
     CACHE_ATTR_HLS_CMAF_BLOCKED,
     VOICE_OVER_DUCK_DEPTH,
+    VOICE_OVER_MIX_CEILING_DB,
     FFMpeg,
     FFMpegStreamInfo,
     _build_filtergraph_args,
@@ -1057,6 +1058,56 @@ def test_voice_over_mixer_says_the_clip_once_from_its_offset() -> None:
     assert clip.input_args == ["-ss", "7.500"]
     # nothing levels the clip here: it arrives at the level it should mix in at
     assert clip.filters == "aresample=44100,aformat=channel_layouts=stereo,adelay=1250:all=1"
+
+
+@pytest.fixture
+def loud_voice(tmp_path: Path) -> Path:
+    """Generate a 1 second stereo sine wav that peaks just under full scale."""
+    voice_path = tmp_path / "loud_voice.wav"
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffmpeg",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            "-af",
+            "volume=0.99:precision=fixed",
+            "-ar",
+            str(_PCM_FORMAT.sample_rate),
+            "-ac",
+            str(_PCM_FORMAT.channels),
+            str(voice_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return voice_path
+
+
+async def _loud_music() -> AsyncGenerator[bytes]:
+    """Yield one second of a PCM square wave near full scale."""
+    period = array("h", [32000] * 100 + [-32000] * 100)
+    yield (period * (_PCM_FORMAT.sample_rate * _PCM_FORMAT.channels // len(period))).tobytes()
+
+
+async def test_voice_over_stream_cannot_clip_when_voice_and_music_peak_together(
+    loud_voice: Path,
+) -> None:
+    """Full-scale music under a full-scale voice stays inside the mix ceiling."""
+    output = b"".join(
+        await _collect_chunks(
+            get_ffmpeg_voice_over_stream(
+                audio_input=_loud_music(),
+                voice_path=str(loud_voice),
+                pcm_format=_PCM_FORMAT,
+                voice_start=0.0,
+                voice_end=1.0,
+            )
+        )
+    )
+    ceiling = 32767 * 10 ** (VOICE_OVER_MIX_CEILING_DB / 20)
+    assert max(abs(sample) for sample in _samples(output)) <= ceiling * 1.01
 
 
 async def test_voice_over_stream_mixes_the_clip_at_its_own_level(overlay_file_stereo: Path) -> None:

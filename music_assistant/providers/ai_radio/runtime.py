@@ -769,9 +769,9 @@ class AIRadioRuntimeMixin:
         merged_names: list[str] = []
         # a weather+news merge must still air the news half, so only all-guarded merges require it
         all_weather_required = all(section_id in weather_guarded_ids for section_id in section_ids)
-        # a merged break is one recording, so it may carry over the next record if any
-        # of the sections it was built from allows that
-        any_allow_post = any(
+        # a merged break is one recording whose order is the AI's to choose, so any of its
+        # sections may end up over the record: it carries over only when all of them allow it
+        all_allow_post = all(
             bool(section_by_id.get(section_id, {}).get("allow_post", False))
             for section_id in section_ids
         )
@@ -815,7 +815,7 @@ class AIRadioRuntimeMixin:
             max_chars=total_max_chars,
             web_search_mode=max_web_mode,
             weather_required=all_weather_required,
-            allow_post=any_allow_post,
+            allow_post=all_allow_post,
             history_events=history_events,
         )
 

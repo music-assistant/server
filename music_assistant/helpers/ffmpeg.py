@@ -42,6 +42,9 @@ _MONO_WIDEN_COMPENSATION: Final[float] = 2**0.5
 # hold, ramp up), measured at -8 dB inside the voice and 0 dB outside it.
 VOICE_OVER_DUCK_DEPTH: Final = 0.60  # fraction of the level removed under the voice
 VOICE_OVER_DUCK_RAMP: Final = 0.4  # seconds, each side
+# the mix sums the ducked music and the voice, which can peak together past full scale;
+# a limiter at this ceiling catches that and leaves everything below it untouched
+VOICE_OVER_MIX_CEILING_DB: Final = -0.5
 
 # FFmpeg applies these to the single input they precede, not to the command as a whole,
 # so every input we open has to bring its own copy.
@@ -504,6 +507,7 @@ async def get_ffmpeg_voice_over_stream(
         # the duck applies to the music alone, so it precedes the two-input mixer
         _build_voice_over_duck_filter(voice_start, voice_end),
         _build_voice_over_mixer(voice_path, pcm_format, voice_start, voice_offset),
+        f"alimiter=limit={VOICE_OVER_MIX_CEILING_DB}dB:level=false:latency=true",
     ]
     async for chunk in _iter_mixed_stream(audio_input, pcm_format, filter_params, chunk_size):
         yield chunk
