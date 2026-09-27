@@ -384,7 +384,7 @@ class AnnouncementsMixin:
                     # output that would announce for each member can line up its start with
                     # the others. Members that cannot would be heard out of step, so such a
                     # group plays the clip through its own (synchronized) stream instead.
-                    if self._members_announce_in_step(player):
+                    if self._members_announce_in_step(player, volume_level):
                         # forward the request to each individual player. Each member's
                         # announcement runs in a task of its own, in which the group's lock
                         # held here is not re-entrant - so a member takes only its own lock.
@@ -1042,15 +1042,17 @@ class AnnouncementsMixin:
             return
         await self._handle_cmd_volume_mute(player, mute_control, muted)
 
-    def _members_announce_in_step(self, group_player: Player) -> bool:
+    def _members_announce_in_step(self, group_player: Player, volume_level: int | None) -> bool:
         """
         Return True if every member of a group announces natively and in step with the others.
 
         A player only lines up its start with the members announcing through the same
         provider, so the outputs announcing for the members must all belong to one
-        provider instance.
+        provider instance. A member that would leave its native route to apply a wanted
+        volume (see _native_route_ignores_wanted_volume) does not line up either.
 
         :param group_player: The group player the announcement is played on.
+        :param volume_level: Optional volume level override for the announcement.
         """
         provider_ids: set[str] = set()
         for member in self.iter_group_members(group_player):
@@ -1059,6 +1061,9 @@ class AnnouncementsMixin:
                 announce_player is None
                 or AnnouncementFeature.COORDINATES_START
                 not in announce_player.announcement_features
+                # the default implementation frees such a member from the group, which
+                # needs the group's lock that the fan-out holds for the whole announcement
+                or self._native_route_ignores_wanted_volume(member, announce_player, volume_level)
             ):
                 return False
             provider_ids.add(announce_player.provider.instance_id)

@@ -6001,6 +6001,44 @@ class TestNativeAnnouncementRouting:
         assert native_path.call_args.args[1] is proto
         generic_path.assert_not_awaited()
 
+    async def test_group_plays_itself_when_a_member_would_drop_the_wanted_volume(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        A member whose native route ignores the announcement volume is not fanned out.
+
+        Such a member would announce through the default implementation, which frees it
+        from the group - and that needs the group's lock, held by the announcement that
+        fans out. So the group plays the clip through its own stream instead.
+        """
+        use_real_create_task(mock_mass)
+        controller, player, _proto, native_path, generic_path = self._make_player_with_linked_child(
+            mock_mass, PlaybackState.IDLE, parent_supports_announce=True
+        )
+        player._attr_volume_level = 40
+        player._cache.clear()
+        player.update_state(force_update=True, signal_event=False)
+        controller.get_announcement_volume = MagicMock(return_value=60)  # type: ignore[method-assign]
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        group = MockPlayer(provider, "group_1", "Group 1", player_type=PlayerType.GROUP)
+        group._attr_group_members = ["player_1"]
+        group._cache.clear()
+        controller._players["group_1"] = group
+        group.update_state(signal_event=False)
+
+        # the member lines up its start but drops a wanted volume
+        with patch.object(
+            MockPlayer,
+            "announcement_features",
+            new_callable=PropertyMock,
+            return_value={AnnouncementFeature.COORDINATES_START},
+        ):
+            await controller.play_announcement("group_1", "http://test/announcement.mp3")
+
+        native_path.assert_not_awaited()
+        generic_path.assert_awaited_once()
+        assert generic_path.call_args.args[0] is group
+
 
 @pytest.mark.usefixtures("running_background_tasks")
 class TestPlayAnnouncementRestore:
