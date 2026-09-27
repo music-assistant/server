@@ -38,8 +38,8 @@ if TYPE_CHECKING:
 PENDING_USER_ID = "__pending__"
 # how long a resolved user list serves the reports of one library sync
 USERS_TTL = 30
-# a user's disliked tracks: their library ids plus the (provider domain, provider item id)
-# pairs of every mapping of those tracks
+# the library ids of a user's disliked tracks, and the (provider instance, item id) pairs
+# those tracks are known by, so a track straight from a music source is recognized too
 type DislikedTrackKeys = tuple[set[int], set[tuple[str, str]]]
 
 
