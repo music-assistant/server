@@ -1216,8 +1216,9 @@ def _matching_provider_track(db_track: Track, provider_tracks: Sequence[Track]) 
     """Return the provider track that is the given library track: by ISRC, else by position."""
     isrcs = _isrcs(db_track)
     if isrcs:
+        # an ISRC is occasionally reused, so the durations must agree as well
         for provider_track in provider_tracks:
-            if isrcs & _isrcs(provider_track):
+            if isrcs & _isrcs(provider_track) and _durations_agree(db_track, provider_track):
                 return provider_track
     if not db_track.track_number:
         return None
@@ -1227,14 +1228,17 @@ def _matching_provider_track(db_track: Track, provider_tracks: Sequence[Track]) 
         if (
             (provider_track.disc_number or 1, provider_track.track_number) == position
             and compare_strings(provider_track.name, db_track.name, strict=False)
-            and (
-                not provider_track.duration
-                or not db_track.duration
-                or abs(provider_track.duration - db_track.duration) <= _TRACK_DURATION_TOLERANCE
-            )
+            and _durations_agree(db_track, provider_track)
         ):
             return provider_track
     return None
+
+
+def _durations_agree(track: Track, other: Track) -> bool:
+    """Return whether two tracks' durations are within tolerance, an unknown duration passing."""
+    if not track.duration or not other.duration:
+        return True
+    return abs(track.duration - other.duration) <= _TRACK_DURATION_TOLERANCE
 
 
 def _isrcs(track: Track) -> set[str]:

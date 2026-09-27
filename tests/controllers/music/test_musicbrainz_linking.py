@@ -367,24 +367,33 @@ async def test_unclaimed_mappings_are_checked_and_written_under_the_add_lock() -
     assert not lock.locked()
 
 
-async def test_unclaimed_sibling_instance_copies_pass_the_ownership_check_too() -> None:
-    """A mapping's copy for a sibling provider instance is dropped when another item holds it."""
+async def test_unclaimed_mappings_are_copied_to_the_other_instances_of_a_service() -> None:
+    """A new mapping is written for every loaded instance of its service, available or not."""
     track = _library_track("1", 1)
     new = ProviderMapping(item_id="x", provider_domain="spotify", provider_instance="spotify_1")
-    copy_ = ProviderMapping(item_id="x", provider_domain="spotify", provider_instance="spotify_2")
-    with _harness(track, loaded={}, owners={("spotify_2", "x"): "7"}) as harness:
-
-        def _fan_out(item: Track) -> bool:
-            item.provider_mappings.add(copy_)
-            return True
-
-        fan_out = harness.ctrl.mass.music.match_provider_instances
-        assert isinstance(fan_out, Mock)
-        fan_out.side_effect = _fan_out
+    with _harness(track, loaded={"spotify": ["spotify_1", "spotify_2"]}, owners={}) as harness:
         added = await harness.ctrl.add_unclaimed_provider_mappings("1", [new])
 
-    assert added == [new]
-    assert harness.stored_mappings() == {new}
+    copy_ = ProviderMapping(item_id="x", provider_domain="spotify", provider_instance="spotify_2")
+    assert added == [new, copy_]
+    assert harness.stored_mappings() == {new, copy_}
+    instances = harness.ctrl.mass.music.get_provider_instances
+    assert isinstance(instances, Mock)
+    instances.assert_called_with("spotify", return_unavailable=True)
+
+
+async def test_unclaimed_mappings_drop_the_whole_service_group_when_a_copy_is_claimed() -> None:
+    """When another item holds the mapping on a sibling instance, no instance of it is linked."""
+    track = _library_track("1", 1)
+    new = ProviderMapping(item_id="x", provider_domain="spotify", provider_instance="spotify_1")
+    other = ProviderMapping(item_id="y", provider_domain="tidal", provider_instance="tidal_1")
+    with _harness(
+        track, loaded={"spotify": ["spotify_1", "spotify_2"]}, owners={("spotify_2", "x"): "7"}
+    ) as harness:
+        added = await harness.ctrl.add_unclaimed_provider_mappings("1", [new, other])
+
+    assert added == [other]
+    assert harness.stored_mappings() == {other}
     harness.merge.assert_not_awaited()
 
 
@@ -556,6 +565,18 @@ async def test_provider_tracks_are_matched_by_isrc_before_position() -> None:
 
     assert harness.linked() == [("t1", {"sp-1"}), ("t2", {"sp-2"}), ("t3", {"sp-3"})]
     harness.provider_album_tracks.assert_awaited_once_with("sp-album", "spotify_1")
+
+
+async def test_provider_tracks_sharing_an_isrc_still_need_a_close_duration() -> None:
+    """A reused ISRC does not link a provider track whose length is far off."""
+    db_tracks = [_library_track("t1", 1, isrcs=["GBSTK0700001"])]
+    provider_tracks = [
+        _provider_track("sp-9", 9, name="Something Else", isrcs=["GBSTK0700001"], duration=600)
+    ]
+    with _album_harness({"sp-album": provider_tracks}) as harness:
+        await harness.ctrl.link_album_tracks(_library_album("1", SPOTIFY_ALBUM), db_tracks, None)
+
+    assert harness.linked() == []
 
 
 async def test_provider_tracks_by_position_need_a_close_duration_and_title() -> None:
