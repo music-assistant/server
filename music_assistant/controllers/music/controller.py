@@ -617,6 +617,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                         prov_media_types,
                         limit=limit,
                         skip_item_ids=all_prov_item_ids,
+                        soft_timeout=SEARCH_PROVIDER_SOFT_TIMEOUT,
                     )
                 )
             # include results from all (unique) music providers
@@ -2788,6 +2789,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         limit: int = 10,
         skip_item_ids: set[tuple[MediaType, str, str]] | None = None,
         strict_provider_instance: bool = False,
+        soft_timeout: float | None = None,
     ) -> SearchResults | None:
         """
         Perform search on given provider, returns None if the search failed or timed out.
@@ -2800,6 +2802,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param skip_item_ids: Optional set of (media_type, provider_domain, item_id)
                               tuples to filter out of the results.
         :param strict_provider_instance: Do not fall back to another provider instance.
+        :param soft_timeout: Seconds to wait before returning None while the search
+                             continues in the background; None waits for it to finish.
         """
         prov = self.mass.get_provider(
             provider_instance_id_or_domain,
@@ -2829,16 +2833,15 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         ) is not None:
             return filter_search_results(cast("SearchResults", cache), prov.domain, skip_item_ids)
         # run the provider search as a separate task (deduplicated by task_id so
-        # identical concurrent searches share a single provider call) and wait for
-        # it a limited amount of time only: a slow provider then contributes no
-        # results now, while its search continues in the background so the result
-        # is cached and available for a next search request
+        # identical concurrent searches share a single provider call); with a soft
+        # timeout a slow provider contributes no results now, while its search
+        # continues in the background so the result is cached for a next search
         task = self.mass.create_task(
             self._execute_provider_search(prov, search_query, media_types, limit, cache_key),
             task_id=f"provider_search_{prov.instance_id}_{cache_key}",
         )
         try:
-            async with asyncio.timeout(SEARCH_PROVIDER_SOFT_TIMEOUT):
+            async with asyncio.timeout(soft_timeout):
                 prov_search_results = await asyncio.shield(task)
         except TimeoutError:
             self.logger.warning(
