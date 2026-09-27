@@ -1251,7 +1251,7 @@ def _library_song_obj(play_params: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def test_parse_track_purchase_only_is_unavailable() -> None:
-    """A purchase with no catalog twin has playParams but Apple refuses to stream it."""
+    """Metadata cannot say whether a purchase is still sold, so the parser assumes not."""
     provider = _create_provider_mock()
     track_obj = _library_song_obj(
         {"id": "i.librarysong", "kind": "song", "isLibrary": True, "purchasedId": "397010985"}

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -1129,3 +1129,79 @@ async def test_track_sync_reads_catalog_relationships_from_listing() -> None:
     provider.media_manager.search.assert_awaited_once()
     withdrawn_track = tracks["Track 2"]
     assert all(not mapping.available for mapping in withdrawn_track.provider_mappings)
+
+
+async def test_resolve_purchased_ids_returns_only_what_apple_still_sells() -> None:
+    """A purchasedId that still resolves in the catalog is one Apple will license."""
+    provider = MagicMock()
+    provider._storefront = "pt"
+    provider.instance_id = "apple_music--test"
+    provider.logger = MagicMock()
+    provider.api_client = MagicMock()
+    manager = AppleMusicLibraryManager(provider)
+    manager.api.get_data = AsyncMock(
+        return_value={"data": [{"id": "397010985"}]}  # the U2 id is simply absent
+    )
+
+    result = await manager._resolve_purchased_ids({"397010985", "915794195"})
+
+    assert result == {"397010985"}
+    endpoint, kwargs = (
+        manager.api.get_data.await_args.args[0],
+        manager.api.get_data.await_args.kwargs,
+    )
+    assert endpoint == "catalog/pt/songs"
+    assert kwargs["ids"] == "397010985,915794195"
+
+
+async def test_resolve_purchased_ids_treats_a_404_as_none_still_sold() -> None:
+    """Apple answers 404 when it recognises none of them; that is an answer, not a failure."""
+    provider = MagicMock()
+    provider._storefront = "pt"
+    provider.logger = MagicMock()
+    provider.api_client = MagicMock()
+    manager = AppleMusicLibraryManager(provider)
+    manager.api.get_data = AsyncMock(side_effect=MediaNotFoundError("not found"))
+
+    assert await manager._resolve_purchased_ids({"915794195"}) == set()
+
+
+async def test_resolve_purchased_ids_makes_no_call_when_there_are_no_purchases() -> None:
+    """The common case is a library with no purchases at all; it must cost nothing."""
+    provider = MagicMock()
+    provider.logger = MagicMock()
+    provider.api_client = MagicMock()
+    manager = AppleMusicLibraryManager(provider)
+    manager.api.get_data = AsyncMock()
+
+    assert await manager._resolve_purchased_ids(set()) == set()
+    manager.api.get_data.assert_not_awaited()
+
+
+def test_promote_purchase_only_ever_promotes() -> None:
+    """Promotion must not contradict a judgement the parser made on stronger evidence."""
+    provider = MagicMock()
+    provider.instance_id = "apple_music--test"
+    provider.logger = MagicMock()
+    provider.api_client = MagicMock()
+    manager = AppleMusicLibraryManager(provider)
+
+    track = Track(
+        item_id="i.librarysong",
+        provider="apple_music",
+        name="Library Song",
+        provider_mappings={
+            ProviderMapping(
+                item_id="i.librarysong",
+                provider_domain="apple_music",
+                provider_instance="apple_music--test",
+                available=False,
+            )
+        },
+    )
+
+    manager._promote_purchase(track, still_on_sale=False)
+    assert all(m.available is False for m in track.provider_mappings)
+
+    manager._promote_purchase(track, still_on_sale=True)
+    assert all(m.available is True for m in track.provider_mappings)
