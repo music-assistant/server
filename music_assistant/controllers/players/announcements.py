@@ -60,14 +60,15 @@ from .helpers import AnnounceData, handle_player_command
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from contextlib import AbstractAsyncContextManager
 
     from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant import MusicAssistant
     from music_assistant.controllers.streams.announcements import AnnouncementRender
 
-# the caller waits for this command and it holds the player's playback lock while it runs,
-# so a wedged engine must give up well before the generic (background) engine timeout
+# the caller waits for this command, so a wedged engine must give up well before the
+# generic (background) engine timeout
 ANNOUNCEMENT_TTS_TIMEOUT = 30
 
 
@@ -113,6 +114,14 @@ class AnnouncementsMixin:
             active_only: bool = False,
             exclude_self: bool = True,
         ) -> Iterator[Player]: ...
+
+        def get_player_lock(  # noqa: D102
+            self, player_id: str, purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
+        ) -> AbstractAsyncContextManager[None]: ...
+
+        def get_group_and_player_lock(  # noqa: D102
+            self, player_id: str
+        ) -> AbstractAsyncContextManager[None]: ...
 
         def _get_control_target(
             self,
@@ -164,7 +173,7 @@ class AnnouncementsMixin:
     # becomes once mixed in; the attributes it needs are declared in the block above.
     # mypy reports that on the outermost decorator, hence the ignore below.
     @api_command("players/cmd/play_announcement", required_scope=Scope.PLAYERS_CONTROL)  # type: ignore[type-var]
-    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
+    @handle_player_command
     async def play_announcement(
         self,
         player_id: str,
@@ -238,74 +247,18 @@ class AnnouncementsMixin:
             announcement_url=url,
             pre_announce=bool(pre_announce),
             pre_announce_url=pre_announce_url,
-            # filled in below, once we know which player fetches the stream
+            # filled in once the player that fetches the stream is known
             announce_player_id=None,
         )
-        # Register right away, so the audio is (nearly always fully) rendered by the time
-        # the player is ready for it. The render is shared by everything that consumes
-        # this announcement, including all members of a group.
-        render = self.mass.streams.announcement_renderer.register(player_id, announce_data)
-        try:
-            # mark announcement_in_progress on player
-            player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
-            if player.state.type == PlayerType.GROUP:
-                # the output that announces for a member is resolved once the audio is
-                # there, so the decision below is taken on the state the members act on
-                await render.wait_ready()
-                # a group announcement is only handed to the individual members when the output
-                # that would announce for each member can line up its start with the others.
-                # Members that cannot would be heard out of step, so such a group plays the clip
-                # through its own (synchronized) stream instead.
-                if self._members_announce_in_step(player):
-                    # forward the request to each individual player
-                    async with TaskManager(self.mass) as tg:
-                        for group_member in player.state.group_members:
-                            tg.create_task(
-                                self.play_announcement(
-                                    group_member,
-                                    url=url,
-                                    pre_announce=pre_announce,
-                                    volume_level=volume_level,
-                                    pre_announce_url=pre_announce_url,
-                                )
-                            )
-                    return
-            self.logger.info(
-                "Playback announcement to player %s (with pre-announce: %s): %s",
-                player.state.name,
-                pre_announce,
-                url,
-            )
-            announce_player = await self._resolve_ready_announce_player(
-                player, render, url, volume_level
-            )
-            native_announce_support = announce_player is not None
-            if announce_player is None:
-                announce_player = player
-            # create a PlayerMedia object for the announcement so
-            # we can send a regular play-media call downstream
-            announce_data["announce_player_id"] = (
-                announce_player.player_id if native_announce_support else None
-            )
-            announcement = PlayerMedia(
-                uri=self.mass.streams.get_announcement_url(player_id),
-                media_type=MediaType.ANNOUNCEMENT,
-                title="Announcement",
-                custom_data=dict(announce_data),
-            )
-            # handle native announce support (player or linked protocol)
-            if native_announce_support:
-                await self._play_native_announcement(
-                    player, announce_player, announcement, volume_level
-                )
-                return
-            # use fallback/default implementation
-            await self._play_announcement(player, announcement, volume_level)
-        finally:
-            # Cleared after restore finishes.
-            # Resume during announce still needs the parked position while this is set.
-            player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
-            await self.mass.streams.announcement_renderer.unregister(player_id, render)
+        # A member's announcement detaches it from its (sync)group and joins it back
+        # afterwards, which takes the group's lock - so that one is taken before the
+        # member's own (see get_group_and_player_lock).
+        await self._run_announcement(
+            player,
+            announce_data,
+            volume_level,
+            self.get_group_and_player_lock(player.player_id),
+        )
 
     @api_command("players/tts_engines", required_scope=Scope.PLAYERS_CONTROL)
     async def get_announcement_tts_engines(self) -> list[dict[str, str]]:
@@ -396,6 +349,95 @@ class AnnouncementsMixin:
         if announce_player is None:
             return True
         return AnnouncementFeature.SUPPORTS_VOLUME in announce_player.announcement_features
+
+    async def _run_announcement(
+        self,
+        player: Player,
+        announce_data: AnnounceData,
+        volume_level: int | None,
+        lock: AbstractAsyncContextManager[None],
+    ) -> None:
+        """
+        Play an announcement on a player, holding the given playback lock(s) throughout.
+
+        :param player: The player the announcement is played on.
+        :param announce_data: The announcement to play.
+        :param volume_level: Optional volume level override for the announcement.
+        :param lock: The lock(s) to hold while the announcement plays and the player is
+            restored afterwards.
+        """
+        async with lock:
+            # Register right away, so the audio is (nearly always fully) rendered by the time
+            # the player is ready for it. The render is shared by everything that consumes
+            # this announcement, including all members of a group.
+            render = self.mass.streams.announcement_renderer.register(
+                player.player_id, announce_data
+            )
+            try:
+                # mark announcement_in_progress on player
+                player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
+                if player.state.type == PlayerType.GROUP:
+                    # the output that announces for a member is resolved once the audio is
+                    # there, so the decision below is taken on the state the members act on
+                    await render.wait_ready()
+                    # a group announcement is only handed to the individual members when the
+                    # output that would announce for each member can line up its start with
+                    # the others. Members that cannot would be heard out of step, so such a
+                    # group plays the clip through its own (synchronized) stream instead.
+                    if self._members_announce_in_step(player):
+                        # forward the request to each individual player. Each member's
+                        # announcement runs in a task of its own, in which the group's lock
+                        # held here is not re-entrant - so a member takes only its own lock.
+                        async with TaskManager(self.mass) as tg:
+                            for member in self.iter_group_members(player):
+                                tg.create_task(
+                                    self._run_announcement(
+                                        member,
+                                        announce_data.copy(),
+                                        volume_level,
+                                        self.get_player_lock(
+                                            member.player_id, PlayerLockPurpose.PLAYBACK
+                                        ),
+                                    )
+                                )
+                        return
+                url = announce_data["announcement_url"]
+                self.logger.info(
+                    "Playback announcement to player %s (with pre-announce: %s): %s",
+                    player.state.name,
+                    announce_data["pre_announce"],
+                    url,
+                )
+                announce_player = await self._resolve_ready_announce_player(
+                    player, render, url, volume_level
+                )
+                native_announce_support = announce_player is not None
+                if announce_player is None:
+                    announce_player = player
+                # create a PlayerMedia object for the announcement so
+                # we can send a regular play-media call downstream
+                announce_data["announce_player_id"] = (
+                    announce_player.player_id if native_announce_support else None
+                )
+                announcement = PlayerMedia(
+                    uri=self.mass.streams.get_announcement_url(player.player_id),
+                    media_type=MediaType.ANNOUNCEMENT,
+                    title="Announcement",
+                    custom_data=dict(announce_data),
+                )
+                # handle native announce support (player or linked protocol)
+                if native_announce_support:
+                    await self._play_native_announcement(
+                        player, announce_player, announcement, volume_level
+                    )
+                    return
+                # use fallback/default implementation
+                await self._play_announcement(player, announcement, volume_level)
+            finally:
+                # Cleared after restore finishes.
+                # Resume during announce still needs the parked position while this is set.
+                player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
+                await self.mass.streams.announcement_renderer.unregister(player.player_id, render)
 
     def _native_route_ignores_wanted_volume(
         self, player: Player, announce_player: Player, volume_level: int | None
@@ -751,7 +793,9 @@ class AnnouncementsMixin:
                     player.state.name,
                     prev_group.display_name,
                 )
-                await prev_group.set_members(player_ids_to_remove=[player.player_id])
+                await self.cmd_set_members(
+                    prev_group.player_id, player_ids_to_remove=[player.player_id]
+                )
             else:
                 # if the player is part of a group player that does not support ungrouping,
                 # we need to power off the groupplayer instead
@@ -873,7 +917,9 @@ class AnnouncementsMixin:
                         player.state.name,
                         prev_group.display_name,
                     )
-                    await prev_group.set_members(player_ids_to_add=[player.player_id])
+                    await self.cmd_set_members(
+                        prev_group.player_id, player_ids_to_add=[player.player_id]
+                    )
                 elif restore_playback:
                     # if the player is part of a group player that does not support set_members,
                     # we need to restart the groupplayer

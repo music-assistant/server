@@ -227,7 +227,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         Ordering rule: when a command needs both a group/leader lock and a member
         lock, it must take the group's first. The group players themselves always
         lock their members from under their own lock, so a member-first
-        acquisition is an inversion and will deadlock.
+        acquisition is an inversion and will deadlock. A command on a member that
+        reaches its group uses get_group_and_player_lock for that.
 
         :param player_id: The player to lock.
         :param purpose: Lock category. Commands with different purposes can run
@@ -276,6 +277,38 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     if not held:
                         del self._task_held_locks[task]
                 lock.release()
+
+    @contextlib.asynccontextmanager
+    async def get_group_and_player_lock(self, player_id: str) -> AsyncIterator[None]:
+        """
+        Acquire the playback lock of a player, preceded by that of the group holding it.
+
+        For a command on a group member that reaches its (sync)group: releasing the
+        member, joining it back or restarting the group all take the group's lock,
+        which has to be taken before the member's own (see get_player_lock). A player
+        that is not part of a group only takes its own lock.
+
+        :param player_id: The player to lock.
+        """
+        async with contextlib.AsyncExitStack() as stack:
+            if (player := self.get_player(player_id)) and (
+                parent_id := (player.state.active_group or player.state.synced_to)
+            ):
+                if (
+                    (parent := self.get_player(parent_id))
+                    and parent.type != PlayerType.GROUP
+                    and parent.state.active_group
+                ):
+                    # cmd_set_members redirects a captured sync leader to its group
+                    # player, so that group is the lock it will actually take
+                    parent_id = parent.state.active_group
+                await stack.enter_async_context(
+                    self.get_player_lock(parent_id, PlayerLockPurpose.PLAYBACK)
+                )
+            await stack.enter_async_context(
+                self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK)
+            )
+            yield
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the Player Controller."""
@@ -870,31 +903,17 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param player_id: player_id of the player to handle the command.
         :param powered: bool if player should be powered on or off.
         """
-        player = self.get_player(player_id, True)
-        assert player is not None  # for type checking
-        async with contextlib.AsyncExitStack() as stack:
-            # Power is serialized with PLAYBACK because powering on a sync/group player
-            # forms the group (and powering off dissolves it) - this must not race with
-            # play_media / cmd_resume / cmd_set_members on the same player.
-            # A power off also detaches this player from its (sync)group, which ends up
-            # in cmd_set_members on that group - and that takes the group's lock before
-            # this player's. The same two locks are taken here, so they must be taken in
-            # the same order or the two commands lock each other out (see get_player_lock).
-            if not powered and (parent_id := (player.state.active_group or player.state.synced_to)):
-                if (
-                    (parent := self.get_player(parent_id))
-                    and parent.type != PlayerType.GROUP
-                    and parent.state.active_group
-                ):
-                    # cmd_set_members redirects a captured sync leader to its group
-                    # player, so that group is the lock it will actually take
-                    parent_id = parent.state.active_group
-                await stack.enter_async_context(
-                    self.get_player_lock(parent_id, PlayerLockPurpose.PLAYBACK)
-                )
-            await stack.enter_async_context(
-                self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK)
-            )
+        # Power is serialized with PLAYBACK because powering on a sync/group player
+        # forms the group (and powering off dissolves it) - this must not race with
+        # play_media / cmd_resume / cmd_set_members on the same player.
+        # A power off also detaches this player from its (sync)group, which takes the
+        # group's lock - so that one is taken first (see get_group_and_player_lock).
+        lock = (
+            self.get_group_and_player_lock(player_id)
+            if not powered
+            else self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK)
+        )
+        async with lock:
             await self._handle_cmd_power(player_id, powered)
 
     @api_command("players/cmd/volume_set", required_scope=Scope.PLAYERS_CONTROL)
@@ -1096,9 +1115,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # player is released from its group/sync first, then plays the media
         # standalone. With the preference off, behavior falls back to the
         # legacy "redirect to group leader" path below.
-        # Note: the release step runs outside the PLAYBACK lock to avoid an
-        # AB-BA cycle with cmd_set_members(group), which acquires lock(group)
-        # then lock(sync_leader) via the sync_group provider.
+        # The release goes through cmd_set_members(group), which takes the group's
+        # lock, so it runs before this player's own lock is taken here. A queue
+        # action calling in with that lock already held took the group's lock
+        # first as well (see get_group_and_player_lock).
         target_player = self.get_player(player_id, True)
         if target_player is not None and (
             target_player.state.synced_to or target_player.state.active_group
