@@ -1371,6 +1371,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 full_item = await cast(
                     "MediaControllerBase[MediaItemType]", ctrl
                 ).add_item_to_library(full_item)
+        elif favorite and not any(mapping.in_library for mapping in full_item.provider_mappings):
+            # a row that only ever held a dislike joins the library for real on a like
+            full_item = await self.add_item_to_library(full_item)
         # set favorite in library db
         await ctrl.set_favorite(full_item.item_id, favorite, await self.acting_user_ids())
         # forward to the music sources this user may write to, never to somebody else's
