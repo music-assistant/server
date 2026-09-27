@@ -14,6 +14,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
+    ProviderUnavailableError,
     RetriesExhausted,
 )
 from music_assistant_models.helpers import create_safe_string
@@ -48,7 +49,7 @@ from music_assistant.helpers.external_ids import barcode_to_upc, is_valid_barcod
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
 
-from .base import MediaControllerBase
+from .base import MAX_EXTERNAL_ID_MATCH_LOOKUPS, MediaControllerBase
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -555,10 +556,11 @@ class AlbumsController(MediaControllerBase[Album]):
         """
         Try to find a match on the given (streaming) provider for a (database) album.
 
-        Links albums of different providers/qualities together. Sparse provider search
-        results only rule out a confident non-match; a candidate that still looks
-        ambiguous is confirmed against the full provider album, its tracklist and, as a
-        last resort, MusicBrainz before its provider mapping is accepted.
+        Links albums of different providers/qualities together. A provider that supports
+        barcode lookups is asked for the album by barcode before it is searched. Sparse
+        provider search results only rule out a confident non-match; a candidate that
+        still looks ambiguous is confirmed against the full provider album, its tracklist
+        and, as a last resort, MusicBrainz before its provider mapping is accepted.
         """
         return await self._match_provider(db_album, provider, strict, _BaseTracksMemo())
 
@@ -570,15 +572,15 @@ class AlbumsController(MediaControllerBase[Album]):
         """
         if db_album.provider != "library":
             return  # Matching only supported for database items
-        if not db_album.artists:
-            return  # guard
 
         # resolve the base tracklist at most once for the whole match operation
         base_tracks_memo = _BaseTracksMemo()
         # try to find match on all providers
-        processed_domains = set()
+        cur_provider_domains = {
+            x.provider_domain for x in db_album.provider_mappings if x.available
+        }
         for provider in self.mass.music.providers:
-            if provider.domain in processed_domains:
+            if provider.domain in cur_provider_domains:
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
@@ -590,7 +592,7 @@ class AlbumsController(MediaControllerBase[Album]):
             if match := await self._match_provider(db_album, provider, True, base_tracks_memo):
                 # 100% match, we update the db with the additional provider mapping(s)
                 await self.add_provider_mappings(db_album.item_id, match)
-                processed_domains.add(provider.domain)
+                cur_provider_domains.add(provider.domain)
 
     def album_from_item_mapping(self, item: ItemMapping) -> Album:
         """Create an Album object from an ItemMapping object."""
@@ -729,13 +731,20 @@ class AlbumsController(MediaControllerBase[Album]):
         strict: bool,
         base_tracks_memo: _BaseTracksMemo,
     ) -> list[ProviderMapping]:
-        """Search one provider and return the mappings of every confirmed album match."""
+        """Match one provider by barcode, then by search, and return the confirmed mappings."""
         self.logger.debug("Trying to match album %s on provider %s", db_album.name, provider.name)
         matches: list[ProviderMapping] = []
-        search_str = (
-            f"{db_album.artists[0].name} - {db_album.name}" if db_album.artists else db_album.name
-        )
-        for search_result_item in await self.search(search_str, provider.instance_id):
+        if ProviderFeature.ALBUM_BY_EXTERNAL_ID in provider.supported_features:
+            matches = await self._match_provider_by_barcode(
+                db_album, provider, strict, base_tracks_memo
+            )
+        # a barcode hit makes the search unnecessary, and an album without an artist has no
+        # search string selective enough to be worth one
+        search_results: list[Album] = []
+        if not matches and db_album.artists:
+            search_str = f"{db_album.artists[0].name} - {db_album.name}"
+            search_results = await self.search(search_str, provider.instance_id)
+        for search_result_item in search_results:
             if not search_result_item.available:
                 continue
             # a sparse search result only rules out a confident non-match; a MATCH or an
@@ -763,6 +772,32 @@ class AlbumsController(MediaControllerBase[Album]):
                 provider.name,
             )
         return matches
+
+    async def _match_provider_by_barcode(
+        self,
+        db_album: Album,
+        provider: MusicProvider,
+        strict: bool,
+        base_tracks_memo: _BaseTracksMemo,
+    ) -> list[ProviderMapping]:
+        """Return the mappings of the provider album one of the base album's barcodes resolves to."""
+        for barcode in sorted(_canonical_album_barcodes(db_album))[:MAX_EXTERNAL_ID_MATCH_LOOKUPS]:
+            try:
+                prov_album = await provider.get_album_by_external_id(barcode, ExternalID.BARCODE)
+            except (NotImplementedError, MediaNotFoundError, ProviderUnavailableError) as err:
+                self.logger.debug(
+                    "Barcode %s lookup on provider %s failed: %s", barcode, provider.name, err
+                )
+                continue
+            if prov_album is None:
+                continue
+            # a barcode is shared across pressings, so the hit must still pass the album evidence
+            evidence = await self._resolve_album_evidence(
+                db_album, prov_album, provider, strict, base_tracks_memo
+            )
+            if evidence == AlbumMatchEvidence.MATCH:
+                return list(prov_album.provider_mappings)
+        return []
 
     async def _resolve_album_evidence(
         self,

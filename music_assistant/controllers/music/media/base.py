@@ -125,6 +125,9 @@ PROVIDER_FEATURE_BY_MEDIA_TYPE = {
     MediaType.ARTIST: ProviderFeature.ARTIST_BY_EXTERNAL_ID,
 }
 
+# external ids tried per provider before cross-provider matching falls back to a text search
+MAX_EXTERNAL_ID_MATCH_LOOKUPS = 3
+
 SORT_KEYS = {
     # sqlite has no builtin support for natural sorting
     # so we have use an additional column for this
