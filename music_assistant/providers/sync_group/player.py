@@ -1407,21 +1407,26 @@ class SyncGroupPlayer(Player):
             await asyncio.sleep(IDLE_GRACE_SECONDS)
         except asyncio.CancelledError:
             return
-        # re-check state at fire time — playback may have resumed, the user
-        # may have powered the group on, or another path may have dissolved
-        # us already. Any of these means we should not dissolve here.
-        self._idle_grace_task = None
-        if self.sync_leader is None:
-            return
-        if self._attr_powered is True:
-            return
-        if self.sync_leader.state.playback_state != PlaybackState.IDLE:
-            return
-        self.logger.info(
-            "Idle-grace expired for syncgroup %s, dissolving",
-            self.display_name,
-        )
-        await self._dissolve_syncgroup()
+        # serialize with (un)group and playback commands targeting this group.
+        # A cancellation (playback resuming, an explicit stop or power command)
+        # may still land while we wait for the lock and simply ends this task.
+        async with self.mass.players.get_player_lock(self.player_id, PlayerLockPurpose.PLAYBACK):
+            # drop our own reference first: the dissolve cancels any pending grace task
+            self._idle_grace_task = None
+            # re-check state at fire time — playback may have resumed, the user
+            # may have powered the group on, or another path may have dissolved
+            # us already. Any of these means we should not dissolve here.
+            if self.sync_leader is None:
+                return
+            if self._attr_powered is True:
+                return
+            if self.sync_leader.state.playback_state != PlaybackState.IDLE:
+                return
+            self.logger.info(
+                "Idle-grace expired for syncgroup %s, dissolving",
+                self.display_name,
+            )
+            await self._dissolve_syncgroup()
 
     @property
     def _playback_recently_started(self) -> bool:
