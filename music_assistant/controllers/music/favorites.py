@@ -16,17 +16,20 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
+from music_assistant_models.enums import MediaType
+
 from music_assistant.constants import DB_TABLE_FAVORITES, DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.helpers.provider_access import (
     access_allows,
     music_sources_access,
     source_access,
 )
+from music_assistant.helpers.util import parse_optional_bool
 
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import ProviderAccess
-    from music_assistant_models.enums import MediaType
+    from music_assistant_models.media_items import Track
 
     from music_assistant import MusicAssistant
 
@@ -35,6 +38,9 @@ if TYPE_CHECKING:
 PENDING_USER_ID = "__pending__"
 # how long a resolved user list serves the reports of one library sync
 USERS_TTL = 30
+# the library ids of a user's disliked tracks, and the (provider instance, item id) pairs
+# those tracks are known by, so a track straight from a music source is recognized too
+type DislikedTrackKeys = tuple[set[int], set[tuple[str, str]]]
 
 
 class FavoritesStore:
@@ -118,6 +124,36 @@ class FavoritesStore:
                 **{f"user_{idx}": user_id for idx, user_id in enumerate(user_ids)},
             },
         )
+
+    async def disliked_track_keys(self, user_id: str) -> DislikedTrackKeys:
+        """
+        Return the tracks the given user disliked, in one query.
+
+        The library ids identify the tracks as library items, the (instance, item id) pairs
+        recognize the same track when it arrives straight from a music source. Feed the result
+        to :func:`filter_disliked`.
+
+        :param user_id: The user whose dislikes are returned.
+        """
+        item_ids: set[int] = set()
+        provider_keys: set[tuple[str, str]] = set()
+        # LEFT JOIN: a disliked track without any mapping left still counts by its library id
+        query = (
+            "SELECT f.item_id, pm.provider_instance, pm.provider_item_id "
+            f"FROM {DB_TABLE_FAVORITES} f "
+            f"LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} pm "
+            "ON pm.media_type = f.media_type AND pm.item_id = f.item_id "
+            "WHERE f.user_id = :user_id AND f.media_type = :media_type AND f.favorite = 0"
+        )
+        for row in await self.mass.music.database.get_rows_from_query(
+            query,
+            {"user_id": user_id, "media_type": MediaType.TRACK.value},
+            limit=0,
+        ):
+            item_ids.add(int(row["item_id"]))
+            if row["provider_instance"] and row["provider_item_id"]:
+                provider_keys.add((row["provider_instance"], row["provider_item_id"]))
+        return item_ids, provider_keys
 
     async def move_item(self, media_type: MediaType, source_id: int, target_id: int) -> None:
         """
@@ -243,6 +279,70 @@ class FavoritesStore:
         return self._users[1]
 
 
+async def with_user_favorites(
+    mass: MusicAssistant, user: User | None, tracks: list[Track]
+) -> list[Track]:
+    """
+    Return the given tracks carrying the favorite state of the given user.
+
+    For a cached list somebody else filled: the state it carries is theirs. The library
+    tracks in the list are updated in place.
+
+    :param mass: The MusicAssistant instance.
+    :param user: The user asking; without one the tracks carry no state at all.
+    :param tracks: The tracks to update.
+    """
+    if not tracks:
+        return tracks
+    states: dict[int, bool | None] = {}
+    if user:
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT item_id, favorite FROM {DB_TABLE_FAVORITES} "
+            "WHERE user_id = :user_id AND media_type = :media_type",
+            {"user_id": user.user_id, "media_type": MediaType.TRACK.value},
+            limit=0,
+        )
+        states = {row["item_id"]: parse_optional_bool(row["favorite"]) for row in rows}
+    for track in tracks:
+        if track.provider == "library":
+            track.favorite = states.get(int(track.item_id))
+    return tracks
+
+
+async def without_disliked_tracks(
+    mass: MusicAssistant, user_id: str | None, tracks: list[Track]
+) -> list[Track]:
+    """
+    Return the given tracks without the ones the user disliked.
+
+    Only for playback Music Assistant picks itself; what a user asks for by name is never
+    filtered.
+
+    :param mass: The MusicAssistant instance.
+    :param user_id: The playback user; an anonymous queue (None) is not filtered.
+    :param tracks: The candidate tracks.
+    """
+    if not user_id or not tracks:
+        return tracks
+    return filter_disliked(tracks, await mass.music.favorites.disliked_track_keys(user_id))
+
+
+def filter_disliked(tracks: list[Track], keys: DislikedTrackKeys) -> list[Track]:
+    """
+    Drop the tracks a user disliked from a list of candidates.
+
+    A hard filter, unlike the advisory :func:`music_assistant.helpers.track_filter.filter_tracks`:
+    an empty result is a valid answer, since a disliked track must never be played.
+
+    :param tracks: The candidate tracks.
+    :param keys: The user's dislikes, from :meth:`FavoritesStore.disliked_track_keys`.
+    """
+    item_ids, provider_keys = keys
+    if not item_ids and not provider_keys:
+        return tracks
+    return [track for track in tracks if not _is_disliked(track, item_ids, provider_keys)]
+
+
 def _holds_favorites_for(access: ProviderAccess | None, user: User) -> bool:
     """
     Return whether a music source with this access record holds favorites of the given user.
@@ -253,3 +353,13 @@ def _holds_favorites_for(access: ProviderAccess | None, user: User) -> bool:
     if access and access.owner:
         return access.owner == user.user_id
     return access_allows(access, user)
+
+
+def _is_disliked(track: Track, item_ids: set[int], provider_keys: set[tuple[str, str]]) -> bool:
+    """Return whether the track is one of the disliked ones, by library id or by mapping."""
+    if track.provider == "library" and int(track.item_id) in item_ids:
+        return True
+    return any(
+        (mapping.provider_instance, mapping.item_id) in provider_keys
+        for mapping in track.provider_mappings
+    )
