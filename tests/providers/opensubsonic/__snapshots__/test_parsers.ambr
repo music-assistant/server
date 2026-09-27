@@ -1622,7 +1622,9 @@
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
         'description_language': None,
         'explicit': None,
-        'genres': None,
+        'genres': list([
+          'Spoken Word',
+        ]),
         'grouping': None,
         'has_transcript': None,
         'images': list([
@@ -1776,7 +1778,9 @@
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
         'description_language': None,
         'explicit': None,
-        'genres': None,
+        'genres': list([
+          'Spoken Word',
+        ]),
         'grouping': None,
         'has_transcript': None,
         'images': list([
@@ -1930,7 +1934,9 @@
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
         'description_language': None,
         'explicit': None,
-        'genres': None,
+        'genres': list([
+          'Spoken Word',
+        ]),
         'grouping': None,
         'has_transcript': None,
         'images': list([
@@ -2120,7 +2126,9 @@
       'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
       'description_language': None,
       'explicit': None,
-      'genres': None,
+      'genres': list([
+        'Spoken Word',
+      ]),
       'grouping': None,
       'has_transcript': None,
       'images': list([
@@ -2198,7 +2206,9 @@
       'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
       'description_language': None,
       'explicit': None,
-      'genres': None,
+      'genres': list([
+        'Spoken Word',
+      ]),
       'grouping': None,
       'has_transcript': None,
       'images': list([

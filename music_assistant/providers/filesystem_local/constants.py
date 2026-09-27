@@ -198,8 +198,6 @@ METADATA_FILE_CACHE_EXPIRATION: Final[int] = 86400 * 365 * 10  # ~permanent for 
 # the missing episode cannot reappear any sooner than this
 PARTIAL_LISTING_CACHE_EXPIRATION: Final[int] = 300
 
-DEFAULT_AUDIOBOOK_PODCAST_GENRE: Final[str] = "Spoken Word"
-
 # how often storage that went away during a scan is re-checked, so the provider comes
 # back within minutes instead of waiting for the next scheduled sync
 AVAILABILITY_PROBE_INTERVAL: Final[int] = 300

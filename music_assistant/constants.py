@@ -315,6 +315,9 @@ DEFAULT_AUDIOBOOK_GENRE_MAPPING: Final[list[dict[str, Any]]] = load_genre_mappin
 )
 DEFAULT_GENRES: Final[tuple[str, ...]] = tuple(entry["genre"] for entry in DEFAULT_GENRE_MAPPING)
 
+# fallback genre for a podcast or audiobook whose provider has no categories of its own
+DEFAULT_AUDIOBOOK_PODCAST_GENRE: Final[str] = "Spoken Word"
+
 
 # all other
 MASS_LOGO_ONLINE: Final[str] = (

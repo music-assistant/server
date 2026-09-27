@@ -48,6 +48,8 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from yarl import URL
 
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
+
 from .constants import (
     API_DEFAULT_RESOURCE_VERSION,
     API_ENCRYPTION_IV,
@@ -492,8 +494,7 @@ class StorytelHelper:
         if language:
             podcast.metadata.languages = UniqueList([language])
         genre = list_metadata.get("genre") or ""
-        if genre:
-            podcast.metadata.genres = {genre}
+        podcast.metadata.genres = {genre} if genre else {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
         podcast.metadata.performers = set(hosts)
         latest_episode_date_text = (list_metadata.get("followingInfo") or {}).get(
             "newestItemReleaseDate"
@@ -1267,6 +1268,7 @@ class StorytelHelper:
                 )
             },
         )
+        podcast.metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
         cover_url = (
             (item_data.get("cover") or {}).get("url")
             if isinstance(item_data.get("cover"), dict)

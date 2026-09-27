@@ -56,6 +56,7 @@ from ytmusicapi.parsers.podcasts import Description
 from music_assistant.constants import (
     CONF_ENTRY_UNOFFICIAL_PROVIDER,
     CONF_USERNAME,
+    DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.cache import use_cache
@@ -1126,6 +1127,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             podcast.publisher = author["name"]
         if thumbnails := podcast_obj.get("thumbnails"):
             podcast.metadata.images = self._parse_thumbnails(thumbnails)
+        podcast.metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
         return podcast
 
     def _parse_browse_podcast(self, item_obj: dict[str, Any]) -> Podcast | None:

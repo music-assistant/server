@@ -49,7 +49,7 @@ from sounds.models import (
 )
 
 import music_assistant.helpers.datetime as dt
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.datetime import LOCAL_TIMEZONE
 from music_assistant.providers.bbc_sounds.constants import ValidMenuIDs, _Constants
 
@@ -485,13 +485,16 @@ class PodcastConverter(BaseConverter):
             podcast, "sub_items.image_url"
         )
 
+        metadata = ImageProvider.create_metadata_with_image(
+            image_url, self.context.provider_domain, description
+        )
+        if isinstance(podcast, Podcast):
+            metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
         return MAPodcast(
             item_id=podcast.id,
             name=name,
             provider=self.context.provider_domain,
-            metadata=ImageProvider.create_metadata_with_image(
-                image_url, self.context.provider_domain, description
-            ),
+            metadata=metadata,
             provider_mappings={self._create_provider_mapping(podcast.item_id)},
         )
 

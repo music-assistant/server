@@ -24,7 +24,7 @@ from music_assistant_models.media_items import (
     Track,
 )
 
-from music_assistant.constants import UNKNOWN_ARTIST
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE, UNKNOWN_ARTIST
 from music_assistant.helpers.tags import clean_mbid
 from music_assistant.helpers.util import parse_title_and_version
 
@@ -507,6 +507,7 @@ def parse_podcast(instance_id: str, sonic_podcast: SonicPodcast) -> Podcast:
     )
 
     podcast.metadata.description = sonic_podcast.description
+    podcast.metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
 
     if sonic_podcast.cover_art:
         podcast.metadata.add_image(

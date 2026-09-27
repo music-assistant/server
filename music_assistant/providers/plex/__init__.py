@@ -70,6 +70,7 @@ from plexapi.server import PlexServer
 
 from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
+    DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     LOUDNESS_MEASUREMENT_MIN_LUFS,
     UNKNOWN_ARTIST,
 )
@@ -1906,6 +1907,9 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             podcast.metadata.release_date = datetime(plex_album.year, 1, 1, tzinfo=UTC)
         if images := get_thumbnail_images(plex_album, self.instance_id):
             podcast.metadata.images = images
+        podcast.metadata.genres = {genre.tag for genre in plex_album.genres or [] if genre.tag} or {
+            DEFAULT_AUDIOBOOK_PODCAST_GENRE
+        }
         if include_episodes:
             podcast.total_episodes = await self._count_podcast_episodes(plex_album)
         return podcast
