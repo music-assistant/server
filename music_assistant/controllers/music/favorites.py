@@ -179,6 +179,8 @@ class FavoritesStore:
 
         :param user_id: Id of the removed user.
         """
+        # a sync in progress must not hand the user anything after this
+        self._users = None
         await self.mass.music.database.delete(DB_TABLE_FAVORITES, {"user_id": user_id})
 
     async def settle_pending(self) -> None:
