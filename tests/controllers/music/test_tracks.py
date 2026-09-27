@@ -12,6 +12,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items import (
     Album,
@@ -34,7 +35,7 @@ from music_assistant.helpers.compare import TrackMatchConfidence
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 
-from .helpers import create_album, create_track
+from .helpers import ISRC, create_album, create_track
 
 
 @pytest.fixture
@@ -183,6 +184,178 @@ async def test_match_provider_uses_full_track_mapping(music: MusicController) ->
         mappings = await music.tracks.match_provider(base_track, provider, ref_albums=[])
 
     assert mappings == list(full_track.provider_mappings)
+
+
+def _streaming_provider(instance_id: str, *features: ProviderFeature) -> MagicMock:
+    """Return a mock streaming provider that supports search plus the given features."""
+    provider = MagicMock()
+    provider.name = instance_id
+    provider.instance_id = instance_id
+    provider.domain = instance_id.split("_", maxsplit=1)[0]
+    provider.supported_features = {ProviderFeature.SEARCH, *features}
+    provider.supported_media_types = {MediaType.TRACK}
+    provider.is_streaming_provider = True
+    return provider
+
+
+async def test_match_provider_maps_an_isrc_hit_without_searching(music: MusicController) -> None:
+    """A track the provider resolves by ISRC is mapped without a text search."""
+    base_track = create_track("spotify_1", "base")
+    prov_track = create_track("qobuz_1", "candidate")
+    provider = _streaming_provider("qobuz_1", ProviderFeature.TRACK_BY_EXTERNAL_ID)
+    provider.get_track_by_external_id = AsyncMock(return_value=prov_track)
+
+    with patch.object(music.tracks, "search", AsyncMock(return_value=[])) as search:
+        mappings = await music.tracks.match_provider(base_track, provider, ref_albums=[])
+
+    assert mappings == list(prov_track.provider_mappings)
+    provider.get_track_by_external_id.assert_awaited_once_with(ISRC, ExternalID.ISRC)
+    search.assert_not_awaited()
+
+
+async def test_match_provider_isrc_hit_must_pass_track_comparison(
+    music: MusicController,
+) -> None:
+    """An ISRC hit whose duration is far off is rejected and the search runs."""
+    base_track = create_track("spotify_1", "base")
+    provider = _streaming_provider("qobuz_1", ProviderFeature.TRACK_BY_EXTERNAL_ID)
+    provider.get_track_by_external_id = AsyncMock(
+        return_value=create_track("qobuz_1", "candidate", duration=230)
+    )
+
+    with patch.object(music.tracks, "search", AsyncMock(return_value=[])) as search:
+        mappings = await music.tracks.match_provider(base_track, provider, ref_albums=[])
+
+    assert mappings == []
+    search.assert_awaited_once_with("Test Artist - Test Track", "qobuz")
+
+
+async def test_match_provider_rejects_an_isrc_hit_for_another_song(
+    music: MusicController,
+) -> None:
+    """An ISRC hit with another title is a wrongly tagged ISRC: rejected, the search runs."""
+    base_track = create_track("spotify_1", "base")
+    provider = _streaming_provider("qobuz_1", ProviderFeature.TRACK_BY_EXTERNAL_ID)
+    provider.get_track_by_external_id = AsyncMock(
+        return_value=create_track("qobuz_1", "candidate", name="Totally Different Song")
+    )
+
+    with patch.object(music.tracks, "search", AsyncMock(return_value=[])) as search:
+        mappings = await music.tracks.match_provider(base_track, provider, ref_albums=[])
+
+    assert mappings == []
+    search.assert_awaited_once_with("Test Artist - Test Track", "qobuz")
+
+
+async def test_match_provider_skips_an_unavailable_isrc_hit(music: MusicController) -> None:
+    """An ISRC hit that is not available on the provider is skipped and the search runs."""
+    base_track = create_track("spotify_1", "base")
+    prov_track = create_track("qobuz_1", "candidate")
+    prov_track.provider_mappings = {
+        ProviderMapping(
+            item_id="candidate",
+            provider_domain="qobuz",
+            provider_instance="qobuz_1",
+            available=False,
+        )
+    }
+    provider = _streaming_provider("qobuz_1", ProviderFeature.TRACK_BY_EXTERNAL_ID)
+    provider.get_track_by_external_id = AsyncMock(return_value=prov_track)
+
+    with patch.object(music.tracks, "search", AsyncMock(return_value=[])) as search:
+        mappings = await music.tracks.match_provider(base_track, provider, ref_albums=[])
+
+    assert mappings == []
+    search.assert_awaited_once()
+
+
+async def test_match_provider_looks_up_the_canonical_isrc(music: MusicController) -> None:
+    """A stored ISRC with separators reaches the provider in its canonical form."""
+    base_track = create_track("spotify_1", "base", isrc="GB-STK-07-00001")
+    provider = _streaming_provider("qobuz_1", ProviderFeature.TRACK_BY_EXTERNAL_ID)
+    provider.get_track_by_external_id = AsyncMock(return_value=None)
+
+    with patch.object(music.tracks, "search", AsyncMock(return_value=[])):
+        await music.tracks.match_provider(base_track, provider, ref_albums=[])
+
+    provider.get_track_by_external_id.assert_awaited_once_with("GBSTK0700001", ExternalID.ISRC)
+
+
+async def test_match_provider_without_isrc_lookup_searches(music: MusicController) -> None:
+    """A provider that does not support ISRC lookups is only searched."""
+    base_track = create_track("spotify_1", "base")
+    provider = _streaming_provider("qobuz_1")
+    provider.get_track_by_external_id = AsyncMock(return_value=create_track("qobuz_1", "candidate"))
+
+    with patch.object(music.tracks, "search", AsyncMock(return_value=[])) as search:
+        mappings = await music.tracks.match_provider(base_track, provider, ref_albums=[])
+
+    assert mappings == []
+    provider.get_track_by_external_id.assert_not_awaited()
+    search.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "error", [ProviderUnavailableError("down"), RetriesExhausted("rate limited"), TimeoutError()]
+)
+async def test_match_provider_isrc_lookup_failure_falls_back_to_search(
+    music: MusicController, error: Exception
+) -> None:
+    """A provider lookup that fails or times out does not end the match; the search still runs."""
+    base_track = create_track("spotify_1", "base")
+    provider = _streaming_provider("qobuz_1", ProviderFeature.TRACK_BY_EXTERNAL_ID)
+    provider.get_track_by_external_id = AsyncMock(side_effect=error)
+
+    with patch.object(music.tracks, "search", AsyncMock(return_value=[])) as search:
+        mappings = await music.tracks.match_provider(base_track, provider, ref_albums=[])
+
+    assert mappings == []
+    search.assert_awaited_once()
+
+
+async def test_match_provider_caps_isrc_lookups(music: MusicController) -> None:
+    """At most three ISRCs are looked up on a provider, in a deterministic order."""
+    base_track = create_track("spotify_1", "base")
+    isrcs = [f"USRC1760783{index}" for index in range(5)]
+    base_track.external_ids = {(ExternalID.ISRC, isrc) for isrc in isrcs}
+    provider = _streaming_provider("qobuz_1", ProviderFeature.TRACK_BY_EXTERNAL_ID)
+    provider.get_track_by_external_id = AsyncMock(return_value=None)
+
+    with patch.object(music.tracks, "search", AsyncMock(return_value=[])):
+        await music.tracks.match_provider(base_track, provider, ref_albums=[])
+
+    looked_up = [awaited.args[0] for awaited in provider.get_track_by_external_id.await_args_list]
+    assert looked_up == isrcs[:3]
+
+
+@pytest.mark.parametrize(
+    ("mapping_available", "expected"),
+    [(True, ["qobuz_1"]), (False, ["tidal_1", "qobuz_1"])],
+)
+async def test_match_providers_only_visits_domains_without_an_available_mapping(
+    music: MusicController, mapping_available: bool, expected: list[str]
+) -> None:
+    """A domain the track is already available on is skipped; an unavailable one is retried."""
+    db_track = create_track("library", "1")
+    db_track.provider_mappings = {
+        ProviderMapping(
+            item_id="t1",
+            provider_domain="tidal",
+            provider_instance="tidal_1",
+            available=mapping_available,
+        )
+    }
+    providers = [_streaming_provider("tidal_1"), _streaming_provider("qobuz_1")]
+    match_provider = AsyncMock(return_value=[])
+
+    with (
+        patch.object(type(music), "providers", new_callable=PropertyMock, return_value=providers),
+        patch.object(music.tracks, "albums", AsyncMock(return_value=[])),
+        patch.object(music.tracks, "match_provider", match_provider),
+    ):
+        await music.tracks.match_providers(db_track)
+
+    assert [awaited.args[1].instance_id for awaited in match_provider.await_args_list] == expected
 
 
 async def test_get_provider_item_can_disable_library_fallback(

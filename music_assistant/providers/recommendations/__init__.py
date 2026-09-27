@@ -232,7 +232,7 @@ class LibraryRecommendationsProvider(PluginProvider):
                 items = await self.mass.music.tracks.library_items(
                     favorite=True,
                     limit=10,
-                    order_by="timestamp_modified_desc",
+                    order_by="favorite_timestamp_desc",
                     reachable_via=providers,
                 )
             case LibraryRowID.FAVORITE_PLAYLISTS:

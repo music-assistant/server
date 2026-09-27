@@ -71,6 +71,9 @@
     "pairing_pin": {
       "label": "Pairing code"
     },
+    "pairing_token": {
+      "label": "Pairing token"
+    },
     "unpair": {
       "label": "Unpair",
       "description": "Remove the pairing with this device. Both sides forget the stored credential and the device reconnects as unpaired."
@@ -133,6 +136,15 @@
     },
     "static_pin_location_operator": {
       "label": "Enter the code set on the device by its operator"
+    },
+    "pairing_psk_location_device": {
+      "label": "Enter the token printed on the device"
+    },
+    "pairing_psk_location_leaflet": {
+      "label": "Enter the token from the leaflet supplied with the device"
+    },
+    "pairing_psk_location_operator": {
+      "label": "Enter the token set on the device by its operator"
     },
     "dynamic_pin_channel_display": {
       "label": "Enter the code shown on the device's screen"
@@ -199,6 +211,10 @@
     "enter_pin": {
       "title": "Enter the pairing code"
     },
+    "enter_token": {
+      "title": "Enter the pairing token",
+      "description": "Paste the device's pairing token to set up a secure connection."
+    },
     "confirming": {
       "title": "Finishing pairing",
       "description": "Completing the secure pairing with the device.",
@@ -215,8 +231,7 @@
       "pairing_error_concurrent": "Another pairing attempt is already in progress.",
       "pairing_error_not_connected": "The device is no longer connected.",
       "pairing_failed": "Pairing with the device failed. Please try again.",
-      "timed_out": "The device did not respond in time. Run the setup again to retry.",
-      "token_pairing_only": "This device cannot be paired from here. It only offers the pairing method servers use to enrol themselves, which has no code for you to enter."
+      "timed_out": "The device did not respond in time. Run the setup again to retry."
     },
     "approve_device_source": {
       "title": "How do you want to connect?",

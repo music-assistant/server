@@ -150,6 +150,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SIMILAR_TRACKS,
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.RECOMMENDATIONS,
+    ProviderFeature.ALBUM_VERSIONS,
 }
 
 
@@ -400,6 +401,27 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 continue
             tracks.append(track)
         return tracks
+
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
+    async def get_album_versions(self, prov_album_id: str) -> list[Album]:
+        """
+        Get albums that YTM has indicated as alternate versions to the given album.
+
+        YTM won't surface these variants via search, so we must explicitly grab
+        them out of the other_versions field.
+        """
+        if album_obj := await get_album(
+            headers=self._headers,
+            prov_album_id=prov_album_id,
+            language=self.language,
+            user=self._yt_user,
+        ):
+            return [
+                self._parse_album(album_obj=ov, album_id=ov["browseId"])
+                for ov in album_obj.get("other_versions", [])
+            ]
+        msg = f"Item {prov_album_id} not found"
+        raise MediaNotFoundError(msg)
 
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_artist(self, prov_artist_id: str) -> Artist:
@@ -698,6 +720,8 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             can_seek=True,
             allow_seek=True,
             expiration=expiration,
+            # YouTube throttles delivery to ~playback rate, so treat it as a live-paced source.
+            is_realtime=True,
         )
         if (audio_channels := stream_format.get("audio_channels")) and str(
             audio_channels
@@ -912,7 +936,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     url=f"{YTM_DOMAIN}/playlist?list={album_obj.get('audioPlaylistId')}",
                 )
             },
-            favorite=album_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
+            favorite=_favorite_from_like_status(album_obj),
         )
         if album_obj.get("year") and album_obj["year"].isdigit():
             album.year = album_obj["year"]
@@ -972,7 +996,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     url=f"{YTM_DOMAIN}/channel/{artist_id}",
                 )
             },
-            favorite=artist_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
+            favorite=_favorite_from_like_status(artist_obj),
         )
         if "description" in artist_obj:
             artist.metadata.description = artist_obj["description"]
@@ -1005,7 +1029,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 )
             },
             is_editable=is_editable,
-            favorite=playlist_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
+            favorite=_favorite_from_like_status(playlist_obj),
         )
         if "description" in playlist_obj:
             playlist.metadata.description = playlist_obj["description"]
@@ -1047,7 +1071,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     ),
                 )
             },
-            favorite=track_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
+            favorite=_favorite_from_like_status(track_obj),
             # Disc info is not available in YTM, assume a single disc
             disc_number=1,
             # Track number is "sometimes" available in the track object, otherwise approach
@@ -1276,3 +1300,13 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             await import_module_in_thread("yt_dlp")
         except ImportError:
             raise SetupFailedError("Package yt_dlp failed to install")
+
+
+def _favorite_from_like_status(item: dict[str, Any]) -> bool | None:
+    """Translate the like status YouTube Music reports on an item to a favorite state."""
+    match item.get("likeStatus"):
+        case "LIKE":
+            return True
+        case "DISLIKE":
+            return False
+    return None

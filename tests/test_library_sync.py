@@ -65,7 +65,7 @@ def create_mock_album(
     provider_mappings: list[ProviderMapping] | None = None,
     provider: str = "library",
     name: str = "Test Album",
-    favorite: bool = False,
+    favorite: bool | None = None,
 ) -> Mock:
     """
     Create a mock Album media item.
@@ -74,7 +74,7 @@ def create_mock_album(
     :param provider_mappings: The provider mappings to set.
     :param provider: The provider string (e.g. 'library', 'spotify').
     :param name: The album name.
-    :param favorite: Whether the item is favorited.
+    :param favorite: The favorite state the source reports, None for none.
     """
     album = Mock(spec=Album)
     album.item_id = item_id
@@ -91,6 +91,23 @@ def create_mock_album(
 async def _noop_deferred_commit() -> AsyncGenerator[None]:
     """Stand-in for DatabaseConnection.deferred_commit on mocked databases."""
     yield
+
+
+def _answer_lookups_with(mass: Mock, provider_mock: Mock) -> None:
+    """
+    Let the registry answer every lookup with this provider, as the instance asked for.
+
+    A library write resolves the exact instance instead of widening to a sibling account,
+    so a provider mock needs to carry the instance_id of the mapping being written and to
+    say it is available.
+    """
+    provider_mock.available = True
+
+    def _get_provider(instance_id: str, **_kwargs: object) -> Mock:
+        provider_mock.instance_id = instance_id
+        return provider_mock
+
+    mass.get_provider.side_effect = _get_provider
 
 
 # --- Group 1: Optimistic in_library on add ---
@@ -222,7 +239,7 @@ async def test_add_album_imports_tracks_when_enabled() -> None:
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
-    mass.get_provider.return_value = provider_mock
+    _answer_lookups_with(mass, provider_mock)
     mass.metadata = AsyncMock()
 
     with (
@@ -254,7 +271,7 @@ async def test_add_album_does_not_import_tracks_when_disabled() -> None:
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
-    mass.get_provider.return_value = provider_mock
+    _answer_lookups_with(mass, provider_mock)
     mass.metadata = AsyncMock()
 
     with (
@@ -302,7 +319,7 @@ async def test_add_album_only_imports_tracks_for_added_instance() -> None:
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
-    mass.get_provider.return_value = provider_mock
+    _answer_lookups_with(mass, provider_mock)
     mass.metadata = AsyncMock()
 
     with (
@@ -1021,8 +1038,8 @@ def test_ensure_provider_filter_allows_explicit_non_music_provider() -> None:
     assert result == ["smart_playlist_1"]
 
 
-def test_ensure_provider_filter_does_not_auto_allow_other_non_music_providers() -> None:
-    """Test that only plugin providers are auto-allowed when user filter is active."""
+def test_ensure_provider_filter_auto_allows_non_music_providers() -> None:
+    """Non-music providers (metadata, plugin) are household-wide and always kept."""
     ctrl = Mock(spec=MediaControllerBase)
     ctrl.mass = Mock()
     ctrl.mass.providers = [
@@ -1042,7 +1059,7 @@ def test_ensure_provider_filter_does_not_auto_allow_other_non_music_providers() 
     assert result is not None
     assert "spotify_1" in result
     assert "smart_playlist_1" in result
-    assert "meta_1" not in result
+    assert "meta_1" in result
 
 
 def _mock_provider_lookup(providers: dict[str, Mock]) -> Mock:

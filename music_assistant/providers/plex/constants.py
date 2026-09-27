@@ -22,6 +22,7 @@ CONF_PLEX_UNLIKE_RATING = "plex_unlike_rating"
 CONF_HUB_ITEMS_LIMIT = "hub_items_limit"
 CONF_EXTENDED_RECOMMENDATIONS = "extended_recommendations"
 CONF_STREAM_QUALITY = "stream_quality"
+CONF_SYNC_ON_LIBRARY_CHANGE = "sync_on_library_change"
 
 STREAM_QUALITY_ORIGINAL = "original"
 STREAM_QUALITY_96 = "96"
@@ -50,6 +51,9 @@ MIX_ITEM_PREFIX = "mix:"
 # rotating the mix out of its hub. 90 days is chosen to outlive MA's
 # playlog retention (see controllers/music.py: _cleanup_database).
 MIX_CACHE_EXPIRATION = 86400 * 90
+
+# seconds to wait before reconnecting to the Plex notification socket
+NOTIFICATION_RECONNECT_DELAY = 30
 
 # Query parameters passed to /hubs/sections when loading recommendations.
 # Some of these are not in public Plex docs but are required to surface

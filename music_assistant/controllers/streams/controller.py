@@ -12,6 +12,7 @@ import logging
 import os
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
+from dataclasses import dataclass
 from ipaddress import ip_address
 from math import ceil
 from typing import TYPE_CHECKING, cast
@@ -19,7 +20,9 @@ from uuid import uuid4
 
 from aiofiles.os import wrap
 from aiohttp import web
+from mashumaro import DataClassDictMixin
 from music_assistant_models.audio_processing import AudioQueueProcessing
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -96,6 +99,7 @@ from music_assistant.controllers.streams.live_announcements import (
     LIVE_ANNOUNCEMENT_STREAM_PATH,
     LiveAnnouncementManager,
 )
+from music_assistant.helpers.api import api_command
 from music_assistant.helpers.audio import (
     calculate_content_length,
     create_streaming_wave_header,
@@ -212,6 +216,22 @@ class AbortFlowStream(Exception):
     """Raised to end a flow response whose session rotated during its setup."""
 
 
+# the probe route answers any origin: a browser on the local network calls it cross-origin
+_INFO_CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Max-Age": "86400",
+}
+
+
+@dataclass
+class StreamServerInfo(DataClassDictMixin):
+    """The address players are handed to fetch audio from, as it is in use right now."""
+
+    base_url: str
+
+
 class StreamsController(CoreController):
     """Controller to stream audio to players."""
 
@@ -283,6 +303,11 @@ class StreamsController(CoreController):
     def bind_ip(self) -> str:
         """Return the IP address this streamserver is bound to."""
         return self._bind_ip
+
+    @api_command("streams/info", required_scope=Scope.CONFIG_CORE_READ)
+    def get_streamserver_info(self) -> StreamServerInfo:
+        """Return the address the streamserver is currently reachable on for players."""
+        return StreamServerInfo(base_url=self.base_url)
 
     async def get_source_ip(self, target_ip: str | None = None) -> str | None:
         """
@@ -545,6 +570,8 @@ class StreamsController(CoreController):
                     LIVE_ANNOUNCEMENT_STREAM_PATH,
                     self.live_announcements.serve_stream,
                 ),
+                ("GET", "/info", self._handle_info_request),
+                ("OPTIONS", "/info", self._handle_info_preflight),
             ],
         )
         # adopt what the server actually bound to: a configured port of 0 is only resolved
@@ -2342,6 +2369,16 @@ class StreamsController(CoreController):
         # the single address players are handed, taken from the top of the ranked list
         self.publish_ip = self._publish_addresses[0]
         self._base_url = f"http://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
+
+    async def _handle_info_request(self, request: web.Request) -> web.Response:
+        """Answer a reachability probe with this server's id."""
+        # a browser on the local network checks whether the published address leads to
+        # this server; the id is public already, the webserver's /info reports it too
+        return web.json_response({"server_id": self.mass.server_id}, headers=_INFO_CORS_HEADERS)
+
+    async def _handle_info_preflight(self, request: web.Request) -> web.Response:
+        """Answer the CORS preflight a browser may send ahead of a probe."""
+        return web.Response(status=204, headers=_INFO_CORS_HEADERS)
 
 
 def _same_ip_family(ip: str, other_ip: str) -> bool:

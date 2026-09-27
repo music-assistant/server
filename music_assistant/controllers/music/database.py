@@ -30,6 +30,7 @@ from music_assistant.constants import (
     DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
+    DB_TABLE_FAVORITES,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
@@ -154,6 +155,12 @@ class MusicDatabaseSetupMixin:
                 f"AND item_id not in (select item_id from {ctrl.db_table})"
             )
             await self.mass.music.database.delete_where_query(DB_TABLE_PLAYLOG, where_clause)
+            # Cleanup removed db items from the favorites
+            query = (
+                f"media_type = '{ctrl.media_type}' "
+                f"AND item_id not in (select item_id from {ctrl.db_table})"
+            )
+            await self.mass.music.database.delete_where_query(DB_TABLE_FAVORITES, query)
         update_current_task_progress_text("Cleaning orphaned relations")
         # A relation row can outlive the item on either of its ends: the item deletions above
         # leave one behind, and so do the removal paths that only delete their own side of the
@@ -289,6 +296,15 @@ class MusicDatabaseSetupMixin:
                 UNIQUE(item_id, provider, media_type, userid));"""
         )
         await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_FAVORITES}(
+                [user_id] TEXT NOT NULL,
+                [media_type] TEXT NOT NULL,
+                [item_id] INTEGER NOT NULL,
+                [favorite] BOOLEAN,
+                [timestamp] INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(user_id, media_type, item_id));"""
+        )
+        await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUMS}(
                     [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
                     [name] TEXT NOT NULL,
@@ -296,7 +312,6 @@ class MusicDatabaseSetupMixin:
                     [version] TEXT,
                     [album_type] TEXT NOT NULL,
                     [year] INTEGER,
-                    [favorite] BOOLEAN NOT NULL DEFAULT 0,
                     [metadata] json NOT NULL,
                     [play_count] INTEGER NOT NULL DEFAULT 0,
                     [last_played] INTEGER NOT NULL DEFAULT 0,
@@ -312,7 +327,6 @@ class MusicDatabaseSetupMixin:
             [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
             [name] TEXT NOT NULL,
             [sort_name] TEXT NOT NULL,
-            [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
@@ -331,7 +345,6 @@ class MusicDatabaseSetupMixin:
             [sort_name] TEXT NOT NULL,
             [version] TEXT,
             [duration] INTEGER,
-            [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
@@ -351,7 +364,6 @@ class MusicDatabaseSetupMixin:
             [translation_params] json,
             [owner] TEXT NOT NULL,
             [is_editable] BOOLEAN NOT NULL,
-            [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
@@ -370,7 +382,6 @@ class MusicDatabaseSetupMixin:
             [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
             [name] TEXT NOT NULL,
             [sort_name] TEXT NOT NULL,
-            [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
@@ -388,7 +399,6 @@ class MusicDatabaseSetupMixin:
             [name] TEXT NOT NULL,
             [sort_name] TEXT NOT NULL,
             [version] TEXT,
-            [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [publisher] TEXT,
             [authors] json NOT NULL,
             [narrators] json NOT NULL,
@@ -409,7 +419,6 @@ class MusicDatabaseSetupMixin:
             [name] TEXT NOT NULL,
             [sort_name] TEXT NOT NULL,
             [version] TEXT,
-            [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [publisher] TEXT,
             [total_episodes] INTEGER NOT NULL,
             [metadata] json NOT NULL,
@@ -429,7 +438,6 @@ class MusicDatabaseSetupMixin:
             [sort_name] TEXT NOT NULL,
             [translation_key] TEXT,
             [description] TEXT,
-            [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
             [genre_aliases] json NOT NULL DEFAULT '[]',
             [play_count] INTEGER NOT NULL DEFAULT 0,
@@ -593,10 +601,6 @@ class MusicDatabaseSetupMixin:
             DB_TABLE_PODCASTS,
             DB_TABLE_GENRES,
         ):
-            # index on favorite column
-            await self.database.execute(
-                f"CREATE INDEX IF NOT EXISTS {db_table}_favorite_idx on {db_table}(favorite);"
-            )
             # index on name
             await self.database.execute(
                 f"CREATE INDEX IF NOT EXISTS {db_table}_name_idx on {db_table}(name);"
@@ -700,6 +704,12 @@ class MusicDatabaseSetupMixin:
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}_genre_idx "
             f"on {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(genre_id);"
+        )
+        # the favorites table's unique constraint already serves the per-user lookups;
+        # this one serves the per-item sweeps (merge, removal) that span all users
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_FAVORITES}_item_idx "
+            f"on {DB_TABLE_FAVORITES}(media_type,item_id);"
         )
         # unique index on playlog table
         await self.database.execute(

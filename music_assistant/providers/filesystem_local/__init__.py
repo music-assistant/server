@@ -409,6 +409,12 @@ class LocalFileSystemProvider(MusicProvider):
                 except InvalidDataError as err:
                     self.logger.warning("Unable to parse CUE sheet %s: %s", item.relative_path, err)
                     continue
+                if await self._cue.find_audio_file(item, cue_sheet) is None:
+                    self.logger.debug(
+                        "Skipping CUE sheet with missing companion audio file: %s",
+                        item.relative_path,
+                    )
+                    continue
                 # also hide the audio file named in the CUE (may differ from its stem)
                 if companion_stem := cue_referenced_audio_stem(item, cue_sheet):
                     cue_stems.add(companion_stem)
@@ -2173,7 +2179,6 @@ class LocalFileSystemProvider(MusicProvider):
             if item.ext in CUE_EXTENSIONS and self.media_content_type == "music":
                 tracks = await self._cue.parse_tracks(item)
                 for track in tracks:
-                    track.favorite = False
                     await self.mass.music.tracks.add_item_to_library(
                         track, overwrite_existing=prev_checksum is not None
                     )
@@ -2189,7 +2194,7 @@ class LocalFileSystemProvider(MusicProvider):
                     return False
                 tags = await async_parse_tags(item.absolute_path, item.file_size)
                 track = await self._parse_track(item, tags)
-                track.favorite = False  # TODO: implement favorite status based on rating ?
+                # TODO: implement favorite status based on rating ?
                 await self.mass.music.tracks.add_item_to_library(
                     track, overwrite_existing=prev_checksum is not None
                 )

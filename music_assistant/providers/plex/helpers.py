@@ -8,7 +8,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import requests
 from music_assistant_models.enums import ImageType, MediaType, ProviderFeature
@@ -265,19 +265,26 @@ def get_thumbnail_images(
     return None
 
 
-def get_favorite_from_rating(plex_media: PlexObject, threshold: float) -> bool | None:
+def get_favorite_from_rating(
+    plex_media: PlexObject, threshold: float, unlike_rating: float
+) -> bool | None:
     """
-    Derive favorite status from the user rating of a Plex object.
+    Derive the favorite state from the user rating of a Plex object.
 
-    Returns None if the object has no user rating.
+    Returns None if the object has no user rating, or one that is neither a like nor a dislike.
 
     :param plex_media: The Plex object to read the user rating from.
-    :param threshold: Minimum rating (0.0-10.0) to consider the item a favorite.
+    :param threshold: Minimum rating (0.0-10.0) to consider the item a like.
+    :param unlike_rating: Maximum rating (0.0-10.0) to consider the item a dislike.
     """
     rating = getattr(plex_media, "userRating", None)
     if rating is None:
         return None
-    return float(rating) >= threshold
+    if float(rating) >= threshold:
+        return True
+    if float(rating) <= unlike_rating:
+        return False
+    return None
 
 
 def get_explicit(plex_media: PlexObject) -> bool | None:
@@ -327,6 +334,22 @@ def parse_plex_lyrics_payload(content: str) -> tuple[str, bool] | None:
     if _LRC_TIMESTAMP_RE.search(content):
         return content.strip(), True
     return content.strip(), False
+
+
+def is_library_scan_finished(notification: dict[str, Any]) -> bool:
+    """
+    Return whether a Plex server notification reports that a library scan finished.
+
+    :param notification: A decoded message from the Plex notification websocket.
+    """
+    container = notification.get("NotificationContainer", {})
+    if container.get("type") != "activity":
+        return False
+    return any(
+        entry.get("event") == "ended"
+        and entry.get("Activity", {}).get("type") == "library.update.section"
+        for entry in container.get("ActivityNotification", [])
+    )
 
 
 def _is_plex_lyrics_json(content: str) -> bool:
