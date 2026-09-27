@@ -152,6 +152,8 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
+    from music_assistant.controllers.music.media.albums import AlbumsController
+    from music_assistant.controllers.music.media.artists import ArtistsController
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
     from music_assistant.providers.musicbrainz import MusicbrainzProvider
@@ -2350,12 +2352,41 @@ class LocalFileSystemProvider(MusicProvider):
         for album_id in album_ids:
             if not await self.mass.music.albums.tracks(album_id, "library"):
                 await self.mass.music.albums.remove_item_from_library(album_id)
+            else:
+                await self._prune_missing_local_refs(self.mass.music.albums, album_id)
         # check if any artists need to be cleaned up
         for artist_id in artist_ids:
             artist_albums = await self.mass.music.artists.albums(artist_id, "library")
             artist_tracks = await self.mass.music.artists.tracks(artist_id, "library")
             if not (artist_albums or artist_tracks):
                 await self.mass.music.artists.remove_item_from_library(artist_id)
+            else:
+                await self._prune_missing_local_refs(self.mass.music.artists, artist_id)
+
+    async def _prune_missing_local_refs(
+        self, controller: AlbumsController | ArtistsController, item_id: str | int
+    ) -> None:
+        """Drop mappings and images of a library item pointing to files/folders missing from disk."""
+        library_item = await controller.get_library_item(item_id)
+        stale_mappings = [
+            mapping.item_id
+            for mapping in library_item.provider_mappings
+            if mapping.provider_instance == self.instance_id
+            and mapping.url
+            and not await self.exists(mapping.url)
+        ]
+        # the item still has library tracks, so never drop its last mapping
+        if len(stale_mappings) < len(library_item.provider_mappings):
+            for prov_item_id in stale_mappings:
+                await controller.remove_provider_mapping(item_id, self.instance_id, prov_item_id)
+        stale_images = {
+            image.path
+            for image in library_item.metadata.images or []
+            if image.provider == self.instance_id
+            and not await self.exists(image.path.split("?cs=", 1)[0])
+        }
+        if stale_images:
+            await controller.remove_provider_images(item_id, self.instance_id, stale_images)
 
     async def _get_playlist_local_image(self, file_item: FileSystemItem) -> MediaItemImage | None:
         """Return a local image alongside the playlist file (matching basename) if any."""
