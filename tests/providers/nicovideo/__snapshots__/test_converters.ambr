@@ -26,6 +26,7 @@
           'images': None,
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': None,
@@ -91,6 +92,7 @@
       'images': None,
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -169,6 +171,7 @@
             'images': None,
             'label': None,
             'languages': None,
+            'last_musicbrainz_lookup': None,
             'last_refresh': None,
             'life_span': None,
             'links': None,
@@ -234,6 +237,7 @@
         'images': None,
         'label': None,
         'languages': None,
+        'last_musicbrainz_lookup': None,
         'last_refresh': None,
         'life_span': None,
         'links': list([
@@ -318,6 +322,7 @@
               ]),
               'label': None,
               'languages': None,
+              'last_musicbrainz_lookup': None,
               'last_refresh': None,
               'life_span': None,
               'links': list([
@@ -407,6 +412,7 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': list([
@@ -486,6 +492,7 @@
           'images': None,
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': None,
@@ -551,6 +558,7 @@
       'images': None,
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -633,6 +641,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -714,6 +723,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -798,6 +808,7 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': list([
@@ -887,6 +898,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -972,6 +984,7 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': list([
@@ -1061,6 +1074,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -1145,6 +1159,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -1234,6 +1249,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -1324,6 +1340,7 @@
         ]),
         'label': None,
         'languages': None,
+        'last_musicbrainz_lookup': None,
         'last_refresh': None,
         'life_span': None,
         'links': list([
@@ -1413,6 +1430,7 @@
               ]),
               'label': None,
               'languages': None,
+              'last_musicbrainz_lookup': None,
               'last_refresh': None,
               'life_span': None,
               'links': list([
@@ -1502,6 +1520,7 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': list([
@@ -1588,6 +1607,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -1670,6 +1690,7 @@
           'images': None,
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': None,
@@ -1735,6 +1756,7 @@
       'images': None,
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -1820,6 +1842,7 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': list([
@@ -1909,6 +1932,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -1994,6 +2018,7 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': list([
@@ -2083,6 +2108,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -2206,6 +2232,7 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': list([
@@ -2295,6 +2322,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -2380,6 +2408,7 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': list([
@@ -2469,6 +2498,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -2555,6 +2585,7 @@
             ]),
             'label': None,
             'languages': None,
+            'last_musicbrainz_lookup': None,
             'last_refresh': None,
             'life_span': None,
             'links': list([
@@ -2625,6 +2656,7 @@
         'images': None,
         'label': None,
         'languages': None,
+        'last_musicbrainz_lookup': None,
         'last_refresh': None,
         'life_span': None,
         'links': list([
@@ -2706,6 +2738,7 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': list([
@@ -2806,6 +2839,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
