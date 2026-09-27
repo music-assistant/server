@@ -24,6 +24,7 @@ from music_assistant.helpers.provider_access import (
     music_sources_access,
     source_access,
 )
+from music_assistant.helpers.util import parse_optional_bool
 
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
@@ -276,6 +277,36 @@ class FavoritesStore:
         if self._users is None or now - self._users[0] > USERS_TTL:
             self._users = (now, await self.mass.webserver.auth.list_users())
         return self._users[1]
+
+
+async def with_user_favorites(
+    mass: MusicAssistant, user: User | None, tracks: list[Track]
+) -> list[Track]:
+    """
+    Return the given tracks carrying the favorite state of the given user.
+
+    For a cached list somebody else filled: the state it carries is theirs. The library
+    tracks in the list are updated in place.
+
+    :param mass: The MusicAssistant instance.
+    :param user: The user asking; without one the tracks carry no state at all.
+    :param tracks: The tracks to update.
+    """
+    if not tracks:
+        return tracks
+    states: dict[int, bool | None] = {}
+    if user:
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT item_id, favorite FROM {DB_TABLE_FAVORITES} "
+            "WHERE user_id = :user_id AND media_type = :media_type",
+            {"user_id": user.user_id, "media_type": MediaType.TRACK.value},
+            limit=0,
+        )
+        states = {row["item_id"]: parse_optional_bool(row["favorite"]) for row in rows}
+    for track in tracks:
+        if track.provider == "library":
+            track.favorite = states.get(int(track.item_id))
+    return tracks
 
 
 async def without_disliked_tracks(

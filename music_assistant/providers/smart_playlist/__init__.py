@@ -49,6 +49,7 @@ from music_assistant_models.media_items.metadata import MediaItemImage, MediaIte
 from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
 from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.music.constants import DYNAMIC_RADIO_BASE_SAMPLE_SIZE
+from music_assistant.controllers.music.favorites import with_user_favorites
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     set_current_user,
@@ -380,7 +381,8 @@ class SmartPlaylistProvider(PluginProvider):
             )
         else:
             sample = await self._cached_dynamic_sample(resolved_id, user_provider_filter)
-        return filter_tracks(sample)
+        # a cached sample carries the favorite state of whoever filled it
+        return filter_tracks(await with_user_favorites(self.mass, user, sample))
 
     @use_cache(
         expiration=DYNAMIC_SAMPLE_CACHE_EXPIRATION,

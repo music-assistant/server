@@ -5,12 +5,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import ProviderMapping
 
 from music_assistant.controllers.music.favorites import (
     DislikedTrackKeys,
     filter_disliked,
+    with_user_favorites,
     without_disliked_tracks,
 )
 
@@ -89,3 +91,27 @@ async def test_without_disliked_drops_the_users_dislikes(music_mass_module: Musi
 
     untouched = await without_disliked_tracks(mass, None, [disliked, liked])
     assert [x.item_id for x in untouched] == [disliked.item_id, liked.item_id]
+
+
+async def test_with_user_favorites_applies_the_asking_users_state(
+    music_mass_module: MusicAssistant,
+) -> None:
+    """A track list filled for somebody else ends up carrying the asking user's state."""
+    mass = music_mass_module
+    store = mass.music.favorites
+    liked = await _add_track(mass, "Liked By A")
+    disliked = await _add_track(mass, "Disliked By A")
+    plain = await _add_track(mass, "Nothing From A")
+    await store.set(MediaType.TRACK, int(liked.item_id), True, [USER_A])
+    await store.set(MediaType.TRACK, int(disliked.item_id), False, [USER_A])
+    await store.set(MediaType.TRACK, int(plain.item_id), True, [USER_B])
+    for track in (liked, disliked, plain):
+        # the state of whoever filled the cached list
+        track.favorite = True
+
+    user_a = User(user_id=USER_A, username=USER_A, role=UserRole.USER)
+    tracks = await with_user_favorites(mass, user_a, [liked, disliked, plain])
+    assert [x.favorite for x in tracks] == [True, False, None]
+
+    tracks = await with_user_favorites(mass, None, [liked, disliked, plain])
+    assert [x.favorite for x in tracks] == [None, None, None]
