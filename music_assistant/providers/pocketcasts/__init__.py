@@ -57,6 +57,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 FULLY_PLAYED_THRESHOLD = 0.9
+DEFAULT_PODCAST_GENRE = "Spoken Word"
 SPECIAL_FOLDERS = ("up_next", "new_releases", "in_progress", "starred", "history")
 
 SUPPORTED_FEATURES = {
@@ -194,7 +195,22 @@ class PocketCastsProvider(MusicProvider):
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Get all podcasts from the user's library."""
         for podcast_data in await self._client.get_subscribed_podcasts():
-            yield self._convert_podcast(podcast_data)
+            # the subscribed list carries no genres, so each podcast is looked up in full
+            # (cached for a day)
+            try:
+                podcast = await self.get_podcast(podcast_data["uuid"])
+            except (
+                MediaNotFoundError,
+                LoginFailed,
+                ProviderUnavailableError,
+                ResourceTemporarilyUnavailable,
+                RetriesExhausted,
+            ) as err:
+                self.logger.debug(
+                    "Could not retrieve details for podcast %s: %s", podcast_data["uuid"], err
+                )
+                podcast = self._convert_podcast(podcast_data)
+            yield podcast
 
     async def library_add(self, item: MediaItemType) -> bool:
         """
@@ -231,7 +247,14 @@ class PocketCastsProvider(MusicProvider):
             raise MediaNotFoundError(
                 f"podcast://{prov_podcast_id} not found on provider {self.domain}"
             )
-        return self._convert_podcast(podcast_data)
+        podcast = self._convert_podcast(podcast_data)
+        # only this endpoint carries the category, one genre per line with sub-genres indented
+        podcast.metadata.genres = {
+            genre
+            for line in (podcast_data.get("category") or "").splitlines()
+            if (genre := line.strip())
+        } or {DEFAULT_PODCAST_GENRE}
+        return podcast
 
     async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """

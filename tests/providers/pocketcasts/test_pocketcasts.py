@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import RetriesExhausted
+from music_assistant_models.errors import ProviderUnavailableError, RetriesExhausted
 from music_assistant_models.media_items import PodcastEpisode
 
 from music_assistant.providers.pocketcasts import PocketCastsProvider
@@ -366,3 +366,52 @@ async def test_special_folder_looks_each_podcast_up_once(
     episodes = [item for item in items if isinstance(item, PodcastEpisode)]
     assert [episode.podcast.name for episode in episodes] == ["Podcast One"] * 3
     assert client.get_podcast.await_count == 1
+
+
+async def test_podcast_gets_its_genres(provider: PocketCastsProvider, client: AsyncMock) -> None:
+    """Each category line, sub-genres included, becomes a genre."""
+    client.get_podcast.return_value = {
+        "uuid": "podcast-1",
+        "title": "Podcast One",
+        "category": "Science\n  Physics\n  Mathematics",
+    }
+
+    podcast = await provider.get_podcast("podcast-1")
+
+    assert podcast.metadata.genres == {"Science", "Physics", "Mathematics"}
+
+
+async def test_podcast_without_category_is_spoken_word(provider: PocketCastsProvider) -> None:
+    """A podcast without a category falls back to Spoken Word."""
+    podcast = await provider.get_podcast("podcast-1")
+
+    assert podcast.metadata.genres == {"Spoken Word"}
+
+
+async def test_library_podcasts_get_their_genres(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """Library podcasts are looked up in full, since the subscribed list carries no genres."""
+    client.get_subscribed_podcasts.return_value = [{"uuid": "podcast-1", "title": "Podcast One"}]
+    client.get_podcast.return_value = {
+        "uuid": "podcast-1",
+        "title": "Podcast One",
+        "category": "History",
+    }
+
+    podcasts = [podcast async for podcast in provider.get_library_podcasts()]
+
+    assert podcasts[0].metadata.genres == {"History"}
+
+
+async def test_library_podcast_survives_a_failed_lookup(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """A failed full lookup keeps the podcast in the library, without genres."""
+    client.get_subscribed_podcasts.return_value = [{"uuid": "podcast-1", "title": "Podcast One"}]
+    client.get_podcast.side_effect = ProviderUnavailableError("boom")
+
+    podcasts = [podcast async for podcast in provider.get_library_podcasts()]
+
+    assert podcasts[0].name == "Podcast One"
+    assert not podcasts[0].metadata.genres
