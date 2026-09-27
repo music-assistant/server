@@ -60,11 +60,17 @@ from music_assistant.helpers.compare import (
     loose_compare_strings,
 )
 from music_assistant.helpers.database import UNSET
+from music_assistant.helpers.external_ids import is_valid_isrc, normalize_external_id
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.lyrics import extract_lrc_lyrics, normalize_lrc_lyrics
 from music_assistant.models.music_provider import MusicProvider
 
-from .base import MediaControllerBase, TrackSyncDetails
+from .base import (
+    EXTERNAL_ID_LOOKUP_ERRORS,
+    MAX_EXTERNAL_ID_MATCH_LOOKUPS,
+    MediaControllerBase,
+    TrackSyncDetails,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -899,12 +905,15 @@ class TracksController(MediaControllerBase[Track]):
         """
         Try to find match on (streaming) provider for the provided track.
 
-        This is used to link objects of different providers/qualities together.
+        This is used to link objects of different providers/qualities together. A provider
+        that supports ISRC lookups is asked for the track by ISRC before it is searched.
         """
         if ref_albums is None:
             ref_albums = await self.albums(base_track.item_id, base_track.provider)
         self.logger.debug("Trying to match track %s on provider %s", base_track.name, provider.name)
         matches: list[ProviderMapping] = []
+        if ProviderFeature.TRACK_BY_EXTERNAL_ID in provider.supported_features:
+            matches = await self._match_provider_by_isrc(base_track, provider, strict, ref_albums)
         for artist in base_track.artists:
             if matches:
                 break
@@ -944,9 +953,11 @@ class TracksController(MediaControllerBase[Track]):
 
         track_albums = await self.albums(db_track.item_id, db_track.provider)
         # try to find match on all providers
-        processed_domains = set()
+        cur_provider_domains = {
+            x.provider_domain for x in db_track.provider_mappings if x.available
+        }
         for provider in self.mass.music.providers:
-            if provider.domain in processed_domains:
+            if provider.domain in cur_provider_domains:
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
@@ -960,7 +971,53 @@ class TracksController(MediaControllerBase[Track]):
             ):
                 # 100% match, we update the db with the additional provider mapping(s)
                 await self.add_provider_mappings(db_track.item_id, match)
-                processed_domains.add(provider.domain)
+                cur_provider_domains.add(provider.domain)
+
+    async def _match_provider_by_isrc(
+        self,
+        base_track: Track,
+        provider: MusicProvider,
+        strict: bool,
+        ref_albums: list[Album],
+    ) -> list[ProviderMapping]:
+        """Return the mappings of the provider track one of the base track's ISRCs resolves to."""
+        # the order only makes the choice of looked-up ISRCs deterministic
+        isrcs = sorted(
+            {
+                normalize_external_id(ExternalID.ISRC, value)
+                for external_id_type, value in base_track.external_ids
+                if external_id_type == ExternalID.ISRC and is_valid_isrc(value)
+            }
+        )
+        for isrc in isrcs[:MAX_EXTERNAL_ID_MATCH_LOOKUPS]:
+            try:
+                prov_track = await provider.get_track_by_external_id(isrc, ExternalID.ISRC)
+            except EXTERNAL_ID_LOOKUP_ERRORS as err:
+                self.logger.debug(
+                    "ISRC %s lookup on provider %s failed: %s", isrc, provider.name, err
+                )
+                continue
+            if prov_track is None or not prov_track.available:
+                continue
+            # the hit carries the queried ISRC by construction, which the track comparison
+            # accepts on its own, so the basic comparison a search result gets is made
+            # without it: a wrongly tagged ISRC must not map an unrelated song
+            candidate = replace(
+                prov_track,
+                external_ids={
+                    (kind, value)
+                    for kind, value in prov_track.external_ids
+                    if not (
+                        kind == ExternalID.ISRC
+                        and normalize_external_id(ExternalID.ISRC, value) == isrc
+                    )
+                },
+            )
+            if not compare_media_item(base_track, candidate, strict=False):
+                continue
+            if compare_track(base_track, prov_track, strict=strict, track_albums=ref_albums):
+                return list(prov_track.provider_mappings)
+        return []
 
     async def _search_provider_track_matches(
         self,
