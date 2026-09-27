@@ -1358,6 +1358,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             ),
         )
         if full_item.provider != "library":
+            if favorite is None:
+                # nothing to clear on an item that is not in the library
+                return
             full_item = await self.add_item_to_library(full_item)
         # set favorite in library db
         ctrl = self.get_controller(item.media_type)

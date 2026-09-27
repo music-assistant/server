@@ -399,6 +399,26 @@ async def test_a_dislike_on_a_provider_item_pulls_it_into_the_library(
     assert THEIRS not in seen
 
 
+async def test_clearing_a_favorite_on_a_provider_item_changes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An item that is not in the library has no state to clear, so it is not pulled in."""
+    _as_user(monkeypatch, _user())
+    controller = _controller(THREE_ACCOUNTS)
+    prov_item = Mock(
+        provider=MINE, item_id="mine-42", media_type=MediaType.TRACK, provider_mappings=set()
+    )
+    controller.get_item = AsyncMock(return_value=prov_item)  # type: ignore[method-assign]
+    controller.add_item_to_library = AsyncMock()  # type: ignore[method-assign]
+    ctrl = Mock(set_favorite=AsyncMock())
+    controller.get_controller = Mock(return_value=ctrl)  # type: ignore[method-assign]
+
+    await controller.set_item_favorite(prov_item, None)
+
+    controller.add_item_to_library.assert_not_awaited()
+    ctrl.set_favorite.assert_not_awaited()
+
+
 async def test_a_down_own_source_is_skipped_rather_than_served_by_a_sibling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
