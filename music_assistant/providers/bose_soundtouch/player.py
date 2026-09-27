@@ -34,6 +34,7 @@ from music_assistant.constants import (
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.providers.bose_soundtouch.avt_helpers import avt_play, avt_set_url, avt_stop
 
+from .client import RECONNECT_DELAY
 from .client.schema.enums import Key, PlayStatus, SourceStatus
 from .client.schema.models import Info, NowPlaying, Zone, ZoneMember
 from .const import (
@@ -45,16 +46,11 @@ from .const import (
     ACTION_OVERWRITE_PRESET_6,
     CONF_APP_KEY,
     IDLE_POLL_INTERVAL,
-    NOTIFICATION_PORT,
     PLAYBACK_POLL_INTERVAL,
     PLAYER_ID_PREFIX,
     PRESET_IDS,
-    RECONNECT_DELAY,
     SOURCE_INVALID,
     SOURCE_STANDBY,
-    STRING_ENCODING,
-    WS_HEARTBEAT,
-    WS_SUBPROTOCOLS,
     PlayerOptionKeys,
 )
 from .helpers import extract_preset_id, source_id
@@ -84,7 +80,6 @@ class BoseSoundTouchPlayer(Player):
         self._app_key = str(app_key) if app_key else None
         self._update_lock = asyncio.Lock()
 
-        self._stop_event = asyncio.Event()
         self._listener_task: asyncio.Task[None] | None = None
 
         self._supported_player_options: set[PlayerOptionKeys] = set()
@@ -168,7 +163,6 @@ class BoseSoundTouchPlayer(Player):
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
-        self._stop_event.set()
         if self._listener_task:
             self._listener_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -397,50 +391,31 @@ class BoseSoundTouchPlayer(Player):
     # --- Private helpers ---
 
     async def _listen(self) -> None:
-        """Connect to the speaker's notification websocket and handle push updates."""
-        while not self._stop_event.is_set():
-            uri = f"ws://{self.ip_address}:{NOTIFICATION_PORT}"
+        """Handle the push updates the speaker sends over its notification channel."""
+
+        def mark_available() -> None:
+            if not self._attr_available:
+                self._attr_available = True
+                self.update_state()
+
+        while True:
             try:
-                async with self.mass.http_session.ws_connect(
-                    uri, protocols=WS_SUBPROTOCOLS, heartbeat=WS_HEARTBEAT
-                ) as ws:
-                    self.logger.debug("Connected to SoundTouch websocket: %s", uri)
-                    if not self._attr_available:
-                        self._attr_available = True
-                        self.update_state()
-                    async for msg in ws:
-                        if self._stop_event.is_set():
-                            break
-                        if msg.type == aiohttp.WSMsgType.TEXT:
-                            await self._handle_update_message(msg.data)
-                        elif msg.type == aiohttp.WSMsgType.BINARY:
-                            await self._handle_update_message(msg.data.decode(STRING_ENCODING))
-                        elif msg.type in (
-                            aiohttp.WSMsgType.ERROR,
-                            aiohttp.WSMsgType.CLOSE,
-                            aiohttp.WSMsgType.CLOSED,
-                        ):
-                            break
+                async with contextlib.aclosing(
+                    self._client.websocket_notification_loop(on_connect=mark_available)
+                ) as notifications:
+                    async for message in notifications:
+                        await self._handle_update_message(message)
             except asyncio.CancelledError:
                 raise
-            except (aiohttp.ClientError, OSError, TimeoutError, UnicodeDecodeError) as err:
-                self.logger.debug(
-                    "SoundTouch websocket error for %s: %s. Reconnecting in %ss",
-                    self.name,
-                    err,
-                    RECONNECT_DELAY,
-                )
             except Exception:
-                # nothing restarts this task, so an unexpected error would silently cost
-                # the speaker its push channel for the rest of the run
+                # the client reconnects on its own, so only a failure of our own handling
+                # gets here - and nothing restarts this task if we let it end
                 self.logger.exception(
-                    "Unexpected SoundTouch websocket error for %s. Reconnecting in %ss",
+                    "Failed to handle a SoundTouch notification for %s. Retrying in %ss",
                     self.name,
                     RECONNECT_DELAY,
                 )
-            if not self._stop_event.is_set():
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(self._stop_event.wait(), timeout=RECONNECT_DELAY)
+                await asyncio.sleep(RECONNECT_DELAY)
 
     async def _handle_update_message(self, message: str) -> None:
         """Handle a single websocket notification message."""
