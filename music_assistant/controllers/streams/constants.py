@@ -98,7 +98,7 @@ _PACING: Final[dict[PacingProfile, tuple[str, str]]] = {
 # A realtime source that allows a single stream (Spotify's soloist backend) delivers audio
 # at playback pace and holds that slot until the item ends, so the next item's session only
 # starts once this one is over. A session that begins on such an item with little left to
-# play reaches that boundary with almost nothing buffered, and a pull player drops out in
+# play reaches that boundary with almost nothing buffered, and the player can drop out in
 # the ~1.5 s the restart leaves silent: a Sonos Era 100 dies with 25 s left, survives with
 # 45 s, and a banked 5 s lead played nine 30 s tracks in a row cleanly. So bank this many
 # seconds before serving the first item of a session when it has less than

@@ -363,7 +363,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
     def _single_source_slot_holder(
         self, queue: PlayerQueue, next_item: QueueItem
     ) -> MusicProvider | None:
-        """Return the next item's source if its only stream slot is held by the playing item."""
+        """Return the next item's source if the realtime item playing holds its only slot."""
         playing = queue.current_item.streamdetails if queue.current_item else None
         upcoming = next_item.streamdetails
         if playing is None or upcoming is None or playing.provider != upcoming.provider:
