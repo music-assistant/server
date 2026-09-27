@@ -380,7 +380,7 @@ def _is_disliked(
     provider_keys: set[tuple[MediaType, str, str]],
 ) -> bool:
     """Return whether the track, its album or one of its artists is disliked."""
-    # the media type comes from where the item sits: a reference may not carry it itself
+    # a bare reference may lack a correct media type, so take it from its place on the track
     refs: list[tuple[MediaType, MediaItem | ItemMapping]] = [(MediaType.TRACK, track)]
     refs += [(MediaType.ARTIST, artist) for artist in track.artists]
     if track.album:
