@@ -7,8 +7,10 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from music_assistant_models.media_items import ProviderMapping, Track
+from music_assistant_models.enums import MediaType
+from music_assistant_models.media_items import ItemMapping, ProviderMapping, Track
 
+from music_assistant.controllers.music.favorites import DislikedTrackKeys
 from music_assistant.controllers.player_queues.autoplay import AutoplayMode
 from music_assistant.controllers.player_queues.managed_pool import ManagedPool
 from music_assistant.controllers.player_queues.queue_loader import QueueLoaderMixin
@@ -19,10 +21,15 @@ USER_ID = "user-a"
 PROV = "spotify--1"
 DISLIKED = "disliked"
 LIKED = "liked"
+DISLIKED_ALBUM = "disliked-album"
+DISLIKED_KEYS: DislikedTrackKeys = (
+    set(),
+    {(MediaType.TRACK, PROV, DISLIKED), (MediaType.ALBUM, PROV, DISLIKED_ALBUM)},
+)
 
 
-def _track(item_id: str) -> Track:
-    """Build a provider track with a single mapping."""
+def _track(item_id: str, album_id: str | None = None) -> Track:
+    """Build a provider track with a single mapping, optionally on an album."""
     return Track(
         item_id=item_id,
         provider=PROV,
@@ -30,6 +37,7 @@ def _track(item_id: str) -> Track:
         provider_mappings={
             ProviderMapping(item_id=item_id, provider_domain="spotify", provider_instance=PROV)
         },
+        album=ItemMapping(item_id=album_id, provider=PROV, name="Album") if album_id else None,
     )
 
 
@@ -56,9 +64,7 @@ def _loader(*, userid: str | None) -> Any:
     }
     loader.load = AsyncMock()
     loader.mass.webserver.auth.get_user = AsyncMock()
-    loader.mass.music.favorites.disliked_track_keys = AsyncMock(
-        return_value=(set(), {(PROV, DISLIKED)})
-    )
+    loader.mass.music.favorites.disliked_track_keys = AsyncMock(return_value=DISLIKED_KEYS)
     return loader
 
 
@@ -71,15 +77,25 @@ def _pool() -> tuple[ManagedPool, Any]:
     """Build a managed pool over a queue stand-in whose user disliked the DISLIKED track."""
     queues = MagicMock()
     queues.get_dynamic_source_tracks = AsyncMock(return_value=[_track(DISLIKED), _track(LIKED)])
-    queues.mass.music.favorites.disliked_track_keys = AsyncMock(
-        return_value=(set(), {(PROV, DISLIKED)})
-    )
+    queues.mass.music.favorites.disliked_track_keys = AsyncMock(return_value=DISLIKED_KEYS)
     return ManagedPool(queues), queues
 
 
 async def test_a_dynamic_batch_of_the_pool_skips_a_disliked_track() -> None:
     """The batch a station or mix hands the pool, first or later, has no disliked track."""
     pool, _ = _pool()
+
+    tracks = await pool._fetch_dynamic(MagicMock(), USER_ID)
+
+    assert [x.item_id for x in tracks] == [LIKED]
+
+
+async def test_a_dynamic_batch_of_the_pool_skips_a_track_on_a_disliked_album() -> None:
+    """A track the user never disliked itself is still skipped when its album is disliked."""
+    pool, queues = _pool()
+    queues.get_dynamic_source_tracks = AsyncMock(
+        return_value=[_track("on-disliked-album", DISLIKED_ALBUM), _track(LIKED, "fine-album")]
+    )
 
     tracks = await pool._fetch_dynamic(MagicMock(), USER_ID)
 
