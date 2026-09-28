@@ -841,7 +841,7 @@ def parse_gw_track(provider: DeezerProvider, song: dict[str, Any], position: int
         name=name,
         version=version,
         duration=int(song.get("DURATION", 0)),
-        favorite=is_personal,
+        favorite=True if is_personal else None,
         artists=artists,
         album=album,
         provider_mappings={_provider_mapping(provider, song_id, available=True)},

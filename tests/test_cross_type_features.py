@@ -687,12 +687,9 @@ async def test_browse_bound_sources_honor_the_user_player_filter() -> None:
     controller, _bound, _unbound = _audio_source_browse_controller()
     restricted_user = Mock(player_filter=["office"])
 
-    with (
-        patch(
-            "music_assistant.controllers.music.controller.get_current_user",
-            return_value=restricted_user,
-        ),
-        patch("music_assistant.controllers.music.controller.has_scope", return_value=False),
+    with patch(
+        "music_assistant.controllers.music.controller.get_current_user",
+        return_value=restricted_user,
     ):
         unscoped = await controller.browse(path=None)
         hidden_scope = await controller.browse(path=None, player_id="kitchen")
