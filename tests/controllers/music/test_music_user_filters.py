@@ -580,6 +580,11 @@ def _mapping(provider_instance: str) -> ProviderMapping:
     )
 
 
+async def _like(mass: MusicAssistant, media_type: MediaType, item_id: str) -> None:
+    """Let both users of the count test like the given library item."""
+    await mass.music.favorites.set(media_type, int(item_id), True, [USER_A, USER_ALL])
+
+
 @pytest.fixture(scope="module")
 async def counted_mass(music_mass_module: MusicAssistant) -> MusicAssistant:
     """
@@ -611,9 +616,11 @@ async def counted_mass(music_mass_module: MusicAssistant) -> MusicAssistant:
             provider="library",
             name=name,
             provider_mappings={_mapping(prov) for prov in providers},
-            favorite=favorite,
         )
-        artists.append(await mass.music.artists.add_item_to_library(artist))
+        db_artist = await mass.music.artists.add_item_to_library(artist)
+        artists.append(db_artist)
+        if favorite:
+            await _like(mass, MediaType.ARTIST, db_artist.item_id)
 
     albums: list[Album] = []
     for idx, (name, providers, album_type, favorite) in enumerate(
@@ -632,9 +639,11 @@ async def counted_mass(music_mass_module: MusicAssistant) -> MusicAssistant:
             provider_mappings={_mapping(prov) for prov in providers},
             # Artist 03 gets no album, so album_artists_only excludes something
             artists=UniqueList([artists[idx % 2]]),
-            favorite=favorite,
         )
-        albums.append(await mass.music.albums.add_item_to_library(album))
+        db_album = await mass.music.albums.add_item_to_library(album)
+        albums.append(db_album)
+        if favorite:
+            await _like(mass, MediaType.ALBUM, db_album.item_id)
 
     for idx, (name, providers, favorite) in enumerate(
         (
@@ -654,9 +663,10 @@ async def counted_mass(music_mass_module: MusicAssistant) -> MusicAssistant:
             album=albums[idx % len(albums)],
             disc_number=1,
             track_number=idx + 1,
-            favorite=favorite,
         )
-        await mass.music.tracks.add_item_to_library(track)
+        db_track = await mass.music.tracks.add_item_to_library(track)
+        if favorite:
+            await _like(mass, MediaType.TRACK, db_track.item_id)
 
     # a track whose only PROV_A mapping left the provider's library: it must be excluded
     # from both the filtered listing and the filtered count
@@ -669,9 +679,9 @@ async def counted_mass(music_mass_module: MusicAssistant) -> MusicAssistant:
         album=albums[0],
         disc_number=1,
         track_number=99,
-        favorite=True,
     )
     db_hidden = await mass.music.tracks.add_item_to_library(hidden)
+    await _like(mass, MediaType.TRACK, db_hidden.item_id)
     await mass.music.database.execute(
         f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 0 "
         "WHERE item_id = :item_id AND media_type = 'track'",
@@ -710,7 +720,9 @@ async def test_library_count_matches_list_for_filtered_user(
         ("favorite" if key == "favorite_only" else key): value
         for key, value in count_kwargs.items()
     }
-    with patch(GET_CURRENT_USER, return_value=None):
+    # the baseline is the user that may see every source, not an anonymous caller: a
+    # favorite belongs to a user, so a call without one never matches any
+    with patch(GET_CURRENT_USER, return_value=_user(USER_ALL)):
         unfiltered_count = await controller.library_count(**count_kwargs)
     with patch(GET_CURRENT_USER, return_value=_user(USER_A)):
         filtered_count = await controller.library_count(**count_kwargs)

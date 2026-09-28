@@ -146,7 +146,7 @@ def parse_track(  # noqa: PLR0915
         album=album,
         duration=sonic_song.duration or 0,
         disc_number=sonic_song.disc_number or 0,
-        favorite=bool(sonic_song.starred),
+        favorite=True if sonic_song.starred else None,
         metadata=metadata,
         provider_mappings={
             ProviderMapping(
@@ -285,7 +285,7 @@ def parse_artist(
         name=sonic_artist.name,
         metadata=metadata,
         provider=SUBSONIC_DOMAIN,
-        favorite=bool(sonic_artist.starred),
+        favorite=True if sonic_artist.starred else None,
         provider_mappings={
             ProviderMapping(
                 item_id=sonic_artist.id,
@@ -360,7 +360,7 @@ def parse_album(
         metadata=metadata,
         name=name,
         version=version,
-        favorite=bool(sonic_album.starred),
+        favorite=True if sonic_album.starred else None,
         provider_mappings={
             ProviderMapping(
                 item_id=sonic_album.id,

@@ -140,7 +140,7 @@ def parse_album(
         album.artists.append(_unknown_artist_mapping(instance_id))
 
     user_data = jellyfin_album.get(ITEM_KEY_USER_DATA, {})
-    album.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+    album.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
     return album
 
 
@@ -176,7 +176,7 @@ def parse_artist(
         artist.sort_name = jellyfin_artist[ITEM_KEY_SORT_NAME]
     artist.metadata.images = _get_artwork(instance_id, connection, jellyfin_artist)
     user_data = jellyfin_artist.get(ITEM_KEY_USER_DATA, {})
-    artist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+    artist.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
     return artist
 
 
@@ -273,7 +273,7 @@ def parse_track(
                 exc_info=error if logger.isEnabledFor(logging.DEBUG) else None,
             )
     user_data = jellyfin_track.get(ITEM_KEY_USER_DATA, {})
-    track.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+    track.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
     return track
 
 
@@ -298,7 +298,7 @@ def parse_playlist(
         playlist.metadata.description = jellyfin_playlist[ITEM_KEY_OVERVIEW]
     playlist.metadata.images = _get_artwork(instance_id, client, jellyfin_playlist)
     user_data = jellyfin_playlist.get(ITEM_KEY_USER_DATA, {})
-    playlist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+    playlist.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
     playlist.is_editable = False
     return playlist
 

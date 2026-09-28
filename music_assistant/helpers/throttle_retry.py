@@ -122,6 +122,11 @@ class ThrottlerManager:
         self.throttler = Throttler(rate_limit, period)
         self._cooldown_until: float = 0.0
 
+    @property
+    def cooldown_remaining(self) -> float:
+        """Seconds a server-imposed rate limit still holds every caller back, 0 when clear."""
+        return max(0.0, self._cooldown_until - time.monotonic())
+
     @asynccontextmanager
     async def acquire(self, honored_until: float = 0.0) -> AsyncGenerator[float]:
         """

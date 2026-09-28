@@ -43,6 +43,7 @@ def _controller_returning(item: Track) -> tuple[TracksController, AsyncMock]:
     mass.music.database = AsyncMock()
     # deferred_commit is used as (sync-called) async context manager
     mass.music.database.deferred_commit = MagicMock()
+    mass.music.favorites = AsyncMock()
     invalidate_mock = AsyncMock()
     mass.metadata.invalidate_image_cache = invalidate_mock
     mass.get_provider.return_value = None

@@ -8,7 +8,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
@@ -26,6 +26,7 @@
           'images': None,
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': None,
@@ -73,7 +74,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '527007',
     'media_type': 'album',
@@ -91,6 +92,7 @@
       'images': None,
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -151,7 +153,7 @@
           'date_added': None,
           'external_ids': list([
           ]),
-          'favorite': False,
+          'favorite': None,
           'is_playable': True,
           'item_id': '68461151',
           'media_type': 'artist',
@@ -169,6 +171,7 @@
             'images': None,
             'label': None,
             'languages': None,
+            'last_musicbrainz_lookup': None,
             'last_refresh': None,
             'life_span': None,
             'links': None,
@@ -216,7 +219,7 @@
       'date_added': None,
       'external_ids': list([
       ]),
-      'favorite': False,
+      'favorite': None,
       'is_playable': True,
       'item_id': '527007',
       'media_type': 'album',
@@ -234,6 +237,7 @@
         'images': None,
         'label': None,
         'languages': None,
+        'last_musicbrainz_lookup': None,
         'last_refresh': None,
         'life_span': None,
         'links': list([
@@ -292,7 +296,7 @@
             'date_added': None,
             'external_ids': list([
             ]),
-            'favorite': False,
+            'favorite': None,
             'is_playable': True,
             'item_id': '68461151',
             'media_type': 'artist',
@@ -318,6 +322,7 @@
               ]),
               'label': None,
               'languages': None,
+              'last_musicbrainz_lookup': None,
               'last_refresh': None,
               'life_span': None,
               'links': list([
@@ -373,7 +378,7 @@
         'duration': 2,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': 'sm45285955',
         'last_played': 0,
@@ -407,6 +412,7 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': list([
@@ -468,7 +474,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
@@ -486,6 +492,7 @@
           'images': None,
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': None,
@@ -533,7 +540,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '527007',
     'media_type': 'album',
@@ -551,6 +558,7 @@
       'images': None,
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -607,7 +615,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '4',
     'media_type': 'artist',
@@ -633,6 +641,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -688,7 +697,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '68461151',
     'media_type': 'artist',
@@ -714,6 +723,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -772,7 +782,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
@@ -798,6 +808,7 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': list([
@@ -853,7 +864,7 @@
     'duration': 2,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'sm45285955',
     'last_played': 0,
@@ -887,6 +898,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -946,7 +958,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
@@ -972,6 +984,7 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': list([
@@ -1027,7 +1040,7 @@
     'duration': 2,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'sm45285955',
     'last_played': 0,
@@ -1061,6 +1074,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -1117,7 +1131,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_dynamic': False,
     'is_editable': False,
     'is_playable': True,
@@ -1145,6 +1159,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -1206,7 +1221,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_dynamic': False,
     'is_editable': True,
     'is_playable': True,
@@ -1234,6 +1249,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -1296,7 +1312,7 @@
       'date_added': None,
       'external_ids': list([
       ]),
-      'favorite': False,
+      'favorite': None,
       'is_dynamic': False,
       'is_editable': True,
       'is_playable': True,
@@ -1324,6 +1340,7 @@
         ]),
         'label': None,
         'languages': None,
+        'last_musicbrainz_lookup': None,
         'last_refresh': None,
         'life_span': None,
         'links': list([
@@ -1387,7 +1404,7 @@
             'date_added': None,
             'external_ids': list([
             ]),
-            'favorite': False,
+            'favorite': None,
             'is_playable': True,
             'item_id': '68461151',
             'media_type': 'artist',
@@ -1413,6 +1430,7 @@
               ]),
               'label': None,
               'languages': None,
+              'last_musicbrainz_lookup': None,
               'last_refresh': None,
               'life_span': None,
               'links': list([
@@ -1468,7 +1486,7 @@
         'duration': 2,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': 'sm45285955',
         'last_played': 0,
@@ -1502,6 +1520,7 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': list([
@@ -1560,7 +1579,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_dynamic': False,
     'is_editable': True,
     'is_playable': True,
@@ -1588,6 +1607,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -1652,7 +1672,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
@@ -1670,6 +1690,7 @@
           'images': None,
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': None,
@@ -1717,7 +1738,7 @@
     'date_added': None,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': '527007',
     'media_type': 'album',
@@ -1735,6 +1756,7 @@
       'images': None,
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -1794,7 +1816,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
@@ -1820,6 +1842,7 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': list([
@@ -1875,7 +1898,7 @@
     'duration': 2,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'sm45285955',
     'last_played': 0,
@@ -1909,6 +1932,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -1968,7 +1992,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
@@ -1994,6 +2018,7 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': list([
@@ -2049,7 +2074,7 @@
     'duration': 2,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'sm45285955',
     'last_played': 0,
@@ -2083,6 +2108,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -2180,7 +2206,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
@@ -2206,6 +2232,7 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': list([
@@ -2261,7 +2288,7 @@
     'duration': 2,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'sm45285955',
     'last_played': 0,
@@ -2295,6 +2322,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -2354,7 +2382,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
@@ -2380,6 +2408,7 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': list([
@@ -2435,7 +2464,7 @@
     'duration': 2,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'sm45285955',
     'last_played': 0,
@@ -2469,6 +2498,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([
@@ -2529,7 +2559,7 @@
           'date_added': None,
           'external_ids': list([
           ]),
-          'favorite': False,
+          'favorite': None,
           'is_playable': True,
           'item_id': '68461151',
           'media_type': 'artist',
@@ -2555,6 +2585,7 @@
             ]),
             'label': None,
             'languages': None,
+            'last_musicbrainz_lookup': None,
             'last_refresh': None,
             'life_span': None,
             'links': list([
@@ -2607,7 +2638,7 @@
       'date_added': None,
       'external_ids': list([
       ]),
-      'favorite': False,
+      'favorite': None,
       'is_playable': True,
       'item_id': '527007',
       'media_type': 'album',
@@ -2625,6 +2656,7 @@
         'images': None,
         'label': None,
         'languages': None,
+        'last_musicbrainz_lookup': None,
         'last_refresh': None,
         'life_span': None,
         'links': list([
@@ -2680,7 +2712,7 @@
         'date_added': None,
         'external_ids': list([
         ]),
-        'favorite': False,
+        'favorite': None,
         'is_playable': True,
         'item_id': '68461151',
         'media_type': 'artist',
@@ -2706,6 +2738,7 @@
           ]),
           'label': None,
           'languages': None,
+          'last_musicbrainz_lookup': None,
           'last_refresh': None,
           'life_span': None,
           'links': list([
@@ -2761,7 +2794,7 @@
     'duration': 2,
     'external_ids': list([
     ]),
-    'favorite': False,
+    'favorite': None,
     'is_playable': True,
     'item_id': 'sm45285955',
     'last_played': 0,
@@ -2806,6 +2839,7 @@
       ]),
       'label': None,
       'languages': None,
+      'last_musicbrainz_lookup': None,
       'last_refresh': None,
       'life_span': None,
       'links': list([

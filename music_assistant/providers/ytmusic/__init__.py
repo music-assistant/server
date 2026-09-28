@@ -48,6 +48,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
+from ytmusicapi import LikeStatus
 from ytmusicapi.constants import SUPPORTED_LANGUAGES
 from ytmusicapi.exceptions import YTMusicServerError
 from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
@@ -91,6 +92,7 @@ from .helpers import (
     library_add_remove_album,
     library_add_remove_artist,
     library_add_remove_playlist,
+    rate_track,
     search,
 )
 
@@ -144,6 +146,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ALBUMS,
     ProviderFeature.LIBRARY_TRACKS,
     ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.FAVORITE_TRACKS_EDIT,
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_ALBUMS,
@@ -626,6 +629,26 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             raise NotImplementedError(err) from err
         return result
 
+    async def set_favorite(
+        self, prov_item_id: str, media_type: MediaType, favorite: bool | None
+    ) -> None:
+        """
+        Like, dislike or clear the rating of a track on YouTube Music.
+
+        :param prov_item_id: The YouTube Music video id of the track.
+        :param media_type: Media type of the item, only tracks can be rated.
+        :param favorite: True to like, False to dislike, None to clear the rating.
+        """
+        if media_type != MediaType.TRACK:
+            return
+        if favorite is None:
+            rating = LikeStatus.INDIFFERENT
+        else:
+            rating = LikeStatus.LIKE if favorite else LikeStatus.DISLIKE
+        await rate_track(
+            headers=self._headers, prov_track_id=prov_item_id, rating=rating, user=self._yt_user
+        )
+
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
         # Grab the playlist id from the full url in case of personal playlists
@@ -937,7 +960,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     url=f"{YTM_DOMAIN}/playlist?list={album_obj.get('audioPlaylistId')}",
                 )
             },
-            favorite=album_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
+            favorite=_favorite_from_like_status(album_obj),
         )
         if album_obj.get("year") and album_obj["year"].isdigit():
             album.year = album_obj["year"]
@@ -997,7 +1020,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     url=f"{YTM_DOMAIN}/channel/{artist_id}",
                 )
             },
-            favorite=artist_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
+            favorite=_favorite_from_like_status(artist_obj),
         )
         if "description" in artist_obj:
             artist.metadata.description = artist_obj["description"]
@@ -1030,7 +1053,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 )
             },
             is_editable=is_editable,
-            favorite=playlist_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
+            favorite=_favorite_from_like_status(playlist_obj),
         )
         if "description" in playlist_obj:
             playlist.metadata.description = playlist_obj["description"]
@@ -1072,7 +1095,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                     ),
                 )
             },
-            favorite=track_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
+            favorite=_favorite_from_like_status(track_obj),
             # Disc info is not available in YTM, assume a single disc
             disc_number=1,
             # Track number is "sometimes" available in the track object, otherwise approach
@@ -1302,3 +1325,13 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             await import_module_in_thread("yt_dlp")
         except ImportError:
             raise SetupFailedError("Package yt_dlp failed to install")
+
+
+def _favorite_from_like_status(item: dict[str, Any]) -> bool | None:
+    """Translate the like status YouTube Music reports on an item to a favorite state."""
+    match item.get("likeStatus"):
+        case "LIKE":
+            return True
+        case "DISLIKE":
+            return False
+    return None
