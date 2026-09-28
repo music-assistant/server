@@ -39,7 +39,11 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant import MusicAssistant
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.constants import (
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    DEFAULT_AUDIOBOOK_PODCAST_GENRE,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import from_iso_string
 from music_assistant.helpers.podcast_parsers import (
@@ -61,7 +65,6 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 FULLY_PLAYED_THRESHOLD = 0.9
-DEFAULT_PODCAST_GENRE = "Spoken Word"
 SPECIAL_FOLDERS = ("up_next", "new_releases", "in_progress", "starred", "history")
 
 SUPPORTED_FEATURES = {
@@ -242,7 +245,7 @@ class PocketCastsProvider(MusicProvider):
             genre
             for line in (podcast_data.get("category") or "").splitlines()
             if (genre := line.strip())
-        } or {DEFAULT_PODCAST_GENRE}
+        } or {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
         return podcast
 
     async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
