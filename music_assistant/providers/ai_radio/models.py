@@ -36,6 +36,9 @@ class PlannedSection:
     web_search_mode: str
     # when true, a failed weather fetch skips the clip instead of airing it without a forecast
     weather_required: bool = False
+    # RSS/Atom feeds to fetch at render time for the <rss_feed> placeholder; each entry is a
+    # dict with "url" and "max_articles"
+    rss_feeds: list[dict[str, Any]] = field(default_factory=list)
     # the guard history events this plan claimed, as (section_id, (song, minute)). a caller
     # that drops the plan can drop these too, so a clip that never aired carries no weight
     history_events: list[tuple[str, tuple[int, float]]] = field(default_factory=list)

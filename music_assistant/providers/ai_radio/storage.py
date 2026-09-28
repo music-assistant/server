@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 from copy import deepcopy
@@ -195,6 +196,24 @@ class AIRadioStorageMixin:
                     ) from err
             if max_chars > 0:
                 normalized["constraints"] = {"max_chars": max_chars}
+            # RSS Feeds (optional)
+            raw_rss_feeds = section.get("rss_feeds")
+            rss_feeds = []
+            if isinstance(raw_rss_feeds, list):
+                for feed_entry in raw_rss_feeds:
+                    if not isinstance(feed_entry, dict):
+                        continue
+                    url = str(feed_entry.get("url", "")).strip()
+                    if not url:
+                        continue
+                    max_articles = 3
+                    raw_max = feed_entry.get("max_articles")
+                    if raw_max is not None:
+                        with contextlib.suppress(TypeError, ValueError):
+                            max_articles = max(1, int(raw_max))
+                    rss_feeds.append({"url": url, "max_articles": max_articles})
+            if rss_feeds:
+                normalized["rss_feeds"] = rss_feeds
         for passthrough_key in ("cover_image",):
             if passthrough_key in section:
                 normalized[passthrough_key] = section[passthrough_key]
@@ -346,6 +365,19 @@ class AIRadioStorageMixin:
                     "written for spoken delivery."
                 ),
                 "constraints": {"max_chars": 700},
+            },
+            {
+                "id": "Local_News_RSS",
+                "name": "Local News (RSS)",
+                "type": "ai_text",
+                "web_search": "disabled",
+                "prompt": (
+                    "Present the following local news items as a concise radio news bulletin "
+                    "anchored to <timestamp>. Summarize each item clearly in spoken-delivery "
+                    "style, keep it factual and natural-sounding.\n\n<rss_feed>"
+                ),
+                "constraints": {"max_chars": 700},
+                "rss_feeds": [],
             },
             {
                 "id": "Weather_Short",

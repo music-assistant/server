@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 import logging
 import random
 import time
@@ -41,6 +42,7 @@ from .constants import (
     ATTR_HOST_ID,
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
+    ATTR_RSS_FEEDS,
     ATTR_SESSION_ID,
     ATTR_STATION_ID,
     ATTR_WEATHER_REQUIRED,
@@ -689,6 +691,7 @@ class AIRadioRuntimeMixin:
                 continue
             prompt = self._apply_placeholders(str(section.get("prompt", "")), placeholders)
             weather_required = section_id in weather_guarded_ids
+            section_rss_feeds = list(section.get("rss_feeds") or [])
             max_chars = int((section.get("constraints") or {}).get("max_chars", 0) or 0)
             if max_chars > 0:
                 prompt += (
@@ -707,6 +710,7 @@ class AIRadioRuntimeMixin:
                     max_chars=max_chars,
                     web_search_mode=self._resolve_web_search_mode(section, section_id),
                     weather_required=weather_required,
+                    rss_feeds=section_rss_feeds,
                     history_events=[(section_id, slot_event(slot))],
                 )
             )
@@ -765,12 +769,14 @@ class AIRadioRuntimeMixin:
         total_max_chars = 0
         max_web_mode = "disabled"
         merged_names: list[str] = []
+        merged_rss_feeds: list[dict[str, Any]] = []
         # a weather+news merge must still air the news half, so only all-guarded merges require it
         all_weather_required = all(section_id in weather_guarded_ids for section_id in section_ids)
         for index, section_id in enumerate(section_ids, start=1):
             section = section_by_id.get(section_id, {})
             section_name = self._resolve_section_name(section, section_id)
             merged_names.append(section_name)
+            merged_rss_feeds.extend(section.get("rss_feeds") or [])
             prompt_base = self._apply_placeholders(str(section.get("prompt", "")), placeholders)
             max_chars = int((section.get("constraints") or {}).get("max_chars", 0) or 0)
             total_max_chars += max_chars
@@ -807,6 +813,7 @@ class AIRadioRuntimeMixin:
             max_chars=total_max_chars,
             web_search_mode=max_web_mode,
             weather_required=all_weather_required,
+            rss_feeds=merged_rss_feeds,
             history_events=history_events,
         )
 
@@ -886,6 +893,9 @@ class AIRadioRuntimeMixin:
                 ATTR_WEATHER_REQUIRED: section.weather_required,
             }
         )
+        # extra_attributes holds scalars only, so the feed list travels as a JSON string
+        if section.rss_feeds:
+            queue_item.extra_attributes[ATTR_RSS_FEEDS] = json.dumps(section.rss_feeds)
         return queue_item
 
     @staticmethod

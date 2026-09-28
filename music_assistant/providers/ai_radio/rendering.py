@@ -6,9 +6,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast
 
+import aiohttp
+import defusedxml.ElementTree as DefusedET
 from music_assistant_models.enums import ContentType, StreamType, VolumeNormalizationMode
 from music_assistant_models.errors import (
     InvalidDataError,
@@ -40,6 +44,7 @@ from .constants import (
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
     ATTR_RENDERED_TEXT,
+    ATTR_RSS_FEEDS,
     ATTR_SESSION_ID,
     ATTR_WEATHER_REQUIRED,
     ATTR_WEB_SEARCH_MODE,
@@ -50,7 +55,10 @@ from .constants import (
     LOUDNESS_MEASURE_TIMEOUT,
     MIN_CLIP_MEDIA_LIFETIME,
     MIN_LOUDNESS_REFERENCE_SECONDS,
+    NO_RSS_DATA_INSTRUCTION,
     NO_WEATHER_DATA_INSTRUCTION,
+    RSS_FEED_PLACEHOLDER,
+    RSS_REQUEST_TIMEOUT,
     TTS_CLIP_PCM_FORMAT,
     TTS_PEAK_CEILING_DB,
     TTS_SERVER_ERROR_MARKERS,
@@ -297,7 +305,7 @@ class AIRadioRenderMixin:
     async def _generate_script(self, queue_item: QueueItem, prompt: str, clip_id: str) -> str:
         """Resolve the deferred placeholders and generate the spoken script."""
         attributes = queue_item.extra_attributes
-        deferred = await self._resolve_deferred_placeholders(prompt)
+        deferred = await self._resolve_deferred_placeholders(prompt, queue_item=queue_item)
         empty_weather_tokens = [
             token
             for token in WEATHER_PLACEHOLDER_TOKENS
@@ -345,7 +353,9 @@ class AIRadioRenderMixin:
         )
         return text
 
-    async def _resolve_deferred_placeholders(self, prompt: str) -> dict[str, str]:
+    async def _resolve_deferred_placeholders(
+        self, prompt: str, queue_item: QueueItem | None = None
+    ) -> dict[str, str]:
         """Return freshly resolved values for the placeholders deferred until airtime."""
         values = dict.fromkeys(DEFERRED_PLACEHOLDERS, "")
         values["<timestamp>"] = format_ai_radio_timestamp(self._configured_now())
@@ -353,7 +363,51 @@ class AIRadioRenderMixin:
         # only fetched when the prompt actually references it
         if any(token in prompt for token in WEATHER_PLACEHOLDER_TOKENS):
             values.update(await self._prepare_weather_tokens())
+        # RSS is likewise fetched only when referenced, and only when the clip carries feeds
+        if RSS_FEED_PLACEHOLDER in prompt and queue_item is not None:
+            raw_feeds = queue_item.extra_attributes.get(ATTR_RSS_FEEDS)
+            if raw_feeds:
+                rss_text = ""
+                try:
+                    feeds = json.loads(cast("str", raw_feeds))
+                    rss_text = await self._fetch_rss_content(feeds)
+                except Exception as err:
+                    self.logger.warning("RSS feed fetch failed: %s", err)
+                values[RSS_FEED_PLACEHOLDER] = rss_text or NO_RSS_DATA_INSTRUCTION
+            else:
+                values[RSS_FEED_PLACEHOLDER] = NO_RSS_DATA_INSTRUCTION
         return values
+
+    async def _fetch_rss_content(self, feeds: list[dict[str, Any]]) -> str:
+        """Fetch RSS/Atom feeds and return formatted article text for LLM context."""
+
+        async def fetch_one(feed: dict[str, Any]) -> str:
+            url = str(feed.get("url", "")).strip()
+            max_articles = coerce_int(feed.get("max_articles"), 3)
+            if not url:
+                return ""
+            try:
+                async with self.mass.http_session.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=RSS_REQUEST_TIMEOUT),
+                    headers={"User-Agent": "MusicAssistant/AIRadio RSS Reader"},
+                ) as resp:
+                    if resp.status != 200:
+                        self.logger.warning("RSS feed %s returned HTTP %s", url, resp.status)
+                        return ""
+                    xml_text = await resp.text()
+            except Exception as err:
+                self.logger.warning("Could not fetch RSS feed %s: %s", url, err)
+                return ""
+            try:
+                return _parse_rss_articles(xml_text, max_articles)
+            except Exception as err:
+                self.logger.warning("Could not parse RSS feed %s: %s", url, err)
+                return ""
+
+        results = await asyncio.gather(*[fetch_one(feed) for feed in feeds], return_exceptions=True)
+        parts = [result.strip() for result in results if isinstance(result, str) and result.strip()]
+        return "\n\n".join(parts)
 
     async def _mint_clip_media(
         self, queue_item: QueueItem, text: str, clip_id: str
@@ -474,3 +528,51 @@ class AIRadioRenderMixin:
             return
         session.skipped_sections += 1
         session.last_render_error = error
+
+
+def _parse_rss_articles(xml_text: str, max_articles: int) -> str:
+    """Parse RSS 2.0 or Atom 1.0 and return a formatted article list."""
+    atom_ns = "http://www.w3.org/2005/Atom"
+
+    def _clean(text: str | None) -> str:
+        if not text:
+            return ""
+        # strip any HTML markup a feed may embed in titles or summaries
+        return re.sub(r"<[^>]+>", "", text).strip()
+
+    def _format(title: str, body: str) -> str | None:
+        title = title.strip()
+        body = body.strip()
+        if not title and not body:
+            return None
+        return f"- {title}: {body}" if body else f"- {title}"
+
+    try:
+        root = DefusedET.fromstring(xml_text)
+    except ET.ParseError:
+        return ""
+
+    articles: list[str] = []
+    tag = root.tag.lower()
+
+    if "rss" in tag or root.find("channel") is not None:
+        # RSS 2.0
+        channel = root.find("channel") if "rss" in tag else root
+        items = channel.findall("item") if channel is not None else []
+        for item in items[:max_articles]:
+            title = _clean(item.findtext("title"))
+            desc = _clean(item.findtext("description"))
+            if (formatted := _format(title, desc)) is not None:
+                articles.append(formatted)
+    elif root.tag == f"{{{atom_ns}}}feed":
+        # Atom 1.0
+        for entry in root.findall(f"{{{atom_ns}}}entry")[:max_articles]:
+            title = _clean(entry.findtext(f"{{{atom_ns}}}title"))
+            summary_el = entry.find(f"{{{atom_ns}}}summary")
+            if summary_el is None:
+                summary_el = entry.find(f"{{{atom_ns}}}content")
+            summary = _clean(summary_el.text if summary_el is not None else "")
+            if (formatted := _format(title, summary)) is not None:
+                articles.append(formatted)
+
+    return "\n".join(articles)

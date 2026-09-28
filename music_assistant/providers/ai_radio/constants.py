@@ -121,10 +121,14 @@ ATTR_HOST_ID = "ai_radio_host_id"
 ATTR_QUEUE_DJ = "ai_radio_queue_dj"
 ATTR_GAP_NEXT_ID = "ai_radio_gap_next_id"
 ATTR_WEATHER_REQUIRED = "ai_radio_weather_required"
+# the section's RSS feeds, serialized to JSON so the clip carries them until render time
+ATTR_RSS_FEEDS = "ai_radio_rss_feeds"
 
 # placeholders resolved at render time rather than at plan time, so the aired script
 # reflects the moment it plays
-DEFERRED_PLACEHOLDERS = frozenset({"<timestamp>", "<weather_hourly>", "<weather_daily>"})
+DEFERRED_PLACEHOLDERS = frozenset(
+    {"<timestamp>", "<weather_hourly>", "<weather_daily>", "<rss_feed>"}
+)
 
 # the deferred placeholders that need a successful weather fetch to say anything at all
 WEATHER_PLACEHOLDER_TOKENS = ("<weather_hourly>", "<weather_daily>")
@@ -132,6 +136,22 @@ WEATHER_PLACEHOLDER_TOKENS = ("<weather_hourly>", "<weather_daily>")
 # substituted for an unresolved weather token in clips that still air
 NO_WEATHER_DATA_INSTRUCTION = (
     "(no weather data available - leave out all weather talk, do not invent a forecast)"
+)
+
+# RSS feed support: sections may carry a list of RSS/Atom feed URLs whose articles are
+# fetched at render time and injected in place of <rss_feed>
+RSS_FEED_PLACEHOLDER = "<rss_feed>"
+
+# the deferred placeholders that need a successful RSS fetch to say anything at all
+RSS_PLACEHOLDER_TOKENS = ("<rss_feed>",)
+
+# how long to wait for a single RSS feed to respond, in seconds, before giving up
+RSS_REQUEST_TIMEOUT = 10
+
+# substituted for an unresolved RSS token in clips that still air
+NO_RSS_DATA_INSTRUCTION = (
+    "(no RSS news data available - do not mention specific news items, "
+    "deliver a brief general news update or transition smoothly)"
 )
 
 # HA drops a tts_proxy token 60s after its last use at the lowest configurable time_memory
