@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -19,7 +20,11 @@ from music_assistant.controllers.streams.constants import (
     STREAMDETAILS_INBAND_TITLE_KEY,
 )
 
-from .constants import DATA_STATION_IMAGE, STREAM_METADATA_UPDATE_INTERVAL
+from .constants import (
+    DATA_STATION_IMAGE,
+    NOW_PLAYING_START_TIMEOUT,
+    STREAM_METADATA_UPDATE_INTERVAL,
+)
 from .parsers import (
     parse_now_playing,
     pick_stream_url,
@@ -99,12 +104,15 @@ class IHeartRadioStreamingManager:
             duration=0,
         )
         try:
-            now_playing = await self.provider.api.get_now_playing(item_id)
+            # the audio does not depend on this, so a slow or retrying lookup must not
+            # hold up the start; the periodic refresh fills the metadata in later
+            async with asyncio.timeout(NOW_PLAYING_START_TIMEOUT):
+                now_playing = await self.provider.api.get_now_playing(item_id)
         except MediaNotFoundError:
             # the station publishes no track metadata at all, so the titles the stream
             # itself carries (handled by the streams controller) are all there is
             return streamdetails
-        except MusicAssistantError as err:
+        except (MusicAssistantError, TimeoutError) as err:
             self.logger.debug("Could not fetch now-playing metadata: %s", err)
             now_playing = None
         # Owning the metadata turns off the streams controller's own HLS poller and keeps

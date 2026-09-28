@@ -92,6 +92,8 @@ STREAM_PREFERENCE: Final[tuple[str, ...]] = (
 
 # How often MA asks us for fresh now-playing data while a station is playing.
 STREAM_METADATA_UPDATE_INTERVAL: Final[int] = 15
+# How long starting a station waits for its now-playing data before playing without it.
+NOW_PLAYING_START_TIMEOUT: Final[int] = 5
 # StreamDetails.data key holding the station's own artwork, shown while a station reports
 # no track of its own.
 DATA_STATION_IMAGE: Final[str] = "station_image"
