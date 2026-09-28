@@ -1123,10 +1123,8 @@ class DeezerBrowseManager:
             if edge.node is None:
                 continue
             track = parse_track(self.provider, edge.node, position=idx)
-            # when the track was added to the playlist, not to the library; getattr
-            # until the deezer-python-gql requirement includes added_at
-            added_at = getattr(edge, "added_at", None)
-            track.date_added = parse_date(added_at) if added_at else None
+            # when the track was added to the playlist, not to the library
+            track.date_added = parse_date(edge.added_at)
             tracks.append(track)
         return tracks
 

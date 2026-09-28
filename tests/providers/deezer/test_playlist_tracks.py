@@ -82,15 +82,3 @@ async def test_playlist_tracks_carry_date_added(
         datetime(2024, 5, 10, 8, 30, 0, tzinfo=UTC),
         None,
     ]
-
-
-@pytest.mark.asyncio
-async def test_playlist_tracks_without_added_at_field(
-    provider: DeezerProvider, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A client that doesn't report added_at still loads the playlist, without dates."""
-    _serve_pages(provider, monkeypatch, [_page([SimpleNamespace(node=SimpleNamespace(id="1"))])])
-
-    tracks = await provider.browse_manager.get_playlist_tracks("123")
-
-    assert [(t.item_id, t.date_added) for t in tracks] == [("1", None)]
