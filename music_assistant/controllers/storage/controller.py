@@ -4,24 +4,31 @@ Storage controller: the storage locations the server can see.
 Locations come from the mount table of the server process (container volumes, network shares
 and drives), from the folders an admin registered on this server, and from the server's own
 data and cache directories. A caller that manages every music source sees all of them; any
-other caller sees only the media locations it may put a music source of its own on.
+other caller sees the media locations that were deliberately made available to the server.
+
+Every location is probed on a thread of its own, so a network share whose server is gone never
+holds up the other locations, the commands of this controller or the shutdown of the server.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 import stat
+import threading
 import time
+from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.errors import ActionUnavailable, InvalidDataError
 
-from music_assistant.constants import CONF_STORAGE_FOLDERS
+from music_assistant.constants import CONF_STORAGE_FOLDERS, FILESYSTEM_PROVIDER_DOMAINS
 from music_assistant.controllers.storage.backends.mountinfo import (
+    AUTOMOUNT_FSTYPE,
+    MediaMount,
     parse_mountinfo,
     parse_mountpoints,
     read_mountinfo,
@@ -31,17 +38,17 @@ from music_assistant.controllers.storage.constants import (
     DIR_SIZE_MAX_AGE,
     DIR_SIZES_TASK_ID,
     MAX_LISTED_FOLDERS,
-    MEMBER_VISIBLE_KINDS,
+    PROBE_TIMEOUT,
     REFRESH_INTERVAL,
     REFRESH_TASK_ID,
 )
+from music_assistant.controllers.storage.helpers import is_within
 from music_assistant.controllers.storage.models import (
     StorageInfo,
     StorageKind,
     StorageLocation,
     StorageUsage,
 )
-from music_assistant.controllers.streams.audio_analysis import FILESYSTEM_PROVIDER_DOMAINS
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_scope,
@@ -52,6 +59,8 @@ from music_assistant.helpers.util import get_folder_size
 from music_assistant.models.core_controller import CoreController
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from music_assistant_models.config_entries import CoreConfig
 
     from music_assistant.mass import MusicAssistant
@@ -74,14 +83,12 @@ class StorageController(CoreController):
         self.manifest.icon = "harddisk"
         self._locations: list[StorageLocation] = []
         self._in_container = False
-        self._refresh_lock = asyncio.Lock()
+        # the latest probe of each path; at most one is in flight per path
+        self._probes: dict[str, asyncio.Future[_ProbeResult | None]] = {}
+        # paths whose probe is being waited for; an answer that comes later rebuilds the list
+        self._awaited_probes: set[str] = set()
         self._dir_sizes: dict[StorageUsage, float] = {}
         self._dir_sizes_requested: float | None = None
-
-    @property
-    def locations(self) -> list[StorageLocation]:
-        """Return every known storage location, regardless of who may see it."""
-        return self._locations
 
     @property
     def can_add_local_folder(self) -> bool:
@@ -95,8 +102,7 @@ class StorageController(CoreController):
         self._in_container = self.mass.running_as_hass_addon or await asyncio.to_thread(
             _running_in_container
         )
-        # the first refresh runs in the background: a mounted network share whose server is
-        # gone can block filesystem calls for a long time, which must not hold up the startup
+        # in the background: a share whose server is gone makes a refresh wait for its probe
         self.mass.create_task(self._periodic_refresh(), task_id=REFRESH_TASK_ID)
         self._request_dir_sizes()
 
@@ -118,6 +124,7 @@ class StorageController(CoreController):
             can_mount_shares=False,
             mount_backend=None,
             supported_share_types=[],
+            supported_share_versions={},
             can_add_local_folder=self.can_add_local_folder,
         )
 
@@ -137,30 +144,35 @@ class StorageController(CoreController):
 
         Only possible when the server does not run in a container.
 
-        :param path: Absolute path of an existing folder.
+        :param path: Absolute path of an existing folder that is no storage location yet.
         """
         if not self.can_add_local_folder:
             msg = "A folder can not be added when the server runs in a container"
-            raise ActionUnavailable(
-                msg,
-                translation_key="local_folder_not_allowed",
-                translation_owner=self.translation_owner,
-            )
+            raise self._error(ActionUnavailable, msg, "local_folder_not_allowed")
         path = os.path.normpath(path)
         if not Path(path).is_absolute():
-            msg = f"Not an absolute path: {path}"
-            raise InvalidDataError(
-                msg,
-                translation_key="folder_path_not_absolute",
-                translation_owner=self.translation_owner,
+            raise self._error(
+                InvalidDataError, f"Not an absolute path: {path}", "folder_path_not_absolute"
             )
-        if not await asyncio.to_thread(Path(path).is_dir):
+        if not path.strip("/"):
+            raise self._error(
+                InvalidDataError, "The root folder can not be added", "folder_is_root"
+            )
+        if path in self._server_paths():
+            msg = f"{path} is a folder of the server itself"
+            raise self._error(InvalidDataError, msg, "folder_is_server_folder")
+        if any(loc.path == path for loc in self._locations):
+            msg = f"{path} already is a storage location"
+            raise self._error(InvalidDataError, msg, "folder_already_location")
+        if (result := (await self._wait_for_probes([path]))[path]) is None:
+            raise self._folder_unreadable(path)
+        if not result.is_dir:
             raise self._folder_not_found(path)
-        folders = self._get_registered_folders()
-        if path not in folders:
-            self.mass.config.set(CONF_STORAGE_FOLDERS, [*folders, path], immediate=True)
-        await self.refresh()
-        return next(loc for loc in self._locations if loc.path == path and loc.managed)
+        self.mass.config.set(
+            CONF_STORAGE_FOLDERS, [*self._get_registered_folders(), path], immediate=True
+        )
+        await self._rebuild()
+        return next(loc for loc in self._locations if loc.path == path)
 
     @api_command("storage/local_folders/remove", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
     async def remove_local_folder(self, path: str) -> None:
@@ -175,37 +187,29 @@ class StorageController(CoreController):
         folders = self._get_registered_folders()
         if path not in folders:
             msg = f"Not a registered folder: {path}"
-            raise InvalidDataError(
-                msg,
-                translation_key="folder_not_registered",
-                translation_owner=self.translation_owner,
-            )
+            raise self._error(InvalidDataError, msg, "folder_not_registered")
         if (source := self._get_source_using(path)) is not None:
             msg = f"{source.name} uses {path}"
-            raise ActionUnavailable(
-                msg,
-                translation_key="location_in_use",
-                translation_owner=self.translation_owner,
-                translation_args=[source.name],
-            )
+            raise self._error(ActionUnavailable, msg, "location_in_use", source.name)
         self.mass.config.set(
             CONF_STORAGE_FOLDERS, [folder for folder in folders if folder != path], immediate=True
         )
-        await self.refresh()
+        await self._rebuild()
 
     def get_locations(self, manages_all_sources: bool = True) -> list[StorageLocation]:
         """
         Return the storage locations a caller may see.
 
-        :param manages_all_sources: Whether the caller manages every music source; any other
-            caller only sees the media locations it may put a music source of its own on.
+        :param manages_all_sources: Whether the caller manages every music source. Any other
+            caller only sees the media locations that were deliberately made available: all of
+            them inside a container or under a Supervisor, the managed ones on a host.
         """
         if manages_all_sources:
             return list(self._locations)
         return [
             loc
             for loc in self._locations
-            if loc.usage == StorageUsage.MEDIA and loc.kind in MEMBER_VISIBLE_KINDS
+            if loc.usage == StorageUsage.MEDIA and (self._in_container or loc.managed)
         ]
 
     def get_location_for_path(self, path: str) -> StorageLocation | None:
@@ -215,7 +219,7 @@ class StorageController(CoreController):
         :param path: An absolute path.
         """
         return max(
-            (loc for loc in self._locations if _is_within(path, loc.path)),
+            (loc for loc in self._locations if is_within(path, loc.path)),
             key=lambda loc: len(loc.path),
             default=None,
         )
@@ -230,6 +234,9 @@ class StorageController(CoreController):
         :param path: An absolute path.
         """
         location = self.get_location_for_path(path)
+        if location is not None and not location.available:
+            # not touched at all: it may be a share whose server is gone
+            return False
         mountpoint = location.mountpoint if location is not None else None
         return await asyncio.to_thread(_is_available, path, mountpoint)
 
@@ -246,43 +253,41 @@ class StorageController(CoreController):
         roots = [
             loc.path
             for loc in self.get_locations(manages_all_sources)
-            if loc.usage == StorageUsage.MEDIA and _is_within(path, loc.path)
+            if loc.usage == StorageUsage.MEDIA and is_within(path, loc.path)
         ]
+        location = self.get_location_for_path(path)
+        if not roots or location is None:
+            raise self._path_not_allowed(path)
+        if not location.available:
+            raise self._folder_unreadable(path)
         # the path must also stay inside a location once its symlinks are resolved
-        real_path = await asyncio.to_thread(_resolve_within, path, roots) if roots else None
-        if real_path is None:
-            msg = f"Not inside a storage location: {path}"
-            raise InvalidDataError(
-                msg,
-                translation_key="path_not_allowed",
-                translation_owner=self.translation_owner,
-            )
+        if (real_path := await asyncio.to_thread(_resolve_within, path, roots)) is None:
+            raise self._path_not_allowed(path)
         try:
             return await asyncio.to_thread(_list_subfolders, real_path)
         except FileNotFoundError, NotADirectoryError:
             raise self._folder_not_found(path) from None
         except OSError as err:
-            # e.g. a network share whose server is gone, or a folder without read permission
-            msg = f"Can not read {path}: {err}"
-            raise ActionUnavailable(
-                msg,
-                translation_key="folder_unreadable",
-                translation_owner=self.translation_owner,
-                translation_args=[path],
-            ) from err
+            # e.g. a folder without read permission
+            raise self._folder_unreadable(path) from err
 
     async def refresh(self) -> None:
-        """Rebuild the list of storage locations."""
-        async with self._refresh_lock:
-            self._locations = await asyncio.to_thread(
-                _build_locations,
-                data_path=self.mass.storage_path,
-                cache_path=self.mass.cache_path,
-                folders=self._get_registered_folders(),
-                in_container=self._in_container,
-                supervisor=self.mass.running_as_hass_addon,
-                dir_sizes=dict(self._dir_sizes),
-            )
+        """
+        Rebuild the list of storage locations, probing every location.
+
+        Waits at most about 10 seconds: a location whose probe did not answer by then is listed
+        as unavailable, and updated as soon as its probe answers.
+        """
+        table = await asyncio.to_thread(read_mountinfo)
+        await self._wait_for_probes(
+            [
+                *(mount.mountpoint for mount in self._parse_mounts(table)),
+                *self._get_registered_folders(),
+                *self._server_paths(),
+            ]
+        )
+        # read the mount table again: a probe wakes an automount trigger
+        await self._rebuild()
 
     async def _periodic_refresh(self) -> None:
         """Refresh the storage locations and schedule the next refresh."""
@@ -291,6 +296,118 @@ class StorageController(CoreController):
         except Exception:
             self.logger.exception("Failed to refresh the storage locations")
         self.mass.call_later(REFRESH_INTERVAL, self._periodic_refresh, task_id=REFRESH_TASK_ID)
+
+    async def _rebuild(self) -> None:
+        """Rebuild the list of storage locations from the mount table and the latest probes."""
+        table = await asyncio.to_thread(read_mountinfo)
+        data_path, cache_path = self._server_paths()
+        mounts = {mount.mountpoint: mount for mount in self._parse_mounts(table)}
+        media: dict[str, StorageLocation] = {}
+        for mount in mounts.values():
+            result = self._get_probe_result(mount.mountpoint)
+            if result is not None and not result.is_dir:
+                # a file bound into a container
+                continue
+            name = "Media folder" if mount.kind == StorageKind.BUILTIN_MEDIA else None
+            media[mount.mountpoint] = _build_location(
+                mount.mountpoint, name, StorageUsage.MEDIA, mount.kind, result, mount=mount
+            )
+        # a registered folder replaces a discovered location on the same path, mount included
+        for folder in self._get_registered_folders():
+            media[folder] = _build_location(
+                folder,
+                None,
+                StorageUsage.MEDIA,
+                StorageKind.MANUAL,
+                self._get_probe_result(folder),
+                mount=mounts.get(folder),
+                managed=True,
+            )
+        server_kind = StorageKind.CONTAINER_VOLUME if self._in_container else StorageKind.LOCAL_DISK
+        self._locations = [
+            *sorted(media.values(), key=lambda loc: loc.path.casefold()),
+            *(
+                _build_location(
+                    path,
+                    name,
+                    usage,
+                    server_kind,
+                    self._get_probe_result(path),
+                    used_space_gb=self._dir_sizes.get(usage),
+                )
+                for path, name, usage in (
+                    (data_path, "Data", StorageUsage.DATA),
+                    (cache_path, "Cache", StorageUsage.CACHE),
+                )
+            ),
+        ]
+
+    def _parse_mounts(self, table: str) -> list[MediaMount]:
+        """Return the media mounts in a mount table of the server process."""
+        return parse_mountinfo(
+            table,
+            excluded_paths=self._server_paths(),
+            in_container=self._in_container,
+            supervisor=self.mass.running_as_hass_addon,
+        )
+
+    async def _wait_for_probes(self, paths: Iterable[str]) -> dict[str, _ProbeResult | None]:
+        """
+        Probe paths and wait for their answers, at most PROBE_TIMEOUT seconds.
+
+        Returns the answer for each path, None for a path whose probe did not answer in time.
+
+        :param paths: The paths to probe.
+        """
+        probes = {path: self._probe(path) for path in paths}
+        self._awaited_probes.update(probes)
+        try:
+            await asyncio.wait(probes.values(), timeout=PROBE_TIMEOUT)
+        finally:
+            self._awaited_probes.difference_update(probes)
+        return {path: probe.result() if probe.done() else None for path, probe in probes.items()}
+
+    def _probe(self, path: str) -> asyncio.Future[_ProbeResult | None]:
+        """
+        Return the probe of a path, starting a new one unless one is still in flight.
+
+        :param path: The path to probe.
+        """
+        if (probe := self._probes.get(path)) is not None and not probe.done():
+            return probe
+        loop = self.mass.loop
+        probe = loop.create_future()
+        self._probes[path] = probe
+        probe.add_done_callback(lambda _probe: self._on_probe_answered(path))
+
+        def _run() -> None:
+            result = _probe_path(path)
+            # the server may have stopped while the probe was blocked
+            with suppress(RuntimeError):
+                loop.call_soon_threadsafe(_resolve_probe, probe, result)
+
+        # a thread of its own: a blocked probe must neither take a worker of the default
+        # executor nor hold up the shutdown of the server
+        threading.Thread(target=_run, name="storage_probe", daemon=True).start()
+        return probe
+
+    def _on_probe_answered(self, path: str) -> None:
+        """
+        Show the answer of a probe that came after its caller stopped waiting.
+
+        :param path: The probed path.
+        """
+        if path not in self._awaited_probes and not self.mass.closing:
+            self.mass.create_task(self._rebuild())
+
+    def _get_probe_result(self, path: str) -> _ProbeResult | None:
+        """
+        Return the answer of the latest probe of a path, None while it did not answer.
+
+        :param path: The probed path.
+        """
+        probe = self._probes.get(path)
+        return probe.result() if probe is not None and probe.done() else None
 
     def _request_dir_sizes(self) -> None:
         """Measure the data and cache directories when the last measurement is outdated."""
@@ -304,13 +421,20 @@ class StorageController(CoreController):
 
     async def _update_dir_sizes(self) -> None:
         """Measure the data and cache directories and show the result on their rows."""
+        data_path, cache_path = self._server_paths()
+        # the default cache directory lies inside the data directory, and has a row of its own
+        exclude = (cache_path,) if is_within(cache_path, data_path) else ()
         self._dir_sizes = {
-            StorageUsage.DATA: round(await get_folder_size(self.mass.storage_path), 2),
-            StorageUsage.CACHE: round(await get_folder_size(self.mass.cache_path), 2),
+            StorageUsage.DATA: round(await get_folder_size(data_path, exclude), 2),
+            StorageUsage.CACHE: round(await get_folder_size(cache_path), 2),
         }
         for location in self._locations:
             if location.usage != StorageUsage.MEDIA:
                 location.used_space_gb = self._dir_sizes.get(location.usage)
+
+    def _server_paths(self) -> tuple[str, str]:
+        """Return the data and the cache directory of the server."""
+        return os.path.normpath(self.mass.storage_path), os.path.normpath(self.mass.cache_path)
 
     def _get_registered_folders(self) -> list[str]:
         """Return the folders registered as a media location."""
@@ -326,9 +450,19 @@ class StorageController(CoreController):
             if provider.domain not in FILESYSTEM_PROVIDER_DOMAINS:
                 continue
             base_path = getattr(provider, "base_path", None)
-            if isinstance(base_path, str) and _is_within(base_path, path):
+            if isinstance(base_path, str) and is_within(base_path, path):
                 return provider
         return None
+
+    def _path_not_allowed(self, path: str) -> InvalidDataError:
+        """
+        Return the error for a path outside the locations a caller may use.
+
+        :param path: The refused path.
+        """
+        return self._error(
+            InvalidDataError, f"Not inside a storage location: {path}", "path_not_allowed"
+        )
 
     def _folder_not_found(self, path: str) -> InvalidDataError:
         """
@@ -336,12 +470,45 @@ class StorageController(CoreController):
 
         :param path: The folder that does not exist.
         """
-        return InvalidDataError(
-            f"Folder does not exist: {path}",
-            translation_key="folder_not_found",
-            translation_owner=self.translation_owner,
-            translation_args=[path],
+        return self._error(
+            InvalidDataError, f"Folder does not exist: {path}", "folder_not_found", path
         )
+
+    def _folder_unreadable(self, path: str) -> ActionUnavailable:
+        """
+        Return the error for a folder that can not be read right now.
+
+        :param path: The folder that can not be read.
+        """
+        return self._error(ActionUnavailable, f"Can not read {path}", "folder_unreadable", path)
+
+    def _error[ErrorT: (ActionUnavailable, InvalidDataError)](
+        self, error: type[ErrorT], msg: str, translation_key: str, *args: str
+    ) -> ErrorT:
+        """
+        Return an error of this controller with a translated message.
+
+        :param error: The error class.
+        :param msg: The English message, for the log and as a fallback.
+        :param translation_key: The key of the translated message in the strings of this
+            controller.
+        :param args: The values for the placeholders of the translated message.
+        """
+        return error(
+            msg,
+            translation_key=translation_key,
+            translation_owner=self.translation_owner,
+            translation_args=list(args),
+        )
+
+
+@dataclass(frozen=True)
+class _ProbeResult:
+    """What a probe found on a path."""
+
+    is_dir: bool
+    free_space_gb: float | None = None
+    total_space_gb: float | None = None
 
 
 def _caller_manages_all_sources() -> bool:
@@ -351,76 +518,32 @@ def _caller_manages_all_sources() -> bool:
     return user is None or has_scope(user, Scope.CONFIG_PROVIDERS_WRITE)
 
 
-def _is_within(path: str, base: str) -> bool:
-    """Return whether an absolute path is a base path or lies below it, lexically."""
-    return Path(path).is_absolute() and is_safe_path(path, base)
-
-
 def _running_in_container() -> bool:
     """Return whether the server runs in a Docker or Podman container (blocking)."""
     return any(Path(marker).exists() for marker in CONTAINER_MARKER_FILES)
 
 
-def _build_locations(
-    *,
-    data_path: str,
-    cache_path: str,
-    folders: list[str],
-    in_container: bool,
-    supervisor: bool,
-    dir_sizes: dict[StorageUsage, float],
-) -> list[StorageLocation]:
-    """Build the storage locations the server can see (blocking)."""
-    data_path = os.path.normpath(data_path)
-    cache_path = os.path.normpath(cache_path)
-    media: dict[str, StorageLocation] = {}
-    for mount in parse_mountinfo(
-        read_mountinfo(),
-        excluded_paths=(data_path, cache_path),
-        in_container=in_container,
-        supervisor=supervisor,
-    ):
-        if (is_dir := _is_dir(mount.mountpoint)) is False:
-            # a file bound into a container
-            continue
-        media[mount.mountpoint] = _build_location(
-            mount.mountpoint,
-            "Media folder" if mount.kind == StorageKind.BUILTIN_MEDIA else None,
-            StorageUsage.MEDIA,
-            mount.kind,
-            available=bool(is_dir),
-            read_only=mount.read_only,
-            fstype=mount.fstype,
-            mountpoint=mount.mountpoint,
-        )
-    # a registered folder replaces a discovered location on the same path
-    for folder in folders:
-        media[folder] = _build_location(
-            folder,
-            None,
-            StorageUsage.MEDIA,
-            StorageKind.MANUAL,
-            available=bool(_is_dir(folder)),
-            managed=True,
-        )
-    server_kind = StorageKind.CONTAINER_VOLUME if in_container else StorageKind.LOCAL_DISK
-    return [
-        *sorted(media.values(), key=lambda loc: loc.path.casefold()),
-        *(
-            _build_location(
-                path,
-                name,
-                usage,
-                server_kind,
-                available=bool(_is_dir(path)),
-                used_space_gb=dir_sizes.get(usage),
-            )
-            for path, name, usage in (
-                (data_path, "Data", StorageUsage.DATA),
-                (cache_path, "Cache", StorageUsage.CACHE),
-            )
-        ),
-    ]
+def _probe_path(path: str) -> _ProbeResult | None:
+    """Return what is on a path, None when it can not be reached (blocking, may block long)."""
+    try:
+        # statvfs first: unlike a plain stat it wakes an automount trigger on the path
+        fs_stats = os.statvfs(path)
+        is_dir = stat.S_ISDIR(Path(path).stat().st_mode)
+    except FileNotFoundError, NotADirectoryError, ValueError:
+        return _ProbeResult(is_dir=False)
+    except OSError:
+        return None
+    return _ProbeResult(
+        is_dir=is_dir,
+        free_space_gb=round(fs_stats.f_bavail * fs_stats.f_frsize / BYTES_PER_GB, 2),
+        total_space_gb=round(fs_stats.f_blocks * fs_stats.f_frsize / BYTES_PER_GB, 2),
+    )
+
+
+def _resolve_probe(probe: asyncio.Future[_ProbeResult | None], result: _ProbeResult | None) -> None:
+    """Hand the answer of a probe to its future."""
+    if not probe.done():
+        probe.set_result(result)
 
 
 def _build_location(
@@ -428,48 +551,31 @@ def _build_location(
     name: str | None,
     usage: StorageUsage,
     kind: StorageKind,
+    result: _ProbeResult | None,
     *,
-    available: bool,
-    read_only: bool = False,
+    mount: MediaMount | None = None,
     managed: bool = False,
-    fstype: str | None = None,
-    mountpoint: str | None = None,
     used_space_gb: float | None = None,
 ) -> StorageLocation:
-    """Build a storage location, with the free space of its filesystem when available (blocking)."""
-    free_space_gb = total_space_gb = None
-    if available:
-        try:
-            usage_info = shutil.disk_usage(path)
-        except OSError:
-            pass
-        else:
-            free_space_gb = round(usage_info.free / BYTES_PER_GB, 2)
-            total_space_gb = round(usage_info.total / BYTES_PER_GB, 2)
+    """Build a storage location from the latest probe of its path and the mount on it."""
+    # a share still behind its automount trigger did not mount
+    available = (
+        result is not None and result.is_dir and (mount is None or mount.fstype != AUTOMOUNT_FSTYPE)
+    )
     return StorageLocation(
         path=path,
         name=name or Path(path).name or path,
         usage=usage,
         kind=kind,
         available=available,
-        read_only=read_only,
+        read_only=mount.read_only if mount is not None else False,
         managed=managed,
-        fstype=fstype,
-        mountpoint=mountpoint,
-        free_space_gb=free_space_gb,
-        total_space_gb=total_space_gb,
+        fstype=mount.fstype if mount is not None else None,
+        mountpoint=mount.mountpoint if mount is not None else None,
+        free_space_gb=result.free_space_gb if available and result is not None else None,
+        total_space_gb=result.total_space_gb if available and result is not None else None,
         used_space_gb=used_space_gb,
     )
-
-
-def _is_dir(path: str) -> bool | None:
-    """Return whether a path is a directory, None when it can not be reached (blocking)."""
-    try:
-        return stat.S_ISDIR(Path(path).stat().st_mode)
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return None
 
 
 def _is_available(path: str, mountpoint: str | None) -> bool:

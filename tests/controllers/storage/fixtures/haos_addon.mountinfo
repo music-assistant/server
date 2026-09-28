@@ -16,6 +16,9 @@
 1482 1467 8:8 /docker/containers/7d2c9e/resolv.conf /etc/resolv.conf rw,relatime - ext4 /dev/sda8 rw,commit=30
 1483 1467 8:8 /docker/containers/7d2c9e/hostname /etc/hostname rw,relatime - ext4 /dev/sda8 rw,commit=30
 1484 1467 8:8 /docker/containers/7d2c9e/hosts /etc/hosts rw,relatime - ext4 /dev/sda8 rw,commit=30
-1485 1476 0:171 / /media/nas rw,relatime master:240 - cifs //192.168.1.10/music rw,vers=3.1.1,cache=strict,username=marcel,uid=0,noforceuid,gid=0,noforcegid,addr=192.168.1.10,file_mode=0755,dir_mode=0755,soft,nounix,noserverino,mapposix,rsize=4194304,wsize=4194304,bsize=1048576,echo_interval=60,actimeo=1,closetimeo=1
-1486 1476 0:172 / /media/backup_nfs ro,relatime master:241 - nfs4 192.168.1.20:/export/backup ro,vers=4.2,rsize=1048576,wsize=1048576,namlen=255,hard,proto=tcp,timeo=600,retrans=2,sec=sys,clientaddr=192.168.1.5,local_lock=none,addr=192.168.1.20
-1487 1467 0:174 / /tmp/filesystem_smb--Xk3PqR7t rw,relatime - cifs //192.168.1.10/legacy rw,vers=3.0,cache=loose,username=marcel,uid=0,noforceuid,gid=0,noforcegid,addr=192.168.1.10,file_mode=0755,dir_mode=0755,nocase,soft,nounix,noserverino,mapposix,noperm,rsize=4194304,wsize=4194304,bsize=1048576,echo_interval=60,actimeo=30,closetimeo=1
+1485 1476 0:180 / /media/nas rw,relatime master:250 - autofs systemd-1 rw,fd=45,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=21873
+1486 1476 0:181 / /media/backup_nfs rw,relatime master:251 - autofs systemd-1 rw,fd=46,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=21874
+1487 1476 0:182 / /media/archive rw,relatime master:252 - autofs systemd-1 rw,fd=47,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=21875
+1488 1485 0:171 / /media/nas rw,relatime master:240 - cifs //192.168.1.10/music rw,vers=3.1.1,cache=strict,username=marcel,uid=0,noforceuid,gid=0,noforcegid,addr=192.168.1.10,file_mode=0755,dir_mode=0755,soft,nounix,noserverino,mapposix,rsize=4194304,wsize=4194304,bsize=1048576,echo_interval=60,actimeo=1,closetimeo=1
+1489 1486 0:172 / /media/backup_nfs ro,relatime master:241 - nfs4 192.168.1.20:/export/backup ro,vers=4.2,rsize=1048576,wsize=1048576,namlen=255,hard,proto=tcp,timeo=600,retrans=2,sec=sys,clientaddr=192.168.1.5,local_lock=none,addr=192.168.1.20
+1490 1467 0:174 / /tmp/filesystem_smb--Xk3PqR7t rw,relatime - cifs //192.168.1.10/legacy rw,vers=3.0,cache=loose,username=marcel,uid=0,noforceuid,gid=0,noforcegid,addr=192.168.1.10,file_mode=0755,dir_mode=0755,nocase,soft,nounix,noserverino,mapposix,noperm,rsize=4194304,wsize=4194304,bsize=1048576,echo_interval=60,actimeo=30,closetimeo=1

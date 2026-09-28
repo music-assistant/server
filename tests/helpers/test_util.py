@@ -665,6 +665,18 @@ class TestGetFolderSize:
 
         assert await get_folder_size(str(folder)) * (1 << 30) == 4096 + links
 
+    async def test_excluded_folder_is_left_out(self, tmp_path: Path) -> None:
+        """A folder inside the measured one can be left out, e.g. a cache inside the data."""
+        (tmp_path / ".cache" / "images").mkdir(parents=True)
+        (tmp_path / "data.db").write_bytes(b"x" * 4096)
+        (tmp_path / ".cache" / "images" / "cover.jpg").write_bytes(b"x" * 1024)
+        (tmp_path / ".cache-old").mkdir()
+        (tmp_path / ".cache-old" / "kept.bin").write_bytes(b"x" * 512)
+
+        size = await get_folder_size(str(tmp_path), exclude=(f"{tmp_path}/.cache/",))
+
+        assert size * (1 << 30) == 4096 + 512
+
     async def test_vanished_file_is_skipped(self, tmp_path: Path) -> None:
         """A file removed while the folder is walked does not fail the measurement."""
         (tmp_path / "kept.bin").write_bytes(b"x" * 2048)

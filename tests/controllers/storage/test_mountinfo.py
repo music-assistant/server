@@ -48,7 +48,7 @@ def _parse(
 
 
 def test_home_assistant_addon() -> None:
-    """The add-on sees the media folder and each share the Supervisor mounted below it."""
+    """The add-on sees the media folder and each share the Supervisor set up below it."""
     mounts = parse_mountinfo(
         _fixture("haos_addon"),
         excluded_paths=CONTAINER_DATA_PATHS,
@@ -58,9 +58,20 @@ def test_home_assistant_addon() -> None:
 
     assert mounts == [
         MediaMount("/media", "ext4", read_only=False, kind=StorageKind.BUILTIN_MEDIA),
+        # accessed shares: the real mount sits on top of the automount trigger
         MediaMount("/media/nas", "cifs", read_only=False, kind=StorageKind.NETWORK_SHARE),
         MediaMount("/media/backup_nfs", "nfs4", read_only=True, kind=StorageKind.NETWORK_SHARE),
+        # a share nobody accessed yet is only its automount trigger
+        MediaMount("/media/archive", "autofs", read_only=False, kind=StorageKind.NETWORK_SHARE),
     ]
+
+
+@pytest.mark.parametrize(
+    "mountpoint", ["/proc/sys/fs/binfmt_misc", "/boot", "/efi", "/data/shares", "/"]
+)
+def test_automount_trigger_in_an_excluded_path_is_no_location(mountpoint: str) -> None:
+    """An automount trigger only counts where a mount would count."""
+    assert _parse(_line(mountpoint, "autofs"), excluded_paths=("/data",)) == {}
 
 
 def test_home_assistant_addon_folders_are_never_media() -> None:
@@ -164,6 +175,9 @@ def test_add_on_folders_are_only_reserved_inside_a_container() -> None:
         ("/media/nas", "nfs", True, True, StorageKind.NETWORK_SHARE),
         ("/mnt/pool", "fuse.mergerfs", False, False, StorageKind.LOCAL_DISK),
         ("/music", "virtiofs", True, False, StorageKind.CONTAINER_VOLUME),
+        # a bind mount of Docker Desktop for Mac
+        ("/media/music", "fakeowner", True, False, StorageKind.CONTAINER_VOLUME),
+        ("/mnt/nas", "autofs", False, False, StorageKind.NETWORK_SHARE),
     ],
 )
 def test_kind(
@@ -173,6 +187,12 @@ def test_kind(
     mounts = _parse(_line(mountpoint, fstype), in_container=in_container, supervisor=supervisor)
 
     assert mounts[mountpoint].kind == kind
+
+
+@pytest.mark.parametrize("mountpoint", ["/efi", "/efi/EFI"])
+def test_efi_system_partition_is_excluded(mountpoint: str) -> None:
+    """The EFI system partition mounted at /efi is no media location, although it is vfat."""
+    assert _parse(_line(mountpoint, "vfat")) == {}
 
 
 @pytest.mark.parametrize("fstype", ["overlay", "tmpfs", "squashfs", "proc", "cgroup2", "fuse"])
@@ -203,6 +223,19 @@ def test_read_only_from_mount_or_superblock_options() -> None:
     assert not mounts["/mnt/writable"].read_only
 
 
+def test_several_optional_fields() -> None:
+    """A mount that is shared and a slave at once has two optional fields before the dash."""
+    mounts = _parse(
+        "36 35 98:0 /mnt1 /mnt/music ro,noatime shared:5 master:1 - ext4 /dev/sdb1 rw",
+        "37 35 98:1 / /mnt/more rw shared:6 master:2 propagate_from:3 unbindable - xfs /dev/sdc1 rw",
+    )
+
+    assert mounts == {
+        "/mnt/music": MediaMount("/mnt/music", "ext4", read_only=True, kind=StorageKind.LOCAL_DISK),
+        "/mnt/more": MediaMount("/mnt/more", "xfs", read_only=False, kind=StorageKind.LOCAL_DISK),
+    }
+
+
 def test_escaped_mountpoints_are_decoded() -> None:
     """Spaces, tabs and backslashes in a mountpoint come back as the characters themselves."""
     mounts = _parse(_line(r"/mnt/My\040Music\011Tab\134Slash", "ext4"))
@@ -227,7 +260,19 @@ def test_mountpoints_include_every_mount() -> None:
     """The mountpoints of a table include the mounts that hold no media."""
     mountpoints = parse_mountpoints(_fixture("haos_addon"))
 
-    assert {"/", "/data", "/media", "/media/nas", "/etc/hosts"} <= mountpoints
+    assert {"/", "/data", "/media", "/media/nas", "/media/backup_nfs", "/etc/hosts"} <= mountpoints
+
+
+def test_dormant_automount_trigger_is_no_mount() -> None:
+    """Only a trigger with the real mount on top counts as mounted."""
+    dormant = parse_mountpoints(_line("/media/nas", "autofs"))
+    woken = parse_mountpoints(
+        "\n".join((_line("/media/nas", "autofs"), _line("/media/nas", "cifs")))
+    )
+
+    assert "/media/nas" not in dormant
+    assert "/media/nas" in woken
+    assert "/media/archive" not in parse_mountpoints(_fixture("haos_addon"))
 
 
 def test_no_mount_table_outside_linux(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

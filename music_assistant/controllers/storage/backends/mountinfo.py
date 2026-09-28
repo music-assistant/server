@@ -4,17 +4,19 @@ Discovery of the media mounts in the mount table of the server process (Linux on
 Every line of ``/proc/self/mountinfo`` describes one mount:
 ``id parent major:minor root mountpoint options [optional fields] - fstype source superoptions``.
 Inside a container the table holds the volumes mapped into it; under a Home Assistant Supervisor
-it also holds every network share and drive the Supervisor mounted below ``/media``.
+it also holds every network share and drive the Supervisor mounted below ``/media``. The
+Supervisor mounts a network share on first access: until then the table only holds an automount
+trigger (``autofs``) on its mountpoint, and the real mount is listed on top of it afterwards.
 """
 
 from __future__ import annotations
 
-import os
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Final
 
+from music_assistant.controllers.storage.helpers import is_within
 from music_assistant.controllers.storage.models import StorageKind
 
 MOUNTINFO_PATH: Final[str] = "/proc/self/mountinfo"
@@ -45,9 +47,12 @@ MEDIA_FSTYPES: Final[frozenset[str]] = frozenset(
         "nfs4",
         "virtiofs",
         "9p",
+        # Docker Desktop for Mac reports its bind mounts with this type
+        "fakeowner",
     }
 )
 MEDIA_FSTYPE_PREFIX: Final[str] = "fuse."
+AUTOMOUNT_FSTYPE: Final[str] = "autofs"
 NETWORK_FSTYPES: Final[frozenset[str]] = frozenset({"cifs", "smb3", "nfs", "nfs4"})
 REMOVABLE_FSTYPES: Final[frozenset[str]] = frozenset(
     {"vfat", "exfat", "ntfs", "ntfs3", "hfsplus", "iso9660", "udf"}
@@ -63,6 +68,7 @@ SYSTEM_PATHS: Final[tuple[str, ...]] = (
     "/var",
     "/usr",
     "/boot",
+    "/efi",
     "/snap",
     "/tmp",  # noqa: S108
 )
@@ -100,7 +106,8 @@ def parse_mountinfo(
     """
     Return the mounts in a mount table that can hold media, classified by kind.
 
-    The result can still contain files bound into a container: the caller keeps directories only.
+    The result can still contain files bound into a container (the caller keeps directories
+    only) and dormant automount triggers, which are listed as network shares with fstype autofs.
 
     :param text: Contents of a mountinfo file.
     :param excluded_paths: Absolute paths that are never a media location, nor anything below
@@ -108,15 +115,10 @@ def parse_mountinfo(
     :param in_container: Whether the server runs in a container.
     :param supervisor: Whether the server runs under a Home Assistant Supervisor.
     """
-    # a later mount on the same mountpoint hides the earlier one
-    mounts: dict[str, tuple[str, bool]] = {}
-    for line in text.splitlines():
-        if (parsed := _parse_line(line)) is not None:
-            mountpoint, fstype, read_only = parsed
-            mounts[mountpoint] = (fstype, read_only)
+    mounts = _parse_table(text)
     excluded = [
         *SYSTEM_PATHS,
-        *(os.path.normpath(path) for path in excluded_paths),
+        *excluded_paths,
         *(CONTAINER_RESERVED_PATHS if in_container else ()),
     ]
     return [
@@ -127,19 +129,25 @@ def parse_mountinfo(
             kind=_classify(mountpoint, fstype, in_container, supervisor),
         )
         for mountpoint, (fstype, read_only) in mounts.items()
-        if _is_media_fstype(fstype)
+        if (_is_media_fstype(fstype) or fstype == AUTOMOUNT_FSTYPE)
         and mountpoint != "/"
-        and not any(_is_within(mountpoint, path) for path in excluded)
+        and not any(is_within(mountpoint, path) for path in excluded)
     ]
 
 
 def parse_mountpoints(text: str) -> set[str]:
     """
-    Return every mountpoint in a mount table.
+    Return every mountpoint in a mount table that has a filesystem mounted on it.
+
+    A dormant automount trigger does not count.
 
     :param text: Contents of a mountinfo file.
     """
-    return {parsed[0] for line in text.splitlines() if (parsed := _parse_line(line)) is not None}
+    return {
+        mountpoint
+        for mountpoint, (fstype, _read_only) in _parse_table(text).items()
+        if fstype != AUTOMOUNT_FSTYPE
+    }
 
 
 def read_mountinfo() -> str:
@@ -149,6 +157,17 @@ def read_mountinfo() -> str:
             return file.read()
     except FileNotFoundError:
         return ""
+
+
+def _parse_table(text: str) -> dict[str, tuple[str, bool]]:
+    """Return the fstype and read-only state of the mount on each mountpoint of a mount table."""
+    # a later mount on the same mountpoint hides the earlier one
+    mounts: dict[str, tuple[str, bool]] = {}
+    for line in text.splitlines():
+        if (parsed := _parse_line(line)) is not None:
+            mountpoint, fstype, read_only = parsed
+            mounts[mountpoint] = (fstype, read_only)
+    return mounts
 
 
 def _parse_line(line: str) -> tuple[str, str, bool] | None:
@@ -175,7 +194,7 @@ def _is_media_fstype(fstype: str) -> bool:
 
 def _classify(mountpoint: str, fstype: str, in_container: bool, supervisor: bool) -> StorageKind:
     """Return where a media mount comes from."""
-    if fstype in NETWORK_FSTYPES:
+    if fstype in NETWORK_FSTYPES or fstype == AUTOMOUNT_FSTYPE:
         return StorageKind.NETWORK_SHARE
     if supervisor and mountpoint == SUPERVISOR_MEDIA_PATH:
         return StorageKind.BUILTIN_MEDIA
@@ -186,8 +205,3 @@ def _classify(mountpoint: str, fstype: str, in_container: bool, supervisor: bool
     if mountpoint.startswith(f"{SUPERVISOR_MEDIA_PATH}/") and (supervisor or not in_container):
         return StorageKind.REMOVABLE
     return StorageKind.CONTAINER_VOLUME if in_container else StorageKind.LOCAL_DISK
-
-
-def _is_within(path: str, base: str) -> bool:
-    """Return whether a path is a base path or lies below it."""
-    return path == base or path.startswith(f"{base.rstrip('/')}/")

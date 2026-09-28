@@ -58,12 +58,13 @@ async def test_lists_subfolders_sorted(storage: StorageController, media_root: P
         "{root}/escape/secret",
         "media",
         "",
+        "{root}/Albums\0",
     ],
 )
 async def test_refuses_paths_outside_the_locations(
     storage: StorageController, media_root: Path, path: str
 ) -> None:
-    """Traversal, look-alike prefixes, relative paths and escaping symlinks are refused."""
+    """Traversal, look-alikes, relative paths, NUL bytes and escaping symlinks are refused."""
     storage._locations = [make_location(media_root)]
 
     with pytest.raises(InvalidDataError) as exc_info:
@@ -88,18 +89,36 @@ async def test_refuses_what_is_no_folder(
 async def test_unreadable_folder(
     storage: StorageController, media_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A folder that can not be read (a share whose server is gone) gets its own error."""
+    """A folder that can not be read (no permission) gets its own error."""
     storage._locations = [make_location(media_root)]
 
-    def _host_down(path: str) -> list[str]:
-        raise OSError(errno.EHOSTDOWN, "Host is down", path)
+    def _no_permission(path: str) -> list[str]:
+        raise PermissionError(errno.EACCES, "Permission denied", path)
 
-    monkeypatch.setattr(controller_module, "_list_subfolders", _host_down)
+    monkeypatch.setattr(controller_module, "_list_subfolders", _no_permission)
 
     with pytest.raises(ActionUnavailable) as exc_info:
         await storage.list_folders(str(media_root))
 
     assert exc_info.value.translation_key == "folder_unreadable"
+
+
+async def test_unavailable_location_is_not_touched(
+    storage: StorageController, media_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A location whose probe did not answer (a share whose server is gone) is not browsed."""
+    nested = media_root / "Albums"
+    storage._locations = [make_location(media_root), make_location(nested, available=False)]
+    touched: list[str] = []
+    monkeypatch.setattr(
+        controller_module, "_resolve_within", lambda path, _roots: touched.append(path)
+    )
+
+    for path in (nested, nested / "Artist"):
+        with pytest.raises(ActionUnavailable) as exc_info:
+            await storage.list_folders(str(path))
+        assert exc_info.value.translation_key == "folder_unreadable"
+    assert touched == []
 
 
 async def test_listing_is_capped(storage: StorageController, tmp_path: Path) -> None:
@@ -115,21 +134,30 @@ async def test_listing_is_capped(storage: StorageController, tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize(
-    ("kind", "member_may_browse"),
+    ("in_container", "kind", "managed", "member_may_browse"),
     [
-        (StorageKind.BUILTIN_MEDIA, True),
-        (StorageKind.CONTAINER_VOLUME, True),
-        (StorageKind.NETWORK_SHARE, True),
-        (StorageKind.REMOVABLE, True),
-        (StorageKind.LOCAL_DISK, False),
-        (StorageKind.MANUAL, False),
+        # inside a container every location was mapped in on purpose
+        (True, StorageKind.CONTAINER_VOLUME, False, True),
+        (True, StorageKind.REMOVABLE, False, True),
+        # on a host only what Music Assistant set up itself
+        (False, StorageKind.MANUAL, True, True),
+        (False, StorageKind.NETWORK_SHARE, True, True),
+        (False, StorageKind.NETWORK_SHARE, False, False),
+        (False, StorageKind.REMOVABLE, False, False),
+        (False, StorageKind.LOCAL_DISK, False, False),
     ],
 )
-async def test_member_browses_only_shared_kinds(
-    storage: StorageController, media_root: Path, kind: StorageKind, member_may_browse: bool
+async def test_member_browses_what_was_made_available(
+    storage: StorageController,
+    media_root: Path,
+    in_container: bool,
+    kind: StorageKind,
+    managed: bool,
+    member_may_browse: bool,
 ) -> None:
-    """A caller that does not manage every source only browses the kinds it may use."""
-    storage._locations = [make_location(media_root, kind=kind)]
+    """A caller that does not manage every source only browses the locations meant for it."""
+    storage._in_container = in_container
+    storage._locations = [make_location(media_root, kind=kind, managed=managed)]
 
     assert await storage.list_folders(str(media_root), manages_all_sources=True)
     if member_may_browse:
@@ -143,7 +171,7 @@ async def test_member_browses_only_shared_kinds(
 async def test_server_directories_are_not_browsable(
     storage: StorageController, media_root: Path, usage: StorageUsage
 ) -> None:
-    """The data and cache directories are never browsable, not even by an admin."""
+    """The data and cache rows alone make nothing browsable, not even for an admin."""
     storage._locations = [make_location(media_root, usage=usage)]
 
     with pytest.raises(InvalidDataError):

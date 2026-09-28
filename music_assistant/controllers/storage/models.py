@@ -76,4 +76,7 @@ class StorageInfo(DataClassDictMixin):
     can_mount_shares: bool
     mount_backend: MountBackend | None
     supported_share_types: list[ShareType]
+    # the protocol versions a share can be pinned to, next to automatic; an empty list means
+    # the version can not be chosen
+    supported_share_versions: dict[ShareType, list[str]]
     can_add_local_folder: bool
