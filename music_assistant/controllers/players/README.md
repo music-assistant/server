@@ -103,6 +103,8 @@ A command that locks a member and only then reaches the group — a power off de
 
 `get_group_and_player_lock` does exactly that: it takes the lock of the group holding the player (following the same redirect as `cmd_set_members`) and then the player's own. A power off, an announcement and the queue play actions all use it, since each detaches the player from its group or joins it back. The re-entrancy is per task, so a group command that fans out to its members in separate tasks (a group announcement) has those tasks take the member's lock only.
 
+A playback command on a synced player (play, stop, resume, ...) is redirected to the owner of its playback: the sync leader, or the group holding that leader when it is captured by one. That redirect is what puts the command under the group's lock rather than the leader's.
+
 ## Player Types
 
 Players in Music Assistant have different types based on their capabilities:
