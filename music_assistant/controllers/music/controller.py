@@ -1577,7 +1577,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         await self.mass.metadata.update_metadata(library_item, overwrite_existing)
         return library_item
 
-    @api_command("music/refresh_item", required_scope=Scope.LIBRARY_MANAGE)
+    @api_command("music/refresh_item", required_scope=Scope.LIBRARY_WRITE)
     async def refresh_item(  # noqa: PLR0915
         self,
         media_item: str | MediaItemType,
