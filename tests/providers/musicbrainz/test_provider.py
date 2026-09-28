@@ -102,6 +102,19 @@ async def test_release_year_looks_up_the_normalized_isrc() -> None:
     get_data.assert_awaited_once_with("isrc/GBAYE8600477?inc=isrcs+artist-credits+url-rels")
 
 
+async def test_release_year_reads_the_date_from_the_recording_lookup() -> None:
+    """Take the date from the recording lookup when the isrc lookup leaves it out."""
+    provider, get_data = _routed_provider(
+        {
+            "isrc/GBAYE8600477": _recordings(None),
+            "recording/stub-0": {"id": "stub-0", "title": "stub", "first-release-date": "1986"},
+        }
+    )
+
+    assert await provider.get_release_year_by_isrc("GBAYE8600477") == 1986
+    assert _requested(get_data) == ["isrc/GBAYE8600477", "recording/stub-0"]
+
+
 async def test_release_year_returns_earliest_of_multiple_recordings() -> None:
     """Date the song by the oldest recording the ISRC covers."""
     provider, _ = _provider(_recordings("2009-05-01", "1986-06", "1994"))
@@ -114,10 +127,14 @@ async def test_release_year_is_none_without_a_usable_date() -> None:
         None,
         {"isrc": "GBAYE8600477"},
         {"isrc": "GBAYE8600477", "recordings": []},
-        _recordings(None),
         _recordings("????-06"),
     ):
         provider, _ = _provider(response)
+        assert await provider.get_release_year_by_isrc("GBAYE8600477") is None
+    for recording_lookup in (None, {"id": "stub-0", "title": "stub"}):
+        provider, _ = _routed_provider(
+            {"isrc/GBAYE8600477": _recordings(None), "recording/stub-0": recording_lookup}
+        )
         assert await provider.get_release_year_by_isrc("GBAYE8600477") is None
 
 
