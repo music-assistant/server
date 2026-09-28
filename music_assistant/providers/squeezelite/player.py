@@ -127,11 +127,8 @@ class SqueezelitePlayer(Player):
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
         # map the per-player sync delay setting to the LMS play delay
-        self.client.play_delay = int(
-            self.mass.config.get_raw_player_config_value(
-                self.player_id, CONF_SYNC_ADJUST, 0
-            )
-        )
+        sync_adjust = self.config.get_value(CONF_SYNC_ADJUST, 0)
+        self.client.play_delay = sync_adjust if isinstance(sync_adjust, int) else 0
         # set presets and display
         await self._set_preset_items()
         await self._set_display()
@@ -691,5 +688,3 @@ class SqueezelitePlayer(Player):
         return self.mass.config.get_raw_player_config_value(
             member_player_id, CONF_OUTPUT_CODEC, "flac"
         )
-
-
