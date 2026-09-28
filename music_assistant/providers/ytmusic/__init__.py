@@ -48,6 +48,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
+from ytmusicapi import LikeStatus
 from ytmusicapi.constants import SUPPORTED_LANGUAGES
 from ytmusicapi.exceptions import YTMusicServerError
 from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
@@ -56,6 +57,7 @@ from ytmusicapi.parsers.podcasts import Description
 from music_assistant.constants import (
     CONF_ENTRY_UNOFFICIAL_PROVIDER,
     CONF_USERNAME,
+    DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.cache import use_cache
@@ -90,6 +92,7 @@ from .helpers import (
     library_add_remove_album,
     library_add_remove_artist,
     library_add_remove_playlist,
+    rate_track,
     search,
 )
 
@@ -143,6 +146,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ALBUMS,
     ProviderFeature.LIBRARY_TRACKS,
     ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.FAVORITE_TRACKS_EDIT,
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_ALBUMS,
@@ -624,6 +628,26 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             # YTM raises if trying to remove an item that is not in the library
             raise NotImplementedError(err) from err
         return result
+
+    async def set_favorite(
+        self, prov_item_id: str, media_type: MediaType, favorite: bool | None
+    ) -> None:
+        """
+        Like, dislike or clear the rating of a track on YouTube Music.
+
+        :param prov_item_id: The YouTube Music video id of the track.
+        :param media_type: Media type of the item, only tracks can be rated.
+        :param favorite: True to like, False to dislike, None to clear the rating.
+        """
+        if media_type != MediaType.TRACK:
+            return
+        if favorite is None:
+            rating = LikeStatus.INDIFFERENT
+        else:
+            rating = LikeStatus.LIKE if favorite else LikeStatus.DISLIKE
+        await rate_track(
+            headers=self._headers, prov_track_id=prov_item_id, rating=rating, user=self._yt_user
+        )
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
@@ -1126,6 +1150,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
             podcast.publisher = author["name"]
         if thumbnails := podcast_obj.get("thumbnails"):
             podcast.metadata.images = self._parse_thumbnails(thumbnails)
+        podcast.metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
         return podcast
 
     def _parse_browse_podcast(self, item_obj: dict[str, Any]) -> Podcast | None:

@@ -331,6 +331,31 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 category="generic",
                 advanced=True,
             ),
+            # the three entries below hold state kept across restarts; they are declared so a
+            # config save carries them over
+            ConfigEntry(
+                key=CONF_DELETED_PROVIDERS,
+                type=ConfigEntryType.STRING,
+                required=False,
+                multi_value=True,
+                default_value=[],
+                hidden=True,
+            ),
+            ConfigEntry(
+                key=CONF_TRACK_RECONCILIATION_CURSOR,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                multi_value=True,
+                default_value=[0, 0],
+                hidden=True,
+            ),
+            ConfigEntry(
+                key=CONF_TRACK_RECONCILIATION_RESCAN_DUE,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=False,
+                hidden=True,
+            ),
         )
 
     async def handle_config_action(
@@ -1255,6 +1280,16 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 # ICY name or reports no duration
                 return await builtin_prov.get_track(item_id)
             return await builtin_prov.parse_item(item_id, requested_media_type=media_type)
+        if provider_instance_id_or_domain == "musicbrainz":
+            # a release group listed in an artist's discography is resolved, on demand, to
+            # the album on one of the music providers
+            if media_type == MediaType.ALBUM:
+                return await self.albums.resolve_musicbrainz_release_group(
+                    item_id, allow_update_metadata=allow_update_metadata
+                )
+            raise MediaNotFoundError(
+                f"MusicBrainz {media_type.value} {item_id} can not be resolved"
+            )
         if media_type == MediaType.PODCAST_EPISODE:
             # special case for podcast episodes
             return await self.podcasts.episode(item_id, provider_instance_id_or_domain)
@@ -1357,13 +1392,29 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 item.media_type, item.item_id, item.provider, allow_update_metadata=False
             ),
         )
+        ctrl = self.get_controller(item.media_type)
         if full_item.provider != "library":
             if favorite is None:
                 # nothing to clear on an item that is not in the library
                 return
+            if favorite:
+                full_item = await self.add_item_to_library(full_item)
+            else:
+                # a dislike needs a library row to hang on, but the item is not in the
+                # user's library on any source: no library write to a provider, and the
+                # row stays out of the library listings
+                full_item = await cast(
+                    "MediaControllerBase[MediaItemType]", ctrl
+                ).add_item_to_library(full_item)
+        elif (
+            favorite
+            and (own_mappings := self._write_target_mappings(full_item.provider_mappings))
+            and not any(mapping.in_library for mapping in own_mappings)
+        ):
+            # a row that only ever held a dislike, or that another member holds in their
+            # library, joins the user's own library for real on a like
             full_item = await self.add_item_to_library(full_item)
         # set favorite in library db
-        ctrl = self.get_controller(item.media_type)
         await ctrl.set_favorite(full_item.item_id, favorite, await self.acting_user_ids())
         # forward to the music sources this user may write to, never to somebody else's
         for prov_mapping in self._write_target_mappings(full_item.provider_mappings):
@@ -1526,7 +1577,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         await self.mass.metadata.update_metadata(library_item, overwrite_existing)
         return library_item
 
-    @api_command("music/refresh_item", required_scope=Scope.LIBRARY_MANAGE)
+    @api_command("music/refresh_item", required_scope=Scope.LIBRARY_WRITE)
     async def refresh_item(  # noqa: PLR0915
         self,
         media_item: str | MediaItemType,
@@ -1560,13 +1611,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         for prov_mapping in sorted(
             media_item.provider_mappings, key=lambda x: x.priority, reverse=True
         ):
-            if not self.mass.get_provider(prov_mapping.provider_instance):
-                # ignore unavailable providers
+            if not (source := self._visible_provider_for(prov_mapping)):
+                # unavailable, or not one of the caller's music sources
                 continue
             with suppress(MediaNotFoundError):
                 media_item = await ctrl.get_provider_item(
                     prov_mapping.item_id,
-                    prov_mapping.provider_instance,
+                    source.instance_id,
                     force_refresh=True,
                 )
                 provider = media_item.provider
@@ -1620,7 +1671,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 library_item.item_id, library_item.provider, True
             ):
                 for prov_mapping in album_track.provider_mappings:
-                    if not (prov := self.mass.get_provider(prov_mapping.provider_instance)):
+                    if not (prov := self._visible_provider_for(prov_mapping)):
                         continue
                     if not isinstance(prov, MusicProvider):
                         continue
@@ -1647,6 +1698,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         user_initiated: bool = True,
         skip_artist_ids: list[str] | None = None,
         playback_speed: float | None = None,
+        provider_instance_id: str | None = None,
     ) -> None:
         """
         Mark item as played in playlog.
@@ -1664,6 +1716,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param skip_artist_ids: Library artist ids to skip when crediting an album's artists.
         :param playback_speed: The current playback speed to persist (audiobooks/podcasts).
             If None, any previously stored speed for the item is preserved.
+        :param provider_instance_id: The provider instance reporting the play, whose user it is.
         """
         timestamp = utc_timestamp()
         # we deliberately skip one-off items: sound effects and live inputs whoever owns
@@ -1703,6 +1756,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if userid:
             # userid overridden by parameter
             user = await self.mass.webserver.auth.get_user(userid)
+        elif provider_instance_id:
+            # an item merged from several accounts must not be guessed from its first mapping
+            user = await self._get_user_for_provider(provider_instance_id)
         elif session_user := get_current_user():
             # this is the active session user that triggered the action
             user = session_user
@@ -1803,6 +1859,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self,
         media_item: MediaItemType | ItemMapping,
         userid: str | None = None,
+        provider_instance_id: str | None = None,
     ) -> None:
         """
         Mark item as unplayed in playlog.
@@ -1810,6 +1867,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param media_item: The media item to mark as unplayed.
         :param all_users: If True, mark the item as unplayed for all users.
         :param userid: The user ID to mark the item as unplayed for (instead of the current user).
+        :param provider_instance_id: The provider instance reporting the change, whose user it is.
         """
         # the playlog is keyed by the identity the caller referenced, not the resolved one
         reference = media_item
@@ -1824,6 +1882,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if userid:
             # userid overridden by parameter
             user = await self.mass.webserver.auth.get_user(userid)
+        elif provider_instance_id:
+            # an item merged from several accounts must not be guessed from its first mapping
+            user = await self._get_user_for_provider(provider_instance_id)
         elif session_user := get_current_user():
             # this is the active session user that triggered the action
             user = session_user
@@ -2693,6 +2754,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if user is None or (allowed := visible_music_sources(self.mass, user)) is None:
             return list(providers)
         return [p for p in providers if p.type != ProviderType.MUSIC or p.instance_id in allowed]
+
+    def _visible_provider_for(self, mapping: ProviderMapping) -> ProviderInstanceType | None:
+        """
+        Return the loaded provider that serves the mapping, if the current user may see it.
+
+        :param mapping: The provider mapping to resolve.
+        """
+        # an unavailable account of a streaming service resolves to another loaded account
+        # of that service, so the account actually serving the mapping is the one to check
+        provider = self.mass.get_provider(mapping.provider_instance)
+        if provider is None or not self._apply_user_provider_filter([provider]):
+            return None
+        return provider
 
     async def _search_shareable_url(self, search_query: str) -> SearchResults | None:
         """

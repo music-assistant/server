@@ -70,6 +70,7 @@ from music_assistant.controllers.player_queues.constants import (
     DEFAULT_CROSSFADE_ENABLED,
     PLAYBACK_START_TIMEOUT,
     QUEUE_CACHE_SAVE_DELAY,
+    SKIP_END_MARGIN,
 )
 from music_assistant.controllers.player_queues.helpers import (
     committed_index,
@@ -827,7 +828,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             return
         prev_index = int(current_index)
         # restart current track if elapsed > 5s, otherwise go to previous
-        if self._queue_data[queue_id].queue.elapsed_time < 5:
+        if queue.corrected_elapsed_time < 5:
             prev_index = max(current_index - 1, 0)
 
         # immediately update current item so UI shows the new track right away
@@ -849,24 +850,32 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         )
 
     @api_command("player_queues/skip", required_scope=Scope.QUEUES_CONTROL)
+    @handle_play_action
     async def skip(self, queue_id: str, seconds: int = 10) -> None:
         """
         Handle SKIP command for given queue.
 
-        - queue_id: queue_id of the queue to handle the command.
-        - seconds: number of seconds to skip in track. Use negative value to skip back.
+        :param queue_id: queue_id of the queue to handle the command.
+        :param seconds: number of seconds to skip in the current item, negative to skip back.
         """
         if (queue := self.get(queue_id)) is None or not queue.active:
             raise InvalidCommand(f"Queue {queue_id} is not active")
-        await self.seek(queue_id, int(self._queue_data[queue_id].queue.elapsed_time + seconds))
+        if (current_item := queue.current_item) is None:
+            raise InvalidCommand(f"Queue {queue.display_name} has no item(s) loaded.")
+        if not current_item.duration:
+            raise InvalidCommand("Can not skip in items without duration.")
+        target = self._clamp_skip_target(
+            queue.corrected_elapsed_time + seconds, current_item.duration
+        )
+        await self.seek(queue_id, int(target))
 
     @api_command("player_queues/seek", required_scope=Scope.QUEUES_CONTROL)
     async def seek(self, queue_id: str, position: int = 10) -> None:
         """
         Handle SEEK command for given queue.
 
-        - queue_id: queue_id of the queue to handle the command.
-        - position: position in seconds to seek to in the current playing item.
+        :param queue_id: queue_id of the queue to handle the command.
+        :param position: position in seconds to seek to in the current playing item.
         """
         if (queue := self.get(queue_id)) is None or not queue.active:
             raise InvalidCommand(f"Queue {queue_id} is not active")
@@ -998,19 +1007,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 not seek_position
                 and not restarting_ended_queue
                 and (queue_item := self.get_item(queue_id, index))
-                and (resume_position_ms := getattr(queue_item.media_item, "resume_position_ms", 0))
             ):
-                # the client may have fetched the item before its duration was known
-                await self._restore_probed_duration(queue_item)
-                if queue_item.duration or getattr(queue_item.media_item, "duration", 0):
-                    seek_position = max(0, int((resume_position_ms - 500) / 1000))
-                else:
-                    # seeking needs a duration, which is determined while streaming
-                    self.logger.debug(
-                        "Can not resume %s at %ss: its duration is not known (yet)",
-                        queue_item.name,
-                        int(resume_position_ms / 1000),
-                    )
+                seek_position = await self._get_resume_position(queue_item)
 
             # restore the persisted playback speed for a freshly queued audiobook/episode
             # (an in-session item already carries its speed in extra_attributes)
@@ -1395,7 +1393,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 # we only allow 10 retries to prevent infinite loops
                 raise QueueEmpty("No more (playable) tracks left in the queue.")
             try:
-                await self._load_item(queue_item)
+                # a repeat plays the item over from the start, not from where it was left off
+                seek_position = (
+                    await self._get_resume_position(queue_item) if next_index > cur_index else 0
+                )
+                await self._load_item(queue_item, seek_position=seek_position)
                 # we're all set, this is our next item
                 next_item = queue_item
                 break
@@ -1933,6 +1935,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Mark (or clear) whether a queue is mid-transition (no-op if it is not registered)."""
         if (queue_data := self._queue_data.get(queue_id)) is not None:
             queue_data.transitioning = value
+
+    def _clamp_skip_target(self, target: float, duration: int) -> float:
+        """
+        Clamp a relative skip target into the current item's playable range.
+
+        :param target: The requested position in seconds.
+        :param duration: Duration of the item being skipped in.
+        """
+        return max(0.0, min(target, max(0.0, duration - SKIP_END_MARGIN)))
 
     def _clear(self, queue_id: str, skip_stop: bool = False) -> None:
         """Drop the queue's items and playback position, leaving user settings untouched."""

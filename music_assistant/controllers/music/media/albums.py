@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
@@ -36,6 +37,7 @@ from music_assistant.controllers.music.helpers import (
     fill_track_from_recording,
     metadata_for_update,
     provider_mappings_for_update,
+    provider_mappings_from_urls,
     search_name_match_clause,
 )
 from music_assistant.helpers.compare import (
@@ -56,7 +58,13 @@ from music_assistant.helpers.external_ids import (
     normalize_external_id,
 )
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.helpers.uri import share_url_provider
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.musicbrainz.provider import (
+    is_digital_release,
+    relation_urls,
+    release_matches_album,
+)
 
 from .base import EXTERNAL_ID_LOOKUP_ERRORS, MAX_EXTERNAL_ID_MATCH_LOOKUPS, MediaControllerBase
 
@@ -87,6 +95,10 @@ _ALBUM_TRACK_LOOKUP_ERRORS = (
 
 # how many seconds the duration of one and the same track may differ between sources
 _TRACK_DURATION_TOLERANCE = 8
+
+# how many of a release group's official editions are looked up on the music providers,
+# likeliest first: each one costs a MusicBrainz release lookup and a barcode fan-out
+_MAX_EDITION_LOOKUPS = 3
 
 
 @dataclass
@@ -402,16 +414,9 @@ class AlbumsController(MediaControllerBase[Album]):
             album_tracks = await self._get_provider_album_tracks(
                 item_id, provider_instance_id_or_domain
             )
-            # some album-track listings omit the parent album and its image; backfill both
-            # from the provider album so the queue shows the album name and artwork.
-            if album_tracks and (not album_tracks[0].album or not album_tracks[0].image):
-                prov_album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-                album_mapping = ItemMapping.from_item(prov_album)
-                for track in album_tracks:
-                    if prov_album.image and not track.image:
-                        track.metadata.add_image(prov_album.image)
-                    if track.album is None:
-                        track.album = album_mapping
+            await self._backfill_album_on_tracks(
+                album_tracks, item_id, provider_instance_id_or_domain
+            )
             return album_tracks
 
         # respect the current user's provider filter (if any) for both the
@@ -435,15 +440,28 @@ class AlbumsController(MediaControllerBase[Album]):
         # where each provider track landed in the result, so a playable copy from another
         # provider can take the place of an unplayable one
         provider_slots: dict[str, int] = {}
+        lookup_error: Exception | None = None
         for provider_mapping in library_album.provider_mappings:
             if (
                 allowed_providers is not None
                 and provider_mapping.provider_instance not in allowed_providers
             ):
                 continue
-            provider_tracks = await self._get_provider_album_tracks(
-                provider_mapping.item_id, provider_mapping.provider_instance
-            )
+            try:
+                provider_tracks = await self._get_provider_album_tracks(
+                    provider_mapping.item_id, provider_mapping.provider_instance
+                )
+            except _ALBUM_TRACK_LOOKUP_ERRORS as err:
+                # one provider that no longer lists the album must not hide the other
+                # providers' tracks
+                self.logger.debug(
+                    "Album tracks unavailable for %s on %s: %s",
+                    provider_mapping.item_id,
+                    provider_mapping.provider_instance,
+                    err,
+                )
+                lookup_error = err
+                continue
             for provider_track in provider_tracks:
                 # In some cases (looking at you YTM) the disc/track number is not obtained from
                 # library_tracks. Ensure to update the disc/track number when interacting with
@@ -489,6 +507,9 @@ class AlbumsController(MediaControllerBase[Album]):
                     result.append(provider_track)
                 else:
                     result[slot] = provider_track
+        if not result and lookup_error is not None:
+            # nothing else lists the album, so the failure is the caller's answer
+            raise lookup_error
         # NOTE: we need to return the results sorted on disc/track here
         # to ensure the correct order at playback
         return sorted(result, key=lambda x: (x.disc_number, x.track_number))
@@ -535,6 +556,72 @@ class AlbumsController(MediaControllerBase[Album]):
                     result.extend(await provider.get_album_versions(mapped_id))
         return result
 
+    async def resolve_musicbrainz_release_group(
+        self, release_group_id: str, allow_update_metadata: bool = True
+    ) -> Album:
+        """
+        Return the album a MusicBrainz release group is, on one of the user's music providers.
+
+        The group's likeliest official editions are tried in turn, and the album is the first
+        one a music provider has, found through the links MusicBrainz keeps or, failing
+        those, by the edition's barcode. An album already in the library is returned as the
+        library album.
+
+        :param release_group_id: MusicBrainz release group id.
+        :param allow_update_metadata: Whether the album's metadata may be refreshed on the way.
+        :raises ProviderUnavailableError: The MusicBrainz provider is not loaded.
+        :raises MediaNotFoundError: None of the user's music providers has the album.
+        """
+        musicbrainz = cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
+        if musicbrainz is None:
+            raise ProviderUnavailableError("MusicBrainz is not available")
+        # a heavily reissued album has more editions than one page holds, of which the
+        # likeliest few are wanted rather than the whole set
+        editions = [
+            release
+            for release in await musicbrainz.browse_releases_by_release_group(
+                release_group_id, complete=False
+            )
+            if release.status == "Official"
+        ]
+        # the digital editions of one group carry different ids on the providers, so each
+        # edition's own links and barcode are tried, never those of the whole group; the
+        # editions linked to the user's own services go first, as only those resolve by link
+        services = {source.domain for source in self.mass.music.providers if source.available}
+        ranked = sorted(editions, key=lambda edition: _streaming_edition_rank(edition, services))
+        for edition in ranked[:_MAX_EDITION_LOOKUPS]:
+            try:
+                release = await musicbrainz.get_release_details(edition.id)
+            except InvalidDataError as err:
+                # a stale edition costs nothing but its turn
+                self.logger.debug("Release %s could not be looked up: %s", edition.id, err)
+                continue
+            # a link names one loaded instance of a service, while the user may only be
+            # handed an album from a music source it may see
+            linked = _within_sources(
+                await provider_mappings_from_urls(
+                    self.mass, relation_urls(release.relations), MediaType.ALBUM, set()
+                ),
+                self.mass.music.providers,
+            )
+            if album := await self._first_available_album(
+                linked, release_group_id, allow_update_metadata
+            ):
+                return album
+            # a barcode lookup fans out over every provider, so it is spent only when none
+            # of the links resolves; a linked provider is asked too, as its link may be stale
+            by_barcode = await self._album_candidates_by_barcode(release)
+            if album := await self._first_available_album(
+                by_barcode, release_group_id, allow_update_metadata
+            ):
+                return album
+        msg = f"Release group {release_group_id} is not available on any music provider"
+        raise MediaNotFoundError(
+            msg,
+            translation_key="album_not_available_on_music_services",
+            translation_owner=self.translation_owner,
+        )
+
     async def get_library_album_tracks(
         self,
         item_id: str | int,
@@ -560,7 +647,12 @@ class AlbumsController(MediaControllerBase[Album]):
         )
 
     async def link_album_tracks(
-        self, album: Album, db_tracks: Sequence[Track], release: MusicBrainzRelease | None
+        self,
+        album: Album,
+        db_tracks: Sequence[Track],
+        release: MusicBrainzRelease | None,
+        *,
+        link_providers: bool = True,
     ) -> None:
         """
         Carry an album's MusicBrainz identity and provider links over to its library tracks.
@@ -573,6 +665,7 @@ class AlbumsController(MediaControllerBase[Album]):
         :param album: The library album.
         :param db_tracks: The album's library tracks.
         :param release: The album's MusicBrainz release, if it was identified.
+        :param link_providers: Whether to link the tracks to the album's providers too.
         """
         if not db_tracks:
             return
@@ -595,6 +688,8 @@ class AlbumsController(MediaControllerBase[Album]):
         async with self.mass.music.database.deferred_commit():
             if release is not None:
                 await self._link_tracks_to_release(db_tracks, release)
+            if not link_providers:
+                return
             for domain, mapping in album_mappings.items():
                 if all(domain in domains for domains in track_domains):
                     continue
@@ -641,6 +736,12 @@ class AlbumsController(MediaControllerBase[Album]):
         cur_provider_domains = {
             x.provider_domain for x in db_album.provider_mappings if x.available
         }
+        # the links MusicBrainz keeps name the album on the other providers outright, so
+        # those providers are linked first and only the remaining ones are searched
+        if musicbrainz := self._musicbrainz_link_provider():
+            cur_provider_domains |= await self._link_musicbrainz_entity(
+                db_album, lambda: musicbrainz.resolve_release(db_album)
+            )
         for provider in self.mass.music.providers:
             if provider.domain in cur_provider_domains:
                 continue
@@ -757,6 +858,28 @@ class AlbumsController(MediaControllerBase[Album]):
             prov = cast("MusicProvider", prov)
             return await prov.get_album_tracks(item_id)
         return []
+
+    async def _backfill_album_on_tracks(
+        self, album_tracks: list[Track], item_id: str, provider_instance_id_or_domain: str
+    ) -> None:
+        """
+        Fill in the parent album and its image on provider album tracks that omit them.
+
+        :param album_tracks: The album tracks as listed by the provider.
+        :param item_id: The provider album id.
+        :param provider_instance_id_or_domain: The provider the album tracks come from.
+        """
+        # some album-track listings omit the parent album and its image; backfill both
+        # from the provider album so the queue shows the album name and artwork.
+        if not album_tracks or (album_tracks[0].album and album_tracks[0].image):
+            return
+        prov_album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
+        album_mapping = ItemMapping.from_item(prov_album)
+        for track in album_tracks:
+            if prov_album.image and not track.image:
+                track.metadata.add_image(prov_album.image)
+            if track.album is None:
+                track.album = album_mapping
 
     async def _verify_musicbrainz_mapping(self, mapping: ProviderMapping) -> bool:
         """Return True if a linked album exists on the provider, checked for Apple Music only."""
@@ -941,6 +1064,89 @@ class AlbumsController(MediaControllerBase[Album]):
             if evidence == AlbumMatchEvidence.MATCH:
                 return list(prov_album.provider_mappings)
         return []
+
+    async def _album_candidates_by_barcode(
+        self, release: MusicBrainzRelease
+    ) -> list[ProviderMapping]:
+        """
+        Return the mappings of the albums the music providers find by a release's barcode.
+
+        Only an album that is the release, by title and primary artist, counts.
+
+        :param release: The MusicBrainz release, with its barcode and artist credits.
+        """
+        if not release.barcode or not is_valid_barcode(release.barcode):
+            return []
+        upc = barcode_to_upc(release.barcode)
+        providers = [
+            provider
+            for provider in self.mass.music.providers
+            if provider.supports_feature(ProviderFeature.ALBUM_BY_EXTERNAL_ID)
+        ]
+        hits = await asyncio.gather(
+            *(self._album_by_barcode(provider, upc) for provider in providers)
+        )
+        candidates: list[ProviderMapping] = []
+        for provider, hit in zip(providers, hits, strict=True):
+            if hit is None:
+                continue
+            # a barcode gets reused, and a provider answers with the first album carrying it
+            if not release_matches_album(release, hit):
+                self.logger.debug(
+                    "Barcode %s on provider %s is album %s, not %s",
+                    upc,
+                    provider.name,
+                    hit.name,
+                    release.title,
+                )
+                continue
+            candidates.extend(hit.provider_mappings)
+        return candidates
+
+    async def _album_by_barcode(self, provider: MusicProvider, upc: str) -> Album | None:
+        """Return the album a provider finds by a barcode, if it has one and answers."""
+        try:
+            return await provider.get_album_by_external_id(upc, ExternalID.BARCODE)
+        except EXTERNAL_ID_LOOKUP_ERRORS as err:
+            self.logger.debug(
+                "Barcode %s lookup on provider %s failed: %s", upc, provider.name, err
+            )
+            return None
+
+    async def _first_available_album(
+        self,
+        candidates: Sequence[ProviderMapping],
+        release_group_id: str,
+        allow_update_metadata: bool,
+    ) -> Album | None:
+        """Return the first candidate its provider still serves as an album, if any."""
+        for candidate in candidates:
+            try:
+                if library_album := await self.get_library_item_by_prov_id(
+                    candidate.item_id, candidate.provider_instance
+                ):
+                    return await self.get(
+                        library_album.item_id,
+                        "library",
+                        allow_update_metadata=allow_update_metadata,
+                    )
+                # the candidate names one of the user's own sources, so an unavailable one
+                # must not fall back to another account of the same service
+                return await self.get_provider_item(
+                    candidate.item_id,
+                    candidate.provider_instance,
+                    allow_fallback=False,
+                    strict_provider_instance=True,
+                )
+            except EXTERNAL_ID_LOOKUP_ERRORS as err:
+                self.logger.debug(
+                    "Release group %s is not available as album %s on %s: %s",
+                    release_group_id,
+                    candidate.item_id,
+                    candidate.provider_instance,
+                    err,
+                )
+        return None
 
     async def _resolve_album_evidence(
         self,
@@ -1183,6 +1389,52 @@ def _canonical_album_barcodes(album: Album) -> set[str]:
         for external_id_type, value in album.external_ids
         if external_id_type == ExternalID.BARCODE and is_valid_barcode(value)
     }
+
+
+def _streaming_edition_rank(
+    release: MusicBrainzBarcodeRelease, services: set[str]
+) -> tuple[bool, bool, bool, bool, str]:
+    """
+    Return the sort key ranking a group's official editions, the one the user's services carry first.
+
+    :param release: The edition as the release group browse lists it.
+    :param services: The domains of the music services the user may see.
+    """
+    linked = {
+        service
+        for url in relation_urls(release.relations)
+        if (service := share_url_provider(url, MediaType.ALBUM))
+    }
+    return (
+        not linked & services,
+        not is_digital_release(release),
+        not linked,
+        release.country not in ("XW", "XE"),
+        release.date or "9999",
+    )
+
+
+def _within_sources(
+    candidates: Iterable[ProviderMapping], sources: Sequence[MusicProvider]
+) -> list[ProviderMapping]:
+    """
+    Return the candidates that name one of the given music sources.
+
+    A candidate stays on its own instance when that is an available source; otherwise it
+    moves to the first available instance the sources have of its service, failing that to
+    the first there is. One on a service they do not include is left out.
+    """
+    available = {source.instance_id for source in sources if source.available}
+    first_by_domain: dict[str, str] = {}
+    for source in sorted(sources, key=lambda source: not source.available):
+        first_by_domain.setdefault(source.domain, source.instance_id)
+    within: list[ProviderMapping] = []
+    for candidate in candidates:
+        if candidate.provider_instance in available:
+            within.append(candidate)
+        elif instance := first_by_domain.get(candidate.provider_domain):
+            within.append(replace(candidate, provider_instance=instance))
+    return within
 
 
 def _unambiguous_release_ids(

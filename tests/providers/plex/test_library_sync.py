@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -100,6 +101,7 @@ class _FakePlexAlbum:
         self.parentTitle = "Author 1"
         self.grandparentTitle = None
         self.summary = ""
+        self.genres: list[Any] | None = None
         self._data = _FakePlexData({"title": title, "key": key})
 
     def getWebURL(self, baseurl: str) -> str:  # noqa: N802
@@ -268,6 +270,26 @@ async def test_spoken_item_ignores_out_of_range_year(library_type: str, parse_me
     parsed = await getattr(provider, parse_method)(_FakePlexAlbum(year=19999))
 
     assert parsed.metadata.release_date is None
+
+
+async def test_podcast_keeps_its_plex_genres() -> None:
+    """A podcast with Plex genres keeps them instead of the Spoken Word fallback."""
+    provider = _make_provider(LIBRARY_TYPE_PODCASTS)
+    plex_album = _FakePlexAlbum()
+    plex_album.genres = [SimpleNamespace(tag="News"), SimpleNamespace(tag="Comedy")]
+
+    parsed = await provider._parse_podcast(plex_album)
+
+    assert parsed.metadata.genres == {"News", "Comedy"}
+
+
+async def test_podcast_without_genres_gets_spoken_word() -> None:
+    """A podcast with no Plex genres falls back to the Spoken Word genre."""
+    provider = _make_provider(LIBRARY_TYPE_PODCASTS)
+
+    parsed = await provider._parse_podcast(_FakePlexAlbum())
+
+    assert parsed.metadata.genres == {"Spoken Word"}
 
 
 async def test_album_tracks_skips_unparsable_track() -> None:

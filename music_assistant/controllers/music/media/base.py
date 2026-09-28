@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, final, overload
 import aiohttp
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
+    ArtistType,
     EventType,
     ExternalID,
     ImageType,
@@ -26,6 +27,7 @@ from music_assistant_models.errors import (
     InsufficientPermissions,
     InvalidDataError,
     MediaNotFoundError,
+    MusicAssistantError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
@@ -33,6 +35,8 @@ from music_assistant_models.errors import (
 from music_assistant_models.favorite_update import FavoriteUpdate
 from music_assistant_models.helpers import create_safe_string, get_global_cache_value
 from music_assistant_models.media_items import (
+    Artist,
+    Audiobook,
     AudioFormat,
     ItemMapping,
     ItemMappingSummary,
@@ -81,13 +85,16 @@ from music_assistant.helpers.external_ids import (
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.provider_access import exact_provider, visible_music_sources
 from music_assistant.helpers.util import guard_single_request, parse_optional_bool
+from music_assistant.providers.musicbrainz.provider import relation_urls
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Mapping
+    from collections.abc import AsyncGenerator, Callable, Coroutine, Mapping
 
     from music_assistant import MusicAssistant
     from music_assistant.models.music_provider import MusicProvider
     from music_assistant.models.plugin import PluginProvider
+    from music_assistant.providers.musicbrainz.models import MusicBrainzArtist, MusicBrainzRelease
+    from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
 
 
 ItemCls = TypeVar("ItemCls", bound="MediaItemType")
@@ -205,10 +212,61 @@ class TrackSyncDetails(LibraryItemSyncDetails):
 class AudiobookSyncDetails(LibraryItemSyncDetails):
     """Lightweight sync snapshot of a library audiobook."""
 
-    author_is_str: bool
-    narrator_is_str: bool
+    # (artist_id, artist_type, provider_instance, provider_item_id) per linked artist mapping
+    artist_links: frozenset[tuple[int, str, str, str]]
+    # the plain names stored on the audiobook itself
+    authors: tuple[str, ...]
+    narrators: tuple[str, ...]
     fully_played: bool | None
     resume_position_ms: int | None
+
+    def authors_narrators_changed(self, audiobook: Audiobook) -> bool:
+        """
+        Return True when the provider's authors/narrators differ from the stored ones.
+
+        :param audiobook: The audiobook as the provider currently reports it.
+        """
+        instance_id = audiobook.provider
+        roles = (
+            (ArtistType.AUTHOR, self.authors, audiobook.authors),
+            (ArtistType.NARRATOR, self.narrators, audiobook.narrators),
+        )
+        # a provider reporting nobody does not mean the book has nobody
+        covered = {artist_type.value for artist_type, _, prov_values in roles if prov_values}
+        prov_ids = {
+            value.item_id
+            for _, _, prov_values in roles
+            for value in prov_values
+            if isinstance(value, Artist)
+        }
+        # mirrors the replacement on update: the links this provider reports, in any role,
+        # as one artist may serve as author and narrator and have several ids
+        reported: dict[int, tuple[str, set[str]]] = {}
+        for artist_id, artist_type, inst, item_id in self.artist_links:
+            if inst == instance_id:
+                reported.setdefault(artist_id, (artist_type, set()))[1].add(item_id)
+        if not prov_ids <= {x for _, ids in reported.values() for x in ids}:
+            return True
+        if any(
+            not ids & prov_ids and (len(covered) == 2 or artist_type in covered)
+            for artist_type, ids in reported.values()
+        ):
+            return True
+        # plain names are shared by all providers of the book, so only a sole one owns them
+        if {x.provider_instance for x in self.provider_mappings} != {instance_id}:
+            return False
+        for _, stored_names, prov_values in roles:
+            prov_names = tuple(value for value in prov_values if isinstance(value, str))
+            if prov_names and prov_names != stored_names:
+                return True
+        return False
+
+
+@dataclass(slots=True)
+class PodcastSyncDetails(LibraryItemSyncDetails):
+    """Lightweight sync snapshot of a library podcast."""
+
+    genres: set[str]
 
 
 class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
@@ -1272,6 +1330,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         Add provider mappings to existing library item.
 
         A mapping that belongs to another library item merges that item into this one.
+        The copies made for the other instances of a mapping's provider count as well.
 
         :param item_id: The library item ID to add mappings to.
         :param provider_mappings: The provider mappings to add.
@@ -1532,7 +1591,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         Update the provider_mappings table for the media item.
 
         An empty set of mappings never clears the stored rows: an item without any
-        mapping can not be played or resolved.
+        mapping can not be played or resolved. A mapping another library item holds
+        stays with that item: only a library merge moves mappings between items.
         """
         db_id = int(item_id)  # ensure integer
         prov_map_objs: list[dict[str, Any]] = []
@@ -1567,10 +1627,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 DB_TABLE_PROVIDER_MAPPINGS,
                 {"media_type": self.media_type.value, "item_id": db_id},
             )
-        await self.mass.music.database.upsert_many(
-            DB_TABLE_PROVIDER_MAPPINGS,
-            prov_map_objs,
+        untouched = await self.mass.music.database.upsert_many(
+            DB_TABLE_PROVIDER_MAPPINGS, prov_map_objs, immutable=("item_id",)
         )
+        if untouched:
+            self.logger.debug(
+                "Skipped %s provider mapping(s) for %s item id %s: held by another library item",
+                untouched,
+                self.media_type.value,
+                db_id,
+            )
 
     @final
     async def set_external_ids(
@@ -1875,6 +1941,42 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param mapping: The candidate mapping, built from a MusicBrainz URL relation.
         """
         return True
+
+    def _musicbrainz_link_provider(self) -> MusicbrainzProvider | None:
+        """Return the MusicBrainz provider when it is loaded and linking through it is enabled."""
+        if not self.mass.metadata.link_providers_via_musicbrainz:
+            return None
+        return cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
+
+    @final
+    async def _link_musicbrainz_entity(
+        self,
+        db_item: ItemCls,
+        resolve: Callable[[], Coroutine[Any, Any, MusicBrainzArtist | MusicBrainzRelease | None]],
+    ) -> set[str]:
+        """
+        Link a library item to the providers MusicBrainz knows it on, before any is searched.
+
+        :param db_item: The library item under match.
+        :param resolve: Starts the MusicBrainz lookup identifying the item.
+        :return: The provider domains linked, for the search to skip.
+        """
+        try:
+            if (entity := await resolve()) is None:
+                return set()
+            added = await self.link_musicbrainz_mappings(db_item, relation_urls(entity.relations))
+        except (MusicAssistantError, aiohttp.ClientError, TimeoutError) as err:
+            # the search legs can still find the providers, so MusicBrainz trouble only
+            # costs the shortcut
+            self.logger.warning(
+                "Error linking %s %s through MusicBrainz: %s",
+                self.media_type.value,
+                db_item.name,
+                err,
+                exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+            )
+            return set()
+        return {mapping.provider_domain for mapping in added}
 
     def _external_ids_query(
         self, media_type: MediaType | None = None, table_alias: str | None = None
@@ -2856,11 +2958,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # item claims concurrently cannot slip through
         async with self._db_add_lock:
             library_item = await self.get_library_item(db_id)
-            if not merge_conflicts:
-                # the copies for sibling provider instances must pass the ownership check as
-                # well, so they are expanded here rather than by the write below
-                mappings = self._with_sibling_instance_mappings(library_item, mappings)
+            # the copies for sibling provider instances pass the ownership check as well;
+            # a copy another item holds merges that item or drops the group, never moves it
+            mappings = self._with_sibling_instance_mappings(library_item, mappings)
             for mapping in list(mappings):
+                if mapping not in mappings:
+                    continue  # dropped along with its group
                 existing_item = await self.get_library_item_by_prov_id(
                     mapping.item_id, mapping.provider_instance
                 )
@@ -2893,8 +2996,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             if not added:
                 return []
             library_item.provider_mappings.update(added)
-            if merge_conflicts:
-                self.mass.music.match_provider_instances(library_item)
             await self.set_provider_mappings(db_id, library_item.provider_mappings)
             self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
             return added
@@ -2916,7 +3017,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             ):
                 if instance.instance_id in mapped_instances or not instance.is_streaming_provider:
                     continue
-                copies.append(replace(mapping, provider_instance=instance.instance_id))
+                # whether the other instance holds the item in its library is unknown
+                copies.append(
+                    replace(mapping, provider_instance=instance.instance_id, in_library=None)
+                )
                 mapped_instances.add(instance.instance_id)
         return mappings + copies
 

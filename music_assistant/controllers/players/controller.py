@@ -74,6 +74,7 @@ from music_assistant.constants import (
     ATTR_MUTE_CONTROL,
     ATTR_MUTE_LOCK,
     ATTR_POWER_CONTROL,
+    ATTR_POWER_OFF_IN_PROGRESS,
     ATTR_POWERED,
     ATTR_PREVIOUS_VOLUME,
     ATTR_SUPPORTED_FEATURES,
@@ -153,6 +154,11 @@ POSITION_ANCHOR_KEYS = frozenset(
 # back some time later, short enough for a change made on the device itself to win again.
 VOLUME_TARGET_EXPIRY = 2.0
 
+# How long an MA power off command claims the power off the player reports back. Covers
+# the stop the command waits on and a power control that reports the new state some
+# time later.
+POWER_OFF_IN_PROGRESS_EXPIRY = 30.0
+
 # How long a freshly started source session may wait for its first stream request
 # before it is considered never started and released.
 AUDIO_SOURCE_CLAIM_TIMEOUT = 30
@@ -227,7 +233,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         Ordering rule: when a command needs both a group/leader lock and a member
         lock, it must take the group's first. The group players themselves always
         lock their members from under their own lock, so a member-first
-        acquisition is an inversion and will deadlock.
+        acquisition is an inversion and will deadlock. A command on a member that
+        reaches its group uses get_group_and_player_lock for that.
 
         :param player_id: The player to lock.
         :param purpose: Lock category. Commands with different purposes can run
@@ -276,6 +283,38 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     if not held:
                         del self._task_held_locks[task]
                 lock.release()
+
+    @contextlib.asynccontextmanager
+    async def get_group_and_player_lock(self, player_id: str) -> AsyncIterator[None]:
+        """
+        Acquire the playback lock of a player, preceded by that of the group holding it.
+
+        For a command on a group member that reaches its (sync)group: releasing the
+        member, joining it back or restarting the group all take the group's lock,
+        which has to be taken before the member's own (see get_player_lock). A player
+        that is not part of a group only takes its own lock.
+
+        :param player_id: The player to lock.
+        """
+        async with contextlib.AsyncExitStack() as stack:
+            if (player := self.get_player(player_id)) and (
+                parent_id := (player.state.active_group or player.state.synced_to)
+            ):
+                if (
+                    (parent := self.get_player(parent_id))
+                    and parent.type != PlayerType.GROUP
+                    and parent.state.active_group
+                ):
+                    # cmd_set_members redirects a captured sync leader to its group
+                    # player, so that group is the lock it will actually take
+                    parent_id = parent.state.active_group
+                await stack.enter_async_context(
+                    self.get_player_lock(parent_id, PlayerLockPurpose.PLAYBACK)
+                )
+            await stack.enter_async_context(
+                self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK)
+            )
+            yield
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the Player Controller."""
@@ -870,31 +909,17 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :param player_id: player_id of the player to handle the command.
         :param powered: bool if player should be powered on or off.
         """
-        player = self.get_player(player_id, True)
-        assert player is not None  # for type checking
-        async with contextlib.AsyncExitStack() as stack:
-            # Power is serialized with PLAYBACK because powering on a sync/group player
-            # forms the group (and powering off dissolves it) - this must not race with
-            # play_media / cmd_resume / cmd_set_members on the same player.
-            # A power off also detaches this player from its (sync)group, which ends up
-            # in cmd_set_members on that group - and that takes the group's lock before
-            # this player's. The same two locks are taken here, so they must be taken in
-            # the same order or the two commands lock each other out (see get_player_lock).
-            if not powered and (parent_id := (player.state.active_group or player.state.synced_to)):
-                if (
-                    (parent := self.get_player(parent_id))
-                    and parent.type != PlayerType.GROUP
-                    and parent.state.active_group
-                ):
-                    # cmd_set_members redirects a captured sync leader to its group
-                    # player, so that group is the lock it will actually take
-                    parent_id = parent.state.active_group
-                await stack.enter_async_context(
-                    self.get_player_lock(parent_id, PlayerLockPurpose.PLAYBACK)
-                )
-            await stack.enter_async_context(
-                self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK)
-            )
+        # Power is serialized with PLAYBACK because powering on a sync/group player
+        # forms the group (and powering off dissolves it) - this must not race with
+        # play_media / cmd_resume / cmd_set_members on the same player.
+        # A power off also detaches this player from its (sync)group, which takes the
+        # group's lock - so that one is taken first (see get_group_and_player_lock).
+        lock = (
+            self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK)
+            if powered
+            else self.get_group_and_player_lock(player_id)
+        )
+        async with lock:
             await self._handle_cmd_power(player_id, powered)
 
     @api_command("players/cmd/volume_set", required_scope=Scope.PLAYERS_CONTROL)
@@ -1096,9 +1121,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # player is released from its group/sync first, then plays the media
         # standalone. With the preference off, behavior falls back to the
         # legacy "redirect to group leader" path below.
-        # Note: the release step runs outside the PLAYBACK lock to avoid an
-        # AB-BA cycle with cmd_set_members(group), which acquires lock(group)
-        # then lock(sync_leader) via the sync_group provider.
+        # The release reaches the group (and takes its lock through cmd_set_members
+        # for a dynamic member), so it runs before this player's own lock is taken
+        # here. A queue action calling in with that lock already held took the
+        # group's lock first as well (see get_group_and_player_lock).
         target_player = self.get_player(player_id, True)
         if target_player is not None and (
             target_player.state.synced_to or target_player.state.active_group
@@ -2977,11 +3003,20 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # linked power control was switched off directly) must be unsynced too. We act
         # only on an explicit on->off transition, leaving players without power control
         # (powered == None) untouched. The player is still reachable here, so we route
-        # through cmd_ungroup which also transfers leadership when it is a sync leader.
-        if (
-            changed_values.get(ATTR_POWERED) == (True, False)
-            and player.state.type in UNGROUP_ON_POWER_OFF_TYPES
-            and (player.state.synced_to or player.state.active_group or player.state.group_members)
+        # through cmd_ungroup, which also hands over the playback of a sync leader that
+        # plays its own queue.
+        if changed_values.get(ATTR_POWERED) != (True, False):
+            return
+        # An MA power command ungroups the player itself before it flips the power, and a
+        # provider may keep listing the followers on a leader for a while after that
+        # (Sonos does), so the transition it causes would ungroup a second time. The
+        # marker expires: a command whose device never reported off must not claim the
+        # next external power off.
+        issued_at = player.extra_data.pop(ATTR_POWER_OFF_IN_PROGRESS, None)
+        if issued_at is not None and time.monotonic() - issued_at < POWER_OFF_IN_PROGRESS_EXPIRY:
+            return
+        if player.state.type in UNGROUP_ON_POWER_OFF_TYPES and (
+            player.state.synced_to or player.state.active_group or player.state.group_members
         ):
             self.mass.create_task(self.cmd_ungroup(player.player_id))
 
@@ -3059,26 +3094,23 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """Get player with check if playback related command should be redirected."""
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
-        if player.state.synced_to and (sync_leader := self.get_player(player.state.synced_to)):
-            self.logger.info(
-                "Player %s is synced to %s and can not accept "
-                "playback related commands itself, "
-                "redirected the command to the sync leader.",
-                player.name,
-                sync_leader.name,
-            )
-            return sync_leader
-        if player.state.active_group and (
-            active_group := self.get_player(player.state.active_group)
+        target = player
+        if target.state.synced_to and (sync_leader := self.get_player(target.state.synced_to)):
+            target = sync_leader
+        # a captured sync leader hands the command on to its group, which owns its
+        # playback and whose lock has to be taken first (see get_group_and_player_lock)
+        if target.state.active_group and (
+            active_group := self.get_player(target.state.active_group)
         ):
+            target = active_group
+        if target is not player:
             self.logger.info(
-                "Player %s is part of a playergroup and can not accept "
-                "playback related commands itself, "
-                "redirected the command to the group leader.",
+                "Player %s is synced or grouped and can not accept playback related "
+                "commands itself, redirected the command to %s.",
                 player.name,
+                target.name,
             )
-            return active_group
-        return player
+        return target
 
     def _get_active_audio_source(self, player: Player) -> tuple[AudioSource, PluginProvider] | None:
         """
@@ -3540,8 +3572,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 (member := self.get_player(m)) and member.state.type in PLAYBACK_TARGET_TYPES
                 for m in remaining_members
             )
+            # only a queue of the leader's own is handed over: the elected leader of a
+            # group player plays the group's queue, and that group re-forms around another
+            # member itself (its native followers may still linger on it after a dissolve)
             active_queue = self.get_active_queue(parent_player)
-            if has_playback_heir and active_queue and active_queue.state != PlaybackState.IDLE:
+            if (
+                has_playback_heir
+                and active_queue
+                and active_queue.queue_id == target_player
+                and active_queue.state != PlaybackState.IDLE
+            ):
                 # transfer leadership to a remaining member instead of dissolving
                 await self._transfer_ad_hoc_leadership(parent_player, remaining_members)
                 return
@@ -3965,6 +4005,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             )
             return  # nothing to do
 
+        if not powered:
+            # the power off the player reports back must not ungroup it a second time: a
+            # device that powers itself off when stopped reports it before the power
+            # command below even reaches it
+            player.extra_data[ATTR_POWER_OFF_IN_PROGRESS] = time.monotonic()
+
         # ungroup player at power off
         player_was_sync_child = bool(player.state.synced_to or player.state.active_group)
         if (
@@ -3972,7 +4018,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             and player.type in UNGROUP_ON_POWER_OFF_TYPES
             and not powered
         ):
-            # ungroup player if it is synced (or is a sync leader itself)
+            # ungroup player if it is synced (or is a sync leader itself). Only this
+            # player leaves: its followers keep their own power state, as leadership
+            # transfers to one of them or their group re-forms without it
             await self.cmd_ungroup(player_id)
 
         # always stop player at power off
@@ -3984,25 +4032,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # wait for the stop command to process and prevent race conditions
             async with self.wait_for_player_update(player_id, timeout=5):
                 await self._stop_player_or_its_queue(player)
-
-        # power off all synced childs when player is a sync leader
-        elif (
-            not powered
-            and player_state.type in UNGROUP_ON_POWER_OFF_TYPES
-            and player_state.group_members
-        ):
-            # Sequential and in this very task: a member's power off detaches it from
-            # this leader and so needs the locks this power off already holds, and
-            # get_player_lock is only re-entrant within a single task.
-            for member in self.iter_group_members(player, True):
-                if member.power_control == PLAYER_CONTROL_NONE:
-                    continue
-                try:
-                    await self._handle_cmd_power(member.player_id, False)
-                except MusicAssistantError as err:
-                    self.logger.warning(
-                        "Could not power off group member %s: %s", member.display_name, err
-                    )
 
         # handle actual power command
         if player_state.power_control == PLAYER_CONTROL_NONE:

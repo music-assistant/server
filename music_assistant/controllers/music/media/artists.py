@@ -11,6 +11,8 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.enums import (
     AlbumType,
     ArtistType,
+    ExternalID,
+    ImageType,
     MediaType,
     ProviderFeature,
     ProviderType,
@@ -29,8 +31,10 @@ from music_assistant_models.media_items import (
     Audiobook,
     ItemMapping,
     MediaCollection,
+    MediaItemImage,
     ProviderMapping,
     Track,
+    UniqueList,
 )
 
 from music_assistant.constants import (
@@ -59,10 +63,11 @@ from music_assistant.models.music_provider import MusicProvider
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Container, Mapping, Sequence
 
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
+    from music_assistant.providers.musicbrainz import MusicbrainzProvider, MusicBrainzReleaseGroup
 
 
 class ArtistsController(MediaControllerBase[Artist]):
@@ -84,6 +89,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         self.mass.register_api_command(
             f"music/{api_base}/artist_tracks", self.tracks, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/discography", self.discography, required_scope=Scope.LIBRARY_READ
         )
         self.mass.register_api_command(
             f"music/{api_base}/top_tracks", self.top_tracks, required_scope=Scope.LIBRARY_READ
@@ -260,6 +268,71 @@ class ArtistsController(MediaControllerBase[Artist]):
             return await self.get_library_artist_albums(item_id, provider_filter=provider_filter)
         self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
         return await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain)
+
+    async def discography(self, item_id: str, provider_instance_id_or_domain: str) -> list[Album]:
+        """
+        Return the discography of a library artist as MusicBrainz knows it, newest first.
+
+        Every album, EP and single credited to the artist is listed. The ones in the library
+        are the library albums themselves; the others are MusicBrainz albums, which resolve
+        to the user's music providers when opened or added to the library.
+
+        :param item_id: The library item id of the artist.
+        :param provider_instance_id_or_domain: The provider of the artist, must be ``library``.
+        """
+        if provider_instance_id_or_domain != "library":
+            msg = "A discography is only available for library artists"
+            raise InvalidDataError(msg)
+        artist = await self.get_library_item(item_id)
+        musicbrainz = cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
+        if musicbrainz is None:
+            return []
+        library_albums = await self.albums(item_id, "library")
+        mbid = artist.mbid
+        if not mbid:
+            # an artist not yet identified on MusicBrainz is identified for this listing only;
+            # storing the id is left to the background linking, a read writes nothing
+            mb_artist = await musicbrainz.resolve_artist(artist, library_albums, [])
+            mbid = mb_artist.id if mb_artist else None
+        # the Various Artists entity is nobody's discography
+        if not mbid or mbid == VARIOUS_ARTISTS_MBID:
+            return []
+        release_groups = await musicbrainz.browse_release_groups_by_artist(mbid)
+        if not release_groups:
+            return []
+        albums_by_release_group: dict[str, Album] = {}
+        unidentified_albums: list[Album] = []
+        for album in library_albums:
+            if release_group_id := album.get_external_id(ExternalID.MB_RELEASEGROUP):
+                albums_by_release_group[release_group_id] = album
+            else:
+                unidentified_albums.append(album)
+        for album in unidentified_albums:
+            if group := _release_group_of(
+                album,
+                release_groups,
+                albums_by_release_group,
+                musicbrainz.album_type_from_release_group,
+            ):
+                albums_by_release_group[group.id] = album
+        artist_mapping = ItemMapping.from_item(artist)
+        # the Cover Art Archive provider, if loaded, fetches a cover once its image is shown,
+        # so the listing itself costs no lookups
+        cover_provider = "coverartarchive" if self.mass.get_provider("coverartarchive") else None
+        discography: list[Album] = []
+        for group in release_groups:
+            if library_album := albums_by_release_group.get(group.id):
+                discography.append(library_album)
+                continue
+            discography.append(
+                _album_from_release_group(
+                    group,
+                    artist_mapping,
+                    musicbrainz.album_type_from_release_group(group),
+                    cover_provider,
+                )
+            )
+        return discography
 
     async def top_tracks(
         self,
@@ -1003,6 +1076,12 @@ class ArtistsController(MediaControllerBase[Artist]):
         cur_provider_domains = {
             x.provider_domain for x in db_artist.provider_mappings if x.available
         }
+        # the links MusicBrainz keeps name the artist on the other providers outright, so
+        # those providers are linked first and only the remaining ones are searched
+        if musicbrainz := self._musicbrainz_link_provider():
+            cur_provider_domains |= await self._link_musicbrainz_entity(
+                db_artist, lambda: musicbrainz.resolve_artist(db_artist, [], [])
+            )
         for provider in self.mass.music.providers:
             if provider.domain in cur_provider_domains:
                 continue
@@ -1218,3 +1297,88 @@ class ArtistsController(MediaControllerBase[Artist]):
         item = cast("ArtistSummary", super()._parse_summary_row(db_row))
         item.artist_type = ArtistType(db_row["artist_type"])
         return item
+
+
+_SHORT_FORM_TYPES = {AlbumType.SINGLE, AlbumType.EP}
+
+
+def _release_group_of(
+    album: Album,
+    release_groups: Sequence[MusicBrainzReleaseGroup],
+    claimed: Container[str],
+    album_type_of: Callable[[MusicBrainzReleaseGroup], AlbumType],
+) -> MusicBrainzReleaseGroup | None:
+    """
+    Return the one release group a library album not identified on MusicBrainz is.
+
+    Same-titled groups are told apart by the album's type and year; a group that remains
+    ambiguous is none of them.
+
+    :param album: The library album, without a release group id.
+    :param release_groups: The release groups of the album's artist.
+    :param claimed: The ids of the release groups other library albums are.
+    :param album_type_of: Maps a release group to the album type it describes.
+    """
+    candidates = [
+        group
+        for group in release_groups
+        if group.id not in claimed and compare_album_name(album.name, group.title)
+    ]
+    if len(candidates) > 1:
+        # the type tells a same-titled single or EP from the album, and no more: the music
+        # services type a live album "album" and an EP "single" or even "album"
+        candidates = [
+            group
+            for group in candidates
+            if _album_types_agree(album.album_type, album_type_of(group))
+        ] or candidates
+    if len(candidates) > 1 and album.year:
+        # same-titled groups of one kind, self-titled albums mostly, are told apart by year
+        candidates = [group for group in candidates if group.first_release_year == album.year]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _album_types_agree(library_type: AlbumType, group_type: AlbumType) -> bool:
+    """Return whether two album types can describe one release; a single or EP is never an album."""
+    if AlbumType.UNKNOWN in (library_type, group_type):
+        return True
+    return (library_type in _SHORT_FORM_TYPES) == (group_type in _SHORT_FORM_TYPES)
+
+
+def _album_from_release_group(
+    release_group: MusicBrainzReleaseGroup,
+    artist: ItemMapping,
+    album_type: AlbumType,
+    cover_provider: str | None,
+) -> Album:
+    """
+    Return a MusicBrainz release group as an album that is not (yet) on any music provider.
+
+    :param release_group: The release group as the artist browse lists it.
+    :param artist: The library artist the album is credited to.
+    :param album_type: The album type the release group's types map to.
+    :param cover_provider: The metadata provider resolving the group's cover by its id once
+        the image is requested, if one is loaded.
+    """
+    album = Album(
+        item_id=release_group.id,
+        provider="musicbrainz",
+        name=release_group.title,
+        artists=UniqueList([artist]),
+        year=release_group.first_release_year,
+        album_type=album_type,
+        external_ids={(ExternalID.MB_RELEASEGROUP, release_group.id)},
+        provider_mappings=set(),
+        # resolves to a playable album on a music service only when opened or added
+        is_playable=False,
+    )
+    if cover_provider:
+        album.metadata.add_image(
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=release_group.id,
+                provider=cover_provider,
+                remotely_accessible=False,
+            )
+        )
+    return album

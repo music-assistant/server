@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import ProviderMapping
+from music_assistant_models.media_items import Artist, ItemMapping, ProviderMapping, UniqueList
 
 from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.controllers.music.favorites import (
@@ -17,7 +17,7 @@ from music_assistant.controllers.music.favorites import (
     without_disliked_tracks,
 )
 
-from .helpers import create_track
+from .helpers import create_album, create_track
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Track
@@ -52,16 +52,16 @@ async def test_disliked_track_keys_are_the_users_own(music_mass_module: MusicAss
     await store.set(MediaType.TRACK, int(liked.item_id), True, [USER_A])
     # the same track the other user likes, so the query is scoped by user and by state
     await store.set(MediaType.TRACK, int(disliked.item_id), True, [USER_B])
-    # a cleared state is not a dislike, and a disliked album is not a track
+    # a cleared state is not a dislike
     cleared = await _add_track(mass, "Cleared Again")
     await store.set(MediaType.TRACK, int(cleared.item_id), None, [USER_A])
-    await store.set(MediaType.ALBUM, int(liked.item_id), False, [USER_A])
 
     item_ids, provider_keys = await store.disliked_track_keys(USER_A)
 
-    assert item_ids == {int(disliked.item_id)}
+    assert item_ids == {(MediaType.TRACK, int(disliked.item_id))}
     assert provider_keys == {
-        (mapping.provider_instance, mapping.item_id) for mapping in disliked.provider_mappings
+        (MediaType.TRACK, mapping.provider_instance, mapping.item_id)
+        for mapping in disliked.provider_mappings
     }
     assert len(provider_keys) == 2
     # nobody's playback is gated by another user's dislike
@@ -71,7 +71,66 @@ async def test_disliked_track_keys_are_the_users_own(music_mass_module: MusicAss
         DB_TABLE_PROVIDER_MAPPINGS,
         {"media_type": MediaType.TRACK.value, "item_id": int(disliked.item_id)},
     )
-    assert await store.disliked_track_keys(USER_A) == ({int(disliked.item_id)}, set())
+    assert await store.disliked_track_keys(USER_A) == (
+        {(MediaType.TRACK, int(disliked.item_id))},
+        set(),
+    )
+
+
+async def test_disliked_track_keys_cover_albums_and_artists(
+    music_mass_module: MusicAssistant,
+) -> None:
+    """A disliked album or artist yields its keys; an album's tracks drop from library or source."""
+    mass = music_mass_module
+    store = mass.music.favorites
+    # a user of its own: every test track shares the disliked artist
+    user_id = uuid4().hex
+    track = create_track(PROV_A, uuid4().hex, name="On A Disliked Album", isrc=uuid4().hex)
+    track.album = create_album(PROV_A, uuid4().hex, name="Disliked Album")
+    library_track = await mass.music.tracks.add_item_to_library(track)
+    album = library_track.album
+    artist = library_track.artists[0]
+    assert album is not None
+    await store.set(MediaType.ALBUM, int(album.item_id), False, [user_id])
+
+    assert await without_disliked_tracks(mass, user_id, [library_track, track]) == []
+
+    await store.set(MediaType.ARTIST, int(artist.item_id), False, [user_id])
+    item_ids, provider_keys = await store.disliked_track_keys(user_id)
+
+    # the tracks of a disliked album count as disliked tracks
+    assert item_ids == {
+        (MediaType.TRACK, int(library_track.item_id)),
+        (MediaType.ALBUM, int(album.item_id)),
+        (MediaType.ARTIST, int(artist.item_id)),
+    }
+    # the shared artist is known by the artist mapping of every test track
+    assert provider_keys >= {
+        (MediaType.ALBUM, PROV_A, track.album.item_id),
+        (MediaType.ARTIST, PROV_A, track.artists[0].item_id),
+    }
+
+
+async def test_a_disliked_album_drops_a_track_that_shows_another_album(
+    music_mass_module: MusicAssistant,
+) -> None:
+    """A track on more than one album is dropped for a dislike of the album it does not show."""
+    mass = music_mass_module
+    store = mass.music.favorites
+    user_id = uuid4().hex
+    track_id = uuid4().hex
+    track = create_track(PROV_A, track_id, name="On Two Albums", isrc=uuid4().hex)
+    track.album = create_album(PROV_A, uuid4().hex, name="Original Album")
+    await mass.music.tracks.add_item_to_library(track)
+    on_compilation = create_track(PROV_A, track_id, name="On Two Albums", isrc=uuid4().hex)
+    on_compilation.album = create_album(PROV_A, uuid4().hex, name="Compilation")
+    compilation = await mass.music.albums.add_item_to_library(on_compilation.album)
+    library_track = await mass.music.tracks.add_item_to_library(on_compilation)
+    assert library_track.album is not None
+    assert library_track.album.item_id != compilation.item_id
+    await store.set(MediaType.ALBUM, int(compilation.item_id), False, [user_id])
+
+    assert await without_disliked_tracks(mass, user_id, [library_track, track]) == []
 
 
 def test_filter_disliked_drops_a_track_by_library_id_or_by_mapping() -> None:
@@ -80,13 +139,49 @@ def test_filter_disliked_drops_a_track_by_library_id_or_by_mapping() -> None:
     by_mapping = create_track(PROV_A, "disliked-elsewhere", name="Known By Mapping")
     kept = create_track(PROV_A, "fine", name="Still Fine")
     mapping = next(iter(by_mapping.provider_mappings))
-    keys: DislikedTrackKeys = ({7}, {(mapping.provider_domain, mapping.item_id)})
+    keys: DislikedTrackKeys = (
+        {(MediaType.TRACK, 7)},
+        {(MediaType.TRACK, mapping.provider_instance, mapping.item_id)},
+    )
 
     assert filter_disliked([by_library_id, by_mapping, kept], keys) == [kept]
 
     # a user without dislikes gets the candidates back untouched
     candidates = [by_library_id, by_mapping, kept]
     assert filter_disliked(candidates, (set(), set())) is candidates
+
+
+def test_filter_disliked_drops_a_track_by_its_album_or_artist() -> None:
+    """A disliked album or artist matches by library id, by reference or by mapping."""
+    by_library_album = create_track("library", "1", name="On Library Album 3")
+    by_library_album.artists = UniqueList()
+    by_library_album.album = ItemMapping(
+        item_id="3", provider="library", name="Album 3", media_type=MediaType.ALBUM
+    )
+    by_library_artist = create_track("library", "2", name="By Library Artist 5")
+    by_library_artist.artists = UniqueList(
+        [ItemMapping(item_id="5", provider="library", name="Artist 5", media_type=MediaType.ARTIST)]
+    )
+    # a provider reference that carries neither mappings nor its media type
+    by_album_reference = create_track(PROV_A, "on-album", name="On Provider Album")
+    by_album_reference.album = ItemMapping(item_id="disliked-album", provider=PROV_A, name="Album")
+    # a full artist, disliked on another source it is mapped on
+    by_artist_mapping = create_track(PROV_A, "by", name="By Provider Artist")
+    artist = by_artist_mapping.artists[0]
+    assert isinstance(artist, Artist)
+    artist.provider_mappings.add(
+        ProviderMapping(item_id="artist-on-b", provider_domain=PROV_B, provider_instance=PROV_B)
+    )
+    # the library ids of a disliked album and artist are no track's
+    kept = create_track("library", "3", name="Track 3")
+    kept.artists = UniqueList()
+    keys: DislikedTrackKeys = (
+        {(MediaType.ALBUM, 3), (MediaType.ARTIST, 5)},
+        {(MediaType.ALBUM, PROV_A, "disliked-album"), (MediaType.ARTIST, PROV_B, "artist-on-b")},
+    )
+
+    tracks = [by_library_album, by_library_artist, by_album_reference, by_artist_mapping, kept]
+    assert filter_disliked(tracks, keys) == [kept]
 
 
 async def test_without_disliked_drops_the_users_dislikes(music_mass_module: MusicAssistant) -> None:

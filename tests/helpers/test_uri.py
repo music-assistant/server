@@ -11,6 +11,7 @@ from music_assistant.helpers.uri import (
     canonical_provider_url,
     discogs_id_from_url,
     parse_uri,
+    share_url_provider,
 )
 
 SPOTIFY_ID = "4Z8W4fKeB5YxbusRsdQVPb"
@@ -118,6 +119,43 @@ async def test_parse_uri_rejects_truncated_or_unsupported_share_urls(url: str) -
     """A known host with a path that names no item is invalid, not a builtin stream."""
     with pytest.raises(InvalidProviderURI):
         await parse_uri(url)
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (f"https://open.spotify.com/album/{SPOTIFY_ID}", "spotify"),
+        ("https://tidal.com/browse/album/79280548", "tidal"),
+        ("https://www.deezer.com/album/6575789", "deezer"),
+        ("https://music.apple.com/us/album/in-rainbows/1109714933", "apple_music"),
+        ("https://open.qobuz.com/album/0634904032432", "qobuz"),
+        ("https://www.qobuz.com/us-en/album/in-rainbows-radiohead/0634904032432", "qobuz"),
+        ("https://music.youtube.com/channel/UCr_iyUANcn9OX_yy9piYoLw", "ytmusic"),
+        ("https://www.discogs.com/release/1157205", None),
+        ("https://www.wikidata.org/wiki/Q862203", None),
+        ("https://radiohead.bandcamp.com/album/in-rainbows", None),
+        ("https://open.spotify.com/track/", None),
+        (f"spotify://album/{SPOTIFY_ID}", None),
+    ],
+)
+def test_share_url_provider(url: str, expected: str | None) -> None:
+    """Only the whole share URL of an item on a music service names the service it is on."""
+    assert share_url_provider(url) == expected
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (f"https://open.spotify.com/album/{SPOTIFY_ID}", "spotify"),
+        (f"https://open.spotify.com/artist/{SPOTIFY_ID}", None),
+        ("https://open.spotify.com/album/not-a-spotify-id", None),
+        ("https://tidal.com/album/79280548", "tidal"),
+        ("https://tidal.com/album/in-rainbows", None),
+    ],
+)
+def test_share_url_provider_of_a_media_type(url: str, expected: str | None) -> None:
+    """Asked for a media type, only a valid URL of an item of that type names its service."""
+    assert share_url_provider(url, MediaType.ALBUM) == expected
 
 
 @pytest.mark.parametrize(

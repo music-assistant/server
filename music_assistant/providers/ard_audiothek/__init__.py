@@ -34,7 +34,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import CONF_PASSWORD
+from music_assistant.constants import CONF_PASSWORD, DEFAULT_AUDIOBOOK_PODCAST_GENRE
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import from_utc_timestamp, future_timestamp, utc
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
@@ -665,7 +665,9 @@ def _parse_podcast(
     )
 
     podcast.metadata.description = podcast_query["synopsis"]
-    podcast.metadata.genres = {r["title"] for r in podcast_query["editorialCategoriesList"]}
+    podcast.metadata.genres = {r["title"] for r in podcast_query["editorialCategoriesList"]} or {
+        DEFAULT_AUDIOBOOK_PODCAST_GENRE
+    }
 
     podcast.metadata.add_image(create_media_image(domain, podcast_query["imagesList"]))
 
@@ -748,6 +750,7 @@ def _parse_podcast_episode(
 
     podcast_episode.metadata.add_image(create_media_image(domain, episode["imagesList"]))
     podcast_episode.metadata.description = episode["summary"]
+    podcast_episode.metadata.release_date = _publish_date(episode)
     return podcast_episode
 
 
