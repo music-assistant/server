@@ -80,7 +80,7 @@ pylast==7.1.0
 python-fullykiosk==0.0.15
 python-google-drive-api==0.1.0
 python-mpd2>=3.1.1
-python-slugify==8.0.4
+python-slugify==9.1.1
 pytz==2026.2
 pywam==0.2.0
 pywidevine==1.9.0
