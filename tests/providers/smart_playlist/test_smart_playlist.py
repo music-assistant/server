@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import time
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -1060,6 +1061,10 @@ async def test_tracks_from_seeds_accumulates_batches_for_large_target() -> None:
 @pytest.mark.asyncio
 async def test_tracks_from_seeds_static_gets_headroom_above_target() -> None:
     """Static generation accumulates well past target_size, giving post-filters headroom."""
+    # the radio provider re-samples base tracks per batch, and each mocked similar-track lookup
+    # returns fresh mocks, so a base track drawn twice re-adds ids the provider cannot dedupe;
+    # pin the draw so the unique-id count does not depend on entropy
+    random.seed(1)
     mass = MagicMock()
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
