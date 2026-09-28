@@ -73,11 +73,12 @@ class IHeartRadioLibraryManager:
             if payload is None and page_key is None:
                 # an empty follow list may come back without a body
                 return
-            if not isinstance(payload, dict):
+            page = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(page, list):
                 # a broken page must not pass as the end of the list, or the sync
                 # would unfollow everything it did not get to see
                 raise InvalidDataError("iHeartRadio returned an invalid podcast follow list")
-            for entry in payload.get("data") or []:
+            for entry in page:
                 if isinstance(entry, dict) and (
                     podcast := parse_podcast(entry, self.instance_id, self.domain)
                 ):
