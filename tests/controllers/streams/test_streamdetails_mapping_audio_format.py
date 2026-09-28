@@ -31,6 +31,7 @@ SIBLING_INSTANCE = "tidal--xyz"
 ITEM_ID = "79280548"
 LIBRARY_ID = "42"
 FLAC = AudioFormat(content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16)
+HIRES = AudioFormat(content_type=ContentType.FLAC, sample_rate=96000, bit_depth=24)
 OGG = AudioFormat(content_type=ContentType.OGG, bit_rate=320)
 
 
@@ -63,7 +64,10 @@ def _queue_item(media_item: Track) -> QueueItem:
 
 
 def _provider(
-    audio_format: AudioFormat, item_id: str = ITEM_ID, instance: str = INSTANCE
+    audio_format: AudioFormat,
+    item_id: str = ITEM_ID,
+    instance: str = INSTANCE,
+    supersedes_catalog: bool = False,
 ) -> MagicMock:
     """Build a provider instance whose streamdetails declare the given audio format."""
 
@@ -83,6 +87,7 @@ def _provider(
     provider.domain = "tidal"
     provider.available = True
     provider.is_streaming_provider = True
+    provider.stream_format_supersedes_catalog = supersedes_catalog
     provider.get_stream_details = _get_stream_details
     return provider
 
@@ -146,6 +151,31 @@ async def test_a_mapping_with_a_format_is_left_alone() -> None:
 
     assert scheduled == []
     assert mapping.audio_format == OGG
+
+
+async def test_a_stream_that_supersedes_the_catalog_replaces_a_differing_format() -> None:
+    """A provider whose catalog lacks the full format has its mapping take the stream's."""
+    mapping = _mapping(FLAC)
+    audio, update_provider_mapping, scheduled = _audio(_provider(HIRES, supersedes_catalog=True))
+
+    await audio.get_stream_details(queue_item=_queue_item(_library_track(mapping)))
+
+    assert len(scheduled) == 1
+    await scheduled[0]
+    update_provider_mapping.assert_awaited_once_with(
+        MediaType.TRACK, LIBRARY_ID, INSTANCE, ITEM_ID, audio_format=HIRES
+    )
+    assert mapping.audio_format == HIRES
+
+
+async def test_a_stream_that_supersedes_the_catalog_leaves_an_equal_format_alone() -> None:
+    """Nothing is written when the stream declares the format the mapping already has."""
+    mapping = _mapping(FLAC)
+    audio, _, scheduled = _audio(_provider(FLAC, supersedes_catalog=True))
+
+    await audio.get_stream_details(queue_item=_queue_item(_library_track(mapping)))
+
+    assert scheduled == []
 
 
 async def test_a_stream_without_format_fills_in_nothing() -> None:

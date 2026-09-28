@@ -182,7 +182,16 @@ class CoreConfigMixin:
         # save the config first before reloading to avoid issues on reload
         # for example when reloading the webserver we might be cancelled here
         conf_key = f"{CONF_CORE}/{domain}"
-        self.set(conf_key, config.to_raw())
+        raw_conf = config.to_raw()
+        # Preserve stored values that don't have config entries in the current context
+        # (e.g. state a controller writes at runtime with set_raw_core_config_value) -
+        # to_raw() only rebuilds the values from the declared entries. The revert below
+        # restores the previous block, so that has to carry them as well.
+        existing_values = self._get_raw_core_config(domain).get("values", {})
+        preserved = {k: v for k, v in existing_values.items() if k not in config.values}
+        raw_conf["values"] |= preserved
+        prev_config["values"] |= preserved
+        self.set(conf_key, raw_conf)
         self.save(immediate=True)
         try:
             controller: CoreController = getattr(self.mass, domain)
