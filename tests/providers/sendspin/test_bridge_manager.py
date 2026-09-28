@@ -21,6 +21,7 @@ from music_assistant.providers.chromecast.sendspin_bridge import (
 )
 from music_assistant.providers.sendspin import constants as sendspin_constants
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
+from tests.common import scheduled_call
 
 
 class FakeBridge:
@@ -381,11 +382,13 @@ class TestCastBridgePolicy:
             cast_player, {"device_info.model": ("Old Model", "New Model")}
         )
 
-        mass.create_task.assert_called_once_with(
-            manager._process_pending_bridge_evaluations,
-            cast_player.player_id,
-            task_id="evaluate_chromecast_sendspin_bridge_cc_player",
-        )
+        mass.create_task.assert_called_once()
+        name, arguments = scheduled_call(mass.create_task.call_args.args[0])
+        assert name.endswith("_process_pending_bridge_evaluations")
+        assert arguments["player_id"] == cast_player.player_id
+        assert mass.create_task.call_args.kwargs == {
+            "task_id": "evaluate_chromecast_sendspin_bridge_cc_player",
+        }
 
     def test_parent_protocol_update_schedules_evaluation(self) -> None:
         """Test protocol changes on a parent re-evaluate its Cast bridge."""

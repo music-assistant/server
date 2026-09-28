@@ -6,7 +6,7 @@ import inspect
 import logging
 import pathlib
 from collections.abc import AsyncGenerator, Iterator, Mapping
-from types import MethodType
+from types import CoroutineType, MethodType
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -193,6 +193,25 @@ def suppress_initial_library_sync() -> Iterator[None]:
     """
     with patch("music_assistant.controllers.music.controller.INITIAL_SYNC_DELAY", None):
         yield
+
+
+def scheduled_call(coro: CoroutineType[Any, Any, Any]) -> tuple[str, dict[str, Any]]:
+    """
+    Return the name and bound arguments of a coroutine handed to mass.create_task.
+
+    Callers build the coroutine before handing it over, so a test asserting on what was
+    scheduled reads it back off the coroutine. It is closed here, since a test that only
+    asserts on the scheduling never awaits it.
+
+    :param coro: The coroutine the caller passed to create_task.
+    """
+    name = coro.cr_code.co_qualname
+    # cr_frame is None only once a coroutine has finished; one handed to create_task has
+    # not been started yet, so its frame still holds the arguments it was built with
+    assert coro.cr_frame is not None
+    arguments = dict(coro.cr_frame.f_locals)
+    coro.close()
+    return name, arguments
 
 
 # Mock classes for testing

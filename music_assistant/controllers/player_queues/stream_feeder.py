@@ -117,7 +117,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 raise
 
         self.mass.create_task(
-            _do_prepare,
+            _do_prepare(),
             task_id=f"prepare_next_audio_buffer_{queue_id}",
             abort_existing=True,
         )
@@ -262,8 +262,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
 
         task_id = f"preload_next_item_{queue_id}"
         self.mass.create_task(
-            _preload_streamdetails,
-            item_id_in_buffer,
+            _preload_streamdetails(item_id_in_buffer),
             task_id=task_id,
             abort_existing=True,
         )
