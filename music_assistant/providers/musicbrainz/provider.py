@@ -475,17 +475,18 @@ class MusicbrainzProvider(MetadataProvider):
         :param isrc: ISRC of the recording, with or without separators.
         :return: The earliest known release year, or None if MusicBrainz does not know it.
         """
+        if not is_valid_isrc(isrc):
+            return None
+        # the isrc resource omits the first release date, a recording search carries it
+        safe_isrc = normalize_external_id(ExternalID.ISRC, isrc)
+        result = await self._api_client.get_data("recording", query=f"isrc:{safe_isrc}")
+        recordings = (result or {}).get("recordings") or []
         # one ISRC can cover several recordings, the oldest one dates the song
-        years: list[int] = []
-        for recording in await self.get_recordings_by_isrc(isrc):
-            release_date = recording.first_release_date
-            # the isrc resource omits the first release date, a recording lookup carries it
-            if release_date is None:
-                with suppress(InvalidDataError):
-                    details = await self.get_recording_details(recording.id)
-                    release_date = details.first_release_date
-            if (year := release_year(release_date)) is not None:
-                years.append(year)
+        years = [
+            year
+            for recording in recordings
+            if (year := release_year(recording.get("first-release-date"))) is not None
+        ]
         return min(years, default=None)
 
     async def get_release_details(self, album_id: str) -> MusicBrainzRelease:
