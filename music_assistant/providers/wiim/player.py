@@ -633,10 +633,8 @@ class WiimPlayer(Player):
         # abort_existing=False deduplicates on the shared task_id: while a forced read is in
         # flight, further events neither start a second read (leading-edge throttle) nor
         # cancel the running one, so a burst neither hammers the device nor starves
-        # reconciliation. Passing the coroutine function lets the runtime drop a deduplicated
-        # call cleanly.
+        # reconciliation.
         self.mass.create_task(
             self._native_groups.refresh_leader(self, force=True),
             task_id=f"wiim_topology_{self.player_id}",
-            force=True,
         )
