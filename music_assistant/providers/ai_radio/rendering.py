@@ -235,6 +235,9 @@ class AIRadioRenderMixin:
             if tail_airs or await asyncio.to_thread(Path(clip.post.staged).is_file):
                 path, input_format = clip.post.staged, POST_STAGED_FORMAT
                 filters = [f"atrim=end={clip.post.head:.3f}"] if tail_airs else []
+            if not tail_airs:
+                # the break plays whole, so the queue must not think it ends where the cut was
+                streamdetails.duration = max(1, math.ceil(clip.post.head + clip.post.overlap))
         async for chunk in get_ffmpeg_stream(
             audio_input=path,
             input_format=input_format,

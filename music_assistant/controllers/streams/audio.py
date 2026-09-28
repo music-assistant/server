@@ -5051,8 +5051,12 @@ class StreamsAudio:
         if last_served == item_id:
             if (stored := self._voice_over_sources.get(queue_id)) and stored[0] == item_id:
                 source = stored[1]
-        elif previous := self.mass.player_queues.get_item(queue_id, last_served):
-            source = previous.streamdetails
+        else:
+            # whatever a cut-short request remembered is stale once anything else was served
+            # or the queue was played explicitly; a later repeat fetch must not find it
+            self._voice_over_sources.pop(queue_id, None)
+            if previous := self.mass.player_queues.get_item(queue_id, last_served):
+                source = previous.streamdetails
         if source is None:
             return None
         provider = self.mass.get_provider(source.provider)

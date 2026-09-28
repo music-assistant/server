@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import tempfile
 import time
@@ -149,6 +150,8 @@ def _break_streamdetails(plan: _PostPlan | None = None) -> StreamDetails:
         media_type=MediaType.SOUND_EFFECT,
         stream_type=StreamType.CUSTOM,
         path=_MEDIA_PATH,
+        # a planned split declares the head as the break's length, as get_stream_details does
+        duration=math.ceil(plan.head) if plan is not None else None,
         data=_ClipAudio(_MEDIA_PATH, _CLIP_FORMAT, -2.0, plan),
     )
 
@@ -369,10 +372,12 @@ def ffmpeg_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     return calls
 
 
-async def _produce(renderer: PostRenderer, plan: _PostPlan | None) -> None:
+async def _produce(renderer: PostRenderer, plan: _PostPlan | None) -> StreamDetails:
     """Produce the break's audio the way the streams side asks for it ahead of the airing."""
-    chunks = [chunk async for chunk in renderer.get_audio_stream(_break_streamdetails(plan))]
+    streamdetails = _break_streamdetails(plan)
+    chunks = [chunk async for chunk in renderer.get_audio_stream(streamdetails)]
     assert chunks == [b"pcm"]
+    return streamdetails
 
 
 def _is_cut(ffmpeg_call: dict[str, Any]) -> bool:
@@ -387,12 +392,13 @@ async def test_break_is_cut_where_its_record_comes_in(
     renderer = PostRenderer(staged, [clip, track])
     plan = await renderer._plan_post(clip, _MEDIA, _CLIP_ID, gain_db=-2.0)
 
-    await _produce(renderer, plan)
+    streamdetails = await _produce(renderer, plan)
 
     (call,) = ffmpeg_calls
     assert call["audio_input"] == str(staged)
     assert call["input_format"] == POST_STAGED_FORMAT
     assert call["filter_params"] == [f"atrim=end={_HEAD:.3f}"]
+    assert streamdetails.duration == math.ceil(_HEAD)
     assert await _voice_over(renderer, track) is not None
 
 
@@ -405,11 +411,13 @@ async def test_break_airs_whole_once_another_record_follows_it(
     plan = await renderer._plan_post(clip, _MEDIA, _CLIP_ID, gain_db=-2.0)
     renderer.order = [clip, second, first]
 
-    await _produce(renderer, plan)
+    streamdetails = await _produce(renderer, plan)
 
     (call,) = ffmpeg_calls
     assert call["audio_input"] == str(staged)
     assert call["filter_params"] == []
+    # the whole break airs, so the queue is told its whole length again
+    assert streamdetails.duration == math.ceil(_BREAK_SECONDS)
     assert await _voice_over(renderer, first) is None
     assert await _voice_over(renderer, second) is None
 
@@ -439,12 +447,13 @@ async def test_break_airs_whole_when_its_staged_audio_is_gone(
     plan = await renderer._plan_post(clip, _MEDIA, _CLIP_ID, gain_db=-2.0)
     staged.unlink()
 
-    await _produce(renderer, plan)
+    streamdetails = await _produce(renderer, plan)
 
     (call,) = ffmpeg_calls
     assert call["audio_input"] == _MEDIA_PATH
     assert call["input_format"] == _CLIP_FORMAT
     assert call["filter_params"] == _LEVELLING
+    assert streamdetails.duration == math.ceil(_BREAK_SECONDS)
     assert await _voice_over(renderer, track) is None
 
 

@@ -245,6 +245,28 @@ async def test_source_of_a_stream_cut_short_is_replaced_by_the_next_item_served(
     assert sources["queue"][0] == "track_2"
 
 
+async def test_explicit_replay_forgets_the_source_a_cut_stream_left(
+    monkeypatch: pytest.MonkeyPatch, voice_file: str
+) -> None:
+    """A probe fetch after an explicit replay clears what a cut-short stream remembered."""
+    _fake_mixer(monkeypatch)
+    brk, track = _break_item(), _track_item()
+    plugin = _Plugin(_voice_over(voice_file))
+    audio = _make_streams_audio([brk, track], plugin)
+    stream = _mixed(audio, track)
+    await anext(stream)
+    await stream.aclose()
+
+    # the explicit replay resets what was last served; its probe fetch plays clean
+    _set_last_served(audio, None)
+    assert await _collect(_mixed(audio, track)) == _MUSIC_CHUNKS
+    # by the real fetch the track is last served again, and nothing stale is left to find
+    _set_last_served(audio, _TRACK_ID)
+    assert await _collect(_mixed(audio, track)) == _MUSIC_CHUNKS
+    assert len(plugin.asked) == 1
+    assert cast("Any", audio)._voice_over_sources == {}
+
+
 async def test_settled_voice_over_is_not_asked_for_on_a_later_fetch(
     monkeypatch: pytest.MonkeyPatch, voice_file: str
 ) -> None:
