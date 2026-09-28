@@ -114,10 +114,11 @@ async def auth_manager(mass_minimal: MusicAssistant) -> AuthenticationManager:
 
     :param mass_minimal: Minimal MusicAssistant instance.
     """
-    # deleting a user releases its playlists through the music controller, which the
-    # minimal server does not run
+    # deleting a user releases its playlists and drops its favorites through the music
+    # controller, which the minimal server does not run
     mass_minimal.music = MagicMock()
     mass_minimal.music.playlists.release_user_playlists = AsyncMock()
+    mass_minimal.music.favorites = AsyncMock()
     return mass_minimal.webserver.auth
 
 

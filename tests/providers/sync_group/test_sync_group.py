@@ -6,7 +6,8 @@ import asyncio
 import inspect
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2019,6 +2020,195 @@ class TestIdleGraceOnFailedStart:
             await sgp.play_media(MagicMock(source_id="src", uri="x"))
 
         assert sgp._idle_grace_task is sentinel
+
+
+def _recording_lock(events: list[str]) -> MagicMock:
+    """Build a get_player_lock mock that records every lock enter/exit in ``events``."""
+
+    def _make(
+        player_id: str, _purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
+    ) -> AsyncMock:
+        ctx = AsyncMock()
+
+        async def _enter(*_args: Any) -> None:
+            events.append(f"lock:{player_id}")
+
+        async def _exit(*_args: Any) -> bool:
+            events.append(f"unlock:{player_id}")
+            return False
+
+        ctx.__aenter__.side_effect = _enter
+        ctx.__aexit__.side_effect = _exit
+        return ctx
+
+    return MagicMock(side_effect=_make)
+
+
+def _group_lock(group_id: str) -> tuple[MagicMock, asyncio.Lock]:
+    """Build a get_player_lock mock backed by a real lock for the group; others are no-ops."""
+    lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def _ctx(
+        player_id: str, _purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
+    ) -> AsyncIterator[None]:
+        if player_id != group_id:
+            yield
+            return
+        async with lock:
+            yield
+
+    return MagicMock(side_effect=_ctx), lock
+
+
+class TestIdleGraceDissolveLocking:
+    """The idle-grace dissolve runs under the group's lock, serialized with group commands."""
+
+    def _setup_group(self, mass: MagicMock) -> tuple[SyncGroupPlayer, MagicMock]:
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="wiim")
+        leader.state.can_group_with = {"m2", "m3"}
+        leader.state.group_members = ["leader", "m2"]
+        players = {
+            "leader": leader,
+            "m2": _make_mock_player("m2", provider_domain="wiim"),
+            "m3": _make_mock_player("m3", provider_domain="wiim"),
+        }
+        mass.players.get_player = _player_lookup(players)
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "m2"]
+        sgp._attr_powered = None  # no pin, so the grace dissolve applies
+        # run scheduled coroutines for real so the grace runner actually fires
+        mass.create_task = MagicMock(
+            side_effect=lambda coro, *_a, **_k: asyncio.Task(
+                coro, loop=asyncio.get_running_loop(), eager_start=True
+            )
+        )
+        return sgp, leader
+
+    async def _start_member_change(
+        self,
+        mass: MagicMock,
+        sgp: SyncGroupPlayer,
+        group_lock: asyncio.Lock,
+        events: list[str],
+    ) -> tuple[asyncio.Task[None], asyncio.Event]:
+        """Start a member change that holds the group lock until the returned event is set."""
+        leader_command_started = asyncio.Event()
+        release_leader_command = asyncio.Event()
+
+        async def _leader_command(*_args: Any, **_kwargs: Any) -> None:
+            events.append("leader command")
+            leader_command_started.set()
+            await release_leader_command.wait()
+
+        mass.players._handle_set_members = AsyncMock(side_effect=_leader_command)
+
+        async def _group_command() -> None:
+            # the controller runs group commands from under the group's lock
+            async with group_lock:
+                await sgp.set_members(player_ids_to_add=["m3"])
+            events.append("member change done")
+
+        command = asyncio.create_task(_group_command())
+        await leader_command_started.wait()
+        return command, release_leader_command
+
+    @pytest.mark.asyncio
+    async def test_dissolve_runs_under_the_group_lock(self) -> None:
+        """The runner takes the group's lock first and the leader's lock from under it."""
+        mass = _make_mock_mass()
+        sgp, leader = self._setup_group(mass)
+        events: list[str] = []
+        mass.players.get_player_lock = _recording_lock(events)
+
+        with (
+            patch("music_assistant.providers.sync_group.player.IDLE_GRACE_SECONDS", 0),
+            patch.object(sgp, "update_state"),
+        ):
+            sgp._schedule_idle_grace_timer()
+            grace = sgp._idle_grace_task
+            assert grace is not None
+            await grace
+
+        mass.players.get_player_lock.assert_any_call(sgp.player_id, PlayerLockPurpose.PLAYBACK)
+        assert events == [
+            f"lock:{sgp.player_id}",
+            "lock:leader",
+            "unlock:leader",
+            f"unlock:{sgp.player_id}",
+        ]
+        mass.players._handle_set_members.assert_awaited_once_with(
+            leader, player_ids_to_remove=["m2"]
+        )
+        assert sgp.sync_leader is None
+        assert sgp._idle_grace_task is None
+
+    @pytest.mark.asyncio
+    async def test_dissolve_waits_for_a_member_change_holding_the_group_lock(self) -> None:
+        """A grace expiry during an in-flight member change dissolves only after it completes."""
+        mass = _make_mock_mass()
+        sgp, leader = self._setup_group(mass)
+        mass.players.get_player_lock, group_lock = _group_lock(sgp.player_id)
+        events: list[str] = []
+
+        async def _dissolve() -> None:
+            events.append("dissolve")
+            sgp.sync_leader = None
+
+        dissolve = AsyncMock(side_effect=_dissolve)
+        with (
+            patch("music_assistant.providers.sync_group.player.IDLE_GRACE_SECONDS", 0),
+            patch.object(sgp, "update_state"),
+            patch.object(sgp, "_dissolve_syncgroup", dissolve),
+        ):
+            command, release = await self._start_member_change(mass, sgp, group_lock, events)
+            # the grace window expires while the member change is still in flight
+            sgp._schedule_idle_grace_timer()
+            grace = sgp._idle_grace_task
+            assert grace is not None
+            await asyncio.sleep(0.01)
+
+            dissolve.assert_not_awaited()
+            assert sgp.sync_leader is leader
+            # the group keeps claiming its members while the dissolve is queued
+            assert sgp.is_active_session is True
+
+            release.set()
+            await asyncio.gather(command, grace)
+
+        assert events == ["leader command", "member change done", "dissolve"]
+        assert "m3" in sgp._attr_group_members
+
+    @pytest.mark.asyncio
+    async def test_cancel_while_queued_on_the_lock_skips_the_dissolve(self) -> None:
+        """Playback resuming while the runner waits for the lock still cancels the dissolve."""
+        mass = _make_mock_mass()
+        sgp, leader = self._setup_group(mass)
+        mass.players.get_player_lock, group_lock = _group_lock(sgp.player_id)
+        events: list[str] = []
+
+        dissolve = AsyncMock()
+        with (
+            patch("music_assistant.providers.sync_group.player.IDLE_GRACE_SECONDS", 0),
+            patch.object(sgp, "update_state"),
+            patch.object(sgp, "_dissolve_syncgroup", dissolve),
+        ):
+            command, release = await self._start_member_change(mass, sgp, group_lock, events)
+            sgp._schedule_idle_grace_timer()
+            grace = sgp._idle_grace_task
+            assert grace is not None
+            await asyncio.sleep(0.01)
+
+            sgp._cancel_idle_grace_timer()
+            assert sgp._idle_grace_task is None
+            release.set()
+            await asyncio.gather(command, grace, return_exceptions=True)
+
+        assert grace.cancelled()
+        dissolve.assert_not_awaited()
+        assert sgp.sync_leader is leader
+        assert events == ["leader command", "member change done"]
 
 
 class TestFormWaitsForLeaderUnsynced:

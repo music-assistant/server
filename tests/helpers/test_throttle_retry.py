@@ -228,6 +228,18 @@ class TestRateLimited:
 class TestSharedCooldown:
     """A rate limit covers the whole account, so it must hold back every caller."""
 
+    def test_cooldown_remaining_reports_an_armed_cooldown(
+        self, provider: FakeProvider, fake_clock: FakeClock
+    ) -> None:
+        """The remaining cooldown is 0 when clear and counts down once one is armed."""
+        assert provider.throttler.cooldown_remaining == 0
+        provider.throttler.set_cooldown(50)
+        assert provider.throttler.cooldown_remaining == 50
+        fake_clock.now += 20
+        assert provider.throttler.cooldown_remaining == 30
+        fake_clock.now += 40
+        assert provider.throttler.cooldown_remaining == 0
+
     async def test_cooldown_gates_new_callers(
         self, provider: FakeProvider, fake_clock: FakeClock
     ) -> None:

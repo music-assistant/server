@@ -307,6 +307,18 @@ async def add_remove_playlist_tracks(
     return await _run_ytmusic(_add_playlist_tracks)
 
 
+async def rate_track(
+    headers: dict[str, str], prov_track_id: str, rating: LikeStatus, user: str | None = None
+) -> None:
+    """Async wrapper around the ytmusicapi rate_song function."""
+
+    def _rate_track() -> None:
+        ytm = ytmusicapi.YTMusic(auth=headers, user=user)
+        ytm.rate_song(videoId=prov_track_id, rating=rating)
+
+    await _run_ytmusic(_rate_track)
+
+
 async def get_song_radio_tracks(
     headers: dict[str, str], prov_item_id: str, limit: int = 25, user: str | None = None
 ) -> dict[str, Any]:

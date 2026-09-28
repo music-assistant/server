@@ -134,7 +134,7 @@ def parse_track(
         )
 
     user_data = item.get(ITEM_KEY_USER_DATA, {})
-    track.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+    track.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
 
     if last_played_date := user_data.get(USER_DATA_KEY_LAST_PLAYED_DATE):
         track.last_played = int(datetime.fromisoformat(last_played_date).timestamp())
@@ -182,7 +182,7 @@ def parse_artist(
         )
 
     user_data = item.get(ITEM_KEY_USER_DATA, {})
-    artist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+    artist.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
 
     if genres := item.get(ITEM_KEY_GENRES):
         artist.metadata.genres = set(genres)
@@ -253,7 +253,7 @@ def parse_album(
         )
 
     user_data = item.get(ITEM_KEY_USER_DATA, {})
-    album.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+    album.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
 
     if genres := item.get(ITEM_KEY_GENRES):
         album.metadata.genres = set(genres)
@@ -297,7 +297,7 @@ def parse_playlist(
         )
 
     user_data = item.get(ITEM_KEY_USER_DATA, {})
-    playlist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+    playlist.favorite = True if user_data.get(USER_DATA_KEY_IS_FAVORITE) else None
 
     return playlist
 

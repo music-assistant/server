@@ -265,19 +265,26 @@ def get_thumbnail_images(
     return None
 
 
-def get_favorite_from_rating(plex_media: PlexObject, threshold: float) -> bool | None:
+def get_favorite_from_rating(
+    plex_media: PlexObject, threshold: float, unlike_rating: float
+) -> bool | None:
     """
-    Derive favorite status from the user rating of a Plex object.
+    Derive the favorite state from the user rating of a Plex object.
 
-    Returns None if the object has no user rating.
+    Returns None if the object has no user rating, or one that is neither a like nor a dislike.
 
     :param plex_media: The Plex object to read the user rating from.
-    :param threshold: Minimum rating (0.0-10.0) to consider the item a favorite.
+    :param threshold: Minimum rating (0.0-10.0) to consider the item a like.
+    :param unlike_rating: Maximum rating (0.0-10.0) to consider the item a dislike.
     """
     rating = getattr(plex_media, "userRating", None)
     if rating is None:
         return None
-    return float(rating) >= threshold
+    if float(rating) >= threshold:
+        return True
+    if float(rating) <= unlike_rating:
+        return False
+    return None
 
 
 def get_explicit(plex_media: PlexObject) -> bool | None:
