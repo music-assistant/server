@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-from music_assistant_models.enums import RepeatMode
+from music_assistant_models.enums import PlaybackState, RepeatMode
 from music_assistant_models.media_items import Audiobook, ProviderMapping, Track
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.controllers.player_queues.controller import PlayerQueuesController
+from music_assistant.controllers.player_queues.helpers import CompareState
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 QUEUE_ID = "queue-1"
@@ -88,6 +89,30 @@ def _controller(
     return controller, get_stream_details
 
 
+def _report_played(
+    controller: PlayerQueuesController, played: QueueItem, seconds_played: int, now: QueueItem
+) -> None:
+    """Have the playback tracker report an item played up to a position, then moved on."""
+
+    def state(item: QueueItem, elapsed: int) -> CompareState:
+        return CompareState(
+            queue_id=QUEUE_ID,
+            state=PlaybackState.PLAYING,
+            current_item_id=item.queue_item_id,
+            next_item_id=None,
+            current_item=item,
+            elapsed_time=elapsed,
+            last_playing_elapsed_time=elapsed,
+            stream_title=None,
+            codec_type=None,
+            output_player_ids=None,
+        )
+
+    queue = controller._queue_data[QUEUE_ID].queue
+    queue.state = PlaybackState.PLAYING
+    controller._handle_playback_progress_report(queue, state(played, seconds_played), state(now, 0))
+
+
 async def test_next_audiobook_starts_at_its_resume_point() -> None:
     """The next audiobook starts where it was left off, not at 0:00."""
     items = [_book("book-a"), _book("book-b", resume_position_ms=60000)]
@@ -116,6 +141,28 @@ async def test_repeated_single_audiobook_starts_from_the_beginning() -> None:
     await controller.load_next_queue_item(QUEUE_ID, "book-a")
 
     assert get_stream_details.call_args.kwargs["seek_position"] == 0
+
+
+async def test_audiobook_played_to_the_end_restarts_on_the_next_repeat_pass() -> None:
+    """An audiobook finished during this queue starts at 0:00 on the next pass, not its bookmark."""
+    items = [_book("book-a"), _book("book-b", resume_position_ms=60000)]
+    controller, get_stream_details = _controller(items, repeat_mode=RepeatMode.ALL)
+    _report_played(controller, items[1], seconds_played=118, now=items[0])
+
+    await controller.load_next_queue_item(QUEUE_ID, "book-a")
+
+    assert get_stream_details.call_args.kwargs["seek_position"] == 0
+
+
+async def test_partly_played_audiobook_resumes_where_it_was_left_this_time() -> None:
+    """An audiobook left part way during this queue resumes there, not at its enqueue bookmark."""
+    items = [_book("book-a"), _book("book-b", resume_position_ms=10000)]
+    controller, get_stream_details = _controller(items)
+    _report_played(controller, items[1], seconds_played=40, now=items[0])
+
+    await controller.load_next_queue_item(QUEUE_ID, "book-a")
+
+    assert get_stream_details.call_args.kwargs["seek_position"] == 39
 
 
 async def test_next_track_starts_from_the_beginning() -> None:
