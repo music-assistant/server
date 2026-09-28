@@ -439,6 +439,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             return
         # links carry no role or source: without overwrite, only drop the links
         # the reporting provider owns, other providers of the book keep theirs
+        # ownership is per artist, not per book: assumes one provider links a given
+        # artist, which holds while Audiobookshelf is the only one sending links
         rows = await self.mass.music.database.get_rows_from_query(
             f"SELECT {DB_TABLE_AUDIOBOOK_ARTISTS}.artist_id, {DB_TABLE_ARTISTS}.artist_type, "
             f"EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} pm "
