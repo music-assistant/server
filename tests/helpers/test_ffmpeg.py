@@ -1061,6 +1061,42 @@ async def test_abort_survives_send_signal_racing_process_exit() -> None:
     assert ffmpeg.closed
 
 
+# -- _log_reader_task (concat-demuxer demux-error gating) --
+
+
+async def test_log_reader_ignores_demuxing_error_without_concat_demuxer() -> None:
+    """A demux error from a non-concat input (e.g. HTTP reconnect at EOF) is not fatal."""
+    ffmpeg = FFMpeg(audio_input="-", input_format=_PCM_FORMAT, output_format=_PCM_FORMAT)
+
+    async def fake_stderr() -> AsyncGenerator[str]:
+        yield "[in#0/mp3 @ 0x600000e58fc0] Error during demuxing: Input/output error"
+
+    ffmpeg.iter_stderr = fake_stderr  # type: ignore[method-assign]
+
+    await ffmpeg._log_reader_task()
+
+    assert ffmpeg.concat_error is False
+
+
+async def test_log_reader_sets_concat_error_for_concat_demuxer() -> None:
+    """A demux error while the concat demuxer is in use still marks the stream as failed."""
+    ffmpeg = FFMpeg(
+        audio_input="-",
+        input_format=_PCM_FORMAT,
+        output_format=_PCM_FORMAT,
+        extra_input_args=["-safe", "0", "-f", "concat"],
+    )
+
+    async def fake_stderr() -> AsyncGenerator[str]:
+        yield "[concat @ 0x600000e58fc0] Error during demuxing: Input/output error"
+
+    ffmpeg.iter_stderr = fake_stderr  # type: ignore[method-assign]
+
+    await ffmpeg._log_reader_task()
+
+    assert ffmpeg.concat_error is True
+
+
 # -- _build_filtergraph_args (DSP chain assembly) --
 
 
