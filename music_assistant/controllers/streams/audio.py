@@ -674,7 +674,7 @@ class StreamsAudio:
                 msg = f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
                 raise MediaNotFoundError(msg)
             if media_item.provider == "library":
-                self._fill_in_mapping_audio_format(media_item, candidates, streamdetails)
+                self._fill_in_mapping_audio_format(media_item, streamdetails)
 
             # work out how to handle radio stream
             if (
@@ -3809,27 +3809,25 @@ class StreamsAudio:
         return None
 
     def _fill_in_mapping_audio_format(
-        self,
-        media_item: MediaItemType,
-        candidates: Iterable[tuple[ProviderMapping, Provider]],
-        streamdetails: StreamDetails,
+        self, media_item: MediaItemType, streamdetails: StreamDetails
     ) -> None:
         """
         Store the audio format a stream revealed on a library mapping that had none.
 
         A mapping added without fetching the provider item (e.g. from a MusicBrainz link)
         ranks last among the item's sources until its format is known; the streamdetails
-        supply it at no extra provider request.
+        supply it at no extra provider request. Only the mapping of the instance that
+        served the stream is filled in: another account of the same service may be on a
+        different tier.
 
         :param media_item: The library item being played.
-        :param candidates: The mapping candidates the streamdetails were requested from.
-        :param streamdetails: The streamdetails one of the candidates resolved.
+        :param streamdetails: The streamdetails a provider resolved for it.
         """
         mapping = next(
             (
                 mapping
-                for mapping, provider in candidates
-                if provider.instance_id == streamdetails.provider
+                for mapping in media_item.provider_mappings
+                if mapping.provider_instance == streamdetails.provider
                 and mapping.item_id == streamdetails.item_id
             ),
             None,

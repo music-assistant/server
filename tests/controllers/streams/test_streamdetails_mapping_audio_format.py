@@ -19,6 +19,7 @@ from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.models.music_provider import MusicProvider
 from tests.common import set_music_source_access
 
 if TYPE_CHECKING:
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
     from typing import Any
 
 INSTANCE = "tidal--abc"
+SIBLING_INSTANCE = "tidal--xyz"
 ITEM_ID = "79280548"
 LIBRARY_ID = "42"
 FLAC = AudioFormat(content_type=ContentType.FLAC, sample_rate=44100, bit_depth=16)
@@ -60,12 +62,14 @@ def _queue_item(media_item: Track) -> QueueItem:
     )
 
 
-def _provider(audio_format: AudioFormat, item_id: str = ITEM_ID) -> MagicMock:
-    """Build a provider whose streamdetails declare the given audio format."""
+def _provider(
+    audio_format: AudioFormat, item_id: str = ITEM_ID, instance: str = INSTANCE
+) -> MagicMock:
+    """Build a provider instance whose streamdetails declare the given audio format."""
 
     async def _get_stream_details(_item_id: str, media_type: MediaType) -> StreamDetails:
         return StreamDetails(
-            provider=INSTANCE,
+            provider=instance,
             item_id=item_id,
             audio_format=audio_format,
             media_type=media_type,
@@ -74,10 +78,11 @@ def _provider(audio_format: AudioFormat, item_id: str = ITEM_ID) -> MagicMock:
             duration=237,
         )
 
-    provider = MagicMock()
-    provider.instance_id = INSTANCE
+    provider = MagicMock(spec=MusicProvider)
+    provider.instance_id = instance
     provider.domain = "tidal"
     provider.available = True
+    provider.is_streaming_provider = True
     provider.get_stream_details = _get_stream_details
     return provider
 
@@ -86,16 +91,16 @@ def _audio(
     provider: MagicMock,
 ) -> tuple[StreamsAudio, AsyncMock, list[Coroutine[Any, Any, None]]]:
     """
-    Build a StreamsAudio resolving the provider, plus the mapping update and its scheduling.
+    Build a StreamsAudio with the provider as its only loaded instance.
 
-    The scheduled coroutines are handed back unstarted, so a test decides when the
-    mapping write runs and sees exactly how many were scheduled.
+    Hands back the mapping update mock and the background tasks scheduled, unstarted,
+    so a test decides when the mapping write runs and sees how many were scheduled.
     """
     mass = MagicMock()
     mass.get_provider.side_effect = lambda instance, **_kwargs: (
-        provider if instance == INSTANCE else None
+        provider if instance == provider.instance_id else None
     )
-    mass.providers = []
+    mass.providers = [provider]
     mass.player_queues.queue_data_or_none.return_value = None
     mass.webserver.auth.get_user = AsyncMock(return_value=None)
     set_music_source_access(mass, {INSTANCE: None})
@@ -162,6 +167,18 @@ async def test_a_stream_for_another_item_fills_in_nothing() -> None:
     await audio.get_stream_details(queue_item=_queue_item(_library_track(mapping)))
 
     assert scheduled == []
+
+
+async def test_a_sibling_instance_fills_in_nothing() -> None:
+    """Another account of the same service standing in does not fill in the mapping."""
+    mapping = _mapping()
+    audio, _, scheduled = _audio(_provider(FLAC, instance=SIBLING_INSTANCE))
+
+    streamdetails = await audio.get_stream_details(queue_item=_queue_item(_library_track(mapping)))
+
+    assert streamdetails.provider == SIBLING_INSTANCE
+    assert scheduled == []
+    assert mapping.audio_format.content_type == ContentType.UNKNOWN
 
 
 async def test_a_provider_item_is_not_written_back() -> None:
