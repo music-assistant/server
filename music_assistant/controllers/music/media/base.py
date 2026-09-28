@@ -215,6 +215,13 @@ class AudiobookSyncDetails(LibraryItemSyncDetails):
     resume_position_ms: int | None
 
 
+@dataclass(slots=True)
+class PodcastSyncDetails(LibraryItemSyncDetails):
+    """Lightweight sync snapshot of a library podcast."""
+
+    genres: set[str]
+
+
 class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     """Base model for controller managing a MediaType."""
 
