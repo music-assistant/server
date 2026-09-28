@@ -97,9 +97,8 @@ AI_QUERY_TIMEOUT_SECONDS = 60
 # a reply is persisted and served in every playlist listing, so a runaway one is discarded
 # in favour of the rules summary; the cap sits well above the sentence or two we ask for
 MAX_AI_DESCRIPTION_BYTES = 2048
-# consecutive batches that add no new track before a seed counts as exhausted. The base-track
-# sample is random, so one barren round says nothing about whether the seed has more to give;
-# a second one costs a spare provider call on a seed that really is spent
+# barren batches in a row a seed may yield before it counts as exhausted; base tracks are
+# sampled at random, so one batch of only already-seen tracks doesn't mean the seed is spent
 MAX_UNPRODUCTIVE_SEED_ROUNDS = 1
 
 SUPPORTED_FEATURES: set[ProviderFeature] = {
@@ -1413,10 +1412,6 @@ class SmartPlaylistProvider(PluginProvider):
                     added = True
             if len(pool) >= per_seed_target:
                 break
-            # each batch samples its base tracks afresh, so an unlucky draw can redraw only
-            # tracks already seen and add nothing while the seed is far from exhausted.
-            # Ending on the first of those cost the pool the headroom it is sized for, so
-            # give the sampler another draw or two before calling the seed spent
             unproductive_rounds = 0 if added else unproductive_rounds + 1
             if unproductive_rounds > MAX_UNPRODUCTIVE_SEED_ROUNDS:
                 break

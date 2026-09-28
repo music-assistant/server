@@ -937,8 +937,7 @@ async def test_tracks_from_seeds_pools_base_and_similar() -> None:
 
     ids = [track.item_id for track in result]
     assert ids == ["base", "sim1", "sim2"]
-    # the mock returns the same batch every call: the second adds nothing new and the third
-    # confirms it, since one barren round alone is not taken as the seed being spent
+    # the mock returns the same batch every call, so it stops after two batches add nothing new
     assert radio_prov.get_dynamic_tracks.await_count == 3
 
 
@@ -1094,8 +1093,7 @@ async def test_tracks_from_seeds_static_gets_headroom_above_target() -> None:
 @pytest.mark.asyncio
 async def test_tracks_from_seeds_survives_an_unproductive_radio_batch() -> None:
     """A batch that redraws only already-seen base tracks must not end accumulation."""
-    # this draw makes an early batch resample base tracks it has already used, which is the
-    # case that used to stop the pool well below the headroom it is sized for
+    # this seed makes an early batch redraw only base tracks it has already used
     random.seed(141)
     mass = MagicMock()
     manifest = MagicMock()
@@ -1112,8 +1110,7 @@ async def test_tracks_from_seeds_survives_an_unproductive_radio_batch() -> None:
 
     base_tracks = [_radio_track(f"base_{i}") for i in range(40)]
     mass.player_queues.get_tracks_for_playback = AsyncMock(return_value=base_tracks)
-    # one base track always yields the same similar tracks, so a redraw dedupes by value the
-    # way a real Track (hashed on its uri) does, instead of looking like fresh material
+    # a base track always yields the same similar tracks, so redraws dedupe like real Tracks do
     similar_by_base: dict[str, list[MagicMock]] = {}
 
     def _similar(item_id: str, _provider: str, **_kwargs: Any) -> list[MagicMock]:
