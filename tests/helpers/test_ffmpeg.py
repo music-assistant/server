@@ -1042,6 +1042,36 @@ async def test_voice_over_stream_raises_when_the_clip_cannot_be_opened(tmp_path:
         )
 
 
+async def test_voice_over_stream_cuts_the_clip_at_the_end_of_its_window(
+    overlay_file: Path,
+) -> None:
+    """A clip longer than its window stops where the window ends, as the duck lifts there."""
+    output = b"".join(
+        await _collect_chunks(
+            get_ffmpeg_voice_over_stream(
+                audio_input=_silence(1),
+                voice_path=str(overlay_file),
+                pcm_format=_PCM_FORMAT,
+                voice_start=0.0,
+                voice_end=0.5,
+            )
+        )
+    )
+    samples = _samples(output, channel=0)
+    half = len(samples) // 2
+    assert _rms(samples[: half - 2000]) > 1000
+    assert _rms(samples[half + 2000 :]) == 0
+
+
+def test_voice_over_mixer_trims_the_clip_to_its_window() -> None:
+    """The trim runs on the clip alone, ahead of the resample and the delay."""
+    (clip,) = _build_voice_over_mixer(
+        "/clip.wav", _PCM_FORMAT, voice_start=1.0, voice_offset=2.0, voice_seconds=7.25
+    ).inputs
+    assert clip.filters.startswith("atrim=duration=7.250,")
+    assert clip.filters.index("atrim") < clip.filters.index("adelay")
+
+
 def test_voice_over_duck_filter_is_fully_down_when_the_voice_leads_the_record() -> None:
     """A voice already talking at the first sample needs the ramp to start before zero."""
     duck = _build_voice_over_duck_filter(voice_start=0.0, voice_end=8.0)

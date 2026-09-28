@@ -506,7 +506,9 @@ async def get_ffmpeg_voice_over_stream(
     filter_params: list[str | ComplexFilter] = [
         # the duck applies to the music alone, so it precedes the two-input mixer
         _build_voice_over_duck_filter(voice_start, voice_end),
-        _build_voice_over_mixer(voice_path, pcm_format, voice_start, voice_offset),
+        _build_voice_over_mixer(
+            voice_path, pcm_format, voice_start, voice_offset, voice_end - voice_start
+        ),
         f"alimiter=limit={VOICE_OVER_MIX_CEILING_DB}dB:level=false:latency=true",
     ]
     async for chunk in _iter_mixed_stream(audio_input, pcm_format, filter_params, chunk_size):
@@ -869,12 +871,19 @@ def _build_voice_over_duck_filter(voice_start: float, voice_end: float) -> str:
 
 
 def _build_voice_over_mixer(
-    voice_path: str, pcm_format: AudioFormat, voice_start: float, voice_offset: float = 0.0
+    voice_path: str,
+    pcm_format: AudioFormat,
+    voice_start: float,
+    voice_offset: float = 0.0,
+    voice_seconds: float | None = None,
 ) -> ComplexFilter:
     """Build the filter mixing a one-shot voice clip, at its own level, into the music."""
     input_args = ["-ss", f"{voice_offset:.3f}"] if voice_offset > 0 else []
     layout = _get_channel_layout_name(pcm_format.channels)
     conform = f",aformat=channel_layouts={layout}" if layout else ""
+    # the window is the caller's promise of where the voice ends, and the duck lifts there,
+    # so a clip that runs on past it is cut rather than played over music at full level
+    trim = f"atrim=duration={voice_seconds:.3f}," if voice_seconds is not None else ""
     delay_ms = max(0, round(voice_start * 1000))
     return ComplexFilter(
         # duration=first: the clip can never extend the music
@@ -884,7 +893,9 @@ def _build_voice_over_mixer(
                 path=voice_path,
                 # brought to the music's rate ahead of amix, so its negotiation never
                 # touches the music
-                filters=f"aresample={pcm_format.sample_rate}{conform},adelay={delay_ms}:all=1",
+                filters=(
+                    f"{trim}aresample={pcm_format.sample_rate}{conform},adelay={delay_ms}:all=1"
+                ),
                 input_args=input_args,
             )
         ],
