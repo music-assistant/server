@@ -168,7 +168,7 @@ async def test_enqueued_item_mapping_counts_as_user_initiated() -> None:
     lock_cm = MagicMock()
     lock_cm.__aenter__ = AsyncMock(return_value=None)
     lock_cm.__aexit__ = AsyncMock(return_value=None)
-    ctrl.mass.players.get_player_lock = Mock(return_value=lock_cm)
+    ctrl.mass.players.get_group_and_player_lock = Mock(return_value=lock_cm)
     ctrl._set_transitioning = Mock()  # type: ignore[method-assign]
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl.on_player_update = Mock()  # type: ignore[method-assign]
@@ -240,7 +240,7 @@ def _play_media_controller(
     lock_cm = MagicMock()
     lock_cm.__aenter__ = AsyncMock(return_value=None)
     lock_cm.__aexit__ = AsyncMock(return_value=None)
-    ctrl.mass.players.get_player_lock = Mock(return_value=lock_cm)
+    ctrl.mass.players.get_group_and_player_lock = Mock(return_value=lock_cm)
     ctrl.get_config_value = Mock(return_value=default_option)  # type: ignore[method-assign]
     ctrl._set_transitioning = Mock()  # type: ignore[method-assign]
     ctrl.signal_update = Mock()  # type: ignore[method-assign]

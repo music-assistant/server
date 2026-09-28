@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import ytmusicapi
 from music_assistant_models.errors import LoginFailed
+from ytmusicapi import LikeStatus
 
 from music_assistant.providers.ytmusic import helpers
 
@@ -112,3 +113,15 @@ async def test_add_playlist_tracks_allows_duplicates() -> None:
         videoIds=["track", "track"],
         duplicates=True,
     )
+
+
+async def test_rate_track_passes_auth_headers_and_user() -> None:
+    """rate_track must rate the song on the authenticated account."""
+    mock_ytm = MagicMock()
+    headers = {"cookie": "abc"}
+    with patch.object(ytmusicapi, "YTMusic", return_value=mock_ytm) as mock_ytmusic:
+        await helpers.rate_track(
+            headers=headers, prov_track_id="video", rating=LikeStatus.DISLIKE, user="123"
+        )
+    mock_ytmusic.assert_called_once_with(auth=headers, user="123")
+    mock_ytm.rate_song.assert_called_once_with(videoId="video", rating=LikeStatus.DISLIKE)

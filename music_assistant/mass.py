@@ -338,6 +338,14 @@ class MusicAssistant:
         # provider load so no provider is served a record that is still to be written.
         # TODO: remove after 2.11 release
         await migrate_provider_access(self)
+        # one-off: hand the favorites the library migration parked to their users. Needs the
+        # owners of the music sources (migrated just above) and the users from the auth
+        # database, neither of which is there while the library migrates.
+        try:
+            await self.music.favorites.settle_pending()
+        except Exception as err:
+            # the parked rows stay where they are and get another chance on the next start
+            LOGGER.warning("Could not hand out the migrated favorites: %s", err)
         # repair sidebar shortcuts left pointing at a provider instance that no longer exists:
         # those never resolve, so the frontend cannot render them and the user cannot remove
         # them. Reads the provider config, so it must not wait for the providers to load.
