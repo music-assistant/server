@@ -761,7 +761,8 @@ def generate_openapi_spec(
                             }
                         },
                     },
-                    "400": {"description": "Setup already completed or invalid request"},
+                    "400": {"description": "Invalid request"},
+                    "409": {"description": "Setup already completed"},
                 },
             }
         },

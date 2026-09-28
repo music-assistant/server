@@ -99,7 +99,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         """
         Get in-database podcasts.
 
-        :param favorite: Filter by favorite status.
+        :param favorite: Only include the current user's likes (True) or dislikes (False).
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
@@ -300,7 +300,6 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 "name": item.name,
                 "sort_name": item.sort_name,
                 "version": item.version,
-                "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
                 "publisher": item.publisher,
                 "total_episodes": item.total_episodes or 0,

@@ -101,14 +101,15 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
-    has_scope,
+    has_player_access,
+    set_current_user,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.colors import get_palette_for_url
 from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.plugin_engines import create_tts_engine_config_entries
+from music_assistant.helpers.provider_access import resolve_playback_user
 from music_assistant.helpers.util import (
-    TaskManager,
     enrich_device_mac_address,
     is_valid_mac_address,
 )
@@ -120,7 +121,7 @@ from music_assistant.models.plugin import PluginProvider, SourceControlValue
 from .announcements import AnnouncementsMixin
 from .audio_sources import AudioSourceMixin, AudioSourceSession
 from .constants import PlayerLockPurpose
-from .helpers import handle_player_command, is_own_client_player, wait_for_power_on
+from .helpers import handle_player_command, wait_for_power_on
 from .protocol_linking import ProtocolLinkingMixin
 
 if TYPE_CHECKING:
@@ -223,6 +224,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         If the lock can't be acquired within 30s the body runs anyway, to keep
         the player responsive when a previous holder is stuck on a hung command.
 
+        Ordering rule: when a command needs both a group/leader lock and a member
+        lock, it must take the group's first. The group players themselves always
+        lock their members from under their own lock, so a member-first
+        acquisition is an inversion and will deadlock. A command on a member that
+        reaches its group uses get_group_and_player_lock for that.
+
         :param player_id: The player to lock.
         :param purpose: Lock category. Commands with different purposes can run
             concurrently on the same player.
@@ -270,6 +277,38 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     if not held:
                         del self._task_held_locks[task]
                 lock.release()
+
+    @contextlib.asynccontextmanager
+    async def get_group_and_player_lock(self, player_id: str) -> AsyncIterator[None]:
+        """
+        Acquire the playback lock of a player, preceded by that of the group holding it.
+
+        For a command on a group member that reaches its (sync)group: releasing the
+        member, joining it back or restarting the group all take the group's lock,
+        which has to be taken before the member's own (see get_player_lock). A player
+        that is not part of a group only takes its own lock.
+
+        :param player_id: The player to lock.
+        """
+        async with contextlib.AsyncExitStack() as stack:
+            if (player := self.get_player(player_id)) and (
+                parent_id := (player.state.active_group or player.state.synced_to)
+            ):
+                if (
+                    (parent := self.get_player(parent_id))
+                    and parent.type != PlayerType.GROUP
+                    and parent.state.active_group
+                ):
+                    # cmd_set_members redirects a captured sync leader to its group
+                    # player, so that group is the lock it will actually take
+                    parent_id = parent.state.active_group
+                await stack.enter_async_context(
+                    self.get_player_lock(parent_id, PlayerLockPurpose.PLAYBACK)
+                )
+            await stack.enter_async_context(
+                self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK)
+            )
+            yield
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the Player Controller."""
@@ -393,11 +432,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :return: List of Player objects.
         """
         current_user = get_current_user()
-        user_filter = (
-            current_user.player_filter
-            if current_user and not has_scope(current_user, Scope.ALL)
-            else None
-        )
         return [
             player
             for player in self.iter_players(
@@ -406,7 +440,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 provider_filter=provider_filter,
                 return_protocol_players=return_protocol_players,
             )
-            if not user_filter or player.player_id in user_filter or is_own_client_player(player)
+            if has_player_access(current_user, player.player_id, player)
         ]
 
     @api_command("players/all", required_scope=Scope.PLAYERS_READ)
@@ -477,16 +511,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :return: Player object or None.
         """
         current_user = get_current_user()
-        user_filter = (
-            current_user.player_filter
-            if current_user and not has_scope(current_user, Scope.ALL)
-            else None
-        )
-        if (
-            current_user
-            and user_filter
-            and player_id not in user_filter
-            and not is_own_client_player(self.get_player(player_id))
+        if current_user and not has_player_access(
+            current_user, player_id, self.get_player(player_id)
         ):
             msg = f"{current_user.username} does not have access to player {player_id}"
             raise InsufficientPermissions(msg)
@@ -538,18 +564,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         :return: PlayerState object or None.
         """
         current_user = get_current_user()
-        user_filter = (
-            current_user.player_filter
-            if current_user and not has_scope(current_user, Scope.ALL)
-            else None
-        )
         if player := self.get_player_by_name(name):
-            if (
-                current_user
-                and user_filter
-                and player.player_id not in user_filter
-                and not is_own_client_player(player)
-            ):
+            if current_user and not has_player_access(current_user, player.player_id, player):
                 msg = f"{current_user.username} does not have access to player {player.player_id}"
                 raise InsufficientPermissions(msg)
             return player.state
@@ -879,7 +895,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         raise UnsupportedFeaturedException(msg)
 
     @api_command("players/cmd/power", required_scope=Scope.PLAYERS_CONTROL)
-    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
+    @handle_player_command
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """
         Send POWER command to given player.
@@ -890,7 +906,15 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # Power is serialized with PLAYBACK because powering on a sync/group player
         # forms the group (and powering off dissolves it) - this must not race with
         # play_media / cmd_resume / cmd_set_members on the same player.
-        await self._handle_cmd_power(player_id, powered)
+        # A power off also detaches this player from its (sync)group, which takes the
+        # group's lock - so that one is taken first (see get_group_and_player_lock).
+        lock = (
+            self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK)
+            if powered
+            else self.get_group_and_player_lock(player_id)
+        )
+        async with lock:
+            await self._handle_cmd_power(player_id, powered)
 
     @api_command("players/cmd/volume_set", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command
@@ -1091,9 +1115,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # player is released from its group/sync first, then plays the media
         # standalone. With the preference off, behavior falls back to the
         # legacy "redirect to group leader" path below.
-        # Note: the release step runs outside the PLAYBACK lock to avoid an
-        # AB-BA cycle with cmd_set_members(group), which acquires lock(group)
-        # then lock(sync_leader) via the sync_group provider.
+        # The release reaches the group (and takes its lock through cmd_set_members
+        # for a dynamic member), so it runs before this player's own lock is taken
+        # here. A queue action calling in with that lock already held took the
+        # group's lock first as well (see get_group_and_player_lock).
         target_player = self.get_player(player_id, True)
         if target_player is not None and (
             target_player.state.synced_to or target_player.state.active_group
@@ -1525,8 +1550,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         can not be resolved to a media item.
         """
         player = self._get_player_with_redirect(player_id)
+        mass_queue = self.get_active_queue(player)
+        # a favorite set from a player belongs to the user the playback is for
+        if (
+            get_current_user() is None
+            and mass_queue
+            and (playback_user := await resolve_playback_user(self.mass, mass_queue.queue_id))
+        ):
+            set_current_user(playback_user)
         # handle mass player queue active
-        if mass_queue := self.get_active_queue(player):
+        if mass_queue:
             if not (current_item := mass_queue.current_item) or not current_item.media_item:
                 raise PlayerCommandFailed("No current item to add to favorites")
             # if we're playing a radio station, try to resolve the currently playing track
@@ -2981,9 +3014,14 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             or player.state.type not in PLAYBACK_TARGET_TYPES
         ):
             return
-        if player.state.synced_to or player.state.active_group or player.state.group_members:
-            # a grouped player is detached from its group instead, which ends the
-            # group's queue through the group's own power off
+        if (
+            player.state.synced_to
+            or player.state.active_group
+            or (player.state.group_members and player.state.type in UNGROUP_ON_POWER_OFF_TYPES)
+        ):
+            # a player that is a member of a group, or a sync leader handing its
+            # leadership on, is detached instead and the group's own power off ends the
+            # queue. a group player leads its own members, so its queue is ended here.
             return
         # a device that powers itself off may report its stop in this very update, so
         # judge on the playback state as it was before it - which is also the snapshot
@@ -3950,7 +3988,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # ungroup player at power off
         player_was_sync_child = bool(player.state.synced_to or player.state.active_group)
         if (
-            (player_was_sync_child or player.group_members)
+            (player_was_sync_child or player_state.group_members)
             and player.type in UNGROUP_ON_POWER_OFF_TYPES
             and not powered
         ):
@@ -3973,11 +4011,18 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             and player_state.type in UNGROUP_ON_POWER_OFF_TYPES
             and player_state.group_members
         ):
-            async with TaskManager(self.mass) as tg:
-                for member in self.iter_group_members(player, True):
-                    if member.power_control == PLAYER_CONTROL_NONE:
-                        continue
-                    tg.create_task(self._handle_cmd_power(member.player_id, False))
+            # Sequential and in this very task: a member's power off detaches it from
+            # this leader and so needs the locks this power off already holds, and
+            # get_player_lock is only re-entrant within a single task.
+            for member in self.iter_group_members(player, True):
+                if member.power_control == PLAYER_CONTROL_NONE:
+                    continue
+                try:
+                    await self._handle_cmd_power(member.player_id, False)
+                except MusicAssistantError as err:
+                    self.logger.warning(
+                        "Could not power off group member %s: %s", member.display_name, err
+                    )
 
         # handle actual power command
         if player_state.power_control == PLAYER_CONTROL_NONE:

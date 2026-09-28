@@ -31,6 +31,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.music.media.artists import ArtistsController
 from music_assistant.mass import MusicAssistant
 from tests.common import set_music_source_access
 
@@ -113,6 +114,54 @@ def test_apply_user_provider_filter_no_filter_returns_all(
     result = controller._apply_user_provider_filter([music_a, music_b])
 
     assert [p.instance_id for p in result] == ["m_a", "m_b"]
+
+
+@patch(GET_CURRENT_USER)
+def test_ensure_provider_filter_passes_a_metadata_source(mock_get_user: Mock) -> None:
+    """A metadata source feeding an aggregated row is honored, never a permission error."""
+    mock_get_user.return_value = _user(USER_A)
+    metadata = _make_prov("meta_a", ProviderType.METADATA)
+
+    controller = ArtistsController.__new__(ArtistsController)
+    controller.mass = Mock()
+    controller.mass.providers = [metadata]
+    # USER_A may see m_a but not m_b
+    set_music_source_access(controller.mass, {"m_a": None, "m_b": _private(USER_B)})
+
+    assert controller._ensure_provider_filter("meta_a") == ["meta_a"]
+
+
+@patch(GET_CURRENT_USER)
+def test_ensure_provider_filter_denies_a_hidden_music_source(mock_get_user: Mock) -> None:
+    """A music source the user may not see still raises."""
+    mock_get_user.return_value = _user(USER_A)
+
+    controller = ArtistsController.__new__(ArtistsController)
+    controller.mass = Mock()
+    controller.mass.providers = []
+    set_music_source_access(controller.mass, {"m_a": None, "m_b": _private(USER_B)})
+
+    with pytest.raises(InsufficientPermissions):
+        controller._ensure_provider_filter("m_b")
+
+
+@patch(GET_CURRENT_USER)
+def test_ensure_provider_filter_keeps_non_music_sources_when_unfiltered(
+    mock_get_user: Mock,
+) -> None:
+    """With no explicit filter, a filtered user keeps its music sources and every non-music one."""
+    mock_get_user.return_value = _user(USER_A)
+    metadata = _make_prov("meta_a", ProviderType.METADATA)
+    plugin = _make_prov("plug_a", ProviderType.PLUGIN)
+
+    controller = ArtistsController.__new__(ArtistsController)
+    controller.mass = Mock()
+    controller.mass.providers = [metadata, plugin]
+    set_music_source_access(controller.mass, {"m_a": None, "m_b": _private(USER_B)})
+
+    result = controller._ensure_provider_filter(None)
+    assert result is not None
+    assert set(result) == {"m_a", "meta_a", "plug_a"}
 
 
 @patch("music_assistant.controllers.music.controller.get_current_user")
@@ -531,6 +580,11 @@ def _mapping(provider_instance: str) -> ProviderMapping:
     )
 
 
+async def _like(mass: MusicAssistant, media_type: MediaType, item_id: str) -> None:
+    """Let both users of the count test like the given library item."""
+    await mass.music.favorites.set(media_type, int(item_id), True, [USER_A, USER_ALL])
+
+
 @pytest.fixture(scope="module")
 async def counted_mass(music_mass_module: MusicAssistant) -> MusicAssistant:
     """
@@ -562,9 +616,11 @@ async def counted_mass(music_mass_module: MusicAssistant) -> MusicAssistant:
             provider="library",
             name=name,
             provider_mappings={_mapping(prov) for prov in providers},
-            favorite=favorite,
         )
-        artists.append(await mass.music.artists.add_item_to_library(artist))
+        db_artist = await mass.music.artists.add_item_to_library(artist)
+        artists.append(db_artist)
+        if favorite:
+            await _like(mass, MediaType.ARTIST, db_artist.item_id)
 
     albums: list[Album] = []
     for idx, (name, providers, album_type, favorite) in enumerate(
@@ -583,9 +639,11 @@ async def counted_mass(music_mass_module: MusicAssistant) -> MusicAssistant:
             provider_mappings={_mapping(prov) for prov in providers},
             # Artist 03 gets no album, so album_artists_only excludes something
             artists=UniqueList([artists[idx % 2]]),
-            favorite=favorite,
         )
-        albums.append(await mass.music.albums.add_item_to_library(album))
+        db_album = await mass.music.albums.add_item_to_library(album)
+        albums.append(db_album)
+        if favorite:
+            await _like(mass, MediaType.ALBUM, db_album.item_id)
 
     for idx, (name, providers, favorite) in enumerate(
         (
@@ -605,9 +663,10 @@ async def counted_mass(music_mass_module: MusicAssistant) -> MusicAssistant:
             album=albums[idx % len(albums)],
             disc_number=1,
             track_number=idx + 1,
-            favorite=favorite,
         )
-        await mass.music.tracks.add_item_to_library(track)
+        db_track = await mass.music.tracks.add_item_to_library(track)
+        if favorite:
+            await _like(mass, MediaType.TRACK, db_track.item_id)
 
     # a track whose only PROV_A mapping left the provider's library: it must be excluded
     # from both the filtered listing and the filtered count
@@ -620,9 +679,9 @@ async def counted_mass(music_mass_module: MusicAssistant) -> MusicAssistant:
         album=albums[0],
         disc_number=1,
         track_number=99,
-        favorite=True,
     )
     db_hidden = await mass.music.tracks.add_item_to_library(hidden)
+    await _like(mass, MediaType.TRACK, db_hidden.item_id)
     await mass.music.database.execute(
         f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 0 "
         "WHERE item_id = :item_id AND media_type = 'track'",
@@ -661,7 +720,9 @@ async def test_library_count_matches_list_for_filtered_user(
         ("favorite" if key == "favorite_only" else key): value
         for key, value in count_kwargs.items()
     }
-    with patch(GET_CURRENT_USER, return_value=None):
+    # the baseline is the user that may see every source, not an anonymous caller: a
+    # favorite belongs to a user, so a call without one never matches any
+    with patch(GET_CURRENT_USER, return_value=_user(USER_ALL)):
         unfiltered_count = await controller.library_count(**count_kwargs)
     with patch(GET_CURRENT_USER, return_value=_user(USER_A)):
         filtered_count = await controller.library_count(**count_kwargs)

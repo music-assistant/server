@@ -144,7 +144,7 @@ class AppleMusicMediaManager:
     async def get_playlist(
         self,
         prov_playlist_id: str,
-        is_favourite: bool = False,
+        is_favourite: bool | None = None,
         can_edit_hint: bool | None = None,
         library_id_override: str | None = None,
     ) -> Playlist:
@@ -253,7 +253,7 @@ class AppleMusicMediaManager:
     async def _get_regular_playlist(
         self,
         prov_playlist_id: str,
-        is_favourite: bool = False,
+        is_favourite: bool | None = None,
         can_edit_hint: bool | None = None,
         library_id_override: str | None = None,
     ) -> Playlist:
