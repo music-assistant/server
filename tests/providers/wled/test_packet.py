@@ -7,7 +7,7 @@ import struct
 
 import pytest
 
-from music_assistant.providers.wled.constants import DEFAULT_GAIN_DB
+from music_assistant.providers.wled.constants import DEFAULT_GAIN_DB, ScalingMode
 from music_assistant.providers.wled.packet import (
     FFT_MAGNITUDE_SCALE,
     NOISE_GATE,
@@ -281,7 +281,7 @@ class TestSpectrumToFftResult:
         bins = [0] * 16
         bins[9] = 30000
         bins[10] = 30000
-        result = spectrum_to_fft_result(bins, scaling_mode="square_root")
+        result = spectrum_to_fft_result(bins, scaling_mode=ScalingMode.SQUARE_ROOT)
         assert result[10] > result[9]
 
 
@@ -291,21 +291,21 @@ class TestScalingModes:
     def test_modes_produce_different_output_for_mid_range_input(self) -> None:
         """Logarithmic, square-root, and linear must not collapse to the same value."""
         loudness = 47537  # amplitude ~0.15, well above NOISE_GATE
-        linear = loudness_to_sample(loudness, scaling_mode="linear")
-        square_root = loudness_to_sample(loudness, scaling_mode="square_root")
-        logarithmic = loudness_to_sample(loudness, scaling_mode="logarithmic")
+        linear = loudness_to_sample(loudness, scaling_mode=ScalingMode.LINEAR)
+        square_root = loudness_to_sample(loudness, scaling_mode=ScalingMode.SQUARE_ROOT)
+        logarithmic = loudness_to_sample(loudness, scaling_mode=ScalingMode.LOGARITHMIC)
         assert linear < square_root < logarithmic
 
     def test_all_modes_agree_at_full_scale(self) -> None:
         """Every curve maps amplitude 1.0 to 1.0, so full-scale input should match across modes."""
         assert (
-            loudness_to_sample(65535, scaling_mode="linear")
-            == loudness_to_sample(65535, scaling_mode="square_root")
-            == loudness_to_sample(65535, scaling_mode="logarithmic")
+            loudness_to_sample(65535, scaling_mode=ScalingMode.LINEAR)
+            == loudness_to_sample(65535, scaling_mode=ScalingMode.SQUARE_ROOT)
+            == loudness_to_sample(65535, scaling_mode=ScalingMode.LOGARITHMIC)
             == pytest.approx(255.0)
         )
 
     def test_all_modes_gate_true_silence_to_zero(self) -> None:
         """The noise gate applies before the curve, so silence is 0 regardless of mode."""
-        for mode in ("linear", "square_root", "logarithmic"):
+        for mode in ScalingMode:
             assert loudness_to_sample(0, scaling_mode=mode) == 0.0

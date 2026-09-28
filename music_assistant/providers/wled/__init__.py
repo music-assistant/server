@@ -12,10 +12,7 @@ speaker player makes the zone's WLED devices react to that speaker's audio.
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
-
-LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig

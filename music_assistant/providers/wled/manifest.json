@@ -4,7 +4,7 @@
   "domain": "wled",
   "name": "WLED Audio Sync",
   "description": "Drive WLED's built-in audio-reactive effects from music played by Music Assistant.",
-  "codeowners": ["@music-assistant"],
+  "codeowners": ["@netmindz"],
   "depends_on": "sendspin",
   "documentation": "https://music-assistant.io/plugins/wled/",
   "multi_instance": true,
