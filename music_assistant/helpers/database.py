@@ -393,13 +393,17 @@ class DatabaseConnection:
         await self._db.execute(sql_query, values)
         await self._maybe_commit()
 
-    async def upsert_many(self, table: str, values: Sequence[dict[str, Any]]) -> None:
+    async def upsert_many(
+        self, table: str, values: Sequence[dict[str, Any]], immutable: Sequence[str] = ()
+    ) -> None:
         """
         Upsert multiple rows in the given table with a single commit.
 
         :param table: The table to upsert the rows into.
         :param values: The rows to upsert, each given as a column->value dict.
             Rows do not need to share the same set of columns.
+        :param immutable: Columns an existing row keeps: a conflicting row whose value
+            differs from the given one is left untouched instead of updated.
         """
         if not values:
             return
@@ -416,6 +420,8 @@ class DatabaseConnection:
                 f"INSERT INTO {table}({','.join(keys)}) VALUES ({','.join(f':{x}' for x in keys)})"
             )
             sql_query += f" ON CONFLICT DO UPDATE SET {','.join(f'{x}=:{x}' for x in keys)}"
+            if guards := [x for x in immutable if x in keys]:
+                sql_query += " WHERE " + " AND ".join(f"{table}.{x} = excluded.{x}" for x in guards)
             await self._db.executemany(sql_query, rows)
         await self._maybe_commit()
 

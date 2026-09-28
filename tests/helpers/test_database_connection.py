@@ -363,6 +363,40 @@ async def test_upsert_many_empty_is_noop(db_with_table: DatabaseConnection) -> N
     assert len(commits) == 0
 
 
+async def test_upsert_many_leaves_a_row_with_another_immutable_value_alone(
+    db_with_table: DatabaseConnection,
+) -> None:
+    """Test that a conflicting row is only updated when its immutable columns match."""
+    await db_with_table.insert("items", {"name": "a", "url": "http://a", "plays": 1})
+    # a different value for the immutable column leaves the whole row as is
+    await db_with_table.upsert_many(
+        "items", [{"name": "a", "url": "http://other", "plays": 2}], immutable=("plays",)
+    )
+    row = await db_with_table.get_row("items", {"name": "a"})
+    assert row is not None
+    assert (row["url"], row["plays"]) == ("http://a", 1)
+    # the same value updates the row like any upsert
+    await db_with_table.upsert_many(
+        "items", [{"name": "a", "url": "http://same", "plays": 1}], immutable=("plays",)
+    )
+    row = await db_with_table.get_row("items", {"name": "a"})
+    assert row is not None
+    assert (row["url"], row["plays"]) == ("http://same", 1)
+
+
+async def test_upsert_many_omitted_immutable_column_does_not_block_the_update(
+    db_with_table: DatabaseConnection,
+) -> None:
+    """Test that a row leaving out an immutable column still updates the columns it carries."""
+    await db_with_table.insert("items", {"name": "a", "url": "http://a", "plays": 1})
+    await db_with_table.upsert_many(
+        "items", [{"name": "a", "url": "http://b"}], immutable=("plays",)
+    )
+    row = await db_with_table.get_row("items", {"name": "a"})
+    assert row is not None
+    assert (row["url"], row["plays"]) == ("http://b", 1)
+
+
 def test_query_params_expands_list_values() -> None:
     """Test that list params are expanded into placeholders in all placeholder notations."""
     query, params = query_params(
