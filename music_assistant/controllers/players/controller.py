@@ -298,18 +298,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         async with contextlib.AsyncExitStack() as stack:
             if (player := self.get_player(player_id)) and (
-                parent_id := (player.state.active_group or player.state.synced_to)
-            ):
-                if (
-                    (parent := self.get_player(parent_id))
-                    and parent.type != PlayerType.GROUP
-                    and parent.state.active_group
-                ):
-                    # cmd_set_members redirects a captured sync leader to its group
-                    # player, so that group is the lock it will actually take
-                    parent_id = parent.state.active_group
+                owner := self._resolve_playback_owner(player)
+            ) is not player:
                 await stack.enter_async_context(
-                    self.get_player_lock(parent_id, PlayerLockPurpose.PLAYBACK)
+                    self.get_player_lock(owner.player_id, PlayerLockPurpose.PLAYBACK)
                 )
             await stack.enter_async_context(
                 self.get_player_lock(player_id, PlayerLockPurpose.PLAYBACK)
@@ -1386,8 +1378,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         if (
             parent_player.type != PlayerType.GROUP
             and parent_player.state.active_group
-            and (group_player := self.get_player(parent_player.state.active_group))
-            and group_player.type == PlayerType.GROUP
+            and (group_player := self._resolve_playback_owner(parent_player)).type
+            == PlayerType.GROUP
             and PlayerFeature.SET_MEMBERS in group_player.state.supported_features
         ):
             self.logger.debug(
@@ -1396,7 +1388,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 group_player.name,
             )
             await self.cmd_set_members(
-                parent_player.state.active_group, player_ids_to_add, player_ids_to_remove
+                group_player.player_id, player_ids_to_add, player_ids_to_remove
             )
             return
 
@@ -3094,15 +3086,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """Get player with check if playback related command should be redirected."""
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
-        target = player
-        if target.state.synced_to and (sync_leader := self.get_player(target.state.synced_to)):
-            target = sync_leader
-        # a captured sync leader hands the command on to its group, which owns its
-        # playback and whose lock has to be taken first (see get_group_and_player_lock)
-        if target.state.active_group and (
-            active_group := self.get_player(target.state.active_group)
-        ):
-            target = active_group
+        target = self._resolve_playback_owner(player)
         if target is not player:
             self.logger.info(
                 "Player %s is synced or grouped and can not accept playback related "
@@ -3111,6 +3095,24 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 target.name,
             )
         return target
+
+    def _resolve_playback_owner(self, player: Player) -> Player:
+        """
+        Return the player that owns the given player's playback.
+
+        That is its sync leader, or the group player capturing that leader.
+        A player that is not synced or grouped owns its own playback.
+
+        :param player: The player to resolve the playback owner for.
+        """
+        owner = player
+        if owner.state.synced_to and (sync_leader := self.get_player(owner.state.synced_to)):
+            owner = sync_leader
+        # a captured sync leader hands its playback on to its group, whose lock has
+        # to be taken first (see get_group_and_player_lock)
+        if owner.state.active_group and (group := self.get_player(owner.state.active_group)):
+            owner = group
+        return owner
 
     def _get_active_audio_source(self, player: Player) -> tuple[AudioSource, PluginProvider] | None:
         """
