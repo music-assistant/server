@@ -1323,6 +1323,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         Add provider mappings to existing library item.
 
         A mapping that belongs to another library item merges that item into this one.
+        The copies made for the other instances of a mapping's provider count as well.
 
         :param item_id: The library item ID to add mappings to.
         :param provider_mappings: The provider mappings to add.
@@ -1583,7 +1584,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         Update the provider_mappings table for the media item.
 
         An empty set of mappings never clears the stored rows: an item without any
-        mapping can not be played or resolved.
+        mapping can not be played or resolved. A mapping another library item holds
+        stays with that item: only a library merge moves mappings between items.
         """
         db_id = int(item_id)  # ensure integer
         prov_map_objs: list[dict[str, Any]] = []
@@ -1618,10 +1620,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 DB_TABLE_PROVIDER_MAPPINGS,
                 {"media_type": self.media_type.value, "item_id": db_id},
             )
-        await self.mass.music.database.upsert_many(
-            DB_TABLE_PROVIDER_MAPPINGS,
-            prov_map_objs,
+        untouched = await self.mass.music.database.upsert_many(
+            DB_TABLE_PROVIDER_MAPPINGS, prov_map_objs, immutable=("item_id",)
         )
+        if untouched:
+            self.logger.debug(
+                "Skipped %s provider mapping(s) for %s item id %s: held by another library item",
+                untouched,
+                self.media_type.value,
+                db_id,
+            )
 
     @final
     async def set_external_ids(
@@ -2943,11 +2951,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # item claims concurrently cannot slip through
         async with self._db_add_lock:
             library_item = await self.get_library_item(db_id)
-            if not merge_conflicts:
-                # the copies for sibling provider instances must pass the ownership check as
-                # well, so they are expanded here rather than by the write below
-                mappings = self._with_sibling_instance_mappings(library_item, mappings)
+            # the copies for sibling provider instances pass the ownership check as well;
+            # a copy another item holds merges that item or drops the group, never moves it
+            mappings = self._with_sibling_instance_mappings(library_item, mappings)
             for mapping in list(mappings):
+                if mapping not in mappings:
+                    continue  # dropped along with its group
                 existing_item = await self.get_library_item_by_prov_id(
                     mapping.item_id, mapping.provider_instance
                 )
@@ -2980,8 +2989,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             if not added:
                 return []
             library_item.provider_mappings.update(added)
-            if merge_conflicts:
-                self.mass.music.match_provider_instances(library_item)
             await self.set_provider_mappings(db_id, library_item.provider_mappings)
             self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
             return added
@@ -3003,7 +3010,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             ):
                 if instance.instance_id in mapped_instances or not instance.is_streaming_provider:
                     continue
-                copies.append(replace(mapping, provider_instance=instance.instance_id))
+                # whether the other instance holds the item in its library is unknown
+                copies.append(
+                    replace(mapping, provider_instance=instance.instance_id, in_library=None)
+                )
                 mapped_instances.add(instance.instance_id)
         return mappings + copies
 
