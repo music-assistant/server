@@ -317,6 +317,31 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 category="generic",
                 advanced=True,
             ),
+            # the three entries below hold state kept across restarts; they are declared so a
+            # config save carries them over
+            ConfigEntry(
+                key=CONF_DELETED_PROVIDERS,
+                type=ConfigEntryType.STRING,
+                required=False,
+                multi_value=True,
+                default_value=[],
+                hidden=True,
+            ),
+            ConfigEntry(
+                key=CONF_TRACK_RECONCILIATION_CURSOR,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                multi_value=True,
+                default_value=[0, 0],
+                hidden=True,
+            ),
+            ConfigEntry(
+                key=CONF_TRACK_RECONCILIATION_RESCAN_DUE,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=False,
+                hidden=True,
+            ),
         )
 
     async def handle_config_action(
