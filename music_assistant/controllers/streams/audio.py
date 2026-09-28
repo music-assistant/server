@@ -3812,13 +3812,14 @@ class StreamsAudio:
         self, media_item: MediaItemType, streamdetails: StreamDetails
     ) -> None:
         """
-        Store the audio format a stream revealed on a library mapping that had none.
+        Store the audio format a stream revealed on the library mapping that served it.
 
         A mapping added without fetching the provider item (e.g. from a MusicBrainz link)
         ranks last among the item's sources until its format is known; the streamdetails
-        supply it at no extra provider request. Only the mapping of the instance that
-        served the stream is filled in: another account of the same service may be on a
-        different tier.
+        supply it at no extra provider request. A mapping that already has a format keeps
+        it, unless its provider declares that the stream's format supersedes the catalog's.
+        Only the mapping of the instance that served the stream is written: another account
+        of the same service may be on a different tier.
 
         :param media_item: The library item being played.
         :param streamdetails: The streamdetails a provider resolved for it.
@@ -3832,12 +3833,16 @@ class StreamsAudio:
             ),
             None,
         )
-        if (
-            mapping is None
-            or mapping.audio_format.content_type != ContentType.UNKNOWN
-            or streamdetails.audio_format.content_type == ContentType.UNKNOWN
-        ):
+        if mapping is None or streamdetails.audio_format.content_type == ContentType.UNKNOWN:
             return
+        if mapping.audio_format.content_type != ContentType.UNKNOWN:
+            provider = self.mass.get_provider(streamdetails.provider)
+            if (
+                not isinstance(provider, MusicProvider)
+                or not provider.stream_format_supersedes_catalog
+                or mapping.audio_format == streamdetails.audio_format
+            ):
+                return
         # ffmpeg fills in more of the streamdetails' format once the stream runs, so the
         # mapping gets its own copy of what the provider declared
         audio_format = replace(streamdetails.audio_format)
