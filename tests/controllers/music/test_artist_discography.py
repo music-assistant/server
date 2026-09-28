@@ -215,7 +215,7 @@ async def test_discography_lists_release_groups_the_library_lacks_as_musicbrainz
 
 
 async def test_discography_lists_a_musicbrainz_album_as_not_playable() -> None:
-    """A release no music service has yet cannot be played; a library album keeps its own flag."""
+    """A MusicBrainz album is not directly playable; a library album keeps its own flag."""
     library_album = _library_album("7", "OK Computer", RG_OK_COMPUTER)
     with _harness(
         _artist(),
