@@ -85,7 +85,7 @@ async def run_cloud_setup(
     # a secure value is never echoed back into a flow step, so on reconfigure the user may
     # leave the client secret blank to reuse the previously stored one
     stored_secret = str(session.context.setup_data.get(CONF_CLIENT_SECRET) or "")
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         entries = [
             replace(entry, value=setup_data.get(entry.key, entry.value))
@@ -105,7 +105,7 @@ async def run_cloud_setup(
             await session.finish(setup_data)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 def read_setup_value(
