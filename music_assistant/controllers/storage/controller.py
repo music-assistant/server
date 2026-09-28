@@ -6,8 +6,11 @@ and drives), from the folders an admin registered on this server, and from the s
 data and cache directories. A caller that manages every music source sees all of them; any
 other caller sees the media locations that were deliberately made available to the server.
 
-Every location is probed on a thread of its own, so a network share whose server is gone never
-holds up the other locations, the commands of this controller or the shutdown of the server.
+The list follows the mount table without touching any location, so an idle network share is
+left alone. A location is only probed when a caller needs its state and the last answer is
+older than half a minute; the probe of a share wakes it when it sits behind an automount
+trigger. Every probe runs on a thread of its own, so a share whose server is gone never holds
+up the other locations, the commands of this controller or the shutdown of the server.
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ import stat
 import threading
 import time
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -38,6 +41,7 @@ from music_assistant.controllers.storage.constants import (
     DIR_SIZE_MAX_AGE,
     DIR_SIZES_TASK_ID,
     MAX_LISTED_FOLDERS,
+    PROBE_MAX_AGE,
     PROBE_TIMEOUT,
     REFRESH_INTERVAL,
     REFRESH_TASK_ID,
@@ -83,8 +87,7 @@ class StorageController(CoreController):
         self.manifest.icon = "harddisk"
         self._locations: list[StorageLocation] = []
         self._in_container = False
-        # the latest probe of each path; at most one is in flight per path
-        self._probes: dict[str, asyncio.Future[_ProbeResult | None]] = {}
+        self._probes: dict[str, _ProbeState] = {}
         # paths whose probe is being waited for; an answer that comes later rebuilds the list
         self._awaited_probes: set[str] = set()
         self._dir_sizes: dict[StorageUsage, float] = {}
@@ -102,8 +105,8 @@ class StorageController(CoreController):
         self._in_container = self.mass.running_as_hass_addon or await asyncio.to_thread(
             _running_in_container
         )
-        # in the background: a share whose server is gone makes a refresh wait for its probe
-        self.mass.create_task(self._periodic_refresh(), task_id=REFRESH_TASK_ID)
+        # the mount table only: a location is probed once a caller needs its state
+        await self._periodic_refresh()
         self._request_dir_sizes()
 
     async def close(self) -> None:
@@ -114,11 +117,18 @@ class StorageController(CoreController):
 
     @api_command("storage/info", required_scope=READ_SCOPES)
     async def get_info(self) -> StorageInfo:
-        """Return the storage locations the caller may see and what can be added."""
+        """
+        Return the storage locations the caller may see and what can be added.
+
+        Probes the locations whose state is outdated first, which takes at most about 10 seconds.
+        """
         manages_all_sources = _caller_manages_all_sources()
         if manages_all_sources:
             # the used space is only shown on the data and cache rows these callers see
             self._request_dir_sizes()
+        # a drive or share mounted since the last refresh shows up right away
+        await self.refresh()
+        await self._probe_outdated(loc.path for loc in self.get_locations(manages_all_sources))
         return StorageInfo(
             locations=self.get_locations(manages_all_sources),
             can_mount_shares=False,
@@ -171,7 +181,7 @@ class StorageController(CoreController):
         self.mass.config.set(
             CONF_STORAGE_FOLDERS, [*self._get_registered_folders(), path], immediate=True
         )
-        await self._rebuild()
+        await self.refresh()
         return next(loc for loc in self._locations if loc.path == path)
 
     @api_command("storage/local_folders/remove", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
@@ -194,7 +204,7 @@ class StorageController(CoreController):
         self.mass.config.set(
             CONF_STORAGE_FOLDERS, [folder for folder in folders if folder != path], immediate=True
         )
-        await self._rebuild()
+        await self.refresh()
 
     def get_locations(self, manages_all_sources: bool = True) -> list[StorageLocation]:
         """
@@ -229,13 +239,16 @@ class StorageController(CoreController):
         Return whether a folder can be used right now.
 
         A folder in a location backed by a mount is only available while that mount is there,
-        so the empty directory an unmounted share leaves behind does not count.
+        so the empty directory an unmounted share leaves behind does not count. Probes the
+        location first when its state is outdated, which takes at most about 10 seconds.
 
         :param path: An absolute path.
         """
-        location = self.get_location_for_path(path)
+        if (location := self.get_location_for_path(path)) is not None:
+            await self._probe_outdated([location.path])
+            location = self.get_location_for_path(path)
         if location is not None and not location.available:
-            # not touched at all: it may be a share whose server is gone
+            # nothing more to look at: it may be a share whose server is gone
             return False
         mountpoint = location.mountpoint if location is not None else None
         return await asyncio.to_thread(_is_available, path, mountpoint)
@@ -244,19 +257,20 @@ class StorageController(CoreController):
         """
         Return the names of the subfolders of a folder in a media location, sorted.
 
-        Hidden folders and symlinks are left out and at most 500 names are returned.
+        Hidden folders and symlinks are left out and at most 500 names are returned. Probes the
+        location first when its state is outdated, which takes at most about 10 seconds.
 
         :param path: A media location the caller may see, or a folder inside one.
         :param manages_all_sources: Whether the caller manages every music source.
         """
         path = os.path.normpath(path)
-        roots = [
-            loc.path
-            for loc in self.get_locations(manages_all_sources)
-            if loc.usage == StorageUsage.MEDIA and is_within(path, loc.path)
-        ]
-        location = self.get_location_for_path(path)
-        if not roots or location is None:
+        # checked before the probe too, so a caller only makes the server probe what it may use
+        if not self._visible_roots(path, manages_all_sources):
+            raise self._path_not_allowed(path)
+        if (location := self.get_location_for_path(path)) is not None:
+            await self._probe_outdated([location.path])
+        roots = self._visible_roots(path, manages_all_sources)
+        if not roots or (location := self.get_location_for_path(path)) is None:
             raise self._path_not_allowed(path)
         if not location.available:
             raise self._folder_unreadable(path)
@@ -272,55 +286,32 @@ class StorageController(CoreController):
             raise self._folder_unreadable(path) from err
 
     async def refresh(self) -> None:
-        """
-        Rebuild the list of storage locations, probing every location.
-
-        Waits at most about 10 seconds: a location whose probe did not answer by then is listed
-        as unavailable, and updated as soon as its probe answers.
-        """
-        table = await asyncio.to_thread(read_mountinfo)
-        await self._wait_for_probes(
-            [
-                *(mount.mountpoint for mount in self._parse_mounts(table)),
-                *self._get_registered_folders(),
-                *self._server_paths(),
-            ]
-        )
-        # read the mount table again: a probe wakes an automount trigger
-        await self._rebuild()
-
-    async def _periodic_refresh(self) -> None:
-        """Refresh the storage locations and schedule the next refresh."""
-        try:
-            await self.refresh()
-        except Exception:
-            self.logger.exception("Failed to refresh the storage locations")
-        self.mass.call_later(REFRESH_INTERVAL, self._periodic_refresh, task_id=REFRESH_TASK_ID)
-
-    async def _rebuild(self) -> None:
-        """Rebuild the list of storage locations from the mount table and the latest probes."""
+        """Rebuild the list of storage locations from the mount table, touching no location."""
         table = await asyncio.to_thread(read_mountinfo)
         data_path, cache_path = self._server_paths()
         mounts = {mount.mountpoint: mount for mount in self._parse_mounts(table)}
         media: dict[str, StorageLocation] = {}
         for mount in mounts.values():
-            result = self._get_probe_result(mount.mountpoint)
-            if result is not None and not result.is_dir:
+            # a mount in the table counts as usable until a probe says otherwise
+            answer = self._get_answer(mount.mountpoint, _UNPROBED_FOLDER)
+            if answer is not None and not answer.is_dir:
                 # a file bound into a container
                 continue
             name = "Media folder" if mount.kind == StorageKind.BUILTIN_MEDIA else None
             media[mount.mountpoint] = _build_location(
-                mount.mountpoint, name, StorageUsage.MEDIA, mount.kind, result, mount=mount
+                mount.mountpoint, name, StorageUsage.MEDIA, mount.kind, answer, mount=mount
             )
         # a registered folder replaces a discovered location on the same path, mount included
         for folder in self._get_registered_folders():
+            folder_mount = mounts.get(folder)
             media[folder] = _build_location(
                 folder,
                 None,
                 StorageUsage.MEDIA,
                 StorageKind.MANUAL,
-                self._get_probe_result(folder),
-                mount=mounts.get(folder),
+                # a plain folder may have gone, it counts as usable once a probe found it
+                self._get_answer(folder, _UNPROBED_FOLDER if folder_mount is not None else None),
+                mount=folder_mount,
                 managed=True,
             )
         server_kind = StorageKind.CONTAINER_VOLUME if self._in_container else StorageKind.LOCAL_DISK
@@ -332,7 +323,8 @@ class StorageController(CoreController):
                     name,
                     usage,
                     server_kind,
-                    self._get_probe_result(path),
+                    # the server runs from these
+                    self._get_answer(path, _UNPROBED_FOLDER),
                     used_space_gb=self._dir_sizes.get(usage),
                 )
                 for path, name, usage in (
@@ -340,6 +332,27 @@ class StorageController(CoreController):
                     (cache_path, "Cache", StorageUsage.CACHE),
                 )
             ),
+        ]
+
+    async def _periodic_refresh(self) -> None:
+        """Refresh the storage locations and schedule the next refresh."""
+        try:
+            await self.refresh()
+        except Exception:
+            self.logger.exception("Failed to refresh the storage locations")
+        self.mass.call_later(REFRESH_INTERVAL, self._periodic_refresh, task_id=REFRESH_TASK_ID)
+
+    def _visible_roots(self, path: str, manages_all_sources: bool) -> list[str]:
+        """
+        Return the media locations a caller may see that contain a path.
+
+        :param path: A normalized path.
+        :param manages_all_sources: Whether the caller manages every music source.
+        """
+        return [
+            loc.path
+            for loc in self.get_locations(manages_all_sources)
+            if loc.usage == StorageUsage.MEDIA and is_within(path, loc.path)
         ]
 
     def _parse_mounts(self, table: str) -> list[MediaMount]:
@@ -350,6 +363,27 @@ class StorageController(CoreController):
             in_container=self._in_container,
             supervisor=self.mass.running_as_hass_addon,
         )
+
+    async def _probe_outdated(self, paths: Iterable[str]) -> None:
+        """
+        Probe the paths whose last answer is missing or outdated, and rebuild the list.
+
+        A path whose probe already did not answer in time is not waited for again: it counts as
+        not answering until that probe answers.
+
+        :param paths: The paths whose state a caller needs.
+        """
+        now = time.monotonic()
+        outdated = [
+            path
+            for path in paths
+            if (state := self._probes.get(path)) is None
+            or (not state.overdue and not state.is_fresh(now))
+        ]
+        if outdated:
+            await self._wait_for_probes(outdated)
+            # read the mount table again: a probe wakes an automount trigger
+            await self.refresh()
 
     async def _wait_for_probes(self, paths: Iterable[str]) -> dict[str, _ProbeResult | None]:
         """
@@ -365,7 +399,14 @@ class StorageController(CoreController):
             await asyncio.wait(probes.values(), timeout=PROBE_TIMEOUT)
         finally:
             self._awaited_probes.difference_update(probes)
-        return {path: probe.result() if probe.done() else None for path, probe in probes.items()}
+        answers: dict[str, _ProbeResult | None] = {}
+        for path, probe in probes.items():
+            if probe.done():
+                answers[path] = probe.result()
+            else:
+                self._probes[path].overdue = True
+                answers[path] = None
+        return answers
 
     def _probe(self, path: str) -> asyncio.Future[_ProbeResult | None]:
         """
@@ -373,12 +414,12 @@ class StorageController(CoreController):
 
         :param path: The path to probe.
         """
-        if (probe := self._probes.get(path)) is not None and not probe.done():
-            return probe
+        state = self._probes.setdefault(path, _ProbeState())
+        if state.probe is not None:
+            return state.probe
         loop = self.mass.loop
-        probe = loop.create_future()
-        self._probes[path] = probe
-        probe.add_done_callback(lambda _probe: self._on_probe_answered(path))
+        probe = state.probe = loop.create_future()
+        probe.add_done_callback(lambda _probe: self._on_probe_answered(path, _probe))
 
         def _run() -> None:
             result = _probe_path(path)
@@ -391,23 +432,35 @@ class StorageController(CoreController):
         threading.Thread(target=_run, name="storage_probe", daemon=True).start()
         return probe
 
-    def _on_probe_answered(self, path: str) -> None:
+    def _on_probe_answered(self, path: str, probe: asyncio.Future[_ProbeResult | None]) -> None:
         """
-        Show the answer of a probe that came after its caller stopped waiting.
+        Keep the answer of a probe, and show it when it came after its caller stopped waiting.
 
         :param path: The probed path.
+        :param probe: The probe that answered.
         """
+        state = self._probes[path]
+        state.answer = probe.result()
+        state.answered_at = time.monotonic()
+        state.probe = None
+        state.overdue = False
         if path not in self._awaited_probes and not self.mass.closing:
-            self.mass.create_task(self._rebuild())
+            self.mass.create_task(self.refresh())
 
-    def _get_probe_result(self, path: str) -> _ProbeResult | None:
+    def _get_answer(self, path: str, unprobed: _ProbeResult | None) -> _ProbeResult | None:
         """
-        Return the answer of the latest probe of a path, None while it did not answer.
+        Return what describes a path now: its last answer, None when it does not answer.
+
+        The last answer stays while a new probe is in flight, until that probe is overdue.
 
         :param path: The probed path.
+        :param unprobed: What to assume for a path that was never probed.
         """
-        probe = self._probes.get(path)
-        return probe.result() if probe is not None and probe.done() else None
+        if (state := self._probes.get(path)) is None:
+            return unprobed
+        if state.overdue:
+            return None
+        return state.answer if state.answered_at is not None else unprobed
 
     def _request_dir_sizes(self) -> None:
         """Measure the data and cache directories when the last measurement is outdated."""
@@ -509,6 +562,31 @@ class _ProbeResult:
     is_dir: bool
     free_space_gb: float | None = None
     total_space_gb: float | None = None
+
+
+@dataclass
+class _ProbeState:
+    """The probes of one path: the last answer and the probe in flight, at most one."""
+
+    # None when the path could not be reached
+    answer: _ProbeResult | None = None
+    # monotonic time of the answer, None while the path was never probed
+    answered_at: float | None = None
+    probe: asyncio.Future[_ProbeResult | None] | None = field(default=None, repr=False)
+    # the probe in flight did not answer within PROBE_TIMEOUT
+    overdue: bool = False
+
+    def is_fresh(self, now: float) -> bool:
+        """
+        Return whether the last answer is recent enough to go by.
+
+        :param now: The current monotonic time.
+        """
+        return self.answered_at is not None and now - self.answered_at < PROBE_MAX_AGE
+
+
+# what a mount or folder is taken for until a probe says otherwise: usable, space unknown
+_UNPROBED_FOLDER = _ProbeResult(is_dir=True)
 
 
 def _caller_manages_all_sources() -> bool:

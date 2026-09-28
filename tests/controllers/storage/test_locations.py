@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,7 +14,6 @@ from music_assistant.constants import CONF_STORAGE_FOLDERS
 from music_assistant.controllers.storage import (
     StorageController,
     StorageKind,
-    StorageLocation,
     StorageUsage,
 )
 from music_assistant.controllers.storage import controller as controller_module
@@ -31,6 +31,7 @@ from tests.controllers.storage.conftest import (
     MountTable,
     make_location,
     mount_line,
+    set_locations,
 )
 
 # every field of the wire contract, in the order of the contract
@@ -58,67 +59,77 @@ LOCATION_FIELDS = [
 ]
 
 
-def _locations() -> list[StorageLocation]:
-    """Return discovered media locations of every kind, a managed one and the server's own."""
-    return [
-        *(make_location(f"/{kind.value}", kind=kind, managed=False) for kind in StorageKind),
-        make_location("/srv/music", kind=StorageKind.MANUAL),
-        make_location("/data", usage=StorageUsage.DATA),
-        make_location("/data/.cache", usage=StorageUsage.CACHE),
-    ]
+MEDIA_PATHS = ["/home", "/media/music", "/mnt/nas", "/mnt/usb", "/srv/music"]
 
 
+@pytest.fixture
+def media_mounts(storage: StorageController, mount_table: MountTable) -> None:
+    """
+    Give the server discovered mounts of several kinds and one registered folder.
+
+    :param storage: The storage controller.
+    :param mount_table: The mount table the controller reads.
+    """
+    mount_table.set(
+        mount_line("/media/music", "ext4"),
+        mount_line("/mnt/usb", "vfat"),
+        mount_line("/mnt/nas", "cifs"),
+        mount_line("/home", "ext4"),
+    )
+    storage.mass.config.set(CONF_STORAGE_FOLDERS, ["/srv/music"])
+
+
+@pytest.mark.usefixtures("media_mounts", "probes")
 @pytest.mark.parametrize("role", [UserRole.USER, UserRole.SERVICE])
 async def test_info_for_a_member_in_a_container(storage: StorageController, role: str) -> None:
     """Inside a container a member sees every media location, never the server's own."""
     storage._in_container = True
-    storage._locations = _locations()
     set_current_user(User(user_id="member", username="member", role=role))
 
     info = await storage.get_info()
 
-    assert [loc.path for loc in info.locations] == [
-        loc.path for loc in storage.get_locations() if loc.usage == StorageUsage.MEDIA
-    ]
+    assert [loc.path for loc in info.locations] == MEDIA_PATHS
 
 
+@pytest.mark.usefixtures("media_mounts", "probes")
 @pytest.mark.parametrize("role", [UserRole.USER, UserRole.SERVICE])
 async def test_info_for_a_member_on_a_host(storage: StorageController, role: str) -> None:
     """On a host a member only sees the locations Music Assistant set up, whatever their kind."""
-    storage._locations = [
-        *_locations(),
-        make_location("/media/nas", kind=StorageKind.NETWORK_SHARE, managed=True),
-    ]
     set_current_user(User(user_id="member", username="member", role=role))
 
     info = await storage.get_info()
 
-    assert [loc.path for loc in info.locations] == ["/srv/music", "/media/nas"]
+    assert [loc.path for loc in info.locations] == ["/srv/music"]
 
 
+@pytest.mark.usefixtures("media_mounts", "probes")
 async def test_info_for_an_admin(storage: StorageController) -> None:
     """An admin sees every location, including local disks, folders and the server's own."""
-    storage._locations = _locations()
     set_current_user(User(user_id="admin", username="admin", role=UserRole.ADMIN))
 
     info = await storage.get_info()
 
-    assert info.locations == storage.get_locations()
+    assert [loc.path for loc in info.locations] == [
+        *MEDIA_PATHS,
+        storage.mass.storage_path,
+        storage.mass.cache_path,
+    ]
+    assert all(loc.available for loc in info.locations)
     assert not info.can_mount_shares
     assert info.mount_backend is None
     assert info.supported_share_types == []
     assert info.supported_share_versions == {}
 
 
+@pytest.mark.usefixtures("media_mounts", "probes")
 async def test_info_for_an_internal_caller(storage: StorageController) -> None:
     """A server-side caller (no user) is trusted with every location."""
-    storage._locations = _locations()
-
     info = await storage.get_info()
 
-    assert info.locations == storage.get_locations()
+    assert len(info.locations) == len(MEDIA_PATHS) + 2
 
 
+@pytest.mark.usefixtures("mount_table", "probes")
 @pytest.mark.parametrize(("role", "measures"), [(UserRole.ADMIN, True), (UserRole.USER, False)])
 async def test_info_measures_directories_for_admins_only(
     storage: StorageController, role: str, measures: bool
@@ -163,7 +174,7 @@ def test_info_serializes_to_the_contract() -> None:
 
 def test_location_for_path_is_the_most_specific(storage: StorageController) -> None:
     """A path belongs to the deepest location that contains it, never to a look-alike."""
-    storage._locations = [make_location("/media"), make_location("/media/nas")]
+    set_locations(storage, make_location("/media"), make_location("/media/nas"))
 
     assert storage.get_location_for_path("/media/nas/music") is storage._locations[1]
     assert storage.get_location_for_path("/media/nas/") is storage._locations[1]
@@ -178,7 +189,7 @@ async def test_mount_backed_folder_needs_its_mount(
     """The empty directory an unmounted share leaves behind is not available."""
     share = tmp_path / "nas"
     (share / "music").mkdir(parents=True)
-    storage._locations = [make_location(share, mountpoint=str(share))]
+    set_locations(storage, make_location(share, mountpoint=str(share)))
 
     mount_table.set(mount_line(share))
     assert await storage.is_available(str(share))
@@ -197,7 +208,7 @@ async def test_same_filesystem_bind_mount_is_available(
     """A bind mount of a folder on the filesystem it is mounted on counts as mounted."""
     volume = tmp_path / "music"
     volume.mkdir()
-    storage._locations = [make_location(volume, mountpoint=str(volume))]
+    set_locations(storage, make_location(volume, mountpoint=str(volume)))
     # for os.path.ismount this is a plain folder: same device as its parent
     mount_table.set(mount_line(volume))
 
@@ -208,7 +219,7 @@ async def test_unavailable_location_is_not_touched(
     storage: StorageController, tmp_path: Path
 ) -> None:
     """A folder in a location whose probe did not answer is unavailable without a look."""
-    storage._locations = [make_location(tmp_path, mountpoint=str(tmp_path), available=False)]
+    set_locations(storage, make_location(tmp_path, mountpoint=str(tmp_path), available=False))
 
     with patch.object(controller_module, "_is_available") as is_available:
         assert not await storage.is_available(str(tmp_path / "music"))
@@ -221,7 +232,7 @@ async def test_folder_without_a_mount_only_needs_to_exist(
 ) -> None:
     """A folder in a registered folder or outside every location only has to exist."""
     (tmp_path / "registered" / "music").mkdir(parents=True)
-    storage._locations = [make_location(tmp_path / "registered", kind=StorageKind.MANUAL)]
+    set_locations(storage, make_location(tmp_path / "registered", kind=StorageKind.MANUAL))
 
     with patch.object(controller_module, "parse_mountpoints") as parse_mountpoints:
         assert await storage.is_available(str(tmp_path / "registered" / "music"))
@@ -237,7 +248,9 @@ async def test_refresh_builds_the_locations(
     data_path, cache_path = storage.mass.storage_path, storage.mass.cache_path
     probes.results.update({"/music.conf": FILE, "/mnt/asleep": None})
     storage._in_container = True
+    # a measurement of the data folder that is recent, so the info does not measure again
     storage._dir_sizes = {StorageUsage.DATA: 1.5}
+    storage._dir_sizes_requested = time.monotonic()
     storage.mass.config.set(CONF_STORAGE_FOLDERS, ["/srv/podcasts", "/media/music"])
     mount_table.set(
         mount_line("/media/music", "ext4"),
@@ -246,7 +259,7 @@ async def test_refresh_builds_the_locations(
         mount_line(data_path, "ext4"),
     )
 
-    await storage.refresh()
+    await storage.get_info()
 
     locations = storage.get_locations()
     by_path = {loc.path: loc for loc in locations}
@@ -289,12 +302,12 @@ async def test_periodic_refresh_survives_a_failure(storage: StorageController) -
 
 
 @pytest.mark.usefixtures("mount_table")
-async def test_close_stops_the_refreshes(storage: StorageController, probes: FakeProbes) -> None:
+async def test_close_stops_the_refreshes(storage: StorageController) -> None:
     """Closing cancels the refresh in flight and the timer of the next one."""
     await storage._periodic_refresh()
     assert REFRESH_TASK_ID in storage.mass._tracked_timers
-    probes.block(storage.mass.storage_path)
-    task = storage.mass.create_task(storage.refresh(), task_id=REFRESH_TASK_ID)
+    # stands in for a refresh the timer started
+    task = storage.mass.create_task(asyncio.sleep(10), task_id=REFRESH_TASK_ID)
 
     await storage.close()
 
@@ -364,16 +377,17 @@ async def test_cache_is_not_counted_twice(
 
 
 @pytest.mark.usefixtures("mount_table")
-async def test_sizes_measured_during_a_refresh_are_kept(
+async def test_sizes_measured_during_a_probe_are_kept(
     storage: StorageController, probes: FakeProbes
 ) -> None:
-    """A measurement that finishes while a refresh waits for its probes shows up after it."""
+    """A measurement that finishes while the info waits for its probes shows up in it."""
     probes.block(storage.mass.cache_path)
-    refresh = storage.mass.create_task(storage.refresh())
+    with patch.object(storage, "_request_dir_sizes"):
+        info = storage.mass.create_task(storage.get_info())
 
     with patch.object(controller_module, "get_folder_size", AsyncMock(return_value=2.0)):
         await storage._update_dir_sizes()
     probes.release()
-    await refresh
+    await info
 
     assert [loc.used_space_gb for loc in storage.get_locations()] == [2.0, 2.0]

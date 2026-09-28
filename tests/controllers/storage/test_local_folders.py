@@ -63,23 +63,22 @@ async def test_add_folder_twice(storage: StorageController, tmp_path: Path) -> N
     assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == [str(tmp_path)]
 
 
+@pytest.mark.usefixtures("probes")
 async def test_add_refuses_a_discovered_location(
-    storage: StorageController, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    storage: StorageController, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A mount that is a location already keeps its mount check instead of becoming a folder."""
-    volume = tmp_path / "music"
-    (volume / "Albums").mkdir(parents=True)
-    table = mount_line(volume, "ext4")
+    table = mount_line("/mnt/music", "ext4")
     monkeypatch.setattr(controller_module, "read_mountinfo", lambda: table)
     await storage.refresh()
 
     with pytest.raises(InvalidDataError) as exc_info:
-        await storage.add_local_folder(str(volume))
+        await storage.add_local_folder("/mnt/music/")
     # a folder inside the mount is fine
-    await storage.add_local_folder(str(volume / "Albums"))
+    await storage.add_local_folder("/mnt/music/Albums")
 
     assert exc_info.value.translation_key == "folder_already_location"
-    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == [str(volume / "Albums")]
+    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == ["/mnt/music/Albums"]
 
 
 @pytest.mark.parametrize(

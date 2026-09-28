@@ -13,7 +13,7 @@ from music_assistant.controllers.storage import StorageController, StorageKind, 
 from music_assistant.controllers.storage import controller as controller_module
 from music_assistant.controllers.storage.constants import MAX_LISTED_FOLDERS
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
-from tests.controllers.storage.conftest import make_location
+from tests.controllers.storage.conftest import make_location, set_locations
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def media_root(tmp_path: Path) -> Path:
 
 async def test_lists_subfolders_sorted(storage: StorageController, media_root: Path) -> None:
     """Only real, visible folders are listed, sorted without regard to case."""
-    storage._locations = [make_location(media_root)]
+    set_locations(storage, make_location(media_root))
 
     assert await storage.list_folders(str(media_root)) == [
         "Albums",
@@ -65,7 +65,7 @@ async def test_refuses_paths_outside_the_locations(
     storage: StorageController, media_root: Path, path: str
 ) -> None:
     """Traversal, look-alikes, relative paths, NUL bytes and escaping symlinks are refused."""
-    storage._locations = [make_location(media_root)]
+    set_locations(storage, make_location(media_root))
 
     with pytest.raises(InvalidDataError) as exc_info:
         await storage.list_folders(path.format(root=media_root, tmp=media_root.parent))
@@ -78,7 +78,7 @@ async def test_refuses_what_is_no_folder(
     storage: StorageController, media_root: Path, name: str
 ) -> None:
     """A path inside a location that is not an existing folder is reported as such."""
-    storage._locations = [make_location(media_root)]
+    set_locations(storage, make_location(media_root))
 
     with pytest.raises(InvalidDataError) as exc_info:
         await storage.list_folders(str(media_root / name))
@@ -90,7 +90,7 @@ async def test_unreadable_folder(
     storage: StorageController, media_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A folder that can not be read (no permission) gets its own error."""
-    storage._locations = [make_location(media_root)]
+    set_locations(storage, make_location(media_root))
 
     def _no_permission(path: str) -> list[str]:
         raise PermissionError(errno.EACCES, "Permission denied", path)
@@ -108,7 +108,7 @@ async def test_unavailable_location_is_not_touched(
 ) -> None:
     """A location whose probe did not answer (a share whose server is gone) is not browsed."""
     nested = media_root / "Albums"
-    storage._locations = [make_location(media_root), make_location(nested, available=False)]
+    set_locations(storage, make_location(media_root), make_location(nested, available=False))
     touched: list[str] = []
     monkeypatch.setattr(
         controller_module, "_resolve_within", lambda path, _roots: touched.append(path)
@@ -126,7 +126,7 @@ async def test_listing_is_capped(storage: StorageController, tmp_path: Path) -> 
     root = tmp_path / "many"
     for index in range(MAX_LISTED_FOLDERS + 100):
         (root / f"folder{index:04d}").mkdir(parents=True)
-    storage._locations = [make_location(root)]
+    set_locations(storage, make_location(root))
 
     names = await storage.list_folders(str(root))
 
@@ -157,7 +157,7 @@ async def test_member_browses_what_was_made_available(
 ) -> None:
     """A caller that does not manage every source only browses the locations meant for it."""
     storage._in_container = in_container
-    storage._locations = [make_location(media_root, kind=kind, managed=managed)]
+    set_locations(storage, make_location(media_root, kind=kind, managed=managed))
 
     assert await storage.list_folders(str(media_root), manages_all_sources=True)
     if member_may_browse:
@@ -172,7 +172,7 @@ async def test_server_directories_are_not_browsable(
     storage: StorageController, media_root: Path, usage: StorageUsage
 ) -> None:
     """The data and cache rows alone make nothing browsable, not even for an admin."""
-    storage._locations = [make_location(media_root, usage=usage)]
+    set_locations(storage, make_location(media_root, usage=usage))
 
     with pytest.raises(InvalidDataError):
         await storage.list_folders(str(media_root))
@@ -185,7 +185,7 @@ async def test_command_applies_the_callers_visibility(
     storage: StorageController, media_root: Path, role: str, allowed: bool
 ) -> None:
     """The folders command browses with the visibility of the calling user."""
-    storage._locations = [make_location(media_root, kind=StorageKind.LOCAL_DISK)]
+    set_locations(storage, make_location(media_root, kind=StorageKind.LOCAL_DISK))
     set_current_user(User(user_id="someone", username="someone", role=role))
 
     if allowed:

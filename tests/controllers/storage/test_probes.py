@@ -1,4 +1,4 @@
-"""Tests for probing the storage locations, including shares whose server is gone."""
+"""Tests for probing the storage locations: only on demand, and never held up by a dead share."""
 
 from __future__ import annotations
 
@@ -10,13 +10,17 @@ from contextlib import suppress
 from pathlib import Path
 
 import pytest
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.errors import ActionUnavailable
 
 from music_assistant.constants import CONF_STORAGE_FOLDERS
-from music_assistant.controllers.storage import StorageController, StorageKind
+from music_assistant.controllers.storage import StorageController, StorageKind, StorageLocation
 from music_assistant.controllers.storage import controller as controller_module
+from music_assistant.controllers.storage.constants import PROBE_MAX_AGE
 from music_assistant.controllers.storage.controller import _probe_path, _ProbeResult
+from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from tests.controllers.storage.conftest import (
+    FOLDER,
     FakeProbes,
     MountTable,
     mount_line,
@@ -24,12 +28,201 @@ from tests.controllers.storage.conftest import (
 )
 
 DEAD_SHARE = "/mnt/dead"
+NAS = "/mnt/nas"
+OLD_ANSWER = _ProbeResult(is_dir=True, free_space_gb=1.0, total_space_gb=2.0)
 
 
 @pytest.fixture
 def short_probe_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make a refresh give up on a probe quickly."""
+    """Make a caller give up on a probe quickly."""
     monkeypatch.setattr(controller_module, "PROBE_TIMEOUT", 0.2)
+
+
+def _location(storage: StorageController, path: str) -> StorageLocation:
+    """Return the listed location on a path."""
+    return next(loc for loc in storage.get_locations() if loc.path == path)
+
+
+async def _answered(storage: StorageController, path: str, age: float) -> None:
+    """
+    Give a path an answer of the given age, as if a caller had it probed back then.
+
+    :param storage: The storage controller.
+    :param path: The probed path.
+    :param age: The age of the answer in seconds.
+    """
+    await storage._wait_for_probes([path])
+    storage._probes[path].answer = OLD_ANSWER
+    storage._probes[path].answered_at = time.monotonic() - age
+    await storage.refresh()
+
+
+async def test_timer_touches_no_location(
+    storage: StorageController, mount_table: MountTable, probes: FakeProbes
+) -> None:
+    """The periodic refresh only reads the mount table, so an idle share is left alone."""
+    mount_table.set(mount_line(NAS, "cifs"), mount_line("/media/archive", "autofs"))
+    storage.mass.config.set(CONF_STORAGE_FOLDERS, ["/srv/music"])
+
+    await storage._periodic_refresh()
+    await storage._periodic_refresh()
+
+    assert probes.calls == []
+    assert {loc.path for loc in storage.get_locations()} >= {NAS, "/media/archive", "/srv/music"}
+
+
+async def test_never_probed_locations(
+    storage: StorageController, mount_table: MountTable, probes: FakeProbes
+) -> None:
+    """
+    Before any probe the mount table decides.
+
+    A mount counts as usable, a dormant automount trigger does not (the share is not mounted),
+    and neither does a registered folder, which may be gone. A registered folder that is a mount
+    goes by its mount, and the server's own folders count as usable: the server runs from them.
+    """
+    mount_table.set(
+        mount_line(NAS, "cifs"),
+        mount_line("/media/archive", "autofs"),
+        mount_line("/mnt/usb", "vfat"),
+    )
+    storage.mass.config.set(CONF_STORAGE_FOLDERS, ["/srv/music", "/mnt/usb"])
+
+    await storage.refresh()
+
+    assert {loc.path: loc.available for loc in storage.get_locations()} == {
+        NAS: True,
+        "/media/archive": False,
+        "/mnt/usb": True,
+        "/srv/music": False,
+        storage.mass.storage_path: True,
+        storage.mass.cache_path: True,
+    }
+    assert all(loc.free_space_gb is None for loc in storage.get_locations())
+    assert probes.calls == []
+
+
+async def test_info_probes_what_is_outdated(
+    storage: StorageController, mount_table: MountTable, probes: FakeProbes
+) -> None:
+    """The info probes a location without a recent answer, and not one with a fresh answer."""
+    mount_table.set(mount_line(NAS, "cifs"), mount_line("/mnt/music", "ext4"))
+    await storage.refresh()
+    await _answered(storage, NAS, age=PROBE_MAX_AGE + 1)
+    await _answered(storage, "/mnt/music", age=1)
+    probes.calls.clear()
+
+    info = await storage.get_info()
+
+    assert NAS in probes.calls
+    assert "/mnt/music" not in probes.calls
+    by_path = {loc.path: loc for loc in info.locations}
+    assert by_path[NAS].free_space_gb == FOLDER.free_space_gb
+    assert by_path["/mnt/music"].free_space_gb == OLD_ANSWER.free_space_gb
+
+
+async def test_member_info_probes_only_what_it_sees(
+    storage: StorageController, mount_table: MountTable, probes: FakeProbes
+) -> None:
+    """A caller that does not manage every source makes the server probe its own view only."""
+    mount_table.set(mount_line(NAS, "cifs"))
+    storage.mass.config.set(CONF_STORAGE_FOLDERS, ["/srv/music"])
+    set_current_user(User(user_id="member", username="member", role=UserRole.USER))
+
+    await storage.get_info()
+
+    assert probes.calls == ["/srv/music"]
+
+
+@pytest.mark.parametrize("age", [PROBE_MAX_AGE + 1, None])
+async def test_is_available_probes_what_is_outdated(
+    storage: StorageController, mount_table: MountTable, probes: FakeProbes, age: float | None
+) -> None:
+    """A source checking its folder has the location probed when the answer is old or missing."""
+    mount_table.set(mount_line(NAS, "cifs"))
+    await storage.refresh()
+    if age is not None:
+        await _answered(storage, NAS, age=age)
+    probes.calls.clear()
+    probes.results[NAS] = None
+
+    assert not await storage.is_available(f"{NAS}/music")
+    assert probes.calls == [NAS]
+
+
+async def test_is_available_goes_by_a_fresh_answer(
+    storage: StorageController, mount_table: MountTable, probes: FakeProbes
+) -> None:
+    """A location with a fresh answer is not probed again."""
+    mount_table.set(mount_line(NAS, "cifs"))
+    await storage.refresh()
+    await _answered(storage, NAS, age=1)
+    probes.calls.clear()
+
+    await storage.is_available(f"{NAS}/music")
+
+    assert probes.calls == []
+
+
+@pytest.mark.usefixtures("mount_table")
+@pytest.mark.parametrize("age", [PROBE_MAX_AGE + 1, None])
+async def test_list_folders_probes_what_is_outdated(
+    storage: StorageController,
+    probes: FakeProbes,
+    tmp_path: Path,
+    age: float | None,
+) -> None:
+    """Browsing a registered folder has it probed first when its answer is old or missing."""
+    music = tmp_path / "music"
+    (music / "Albums").mkdir(parents=True)
+    storage.mass.config.set(CONF_STORAGE_FOLDERS, [str(music)])
+    await storage.refresh()
+    if age is not None:
+        await _answered(storage, str(music), age=age)
+    probes.calls.clear()
+
+    assert await storage.list_folders(str(music)) == ["Albums"]
+    assert probes.calls == [str(music)]
+
+
+@pytest.mark.usefixtures("mount_table")
+async def test_list_folders_goes_by_a_fresh_answer(
+    storage: StorageController, probes: FakeProbes, tmp_path: Path
+) -> None:
+    """A location with a fresh answer is listed without probing it again."""
+    music = tmp_path / "music"
+    (music / "Albums").mkdir(parents=True)
+    storage.mass.config.set(CONF_STORAGE_FOLDERS, [str(music)])
+    await storage.refresh()
+    await _answered(storage, str(music), age=1)
+    probes.calls.clear()
+
+    assert await storage.list_folders(str(music)) == ["Albums"]
+    assert probes.calls == []
+
+
+async def test_previous_answer_stays_while_a_probe_is_in_flight(
+    storage: StorageController,
+    mount_table: MountTable,
+    probes: FakeProbes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A location does not flicker while it is probed, until the probe is overdue."""
+    monkeypatch.setattr(controller_module, "PROBE_TIMEOUT", 1.0)
+    mount_table.set(mount_line(NAS, "cifs"))
+    await storage.refresh()
+    await _answered(storage, NAS, age=PROBE_MAX_AGE + 1)
+    probes.block(NAS)
+    checking = storage.mass.create_task(storage.is_available(f"{NAS}/music"))
+    await wait_until(lambda: NAS in probes.calls)
+
+    await storage.refresh()
+    assert _location(storage, NAS).available
+    assert _location(storage, NAS).free_space_gb == OLD_ANSWER.free_space_gb
+
+    assert not await checking
+    assert not _location(storage, NAS).available
+    assert _location(storage, NAS).free_space_gb is None
 
 
 @pytest.mark.usefixtures("short_probe_timeout")
@@ -41,44 +234,62 @@ async def test_dead_share_does_not_hold_up_the_others(
     probes.block(DEAD_SHARE)
 
     started = time.monotonic()
-    await storage.refresh()
+    await storage.get_info()
 
     assert time.monotonic() - started < 2
-    by_path = {loc.path: loc for loc in storage.get_locations()}
-    assert not by_path[DEAD_SHARE].available
-    assert by_path[DEAD_SHARE].free_space_gb is None
-    assert by_path["/mnt/music"].available
+    assert not _location(storage, DEAD_SHARE).available
+    assert _location(storage, DEAD_SHARE).free_space_gb is None
+    assert _location(storage, "/mnt/music").available
+
+
+async def test_overdue_probe_is_not_waited_for_again(
+    storage: StorageController,
+    mount_table: MountTable,
+    probes: FakeProbes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once a probe did not answer in time, the next caller does not wait for it again."""
+    monkeypatch.setattr(controller_module, "PROBE_TIMEOUT", 1.0)
+    mount_table.set(mount_line(DEAD_SHARE, "nfs4"))
+    probes.block(DEAD_SHARE)
+    await storage.get_info()
+
+    started = time.monotonic()
+    await storage.get_info()
+
+    assert time.monotonic() - started < 0.5
+    assert probes.calls.count(DEAD_SHARE) == 1
 
 
 @pytest.mark.usefixtures("short_probe_timeout")
 async def test_late_answer_is_applied(
     storage: StorageController, mount_table: MountTable, probes: FakeProbes
 ) -> None:
-    """A probe that answers after the refresh stopped waiting still updates its location."""
+    """A probe that answers after its caller stopped waiting still updates its location."""
     mount_table.set(mount_line(DEAD_SHARE, "nfs4"))
     probes.block(DEAD_SHARE)
-    await storage.refresh()
+    await storage.get_info()
 
     probes.release()
 
-    await wait_until(lambda: storage.get_locations()[0].available)
-    assert storage.get_locations()[0].free_space_gb == 75.0
+    await wait_until(lambda: _location(storage, DEAD_SHARE).free_space_gb is not None)
+    assert _location(storage, DEAD_SHARE).available
 
 
-@pytest.mark.usefixtures("short_probe_timeout")
 async def test_one_probe_in_flight_per_path(
     storage: StorageController, mount_table: MountTable, probes: FakeProbes
 ) -> None:
-    """A blocked probe is waited for again rather than joined by a second one."""
-    mount_table.set(mount_line(DEAD_SHARE, "nfs4"))
-    probes.block(DEAD_SHARE)
-
+    """Callers that need the same location at once share one probe."""
+    mount_table.set(mount_line(NAS, "cifs"))
     await storage.refresh()
-    await storage.refresh()
+    probes.block(NAS)
+    checks = [storage.mass.create_task(storage.is_available(NAS)) for _ in range(3)]
+    await wait_until(lambda: NAS in probes.calls)
 
-    assert probes.calls.count(DEAD_SHARE) == 1
-    # every other path is probed on each refresh
-    assert probes.calls.count(storage.mass.storage_path) == 2
+    probes.release()
+    await asyncio.gather(*checks)
+
+    assert probes.calls.count(NAS) == 1
 
 
 async def test_folder_commands_do_not_wait_for_a_dead_share(
@@ -87,7 +298,8 @@ async def test_folder_commands_do_not_wait_for_a_dead_share(
     """Adding and removing a folder answer while another location's probe is blocked."""
     mount_table.set(mount_line(DEAD_SHARE, "nfs4"))
     probes.block(DEAD_SHARE)
-    refresh = storage.mass.create_task(storage.refresh())
+    info = storage.mass.create_task(storage.get_info())
+    await wait_until(lambda: DEAD_SHARE in probes.calls)
 
     async with asyncio.timeout(2):
         location = await storage.add_local_folder(str(tmp_path))
@@ -95,9 +307,9 @@ async def test_folder_commands_do_not_wait_for_a_dead_share(
 
     assert location.available
     assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == []
-    refresh.cancel()
+    info.cancel()
     with suppress(asyncio.CancelledError):
-        await refresh
+        await info
 
 
 @pytest.mark.usefixtures("short_probe_timeout", "mount_table")
@@ -117,8 +329,7 @@ async def test_folder_on_a_dead_share_is_not_added(
 async def test_dormant_automount_trigger_wakes_up(
     storage: StorageController, mount_table: MountTable, probes: FakeProbes
 ) -> None:
-    """Probing a share nobody accessed yet mounts it, and the real mount is listed."""
-    storage._in_container = True
+    """Opening the storage view probes a share nobody accessed yet, which mounts it."""
     trigger = mount_line("/media/archive", "autofs")
     mount_table.set(trigger)
     # the probe accesses the share, so the Supervisor mounts it on top of the trigger
@@ -126,16 +337,15 @@ async def test_dormant_automount_trigger_wakes_up(
         trigger, mount_line("/media/archive", "cifs")
     )
 
-    await storage.refresh()
+    await storage.get_info()
 
-    location = storage.get_locations()[0]
-    assert (location.path, location.kind, location.fstype) == (
-        "/media/archive",
+    location = _location(storage, "/media/archive")
+    assert (location.kind, location.fstype, location.available) == (
         StorageKind.NETWORK_SHARE,
         "cifs",
+        True,
     )
-    assert location.available
-    assert location.free_space_gb == 75.0
+    assert location.free_space_gb == FOLDER.free_space_gb
 
 
 @pytest.mark.parametrize("answer", [_ProbeResult(is_dir=True, free_space_gb=0.0), None])
@@ -149,15 +359,10 @@ async def test_trigger_that_does_not_mount_is_unavailable(
     mount_table.set(mount_line("/media/archive", "autofs"))
     probes.results["/media/archive"] = answer
 
-    await storage.refresh()
+    await storage.get_info()
 
-    location = storage.get_locations()[0]
-    assert (location.path, location.fstype, location.available) == (
-        "/media/archive",
-        "autofs",
-        False,
-    )
-    assert location.free_space_gb is None
+    location = _location(storage, "/media/archive")
+    assert (location.fstype, location.available, location.free_space_gb) == ("autofs", False, None)
 
 
 def test_probe_of_a_folder(tmp_path: Path) -> None:

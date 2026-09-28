@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from collections.abc import AsyncGenerator, Callable, Iterator
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from music_assistant.controllers.storage import (
     StorageUsage,
 )
 from music_assistant.controllers.storage import controller as controller_module
-from music_assistant.controllers.storage.controller import _ProbeResult
+from music_assistant.controllers.storage.controller import _ProbeResult, _ProbeState
 from music_assistant.mass import MusicAssistant
 
 
@@ -62,6 +63,22 @@ def make_location(
         managed=kind == StorageKind.MANUAL if managed is None else managed,
         mountpoint=mountpoint,
     )
+
+
+def set_locations(storage: StorageController, *locations: StorageLocation) -> None:
+    """
+    Give the storage controller these locations, each with a fresh probe answer.
+
+    With fresh answers a caller probes nothing, so the list stays as given.
+
+    :param storage: The storage controller.
+    :param locations: The locations to hold.
+    """
+    storage._locations = list(locations)
+    for location in locations:
+        storage._probes[location.path] = _ProbeState(
+            answer=FOLDER if location.available else None, answered_at=time.monotonic()
+        )
 
 
 def mount_line(mountpoint: Path | str, fstype: str = "cifs", optional: str = "") -> str:
