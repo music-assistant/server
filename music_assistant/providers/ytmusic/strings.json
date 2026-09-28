@@ -12,6 +12,9 @@
       "description": "The URL to the PO Token server. Can be left as default for most people. \n\n**Note that this does require you to have the 'YT Music PO Token Generator' addon installed!**"
     }
   },
+  "errors": {
+    "po_token_server_unreachable": "The PO Token server is not reachable. Make sure the YT Music PO Token Generator is installed and running."
+  },
   "media": {
     "recommendations": {
       "mixed_for_you": {

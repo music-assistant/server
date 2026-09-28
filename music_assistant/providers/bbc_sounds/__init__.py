@@ -658,13 +658,6 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
 
         return None
 
-    @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
-    async def _station_programme_display(self, station: LiveStation) -> StreamMetadata | None:
-        if station and station.titles:
-            title = f"{station.titles.get('secondary')} • {station.titles.get('primary')}"
-            return StreamMetadata(title=title, artist=None, image_url=station.image_url)
-        return None
-
     async def _station_list_as_folders(
         self,
         path_parts: list[str],

@@ -5,8 +5,9 @@ import errno
 from typing import Any, Self, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import ProviderUnavailableError
+from music_assistant_models.errors import InvalidDataError, ProviderUnavailableError
 
 from music_assistant.providers.filesystem_local import _ONDEMAND_NFO_ITEMS, LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
@@ -219,6 +220,36 @@ async def test_failed_item_is_kept_in_the_scan_result() -> None:
     assert result is False
     # the file is still on disk, so the deletion step must not treat it as removed
     assert cur_filenames == {MISSING_FILE}
+
+
+@pytest.mark.parametrize(
+    ("error", "expect_traceback"),
+    [
+        pytest.param(InvalidDataError("file is corrupt"), False, id="unreadable_file"),
+        pytest.param(OSError(errno.EIO, "i/o error"), True, id="unexpected_error"),
+    ],
+)
+async def test_traceback_is_logged_only_for_unexpected_errors(
+    error: Exception, expect_traceback: bool
+) -> None:
+    """An unreadable file logs its message alone, anything unexpected keeps its traceback."""
+    provider = _create_provider()
+    provider._sync_tracks = True
+    item = MagicMock()
+    item.ext = "mp3"
+    item.relative_path = MISSING_FILE
+    item.absolute_path = f"/media/{MISSING_FILE}"
+
+    with patch(
+        "music_assistant.providers.filesystem_local.async_parse_tags",
+        AsyncMock(side_effect=error),
+    ):
+        await provider._process_item_async(item, None, set())
+
+    # the mocked logger reports every level as enabled, so this is the debug case,
+    # the only one where a traceback is attached at all
+    logged = cast("MagicMock", provider.logger.error).call_args
+    assert logged.kwargs["exc_info"] is (error if expect_traceback else None)
 
 
 async def test_failed_cue_keeps_its_previous_tracks() -> None:

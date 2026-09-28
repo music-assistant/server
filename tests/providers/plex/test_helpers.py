@@ -1,5 +1,6 @@
 """Test Plex provider helper functions."""
 
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 from music_assistant.providers.plex.helpers import (
     get_explicit,
     get_musicbrainz_id,
+    is_library_scan_finished,
     parse_plex_lyrics_payload,
 )
 
@@ -58,6 +60,12 @@ def test_parse_lyrics_malformed_json_as_plain() -> None:
     assert parse_plex_lyrics_payload("{not valid json") == ("{not valid json", False)
 
 
+def test_parse_lyrics_no_lyrics_envelope() -> None:
+    """Plex's no-lyrics envelope yields None, not the raw JSON as plain text."""
+    payload = '{"MediaContainer":{"size":1,"Lyrics":[{}]}}'
+    assert parse_plex_lyrics_payload(payload) is None
+
+
 def test_parse_lyrics_long_offset_no_minute_wrap() -> None:
     """Offsets beyond one hour keep counting minutes instead of wrapping at 60."""
     payload = (
@@ -105,3 +113,29 @@ def test_get_explicit(content_rating: str | None, expected: bool | None) -> None
     """Content rating maps to explicit only for the 'explicit' value."""
     attrib = {"contentRating": content_rating} if content_rating is not None else {}
     assert get_explicit(_plex_obj(attrib=attrib)) is expected
+
+
+def _activity(event: str, activity_type: str = "library.update.section") -> dict[str, Any]:
+    """Build a Plex activity notification."""
+    return {
+        "NotificationContainer": {
+            "type": "activity",
+            "ActivityNotification": [{"event": event, "Activity": {"type": activity_type}}],
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    ("notification", "expected"),
+    [
+        (_activity("ended"), True),
+        (_activity("started"), False),
+        (_activity("updated"), False),
+        (_activity("ended", "media.generate.music.analysis"), False),
+        ({"NotificationContainer": {"type": "playing"}}, False),
+        ({}, False),
+    ],
+)
+def test_is_library_scan_finished(notification: dict[str, Any], expected: bool) -> None:
+    """Only the end of a library scan counts, not its progress or other activities."""
+    assert is_library_scan_finished(notification) is expected

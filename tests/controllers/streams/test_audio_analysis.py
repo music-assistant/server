@@ -9,6 +9,7 @@ import sqlite3
 from collections.abc import AsyncGenerator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from datetime import UTC, datetime
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -37,7 +38,7 @@ from music_assistant.controllers.streams.audio_analysis import (
 from music_assistant.controllers.streams.audio_buffer import AudioBufferEOF
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.json import json_dumps, json_loads
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import (
     AudioAnalysisProvider,
     InstrumentedSemaphore,
@@ -201,6 +202,94 @@ async def test_distribute_chunk_evicts_provider_on_exception() -> None:
 
     assert "raises" not in controller._active_sessions[session_key]
     assert "ok" in controller._active_sessions[session_key]
+
+
+@pytest.mark.asyncio
+async def test_distribute_chunk_records_failure_when_provider_raises() -> None:
+    """A provider that raises is aborted so the track shows up in the failures overview."""
+    controller = _make_controller()
+    session_key = "track://provider/abc"
+    controller._active_sessions[session_key] = {"raises"}
+
+    raises = _make_aa_provider(
+        "raises",
+        available=True,
+        process_pcm_chunk=AsyncMock(side_effect=RuntimeError("boom")),
+    )
+    controller.mass.get_provider = MagicMock(return_value=raises)  # type: ignore[method-assign]
+
+    await controller._distribute_chunk(session_key, b"\x00" * 1024)
+
+    raises.cancel.assert_not_called()
+    raises.abort.assert_called_once()
+    assert raises.abort.call_args.args[0] == session_key
+    assert "boom" in raises.abort.call_args.args[1]
+    # an unexpected error carries no retry window, so the row blocks until cleared
+    assert raises.abort.call_args.args[2] is None
+
+
+@pytest.mark.asyncio
+async def test_distribute_chunk_keeps_the_provider_failure_reason() -> None:
+    """A reason the provider states itself reaches the failure record unwrapped."""
+    controller = _make_controller()
+    session_key = "track://provider/abc"
+    controller._active_sessions[session_key] = {"raises"}
+
+    raises = _make_aa_provider(
+        "raises",
+        available=True,
+        process_pcm_chunk=AsyncMock(
+            side_effect=AudioAnalysisError("audio decoding failed during loudness measurement")
+        ),
+    )
+    controller.mass.get_provider = MagicMock(return_value=raises)  # type: ignore[method-assign]
+
+    await controller._distribute_chunk(session_key, b"\x00" * 1024)
+
+    raises.abort.assert_called_once_with(
+        session_key, "audio decoding failed during loudness measurement", None
+    )
+
+
+@pytest.mark.asyncio
+async def test_distribute_chunk_forwards_the_provider_retry_time() -> None:
+    """A retry window the provider attaches to its error reaches the failure record."""
+    controller = _make_controller()
+    session_key = "track://provider/abc"
+    controller._active_sessions[session_key] = {"raises"}
+    retry_at = datetime(2026, 9, 2, tzinfo=UTC)
+
+    raises = _make_aa_provider(
+        "raises",
+        available=True,
+        process_pcm_chunk=AsyncMock(
+            side_effect=AudioAnalysisError("models are not loaded", retry_at=retry_at)
+        ),
+    )
+    controller.mass.get_provider = MagicMock(return_value=raises)  # type: ignore[method-assign]
+
+    await controller._distribute_chunk(session_key, b"\x00" * 1024)
+
+    raises.abort.assert_called_once_with(session_key, "models are not loaded", retry_at)
+
+
+@pytest.mark.asyncio
+async def test_distribute_chunk_records_no_failure_on_timeout() -> None:
+    """A timed out provider is cancelled rather than aborted, leaving the track pending."""
+    controller = _make_controller()
+    session_key = "track://provider/abc"
+    controller._active_sessions[session_key] = {"slow"}
+
+    async def _hang(*_args: object, **_kwargs: object) -> None:
+        await asyncio.sleep(10)
+
+    slow = _make_aa_provider("slow", available=True, process_pcm_chunk=AsyncMock(side_effect=_hang))
+    controller.mass.get_provider = MagicMock(return_value=slow)  # type: ignore[method-assign]
+
+    await controller._distribute_chunk(session_key, b"\x00" * 1024, max_interval=0.05)
+
+    slow.abort.assert_not_called()
+    slow.cancel.assert_called_once_with(session_key)
 
 
 def test_get_scan_concurrency_returns_default_on_unset() -> None:
@@ -414,6 +503,7 @@ def _make_aa_provider(
     provider.available = available
     provider.process_pcm_chunk = process_pcm_chunk or AsyncMock(return_value=None)
     provider.cancel = AsyncMock(return_value=None)
+    provider.abort = AsyncMock(return_value=None)
     return provider
 
 
@@ -492,7 +582,7 @@ async def test_find_candidates_handles_sqlite_row_without_get(
     fs_prov = MagicMock()
     fs_prov.domain = "filesystem_local"
     fs_prov.available = True
-    controller.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
+    controller.mass.providers = [fs_prov]  # type: ignore[misc]
 
     class _RowNoGet:
         """Mimics sqlite3.Row: __getitem__ only, no .get()."""
@@ -546,7 +636,7 @@ async def test_find_candidates_query_gates_on_current_version(
     fs_prov = MagicMock()
     fs_prov.domain = "filesystem_local"
     fs_prov.available = True
-    controller.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
+    controller.mass.providers = [fs_prov]  # type: ignore[misc]
 
     captured: dict[str, Any] = {}
 
@@ -567,7 +657,7 @@ async def test_find_candidates_query_gates_on_current_version(
 
 
 @pytest.mark.asyncio
-async def test_run_background_scan_concurrency_semaphore(
+async def test_run_background_scan_caps_in_flight_tracks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """At most CONF_BACKGROUND_SCAN_CONCURRENCY tracks run concurrently."""
@@ -624,6 +714,68 @@ async def test_run_background_scan_concurrency_semaphore(
     await controller._run_background_scan()
 
     assert max_in_flight == 2
+
+
+@pytest.mark.asyncio
+async def test_run_background_scan_bounds_worker_task_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The scan fans out a fixed worker pool, so task count tracks concurrency not library size."""
+    controller = _make_controller()
+    concurrency = 3
+    monkeypatch.setattr(controller, "_get_scan_concurrency", lambda: concurrency)
+
+    p1 = _make_aa_provider("prov-1", available=True)
+    p1.domain = "p1"
+    p1.start_analysis = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        controller.__class__,
+        "providers",
+        property(lambda _self: [p1]),
+    )
+
+    candidate_count = 50
+    candidates = [
+        {
+            "item_id": f"track-{i}",
+            "provider_instance": "filesystem_local",
+            "missing_domains": ["p1"],
+        }
+        for i in range(candidate_count)
+    ]
+    monkeypatch.setattr(
+        controller, "_find_candidates_missing_analysis", AsyncMock(return_value=candidates)
+    )
+
+    streamdetails_list = [
+        _make_streamdetails(path=f"/music/{c['item_id']}.flac") for c in candidates
+    ]
+    for sd in streamdetails_list:
+        sd.stream_type = StreamType.LOCAL_FILE
+    music_prov = MagicMock()
+    music_prov.available = True
+    music_prov.get_stream_details = AsyncMock(side_effect=streamdetails_list)
+    music_prov.instance_id = "filesystem_local"
+    controller.mass.get_provider = MagicMock(return_value=music_prov)  # type: ignore[method-assign]
+
+    peak_worker_tasks = 0
+    outer_tasks = set(asyncio.all_tasks())
+
+    async def _track_streaming(
+        _streamdetails: MagicMock, _providers: object, **_kwargs: object
+    ) -> None:
+        nonlocal peak_worker_tasks
+        peak_worker_tasks = max(peak_worker_tasks, len(asyncio.all_tasks() - outer_tasks))
+        # yield so every worker reaches this point within the same run
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(controller, "_run_background_streaming_for_track", _track_streaming)
+
+    await controller._run_background_scan()
+
+    # The old per-candidate implementation would spawn one task per candidate here.
+    assert peak_worker_tasks == concurrency
+    assert music_prov.get_stream_details.await_count == candidate_count
 
 
 @pytest.mark.asyncio
@@ -1436,7 +1588,7 @@ async def test_coverage_stale_query_counts_null_analysis_version_as_stale() -> N
 async def test_count_candidates_missing_analysis_zero_without_filesystem() -> None:
     """No available filesystem music providers -> 0 pending (no DB query)."""
     c, _ = _stub_controller()
-    c.mass.get_providers = MagicMock(return_value=[])  # type: ignore[method-assign]
+    c.mass.providers = []  # type: ignore[misc]
 
     assert await c._count_candidates_missing_analysis("sonic_analysis", 1) == 0
 
@@ -1449,7 +1601,7 @@ async def test_count_candidates_missing_analysis_queries_with_available_filesyst
     fs_prov = MagicMock()
     fs_prov.domain = domain
     fs_prov.available = True
-    c.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
+    c.mass.providers = [fs_prov]  # type: ignore[misc]
 
     result = await c._count_candidates_missing_analysis("sonic_analysis", 2)
 

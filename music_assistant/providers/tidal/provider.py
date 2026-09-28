@@ -37,7 +37,6 @@ from .constants import (
     CONF_QUALITY,
     CONF_REFRESH_TOKEN,
     CONF_USER_ID,
-    OPEN_API_URL,
 )
 from .library import TidalLibraryManager
 from .media import TidalMediaManager
@@ -76,6 +75,8 @@ SUPPORTED_FEATURES = {
     ProviderFeature.PLAYLIST_TRACKS_EDIT,
     ProviderFeature.RECOMMENDATIONS,
     ProviderFeature.LYRICS,
+    ProviderFeature.TRACK_BY_EXTERNAL_ID,
+    ProviderFeature.ALBUM_BY_EXTERNAL_ID,
 }
 
 
@@ -189,6 +190,20 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
     async def get_track(self, prov_track_id: str) -> Track:
         """Get track details for given track id."""
         return await self.media.get_track(prov_track_id)
+
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
+    async def get_track_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Track | None:
+        """Retrieve track by external ID (ISRC)."""
+        return await self.media.get_track_by_external_id(external_id, external_id_type)
+
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
+    async def get_album_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Album | None:
+        """Retrieve album by external ID (barcode/UPC)."""
+        return await self.media.get_album_by_external_id(external_id, external_id_type)
 
     @use_cache(3600 * 24 * 30)
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
@@ -395,13 +410,8 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         if not isrc:
             return None
 
-        data = await self.api.get("tracks", params={"filter[isrc]": isrc}, base_url=OPEN_API_URL)
-        items = data.get("data", [])
-        if not items:
-            return None
-
-        live_id = str(items[0]["id"])
-        if live_id == item_id:
+        live_id = await self.media.get_track_id_by_isrc(isrc)
+        if not live_id or live_id == item_id:
             return None
 
         await self.mass.cache.set(

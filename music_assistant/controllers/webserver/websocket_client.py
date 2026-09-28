@@ -8,6 +8,7 @@ import inspect
 import logging
 from concurrent import futures
 from contextlib import suppress
+from dataclasses import replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final
 from uuid import uuid4
@@ -29,15 +30,19 @@ from music_assistant_models.errors import (
     MusicAssistantError,
 )
 from music_assistant_models.event import MassEvent
+from music_assistant_models.favorite_update import FavoriteUpdate
+from music_assistant_models.media_items import MediaItem, Playlist
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
+from music_assistant.helpers.provider_access import access_allows, with_derived_provider_filter
 
 from .helpers.auth_middleware import (
     has_scope,
     is_request_from_ingress,
+    player_access_filter,
     resolve_command_impersonation,
     set_current_client_id,
     set_current_token,
@@ -74,9 +79,12 @@ class WebsocketClientHandler:
         self._current_token: str | None = None  # Will be set after auth command
         self._token_id: str | None = None  # Will be set after auth for tracking revocation
         self._sendspin_player_id: str | None = None  # Set if client is a sendspin web player
+        self._sendspin_player_is_private = False  # whether that bound player is a private client
         self._locale: str | None = None  # UI locale declared by the client (auth arg / set_locale)
         self._is_ingress = is_request_from_ingress(request)
         self._events_unsub_callback: Any = None  # Will be set after authentication
+        # uris of the personal playlists this client was told are gone
+        self._hidden_playlists: set[str] = set()
         # Track WebRTC session ID if this is a WebRTC gateway connection
         self._webrtc_session_id: str | None = request.query.get("webrtc_session_id")
         # try to dynamically detect the base_url of a client if proxied or behind Ingress
@@ -116,6 +124,7 @@ class WebsocketClientHandler:
         :param player_id: Id of the sendspin player this connection owns.
         """
         self._sendspin_player_id = player_id
+        self._sendspin_player_is_private = False
 
     async def disconnect(self) -> None:
         """Disconnect client and wait for its writer to finish."""
@@ -283,7 +292,7 @@ class WebsocketClientHandler:
                     ErrorResultMessage(
                         msg.message_id,
                         InsufficientPermissions.error_code,
-                        f"This command requires the {handler.required_scope} scope",
+                        f"This command requires the {handler.required_scope_label} scope",
                         translation_key="insufficient_permissions",
                     )
                 )
@@ -474,7 +483,10 @@ class WebsocketClientHandler:
         await self._send_message(
             SuccessResultMessage(
                 msg.message_id,
-                {"authenticated": True, "user": user.to_dict()},
+                {
+                    "authenticated": True,
+                    "user": with_derived_provider_filter(self.mass, user).to_dict(),
+                },
             )
         )
 
@@ -558,6 +570,24 @@ class WebsocketClientHandler:
             # The token authentication happens in _handle_auth_message
             self._logger.debug("Ingress connection without user headers, expecting token auth")
 
+    def _is_own_private_player(self, object_id: str | None) -> bool:
+        """
+        Return whether the object is the private client player this connection announced.
+
+        Binding can happen before the sendspin player registers, so the private status is
+        latched the first time an event for the bound id arrives while the player exists,
+        and kept afterwards so the owner still receives its player's removal event. A
+        shared speaker announced as the client id never latches, so it stays filtered.
+
+        :param object_id: The event's object id (a player or queue id), or None.
+        """
+        if object_id is None or object_id != self._sendspin_player_id:
+            return False
+        if not self._sendspin_player_is_private:
+            player = self.mass.players.get_player(object_id)
+            self._sendspin_player_is_private = player is not None and player.private
+        return self._sendspin_player_is_private
+
     def _subscribe_to_events(self) -> None:
         """Subscribe to Mass events and forward them to the client."""
         if self._events_unsub_callback is not None:
@@ -565,10 +595,14 @@ class WebsocketClientHandler:
             return
 
         def handle_event(event: MassEvent) -> None:
+            # Latch the bound player's private status on every event, before applying the
+            # filter: the user may be unrestricted now and restricted later, and the flag
+            # must already be set so the owner still receives the player's removal event.
+            own_private_player = self._is_own_private_player(event.object_id)
             # filter events for objects the user has no access to
+            player_filter = player_access_filter(self._authenticated_user)
             if (
-                self._authenticated_user
-                and self._authenticated_user.player_filter
+                player_filter is not None
                 and event.event
                 in (
                     EventType.PLAYER_ADDED,
@@ -581,8 +615,9 @@ class WebsocketClientHandler:
                     EventType.QUEUE_UPDATED,
                 )
                 and event.object_id
-                and event.object_id not in self._authenticated_user.player_filter
-                and event.object_id != self._sendspin_player_id
+                and event.object_id not in player_filter
+                # the private client player this connection announced is always allowed
+                and not own_private_player
             ):
                 return
 
@@ -593,20 +628,41 @@ class WebsocketClientHandler:
                 user = self._authenticated_user
                 if user is None:
                     return
-                required = (
-                    self.mass.config.get_setup_flow_required_scope(event.object_id)
+                access = (
+                    self.mass.config.get_setup_flow_access(event.object_id)
                     if event.object_id
                     else None
                 )
-                if required is None:
+                if access is None:
                     # flow already popped (terminal step race): the flow kind is no
                     # longer known, so require both config scopes to be safe
                     if not has_scope(user, Scope.CONFIG_PROVIDERS_WRITE) or not has_scope(
                         user, Scope.CONFIG_PLAYERS_WRITE
                     ):
                         return
-                elif not has_scope(user, required):
+                elif not access.allows(user):
                     return
+
+            if isinstance(event.data, Playlist) and not self._forward_playlist_event(
+                event, event.data
+            ):
+                return
+
+            if isinstance(event.data, FavoriteUpdate) and (
+                self._authenticated_user is None
+                or event.data.user_id != self._authenticated_user.user_id
+            ):
+                # a like or dislike is the business of its own user only
+                return
+
+            if isinstance(event.data, MediaItem) and event.data.favorite is not None:
+                # a library item carries the favorite state of the user that touched it; every
+                # client keeps its own and learns of changes through the favorite event
+                event = MassEvent(
+                    event=event.event,
+                    object_id=event.object_id,
+                    data=replace(event.data, favorite=None),
+                )
 
             if event.event == EventType.TASKS_UPDATED:
                 if self._authenticated_user is None:
@@ -621,7 +677,47 @@ class WebsocketClientHandler:
                 )
                 return
 
+            if event.event == EventType.PROVIDERS_UPDATED:
+                # the payload is signalled unfiltered, so narrow it down to the
+                # music sources this client's user may see
+                if self._authenticated_user is None:
+                    return
+                provider_data = self.mass.get_providers_for_user(self._authenticated_user)
+                self._send_message_sync(
+                    MassEvent(
+                        event=event.event,
+                        object_id=event.object_id,
+                        data=provider_data,
+                    )
+                )
+                return
+
             self._send_message_sync(event)
 
         self._events_unsub_callback = self.mass.subscribe(handle_event)
         self._logger.debug("Subscribed to events")
+
+    def _forward_playlist_event(self, event: MassEvent, playlist: Playlist) -> bool:
+        """
+        Return whether an event about a playlist may reach this client as it was signalled.
+
+        A personal playlist is only announced to the users who may see it. A client whose
+        user may no longer see it is instead told once that the playlist is gone, so it
+        drops the row it may still hold.
+
+        :param event: The event about the playlist.
+        :param playlist: The playlist the event carries.
+        """
+        uri = event.object_id
+        if playlist.access is None or access_allows(playlist.access, self._authenticated_user):
+            if uri:
+                self._hidden_playlists.discard(uri)
+            return True
+        if not uri or uri in self._hidden_playlists:
+            return False
+        self._hidden_playlists.add(uri)
+        # only an update can take a playlist away from a client that still holds it; one
+        # created or removed out of sight was never held, nor is anything held before login
+        if event.event == EventType.MEDIA_ITEM_UPDATED and self._authenticated_user:
+            self._send_message_sync(MassEvent(event=EventType.MEDIA_ITEM_DELETED, object_id=uri))
+        return False

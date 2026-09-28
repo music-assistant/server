@@ -19,7 +19,7 @@ from music_assistant.constants import (
 class StoredItem(TypedDict):
     """Definition of an media item (for the builtin provider) stored in persistent storage."""
 
-    item_id: str  # url or (locally accessible) file path (or id in case of playlist)
+    item_id: str  # stream url for a track/radio (or id in case of playlist)
     name: str
     image_url: NotRequired[str]
     last_updated: NotRequired[int]

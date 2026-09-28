@@ -23,7 +23,11 @@ from music_assistant_models.enums import (
     ProviderFeature,
     ProviderType,
 )
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 from music_assistant_models.event import MassEvent
 from music_assistant_models.media_items import ProviderMapping, Track
 
@@ -1683,6 +1687,32 @@ async def test_run_show_targets_active_group_queue() -> None:
     assert session.queue_id == "group_1"
 
 
+@pytest.mark.usefixtures("kitchen_only_user")
+async def test_run_show_leaves_a_group_queue_alone_that_its_user_may_not_use() -> None:
+    """A grouped player's show fails before it touches a group queue its user may not use."""
+    runtime = ShowRuntime()
+    touched: list[str] = []
+
+    async def _load(queue_id: str, **_kwargs: Any) -> None:
+        touched.append(queue_id)
+
+    _set_runtime_mass(
+        runtime,
+        _show_mass_stub(
+            get_active_queue=lambda _player_id: SimpleNamespace(queue_id="living_room"),
+            clear=touched.append,
+            load=_load,
+        ),
+    )
+    session = SessionState(session_id="s1", station_id="st", player_id="kitchen")
+
+    with pytest.raises(InsufficientPermissions, match="living_room"):
+        await runtime._run_show(session, {**_show_station(), "default_player_id": "kitchen"})
+
+    assert touched == []
+    assert session.queue_id is None
+
+
 async def test_run_show_clears_the_queues_sticky_dj(tmp_path: Path) -> None:
     """Starting a show drops that queue's existing sticky DJ assignment."""
     runtime = ShowRuntimeWithDJ(tmp_path)
@@ -2035,6 +2065,9 @@ async def test_fetch_source_tracks_skips_tracks_with_no_resolvable_uri(caplog: A
     class DummyMusic:
         playlists = DummyPlaylistsController([good_track_1, unresolvable_track, good_track_2])
 
+        def check_item_playable_for_user(self, item: Any, user: Any) -> None:
+            """Let every source through."""
+
     class DummyMass:
         music = DummyMusic()
 
@@ -2051,6 +2084,45 @@ async def test_fetch_source_tracks_skips_tracks_with_no_resolvable_uri(caplog: A
     # the resolved media item travels on the normalized dict, unchanged
     assert [track["media_item"] for track in tracks] == [good_track_1, good_track_2]
     assert any("Track Two" in record.message for record in caplog.records)
+
+
+@pytest.mark.usefixtures("kitchen_only_user")
+async def test_fetch_source_tracks_refuses_a_source_its_user_may_not_play() -> None:
+    """A run never reads the tracks of a source playlist its user has no music source for."""
+    checked: list[str] = []
+    read: list[str] = []
+
+    class DummyPlaylist:
+        name = "Someone Else's Playlist"
+
+    class DummyPlaylistsController:
+        async def get(self, playlist_id: str, provider: str) -> Any:
+            return DummyPlaylist()
+
+        async def tracks(self, playlist_id: str, provider: str) -> Any:
+            read.append(playlist_id)
+            yield None
+
+    class DummyMusic:
+        playlists = DummyPlaylistsController()
+
+        def check_item_playable_for_user(self, item: Any, user: Any) -> None:
+            """Refuse every source, as for a music source the user may not use."""
+            checked.append(user.username)
+            raise MediaNotFoundError("not available on any music source of this user")
+
+    class DummyMass:
+        music = DummyMusic()
+
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, DummyMass())
+    station = {"source_playlist_id": "playlist-1", "source_playlist_provider": "spotify--theirs"}
+
+    with pytest.raises(MediaNotFoundError):
+        await runtime._fetch_source_tracks(station)
+
+    assert checked == ["kid"]
+    assert read == []
 
 
 def test_apply_source_shuffle_returns_unchanged_when_disabled() -> None:

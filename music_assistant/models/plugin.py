@@ -24,6 +24,7 @@ if TYPE_CHECKING:
         RecommendationFolder,
         Track,
     )
+    from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
     from music_assistant_models.streamdetails import StreamDetails
 
 
@@ -325,6 +326,24 @@ class PluginProvider(Provider):
         :param source_id: The AudioSource.item_id currently streaming.
         :param volume: The new volume level (0-100).
         """
+
+    async def on_media_item_played(self, report: MediaItemPlaybackProgressReport) -> None:
+        """
+        Record a playback progress report of a media item.
+
+        Will only be called if ProviderFeature.SCROBBLE is declared. Fired for every queue,
+        periodically while an item plays and whenever its playback state or the current
+        item changes, so also on pause, when it ends or when it is skipped;
+        ``report.is_playing`` and ``report.fully_played`` tell those apart. May fire before
+        ``loaded_in_mass`` ran, so ignore reports until everything the plugin needs is set
+        up. The report names the playing user and player, so a plugin recording for some of
+        them only filters on those. ``ScrobblerHelper`` (helpers/scrobbler.py) builds the
+        usual now-playing and scrobble handling on top of this hook.
+
+        :param report: The playback progress report of the played item.
+        """
+        if ProviderFeature.SCROBBLE in self.supported_features:
+            raise NotImplementedError
 
     async def get_tts_engines(self) -> list[TTSEngine]:
         """

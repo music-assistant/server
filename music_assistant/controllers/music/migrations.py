@@ -23,6 +23,7 @@ from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
+    DB_TABLE_FAVORITES,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
@@ -39,6 +40,7 @@ from music_assistant.constants import (
     MEDIA_ITEM_DB_TABLES,
 )
 from music_assistant.controllers.music.constants import DB_SCHEMA_VERSION
+from music_assistant.controllers.music.favorites import PENDING_USER_ID
 from music_assistant.controllers.music.media.genres import GenreController
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
 from music_assistant.helpers.lyrics import normalize_lrc_lyrics
@@ -269,10 +271,10 @@ async def migrate_database(  # noqa: PLR0915
 
         genre_insert_sql = (
             f"INSERT OR IGNORE INTO {DB_TABLE_GENRES}"
-            "(name, sort_name, translation_key, description, favorite, "
+            "(name, sort_name, translation_key, description, "
             "metadata, genre_aliases, play_count, last_played, "
             "search_name, search_sort_name) "
-            "VALUES (?, ?, ?, NULL, 0, ?, ?, 0, 0, ?, ?)"
+            "VALUES (?, ?, ?, NULL, ?, ?, 0, 0, ?, ?)"
         )
         genre_select_sql = f"SELECT item_id FROM {DB_TABLE_GENRES} WHERE search_name = ?"
 
@@ -1001,6 +1003,87 @@ async def migrate_database(  # noqa: PLR0915
         except Exception as err:
             if "duplicate column" not in str(err):
                 raise
+
+    if prev_version <= 58:
+        # the access record (owner + sharing) of a Music Assistant playlist; NULL for every
+        # existing row, which keeps them household playlists
+        try:
+            await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLISTS} ADD COLUMN [access] json")
+        except Exception as err:
+            if "duplicate column" not in str(err):
+                raise
+
+    if prev_version <= 59:
+        # a library item mapping has no provider of its own, but was briefly stored as a
+        # self-referential mapping with the literal string "None" as domain and instance.
+        # Such a mapping never resolves and makes the item page query a provider that does
+        # not exist, so drop it.
+        provider_mappings_table_exists = await database.get_rows_from_query(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :table_name",
+            {"table_name": DB_TABLE_PROVIDER_MAPPINGS},
+            limit=1,
+        )
+        if provider_mappings_table_exists:
+            await database.execute(
+                f"DELETE FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+                "WHERE provider_domain = 'None' OR provider_instance = 'None'"
+            )
+
+    if prev_version <= 60:
+        # favorites move from one shared column on every media item table to a row per user
+        # in the favorites table. Whose like an existing favorite becomes depends on the
+        # owners of the music sources and on the users, and neither is known here: the
+        # access records are migrated and the auth database opened only once the webserver
+        # is up. Every favorite is parked under a placeholder user id, which
+        # FavoritesStore.settle_pending() hands out on that same start.
+        await database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_FAVORITES}(
+                [user_id] TEXT NOT NULL,
+                [media_type] TEXT NOT NULL,
+                [item_id] INTEGER NOT NULL,
+                [favorite] BOOLEAN,
+                [timestamp] INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(user_id, media_type, item_id));"""
+        )
+        await database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_FAVORITES}_item_idx "
+            f"on {DB_TABLE_FAVORITES}(media_type,item_id);"
+        )
+        for media_type, table in (
+            (MediaType.ARTIST, DB_TABLE_ARTISTS),
+            (MediaType.ALBUM, DB_TABLE_ALBUMS),
+            (MediaType.TRACK, DB_TABLE_TRACKS),
+            (MediaType.PLAYLIST, DB_TABLE_PLAYLISTS),
+            (MediaType.RADIO, DB_TABLE_RADIOS),
+            (MediaType.AUDIOBOOK, DB_TABLE_AUDIOBOOKS),
+            (MediaType.PODCAST, DB_TABLE_PODCASTS),
+            (MediaType.GENRE, DB_TABLE_GENRES),
+        ):
+            table_columns = {
+                column["name"]
+                for column in await database.get_rows_from_query(
+                    f"PRAGMA table_info({table})", limit=0
+                )
+            }
+            if "favorite" not in table_columns:
+                # a table (re)created by an earlier migration step already has the column gone
+                continue
+            # the moment of the favorite is unknown; the item's last change is the best guess
+            timestamp = (
+                f"COALESCE({table}.timestamp_modified, 0)"
+                if "timestamp_modified" in table_columns
+                else "0"
+            )
+            await database.execute(
+                f"INSERT OR IGNORE INTO {DB_TABLE_FAVORITES}"
+                "(user_id, media_type, item_id, favorite, timestamp) "
+                f"SELECT :user_id, :media_type, {table}.item_id, 1, {timestamp} "
+                f"FROM {table} WHERE {table}.favorite = 1",
+                {"user_id": PENDING_USER_ID, "media_type": media_type.value},
+            )
+            # the column must not be indexed for DROP COLUMN to succeed
+            await database.execute(f"DROP INDEX IF EXISTS {table}_favorite_idx")
+            await database.execute(f"ALTER TABLE {table} DROP COLUMN favorite")
 
     # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
     # with the current code/schema, so the external_ids column must be gone first.

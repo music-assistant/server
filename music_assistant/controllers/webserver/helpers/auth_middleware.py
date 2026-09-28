@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from contextvars import ContextVar
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final, Self, cast
@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from aiohttp import web
 
     from music_assistant import MusicAssistant
+    from music_assistant.models.player import Player
 
 # Context key for storing authenticated user in request
 USER_CONTEXT_KEY = "authenticated_user"
@@ -40,7 +41,7 @@ _GUEST_SCOPES: Final[frozenset[Scope]] = frozenset(
         Scope.CONFIG_PLAYERS_READ,
     }
 )
-_USER_SCOPES: Final[frozenset[Scope]] = _GUEST_SCOPES | {
+_MEMBER_SCOPES: Final[frozenset[Scope]] = _GUEST_SCOPES | {
     Scope.LIBRARY_WRITE,
     Scope.CONFIG_PROVIDERS_READ,
     Scope.CONFIG_CORE_READ,
@@ -48,19 +49,45 @@ _USER_SCOPES: Final[frozenset[Scope]] = _GUEST_SCOPES | {
     Scope.SYSTEM_READ,
 }
 
-# Scopes granted to each of the builtin user roles.
-# Roles are identified by their (string) role id to allow for custom roles in the future:
-# a role id not present in this mapping simply grants no scopes at all.
+# Scopes granted to each of the builtin user roles, which are defined here and never stored.
+# Roles are identified by their (string) role id, admins may create custom roles as well
+# (see set_custom_role_scopes): a role id that is neither builtin nor custom grants no scopes.
 ROLE_SCOPES: Final[Mapping[str, frozenset[Scope]]] = {
     UserRole.ADMIN: frozenset({Scope.ALL}),
-    UserRole.USER: _USER_SCOPES,
+    UserRole.USER: _MEMBER_SCOPES | {Scope.CONFIG_PROVIDERS_OWN},
     UserRole.GUEST: _GUEST_SCOPES,
-    # service accounts (such as the Home Assistant integration) get
-    # slightly elevated rights over a regular user
+    # service accounts (such as the Home Assistant integration) get slightly
+    # elevated rights over a regular user, but can not own a music source
     UserRole.SERVICE: (
-        _USER_SCOPES | {Scope.CONFIG_PLAYERS_WRITE, Scope.USERS_READ, Scope.USERS_IMPERSONATE}
+        _MEMBER_SCOPES | {Scope.CONFIG_PLAYERS_WRITE, Scope.USERS_READ, Scope.USERS_IMPERSONATE}
     ),
 }
+
+# Scopes that stay with the builtin admin role, as each one reaches past a household member
+# into accounts, the private things of other members or the server itself: users.manage sets
+# the password of any user, users.impersonate acts as any user, library.manage manages every
+# playlist including private ones, config.providers.write reconfigures every provider
+# including the Home Assistant plugin that signs users in, config.core.write changes the
+# addresses and sign-up settings of the server and system.manage runs its maintenance
+CUSTOM_ROLE_FORBIDDEN_SCOPES: Final[frozenset[Scope]] = frozenset(
+    {
+        Scope.ALL,
+        Scope.UNKNOWN,
+        Scope.USERS_MANAGE,
+        Scope.USERS_IMPERSONATE,
+        Scope.LIBRARY_MANAGE,
+        Scope.CONFIG_PROVIDERS_WRITE,
+        Scope.CONFIG_CORE_WRITE,
+        Scope.SYSTEM_MANAGE,
+    }
+)
+# Scopes a custom role holds along with a scope that is of no use without them
+_CUSTOM_ROLE_IMPLIED_SCOPES: Final[Mapping[Scope, frozenset[Scope]]] = {
+    Scope.CONFIG_PLAYERS_WRITE: frozenset({Scope.CONFIG_PLAYERS_READ}),
+    Scope.CONFIG_PROVIDERS_OWN: frozenset({Scope.CONFIG_PROVIDERS_READ}),
+}
+# Scopes granted to each of the custom roles, by role id (see set_custom_role_scopes)
+_custom_role_scopes: Final[dict[str, frozenset[Scope]]] = {}
 
 # ContextVar for tracking current user and token across async calls
 current_user: ContextVar[User | None] = ContextVar("current_user", default=None)
@@ -181,15 +208,54 @@ async def get_authenticated_user(request: web.Request) -> User | None:
     return user
 
 
-def has_scope(user: User, scope: Scope) -> bool:
+def has_scope(user: User, scope: Scope | tuple[Scope, ...]) -> bool:
     """
     Check if the given user is granted the given scope (through its role).
 
     :param user: The user to check.
-    :param scope: The scope required.
+    :param scope: The scope required, or a tuple of scopes of which one suffices.
     """
-    role_scopes = ROLE_SCOPES.get(user.role, frozenset())
-    return Scope.ALL in role_scopes or scope in role_scopes
+    role_scopes = ROLE_SCOPES.get(user.role)
+    if role_scopes is None:
+        role_scopes = _custom_role_scopes.get(user.role, frozenset())
+    if Scope.ALL in role_scopes:
+        return True
+    if isinstance(scope, tuple):
+        return any(one in role_scopes for one in scope)
+    return scope in role_scopes
+
+
+def custom_role_scopes(scopes: Iterable[Scope]) -> list[Scope]:
+    """
+    Return the sorted scopes a custom role holds when it is granted the given scopes.
+
+    A custom role always holds the scopes of a guest, and the scopes that a granted
+    scope is of no use without.
+
+    :param scopes: The scopes to grant the custom role.
+    :raises InvalidDataError: If a custom role can not be granted one of the scopes.
+    """
+    granted = set(scopes)
+    if refused := granted & CUSTOM_ROLE_FORBIDDEN_SCOPES:
+        raise InvalidDataError(
+            f"A custom role can not be granted {', '.join(sorted(refused))}",
+            translation_key="role_scope_not_allowed",
+        )
+    for scope in list(granted):
+        granted |= _CUSTOM_ROLE_IMPLIED_SCOPES.get(scope, frozenset())
+    return sorted(granted | _GUEST_SCOPES)
+
+
+def set_custom_role_scopes(role_scopes: Mapping[str, Iterable[Scope]]) -> None:
+    """
+    Set the scopes granted by the custom roles, replacing the ones set before.
+
+    :param role_scopes: The scopes each custom role grants, by role id.
+    """
+    _custom_role_scopes.clear()
+    _custom_role_scopes.update(
+        {role_id: frozenset(scopes) for role_id, scopes in role_scopes.items()}
+    )
 
 
 async def resolve_impersonated_user(
@@ -295,6 +361,51 @@ def get_current_user() -> User | None:
     if impersonated_user := get_impersonated_user():
         return impersonated_user
     return current_user.get()
+
+
+def is_own_client_player(player: Player | None) -> bool:
+    """
+    Return whether the given player is the private client player the caller connected on.
+
+    A private client player (browser session, desktop or mobile app) is bound to the
+    connection that announced it, so its owner may always use it regardless of their
+    player filter. Only private players qualify, so a shared speaker cannot be claimed
+    by announcing its id.
+
+    :param player: The player to check, or None.
+    """
+    return player is not None and player.private and player.player_id == get_sendspin_player_id()
+
+
+def player_access_filter(user: User | None) -> list[str] | None:
+    """
+    Return the player ids the user is limited to, or None when unrestricted.
+
+    An empty player_filter, or the full-access Scope.ALL, leaves the user unrestricted.
+    The private client player exemption is per player and not reflected here; use
+    has_player_access for an access decision that honors it.
+
+    :param user: The user to check, or None for an unauthenticated caller.
+    """
+    if user is None or has_scope(user, Scope.ALL):
+        return None
+    return user.player_filter or None
+
+
+def has_player_access(user: User | None, player_id: str, player: Player | None = None) -> bool:
+    """
+    Return whether the given user may use the player (or queue) with the given id.
+
+    A user limited to a player_filter may only use the players in it; an empty filter,
+    or the full-access Scope.ALL, leaves the user unrestricted. A user may always use the
+    private client player they connected on, even when it is not in their filter.
+
+    :param user: The user to check, or None for an unauthenticated caller.
+    :param player_id: The id of the player (or queue) to check access to.
+    :param player: The resolved player, when available, to honor the private client exemption.
+    """
+    allowed = player_access_filter(user)
+    return allowed is None or player_id in allowed or is_own_client_player(player)
 
 
 def set_current_user(user: User | None) -> None:

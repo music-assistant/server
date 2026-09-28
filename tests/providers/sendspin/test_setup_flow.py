@@ -859,6 +859,23 @@ async def test_token_only_device_pairs_with_token() -> None:
     assert provider.tokens == ["SP:0TEST"]
 
 
+async def test_token_form_hints_where_the_token_lives() -> None:
+    """A token form surfaces the device's own hint about where its pairing token is found."""
+    api = _FakeApi([_desc(PairMethod.PAIRING_PSK, locations=["device", "bogus"])])
+    provider = _FakeProvider(api)
+    session, _mass = _make_session(_ok_finish)
+    player = _make_player(api, provider)
+
+    task = asyncio.create_task(player.run_setup_flow(session))
+    step = await _wait_step(session, step_type=FlowStepType.FORM, step_id="enter_token")
+    # The unknown location is ignored rather than rendered as a missing translation.
+    assert [entry.key for entry in step.entries] == [CONF_PAIRING_TOKEN]
+    assert step.entries[0].translation_key == "pairing_psk_location_device"
+    session.handle_submit({CONF_PAIRING_TOKEN: "SP:0TEST"})
+    await _wait_for(lambda: session.finished)
+    await task
+
+
 async def test_token_hidden_when_the_device_can_pair_by_pin() -> None:
     """Token pairing is machine-to-machine only and stays hidden while PIN pairing works."""
     api = _FakeApi([_desc(PairMethod.DYNAMIC_PIN), _desc(PairMethod.PAIRING_PSK)])

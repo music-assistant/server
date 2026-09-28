@@ -19,6 +19,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
+from music_assistant.helpers.external_ids import normalize_external_id
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
@@ -40,7 +41,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
-    from music_assistant_models.enums import MediaType
+    from music_assistant_models.enums import ExternalID, MediaType
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -162,7 +163,9 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """Get full track details by id."""
         return await self.media_manager.get_track(prov_track_id)
 
-    async def get_playlist(self, prov_playlist_id: str, is_favourite: bool = False) -> Playlist:
+    async def get_playlist(
+        self, prov_playlist_id: str, is_favourite: bool | None = None
+    ) -> Playlist:
         """Get full playlist details by id."""
         if prov_playlist_id.startswith("ra."):
             return await self.recommendation_manager.get_station_playlist(prov_playlist_id)
@@ -196,6 +199,28 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
     async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
         """Retrieve a list of artists similar to the provided artist."""
         return await self.recommendation_manager.get_similar_artists(prov_artist_id, limit)
+
+    # ------------------------------------------------------------------
+    # External ID lookups
+    # ------------------------------------------------------------------
+
+    async def get_track_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Track | None:
+        """Retrieve track by external ID (ISRC)."""
+        normalized_external_id = normalize_external_id(external_id_type, external_id)
+        return await self.media_manager.get_track_by_external_id(
+            normalized_external_id, external_id_type
+        )
+
+    async def get_album_by_external_id(
+        self, external_id: str, external_id_type: ExternalID
+    ) -> Album | None:
+        """Retrieve album by external ID (UPC/Barcode)."""
+        normalized_external_id = normalize_external_id(external_id_type, external_id)
+        return await self.media_manager.get_album_by_external_id(
+            normalized_external_id, external_id_type
+        )
 
     # ------------------------------------------------------------------
     # Library generators
@@ -245,7 +270,9 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """Remove track(s) from playlist."""
         await self.library_manager.remove_playlist_tracks(prov_playlist_id, positions_to_remove)
 
-    async def set_favorite(self, prov_item_id: str, media_type: MediaType, favorite: bool) -> None:
+    async def set_favorite(
+        self, prov_item_id: str, media_type: MediaType, favorite: bool | None
+    ) -> None:
         """Set the favorite status of an item."""
         await self.library_manager.set_favorite(prov_item_id, media_type, favorite)
 

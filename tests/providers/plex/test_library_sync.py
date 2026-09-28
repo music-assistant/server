@@ -60,6 +60,7 @@ class _FakePlexTrack:
         grandparent_key: str | None = "/library/metadata/10",
     ) -> None:
         self.key = key
+        self.ratingKey = int(key.rsplit("/", 1)[-1])
         self.title = title
         self.originalTitle = original_title
         self.grandparentKey = grandparent_key

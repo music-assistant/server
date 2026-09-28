@@ -123,13 +123,15 @@ def _controller_with_next_item() -> tuple[PlayerQueuesController, SimpleNamespac
         available=True,
     )
     queue = SimpleNamespace(
-        current_item=SimpleNamespace(queue_item_id="current"),
+        current_item=SimpleNamespace(queue_item_id="current", streamdetails=None),
         next_item=next_item,
         display_name="Queue",
     )
     controller.get = MagicMock(return_value=queue)  # type: ignore[method-assign]
     controller._queue_data = {
-        "queue-1": cast("Any", SimpleNamespace(queue=queue, session_id="session-1"))
+        "queue-1": cast(
+            "Any", SimpleNamespace(queue=queue, items=[next_item], session_id="session-1")
+        )
     }
     mass = MagicMock()
     controller.mass = mass
@@ -222,3 +224,134 @@ async def test_prepare_next_gives_up_softly_on_a_capacity_failure() -> None:
     await mass.create_task.call_args.args[0]()
 
     assert next_item.available
+
+
+async def test_prepare_next_defers_while_the_playing_item_holds_the_only_source_slot() -> None:
+    """A preload for the same single-slot source waits for the boundary, not for a timeout."""
+    controller, next_item, mass = _controller_with_next_item()
+    next_item.streamdetails = SimpleNamespace(buffer=None, provider="limited--1")
+    playing = MagicMock()
+    playing.eof = False
+    cast("Any", controller.get("queue-1")).current_item.streamdetails = SimpleNamespace(
+        provider="limited--1", buffer=playing, is_realtime=True
+    )
+    provider = MagicMock(spec=MusicProvider)
+    provider.max_concurrent_streams = 1
+    provider.has_available_stream_slot = False
+    mass.get_provider = MagicMock(return_value=provider)
+    mass.streams.audio.get_audio_buffer = AsyncMock()
+
+    controller.prepare_next_audio_buffer("queue-1")
+    await mass.create_task.call_args.args[0]()
+
+    mass.streams.audio.get_audio_buffer.assert_not_awaited()
+
+
+async def test_prepare_next_only_defers_for_a_realtime_source() -> None:
+    """A source that fills ahead of playback frees its slot in time and gets no deferral."""
+    controller, next_item, mass = _controller_with_next_item()
+    next_item.streamdetails = SimpleNamespace(buffer=None, provider="limited--1")
+    playing = MagicMock()
+    playing.eof = False
+    cast("Any", controller.get("queue-1")).current_item.streamdetails = SimpleNamespace(
+        provider="limited--1", buffer=playing, is_realtime=False
+    )
+    provider = MagicMock(spec=MusicProvider)
+    provider.max_concurrent_streams = 1
+    provider.has_available_stream_slot = False
+    mass.get_provider = MagicMock(return_value=provider)
+    mass.streams.audio.get_audio_buffer = AsyncMock()
+
+    controller.prepare_next_audio_buffer("queue-1")
+    await mass.create_task.call_args.args[0]()
+
+    mass.streams.audio.get_audio_buffer.assert_awaited_once()
+
+
+async def test_prepare_next_runs_once_the_playing_item_released_the_slot() -> None:
+    """The same preload goes ahead when the playing item's source has finished."""
+    controller, next_item, mass = _controller_with_next_item()
+    next_item.streamdetails = SimpleNamespace(buffer=None, provider="limited--1")
+    finished = MagicMock()
+    finished.eof = True
+    cast("Any", controller.get("queue-1")).current_item.streamdetails = SimpleNamespace(
+        provider="limited--1", buffer=finished, is_realtime=True
+    )
+    provider = MagicMock(spec=MusicProvider)
+    provider.max_concurrent_streams = 1
+    provider.has_available_stream_slot = False
+    mass.get_provider = MagicMock(return_value=provider)
+    mass.streams.audio.get_audio_buffer = AsyncMock()
+
+    controller.prepare_next_audio_buffer("queue-1")
+    await mass.create_task.call_args.args[0]()
+
+    mass.streams.audio.get_audio_buffer.assert_awaited_once()
+
+
+async def test_prepare_next_skips_an_item_that_left_the_queue_while_it_was_fetched() -> None:
+    """
+    A replace that lands while the stream details are still being fetched ends the prewarm.
+
+    The item the prewarm was scheduled for is no longer on the queue, so warming its audio
+    would decode a track nobody will play and pin a source slot on an orphaned buffer.
+    """
+    controller, next_item, mass = _controller_with_next_item()
+    next_item.streamdetails = None
+
+    async def _replace_queue_meanwhile(**_kwargs: object) -> SimpleNamespace:
+        controller._queue_data["queue-1"].items.clear()
+        return SimpleNamespace(buffer=None)
+
+    mass.streams.audio.get_stream_details = _replace_queue_meanwhile
+    mass.streams.audio.get_audio_buffer = AsyncMock()
+
+    controller.prepare_next_audio_buffer("queue-1")
+    await mass.create_task.call_args.args[0]()
+
+    mass.streams.audio.get_audio_buffer.assert_not_awaited()
+
+
+async def test_prepare_next_releases_a_buffer_whose_item_left_the_queue_mid_fill() -> None:
+    """
+    A removal that lands while the buffer fills still releases the warmed audio.
+
+    Replace-next and delete do not cancel the prewarm, so without the check after the fill
+    the finished buffer stays attached to an item no cleanup reaches any more, holding its
+    audio until the inactivity sweep.
+    """
+    controller, next_item, mass = _controller_with_next_item()
+    buffer = MagicMock()
+    buffer.clear = AsyncMock()
+
+    async def _remove_item_meanwhile(*_args: object, **_kwargs: object) -> MagicMock:
+        controller._queue_data["queue-1"].items.clear()
+        next_item.streamdetails.buffer = buffer
+        return buffer
+
+    mass.streams.audio.get_audio_buffer = _remove_item_meanwhile
+
+    controller.prepare_next_audio_buffer("queue-1")
+    await mass.create_task.call_args.args[0]()
+
+    buffer.clear.assert_awaited_once()
+    assert next_item.streamdetails.buffer is None
+
+
+async def test_prepare_next_leaves_the_buffer_of_an_item_still_on_the_queue() -> None:
+    """A fill that raced nothing keeps its buffer attached for the upcoming track."""
+    controller, next_item, mass = _controller_with_next_item()
+    buffer = MagicMock()
+    buffer.clear = AsyncMock()
+
+    async def _fill(*_args: object, **_kwargs: object) -> MagicMock:
+        next_item.streamdetails.buffer = buffer
+        return buffer
+
+    mass.streams.audio.get_audio_buffer = _fill
+
+    controller.prepare_next_audio_buffer("queue-1")
+    await mass.create_task.call_args.args[0]()
+
+    buffer.clear.assert_not_awaited()
+    assert next_item.streamdetails.buffer is buffer

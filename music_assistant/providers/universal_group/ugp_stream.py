@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from music_assistant.helpers.dsp import ComplexFilter
 
 from music_assistant.constants import MASS_LOGGER_NAME
+from music_assistant.controllers.streams.constants import PacingProfile, output_pacing_args
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.util import empty_queue
 
@@ -111,8 +112,10 @@ class UGPStream:
                 audio_input=self.audio_source,
                 input_format=self.input_format,
                 output_format=self.base_pcm_format,
-                # we don't allow the player to buffer too much ahead so we use readrate limiting
-                extra_input_args=["-readrate", "1.1", "-readrate_initial_burst", "5"],
+                # the flow source carries no pacing of its own, so this is the single point
+                # that keeps the members from running far ahead, at the flow route's pace.
+                # See the usage policy note in the streams constants.
+                extra_input_args=output_pacing_args(PacingProfile.NEAR_REALTIME),
             ):
                 await asyncio.gather(
                     *[sub(chunk) for sub in self.subscribers],

@@ -6,7 +6,11 @@ from music_assistant_models.enums import ExternalID
 from music_assistant_models.media_items import Album, Artist
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.providers.filesystem_local.parsers import parse_album_nfo, parse_artist_nfo
+from music_assistant.providers.filesystem_local.parsers import (
+    nfo_album_artist,
+    parse_album_nfo,
+    parse_artist_nfo,
+)
 
 
 def test_parse_album_nfo() -> None:
@@ -102,3 +106,12 @@ def test_parse_artist_nfo() -> None:
         },
     )
     _asserts(artist)
+
+
+def test_nfo_album_artist() -> None:
+    """Only exactly one named album artist is used, anything ambiguous is not."""
+    assert nfo_album_artist({"albumartist": "The Beatles"}) == "The Beatles"
+    assert nfo_album_artist({}) is None
+    assert nfo_album_artist({"albumartist": None}) is None
+    assert nfo_album_artist({"albumartist": ["Artist A", "Artist B"]}) is None
+    assert nfo_album_artist({"albumartist": "Artist A; Artist B"}) is None

@@ -108,3 +108,53 @@ async def test_ws_metadata_handler_forwards_the_peer_address(
     )
 
     assert receiver._apply_meta.await_args.args == ({"title": "Test Track"}, SENDER)
+
+
+def _audio_receiver(*, is_playing: bool) -> SimpleNamespace:
+    """Build a bare receiver namespace for driving the /audio WebSocket handler."""
+    return SimpleNamespace(
+        mass=MagicMock(),
+        logger=MagicMock(),
+        _audio_sender_ws=None,
+        _audio_queue=MagicMock(),
+        _stats_received_frames=0,
+        _stats_overruns=0,
+        _is_playing=is_playing,
+        _handle_playback_state=AsyncMock(),
+    )
+
+
+async def test_ws_audio_handler_releases_the_source_on_an_abrupt_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An abrupt sender disconnect tears the source down like a graceful stop would."""
+    receiver = _audio_receiver(is_playing=True)
+    ws = MagicMock()
+    ws.prepare = AsyncMock()
+    ws.send_json = AsyncMock()
+    ws.__aiter__.return_value = []  # the sender vanishes without sending a single frame
+    monkeypatch.setattr(web, "WebSocketResponse", lambda: ws)
+
+    await AriaCastReceiver._ws_audio(
+        cast("AriaCastReceiver", receiver), cast("web.Request", _request())
+    )
+
+    receiver._handle_playback_state.assert_awaited_once_with(False)
+
+
+async def test_ws_audio_handler_does_nothing_special_when_nothing_was_playing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sender that connects and leaves without ever playing needs no teardown."""
+    receiver = _audio_receiver(is_playing=False)
+    ws = MagicMock()
+    ws.prepare = AsyncMock()
+    ws.send_json = AsyncMock()
+    ws.__aiter__.return_value = []
+    monkeypatch.setattr(web, "WebSocketResponse", lambda: ws)
+
+    await AriaCastReceiver._ws_audio(
+        cast("AriaCastReceiver", receiver), cast("web.Request", _request())
+    )
+
+    receiver._handle_playback_state.assert_not_awaited()

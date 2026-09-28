@@ -224,6 +224,11 @@ Two distinct refill paths share the same "running low" trigger:
   — resolved by `media_resolver.py`, and simply ends the queue when there is none. Live sources
   (radio, audio source) have no natural end, so Autoplay does not apply to them at all.
 
+Repeat ONE/ALL temporarily masks the effective autoplay flag off. The queue keeps its saved
+autoplay preference — either a pinned per-queue override or the current global default — so turning
+repeat back off restores that preference instead of changing it. Already-queued items stay in place;
+only future autoplay additions are blocked, and dynamic mode keeps its own refill behaviour.
+
 Data flow: dynamic `sources` → managed pool (per-source fetch + weighted, recency-gated allocation)
 → appended `QueueItem`s; autoplay flag → media-type dispatch → `Autoplay` (mode-based selection) or
 the next episode/book → appended `QueueItem`s.

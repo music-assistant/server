@@ -19,7 +19,10 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.controllers.players.constants import PlayerLockPurpose
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    has_player_access,
+)
 
 if TYPE_CHECKING:
     import logging
@@ -116,11 +119,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
                 )
 
             current_user = get_current_user()
-            if (
-                current_user
-                and current_user.player_filter
-                and player.player_id not in current_user.player_filter
-            ):
+            if current_user and not has_player_access(current_user, player.player_id, player):
                 msg = (
                     f"{current_user.username} does not have access to player {player.display_name}"
                 )

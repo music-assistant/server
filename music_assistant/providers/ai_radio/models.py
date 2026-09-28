@@ -68,6 +68,7 @@ class SessionState:
 
     session_id: str
     station_id: str
+    player_id: str = ""
     status: str = "running"
     created_at: str = field(default_factory=lambda: utc().isoformat())
     started_at: str | None = None
