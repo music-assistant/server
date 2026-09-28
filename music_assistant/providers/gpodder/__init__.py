@@ -19,6 +19,7 @@ from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
+from music_assistant.constants import CONF_USERNAME, CONF_PASSWORD, CONF_VERIFY_SSL
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -58,8 +59,6 @@ if TYPE_CHECKING:
 
 # Config for "classic" gpodder api
 CONF_URL = "url"
-CONF_USERNAME = "username"
-CONF_PASSWORD = "password"
 CONF_DEVICE_ID = "device_id"
 
 # Config for nextcloud
@@ -67,7 +66,6 @@ CONF_TOKEN_NC = "token"
 CONF_URL_NC = "url_nc"
 
 # General config
-CONF_VERIFY_SSL = "verify_ssl"
 CONF_MAX_NUM_EPISODES = "max_num_episodes"
 
 

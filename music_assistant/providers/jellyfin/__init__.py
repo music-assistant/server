@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import socket
+import urllib.parse
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
+from types import MethodType
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from aiojellyfin import Connection, NotFound, authenticate_by_name
 from aiojellyfin import MediaLibrary as JellyMediaLibrary
-from aiojellyfin import NotFound, authenticate_by_name
 from aiojellyfin.session import SessionConfiguration
 from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError
@@ -24,7 +27,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import UNKNOWN_ARTIST, UNKNOWN_ARTIST_ID_MBID
+from music_assistant.constants import CONF_USERNAME, CONF_PASSWORD, CONF_VERIFY_SSL, UNKNOWN_ARTIST, UNKNOWN_ARTIST_ID_MBID
 from music_assistant.controllers.cache import use_cache
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
@@ -59,9 +62,11 @@ if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
 
 CONF_URL = "url"
-CONF_USERNAME = "username"
-CONF_PASSWORD = "password"
-CONF_VERIFY_SSL = "verify_ssl"
+CONF_ACCESS_TOKEN = "access_token"
+CONF_USER_ID = "user_id"
+CONF_DEVICE_ID = "device_id"
+AUTH_METHOD_PASSWORD = "password"
+AUTH_METHOD_QUICK_CONNECT = "quick_connect"
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
     ProviderFeature.LIBRARY_ALBUMS,
@@ -81,6 +86,67 @@ async def setup(
     return JellyfinProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
+class JellyfinConnection(Connection):
+    """Jellyfin connection that uses the current URL authentication parameter."""
+
+    def _build_url(self, url: str, params: dict[str, str | int]) -> str:
+        assert url.startswith("/")
+        params.setdefault("ApiKey", self._access_token)
+        return f"{self.base_url}{url}?{urllib.parse.urlencode(params)}"
+
+
+def _use_current_url_authentication(client: Connection) -> None:
+    """Update a connection to use Jellyfin's supported URL auth parameter."""
+    client._build_url = MethodType(JellyfinConnection._build_url, client)
+
+
+async def initiate_quick_connect(session_config: SessionConfiguration) -> tuple[str, str]:
+    """Start a Jellyfin Quick Connect request and return its secret and approval code."""
+    base_url = session_config.url.rstrip("/")
+    async with session_config.session.post(
+        f"{base_url}/QuickConnect/Initiate",
+        headers={
+            "User-Agent": session_config.user_agent,
+            "Authorization": session_config.authentication_header(),
+        },
+        raise_for_status=True,
+    ) as response:
+        result = await response.json()
+    return result["Secret"], result["Code"]
+
+
+async def authenticate_with_quick_connect(
+    session_config: SessionConfiguration, secret: str
+) -> Connection:
+    """Wait for Quick Connect approval and return the authenticated Jellyfin connection."""
+    base_url = session_config.url.rstrip("/")
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": session_config.user_agent,
+        "Authorization": session_config.authentication_header(),
+    }
+    while True:
+        async with session_config.session.get(
+            f"{base_url}/QuickConnect/Connect",
+            params={"secret": secret},
+            headers=headers,
+            raise_for_status=True,
+        ) as response:
+            result = await response.json()
+        if result["Authenticated"]:
+            break
+        await asyncio.sleep(1)
+
+    async with session_config.session.post(
+        f"{base_url}/Users/AuthenticateWithQuickConnect",
+        json={"Secret": secret},
+        headers=headers,
+        raise_for_status=True,
+    ) as response:
+        result = await response.json()
+    return Connection(session_config, result["User"]["Id"], result["AccessToken"])
+
+
 class JellyfinProvider(MusicProvider):
     """Provider for a jellyfin music library."""
 
@@ -90,7 +156,7 @@ class JellyfinProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Initialize provider(instance) with given configuration."""
-        username = str(self.get_setup_value(CONF_USERNAME))
+        username = str(self.get_setup_value(CONF_USERNAME) or "")
 
         # Device ID should be stable between reboots
         # Otherwise every time the provider starts we "leak" a new device
@@ -106,7 +172,10 @@ class JellyfinProvider(MusicProvider):
         # token and server_id is used in zeroconf) but hash them anyway as its meant
         # to be an opaque identifier
 
-        device_id = hashlib.sha256(f"{self.mass.server_id}+{username}".encode()).hexdigest()
+        device_id = str(
+            self.get_setup_value(CONF_DEVICE_ID)
+            or hashlib.sha256(f"{self.mass.server_id}+{username}".encode()).hexdigest()
+        )
         verify_ssl = bool(self.get_setup_value(CONF_VERIFY_SSL))
         http_session = self.mass.http_session if verify_ssl else self.mass.http_session_no_ssl
 
@@ -121,11 +190,20 @@ class JellyfinProvider(MusicProvider):
         )
 
         try:
-            self._client = await authenticate_by_name(
-                session_config,
-                username,
-                str(self.get_setup_value(CONF_PASSWORD) or ""),
-            )
+            if access_token := self.get_setup_value(CONF_ACCESS_TOKEN):
+                client = Connection(
+                    session_config,
+                    str(self.get_setup_value(CONF_USER_ID)),
+                    str(access_token),
+                )
+            else:
+                client = await authenticate_by_name(
+                    session_config,
+                    username,
+                    str(self.get_setup_value(CONF_PASSWORD) or ""),
+                )
+            _use_current_url_authentication(client)
+            self._client = client
         except Exception as err:
             raise LoginFailed(f"Authentication failed: {err}") from err
 
