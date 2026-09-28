@@ -3010,7 +3010,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # linked power control was switched off directly) must be unsynced too. We act
         # only on an explicit on->off transition, leaving players without power control
         # (powered == None) untouched. The player is still reachable here, so we route
-        # through cmd_ungroup which also transfers leadership when it is a sync leader.
+        # through cmd_ungroup, which also hands over the playback of a sync leader that
+        # plays its own queue.
         if (
             changed_values.get(ATTR_POWERED) == (True, False)
             and player.state.type in UNGROUP_ON_POWER_OFF_TYPES
@@ -3570,8 +3571,16 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 (member := self.get_player(m)) and member.state.type in PLAYBACK_TARGET_TYPES
                 for m in remaining_members
             )
+            # only a queue of the leader's own is handed over: the elected leader of a
+            # group player plays the group's queue, and that group re-forms around another
+            # member itself (its native followers may still linger on it after a dissolve)
             active_queue = self.get_active_queue(parent_player)
-            if has_playback_heir and active_queue and active_queue.state != PlaybackState.IDLE:
+            if (
+                has_playback_heir
+                and active_queue
+                and active_queue.queue_id == target_player
+                and active_queue.state != PlaybackState.IDLE
+            ):
                 # transfer leadership to a remaining member instead of dissolving
                 await self._transfer_ad_hoc_leadership(parent_player, remaining_members)
                 return
@@ -4002,7 +4011,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             and player.type in UNGROUP_ON_POWER_OFF_TYPES
             and not powered
         ):
-            # ungroup player if it is synced (or is a sync leader itself)
+            # ungroup player if it is synced (or is a sync leader itself). Only this
+            # player leaves: its followers keep their own power state, as leadership
+            # transfers to one of them or their group re-forms without it
             await self.cmd_ungroup(player_id)
 
         # always stop player at power off
@@ -4014,25 +4025,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             # wait for the stop command to process and prevent race conditions
             async with self.wait_for_player_update(player_id, timeout=5):
                 await self._stop_player_or_its_queue(player)
-
-        # power off all synced childs when player is a sync leader
-        elif (
-            not powered
-            and player_state.type in UNGROUP_ON_POWER_OFF_TYPES
-            and player_state.group_members
-        ):
-            # Sequential and in this very task: a member's power off detaches it from
-            # this leader and so needs the locks this power off already holds, and
-            # get_player_lock is only re-entrant within a single task.
-            for member in self.iter_group_members(player, True):
-                if member.power_control == PLAYER_CONTROL_NONE:
-                    continue
-                try:
-                    await self._handle_cmd_power(member.player_id, False)
-                except MusicAssistantError as err:
-                    self.logger.warning(
-                        "Could not power off group member %s: %s", member.display_name, err
-                    )
 
         # handle actual power command
         if player_state.power_control == PLAYER_CONTROL_NONE:
