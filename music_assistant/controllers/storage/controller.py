@@ -238,6 +238,22 @@ class StorageController(CoreController):
             default=None,
         )
 
+    def can_hold_music_source(self, path: str, manages_all_sources: bool) -> bool:
+        """
+        Return whether a music source may read its files from a path.
+
+        That is a path inside a media location the caller may see, and not inside the data or
+        cache folder of the server, even when that folder lies inside such a location. The path
+        is taken as given: its symlinks are not resolved.
+
+        :param path: An absolute path.
+        :param manages_all_sources: Whether the caller manages every music source.
+        """
+        path = os.path.normpath(path)
+        return bool(self._visible_roots(path, manages_all_sources)) and not self._is_server_path(
+            path
+        )
+
     async def is_available(self, path: str) -> bool:
         """
         Return whether a folder can be used right now.
@@ -269,22 +285,30 @@ class StorageController(CoreController):
         Hidden folders and symlinks are left out and at most 500 names are returned. Probes the
         location first when its state is outdated, which takes at most about 10 seconds.
 
-        :param path: A media location the caller may see, or a folder inside one.
+        :param path: A path a music source may be put on for the caller: a media location the
+            caller may see or a folder inside one, never inside the data or cache folder of the
+            server.
         :param manages_all_sources: Whether the caller manages every music source.
         """
         path = os.path.normpath(path)
         # checked before the probe too, so a caller only makes the server probe what it may use
-        if not self._visible_roots(path, manages_all_sources):
+        if not self.can_hold_music_source(path, manages_all_sources):
             raise self._path_not_allowed(path)
         if (location := self.get_location_for_path(path)) is not None:
             await self._probe_outdated([location.path])
-        roots = self._visible_roots(path, manages_all_sources)
-        if not roots or (location := self.get_location_for_path(path)) is None:
+        if (
+            not self.can_hold_music_source(path, manages_all_sources)
+            or (location := self.get_location_for_path(path)) is None
+        ):
             raise self._path_not_allowed(path)
         if not location.available:
             raise self._folder_unreadable(path)
-        # the path must also stay inside a location once its symlinks are resolved
-        if (real_path := await asyncio.to_thread(_resolve_within, path, roots)) is None:
+        # the path must also stay inside a location once its symlinks are resolved, and out of
+        # the server's own folders
+        real_path = await asyncio.to_thread(
+            _resolve_within, path, self._visible_roots(path, manages_all_sources)
+        )
+        if real_path is None or self._is_server_path(real_path):
             raise self._path_not_allowed(path)
         try:
             return await asyncio.to_thread(_list_subfolders, real_path)
@@ -382,6 +406,15 @@ class StorageController(CoreController):
             for loc in self.get_locations(manages_all_sources)
             if loc.usage == StorageUsage.MEDIA and is_within(path, loc.path)
         ]
+
+    def _is_server_path(self, path: str) -> bool:
+        """
+        Return whether a path lies in the data or cache folder of the server.
+
+        :param path: A normalized absolute path.
+        """
+        location = self.get_location_for_path(path)
+        return location is not None and location.usage != StorageUsage.MEDIA
 
     def _parse_mounts(self, table: str) -> list[MediaMount]:
         """Return the media mounts in a mount table of the server process."""

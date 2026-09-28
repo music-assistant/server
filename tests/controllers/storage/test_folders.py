@@ -198,3 +198,95 @@ async def test_command_applies_the_callers_visibility(
         return
     with pytest.raises(InvalidDataError):
         await storage.get_folders(str(media_root))
+
+
+@pytest.fixture
+def home_with_server_folders(storage: StorageController, tmp_path: Path) -> Path:
+    """
+    Provide a registered folder that holds the data and cache folders of the server.
+
+    :param storage: The storage controller.
+    :param tmp_path: Temporary directory, which also holds the server's folders.
+    """
+    data_path, cache_path = Path(storage.mass.storage_path), Path(storage.mass.cache_path)
+    assert data_path.parent == cache_path.parent == tmp_path
+    for folder in (data_path / "backups", tmp_path / "music" / "Albums", tmp_path / "data-old"):
+        folder.mkdir(parents=True)
+    (tmp_path / "link").symlink_to(data_path, target_is_directory=True)
+    set_locations(
+        storage,
+        make_location(tmp_path, kind=StorageKind.MANUAL),
+        make_location(data_path, usage=StorageUsage.DATA),
+        make_location(cache_path, usage=StorageUsage.CACHE),
+    )
+    return tmp_path
+
+
+@pytest.mark.parametrize("manages_all_sources", [True, False])
+@pytest.mark.parametrize("folder", ["data", "data/backups", "cache", "link", "link/backups"])
+async def test_server_folders_inside_a_location_are_not_listed(
+    storage: StorageController,
+    home_with_server_folders: Path,
+    manages_all_sources: bool,
+    folder: str,
+) -> None:
+    """The server's own folders stay out of a media location that holds them, also via a link."""
+    with pytest.raises(InvalidDataError) as exc_info:
+        await storage.list_folders(
+            str(home_with_server_folders / folder), manages_all_sources=manages_all_sources
+        )
+
+    assert exc_info.value.translation_key == "path_not_allowed"
+
+
+@pytest.mark.parametrize("manages_all_sources", [True, False])
+async def test_folders_next_to_the_server_folders_are_listed(
+    storage: StorageController, home_with_server_folders: Path, manages_all_sources: bool
+) -> None:
+    """A folder next to the data folder, even one with a look-alike name, is listed."""
+    home = home_with_server_folders
+
+    assert await storage.list_folders(str(home / "music"), manages_all_sources) == ["Albums"]
+    assert await storage.list_folders(str(home / "data-old"), manages_all_sources) == []
+    # the parent still lists the server's folders by name, it only can not be browsed into
+    assert "data" in await storage.list_folders(str(home), manages_all_sources)
+
+
+@pytest.mark.parametrize(
+    ("path", "manages_all_sources", "expected"),
+    [
+        ("{home}", True, True),
+        ("{home}/music/Albums", False, True),
+        ("{home}/data-old", True, True),
+        ("{home}/data", True, False),
+        ("{home}/data/backups", False, False),
+        ("{home}/cache/", True, False),
+        ("{home}/../elsewhere", True, False),
+        ("{home}/music\0", True, False),
+        ("music", True, False),
+        ("/", True, False),
+    ],
+)
+def test_can_hold_music_source(
+    storage: StorageController,
+    home_with_server_folders: Path,
+    path: str,
+    manages_all_sources: bool,
+    expected: bool,
+) -> None:
+    """A music source may go inside a visible media location, never in the server's folders."""
+    resolved = path.format(home=home_with_server_folders)
+
+    assert storage.can_hold_music_source(resolved, manages_all_sources) is expected
+
+
+@pytest.mark.parametrize(("manages_all_sources", "expected"), [(True, True), (False, False)])
+def test_can_hold_music_source_follows_visibility(
+    storage: StorageController, media_root: Path, manages_all_sources: bool, expected: bool
+) -> None:
+    """A location a caller may not see holds no music source for it."""
+    set_locations(storage, make_location(media_root, kind=StorageKind.LOCAL_DISK))
+
+    assert (
+        storage.can_hold_music_source(str(media_root / "Albums"), manages_all_sources) is expected
+    )
