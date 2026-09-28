@@ -144,6 +144,21 @@ def test_share_url_provider(url: str, expected: str | None) -> None:
 
 
 @pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (f"https://open.spotify.com/album/{SPOTIFY_ID}", "spotify"),
+        (f"https://open.spotify.com/artist/{SPOTIFY_ID}", None),
+        ("https://open.spotify.com/album/not-a-spotify-id", None),
+        ("https://tidal.com/album/79280548", "tidal"),
+        ("https://tidal.com/album/in-rainbows", None),
+    ],
+)
+def test_share_url_provider_of_a_media_type(url: str, expected: str | None) -> None:
+    """Asked for a media type, only a valid URL of an item of that type names its service."""
+    assert share_url_provider(url, MediaType.ALBUM) == expected
+
+
+@pytest.mark.parametrize(
     ("domain", "media_type", "storefront", "expected"),
     [
         ("spotify", MediaType.ARTIST, None, f"https://open.spotify.com/artist/{SPOTIFY_ID}"),

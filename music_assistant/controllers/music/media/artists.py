@@ -1309,21 +1309,29 @@ def _release_group_of(
     album_type_of: Callable[[MusicBrainzReleaseGroup], AlbumType],
 ) -> MusicBrainzReleaseGroup | None:
     """
-    Return the one release group a library album not identified on MusicBrainz is, by its name.
+    Return the one release group a library album not identified on MusicBrainz is.
+
+    Same-titled groups are told apart by the album's type and year; a group that remains
+    ambiguous is none of them.
 
     :param album: The library album, without a release group id.
     :param release_groups: The release groups of the album's artist.
     :param claimed: The ids of the release groups other library albums are.
     :param album_type_of: Maps a release group to the album type it describes.
     """
-    # a same-titled single, EP or live album is its own entry, never the album's
     candidates = [
         group
         for group in release_groups
-        if group.id not in claimed
-        and compare_album_name(album.name, group.title)
-        and _album_types_agree(album.album_type, album_type_of(group))
+        if group.id not in claimed and compare_album_name(album.name, group.title)
     ]
+    if len(candidates) > 1:
+        # the type tells a same-titled single or EP from the album, and no more: the music
+        # services type a live album "album" and an EP "single" or even "album"
+        candidates = [
+            group
+            for group in candidates
+            if _album_types_agree(album.album_type, album_type_of(group))
+        ] or candidates
     if len(candidates) > 1 and album.year:
         # same-titled groups of one kind, self-titled albums mostly, are told apart by year
         candidates = [group for group in candidates if group.first_release_year == album.year]

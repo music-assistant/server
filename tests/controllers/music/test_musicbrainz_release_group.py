@@ -367,12 +367,14 @@ async def test_resolve_skips_an_edition_musicbrainz_cannot_look_up() -> None:
 
 
 async def test_resolve_tries_the_editions_linked_to_the_users_services_first() -> None:
-    """For a user without Spotify, the Tidal-linked edition beats any number of Spotify ones."""
+    """For a user without Spotify, a Tidal-linked CD beats any number of Spotify-linked editions."""
     editions = [
         _edition(f"rel-spotify-{index}", date=f"2007-12-{index + 1:02d}", urls=[SPOTIFY_ALBUM_URL])
         for index in range(_MAX_EDITION_LOOKUPS)
     ]
-    editions.append(_edition("rel-tidal", date="2008-01-01", urls=[TIDAL_ALBUM_URL]))
+    editions.append(
+        _edition("rel-tidal", media_format="CD", date="2008-01-01", urls=[TIDAL_ALBUM_URL])
+    )
     tidal_album = _album("tidal_1", TIDAL_ALBUM_ID)
     with _harness(
         editions=editions,
@@ -385,6 +387,30 @@ async def test_resolve_tries_the_editions_linked_to_the_users_services_first() -
 
     assert album is tidal_album
     harness.musicbrainz.get_release_details.assert_awaited_once_with("rel-tidal")
+
+
+async def test_resolve_ranks_an_edition_by_its_usable_album_links_only() -> None:
+    """A link to the artist, or a malformed one, earns an edition no place ahead of the others."""
+    editions = [
+        _edition(
+            "rel-artist-link",
+            date="2007-12-01",
+            urls=[f"https://open.spotify.com/artist/{SPOTIFY_ALBUM_ID}"],
+        ),
+        _edition("rel-bad-id", date="2007-12-02", urls=["https://open.spotify.com/album/bad"]),
+        _edition("rel-album-link", date="2007-12-03", urls=[SPOTIFY_ALBUM_URL]),
+    ]
+    spotify_album = _album("spotify_1", SPOTIFY_ALBUM_ID)
+    with _harness(
+        editions=editions,
+        releases=[_release("rel-album-link", urls=[SPOTIFY_ALBUM_URL])],
+        loaded={"spotify": ["spotify_1"]},
+        albums={("spotify_1", SPOTIFY_ALBUM_ID): spotify_album},
+    ) as harness:
+        album = await harness.resolve()
+
+    assert album is spotify_album
+    harness.musicbrainz.get_release_details.assert_awaited_once_with("rel-album-link")
 
 
 async def test_resolve_looks_up_the_likeliest_few_editions_only() -> None:

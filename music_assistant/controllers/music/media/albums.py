@@ -1401,11 +1401,13 @@ def _streaming_edition_rank(
     :param services: The domains of the music services the user may see.
     """
     linked = {
-        service for url in relation_urls(release.relations) if (service := share_url_provider(url))
+        service
+        for url in relation_urls(release.relations)
+        if (service := share_url_provider(url, MediaType.ALBUM))
     }
     return (
-        not is_digital_release(release),
         not linked & services,
+        not is_digital_release(release),
         not linked,
         release.country not in ("XW", "XE"),
         release.date or "9999",

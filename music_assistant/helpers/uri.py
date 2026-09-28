@@ -120,7 +120,7 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
     return (media_type, provider_instance_id_or_domain, item_id)
 
 
-def share_url_provider(url: str) -> str | None:
+def share_url_provider(url: str, media_type: MediaType | None = None) -> str | None:
     """
     Return the domain of the music service a public share URL is on, None for any other URL.
 
@@ -128,6 +128,7 @@ def share_url_provider(url: str) -> str | None:
     or a truncated one is none.
 
     :param url: The URL to check, e.g. of a MusicBrainz URL relation.
+    :param media_type: When given, only the URL of an item of this type with a valid id counts.
     """
     if not url.startswith(("http://", "https://")):
         return None
@@ -135,7 +136,12 @@ def share_url_provider(url: str) -> str | None:
         parsed = _parse_share_url(url)
     except KeyError, ValueError, IndexError:
         return None
-    return parsed[1] if parsed else None
+    if parsed is None:
+        return None
+    url_media_type, domain, item_id = parsed
+    if media_type and (url_media_type != media_type or not valid_id(domain, media_type, item_id)):
+        return None
+    return domain
 
 
 def canonical_provider_url(

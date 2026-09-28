@@ -331,6 +331,21 @@ async def test_discography_leaves_an_ambiguous_name_match_unresolved() -> None:
     ]
 
 
+async def test_discography_name_matches_the_only_group_of_a_name_whatever_its_type() -> None:
+    """An EP typed "album" by its music service still is the one EP group of its name."""
+    library_album = _library_album(
+        "7", "Airbag / How Am I Driving? - EP", album_type=AlbumType.ALBUM
+    )
+    groups = [
+        _release_group(RG_OK_COMPUTER, "OK Computer"),
+        _release_group(RG_KARMA_POLICE, "Airbag / How Am I Driving?", primary_type="EP"),
+    ]
+    with _harness(_artist(), release_groups=groups, artist_albums=[library_album]) as harness:
+        discography = await harness.discography()
+
+    assert discography[1] is library_album
+
+
 @pytest.mark.parametrize(
     ("album_type", "expected_group"),
     [(AlbumType.ALBUM, RG_OK_COMPUTER), (AlbumType.SINGLE, RG_KARMA_POLICE)],
