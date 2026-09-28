@@ -483,7 +483,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
             self._connection_task.cancel()
         self._restart_connections = self._restart_connections or force
         self._connection_task = self.mass.create_task(
-            self._connection_loop,
+            self._connection_loop(),
             task_id=f"airplay_apple_control_{self.player_id}",
             abort_existing=force,
         )

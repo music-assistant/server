@@ -317,17 +317,17 @@ async def test_search_results_are_cached_per_user(
 async def test_favorite_removal_hides_hidden_playlists(
     playlists: PlaylistController, music_mass_module: MusicAssistant
 ) -> None:
-    """The shared favorite flag of a playlist is only changed by someone who may see it."""
+    """The favorite of a playlist is only changed by someone who may see it."""
     added = await _add(playlists, _playlist("Favorite", PlaylistAccess(owner=OWNER.user_id)))
-    await playlists.set_favorite(added.item_id, True)
+    await playlists.set_favorite(added.item_id, True, [OWNER.user_id])
     remove = music_mass_module.music.remove_item_from_favorites
 
     with _as_user(MEMBER), pytest.raises(MediaNotFoundError):
         await remove(MediaType.PLAYLIST, added.item_id)
-    assert (await playlists.get_library_item(added.item_id)).favorite is True
     with _as_user(OWNER):
+        assert (await playlists.get_library_item(added.item_id)).favorite is True
         await remove(MediaType.PLAYLIST, added.item_id)
-    assert (await playlists.get_library_item(added.item_id)).favorite is False
+        assert (await playlists.get_library_item(added.item_id)).favorite is None
 
 
 async def test_sync_lookups_stay_unfiltered(playlists: PlaylistController) -> None:

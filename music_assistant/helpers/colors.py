@@ -263,11 +263,7 @@ async def get_palette(
 
     # Dedupe concurrent extraction (e.g. now-playing + prefetch) for the same image.
     task: asyncio.Task[MediaItemPalette] = mass.create_task(
-        _extract_and_cache,
-        mass,
-        path_or_url,
-        provider,
-        key,
+        _extract_and_cache(mass, path_or_url, provider, key),
         task_id=f"palette.{key}",
         abort_existing=False,
     )

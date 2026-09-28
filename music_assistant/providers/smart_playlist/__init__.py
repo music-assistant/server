@@ -49,7 +49,11 @@ from music_assistant_models.media_items.metadata import MediaItemImage, MediaIte
 from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
 from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.music.constants import DYNAMIC_RADIO_BASE_SAMPLE_SIZE
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.music.favorites import with_user_favorites
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    set_current_user,
+)
 from music_assistant.helpers.plugin_engines import (
     create_ai_engine_config_entries,
     select_ai_engine,
@@ -93,6 +97,9 @@ AI_QUERY_TIMEOUT_SECONDS = 60
 # a reply is persisted and served in every playlist listing, so a runaway one is discarded
 # in favour of the rules summary; the cap sits well above the sentence or two we ask for
 MAX_AI_DESCRIPTION_BYTES = 2048
+# barren batches in a row a seed may yield before it counts as exhausted; base tracks are
+# sampled at random, so one batch of only already-seen tracks doesn't mean the seed is spent
+MAX_UNPRODUCTIVE_SEED_ROUNDS = 1
 
 SUPPORTED_FEATURES: set[ProviderFeature] = {
     ProviderFeature.BROWSE,
@@ -370,8 +377,15 @@ class SmartPlaylistProvider(PluginProvider):
         user_provider_filter = tuple(sorted(visible)) if visible is not None else ()
         # Filter the cached sample at the boundary (not inside the cached evaluation) so a
         # recency-filtered batch from a queue refill never gets cached and served to browse.
-        sample = await self._cached_dynamic_sample(resolved_id, user_provider_filter)
-        return filter_tracks(sample)
+        if rules.favorites_only and user:
+            # favorites are personal, so this sample is keyed on (and evaluated as) the user
+            sample = await self._cached_dynamic_sample(
+                resolved_id, user_provider_filter, favorites_user_id=user.user_id
+            )
+        else:
+            sample = await self._cached_dynamic_sample(resolved_id, user_provider_filter)
+        # a cached sample carries the favorite state of whoever filled it
+        return filter_tracks(await with_user_favorites(self.mass, user, sample))
 
     @use_cache(
         expiration=DYNAMIC_SAMPLE_CACHE_EXPIRATION,
@@ -383,11 +397,23 @@ class SmartPlaylistProvider(PluginProvider):
         self,
         prov_playlist_id: str,
         user_provider_filter: tuple[str, ...] = (),
+        favorites_user_id: str | None = None,
     ) -> list[Track]:
-        """Evaluate a fresh sample for a dynamic playlist (wrapped in SWR cache)."""
+        """
+        Evaluate a fresh sample for a dynamic playlist (wrapped in SWR cache).
+
+        :param prov_playlist_id: The smart playlist to sample.
+        :param user_provider_filter: The music sources the sample is limited to.
+        :param favorites_user_id: The user whose favorites a favorites-only sample reads; a
+            background refresh has no session, so the user is restored from it.
+        """
         rules = self._rules_store.get(prov_playlist_id)
         if rules is None:
             return []
+        if favorites_user_id and (
+            user := await self.mass.webserver.auth.get_user(favorites_user_id)
+        ):
+            set_current_user(user)
         sample_rules = dc_replace(rules, limit=DYNAMIC_PLAYLIST_SAMPLE_SIZE)
         return await self._evaluate_rules(
             sample_rules, list(user_provider_filter) if user_provider_filter else None
@@ -1367,6 +1393,7 @@ class SmartPlaylistProvider(PluginProvider):
         """Accumulate one seed's endless-mix batches until it reaches its share of the pool."""
         seen: set[Track] = set()
         pool: list[Track] = []
+        unproductive_rounds = 0
         # a single batch tops out around ~55 tracks (5 base + ~50 similar), so a larger static
         # target needs several batches; each batch re-samples base tracks so the endless-mix
         # base/similar ratio holds at any scale
@@ -1383,7 +1410,10 @@ class SmartPlaylistProvider(PluginProvider):
                     seen.add(track)
                     pool.append(track)
                     added = True
-            if len(pool) >= per_seed_target or not added:
+            if len(pool) >= per_seed_target:
+                break
+            unproductive_rounds = 0 if added else unproductive_rounds + 1
+            if unproductive_rounds > MAX_UNPRODUCTIVE_SEED_ROUNDS:
                 break
         return pool
 

@@ -392,8 +392,14 @@ class OpenSonicProvider(MusicProvider):
 
         return SearchResults(artists=ar, albums=al, tracks=tr)
 
-    async def set_favorite(self, prov_item_id: str, media_type: MediaType, favorite: bool) -> None:
-        """Set or clear favorite on the server."""
+    async def set_favorite(
+        self, prov_item_id: str, media_type: MediaType, favorite: bool | None
+    ) -> None:
+        """
+        Set or clear favorite on the server.
+
+        Subsonic only knows starred or not, so both a dislike and an unset unstar the item.
+        """
         # The subsonic spec does not support favorite-ing anything but artists, albums, and tracks
         if media_type not in (MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK):
             return

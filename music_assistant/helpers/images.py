@@ -49,6 +49,11 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
+
+class _NoImageError(MediaNotFoundError):
+    """A provider has no image at the requested path, which it reported by resolving to None."""
+
+
 # Thumbnail cache: on-disk (persistent) + small in-memory FIFO (hot path)
 _THUMB_CACHE_DIR = "thumbnails"
 _THUMB_MEMORY_CACHE_MAX = 50
@@ -321,12 +326,7 @@ async def get_image_data(
         raise FileNotFoundError(failure)
     # fetch de-duplicated across concurrent requests for the same source
     task: asyncio.Task[bytes] = mass.create_task(
-        _fetch_and_cache_source_image,
-        mass,
-        path_or_url,
-        provider,
-        cache_key,
-        _depth,
+        _fetch_and_cache_source_image(mass, path_or_url, provider, cache_key, _depth),
         task_id=f"imgsrc.{cache_key}",
         abort_existing=False,
         # the failure reaches every waiter below; a fetch failure is reported here anyway,
@@ -419,7 +419,9 @@ async def _fetch_and_cache_source_image(
         # a provider signals a missing source with MediaNotFoundError, which is not an
         # OSError and would otherwise bypass this negative cache entirely
         _store_failed_source(cache_key, str(err))
-        LOGGER.warning("%s (not retrying for %s seconds)", err, _FAILED_SOURCE_TTL)
+        # a provider that has no image at a path reports a plain miss, which is no warning
+        level = logging.DEBUG if isinstance(err, _NoImageError) else logging.WARNING
+        LOGGER.log(level, "%s (not retrying for %s seconds)", err, _FAILED_SOURCE_TTL)
         raise
     _failed_sources.pop(cache_key, None)
     _source_memory_cache.put(cache_key, img_data)
@@ -453,7 +455,12 @@ async def _fetch_source_image(
     """
     if prov := mass.get_provider(provider):
         assert isinstance(prov, MusicProvider | MetadataProvider | PlayerProvider | PluginProvider)
-        if resolved_image := await prov.resolve_image(path_or_url):
+        resolved_image = await prov.resolve_image(path_or_url)
+        if resolved_image is None:
+            # the provider looked and has nothing at this path: a miss, not a failed fetch
+            msg = f"{provider} has no image at {path_or_url}"
+            raise _NoImageError(msg)
+        if resolved_image:
             if isinstance(resolved_image, bytes):
                 return resolved_image, True
             if isinstance(resolved_image, str):
@@ -643,14 +650,15 @@ async def _get_image_thumb(
 
     # 3. Generate thumbnail (de-duplicated across concurrent requests)
     task: asyncio.Task[bytes] = mass.create_task(
-        _generate_and_cache_thumb,
-        mass,
-        path_or_url,
-        size,
-        provider,
-        image_format,
-        cache_filepath,
-        flatten_transparency,
+        _generate_and_cache_thumb(
+            mass,
+            path_or_url,
+            size,
+            provider,
+            image_format,
+            cache_filepath,
+            flatten_transparency,
+        ),
         task_id=f"thumb.{cache_filename}",
         abort_existing=False,
         # the failure reaches every waiter, which is where it belongs; a task that lost
