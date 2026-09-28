@@ -752,6 +752,7 @@ class MusicAssistant:
         target: Callable[..., Coroutine[Any, Any, _R]] | Awaitable[_R],
         *args: Any,
         task_id: str | None = None,
+        task_name: str | None = None,
         abort_existing: bool = False,
         eager_start: bool = True,
         log_exceptions: bool = True,
@@ -765,6 +766,9 @@ class MusicAssistant:
         :param target: Coroutine function or awaitable to run as a task.
         :param args: Arguments to pass to the coroutine function.
         :param task_id: Optional ID to track and deduplicate tasks.
+        :param task_name: Optional name identifying the task in log messages. Task ids are
+            not used for this: they key on arguments such as image urls and search terms,
+            which do not belong in a log line. Keep a name free of those too.
         :param abort_existing: If True, cancel existing task with same task_id.
         :param eager_start: If True (default), start task immediately without waiting
                            for next event loop iteration. This ensures proper ordering
@@ -772,7 +776,11 @@ class MusicAssistant:
         :param log_exceptions: Set to False when the caller awaits the task and reports
                                its failures itself; the task then logs at debug level
                                instead of warning.
-        :param kwargs: Keyword arguments to pass to the coroutine function.
+        :param kwargs: Keyword arguments to pass to the coroutine function. The options
+            above take these names for themselves, so a coroutine function with a parameter
+            of its own called task_id, task_name, abort_existing, eager_start or
+            log_exceptions has to be passed as a functools.partial, or called with that
+            argument positionally.
         """
         if task_id and (existing := self._tracked_tasks.get(task_id)) and not existing.done():
             # prevent duplicate tasks if task_id is given and already present
@@ -796,11 +804,16 @@ class MusicAssistant:
         else:
             raise RuntimeError("Target is missing")
 
-        # Use asyncio.Task directly with eager_start for immediate execution
-        task: asyncio.Task[_R] = asyncio.Task(coro, loop=self.loop, eager_start=eager_start)
-
         if task_id is None:
             task_id = uuid4().hex
+
+        # asyncio.Task is used directly for eager_start (immediate execution). An eagerly
+        # started task runs its first step inside the constructor, so the name has to be set
+        # here: it is what identifies the task in asyncio's own slow-callback warnings and in
+        # the exception log below. Without one asyncio numbers the task itself.
+        task: asyncio.Task[_R] = asyncio.Task(
+            coro, loop=self.loop, eager_start=eager_start, name=task_name
+        )
 
         def task_done_callback(_task: asyncio.Task[Any]) -> None:
             # done callbacks run one event loop iteration after the task finished, so a
@@ -1508,8 +1521,10 @@ class MusicAssistant:
         self.config.set(f"{CONF_PROVIDERS}/{conf.instance_id}/last_error", None)
         # track the task per instance so unload_provider can cancel it: left running, a
         # suspended loaded_in_mass() would resume after teardown and announce a gone provider
+        post_load_task_id = f"post_load_provider_{provider.instance_id}"
+        # this id carries nothing but the instance, so it doubles as the logged task name
         self.create_task(
-            _on_provider_loaded(), task_id=f"post_load_provider_{provider.instance_id}"
+            _on_provider_loaded(), task_id=post_load_task_id, task_name=post_load_task_id
         )
 
     async def __load_provider_manifests(self) -> None:

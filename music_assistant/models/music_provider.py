@@ -265,6 +265,18 @@ class MusicProvider(Provider):
         return True
 
     @property
+    def stream_format_supersedes_catalog(self) -> bool:
+        """
+        Return whether the format a stream declares replaces the one stored on a library mapping.
+
+        By default a mapping keeps the format the catalog gave it and only a mapping without
+        a format takes the one its stream declares. Return True when the catalog does not
+        carry the full format, such as a hi-res flag without the sample rate, so mappings
+        take the real format the first time they play.
+        """
+        return False
+
+    @property
     def supported_media_types(self) -> set[MediaType]:
         """
         Return the media types this provider can serve.
