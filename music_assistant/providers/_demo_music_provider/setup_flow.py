@@ -17,8 +17,11 @@ The flow talks to the user through the ``SetupSession``:
   provider via ``self.get_setup_value(<key>)`` - NOT via ``get_config_entries``, which now
   only describes the (runtime) options of an already set-up instance.
 
-Refused/failed setup: raise ``AbortFlow(reason)`` to end the flow, or let a
-``SetupFlowError`` from ``finish()`` bubble up to re-prompt with an error.
+Refused/failed setup: raise ``AbortFlow(reason)`` to end the flow. To re-prompt, catch
+``SetupFlowError`` from ``finish()`` and pass it to ``session.form(..., errors={"base": err})``.
+Pass the exception itself, not its message or translation key, so its translation arguments
+and owner are preserved for each client's language. Letting it propagate ends the flow
+with the localized failure message as the abort reason.
 
 This demo collects nothing and finishes immediately; delete this file for a provider that
 needs no setup input, or replace the body with a real form (see e.g. the opensubsonic or
