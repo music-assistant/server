@@ -272,6 +272,8 @@ def parse_podcast(podcast: Mapping[str, Any], instance_id: str, domain: str) -> 
     # the podcast endpoints call the artwork imageUrl, a search hit image
     if image := podcast.get("imageUrl") or podcast.get("image"):
         mass_podcast.metadata.images = UniqueList([remote_image(str(image), instance_id)])
+    # a podcast carries no category of its own, iHeartRadio only lists them as browse folders
+    mass_podcast.metadata.genres = {"Spoken Word"}
     return mass_podcast
 
 

@@ -53,6 +53,7 @@ def test_parse_podcast_from_search_hit() -> None:
     assert podcast is not None
     assert podcast.image is not None
     assert podcast.image.path == "https://x/y.jpg"
+    assert podcast.metadata.genres == {"Spoken Word"}
 
 
 def test_parse_podcast_episode() -> None:
