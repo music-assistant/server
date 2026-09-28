@@ -4,6 +4,8 @@ import json
 import pathlib
 from typing import Any
 
+import pytest
+
 from music_assistant.providers.tidal.jsonapi import JsonApiDocument
 from music_assistant.providers.tidal.quality_variants import (
     album_variant_key,
@@ -143,6 +145,23 @@ def test_unkeyable_resource_forms_its_own_group() -> None:
     groups_by_id = {group[0][1]["id"]: group for group in result}
     assert len(groups_by_id) == 2
     assert groups_by_id["900002"] == [(doc, broken)]
+
+
+@pytest.mark.parametrize(
+    "attributes",
+    ["not-a-mapping", {"title": "Broken Album", "mediaTags": 5}],
+    ids=["non_mapping_attributes", "non_iterable_media_tags"],
+)
+def test_malformed_attributes_do_not_break_ranking(attributes: object) -> None:
+    """Test malformed attributes rank as lowest instead of raising."""
+    broken = _album_resource("900004", title="Broken Album")
+    broken["attributes"] = attributes
+    ok = _album_resource("900005", title="Fine Album")
+    doc = _album_doc([broken, ok])
+
+    result = group_quality_variants([doc], album_variant_key)
+
+    assert {group[0][1]["id"] for group in result} == {"900004", "900005"}
 
 
 def test_group_candidates_are_ordered_by_quality_rank_regardless_of_input_order() -> None:

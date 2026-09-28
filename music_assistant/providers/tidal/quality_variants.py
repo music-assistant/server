@@ -81,8 +81,16 @@ def group_quality_variants(
     return [
         sorted(
             groups[key],
-            key=lambda variant: quality_rank(variant[1].get("attributes") or {}),
+            key=lambda variant: _safe_quality_rank(variant[1]),
             reverse=True,
         )
         for key in order
     ]
+
+
+def _safe_quality_rank(resource: dict[str, Any]) -> int:
+    """Return the resource's quality rank, 0 if its attributes are malformed."""
+    try:
+        return quality_rank(resource.get("attributes") or {})
+    except SKIPPABLE_ITEM_ERRORS:
+        return 0
