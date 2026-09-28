@@ -7074,8 +7074,36 @@ class TestConfigChangeRestartsPlayback:
 class TestAddCurrentlyPlayingToFavorites:
     """Test who a favorite added from a player belongs to."""
 
-    async def test_favorite_is_recorded_for_the_playback_user(self, mock_mass: MagicMock) -> None:
-        """Without a session user the favorite belongs to the user the queue plays for."""
+    PLAYBACK_USER = User(user_id="user-a", username="user-a", role=UserRole.USER)
+    SERVICE_USER = User(user_id="service", username="service", role=UserRole.SERVICE)
+    OTHER_USER = User(user_id="user-b", username="user-b", role=UserRole.USER)
+    ADMIN_USER = User(user_id="admin", username="admin", role=UserRole.ADMIN)
+
+    @pytest.mark.parametrize(
+        ("session_user", "playback_user", "expected"),
+        [
+            pytest.param(None, PLAYBACK_USER, PLAYBACK_USER, id="no-session-user"),
+            pytest.param(SERVICE_USER, PLAYBACK_USER, PLAYBACK_USER, id="service-account"),
+            pytest.param(SERVICE_USER, None, SERVICE_USER, id="service-account-anonymous-queue"),
+            pytest.param(OTHER_USER, PLAYBACK_USER, OTHER_USER, id="user-session"),
+            pytest.param(ADMIN_USER, PLAYBACK_USER, ADMIN_USER, id="admin-session"),
+        ],
+    )
+    async def test_favorite_owner(
+        self,
+        mock_mass: MagicMock,
+        session_user: User | None,
+        playback_user: User | None,
+        expected: User,
+    ) -> None:
+        """
+        Test that only a call without a user of its own counts for the playback user.
+
+        :param mock_mass: The mocked MusicAssistant instance.
+        :param session_user: The user the command is called as.
+        :param playback_user: The user the queue plays for.
+        :param expected: The user the favorite must be recorded for.
+        """
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
         player = MockPlayer(provider, "player1", "Player 1")
@@ -7083,7 +7111,6 @@ class TestAddCurrentlyPlayingToFavorites:
         mock_mass.players = controller
         queue = MagicMock(queue_id="player1")
         queue.current_item.media_item.media_type = MediaType.TRACK
-        playback_user = User(user_id="user-a", username="user-a", role=UserRole.USER)
         acting_users: list[User | None] = []
 
         async def _capture_acting_user(item: Any) -> None:  # noqa: ARG001
@@ -7091,17 +7118,21 @@ class TestAddCurrentlyPlayingToFavorites:
 
         mock_mass.music.add_item_to_favorites = AsyncMock(side_effect=_capture_acting_user)
 
-        with (
-            patch.object(controller, "get_active_queue", return_value=queue),
-            patch.object(
-                players_controller,
-                "resolve_playback_user",
-                AsyncMock(return_value=playback_user),
-            ),
-        ):
-            await controller.add_currently_playing_to_favorites("player1")
+        token = current_user.set(session_user)
+        try:
+            with (
+                patch.object(controller, "get_active_queue", return_value=queue),
+                patch.object(
+                    players_controller,
+                    "resolve_playback_user",
+                    AsyncMock(return_value=playback_user),
+                ),
+            ):
+                await controller.add_currently_playing_to_favorites("player1")
+        finally:
+            current_user.reset(token)
 
-        assert acting_users == [playback_user]
+        assert acting_users == [expected]
 
 
 if __name__ == "__main__":
