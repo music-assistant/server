@@ -29,8 +29,10 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    Audiobook,
     ItemMapping,
     MediaItemType,
+    PodcastEpisode,
 )
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 
@@ -699,6 +701,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     else None,
                 )
             )
+            if not is_playing and isinstance(media_item, Audiobook | PodcastEpisode):
+                # a later pass over the queue resumes from this, not from the enqueue-time bookmark
+                media_item.resume_position_ms = 0 if fully_played else seconds_played * 1000
             if fully_played and not is_playing:
                 if credit_album := self._claim_enqueued_album_credit(queue_data, media_item):
                     self.mass.create_task(
