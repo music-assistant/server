@@ -48,8 +48,8 @@ def _controller(
     ctrl.mass = MagicMock()
     # a MagicMock satisfies `async with` but serializes nothing, so the tests that care about
     # overlapping presses ask for the real lock instead
-    ctrl.mass.players.get_player_lock = (
-        _lock_provider().get_player_lock if real_lock else MagicMock()
+    ctrl.mass.players.get_group_and_player_lock = (
+        _lock_provider().get_group_and_player_lock if real_lock else MagicMock()
     )
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl.on_player_update = Mock()  # type: ignore[method-assign]
@@ -62,6 +62,7 @@ def _lock_provider() -> PlayerController:
     """Return a bare players controller, carrying just enough state for its real lock."""
     players = PlayerController.__new__(PlayerController)
     players._player_command_locks = {}
+    players._players = {}
     players._task_held_locks = weakref.WeakKeyDictionary()
     players.logger = MagicMock()
     return players
