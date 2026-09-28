@@ -58,6 +58,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import from_iso_string, utc
 from music_assistant.models.music_provider import MusicProvider
@@ -524,6 +525,7 @@ class RadiothekProvider(MusicProvider):
 
         if pod.description:
             p.metadata.description = pod.description
+        p.metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
 
         # image (best available)
         if pod.image:
