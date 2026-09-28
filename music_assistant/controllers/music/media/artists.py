@@ -1369,6 +1369,8 @@ def _album_from_release_group(
         album_type=album_type,
         external_ids={(ExternalID.MB_RELEASEGROUP, release_group.id)},
         provider_mappings=set(),
+        # resolves to a playable album on a music service only when opened or added
+        is_playable=False,
     )
     if cover_provider:
         album.metadata.add_image(
