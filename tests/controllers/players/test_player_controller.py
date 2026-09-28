@@ -71,6 +71,7 @@ from music_assistant.controllers.players.announcements import ANNOUNCEMENT_TTS_T
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     current_user,
+    get_current_user,
     sendspin_player_id,
 )
 from music_assistant.helpers.tts import TTS_QUERY_TIMEOUT_SECONDS, TTSLanguageNotSupportedError
@@ -7097,7 +7098,7 @@ class TestAddCurrentlyPlayingToFavorites:
         expected: User,
     ) -> None:
         """
-        Test that only a call without a user of its own counts for the playback user.
+        Test that a call without a user, or from a service account, counts for the playback user.
 
         :param mock_mass: The mocked MusicAssistant instance.
         :param session_user: The user the command is called as.
@@ -7114,7 +7115,7 @@ class TestAddCurrentlyPlayingToFavorites:
         acting_users: list[User | None] = []
 
         async def _capture_acting_user(item: Any) -> None:  # noqa: ARG001
-            acting_users.append(current_user.get())
+            acting_users.append(get_current_user())
 
         mock_mass.music.add_item_to_favorites = AsyncMock(side_effect=_capture_acting_user)
 
