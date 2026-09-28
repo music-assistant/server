@@ -99,7 +99,14 @@ async def test_release_year_searches_recordings_by_the_normalized_isrc() -> None
 
     await provider.get_release_year_by_isrc("GB-AYE-86-00477")
 
-    get_data.assert_awaited_once_with("recording", query="isrc:GBAYE8600477")
+    get_data.assert_awaited_once_with("recording", query="isrc:GBAYE8600477", limit="100")
+
+
+async def test_release_year_is_none_for_a_truncated_search() -> None:
+    """Refuse to date a song when the search does not return every recording."""
+    response = {**_recordings("1986"), "count": 2}
+    provider, _ = _provider(response)
+    assert await provider.get_release_year_by_isrc("GBAYE8600477") is None
 
 
 async def test_release_year_returns_earliest_of_multiple_recordings() -> None:
