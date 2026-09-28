@@ -331,7 +331,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 category="generic",
                 advanced=True,
             ),
-            # state kept across restarts; declared so a config save carries it over
+            # the three entries below hold state kept across restarts; they are declared so a
+            # config save carries them over
             ConfigEntry(
                 key=CONF_DELETED_PROVIDERS,
                 type=ConfigEntryType.STRING,
