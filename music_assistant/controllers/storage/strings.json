@@ -1,0 +1,15 @@
+{
+  "manifest": {
+    "name": "Storage",
+    "description": "Keeps track of the storage the server can use."
+  },
+  "errors": {
+    "local_folder_not_allowed": "A folder can only be added when Music Assistant does not run in a container. Map the folder into the container as a volume instead.",
+    "folder_path_not_absolute": "Enter the full path of the folder, starting with a /.",
+    "folder_not_found": "The folder {0} does not exist.",
+    "folder_unreadable": "Music Assistant can not read the folder {0}.",
+    "folder_not_registered": "This folder was not added as a storage location.",
+    "location_in_use": "The music source {0} uses this folder. Remove that music source first.",
+    "path_not_allowed": "This folder is not inside a storage location you can use."
+  }
+}

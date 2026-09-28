@@ -1301,14 +1301,15 @@ def format_ip_for_url(ip_address: str) -> str:
 
 
 async def get_folder_size(folderpath: str) -> float:
-    """Return folder size in gb."""
+    """Return folder size in gb, without following symlinks."""
 
     def _get_folder_size(folderpath: str) -> float:
         total_size = 0
         for dirpath, _dirnames, filenames in os.walk(folderpath):
             for _file in filenames:
-                _fp = os.path.join(dirpath, _file)
-                total_size += Path(_fp).stat().st_size
+                # a file can vanish while the folder is walked (e.g. a database journal)
+                with suppress(OSError):
+                    total_size += os.lstat(os.path.join(dirpath, _file)).st_size
         return total_size / float(1 << 30)
 
     return await asyncio.to_thread(_get_folder_size, folderpath)

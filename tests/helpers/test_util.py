@@ -5,10 +5,12 @@ import codecs
 import contextlib
 import gc
 import logging
+import os
 import socket
 import threading
 import time
 from collections.abc import Iterator
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import ifaddr
@@ -20,6 +22,7 @@ from music_assistant_models.media_items import Album, ItemMapping, ProviderMappi
 from music_assistant.helpers import util
 from music_assistant.helpers.util import (
     detect_charset,
+    get_folder_size,
     get_source_ip_for_target,
     guard_single_request,
     import_module_in_thread,
@@ -645,6 +648,36 @@ class TestJoinTask:
 
         release.set()
         assert await task == "done"
+
+
+class TestGetFolderSize:
+    """get_folder_size adds up the files in a folder tree."""
+
+    async def test_symlinks_are_not_followed(self, tmp_path: Path) -> None:
+        """A symlink counts as itself, not as the (possibly huge) file it points to."""
+        folder = tmp_path / "folder"
+        (folder / "nested").mkdir(parents=True)
+        (folder / "nested" / "file.bin").write_bytes(b"x" * 4096)
+        (tmp_path / "outside.bin").write_bytes(b"x" * 1024 * 1024)
+        (folder / "link.bin").symlink_to(tmp_path / "outside.bin")
+        (folder / "broken.bin").symlink_to(tmp_path / "gone.bin")
+        links = (folder / "link.bin").lstat().st_size + (folder / "broken.bin").lstat().st_size
+
+        assert await get_folder_size(str(folder)) * (1 << 30) == 4096 + links
+
+    async def test_vanished_file_is_skipped(self, tmp_path: Path) -> None:
+        """A file removed while the folder is walked does not fail the measurement."""
+        (tmp_path / "kept.bin").write_bytes(b"x" * 2048)
+        (tmp_path / "journal.bin").write_bytes(b"x" * 100)
+        real_lstat = os.lstat
+
+        def _lstat(path: str) -> object:
+            if path.endswith("journal.bin"):
+                raise FileNotFoundError(path)
+            return real_lstat(path)
+
+        with patch.object(os, "lstat", _lstat):
+            assert await get_folder_size(str(tmp_path)) * (1 << 30) == 2048
 
 
 class TestSanitizeHttpHeaderValue:

@@ -1,0 +1,21 @@
+1467 1318 0:163 / / rw,relatime - overlay overlay rw,lowerdir=/mnt/data/docker/overlay2/l/QZ5YVWB2:/mnt/data/docker/overlay2/l/7HWQ3NKD,upperdir=/mnt/data/docker/overlay2/9f1b2c/diff,workdir=/mnt/data/docker/overlay2/9f1b2c/work
+1468 1467 0:166 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw
+1469 1467 0:167 / /dev rw,nosuid - tmpfs tmpfs rw,size=65536k,mode=755
+1470 1469 0:168 / /dev/pts rw,nosuid,noexec,relatime - devpts devpts rw,gid=5,mode=620,ptmxmode=666
+1471 1467 0:169 / /sys ro,nosuid,nodev,noexec,relatime - sysfs sysfs ro
+1472 1471 0:29 / /sys/fs/cgroup ro,nosuid,nodev,noexec,relatime - cgroup2 cgroup rw,nsdelegate,memory_recursiveprot
+1473 1469 0:165 / /dev/mqueue rw,nosuid,nodev,noexec,relatime - mqueue mqueue rw
+1474 1469 0:170 / /dev/shm rw,nosuid,nodev,noexec,relatime - tmpfs shm rw,size=65536k
+1475 1467 8:8 /supervisor/addons/data/d5369777_music_assistant /data rw,relatime - ext4 /dev/sda8 rw,commit=30
+1476 1467 8:8 /supervisor/media /media rw,relatime master:229 - ext4 /dev/sda8 rw,commit=30
+1477 1467 8:8 /supervisor/ssl /ssl ro,relatime - ext4 /dev/sda8 rw,commit=30
+1478 1467 0:25 /audio/external /run/audio ro,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw,size=1597612k,nr_inodes=819200,mode=755
+1479 1467 0:25 /dbus/system_bus_socket /run/dbus/system_bus_socket ro,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw,size=1597612k,nr_inodes=819200,mode=755
+1480 1467 8:8 /supervisor/tmp/homeassistant_pulse /etc/pulse/client.conf ro,relatime - ext4 /dev/sda8 rw,commit=30
+1481 1467 8:8 /supervisor/audio/asound /etc/asound.conf ro,relatime - ext4 /dev/sda8 rw,commit=30
+1482 1467 8:8 /docker/containers/7d2c9e/resolv.conf /etc/resolv.conf rw,relatime - ext4 /dev/sda8 rw,commit=30
+1483 1467 8:8 /docker/containers/7d2c9e/hostname /etc/hostname rw,relatime - ext4 /dev/sda8 rw,commit=30
+1484 1467 8:8 /docker/containers/7d2c9e/hosts /etc/hosts rw,relatime - ext4 /dev/sda8 rw,commit=30
+1485 1476 0:171 / /media/nas rw,relatime master:240 - cifs //192.168.1.10/music rw,vers=3.1.1,cache=strict,username=marcel,uid=0,noforceuid,gid=0,noforcegid,addr=192.168.1.10,file_mode=0755,dir_mode=0755,soft,nounix,noserverino,mapposix,rsize=4194304,wsize=4194304,bsize=1048576,echo_interval=60,actimeo=1,closetimeo=1
+1486 1476 0:172 / /media/backup_nfs ro,relatime master:241 - nfs4 192.168.1.20:/export/backup ro,vers=4.2,rsize=1048576,wsize=1048576,namlen=255,hard,proto=tcp,timeo=600,retrans=2,sec=sys,clientaddr=192.168.1.5,local_lock=none,addr=192.168.1.20
+1487 1467 0:174 / /tmp/filesystem_smb--Xk3PqR7t rw,relatime - cifs //192.168.1.10/legacy rw,vers=3.0,cache=loose,username=marcel,uid=0,noforceuid,gid=0,noforcegid,addr=192.168.1.10,file_mode=0755,dir_mode=0755,nocase,soft,nounix,noserverino,mapposix,noperm,rsize=4194304,wsize=4194304,bsize=1048576,echo_interval=60,actimeo=30,closetimeo=1
