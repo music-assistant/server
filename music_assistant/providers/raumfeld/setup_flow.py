@@ -38,7 +38,7 @@ async def run_setup(session: SetupSession) -> None:
 
     :param session: The active setup session driving the config form.
     """
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     setup_data = dict(session.context.setup_data)
     while True:
         entries = [
@@ -58,7 +58,7 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(setup_data)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 async def _host_reachable(session: SetupSession, host: str, port: int) -> bool:

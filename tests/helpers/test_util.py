@@ -28,6 +28,7 @@ from music_assistant.helpers.util import (
     load_provider_module,
     sanitize_http_header_value,
     select_free_port,
+    try_parse_duration,
 )
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
@@ -679,6 +680,30 @@ class TestSanitizeHttpHeaderValue:
         assert sanitize_http_header_value("\x00Artist - Track\x1f") == "Artist - Track"
 
 
+class TestTryParseDuration:
+    """try_parse_duration reads a duration string as a number of seconds."""
+
+    def test_hours_minutes_seconds(self) -> None:
+        """A full HH:MM:SS duration counts the hours."""
+        assert try_parse_duration("12:34:56") == 45296.0
+
+    def test_fractional_seconds(self) -> None:
+        """The fraction after the seconds is kept."""
+        assert try_parse_duration("00:01:02.500") == 62.5
+
+    def test_comma_as_decimal_separator(self) -> None:
+        """SubRip transcripts write the fraction after a comma."""
+        assert try_parse_duration("00:01:02,500") == 62.5
+
+    def test_hours_are_optional(self) -> None:
+        """A WebVTT cue may leave out the hour part."""
+        assert try_parse_duration("01:02.500") == 62.5
+
+    def test_bare_seconds(self) -> None:
+        """A duration without any colon is read as seconds."""
+        assert try_parse_duration("62") == 62.0
+
+
 class TestGuardSingleRequest:
     """guard_single_request collapses identical concurrent calls into a single request."""
 
@@ -721,6 +746,16 @@ class TestGuardSingleRequest:
             for record in caplog.records
             if record.levelno >= logging.WARNING and "Exception in task" in record.getMessage()
         ]
+
+    @pytest.mark.asyncio
+    async def test_argument_named_after_a_task_option_reaches_the_wrapped_method(
+        self, mass_minimal: MusicAssistant
+    ) -> None:
+        """A parameter sharing its name with a create_task option is still passed through."""
+        caller = _GuardedCaller(mass_minimal)
+        caller.release.set()
+
+        assert await caller.fetch_named(task_name="abc", task_id="123") == "abc-123"
 
     @pytest.mark.asyncio
     async def test_instances_get_their_own_request(self, mass_minimal: MusicAssistant) -> None:
@@ -907,6 +942,13 @@ class _GuardedCaller:
         if self.error is not None:
             raise self.error
         return f"result-{item_id}"
+
+    @guard_single_request
+    async def fetch_named(self, task_name: str, task_id: str) -> str:
+        """Return the arguments, which are named after options of mass.create_task."""
+        self.calls += 1
+        await self.release.wait()
+        return f"{task_name}-{task_id}"
 
     @guard_single_request
     async def fetch_item(

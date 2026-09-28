@@ -57,7 +57,7 @@ async def run_setup(session: SetupSession) -> None:
     server = await _collect_server(session, setup_data, discovered)
     # authenticate once: MyPlex OAuth is expensive to repeat on a retry
     token = await _authenticate(session)
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         if errors is not None:
             # a previous attempt failed: let the user correct the server details
@@ -93,7 +93,7 @@ async def run_setup(session: SetupSession) -> None:
             )
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 async def _discover_servers(session: SetupSession) -> tuple[str | None, int | None]:
@@ -114,7 +114,7 @@ async def _collect_server(
     session: SetupSession,
     setup_data: dict[str, ConfigValueType],
     discovered: tuple[str | None, int | None],
-    errors: dict[str, str] | None = None,
+    errors: dict[str, str | SetupFlowError] | None = None,
 ) -> dict[str, ConfigValueType]:
     """Show the server-details form and return the collected connection settings."""
     ip_default = setup_data.get(CONF_LOCAL_SERVER_IP) or discovered[0]
