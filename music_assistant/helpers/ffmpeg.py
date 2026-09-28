@@ -123,6 +123,7 @@ class FFMpeg(AsyncProcess):
         self.collect_log_history = collect_log_history
         self.log_history: deque[str] = deque(maxlen=100)
         self.concat_error = False  # switch to True if concat demuxer fails on MultiPartFiles
+        self._uses_concat_demuxer = "concat" in (extra_input_args or [])
         # Audio format details for the input and output stream as detected from ffmpeg's
         # own stderr probe output. input_stream_info is also mirrored onto self.input_format
         # so callers that share the AudioFormat (e.g. streamdetails) pick up the corrected
@@ -226,9 +227,10 @@ class FFMpeg(AsyncProcess):
             if "Opening" in line or "Reconnect" in line or "reconnect" in line:
                 self.logger.debug("FFmpeg: %s", line)
 
-            if "Error during demuxing" in line:
+            if self._uses_concat_demuxer and "Error during demuxing" in line:
                 # this can occur if using the concat demuxer for multipart files
-                # and should raise an exception to prevent false progress logging
+                # and should raise an exception to prevent false progress logging.
+                # Other inputs log it harmlessly, e.g. a chunked HTTP source at EOF.
                 self.concat_error = True
 
             # Track which ffmpeg block we're currently parsing so the next 'Stream #'

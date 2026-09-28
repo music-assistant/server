@@ -162,7 +162,7 @@ async def test_prepare_next_uses_the_speculative_capacity_budget() -> None:
     mass.streams.audio.get_audio_buffer = AsyncMock()
 
     controller.prepare_next_audio_buffer("queue-1")
-    await mass.create_task.call_args.args[0]()
+    await mass.create_task.call_args.args[0]
 
     mass.streams.audio.get_audio_buffer.assert_awaited_once_with(
         next_item,
@@ -201,7 +201,7 @@ async def test_an_aborted_prepare_releases_its_half_filled_source(
     mass.streams.audio.get_audio_buffer = _hang
 
     controller.prepare_next_audio_buffer("queue-1")
-    prepare_task = asyncio.create_task(mass.create_task.call_args.args[0]())
+    prepare_task = asyncio.create_task(mass.create_task.call_args.args[0])
     await started.wait()
     prepare_task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -222,7 +222,7 @@ async def test_prepare_next_gives_up_softly_on_a_capacity_failure() -> None:
     )
 
     controller.prepare_next_audio_buffer("queue-1")
-    await mass.create_task.call_args.args[0]()
+    await mass.create_task.call_args.args[0]
 
     assert next_item.available
 
@@ -243,7 +243,7 @@ async def test_prepare_next_defers_while_the_playing_item_holds_the_only_source_
     mass.streams.audio.get_audio_buffer = AsyncMock()
 
     controller.prepare_next_audio_buffer("queue-1")
-    await mass.create_task.call_args.args[0]()
+    await mass.create_task.call_args.args[0]
 
     mass.streams.audio.get_audio_buffer.assert_not_awaited()
 
@@ -264,7 +264,7 @@ async def test_prepare_next_only_defers_for_a_realtime_source() -> None:
     mass.streams.audio.get_audio_buffer = AsyncMock()
 
     controller.prepare_next_audio_buffer("queue-1")
-    await mass.create_task.call_args.args[0]()
+    await mass.create_task.call_args.args[0]
 
     mass.streams.audio.get_audio_buffer.assert_awaited_once()
 
@@ -285,7 +285,7 @@ async def test_prepare_next_runs_once_the_playing_item_released_the_slot() -> No
     mass.streams.audio.get_audio_buffer = AsyncMock()
 
     controller.prepare_next_audio_buffer("queue-1")
-    await mass.create_task.call_args.args[0]()
+    await mass.create_task.call_args.args[0]
 
     mass.streams.audio.get_audio_buffer.assert_awaited_once()
 
@@ -308,7 +308,7 @@ async def test_prepare_next_skips_an_item_that_left_the_queue_while_it_was_fetch
     mass.streams.audio.get_audio_buffer = AsyncMock()
 
     controller.prepare_next_audio_buffer("queue-1")
-    await mass.create_task.call_args.args[0]()
+    await mass.create_task.call_args.args[0]
 
     mass.streams.audio.get_audio_buffer.assert_not_awaited()
 
@@ -333,7 +333,7 @@ async def test_prepare_next_releases_a_buffer_whose_item_left_the_queue_mid_fill
     mass.streams.audio.get_audio_buffer = _remove_item_meanwhile
 
     controller.prepare_next_audio_buffer("queue-1")
-    await mass.create_task.call_args.args[0]()
+    await mass.create_task.call_args.args[0]
 
     buffer.clear.assert_awaited_once()
     assert next_item.streamdetails.buffer is None
@@ -352,7 +352,7 @@ async def test_prepare_next_leaves_the_buffer_of_an_item_still_on_the_queue() ->
     mass.streams.audio.get_audio_buffer = _fill
 
     controller.prepare_next_audio_buffer("queue-1")
-    await mass.create_task.call_args.args[0]()
+    await mass.create_task.call_args.args[0]
 
     buffer.clear.assert_not_awaited()
     assert next_item.streamdetails.buffer is buffer

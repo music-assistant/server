@@ -326,12 +326,7 @@ async def get_image_data(
         raise FileNotFoundError(failure)
     # fetch de-duplicated across concurrent requests for the same source
     task: asyncio.Task[bytes] = mass.create_task(
-        _fetch_and_cache_source_image,
-        mass,
-        path_or_url,
-        provider,
-        cache_key,
-        _depth,
+        _fetch_and_cache_source_image(mass, path_or_url, provider, cache_key, _depth),
         task_id=f"imgsrc.{cache_key}",
         abort_existing=False,
         # the failure reaches every waiter below; a fetch failure is reported here anyway,
@@ -655,14 +650,15 @@ async def _get_image_thumb(
 
     # 3. Generate thumbnail (de-duplicated across concurrent requests)
     task: asyncio.Task[bytes] = mass.create_task(
-        _generate_and_cache_thumb,
-        mass,
-        path_or_url,
-        size,
-        provider,
-        image_format,
-        cache_filepath,
-        flatten_transparency,
+        _generate_and_cache_thumb(
+            mass,
+            path_or_url,
+            size,
+            provider,
+            image_format,
+            cache_filepath,
+            flatten_transparency,
+        ),
         task_id=f"thumb.{cache_filename}",
         abort_existing=False,
         # the failure reaches every waiter, which is where it belongs; a task that lost

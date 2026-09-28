@@ -131,14 +131,14 @@ class MPDPlayer(Player):
         entries = [
             ConfigEntry(key=CONF_PASSWORD, type=ConfigEntryType.SECURE_STRING, required=True)
         ]
-        errors: dict[str, str] | None = None
+        errors: dict[str, str | SetupFlowError] | None = None
         while True:
             values = await session.form(entries, step_id="user", errors=errors, last_step=True)
             try:
                 await session.finish({CONF_PASSWORD: str(values[CONF_PASSWORD])})
                 return
             except SetupFlowError as err:
-                errors = {"base": err.translation_key or str(err)}
+                errors = {"base": err}
 
     async def poll(self) -> None:
         """Fetch current MPD state to update elapsed time."""

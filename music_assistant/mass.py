@@ -713,7 +713,7 @@ class MusicAssistant:
             if is_coro:
                 if TYPE_CHECKING:
                     cb_func = cast("Callable[[MassEvent], Coroutine[Any, Any, None]]", cb_func)
-                self.create_task(cb_func, event_obj)
+                self.create_task(cb_func(event_obj))
             else:
                 if TYPE_CHECKING:
                     cb_func = cast("Callable[[MassEvent], None]", cb_func)
@@ -763,7 +763,11 @@ class MusicAssistant:
 
         Tasks created by this helper will be properly cancelled on stop.
 
-        :param target: Coroutine function or awaitable to run as a task.
+        :param target: The coroutine to run as a task. Build it at the call site
+            (``create_task(self._work(a, b))``) rather than passing the function and its
+            arguments on: the arguments are then checked against the function's signature,
+            and they cannot collide with the options below. A coroutine function plus args
+            and kwargs still works, for a caller that forwards arguments it never sees.
         :param args: Arguments to pass to the coroutine function.
         :param task_id: Optional ID to track and deduplicate tasks.
         :param task_name: Optional name identifying the task in log messages. Task ids are
@@ -777,10 +781,8 @@ class MusicAssistant:
                                its failures itself; the task then logs at debug level
                                instead of warning.
         :param kwargs: Keyword arguments to pass to the coroutine function. The options
-            above take these names for themselves, so a coroutine function with a parameter
-            of its own called task_id, task_name, abort_existing, eager_start or
-            log_exceptions has to be passed as a functools.partial, or called with that
-            argument positionally.
+            above take these names for themselves, which is the collision building the
+            coroutine at the call site avoids.
         """
         if task_id and (existing := self._tracked_tasks.get(task_id)) and not existing.done():
             # prevent duplicate tasks if task_id is given and already present
