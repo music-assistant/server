@@ -369,19 +369,35 @@ async def test_upsert_many_leaves_a_row_with_another_immutable_value_alone(
     """Test that a conflicting row is only updated when its immutable columns match."""
     await db_with_table.insert("items", {"name": "a", "url": "http://a", "plays": 1})
     # a different value for the immutable column leaves the whole row as is
-    await db_with_table.upsert_many(
+    untouched = await db_with_table.upsert_many(
         "items", [{"name": "a", "url": "http://other", "plays": 2}], immutable=("plays",)
     )
+    assert untouched == 1
     row = await db_with_table.get_row("items", {"name": "a"})
     assert row is not None
     assert (row["url"], row["plays"]) == ("http://a", 1)
     # the same value updates the row like any upsert
-    await db_with_table.upsert_many(
+    untouched = await db_with_table.upsert_many(
         "items", [{"name": "a", "url": "http://same", "plays": 1}], immutable=("plays",)
     )
+    assert untouched == 0
     row = await db_with_table.get_row("items", {"name": "a"})
     assert row is not None
     assert (row["url"], row["plays"]) == ("http://same", 1)
+
+
+async def test_upsert_many_immutable_column_compares_null_safely(
+    db_with_table: DatabaseConnection,
+) -> None:
+    """Test that a NULL immutable value on both sides still lets the row update."""
+    await db_with_table.insert("items", {"name": "a", "url": "http://a"})
+    untouched = await db_with_table.upsert_many(
+        "items", [{"name": "a", "url": "http://b", "plays": None}], immutable=("plays",)
+    )
+    assert untouched == 0
+    row = await db_with_table.get_row("items", {"name": "a"})
+    assert row is not None
+    assert (row["url"], row["plays"]) == ("http://b", None)
 
 
 async def test_upsert_many_omitted_immutable_column_does_not_block_the_update(

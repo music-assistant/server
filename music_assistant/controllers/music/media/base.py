@@ -1323,6 +1323,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         Add provider mappings to existing library item.
 
         A mapping that belongs to another library item merges that item into this one.
+        The copies made for the other instances of a mapping's provider count as well.
 
         :param item_id: The library item ID to add mappings to.
         :param provider_mappings: The provider mappings to add.
@@ -1619,9 +1620,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 DB_TABLE_PROVIDER_MAPPINGS,
                 {"media_type": self.media_type.value, "item_id": db_id},
             )
-        await self.mass.music.database.upsert_many(
+        untouched = await self.mass.music.database.upsert_many(
             DB_TABLE_PROVIDER_MAPPINGS, prov_map_objs, immutable=("item_id",)
         )
+        if untouched:
+            self.logger.debug(
+                "Skipped %s provider mapping(s) for %s item id %s: held by another library item",
+                untouched,
+                self.media_type.value,
+                db_id,
+            )
 
     @final
     async def set_external_ids(
@@ -2943,10 +2951,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # item claims concurrently cannot slip through
         async with self._db_add_lock:
             library_item = await self.get_library_item(db_id)
-            # the copies for sibling provider instances pass the ownership check as well:
-            # one another item holds merges that item or drops the group, never moves it
+            # the copies for sibling provider instances pass the ownership check as well;
+            # a copy another item holds merges that item or drops the group, never moves it
             mappings = self._with_sibling_instance_mappings(library_item, mappings)
             for mapping in list(mappings):
+                if mapping not in mappings:
+                    continue  # dropped along with its group
                 existing_item = await self.get_library_item_by_prov_id(
                     mapping.item_id, mapping.provider_instance
                 )

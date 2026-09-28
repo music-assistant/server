@@ -87,6 +87,14 @@ async def _track_owners(mass: MusicAssistant) -> dict[tuple[str, str], int]:
     return {(row["provider_instance"], row["provider_item_id"]): row["item_id"] for row in rows}
 
 
+async def _in_library(mass: MusicAssistant, item_id: str) -> dict[tuple[str, str], int]:
+    """Return the stored in-library state per mapping row of the library track."""
+    rows = await mass.music.database.get_rows(
+        DB_TABLE_PROVIDER_MAPPINGS, {"media_type": MediaType.TRACK.value, "item_id": int(item_id)}
+    )
+    return {(row["provider_instance"], row["provider_item_id"]): row["in_library"] for row in rows}
+
+
 async def _track_exists(mass: MusicAssistant, item_id: str) -> bool:
     """Return whether the library track row is still there."""
     return await mass.music.database.get_row(DB_TABLE_TRACKS, {"item_id": int(item_id)}) is not None
@@ -111,6 +119,24 @@ async def test_adding_a_mapping_merges_the_item_holding_it_on_a_sibling_instance
         (TIDAL, "y"): merged_id,
         (SPOTIFY_A, "x"): merged_id,
         (SPOTIFY_B, "x"): merged_id,
+    }
+
+
+async def test_a_copy_for_another_instance_leaves_its_library_state_open(
+    mass: MusicAssistant,
+) -> None:
+    """The copy made for the other account is not stored as held in that account's library."""
+    _load(mass, SPOTIFY_A)
+    _load(mass, SPOTIFY_B)
+    _load(mass, TIDAL)
+    tidal_track = await _add_track(mass, "Tidal Track", _mapping(TIDAL, "y"))
+
+    await mass.music.tracks.add_provider_mappings(tidal_track.item_id, [_mapping(SPOTIFY_A, "x")])
+
+    assert await _in_library(mass, tidal_track.item_id) == {
+        (TIDAL, "y"): 1,
+        (SPOTIFY_A, "x"): 1,
+        (SPOTIFY_B, "x"): 0,
     }
 
 
