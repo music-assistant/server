@@ -183,34 +183,62 @@ def test_location_for_path_is_the_most_specific(storage: StorageController) -> N
     assert storage.get_location_for_path("/media/nas\0") is None
 
 
-async def test_mount_backed_folder_needs_its_mount(
+@pytest.mark.usefixtures("probes")
+async def test_folder_on_a_mount_needs_its_mount(
     storage: StorageController, tmp_path: Path, mount_table: MountTable
 ) -> None:
-    """The empty directory an unmounted share leaves behind is not available."""
-    share = tmp_path / "nas"
-    (share / "music").mkdir(parents=True)
-    set_locations(storage, make_location(share, mountpoint=str(share)))
+    """The empty folder an unmounted drive leaves behind is not available, also once unlisted."""
+    usb = tmp_path / "usb"
+    (usb / "music").mkdir(parents=True)
+    mount_table.set(mount_line(usb, "ext4"))
+    await storage.refresh()
+    assert await storage.is_available(str(usb / "music"))
+    assert not await storage.is_available(str(usb / "missing"))
 
-    mount_table.set(mount_line(share))
-    assert await storage.is_available(str(share))
-    assert await storage.is_available(str(share / "music"))
-    assert not await storage.is_available(str(share / "missing"))
     mount_table.set()
-    assert not await storage.is_available(str(share / "music"))
-    # back behind its automount trigger
-    mount_table.set(mount_line(share, "autofs"))
-    assert not await storage.is_available(str(share / "music"))
+    await storage.refresh()
+    assert storage.get_location_for_path(str(usb)) is None
+    assert not await storage.is_available(str(usb))
+    assert not await storage.is_available(str(usb / "music"))
+
+    # back behind its automount trigger only
+    mount_table.set(mount_line(usb, "autofs"))
+    await storage.refresh()
+    assert not await storage.is_available(str(usb / "music"))
+
+    mount_table.set(mount_line(usb, "ext4"))
+    await storage.refresh()
+    assert await storage.is_available(str(usb / "music"))
 
 
+@pytest.mark.usefixtures("probes")
+async def test_folder_never_on_a_mount_only_needs_to_exist(
+    storage: StorageController, tmp_path: Path, mount_table: MountTable
+) -> None:
+    """A folder next to a remembered mount, or never on one, goes by the folder alone."""
+    for folder in ("usb", "usb2/music", "plain/music"):
+        (tmp_path / folder).mkdir(parents=True)
+    mount_table.set(mount_line(tmp_path / "usb", "ext4"))
+    await storage.refresh()
+    mount_table.set()
+    await storage.refresh()
+
+    assert not await storage.is_available(str(tmp_path / "usb"))
+    assert await storage.is_available(str(tmp_path / "usb2" / "music"))
+    assert await storage.is_available(str(tmp_path / "plain" / "music"))
+    assert not await storage.is_available(str(tmp_path / "plain" / "gone"))
+
+
+@pytest.mark.usefixtures("probes")
 async def test_same_filesystem_bind_mount_is_available(
     storage: StorageController, tmp_path: Path, mount_table: MountTable
 ) -> None:
     """A bind mount of a folder on the filesystem it is mounted on counts as mounted."""
     volume = tmp_path / "music"
     volume.mkdir()
-    set_locations(storage, make_location(volume, mountpoint=str(volume)))
     # for os.path.ismount this is a plain folder: same device as its parent
     mount_table.set(mount_line(volume))
+    await storage.refresh()
 
     assert await storage.is_available(str(volume))
 

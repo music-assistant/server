@@ -88,6 +88,9 @@ class StorageController(CoreController):
         self._locations: list[StorageLocation] = []
         self._in_container = False
         self._probes: dict[str, _ProbeState] = {}
+        # every mountpoint the mount table showed since the start: an unmounted drive or share
+        # leaves an empty folder behind, which must not pass for the storage itself
+        self._seen_mountpoints: set[str] = set()
         # paths whose probe is being waited for; an answer that comes later rebuilds the list
         self._awaited_probes: set[str] = set()
         self._dir_sizes: dict[StorageUsage, float] = {}
@@ -154,7 +157,8 @@ class StorageController(CoreController):
 
         Only possible when the server does not run in a container.
 
-        :param path: Absolute path of an existing folder that is no storage location yet.
+        :param path: Absolute path of an existing folder that is no storage location yet, also
+            once its symlinks are resolved. It is stored as given.
         """
         if not self.can_add_local_folder:
             msg = "A folder can not be added when the server runs in a container"
@@ -164,20 +168,20 @@ class StorageController(CoreController):
             raise self._error(
                 InvalidDataError, f"Not an absolute path: {path}", "folder_path_not_absolute"
             )
-        if not path.strip("/"):
-            raise self._error(
-                InvalidDataError, "The root folder can not be added", "folder_is_root"
-            )
-        if path in self._server_paths():
-            msg = f"{path} is a folder of the server itself"
-            raise self._error(InvalidDataError, msg, "folder_is_server_folder")
-        if any(loc.path == path for loc in self._locations):
-            msg = f"{path} already is a storage location"
-            raise self._error(InvalidDataError, msg, "folder_already_location")
-        if (result := (await self._wait_for_probes([path]))[path]) is None:
+        self._check_new_folder(path)
+        server_paths = self._server_paths()
+        # the probes resolve the symlinks, of the server's own folders as well
+        answers = await self._wait_for_probes([path, *server_paths])
+        if (result := answers[path]) is None:
             raise self._folder_unreadable(path)
         if not result.is_dir:
             raise self._folder_not_found(path)
+        real_server_paths = [
+            answer.real_path
+            for server_path in server_paths
+            if (answer := answers[server_path]) is not None and answer.real_path is not None
+        ]
+        self._check_new_folder(result.real_path or path, real_server_paths)
         self.mass.config.set(
             CONF_STORAGE_FOLDERS, [*self._get_registered_folders(), path], immediate=True
         )
@@ -238,9 +242,10 @@ class StorageController(CoreController):
         """
         Return whether a folder can be used right now.
 
-        A folder in a location backed by a mount is only available while that mount is there,
-        so the empty directory an unmounted share leaves behind does not count. Probes the
-        location first when its state is outdated, which takes at most about 10 seconds.
+        A folder on a mount is only available while that mount is there, so the empty directory
+        an unmounted drive or share leaves behind does not count, also once the mount is no
+        longer listed. Probes the location first when its state is outdated, which takes at
+        most about 10 seconds.
 
         :param path: An absolute path.
         """
@@ -250,7 +255,11 @@ class StorageController(CoreController):
         if location is not None and not location.available:
             # nothing more to look at: it may be a share whose server is gone
             return False
-        mountpoint = location.mountpoint if location is not None else None
+        mountpoint = max(
+            (mountpoint for mountpoint in self._seen_mountpoints if is_within(path, mountpoint)),
+            key=len,
+            default=None,
+        )
         return await asyncio.to_thread(_is_available, path, mountpoint)
 
     async def list_folders(self, path: str, manages_all_sources: bool = True) -> list[str]:
@@ -288,6 +297,7 @@ class StorageController(CoreController):
     async def refresh(self) -> None:
         """Rebuild the list of storage locations from the mount table, touching no location."""
         table = await asyncio.to_thread(read_mountinfo)
+        self._seen_mountpoints.update(parse_mountpoints(table))
         data_path, cache_path = self._server_paths()
         mounts = {mount.mountpoint: mount for mount in self._parse_mounts(table)}
         media: dict[str, StorageLocation] = {}
@@ -341,6 +351,24 @@ class StorageController(CoreController):
         except Exception:
             self.logger.exception("Failed to refresh the storage locations")
         self.mass.call_later(REFRESH_INTERVAL, self._periodic_refresh, task_id=REFRESH_TASK_ID)
+
+    def _check_new_folder(self, path: str, real_server_paths: Iterable[str] = ()) -> None:
+        """
+        Raise when a path may not be registered as a folder.
+
+        :param path: A normalized absolute path.
+        :param real_server_paths: The server's own folders with their symlinks resolved.
+        """
+        if not path.strip("/"):
+            raise self._error(
+                InvalidDataError, "The root folder can not be added", "folder_is_root"
+            )
+        if path in {*self._server_paths(), *real_server_paths}:
+            msg = f"{path} is a folder of the server itself"
+            raise self._error(InvalidDataError, msg, "folder_is_server_folder")
+        if any(loc.path == path for loc in self._locations):
+            msg = f"{path} already is a storage location"
+            raise self._error(InvalidDataError, msg, "folder_already_location")
 
     def _visible_roots(self, path: str, manages_all_sources: bool) -> list[str]:
         """
@@ -562,6 +590,8 @@ class _ProbeResult:
     is_dir: bool
     free_space_gb: float | None = None
     total_space_gb: float | None = None
+    # the path with its symlinks resolved
+    real_path: str | None = None
 
 
 @dataclass
@@ -615,6 +645,7 @@ def _probe_path(path: str) -> _ProbeResult | None:
         is_dir=is_dir,
         free_space_gb=round(fs_stats.f_bavail * fs_stats.f_frsize / BYTES_PER_GB, 2),
         total_space_gb=round(fs_stats.f_blocks * fs_stats.f_frsize / BYTES_PER_GB, 2),
+        real_path=os.path.realpath(path),
     )
 
 

@@ -105,6 +105,54 @@ async def test_add_refuses_the_root_and_the_server_folders(
     assert storage.mass.config.get(CONF_STORAGE_FOLDERS) is None
 
 
+@pytest.mark.parametrize(
+    ("target", "translation_key"),
+    [
+        ("{data}", "folder_is_server_folder"),
+        ("{cache}", "folder_is_server_folder"),
+        ("/", "folder_is_root"),
+        ("{registered}", "folder_already_location"),
+    ],
+)
+async def test_add_refuses_a_symlink_to_a_refused_folder(
+    storage: StorageController, tmp_path: Path, target: str, translation_key: str
+) -> None:
+    """A symlink is refused when the folder it points to would be."""
+    registered = tmp_path / "registered"
+    registered.mkdir()
+    await storage.add_local_folder(str(registered))
+    link = tmp_path / "link"
+    link.symlink_to(
+        target.format(
+            data=storage.mass.storage_path,
+            cache=storage.mass.cache_path,
+            registered=registered,
+        ),
+        target_is_directory=True,
+    )
+
+    with pytest.raises(InvalidDataError) as exc_info:
+        await storage.add_local_folder(str(link))
+
+    assert exc_info.value.translation_key == translation_key
+    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == [str(registered)]
+
+
+async def test_add_accepts_a_symlink_to_a_folder(
+    storage: StorageController, tmp_path: Path
+) -> None:
+    """A symlink to an ordinary folder is added, stored as typed."""
+    (tmp_path / "music").mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path / "music", target_is_directory=True)
+
+    location = await storage.add_local_folder(f"{link}/")
+
+    assert location.path == str(link)
+    assert location.available
+    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == [str(link)]
+
+
 async def test_add_allows_a_folder_inside_the_data_folder(
     storage: StorageController,
 ) -> None:
