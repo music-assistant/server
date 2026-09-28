@@ -2997,7 +2997,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # linked power control was switched off directly) must be unsynced too. We act
         # only on an explicit on->off transition, leaving players without power control
         # (powered == None) untouched. The player is still reachable here, so we route
-        # through cmd_ungroup which also transfers leadership when it is a sync leader.
+        # through cmd_ungroup, which also hands over the playback of a sync leader that
+        # plays its own queue.
         if (
             changed_values.get(ATTR_POWERED) == (True, False)
             and player.state.type in UNGROUP_ON_POWER_OFF_TYPES
