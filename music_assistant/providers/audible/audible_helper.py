@@ -45,7 +45,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
-from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.datetime import from_iso_string, utc
 from music_assistant.helpers.podcast_parsers import rank_episodes_by_date
 from music_assistant.mass import MusicAssistant
 
@@ -1086,6 +1086,10 @@ class AudibleHelper:
                 or episode_data.get("extended_product_description", "")
             )
         )
+
+        if publication_datetime := episode_data.get("publication_datetime"):
+            with suppress(TypeError, ValueError):
+                episode.metadata.release_date = from_iso_string(publication_datetime)
 
         # Add images
         image_path = episode_data.get("product_images", {}).get("500")

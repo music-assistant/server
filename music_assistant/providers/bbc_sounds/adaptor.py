@@ -9,6 +9,7 @@ This adaptor maps those objects to the most sensible type for MA.
 """
 
 from abc import ABC, abstractmethod
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, tzinfo
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -79,6 +80,15 @@ def _to_date_and_time(timestamp: str | datetime) -> str:
 
 def _to_date(timestamp: str | datetime) -> str:
     return _date_convertor(timestamp, "%d/%m/%y")
+
+
+def _release_date(item: PodcastEpisode | RadioShow | RadioClip) -> datetime | None:
+    """Return the release date of an item, or when it became available if it has none."""
+    for details, key in ((item.release, "date"), (item.availability, "from")):
+        if details and (value := details.get(key)):
+            with suppress(TypeError, ValueError):
+                return dt.from_iso_string(value)
+    return None
 
 
 class ConversionError(MusicAssistantError):
@@ -516,7 +526,7 @@ class PodcastConverter(BaseConverter):
         if not episode or not episode.pid:
             raise ConversionError(f"No podcast episode for {episode}")
 
-        return MAPodcastEpisode(
+        ma_episode = MAPodcastEpisode(
             item_id=episode.pid,
             name=self._format_podcast_episode_title(episode),
             provider=self.context.provider_domain,
@@ -532,6 +542,8 @@ class PodcastConverter(BaseConverter):
             provider_mappings={self._create_provider_mapping(episode.pid)},
             uri=episode.stream,
         )
+        ma_episode.metadata.release_date = _release_date(episode)
+        return ma_episode
 
     def _show_is_a_track(self, show: RadioShow) -> bool:
         """
@@ -578,7 +590,7 @@ class PodcastConverter(BaseConverter):
         if not podcast or not isinstance(podcast, MAPodcast):
             raise ConversionError(f"No podcast for episode for {show}")
 
-        return MAPodcastEpisode(
+        episode = MAPodcastEpisode(
             item_id=show.pid,
             name=self._format_show_title(show),
             provider=self.context.provider_domain,
@@ -593,6 +605,8 @@ class PodcastConverter(BaseConverter):
             provider_mappings={self._create_provider_mapping(show.pid)},
             position=1,
         )
+        episode.metadata.release_date = _release_date(show)
+        return episode
 
     async def _convert_radio_clip(self, clip: RadioClip) -> Track | MAPodcastEpisode:
         duration = self._get_attr(clip, "duration.value")
@@ -610,7 +624,7 @@ class PodcastConverter(BaseConverter):
 
             if not podcast or not isinstance(podcast, MAPodcast):
                 raise ConversionError(f"No podcast for episode for {clip}")
-            return MAPodcastEpisode(
+            episode = MAPodcastEpisode(
                 item_id=clip.pid,
                 name=self._get_attr(clip, "titles.entity_title", "Unknown title"),
                 provider=self.context.provider_domain,
@@ -622,6 +636,8 @@ class PodcastConverter(BaseConverter):
                 podcast=podcast,
                 position=0,
             )
+            episode.metadata.release_date = _release_date(clip)
+            return episode
         return Track(
             item_id=clip.pid,
             name=self._get_attr(clip, "titles.entity_title", "Unknown Track"),
