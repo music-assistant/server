@@ -711,7 +711,7 @@ class AirPlayStream:
         finally:
             self._metadata_lock.release()
         self.mass.create_task(
-            self._send_current_metadata_without_progress,
+            self._send_current_metadata_without_progress(),
             task_id=f"airplay_metadata_after_start_{self._stream_id}",
             abort_existing=True,
         )

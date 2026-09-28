@@ -69,7 +69,7 @@ async def run_setup(session: SetupSession) -> None:
 
     :param session: The setup session driving the flow.
     """
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         values = await session.form(
             [
@@ -94,7 +94,7 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish({CONF_SESSION_COOKIE: await _qr_login(session)})
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 async def _login_with_credentials(session: SetupSession) -> None:
@@ -106,7 +106,7 @@ async def _login_with_credentials(session: SetupSession) -> None:
 
     :param session: The setup session driving the flow.
     """
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     setup_data: dict[str, ConfigValueType] = dict(session.context.setup_data)
     while True:
         entries = [
@@ -124,7 +124,7 @@ async def _login_with_credentials(session: SetupSession) -> None:
             await session.finish(dict(submitted))
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 async def _qr_login(session: SetupSession) -> str:

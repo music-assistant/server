@@ -55,7 +55,7 @@ async def run_setup(session: SetupSession) -> None:
     )
     client = QQClient()
     try:
-        errors: dict[str, str] | None = None
+        errors: dict[str, str | SetupFlowError] | None = None
         while True:
             values = await session.form(
                 [
@@ -84,7 +84,7 @@ async def run_setup(session: SetupSession) -> None:
                 await session.finish(collected)
                 return
             except SetupFlowError as err:
-                errors = {"base": err.translation_key or str(err)}
+                errors = {"base": err}
     finally:
         await client.close()
 

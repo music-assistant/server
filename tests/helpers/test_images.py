@@ -413,6 +413,31 @@ async def test_provider_reported_missing_image_fails_fast_with_single_warning(
     assert "not retrying" in warnings[0].getMessage()
 
 
+async def test_provider_without_an_image_is_a_quiet_miss(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    fetch_calls: list[tuple[str, str]],
+) -> None:
+    """A provider resolving a path to no image is asked once; the miss is remembered, not warned."""
+    fake_provider = MagicMock(spec=MetadataProvider)
+    fake_provider.resolve_image = AsyncMock(return_value=None)
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda _prov: fake_provider)
+    caplog.set_level(logging.DEBUG, logger="music_assistant.helpers.images")
+
+    with pytest.raises(MediaNotFoundError, match="no image"):
+        await get_image_data(mass_minimal, "rg-in-rainbows", "coverartarchive")
+    # follow-up requests fail fast from the negative cache, without asking the provider again
+    with pytest.raises(FileNotFoundError, match="no image"):
+        await get_image_data(mass_minimal, "rg-in-rainbows", "coverartarchive")
+
+    assert len(fetch_calls) == 1
+    assert fake_provider.resolve_image.await_count == 1
+    records = [rec for rec in caplog.records if rec.name == "music_assistant.helpers.images"]
+    assert [rec.levelno for rec in records] == [logging.DEBUG]
+    assert "not retrying" in records[0].getMessage()
+
+
 async def test_failed_source_retried_after_ttl_or_invalidation(
     mass_minimal: MusicAssistant,
     monkeypatch: pytest.MonkeyPatch,

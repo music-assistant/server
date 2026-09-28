@@ -95,6 +95,18 @@ _PACING: Final[dict[PacingProfile, tuple[str, str]]] = {
 }
 
 
+# A realtime source that allows a single stream (Spotify's soloist backend) delivers audio
+# at playback pace and holds that slot until the item ends, so the next item's session only
+# starts once this one is over. A session that begins on such an item with little left to
+# play reaches that boundary with almost nothing buffered, and the player can drop out in
+# the ~1.5 s the restart leaves silent: a Sonos Era 100 dies with 25 s left, survives with
+# 45 s, and a banked 5 s lead played nine 30 s tracks in a row cleanly. So bank this many
+# seconds before serving the first item of a session when it has less than
+# REALTIME_COLD_START_MAX_REMAINING seconds left.
+REALTIME_COLD_START_BANK: Final[int] = 5
+REALTIME_COLD_START_MAX_REMAINING: Final[int] = 60
+
+
 def output_pacing_args(profile: PacingProfile = PacingProfile.DEFAULT) -> list[str]:
     """Return the ffmpeg pacing arguments for a stream handed to a player."""
     readrate, burst = _PACING[profile]

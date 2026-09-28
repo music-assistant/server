@@ -648,6 +648,69 @@ async def test_get_library_albums_without_date_added_stays_none() -> None:
     assert albums[0].date_added is None
 
 
+def _album_song(idx: int, *, catalog_id: str | None, resolves: bool) -> dict[str, Any]:
+    """Build a me/library/albums/{id}/tracks item with its (possibly empty) catalog relation."""
+    song = _library_song(idx, catalog_id=catalog_id)
+    catalog_data = [_catalog_song(catalog_id)] if catalog_id and resolves else []
+    song["relationships"] = {"catalog": {"data": catalog_data}}
+    return song
+
+
+def _stream_album_songs(api: MagicMock, songs_by_album: dict[str, list[dict[str, Any]]]) -> None:
+    """Make api.iter_all_items stream the songs of each library album."""
+
+    async def _iter(endpoint: str, **_kwargs: Any) -> Any:
+        for song in songs_by_album[endpoint.split("/")[3]]:
+            yield song
+
+    api.iter_all_items = _iter
+
+
+@pytest.mark.asyncio
+async def test_get_library_albums_skips_album_with_only_withdrawn_songs() -> None:
+    """A catalog-less album whose songs all point at withdrawn catalog ids is not yielded."""
+    manager, api = _make_albums_manager([_library_album(1), _library_album(2)])
+    _stream_album_songs(
+        api,
+        {
+            "l.album1": [
+                _album_song(1, catalog_id="100", resolves=False),
+                _album_song(2, catalog_id="101", resolves=False),
+            ],
+            "l.album2": [
+                _album_song(3, catalog_id="102", resolves=False),
+                _album_song(4, catalog_id="103", resolves=True),
+            ],
+        },
+    )
+
+    albums = [album async for album in manager.get_library_albums()]
+
+    assert [album.item_id for album in albums] == ["l.album2"]
+
+
+@pytest.mark.asyncio
+async def test_get_library_albums_keeps_upload_album() -> None:
+    """Uploaded songs have no catalog id at all, so their album stays in the library."""
+    manager, api = _make_albums_manager([_library_album(1)])
+    _stream_album_songs(api, {"l.album1": [_album_song(1, catalog_id=None, resolves=False)]})
+
+    albums = [album async for album in manager.get_library_albums()]
+
+    assert [album.item_id for album in albums] == ["l.album1"]
+
+
+@pytest.mark.asyncio
+async def test_get_library_albums_keeps_album_when_song_check_fails() -> None:
+    """A failing song lookup never drops the album."""
+    manager, api = _make_albums_manager([_library_album(1)])
+    api.iter_all_items = MagicMock(side_effect=MusicAssistantError("boom"))
+
+    albums = [album async for album in manager.get_library_albums()]
+
+    assert [album.item_id for album in albums] == ["l.album1"]
+
+
 @pytest.mark.asyncio
 async def test_get_library_playlists_sets_date_added_without_catalog() -> None:
     """A non-catalog library playlist row's dateAdded ends up on the yielded Playlist."""

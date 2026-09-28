@@ -4,23 +4,25 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import RetriesExhausted
+from music_assistant_models.errors import ProviderUnavailableError, RetriesExhausted
 from music_assistant_models.media_items import PodcastEpisode
 
 from music_assistant.providers.pocketcasts import PocketCastsProvider
+from music_assistant.providers.pocketcasts.api_client import PocketCastsClient
 from tests.common import use_real_create_task
 
 
 @pytest.fixture
 def client() -> AsyncMock:
-    """Return a mocked Pocket Casts API client with no show notes on offer."""
+    """Return a mocked Pocket Casts API client with no show notes or transcripts on offer."""
     client = AsyncMock()
     client.get_show_notes.return_value = {}
     client.get_podcast.return_value = {"uuid": "podcast-1", "title": "Podcast One"}
+    client.has_paid_plan.return_value = False
     return client
 
 
@@ -386,3 +388,212 @@ async def test_podcast_without_category_is_spoken_word(provider: PocketCastsProv
     podcast = await provider.get_podcast("podcast-1")
 
     assert podcast.metadata.genres == {"Spoken Word"}
+
+
+async def test_sync_flags_episodes_that_have_a_transcript(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """The episode listing reports transcript availability without fetching any of them."""
+    client.get_podcast_episodes.return_value = (
+        "Podcast One",
+        [
+            _feed_episode(uuid="episode-1"),
+            _feed_episode(uuid="episode-2"),
+        ],
+    )
+    client.get_in_progress_episodes.return_value = []
+    client.get_history.return_value = []
+    client.get_show_notes.return_value = {
+        "episode-1": {"transcripts": [{"url": "https://example.com/ep1.vtt", "type": "text/vtt"}]}
+    }
+
+    episodes = [episode async for episode in provider.get_podcast_episodes("podcast-1")]
+
+    assert [episode.metadata.has_transcript for episode in episodes] == [True, False]
+    cast("MagicMock", provider.mass.http_session).get.assert_not_called()
+    client.get_show_notes.assert_awaited_once()
+
+
+PUBLISHER_TRANSCRIPT = [{"url": "https://example.com/ep1.srt", "type": "application/srt"}]
+GENERATED_TRANSCRIPT = [{"url": "https://example.com/ep1.vtt", "type": "text/vtt"}]
+
+
+async def test_free_account_gets_no_generated_transcripts(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """Generated transcripts are a paid perk, so a free account does not see them."""
+    client.get_podcast_episodes.return_value = ("Podcast One", [_feed_episode(uuid="episode-1")])
+    client.get_in_progress_episodes.return_value = []
+    client.get_history.return_value = []
+    client.get_show_notes.return_value = {
+        "episode-1": {"generated_transcripts": GENERATED_TRANSCRIPT}
+    }
+
+    episodes = [episode async for episode in provider.get_podcast_episodes("podcast-1")]
+
+    assert episodes[0].metadata.has_transcript is False
+    assert await provider.get_podcast_episode_transcript("podcast-1:episode-1") == (None, None)
+
+
+async def test_paid_account_gets_generated_transcripts(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """A paid account falls back to the generated transcript when the publisher has none."""
+    client.has_paid_plan.return_value = True
+    client.get_show_notes.return_value = {
+        "episode-1": {"generated_transcripts": GENERATED_TRANSCRIPT}
+    }
+    with patch(
+        "music_assistant.providers.pocketcasts.get_episode_transcript",
+        AsyncMock(return_value=("Some words.", [])),
+    ) as fetch:
+        await provider.get_podcast_episode_transcript("podcast-1:episode-1")
+
+    assert fetch.await_args is not None
+    assert fetch.await_args.kwargs["transcripts"] == GENERATED_TRANSCRIPT
+
+
+async def test_paid_account_prefers_the_publisher_transcript(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """The publisher's own transcript wins over the generated one."""
+    client.has_paid_plan.return_value = True
+    client.get_show_notes.return_value = {
+        "episode-1": {
+            "transcripts": PUBLISHER_TRANSCRIPT,
+            "generated_transcripts": GENERATED_TRANSCRIPT,
+        }
+    }
+    with patch(
+        "music_assistant.providers.pocketcasts.get_episode_transcript",
+        AsyncMock(return_value=("Some words.", [])),
+    ) as fetch:
+        await provider.get_podcast_episode_transcript("podcast-1:episode-1")
+
+    assert fetch.await_args is not None
+    assert fetch.await_args.kwargs["transcripts"] == PUBLISHER_TRANSCRIPT
+
+
+async def test_unreadable_plan_is_treated_as_free(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """When the plan cannot be read, generated transcripts stay hidden."""
+    client.has_paid_plan.side_effect = ProviderUnavailableError("boom")
+    client.get_show_notes.return_value = {
+        "episode-1": {"generated_transcripts": GENERATED_TRANSCRIPT}
+    }
+
+    assert await provider.get_podcast_episode_transcript("podcast-1:episode-1") == (None, None)
+
+
+async def test_client_reports_a_paid_plan() -> None:
+    """The client reads the paid flag from the subscription status."""
+    client = PocketCastsClient(MagicMock(), MagicMock())
+    client._request = AsyncMock(return_value={"paid": 1, "tier": "Plus"})  # type: ignore[method-assign]
+
+    assert await client.has_paid_plan() is True
+    client._request = AsyncMock(return_value={"paid": 0})  # type: ignore[method-assign]
+    assert await client.has_paid_plan() is False
+
+
+async def test_client_keeps_generated_transcripts_apart() -> None:
+    """Show notes keep the generated transcripts separate from the publisher's."""
+    client = PocketCastsClient(MagicMock(), MagicMock())
+    client._request = AsyncMock(  # type: ignore[method-assign]
+        return_value={
+            "podcast": {
+                "episodes": [
+                    {
+                        "uuid": "episode-1",
+                        "transcripts": PUBLISHER_TRANSCRIPT,
+                        "pocket_casts_transcripts": GENERATED_TRANSCRIPT,
+                    }
+                ]
+            }
+        }
+    )
+
+    assert await client.get_show_notes("podcast-1") == {
+        "episode-1": {
+            "transcripts": PUBLISHER_TRANSCRIPT,
+            "generated_transcripts": GENERATED_TRANSCRIPT,
+        }
+    }
+
+
+async def test_sync_survives_unavailable_transcripts(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """A failing transcript lookup must not abort the listing, and leaves the flag unknown."""
+    client.get_podcast_episodes.return_value = ("Podcast One", [_feed_episode(uuid="episode-1")])
+    client.get_in_progress_episodes.return_value = []
+    client.get_history.return_value = []
+    client.get_show_notes.side_effect = ProviderUnavailableError("boom")
+
+    episodes = [episode async for episode in provider.get_podcast_episodes("podcast-1")]
+
+    assert [episode.item_id for episode in episodes] == ["podcast-1:episode-1"]
+    assert episodes[0].metadata.has_transcript is None
+
+
+async def test_sync_survives_exhausted_transcript_retries(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """A throttled-out transcript lookup must not abort the episode listing either."""
+    client.get_podcast_episodes.return_value = ("Podcast One", [_feed_episode(uuid="episode-1")])
+    client.get_in_progress_episodes.return_value = []
+    client.get_history.return_value = []
+    client.get_show_notes.side_effect = RetriesExhausted("gave up")
+
+    episodes = [episode async for episode in provider.get_podcast_episodes("podcast-1")]
+
+    assert [episode.item_id for episode in episodes] == ["podcast-1:episode-1"]
+
+
+async def test_episode_transcript_is_fetched_on_demand(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """The transcript document is retrieved on demand, not with the episode."""
+    client.get_show_notes.return_value = {
+        "episode-1": {"transcripts": [{"url": "https://example.com/ep1.vtt", "type": "text/vtt"}]}
+    }
+    with patch(
+        "music_assistant.providers.pocketcasts.get_episode_transcript",
+        AsyncMock(return_value=("Some words.", [])),
+    ) as fetch:
+        text, _ = await provider.get_podcast_episode_transcript("podcast-1:episode-1")
+
+    assert text == "Some words."
+    assert fetch.await_args is not None
+    assert fetch.await_args.kwargs["transcripts"] == [
+        {"url": "https://example.com/ep1.vtt", "type": "text/vtt"}
+    ]
+
+
+async def test_episode_transcript_absent_yields_nothing(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """An episode without a transcript returns nothing rather than raising."""
+    client.get_show_notes.return_value = {}
+    assert await provider.get_podcast_episode_transcript("podcast-1:episode-1") == (None, None)
+
+
+async def test_episode_no_longer_carries_the_transcript(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """Fetching an episode reports transcript availability without the transcript itself."""
+    client.get_episode_details.return_value = {
+        "uuid": "episode-1",
+        "title": "Episode 1",
+        "url": "https://example.com/ep1.mp3",
+        "duration": 1800,
+    }
+    client.get_show_notes.return_value = {
+        "episode-1": {"transcripts": [{"url": "https://example.com/ep1.vtt", "type": "text/vtt"}]}
+    }
+
+    episode = await provider.get_podcast_episode("podcast-1:episode-1")
+
+    assert episode.metadata.has_transcript is True
+    assert episode.metadata.transcript is None
+    assert episode.metadata.transcript_cues is None

@@ -52,7 +52,7 @@ class NicovideoTrackConverter(NicovideoConverterBase):
         if activity.actor.id_ and activity.actor.name:
             artist_mapping = ItemMapping(
                 item_id=activity.actor.id_,
-                provider=self.provider.domain,
+                provider=self.provider.instance_id,
                 name=activity.actor.name,
             )
             artists_list.append(artist_mapping)

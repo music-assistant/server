@@ -235,29 +235,40 @@ class SyncGroupPlayer(Player):
         can_group_with: set[str] = set()
         for member_id in member_ids:
             member_player = self.mass.players.get_player(member_id)
-            if member_player and member_player.state.available:
-                can_group_with.add(member_player.player_id)
-                can_group_with.update(member_player.state.can_group_with)
+            if not member_player or not member_player.state.available:
+                continue
+            if not member_player.state.can_group_with and member_player.state.synced_to:
+                # slaved: its compatibility list is empty for now, it can tell us nothing
+                continue
+            can_group_with.add(member_player.player_id)
+            can_group_with.update(member_player.state.can_group_with)
         if can_group_with:
             return {
                 pid
                 for pid in can_group_with
                 if pid in current_members or self._is_member_allowed(pid)
             }
-        # Without any available member to derive compatibility from (empty group or
-        # all members offline), offer any compatible player.
+        # Without any member that can report its compatibility (empty group, all members
+        # offline or all of them still slaved), offer any compatible player.
         # Actual compatibility is validated when adding members
         can_group_with = set()
         for player in self.mass.players.iter_players(return_unavailable=False):
             if not player.available or player.type == PlayerType.GROUP:
                 # let's avoid showing group players as options to group with
                 continue
-            if (
-                PlayerFeature.SET_MEMBERS in player.state.supported_features
-                and player.state.can_group_with
-                and not player.state.active_group
-            ):
-                can_group_with.add(player.player_id)
+            if PlayerFeature.SET_MEMBERS not in player.state.supported_features:
+                continue
+            if (active_group := player.state.active_group) and active_group != self.player_id:
+                # captured by another group player. A (possibly stale) claim by this group
+                # itself is fine: a former member keeps reporting it for a few seconds
+                # after the group dissolved.
+                continue
+            # A slaved player reports an empty can_group_with while it is synced, but it is
+            # group-capable all the same and joining it takes it over from its current
+            # leader (see the same exemption in get_config_entries).
+            if not (player.state.can_group_with or player.state.synced_to):
+                continue
+            can_group_with.add(player.player_id)
         return {pid for pid in can_group_with if self._is_member_allowed(pid)}
 
     @property
@@ -471,6 +482,13 @@ class SyncGroupPlayer(Player):
         # handle additions
         final_players_to_add: list[str] = []
         can_group_with = sync_leader.state.can_group_with.copy() if sync_leader else set()
+        # A leader that still reports being slaved has no compatibility list yet (it is
+        # empty while synced), so it can't tell us anything about the other joiners.
+        # Accept them here and let the form drop the incompatible ones again once the
+        # leader has settled and can be asked.
+        leader_settling = bool(
+            sync_leader and not sync_leader.state.can_group_with and sync_leader.state.synced_to
+        )
         for member_id in player_ids_to_add or []:
             if member_id == self.player_id:
                 continue  # can not add self as member
@@ -491,10 +509,14 @@ class SyncGroupPlayer(Player):
                 if member_id not in self._attr_group_members:
                     self._attr_group_members.append(member_id)
                 continue
-            if member_id != sync_leader.player_id and member_id not in can_group_with:
+            if (
+                member_id != sync_leader.player_id
+                and not leader_settling
+                and member_id not in can_group_with
+            ):
                 # incompatible with the current leader's protocols - do NOT register
-                # the member or it will linger in _attr_group_members forever without
-                # ever actually being synced.
+                # the member or it would sit in _attr_group_members, reported as part
+                # of the group, without ever actually being synced.
                 self.logger.debug(
                     f"Cannot add {member.display_name} to group {self.display_name} since it's "
                     f"not compatible with the (current) sync leader"
@@ -727,6 +749,26 @@ class SyncGroupPlayer(Player):
                 # the group was dissolved or re-led while we waited —
                 # this form attempt is stale, abort
                 return
+        # The leader is settled now, so its compatibility list is meaningful: drop the
+        # members it can not play in sync with (e.g. one that joined while the leader
+        # was still slaved and set_members had nothing to validate against). A leader
+        # that still reports an empty list tells us nothing, so leave the members be.
+        # The list only holds available players, so an offline member is missing from
+        # it for that reason alone and stays in the group until it is back.
+        if leader.state.can_group_with:
+            for member_id in list(self._attr_group_members):
+                if member_id == leader.player_id or member_id in leader.state.can_group_with:
+                    continue
+                member = self.mass.players.get_player(member_id)
+                if member is None or not member.state.available:
+                    continue
+                self.logger.warning(
+                    "Removing %s from group %s: it can not be grouped with %s",
+                    member_id,
+                    self.display_name,
+                    leader.display_name,
+                )
+                self._attr_group_members.remove(member_id)
         # Translate the leader's group_members (may be protocol IDs) to parent IDs
         # so we can compare against our _attr_group_members (always parent IDs)
         already_synced = set(self._translate_to_parent_ids(leader.state.group_members))
@@ -1365,21 +1407,26 @@ class SyncGroupPlayer(Player):
             await asyncio.sleep(IDLE_GRACE_SECONDS)
         except asyncio.CancelledError:
             return
-        # re-check state at fire time — playback may have resumed, the user
-        # may have powered the group on, or another path may have dissolved
-        # us already. Any of these means we should not dissolve here.
-        self._idle_grace_task = None
-        if self.sync_leader is None:
-            return
-        if self._attr_powered is True:
-            return
-        if self.sync_leader.state.playback_state != PlaybackState.IDLE:
-            return
-        self.logger.info(
-            "Idle-grace expired for syncgroup %s, dissolving",
-            self.display_name,
-        )
-        await self._dissolve_syncgroup()
+        # serialize with (un)group and playback commands targeting this group.
+        # A cancellation (playback resuming, an explicit stop or power command)
+        # may still land while we wait for the lock and simply ends this task.
+        async with self.mass.players.get_player_lock(self.player_id, PlayerLockPurpose.PLAYBACK):
+            # drop our own reference first: the dissolve cancels any pending grace task
+            self._idle_grace_task = None
+            # re-check state at fire time — playback may have resumed, the user
+            # may have powered the group on, or another path may have dissolved
+            # us already. Any of these means we should not dissolve here.
+            if self.sync_leader is None:
+                return
+            if self._attr_powered is True:
+                return
+            if self.sync_leader.state.playback_state != PlaybackState.IDLE:
+                return
+            self.logger.info(
+                "Idle-grace expired for syncgroup %s, dissolving",
+                self.display_name,
+            )
+            await self._dissolve_syncgroup()
 
     @property
     def _playback_recently_started(self) -> bool:

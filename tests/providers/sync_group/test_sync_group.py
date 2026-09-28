@@ -6,7 +6,8 @@ import asyncio
 import inspect
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1177,6 +1178,30 @@ class TestSetMembersDoesNotRegisterIncompatible:
         assert kwargs.get("player_ids_to_add") == ["compatible"]
 
     @pytest.mark.asyncio
+    async def test_incompatible_member_is_refused_by_a_leader_that_reports_compatibility(
+        self,
+    ) -> None:
+        """A prospective leader that does report a compatibility list still refuses joiners."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        # still slaved, but it already reports what it can group with
+        registered = _make_mock_player("registered", provider_domain="sonos")
+        registered.state.can_group_with = {"registered", "compatible"}
+        registered.state.synced_to = "old_leader"
+        incompatible = _make_mock_player("incompatible", provider_domain="alien_protocol")
+
+        mass.players.get_player = _player_lookup(
+            {"registered": registered, "incompatible": incompatible}
+        )
+        sgp.sync_leader = None
+        sgp._attr_group_members = ["registered"]
+
+        await sgp.set_members(player_ids_to_add=["incompatible"])
+
+        assert sgp._attr_group_members == ["registered"]
+
+    @pytest.mark.asyncio
     async def test_member_added_when_no_leader_yet(self) -> None:
         """Adding to an empty/unformed group must register the member regardless."""
         mass = _make_mock_mass()
@@ -1525,7 +1550,109 @@ class TestPresetMembersInDynamicGroup:
         result = sgp.can_group_with
 
         assert {"online_member", "friend"} <= result
+        assert "stranger" not in result
         mass.players.iter_players.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_can_group_with_offers_a_member_still_reporting_stale_sync_state(self) -> None:
+        """
+        A player that still reports the just-dissolved group must stay joinable.
+
+        Regression: for a few seconds after a group broke up, its former members
+        still reported the old sync state (an empty can_group_with and an
+        active_group pointing at this group), which excluded them here — so a
+        join in that window was refused.
+        """
+        mass = _make_mock_mass()
+        sgp = self._make_dynamic_group_with_preset(mass, [])
+        await sgp.on_config_updated()
+
+        candidate = _make_mock_player("wasruimte")
+        candidate.type = PlayerType.PLAYER
+        candidate.state.can_group_with = set()
+        candidate.state.synced_to = "old_leader"
+        candidate.state.active_group = sgp.player_id
+        mass.players.get_player = _player_lookup({"wasruimte": candidate})
+        mass.players.iter_players = MagicMock(return_value=[candidate])
+
+        assert "wasruimte" in sgp.can_group_with
+
+    @pytest.mark.asyncio
+    async def test_can_group_with_offers_a_member_that_still_claims_this_group(self) -> None:
+        """A player whose sync settled but whose active_group still points here is offered."""
+        mass = _make_mock_mass()
+        sgp = self._make_dynamic_group_with_preset(mass, [])
+        await sgp.on_config_updated()
+
+        candidate = _make_mock_player("wasruimte")
+        candidate.type = PlayerType.PLAYER
+        candidate.state.can_group_with = {"other"}
+        candidate.state.synced_to = None
+        candidate.state.active_group = sgp.player_id
+        mass.players.get_player = _player_lookup({"wasruimte": candidate})
+        mass.players.iter_players = MagicMock(return_value=[candidate])
+
+        assert "wasruimte" in sgp.can_group_with
+
+    @pytest.mark.asyncio
+    async def test_can_group_with_skips_a_member_held_by_another_group(self) -> None:
+        """A player that is claimed by another group player is not offered."""
+        mass = _make_mock_mass()
+        sgp = self._make_dynamic_group_with_preset(mass, [])
+        await sgp.on_config_updated()
+
+        candidate = _make_mock_player("wasruimte")
+        candidate.type = PlayerType.PLAYER
+        candidate.state.can_group_with = set()
+        candidate.state.synced_to = "other_leader"
+        candidate.state.active_group = "syncgroup_other"
+        mass.players.get_player = _player_lookup({"wasruimte": candidate})
+        mass.players.iter_players = MagicMock(return_value=[candidate])
+
+        assert "wasruimte" not in sgp.can_group_with
+
+    @pytest.mark.asyncio
+    async def test_can_group_with_skips_a_player_that_cannot_group_at_all(self) -> None:
+        """A player that reports no grouping capability at all is not offered."""
+        mass = _make_mock_mass()
+        sgp = self._make_dynamic_group_with_preset(mass, [])
+        await sgp.on_config_updated()
+
+        candidate = _make_mock_player("solo_only")
+        candidate.type = PlayerType.PLAYER
+        candidate.state.can_group_with = set()
+        candidate.state.synced_to = None
+        candidate.state.active_group = None
+        mass.players.get_player = _player_lookup({"solo_only": candidate})
+        mass.players.iter_players = MagicMock(return_value=[candidate])
+
+        assert "solo_only" not in sgp.can_group_with
+
+    @pytest.mark.asyncio
+    async def test_can_group_with_ignores_a_member_that_is_still_slaved(self) -> None:
+        """
+        A member that is still slaved must not narrow down what the group offers.
+
+        Regression: once one speaker had rejoined after a dissolve, it was the only
+        candidate the group offered (a slaved player reports no compatible players),
+        so the next speaker's join was refused.
+        """
+        mass = _make_mock_mass()
+        sgp = self._make_dynamic_group_with_preset(mass, [])
+        await sgp.on_config_updated()
+
+        rejoined = _make_mock_player("m2")
+        candidate = _make_mock_player("m3")
+        for player in (rejoined, candidate):
+            player.type = PlayerType.PLAYER
+            player.state.can_group_with = set()
+            player.state.synced_to = "old_leader"
+            player.state.active_group = sgp.player_id
+        mass.players.get_player = _player_lookup({"m2": rejoined, "m3": candidate})
+        mass.players.iter_players = MagicMock(return_value=[rejoined, candidate])
+        sgp._attr_group_members = ["m2"]
+
+        assert "m3" in sgp.can_group_with
 
 
 class TestGetConfigEntriesMemberPicker:
@@ -1895,6 +2022,195 @@ class TestIdleGraceOnFailedStart:
         assert sgp._idle_grace_task is sentinel
 
 
+def _recording_lock(events: list[str]) -> MagicMock:
+    """Build a get_player_lock mock that records every lock enter/exit in ``events``."""
+
+    def _make(
+        player_id: str, _purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
+    ) -> AsyncMock:
+        ctx = AsyncMock()
+
+        async def _enter(*_args: Any) -> None:
+            events.append(f"lock:{player_id}")
+
+        async def _exit(*_args: Any) -> bool:
+            events.append(f"unlock:{player_id}")
+            return False
+
+        ctx.__aenter__.side_effect = _enter
+        ctx.__aexit__.side_effect = _exit
+        return ctx
+
+    return MagicMock(side_effect=_make)
+
+
+def _group_lock(group_id: str) -> tuple[MagicMock, asyncio.Lock]:
+    """Build a get_player_lock mock backed by a real lock for the group; others are no-ops."""
+    lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def _ctx(
+        player_id: str, _purpose: PlayerLockPurpose = PlayerLockPurpose.PLAYBACK
+    ) -> AsyncIterator[None]:
+        if player_id != group_id:
+            yield
+            return
+        async with lock:
+            yield
+
+    return MagicMock(side_effect=_ctx), lock
+
+
+class TestIdleGraceDissolveLocking:
+    """The idle-grace dissolve runs under the group's lock, serialized with group commands."""
+
+    def _setup_group(self, mass: MagicMock) -> tuple[SyncGroupPlayer, MagicMock]:
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="wiim")
+        leader.state.can_group_with = {"m2", "m3"}
+        leader.state.group_members = ["leader", "m2"]
+        players = {
+            "leader": leader,
+            "m2": _make_mock_player("m2", provider_domain="wiim"),
+            "m3": _make_mock_player("m3", provider_domain="wiim"),
+        }
+        mass.players.get_player = _player_lookup(players)
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "m2"]
+        sgp._attr_powered = None  # no pin, so the grace dissolve applies
+        # run scheduled coroutines for real so the grace runner actually fires
+        mass.create_task = MagicMock(
+            side_effect=lambda coro, *_a, **_k: asyncio.Task(
+                coro, loop=asyncio.get_running_loop(), eager_start=True
+            )
+        )
+        return sgp, leader
+
+    async def _start_member_change(
+        self,
+        mass: MagicMock,
+        sgp: SyncGroupPlayer,
+        group_lock: asyncio.Lock,
+        events: list[str],
+    ) -> tuple[asyncio.Task[None], asyncio.Event]:
+        """Start a member change that holds the group lock until the returned event is set."""
+        leader_command_started = asyncio.Event()
+        release_leader_command = asyncio.Event()
+
+        async def _leader_command(*_args: Any, **_kwargs: Any) -> None:
+            events.append("leader command")
+            leader_command_started.set()
+            await release_leader_command.wait()
+
+        mass.players._handle_set_members = AsyncMock(side_effect=_leader_command)
+
+        async def _group_command() -> None:
+            # the controller runs group commands from under the group's lock
+            async with group_lock:
+                await sgp.set_members(player_ids_to_add=["m3"])
+            events.append("member change done")
+
+        command = asyncio.create_task(_group_command())
+        await leader_command_started.wait()
+        return command, release_leader_command
+
+    @pytest.mark.asyncio
+    async def test_dissolve_runs_under_the_group_lock(self) -> None:
+        """The runner takes the group's lock first and the leader's lock from under it."""
+        mass = _make_mock_mass()
+        sgp, leader = self._setup_group(mass)
+        events: list[str] = []
+        mass.players.get_player_lock = _recording_lock(events)
+
+        with (
+            patch("music_assistant.providers.sync_group.player.IDLE_GRACE_SECONDS", 0),
+            patch.object(sgp, "update_state"),
+        ):
+            sgp._schedule_idle_grace_timer()
+            grace = sgp._idle_grace_task
+            assert grace is not None
+            await grace
+
+        mass.players.get_player_lock.assert_any_call(sgp.player_id, PlayerLockPurpose.PLAYBACK)
+        assert events == [
+            f"lock:{sgp.player_id}",
+            "lock:leader",
+            "unlock:leader",
+            f"unlock:{sgp.player_id}",
+        ]
+        mass.players._handle_set_members.assert_awaited_once_with(
+            leader, player_ids_to_remove=["m2"]
+        )
+        assert sgp.sync_leader is None
+        assert sgp._idle_grace_task is None
+
+    @pytest.mark.asyncio
+    async def test_dissolve_waits_for_a_member_change_holding_the_group_lock(self) -> None:
+        """A grace expiry during an in-flight member change dissolves only after it completes."""
+        mass = _make_mock_mass()
+        sgp, leader = self._setup_group(mass)
+        mass.players.get_player_lock, group_lock = _group_lock(sgp.player_id)
+        events: list[str] = []
+
+        async def _dissolve() -> None:
+            events.append("dissolve")
+            sgp.sync_leader = None
+
+        dissolve = AsyncMock(side_effect=_dissolve)
+        with (
+            patch("music_assistant.providers.sync_group.player.IDLE_GRACE_SECONDS", 0),
+            patch.object(sgp, "update_state"),
+            patch.object(sgp, "_dissolve_syncgroup", dissolve),
+        ):
+            command, release = await self._start_member_change(mass, sgp, group_lock, events)
+            # the grace window expires while the member change is still in flight
+            sgp._schedule_idle_grace_timer()
+            grace = sgp._idle_grace_task
+            assert grace is not None
+            await asyncio.sleep(0.01)
+
+            dissolve.assert_not_awaited()
+            assert sgp.sync_leader is leader
+            # the group keeps claiming its members while the dissolve is queued
+            assert sgp.is_active_session is True
+
+            release.set()
+            await asyncio.gather(command, grace)
+
+        assert events == ["leader command", "member change done", "dissolve"]
+        assert "m3" in sgp._attr_group_members
+
+    @pytest.mark.asyncio
+    async def test_cancel_while_queued_on_the_lock_skips_the_dissolve(self) -> None:
+        """Playback resuming while the runner waits for the lock still cancels the dissolve."""
+        mass = _make_mock_mass()
+        sgp, leader = self._setup_group(mass)
+        mass.players.get_player_lock, group_lock = _group_lock(sgp.player_id)
+        events: list[str] = []
+
+        dissolve = AsyncMock()
+        with (
+            patch("music_assistant.providers.sync_group.player.IDLE_GRACE_SECONDS", 0),
+            patch.object(sgp, "update_state"),
+            patch.object(sgp, "_dissolve_syncgroup", dissolve),
+        ):
+            command, release = await self._start_member_change(mass, sgp, group_lock, events)
+            sgp._schedule_idle_grace_timer()
+            grace = sgp._idle_grace_task
+            assert grace is not None
+            await asyncio.sleep(0.01)
+
+            sgp._cancel_idle_grace_timer()
+            assert sgp._idle_grace_task is None
+            release.set()
+            await asyncio.gather(command, grace, return_exceptions=True)
+
+        assert grace.cancelled()
+        dissolve.assert_not_awaited()
+        assert sgp.sync_leader is leader
+        assert events == ["leader command", "member change done"]
+
+
 class TestFormWaitsForLeaderUnsynced:
     """The form path must wait for a stale leader to report synced_to=None."""
 
@@ -1971,6 +2287,75 @@ class TestFormWaitsForLeaderUnsynced:
         # the stale form attempt must not (re)sync any members
         mass.players._handle_set_members.assert_not_awaited()
         assert sgp.sync_leader is None
+
+
+class TestFormReconcilesIncompatibleMembers:
+    """The form checks the tracked members against the settled leader."""
+
+    @pytest.mark.asyncio
+    async def test_form_drops_member_leader_cannot_group_with(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A member the settled leader can not group with is dropped with a warning."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        sgp.logger = logging.getLogger("test.sync_group")
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        leader.state.can_group_with = {"m2"}
+        member = _make_mock_player("m2", provider_domain="sonos")
+        incompatible = _make_mock_player("x", provider_domain="airplay")
+        mass.players.get_player = _player_lookup(
+            {"leader": leader, "m2": member, "x": incompatible}
+        )
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "m2", "x"]
+
+        with patch.object(sgp, "update_state"), caplog.at_level(logging.WARNING):
+            await sgp._form_syncgroup()
+
+        assert sgp._attr_group_members == ["leader", "m2"]
+        assert "Removing x from group" in caplog.text
+        mass.players._handle_set_members.assert_awaited_once_with(leader, player_ids_to_add=["m2"])
+
+    @pytest.mark.asyncio
+    async def test_form_keeps_an_unavailable_member(self) -> None:
+        """An offline member is absent from the leader's list for that reason only: kept."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        leader.state.can_group_with = {"m2"}
+        member = _make_mock_player("m2", provider_domain="sonos")
+        offline = _make_mock_player("off", provider_domain="sonos")
+        offline.state.available = False
+        mass.players.get_player = _player_lookup({"leader": leader, "m2": member, "off": offline})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "m2", "off"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._form_syncgroup()
+
+        assert sgp._attr_group_members == ["leader", "m2", "off"]
+        mass.players._handle_set_members.assert_awaited_once_with(
+            leader, player_ids_to_add=["m2", "off"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_form_keeps_members_when_leader_reports_nothing(self) -> None:
+        """A leader with an empty compatibility list has no say: nothing is dropped."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        leader.state.can_group_with = set()
+        member = _make_mock_player("m2", provider_domain="sonos")
+        mass.players.get_player = _player_lookup({"leader": leader, "m2": member})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "m2"]
+
+        with patch.object(sgp, "update_state"):
+            await sgp._form_syncgroup()
+
+        assert sgp._attr_group_members == ["leader", "m2"]
+        mass.players._handle_set_members.assert_awaited_once_with(leader, player_ids_to_add=["m2"])
 
 
 class TestWaitMemberUnsynced:
@@ -2460,6 +2845,127 @@ class TestDebouncedReform:
         assert sgp.sync_leader is not None
         assert sgp.sync_leader.player_id == "m2"
         assert sgp._reform_task is None
+
+    @pytest.mark.asyncio
+    async def test_join_after_dissolve_registers_stale_member(self) -> None:
+        """A player re-joining while it still reports the dissolved group is registered."""
+        mass = _make_mock_mass()
+        sgp = self._setup_group(mass, members=["leader", "m2"])
+        mass.players.cmd_resume = AsyncMock()
+        m2 = mass.players.get_player("m2")
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+        ):
+            # the leader is powered off and the remaining member leaves right after,
+            # which drops the pending re-form: an empty group has nothing to resume
+            await sgp.set_members(player_ids_to_remove=["leader"])
+            await sgp.set_members(player_ids_to_remove=["m2"])
+            assert sgp._attr_group_members == []
+            assert sgp._reform_task is None
+
+            # m2 still reports the old sync state (Sonos propagates group state async)
+            m2.state.synced_to = "leader"
+            m2.state.can_group_with = set()
+            m2.state.active_group = sgp.player_id
+            m2.synced_to = "leader"
+            mass.players.iter_players = MagicMock(return_value=[m2])
+
+            # the controller only forwards a join when the group offers the player
+            assert "m2" in sgp.can_group_with
+            await sgp.set_members(player_ids_to_add=["m2"])
+            assert sgp._attr_group_members == ["m2"]
+
+            # the sync state settles, then the next play forms the group with it
+            m2.state.synced_to = None
+            m2.synced_to = None
+            await sgp.play()
+
+        mass.players.cmd_resume.assert_awaited_once()
+        assert sgp.sync_leader is m2
+
+    @pytest.mark.asyncio
+    async def test_play_media_after_join_following_dissolve_forms_the_group(self) -> None:
+        """Starting playback right after such a join forms the group instead of finding it empty."""
+        mass = _make_mock_mass()
+        sgp = self._setup_group(mass, members=["leader", "m2"])
+        m2 = mass.players.get_player("m2")
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+            await sgp.set_members(player_ids_to_remove=["m2"])
+
+            m2.state.synced_to = "leader"
+            m2.state.can_group_with = set()
+            m2.state.active_group = sgp.player_id
+            mass.players.iter_players = MagicMock(return_value=[m2])
+
+            assert "m2" in sgp.can_group_with
+            await sgp.set_members(player_ids_to_add=["m2"])
+
+            # a user play supersedes the pending re-form
+            sgp._cancel_reform_timer()
+            await sgp.play_media(MagicMock(source_id="src", uri="x"))
+
+        assert sgp.sync_leader is m2
+        mass.players._handle_play_media.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_second_join_after_dissolve_is_registered_too(self) -> None:
+        """
+        Two speakers re-joining in the same window both end up in the group.
+
+        Regression: the first (still slaved) re-joiner was picked as prospective
+        leader and reports no compatible players at all, so the second speaker
+        was silently dropped as "incompatible".
+        """
+        mass = _make_mock_mass()
+        sgp = self._setup_group(mass, members=["leader", "m2", "m3"])
+        mass.players.cmd_resume = AsyncMock()
+        m2 = mass.players.get_player("m2")
+        m3 = mass.players.get_player("m3")
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+        ):
+            # the leader is powered off and the other members leave right after
+            await sgp.set_members(player_ids_to_remove=["leader"])
+            await sgp.set_members(player_ids_to_remove=["m2"])
+            await sgp.set_members(player_ids_to_remove=["m3"])
+            assert sgp._attr_group_members == []
+
+            # both still report the old sync state (Sonos propagates group state async)
+            for member in (m2, m3):
+                member.state.synced_to = "leader"
+                member.state.can_group_with = set()
+                member.state.active_group = sgp.player_id
+                member.synced_to = "leader"
+            mass.players.iter_players = MagicMock(return_value=[m2, m3])
+
+            # the controller only forwards a join when the group offers the player
+            assert "m2" in sgp.can_group_with
+            await sgp.set_members(player_ids_to_add=["m2"])
+            assert "m3" in sgp.can_group_with
+            await sgp.set_members(player_ids_to_add=["m3"])
+            assert sgp._attr_group_members == ["m2", "m3"]
+
+            # the sync state settles, then the next play forms the group with both
+            for member in (m2, m3):
+                member.state.synced_to = None
+                member.synced_to = None
+            await sgp.play()
+
+        mass.players.cmd_resume.assert_awaited_once()
+        assert sgp.sync_leader is m2
+        assert any(
+            call.kwargs.get("player_ids_to_add") == ["m3"]
+            for call in mass.players._handle_set_members.await_args_list
+        )
 
 
 def _lock_with_side_effect(on_enter: Callable[[], None]) -> MagicMock:
