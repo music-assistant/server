@@ -322,12 +322,9 @@ class IHeartRadioApiClient:
                 {"limit": EPISODE_PAGE_LIMIT, "pageKey": page_key},
             )
             if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
-                if episodes:
-                    # a broken page past the first would otherwise cache a truncated listing
-                    raise InvalidDataError(
-                        f"iHeartRadio returned an invalid episode page for podcast {podcast_id}"
-                    )
-                break
+                raise InvalidDataError(
+                    f"iHeartRadio returned an invalid episode page for podcast {podcast_id}"
+                )
             episodes.extend(json_items(payload["data"]))
             links = payload.get("links") or {}
             if not (page_key := links.get("next") if isinstance(links, dict) else None):
