@@ -120,9 +120,9 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
     return (media_type, provider_instance_id_or_domain, item_id)
 
 
-def is_provider_share_url(url: str) -> bool:
+def share_url_provider(url: str) -> str | None:
     """
-    Return whether a URL is the public share URL of an item on a supported music service.
+    Return the domain of the music service a public share URL is on, None for any other URL.
 
     Only such a URL can become a provider mapping; a link to a catalog site, Discogs say,
     or a truncated one is none.
@@ -130,11 +130,12 @@ def is_provider_share_url(url: str) -> bool:
     :param url: The URL to check, e.g. of a MusicBrainz URL relation.
     """
     if not url.startswith(("http://", "https://")):
-        return False
+        return None
     try:
-        return _parse_share_url(url) is not None
+        parsed = _parse_share_url(url)
     except KeyError, ValueError, IndexError:
-        return False
+        return None
+    return parsed[1] if parsed else None
 
 
 def canonical_provider_url(

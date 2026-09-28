@@ -58,7 +58,7 @@ from music_assistant.helpers.external_ids import (
     normalize_external_id,
 )
 from music_assistant.helpers.json import serialize_to_json
-from music_assistant.helpers.uri import is_provider_share_url
+from music_assistant.helpers.uri import share_url_provider
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.musicbrainz.provider import (
     is_digital_release,
@@ -585,8 +585,11 @@ class AlbumsController(MediaControllerBase[Album]):
             if release.status == "Official"
         ]
         # the digital editions of one group carry different ids on the providers, so each
-        # edition's own links and barcode are tried, never those of the whole group
-        for edition in sorted(editions, key=_streaming_edition_rank)[:_MAX_EDITION_LOOKUPS]:
+        # edition's own links and barcode are tried, never those of the whole group; the
+        # editions linked to the user's own services go first, as only those resolve by link
+        services = {source.domain for source in self.mass.music.providers}
+        ranked = sorted(editions, key=lambda edition: _streaming_edition_rank(edition, services))
+        for edition in ranked[:_MAX_EDITION_LOOKUPS]:
             try:
                 release = await musicbrainz.get_release_details(edition.id)
             except InvalidDataError as err:
@@ -1388,11 +1391,22 @@ def _canonical_album_barcodes(album: Album) -> set[str]:
     }
 
 
-def _streaming_edition_rank(release: MusicBrainzBarcodeRelease) -> tuple[bool, bool, bool, str]:
-    """Return the sort key ranking a group's official editions, the one the services carry first."""
+def _streaming_edition_rank(
+    release: MusicBrainzBarcodeRelease, services: set[str]
+) -> tuple[bool, bool, bool, bool, str]:
+    """
+    Return the sort key ranking a group's official editions, the one the user's services carry first.
+
+    :param release: The edition as the release group browse lists it.
+    :param services: The domains of the music services the user may see.
+    """
+    linked = {
+        service for url in relation_urls(release.relations) if (service := share_url_provider(url))
+    }
     return (
         not is_digital_release(release),
-        not any(is_provider_share_url(url) for url in relation_urls(release.relations)),
+        not linked & services,
+        not linked,
         release.country not in ("XW", "XE"),
         release.date or "9999",
     )

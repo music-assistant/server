@@ -601,11 +601,16 @@ class MusicbrainzProvider(MetadataProvider):
             if not result or not (listing := result.get("release-groups")):
                 break
             for entry in listing:
-                # a single malformed entry should not sink the rest of the discography
-                with suppress(MissingField, InvalidFieldValue):
+                try:
                     release_group = MusicBrainzReleaseGroup.from_raw(entry)
-                    if release_group.primary_type in DISCOGRAPHY_PRIMARY_TYPES:
-                        release_groups.append(release_group)
+                except (MissingField, InvalidFieldValue) as err:
+                    # a single malformed entry should not sink the rest of the discography
+                    self.logger.debug(
+                        "Skipping malformed release group %s: %s", entry.get("id"), err
+                    )
+                    continue
+                if release_group.primary_type in DISCOGRAPHY_PRIMARY_TYPES:
+                    release_groups.append(release_group)
             offset = result.get("release-group-offset", page * RELEASE_GROUP_BROWSE_LIMIT)
             if offset + len(listing) >= result.get("release-group-count", 0):
                 break

@@ -10,8 +10,8 @@ from music_assistant.helpers.uri import (
     apple_storefront_from_url,
     canonical_provider_url,
     discogs_id_from_url,
-    is_provider_share_url,
     parse_uri,
+    share_url_provider,
 )
 
 SPOTIFY_ID = "4Z8W4fKeB5YxbusRsdQVPb"
@@ -124,23 +124,23 @@ async def test_parse_uri_rejects_truncated_or_unsupported_share_urls(url: str) -
 @pytest.mark.parametrize(
     ("url", "expected"),
     [
-        (f"https://open.spotify.com/album/{SPOTIFY_ID}", True),
-        ("https://tidal.com/browse/album/79280548", True),
-        ("https://www.deezer.com/album/6575789", True),
-        ("https://music.apple.com/us/album/in-rainbows/1109714933", True),
-        ("https://open.qobuz.com/album/0634904032432", True),
-        ("https://www.qobuz.com/us-en/album/in-rainbows-radiohead/0634904032432", True),
-        ("https://music.youtube.com/channel/UCr_iyUANcn9OX_yy9piYoLw", True),
-        ("https://www.discogs.com/release/1157205", False),
-        ("https://www.wikidata.org/wiki/Q862203", False),
-        ("https://radiohead.bandcamp.com/album/in-rainbows", False),
-        ("https://open.spotify.com/track/", False),
-        (f"spotify://album/{SPOTIFY_ID}", False),
+        (f"https://open.spotify.com/album/{SPOTIFY_ID}", "spotify"),
+        ("https://tidal.com/browse/album/79280548", "tidal"),
+        ("https://www.deezer.com/album/6575789", "deezer"),
+        ("https://music.apple.com/us/album/in-rainbows/1109714933", "apple_music"),
+        ("https://open.qobuz.com/album/0634904032432", "qobuz"),
+        ("https://www.qobuz.com/us-en/album/in-rainbows-radiohead/0634904032432", "qobuz"),
+        ("https://music.youtube.com/channel/UCr_iyUANcn9OX_yy9piYoLw", "ytmusic"),
+        ("https://www.discogs.com/release/1157205", None),
+        ("https://www.wikidata.org/wiki/Q862203", None),
+        ("https://radiohead.bandcamp.com/album/in-rainbows", None),
+        ("https://open.spotify.com/track/", None),
+        (f"spotify://album/{SPOTIFY_ID}", None),
     ],
 )
-def test_is_provider_share_url(url: str, expected: bool) -> None:
-    """Only the whole share URL of an item on a music service can become a provider mapping."""
-    assert is_provider_share_url(url) is expected
+def test_share_url_provider(url: str, expected: str | None) -> None:
+    """Only the whole share URL of an item on a music service names the service it is on."""
+    assert share_url_provider(url) == expected
 
 
 @pytest.mark.parametrize(

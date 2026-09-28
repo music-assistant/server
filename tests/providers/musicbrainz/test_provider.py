@@ -2056,6 +2056,7 @@ def _browsing_provider(pages: dict[str, Any]) -> tuple[MusicbrainzProvider, Magi
     """Return a MusicbrainzProvider and its mock API client, answering a browse per offset."""
     with patch.object(MusicbrainzProvider, "__init__", lambda *_a, **_kw: None):
         provider = MusicbrainzProvider.__new__(MusicbrainzProvider)
+    provider.logger = MagicMock()
 
     async def _answer(_endpoint: str, **kwargs: Any) -> Any:
         return pages.get(kwargs["offset"])

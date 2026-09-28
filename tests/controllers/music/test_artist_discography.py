@@ -53,12 +53,21 @@ def _artist(mbid: str | None = ARTIST_MBID) -> Artist:
     )
 
 
-def _library_album(item_id: str, name: str, release_group_id: str | None = None) -> Album:
+def _library_album(
+    item_id: str,
+    name: str,
+    release_group_id: str | None = None,
+    *,
+    year: int | None = None,
+    album_type: AlbumType = AlbumType.UNKNOWN,
+) -> Album:
     """Return a library album, optionally carrying a MusicBrainz release group id."""
     return Album(
         item_id=item_id,
         provider="library",
         name=name,
+        year=year,
+        album_type=album_type,
         external_ids=(
             {(ExternalID.MB_RELEASEGROUP, release_group_id)} if release_group_id else set()
         ),
@@ -292,18 +301,55 @@ async def test_discography_keeps_every_same_titled_release_group() -> None:
     assert [album.album_type for album in discography[1:]] == [AlbumType.LIVE, AlbumType.ALBUM]
 
 
-async def test_discography_name_matches_a_library_album_to_one_release_group_only() -> None:
-    """A library album without a group id is the first group of its name; the next is its own."""
-    library_album = _library_album("7", "OK Computer")
+async def test_discography_name_matches_same_titled_release_groups_by_year() -> None:
+    """Of same-titled groups of one kind, a library album is the one released in its year."""
+    library_album = _library_album("7", "OK Computer", year=1997)
     groups = [
-        _release_group(RG_OK_COMPUTER, "OK Computer", first_release_date="1997-05-21"),
         _release_group(RG_OK_COMPUTER_REISSUE, "OK Computer", first_release_date="2017-06-23"),
+        _release_group(RG_OK_COMPUTER, "OK Computer", first_release_date="1997-05-21"),
     ]
     with _harness(_artist(), release_groups=groups, artist_albums=[library_album]) as harness:
         discography = await harness.discography()
 
-    assert discography[0] is library_album
-    assert discography[1].uri == f"musicbrainz://album/{RG_OK_COMPUTER_REISSUE}"
+    assert discography[0].uri == f"musicbrainz://album/{RG_OK_COMPUTER_REISSUE}"
+    assert discography[1] is library_album
+
+
+async def test_discography_leaves_an_ambiguous_name_match_unresolved() -> None:
+    """A library album without a year matching same-titled groups of one kind is none of them."""
+    library_album = _library_album("7", "OK Computer")
+    groups = [
+        _release_group(RG_OK_COMPUTER_REISSUE, "OK Computer", first_release_date="2017-06-23"),
+        _release_group(RG_OK_COMPUTER, "OK Computer", first_release_date="1997-05-21"),
+    ]
+    with _harness(_artist(), release_groups=groups, artist_albums=[library_album]) as harness:
+        discography = await harness.discography()
+
+    assert [album.uri for album in discography] == [
+        f"musicbrainz://album/{RG_OK_COMPUTER_REISSUE}",
+        f"musicbrainz://album/{RG_OK_COMPUTER}",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("album_type", "expected_group"),
+    [(AlbumType.ALBUM, RG_OK_COMPUTER), (AlbumType.SINGLE, RG_KARMA_POLICE)],
+)
+async def test_discography_name_matches_an_album_to_a_group_of_its_kind(
+    album_type: AlbumType, expected_group: str
+) -> None:
+    """A same-titled single never takes the library album, nor the album the single."""
+    library_album = _library_album("7", "OK Computer", album_type=album_type)
+    groups = [
+        _release_group(RG_KARMA_POLICE, "OK Computer", primary_type="Single"),
+        _release_group(RG_OK_COMPUTER, "OK Computer"),
+    ]
+    with _harness(_artist(), release_groups=groups, artist_albums=[library_album]) as harness:
+        discography = await harness.discography()
+
+    matched = [album for album in discography if album is library_album]
+    assert len(matched) == 1
+    assert discography.index(library_album) == [group.id for group in groups].index(expected_group)
 
 
 async def test_discography_identifies_an_artist_without_a_musicbrainz_id_in_memory() -> None:

@@ -63,7 +63,7 @@ from music_assistant.models.music_provider import MusicProvider
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Container, Mapping, Sequence
 
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
@@ -307,27 +307,21 @@ class ArtistsController(MediaControllerBase[Artist]):
                 albums_by_release_group[release_group_id] = album
             else:
                 unidentified_albums.append(album)
+        for album in unidentified_albums:
+            if group := _release_group_of(
+                album,
+                release_groups,
+                albums_by_release_group,
+                musicbrainz.album_type_from_release_group,
+            ):
+                albums_by_release_group[group.id] = album
         artist_mapping = ItemMapping.from_item(artist)
         # the Cover Art Archive provider, if loaded, fetches a cover once its image is shown,
         # so the listing itself costs no lookups
         cover_provider = "coverartarchive" if self.mass.get_provider("coverartarchive") else None
         discography: list[Album] = []
         for group in release_groups:
-            library_album = albums_by_release_group.get(group.id)
-            if library_album is None:
-                # a library album not identified on MusicBrainz is the first group of its name
-                # and that one only: a same-titled live album or reissue is its own entry
-                library_album = next(
-                    (
-                        album
-                        for album in unidentified_albums
-                        if compare_album_name(album.name, group.title)
-                    ),
-                    None,
-                )
-                if library_album is not None:
-                    unidentified_albums.remove(library_album)
-            if library_album is not None:
+            if library_album := albums_by_release_group.get(group.id):
                 discography.append(library_album)
                 continue
             discography.append(
@@ -1303,6 +1297,44 @@ class ArtistsController(MediaControllerBase[Artist]):
         item = cast("ArtistSummary", super()._parse_summary_row(db_row))
         item.artist_type = ArtistType(db_row["artist_type"])
         return item
+
+
+_SHORT_FORM_TYPES = {AlbumType.SINGLE, AlbumType.EP}
+
+
+def _release_group_of(
+    album: Album,
+    release_groups: Sequence[MusicBrainzReleaseGroup],
+    claimed: Container[str],
+    album_type_of: Callable[[MusicBrainzReleaseGroup], AlbumType],
+) -> MusicBrainzReleaseGroup | None:
+    """
+    Return the one release group a library album not identified on MusicBrainz is, by its name.
+
+    :param album: The library album, without a release group id.
+    :param release_groups: The release groups of the album's artist.
+    :param claimed: The ids of the release groups other library albums are.
+    :param album_type_of: Maps a release group to the album type it describes.
+    """
+    # a same-titled single, EP or live album is its own entry, never the album's
+    candidates = [
+        group
+        for group in release_groups
+        if group.id not in claimed
+        and compare_album_name(album.name, group.title)
+        and _album_types_agree(album.album_type, album_type_of(group))
+    ]
+    if len(candidates) > 1 and album.year:
+        # same-titled groups of one kind, self-titled albums mostly, are told apart by year
+        candidates = [group for group in candidates if group.first_release_year == album.year]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _album_types_agree(library_type: AlbumType, group_type: AlbumType) -> bool:
+    """Return whether two album types can describe one release; a single or EP is never an album."""
+    if AlbumType.UNKNOWN in (library_type, group_type):
+        return True
+    return (library_type in _SHORT_FORM_TYPES) == (group_type in _SHORT_FORM_TYPES)
 
 
 def _album_from_release_group(

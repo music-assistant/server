@@ -341,7 +341,7 @@ async def test_resolve_skips_an_edition_musicbrainz_cannot_look_up() -> None:
     tidal_album = _album("tidal_1", TIDAL_ALBUM_ID)
     with _harness(
         editions=[
-            _edition("rel-stale", urls=[SPOTIFY_ALBUM_URL]),
+            _edition("rel-stale", urls=[TIDAL_ALBUM_URL]),
             _edition("rel-second", date="2008-01-01", urls=[TIDAL_ALBUM_URL]),
         ],
         releases=[_release("rel-second", urls=[TIDAL_ALBUM_URL])],
@@ -364,6 +364,27 @@ async def test_resolve_skips_an_edition_musicbrainz_cannot_look_up() -> None:
         call("rel-stale"),
         call("rel-second"),
     ]
+
+
+async def test_resolve_tries_the_editions_linked_to_the_users_services_first() -> None:
+    """For a user without Spotify, the Tidal-linked edition beats any number of Spotify ones."""
+    editions = [
+        _edition(f"rel-spotify-{index}", date=f"2007-12-{index + 1:02d}", urls=[SPOTIFY_ALBUM_URL])
+        for index in range(_MAX_EDITION_LOOKUPS)
+    ]
+    editions.append(_edition("rel-tidal", date="2008-01-01", urls=[TIDAL_ALBUM_URL]))
+    tidal_album = _album("tidal_1", TIDAL_ALBUM_ID)
+    with _harness(
+        editions=editions,
+        releases=[_release("rel-tidal", urls=[TIDAL_ALBUM_URL])],
+        loaded={"spotify": ["spotify_1"], "tidal": ["tidal_1"]},
+        providers=[_music_provider("tidal_1")],
+        albums={("tidal_1", TIDAL_ALBUM_ID): tidal_album},
+    ) as harness:
+        album = await harness.resolve()
+
+    assert album is tidal_album
+    harness.musicbrainz.get_release_details.assert_awaited_once_with("rel-tidal")
 
 
 async def test_resolve_looks_up_the_likeliest_few_editions_only() -> None:
