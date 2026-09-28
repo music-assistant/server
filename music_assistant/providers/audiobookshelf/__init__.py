@@ -1997,14 +1997,18 @@ for more details.
                     provider_instance_id_or_domain=self.instance_id,
                 ):
                     self.progress_guard.add_progress(discarded_progress_id)
-                    await self.mass.music.mark_item_unplayed(discarded_item)
+                    await self.mass.music.mark_item_unplayed(
+                        discarded_item, provider_instance_id=self.instance_id
+                    )
             else:
                 with suppress(MediaNotFoundError):
                     discarded_item = await self.get_podcast_episode(
                         prov_episode_id=discarded_progress_id, add_progress=False
                     )
                     self.progress_guard.add_progress(*discarded_progress_id.split(" "))
-                    await self.mass.music.mark_item_unplayed(discarded_item)
+                    await self.mass.music.mark_item_unplayed(
+                        discarded_item, provider_instance_id=self.instance_id
+                    )
             self.logger.debug("Discarded item %s ", discarded_progress_id)
 
     async def _update_playlog_book(self, progress: MediaProgress) -> None:
@@ -2021,13 +2025,16 @@ for more details.
         if mass_audiobook is None:
             return
         if int(progress.current_time) == 0 and not progress.is_finished:
-            await self.mass.music.mark_item_unplayed(mass_audiobook)
+            await self.mass.music.mark_item_unplayed(
+                mass_audiobook, provider_instance_id=self.instance_id
+            )
         else:
             await self.mass.music.mark_item_played(
                 mass_audiobook,
                 fully_played=progress.is_finished,
                 seconds_played=int(progress.current_time),
                 user_initiated=False,
+                provider_instance_id=self.instance_id,
             )
 
     async def _update_playlog_episode(self, progress: MediaProgress) -> None:
@@ -2043,13 +2050,16 @@ for more details.
         except MediaNotFoundError:
             return
         if int(progress.current_time) == 0 and not progress.is_finished:
-            await self.mass.music.mark_item_unplayed(mass_episode)
+            await self.mass.music.mark_item_unplayed(
+                mass_episode, provider_instance_id=self.instance_id
+            )
         else:
             await self.mass.music.mark_item_played(
                 mass_episode,
                 fully_played=progress.is_finished,
                 seconds_played=int(progress.current_time),
                 user_initiated=False,
+                provider_instance_id=self.instance_id,
             )
 
     async def _update_book_narrators(self, library_id: str) -> None:

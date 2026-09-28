@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     from music_assistant.controllers.music.media.base import (
         AudiobookSyncDetails,
         LibraryItemSyncDetails,
+        PodcastSyncDetails,
         TrackSyncDetails,
     )
     from music_assistant.mass import MusicAssistant
@@ -1574,7 +1575,9 @@ class MusicProvider(Provider):
                         db_id = int(library_item.item_id)
                         lib_fully_played = library_item.fully_played
                         lib_resume_position_ms = library_item.resume_position_ms
-                    elif self._library_item_needs_update(sync_details, prov_item):
+                    elif self._library_item_needs_update(
+                        sync_details, prov_item
+                    ) or sync_details.authors_narrators_changed(prov_item):
                         library_item = await self.mass.music.audiobooks.update_item_in_library(
                             sync_details.item_id, prov_item
                         )
@@ -1582,23 +1585,9 @@ class MusicProvider(Provider):
                         lib_fully_played = library_item.fully_played
                         lib_resume_position_ms = library_item.resume_position_ms
                     else:
-                        # Detect, if stored authors/narrators are plain strings but the provider
-                        # now supplies full Artist objects, i.e. artist support changed.
-                        prov_author = prov_item.authors[0] if prov_item.authors else None
-                        prov_narrator = prov_item.narrators[0] if prov_item.narrators else None
-                        if (sync_details.author_is_str and not isinstance(prov_author, str)) or (
-                            sync_details.narrator_is_str and not isinstance(prov_narrator, str)
-                        ):
-                            library_item = await self.mass.music.audiobooks.update_item_in_library(
-                                sync_details.item_id, prov_item
-                            )
-                            db_id = int(library_item.item_id)
-                            lib_fully_played = library_item.fully_played
-                            lib_resume_position_ms = library_item.resume_position_ms
-                        else:
-                            db_id = sync_details.item_id
-                            lib_fully_played = sync_details.fully_played
-                            lib_resume_position_ms = sync_details.resume_position_ms
+                        db_id = sync_details.item_id
+                        lib_fully_played = sync_details.fully_played
+                        lib_resume_position_ms = sync_details.resume_position_ms
 
                     cur_db_ids.add(db_id)
                     if prov_item.favorite is not None:
@@ -1848,8 +1837,11 @@ class MusicProvider(Provider):
             self._note_listed_sync_item(MediaType.PODCAST, prov_item.item_id)
             db_id: int | None = None
             try:
-                sync_details = await self.mass.music.podcasts.get_library_item_sync_details(
-                    prov_item.provider_mappings,
+                sync_details = cast(
+                    "PodcastSyncDetails | None",
+                    await self.mass.music.podcasts.get_library_item_sync_details(
+                        prov_item.provider_mappings,
+                    ),
                 )
                 db_id = sync_details.item_id if sync_details else None
                 # batch all writes for this item into a single commit
@@ -1860,7 +1852,11 @@ class MusicProvider(Provider):
                             prov_map.in_library = True
                         library_item = await self.mass.music.podcasts.add_item_to_library(prov_item)
                         db_id = int(library_item.item_id)
-                    elif self._library_item_needs_update(sync_details, prov_item):
+                    elif self._library_item_needs_update(sync_details, prov_item) or (
+                        # the genre scan drops any genre link missing from the saved
+                        # genres, so new provider genres must be saved to keep their links
+                        not set(prov_item.metadata.genres or ()) <= sync_details.genres
+                    ):
                         library_item = await self.mass.music.podcasts.update_item_in_library(
                             sync_details.item_id, prov_item
                         )
