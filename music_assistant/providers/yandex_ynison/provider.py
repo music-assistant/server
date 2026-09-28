@@ -1944,7 +1944,9 @@ class YandexYnisonProvider(PluginProvider):
                 # sees upcoming tracks and enables the "next" button.
                 await self._update_queue_list(result)
 
-        self._prefetch_task = self.mass.create_task(_do_prefetch())
+        self._prefetch_task = self.mass.create_task(
+            _do_prefetch(), task_name=f"ynison_prefetch_{self.instance_id}"
+        )
 
     async def _signal_track_completion(self) -> None:
         """
