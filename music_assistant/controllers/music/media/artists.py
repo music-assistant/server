@@ -51,6 +51,7 @@ from music_assistant.controllers.music.helpers import (
     metadata_for_update,
     provider_mappings_for_update,
 )
+from music_assistant.helpers.collections import has_available_item
 from music_assistant.helpers.compare import (
     compare_album,
     compare_album_name,
@@ -554,7 +555,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                     result.append(db_item)
                 elif not in_library_only:
                     result.append(provider_audiobook)
-        if provider_error is not None and not any(item.available for item in result):
+        if provider_error is not None and not has_available_item(result):
             # nothing could be played at all, so surface the reason instead of an empty list
             raise provider_error
         return result
