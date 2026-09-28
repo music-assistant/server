@@ -214,6 +214,25 @@ async def test_discography_lists_release_groups_the_library_lacks_as_musicbrainz
     harness.assert_nothing_written()
 
 
+async def test_discography_lists_a_musicbrainz_album_as_not_playable() -> None:
+    """A MusicBrainz album is not directly playable; a library album keeps its own flag."""
+    library_album = _library_album("7", "OK Computer", RG_OK_COMPUTER)
+    with _harness(
+        _artist(),
+        release_groups=[
+            _release_group(RG_OK_COMPUTER, "OK Computer"),
+            _release_group(RG_IN_RAINBOWS, "In Rainbows"),
+        ],
+        artist_albums=[library_album],
+    ) as harness:
+        ok_computer, in_rainbows = await harness.discography()
+
+    assert ok_computer is library_album
+    assert ok_computer.is_playable is True
+    assert in_rainbows.provider == "musicbrainz"
+    assert in_rainbows.is_playable is False
+
+
 async def test_discography_hands_each_musicbrainz_album_a_cover_the_image_proxy_resolves() -> None:
     """A MusicBrainz album's cover names its release group, for the archive to resolve when shown."""
     groups = [
