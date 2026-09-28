@@ -122,3 +122,11 @@ async def test_saving_the_tasks_settings_keeps_the_scheduled_task_states(
     states = mass.config.get(f"{CONF_CORE}/tasks/scheduled_task_states")
     assert set(states) == task_ids
     assert states[CACHE_DATABASE_CLEANUP_TASK_ID]["schedule"]["enabled"] is False
+
+
+async def test_a_successful_save_leaves_no_last_error(stub_mass: MusicAssistant) -> None:
+    """A successful save neither stores nor returns a last_error."""
+    config = await stub_mass.config.save_core_config(_DOMAIN, {CONF_LOG_LEVEL: "DEBUG"})
+
+    assert config.last_error is None
+    assert stub_mass.config.get(f"{CONF_CORE}/{_DOMAIN}/last_error") is None
