@@ -298,8 +298,7 @@ class IHeartRadioProvider(MusicProvider):
 
         :param search_query: The query to search for.
         :param media_types: The media types to include in the results.
-        :param limit: The maximum number of results per kind; live stations and artist
-            radios are each capped at it.
+        :param limit: The maximum number of results per media type.
         """
         want_radio = MediaType.RADIO in media_types
         want_podcasts = MediaType.PODCAST in media_types
@@ -318,12 +317,13 @@ class IHeartRadioProvider(MusicProvider):
                 for hit in json_items(results.get("stations"))
                 if _station_matches(hit, words)
                 and (station := parse_live_station(hit, self.instance_id, self.domain))
-            ][:limit]
+            ]
             radio += [
                 artist_radio
-                for hit in json_items(results.get("artists"))[:limit]
+                for hit in json_items(results.get("artists"))
                 if (artist_radio := parse_artist_radio(hit, self.instance_id, self.domain))
             ]
+            radio = radio[:limit]
         if want_podcasts:
             podcasts = [
                 podcast

@@ -49,6 +49,7 @@ async def test_search(provider: IHeartRadioProvider, api: FakeApi) -> None:
                 {"id": 2, "name": "KIIS 1065"},
                 {"id": 3, "name": "Love KIIS", "description": "Brisbane's Greatest Variety"},
             ],
+            "artists": [{"id": 5, "artistName": "KIIS"}],
             "podcasts": [{"id": 4, "title": "Four"}],
         }
     }
