@@ -74,6 +74,7 @@ from music_assistant.constants import (
     ATTR_MUTE_CONTROL,
     ATTR_MUTE_LOCK,
     ATTR_POWER_CONTROL,
+    ATTR_POWER_OFF_IN_PROGRESS,
     ATTR_POWERED,
     ATTR_PREVIOUS_VOLUME,
     ATTR_SUPPORTED_FEATURES,
@@ -152,6 +153,10 @@ POSITION_ANCHOR_KEYS = frozenset(
 # Long enough to cover a burst of volume nudges on a player that only reports its volume
 # back some time later, short enough for a change made on the device itself to win again.
 VOLUME_TARGET_EXPIRY = 2.0
+
+# How long an MA power off command claims the power off the player reports back,
+# covering a power control that only reports the new state some time later.
+POWER_OFF_IN_PROGRESS_EXPIRY = 10.0
 
 # How long a freshly started source session may wait for its first stream request
 # before it is considered never started and released.
@@ -2999,10 +3004,18 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # (powered == None) untouched. The player is still reachable here, so we route
         # through cmd_ungroup, which also hands over the playback of a sync leader that
         # plays its own queue.
-        if (
-            changed_values.get(ATTR_POWERED) == (True, False)
-            and player.state.type in UNGROUP_ON_POWER_OFF_TYPES
-            and (player.state.synced_to or player.state.active_group or player.state.group_members)
+        if changed_values.get(ATTR_POWERED) != (True, False):
+            return
+        # An MA power command ungroups the player itself before it flips the power, and a
+        # provider may keep listing the followers on a leader for a while after that
+        # (Sonos does), so the transition it causes would ungroup a second time. The
+        # marker expires: a command whose device never reported off must not claim the
+        # next external power off.
+        issued_at = player.extra_data.pop(ATTR_POWER_OFF_IN_PROGRESS, None)
+        if issued_at is not None and time.monotonic() - issued_at < POWER_OFF_IN_PROGRESS_EXPIRY:
+            return
+        if player.state.type in UNGROUP_ON_POWER_OFF_TYPES and (
+            player.state.synced_to or player.state.active_group or player.state.group_members
         ):
             self.mass.create_task(self.cmd_ungroup(player.player_id))
 
@@ -4020,6 +4033,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 player_state.name,
             )
             return
+        if not powered:
+            # the power off the player reports back must not ungroup it a second time
+            player.extra_data[ATTR_POWER_OFF_IN_PROGRESS] = time.monotonic()
         if player_state.power_control == PLAYER_CONTROL_NATIVE:
             # player supports power command natively: forward to player provider
             await player.power(powered)
