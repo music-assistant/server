@@ -197,7 +197,7 @@ class SnapCastPlayer(Player):
         self._attr_needs_poll = True
         self._attr_poll_interval = SNAPCLIENT_LIVENESS_POLL_INTERVAL
         if not self._update_worker:
-            self._update_worker = self.mass.create_task(self._player_update_worker)
+            self._update_worker = self.mass.create_task(self._player_update_worker())
 
     async def poll(self) -> None:
         """Poll the snapserver so abruptly powered-off clients are detected."""

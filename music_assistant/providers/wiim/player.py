@@ -636,8 +636,7 @@ class WiimPlayer(Player):
         # reconciliation. Passing the coroutine function lets the runtime drop a deduplicated
         # call cleanly.
         self.mass.create_task(
-            self._native_groups.refresh_leader,
-            self,
+            self._native_groups.refresh_leader(self, force=True),
             task_id=f"wiim_topology_{self.player_id}",
             force=True,
         )

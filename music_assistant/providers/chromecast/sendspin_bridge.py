@@ -1052,8 +1052,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             ):
                 self._pending_bridge_evaluations.add(cast_player.player_id)
                 self.mass.create_task(
-                    self._process_pending_bridge_evaluations,
-                    cast_player.player_id,
+                    self._process_pending_bridge_evaluations(cast_player.player_id),
                     task_id=f"evaluate_chromecast_sendspin_bridge_{cast_player.player_id}",
                 )
 
@@ -1090,7 +1089,7 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinChromecastBridge])
             return
 
         self.mass.create_task(
-            bridge.push_runtime_config_update,
+            bridge.push_runtime_config_update(),
             task_id=f"chromecast_sendspin_config_update_{bridge.cast_player.player_id}",
             abort_existing=True,
         )
