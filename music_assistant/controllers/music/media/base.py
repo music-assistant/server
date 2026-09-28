@@ -532,13 +532,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             search: str | None = None,
             limit: int = 500,
             offset: int = 0,
-            *,
-            sort_field: SortField | None = None,
-            sort_direction: SortDirection | None = None,
-            order_by: str | None = None,
+            order_by: str = "sort_name",
             provider: str | list[str] | None = None,
             genre: int | list[int] | None = None,
             played_only: bool = False,
+            *,
+            sort_field: SortField | None = None,
+            sort_direction: SortDirection | None = None,
             summary: bool = True,
             collapse_collections: Literal[False] = False,
             reachable_via: list[str] | None = None,
@@ -552,13 +552,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             search: str | None = None,
             limit: int = 500,
             offset: int = 0,
-            *,
-            sort_field: SortField | None = None,
-            sort_direction: SortDirection | None = None,
-            order_by: str | None = None,
+            order_by: str = "sort_name",
             provider: str | list[str] | None = None,
             genre: int | list[int] | None = None,
             played_only: bool = False,
+            *,
+            sort_field: SortField | None = None,
+            sort_direction: SortDirection | None = None,
             summary: bool = True,
             collapse_collections: Literal[True],
             reachable_via: list[str] | None = None,
@@ -572,13 +572,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             search: str | None = None,
             limit: int = 500,
             offset: int = 0,
-            *,
-            sort_field: SortField | None = None,
-            sort_direction: SortDirection | None = None,
-            order_by: str | None = None,
+            order_by: str = "sort_name",
             provider: str | list[str] | None = None,
             genre: int | list[int] | None = None,
             played_only: bool = False,
+            *,
+            sort_field: SortField | None = None,
+            sort_direction: SortDirection | None = None,
             summary: bool = True,
             collapse_collections: bool,
             reachable_via: list[str] | None = None,
@@ -591,13 +591,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         search: str | None = None,
         limit: int = 500,
         offset: int = 0,
-        *,
-        sort_field: SortField | None = None,
-        sort_direction: SortDirection | None = None,
-        order_by: str | None = None,
+        order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
+        *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
         summary: bool = True,
         collapse_collections: bool = False,
         reachable_via: list[str] | None = None,
@@ -610,13 +610,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
-        :param sort_field: Sort field to use.
-        :param sort_direction: Sort direction (ASC/DESC). Only applies if sort_field is set.
         :param order_by: DEPRECATED - use sort_field and sort_direction instead.
             Legacy string-based sorting (e.g. 'sort_name', 'timestamp_added_desc').
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
         :param played_only: Only include items that have been played (last_played > 0).
+        :param sort_field: Sort field to use.
+        :param sort_direction: Sort direction (ASC/DESC). Only applies if sort_field is set.
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
         :param collapse_collections: Collapse available collections. Items in a collection won't
@@ -1765,7 +1765,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         search = self._preprocess_search(search)
         genre_ids = self._preprocess_genre_ids(genre_ids)
         # create special performant random query
-        if order_by and order_by.startswith("random"):
+        if order_by and order_by.startswith("random") and not collapse_collections:
             self._apply_random_subquery(
                 query_parts=query_parts,
                 query_params=query_params,
@@ -2229,9 +2229,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             sub_query += " WHERE " + " AND ".join(self._clean_query_parts(sub_query_parts))
 
         # Sample limit+offset rows so later pages aren't skipped past an exhausted sample.
+        parsed_order = self._parse_order_by(order_by)
         order_sql = (
             f"COALESCE({self.db_table}.play_count, 0), RANDOM()"
-            if order_by == "random_play_count"
+            if parsed_order and parsed_order[0] == SortField.RANDOM_PLAY_COUNT
             else "RANDOM()"
         )
         sub_query += f" ORDER BY {order_sql} LIMIT {limit + offset}"
@@ -2476,13 +2477,14 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             sql_query += f" GROUP BY {self.db_table}.item_id"
 
         if order_by:
-            parsed = self._parse_order_by(order_by)
-            if parsed:
-                field, direction = parsed
-                if sort_sql := self._get_sort_sql(field, direction):
-                    sql_query += f" ORDER BY {sort_sql}"
-            elif sort_sql := self._favorite_sort_key(order_by):
+            if sort_sql := self._favorite_sort_key(order_by):
                 sql_query += f" ORDER BY {sort_sql}"
+            else:
+                parsed = self._parse_order_by(order_by)
+                if parsed:
+                    field, direction = parsed
+                    if sort_sql := self._get_sort_sql(field, direction):
+                        sql_query += f" ORDER BY {sort_sql}"
 
         return sql_query, base_query_params
 

@@ -313,22 +313,23 @@ class GenreController(MediaControllerBase[Genre]):
         search: str | None = None,
         limit: int = 500,
         offset: int = 0,
-        *,
-        sort_field: SortField | None = None,
-        sort_direction: SortDirection | None = None,
-        order_by: str | None = None,
+        order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
         hide_empty: bool | None = None,
         media_type: MediaType | None = None,
         content_type: str | None = None,
+        *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
         summary: bool = True,
         **kwargs: Any,
     ) -> list[Genre]:
         """
         Get genres in the library.
 
+        :param order_by: DEPRECATED - use sort_field and sort_direction instead.
         :param genre: NOT SUPPORTED - Filtering genres by genres doesn't make sense.
         :param hide_empty: Only applies when media_type is not set.
             True: only return genres that have at least one media mapping.
@@ -342,7 +343,6 @@ class GenreController(MediaControllerBase[Genre]):
             default podcast genres.
         :param sort_field: Sort field to use.
         :param sort_direction: Sort direction (ASC/DESC). Only applies if sort_field is set.
-        :param order_by: DEPRECATED - use sort_field and sort_direction instead.
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
         """

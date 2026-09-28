@@ -162,13 +162,13 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             search: str | None = None,
             limit: int = 500,
             offset: int = 0,
-            *,
-            sort_field: SortField | None = None,
-            sort_direction: SortDirection | None = None,
-            order_by: str | None = None,
+            order_by: str = "sort_name",
             provider: str | list[str] | None = None,
             genre: int | list[int] | None = None,
             played_only: bool = False,
+            *,
+            sort_field: SortField | None = None,
+            sort_direction: SortDirection | None = None,
             summary: bool = True,
             collapse_collections: Literal[False] = False,
             reachable_via: list[str] | None = None,
@@ -182,13 +182,13 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             search: str | None = None,
             limit: int = 500,
             offset: int = 0,
-            *,
-            sort_field: SortField | None = None,
-            sort_direction: SortDirection | None = None,
-            order_by: str | None = None,
+            order_by: str = "sort_name",
             provider: str | list[str] | None = None,
             genre: int | list[int] | None = None,
             played_only: bool = False,
+            *,
+            sort_field: SortField | None = None,
+            sort_direction: SortDirection | None = None,
             summary: bool = True,
             collapse_collections: Literal[True],
             reachable_via: list[str] | None = None,
@@ -202,13 +202,13 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             search: str | None = None,
             limit: int = 500,
             offset: int = 0,
-            *,
-            sort_field: SortField | None = None,
-            sort_direction: SortDirection | None = None,
-            order_by: str | None = None,
+            order_by: str = "sort_name",
             provider: str | list[str] | None = None,
             genre: int | list[int] | None = None,
             played_only: bool = False,
+            *,
+            sort_field: SortField | None = None,
+            sort_direction: SortDirection | None = None,
             summary: bool = True,
             collapse_collections: bool,
             reachable_via: list[str] | None = None,
@@ -221,13 +221,13 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         search: str | None = None,
         limit: int = 500,
         offset: int = 0,
-        *,
-        sort_field: SortField | None = None,
-        sort_direction: SortDirection | None = None,
-        order_by: str | None = None,
+        order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         played_only: bool = False,
+        *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
         summary: bool = True,
         collapse_collections: bool = False,
         reachable_via: list[str] | None = None,
@@ -240,11 +240,12 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         :param search: Filter by search query.
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
-        :param sort_field: Sort field to use.
-        :param sort_direction: Sort direction (ASC/DESC). Only applies if sort_field is set.
         :param order_by: DEPRECATED - use sort_field and sort_direction instead.
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
+        :param played_only: Only include audiobooks that have been played.
+        :param sort_field: Sort field to use.
+        :param sort_direction: Sort direction (ASC/DESC). Only applies if sort_field is set.
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
         :param collapse_collections: Collapse available collections. Items in a collection won't
