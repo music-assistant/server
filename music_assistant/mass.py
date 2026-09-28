@@ -49,6 +49,7 @@ from music_assistant.constants import (
     CONF_SERVER_ID,
     CONFIGURABLE_CORE_CONTROLLERS,
     DEFAULT_PROVIDERS,
+    DEFAULT_PROVIDERS_MIN_RAM_GB_HASS_ADDON,
     MASS_LOGGER_NAME,
     MIN_SCHEMA_VERSION,
     VERBOSE_LOG_LEVEL,
@@ -83,6 +84,7 @@ from music_assistant.helpers.util import (
     get_package_version,
     is_hass_supervisor,
     load_provider_module,
+    system_meets_requirements,
     warn_if_missing_x86_64_v2,
 )
 from music_assistant.models import ProviderInstanceType
@@ -1331,6 +1333,22 @@ class MusicAssistant:
                 # already processed/setup before, skip
                 continue
             if not (manifest := self._provider_manifests.get(default_provider)):
+                continue
+            if (
+                self.running_as_hass_addon
+                and (min_ram_gb := DEFAULT_PROVIDERS_MIN_RAM_GB_HASS_ADDON.get(default_provider))
+                and not system_meets_requirements(min_memory_gb=min_ram_gb)
+            ):
+                # Marked done (like a default that failed its setup() gate), so it is not
+                # offered again on every start. The user can still enable it by hand.
+                LOGGER.info(
+                    "Not enabling default provider %s: running as a Home Assistant add-on "
+                    "with less than %.0fGB of RAM",
+                    manifest.name,
+                    min_ram_gb,
+                )
+                default_providers_setup.add(default_provider)
+                changes_made = True
                 continue
             if require_mdns:
                 # if mdns discovery is required, check if we have seen any mdns entries

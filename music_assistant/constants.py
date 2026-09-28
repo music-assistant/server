@@ -1022,12 +1022,23 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     ("party", False),
     # smart_fades gates on system requirements (RAM/CPU) in its own setup(); an
     # under-spec host has the auto-created config removed again at load time.
+    # On a Home Assistant add-on it is only auto-created from 8GB of RAM (see below).
     ("smart_fades", False),
     ("lastfm_recommendations", False),
     ("playlist_metadata", False),
     # ambient_sounds provides out-of-the-box sound effects (e.g. for the queue
     # audio overlay feature) at zero resource cost until actually used
     ("ambient_sounds", False),
+}
+
+# Minimum nominal host RAM (GB) before a default provider is auto-created on a Home
+# Assistant add-on install. The add-on shares the host's RAM with Home Assistant Core and
+# every other add-on, so a torch-backed provider that fits a standalone 4GB host can push a
+# 4GB HAOS box (e.g. a Home Assistant Green) into the OOM killer. This only affects the
+# automatic setup: a user can still enable the provider by hand, where its own setup() gate
+# applies.
+DEFAULT_PROVIDERS_MIN_RAM_GB_HASS_ADDON: Final[dict[str, float]] = {
+    "smart_fades": 8.0,
 }
 
 # Seconds an external source may sit paused before we consider its session ended.
