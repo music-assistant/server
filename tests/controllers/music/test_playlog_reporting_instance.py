@@ -9,14 +9,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.config_entries import ProviderAccess
-from music_assistant_models.enums import MediaType, ProviderSharing
+from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import Artist, AudioFormat, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import DB_TABLE_PLAYLOG
 from music_assistant.mass import MusicAssistant
-from tests.common import set_music_source_access
 
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
@@ -38,16 +36,9 @@ def _mappings(item_id: str) -> set[ProviderMapping]:
 
 
 async def _setup(mass: MusicAssistant, name: str) -> tuple[User, User, Track]:
-    """Create two users, each owning one instance, and a track merged from both instances."""
-    user_a = await mass.webserver.auth.create_user(f"{name}a")
-    user_b = await mass.webserver.auth.create_user(f"{name}b")
-    set_music_source_access(
-        mass,
-        {
-            INSTANCE_A: ProviderAccess(owner=user_a.user_id, sharing=ProviderSharing.PRIVATE),
-            INSTANCE_B: ProviderAccess(owner=user_b.user_id, sharing=ProviderSharing.PRIVATE),
-        },
-    )
+    """Create two users, each limited to one instance, and a track merged from both instances."""
+    user_a = await mass.webserver.auth.create_user(f"{name}a", provider_filter=[INSTANCE_A])
+    user_b = await mass.webserver.auth.create_user(f"{name}b", provider_filter=[INSTANCE_B])
     added = await mass.music.tracks.add_item_to_library(
         Track(
             item_id=f"{name}-track",

@@ -1536,7 +1536,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         return library_item
 
     @api_command("music/mark_played", required_scope=Scope.LIBRARY_WRITE)
-    async def mark_item_played(
+    async def mark_item_played(  # noqa: PLR0915
         self,
         media_item: MediaItemType | ItemMapping,
         fully_played: bool = True,
