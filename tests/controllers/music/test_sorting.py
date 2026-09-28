@@ -135,11 +135,11 @@ def test_get_sort_options_for_album_includes_artist_name_and_random() -> None:
     assert SortField.RANDOM_PLAY_COUNT.value in fields
 
 
-def test_get_sort_options_for_genre_excludes_random_play_count() -> None:
-    """Genres have no play_count column, so RANDOM_PLAY_COUNT must not be offered."""
+def test_get_sort_options_for_genre_includes_play_count() -> None:
+    """Genre sort options include play count, which is stored on genre rows."""
     options = get_sort_options_for_media_type(MediaType.GENRE)
     fields = {option.field for option in options}
-    assert SortField.RANDOM_PLAY_COUNT.value not in fields
+    assert SortField.PLAY_COUNT.value in fields
 
 
 def test_get_sort_options_random_field_does_not_support_direction() -> None:
@@ -169,6 +169,7 @@ async def test_resolve_sort_parameters_accepts_supported_field_for_media_type(
     await mass.music.albums.library_items(
         sort_field=SortField.YEAR, sort_direction=SortDirection.ASC
     )
+    await mass.music.genres.library_items(sort_field=SortField.PLAY_COUNT)
 
 
 @pytest.mark.asyncio
