@@ -336,7 +336,10 @@ class DiscoveryController(CoreController):
             if not provider.available or not provider.manifest.mdns_discovery:
                 continue
             if service_type in provider.manifest.mdns_discovery:
-                self.mass.create_task(process_mdns_state_change(provider))
+                self.mass.create_task(
+                    process_mdns_state_change(provider),
+                    task_name=f"mdns_state_change_{provider.instance_id}",
+                )
 
     async def _replay_mdns_discovery(self, provider: ProviderInstanceType) -> None:
         """Replay cached mDNS results for a provider after it loads."""

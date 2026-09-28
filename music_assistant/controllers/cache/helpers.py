@@ -153,6 +153,9 @@ def use_cache(
                 self.mass.create_task(
                     _background_refresh(),
                     task_id=f"cache_refresh.{provider_id}.{cache_key}",
+                    # the cache key carries the looked-up arguments, so the name keeps to
+                    # the provider
+                    task_name=f"cache_refresh_{provider_id}",
                 )
                 return _reconstruct(cachedata)
 
@@ -184,7 +187,9 @@ def use_cache(
 
             # task_id folds concurrent callers for this key onto one execution
             flight = self.mass.create_task(
-                _flight(), task_id=f"cache_flight.{provider_id}.{cache_key}"
+                _flight(),
+                task_id=f"cache_flight.{provider_id}.{cache_key}",
+                task_name=f"cache_flight_{provider_id}",
             )
             if flight is asyncio.current_task():
                 # a body that calls back into itself for the same key is handed the very

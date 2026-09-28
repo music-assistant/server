@@ -116,9 +116,11 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     await asyncio.shield(buf.clear())
                 raise
 
+        task_id = f"prepare_next_audio_buffer_{queue_id}"
         self.mass.create_task(
             _do_prepare,
-            task_id=f"prepare_next_audio_buffer_{queue_id}",
+            task_id=task_id,
+            task_name=task_id,
             abort_existing=True,
         )
 
@@ -265,6 +267,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
             _preload_streamdetails,
             item_id_in_buffer,
             task_id=task_id,
+            task_name=task_id,
             abort_existing=True,
         )
 
