@@ -2109,6 +2109,31 @@ class TestSyncLeaderPowerOffUngroup:
         controller.cmd_ungroup.assert_awaited_once_with("leader")
 
     @pytest.mark.asyncio
+    async def test_ma_power_off_ungroups_once_when_the_stop_powers_the_device_off(
+        self, mock_mass: MagicMock, running_background_tasks: None
+    ) -> None:
+        """A device that reports off as soon as it is stopped is not ungrouped twice either."""
+        controller, leader = self._sync_leader(mock_mass, PlayerType.PLAYER)
+        self._report_power_natively(controller, leader)
+        leader._attr_playback_state = PlaybackState.PLAYING
+        leader._cache.clear()
+        leader.update_state(signal_event=False)
+        assert leader.state.playback_state == PlaybackState.PLAYING
+        controller.cmd_ungroup = AsyncMock()  # type: ignore[method-assign]
+
+        async def _stop(_player: Player) -> None:
+            # the device powers itself off when stopped and reports so right away
+            # (AirPlay does), before the power command reaches it
+            await leader.power(False)
+
+        controller._stop_player_or_its_queue = AsyncMock(side_effect=_stop)  # type: ignore[method-assign]
+
+        await controller._handle_cmd_power("leader", False)
+
+        assert leader.state.powered is False
+        controller.cmd_ungroup.assert_awaited_once_with("leader")
+
+    @pytest.mark.asyncio
     async def test_external_power_off_after_an_ma_power_off_still_ungroups(
         self, mock_mass: MagicMock, running_background_tasks: None
     ) -> None:
@@ -2119,7 +2144,7 @@ class TestSyncLeaderPowerOffUngroup:
         await controller._handle_cmd_power("leader", False)
         controller.cmd_ungroup.assert_awaited_once_with("leader")
 
-        # the leader was powered on and grouped again, then powered off outside of MA
+        # a further on->off report stands in for a power off outside of MA later on
         controller.signal_player_state_update(leader, {"powered": (True, False)})
 
         assert controller.cmd_ungroup.await_count == 2
@@ -2131,7 +2156,7 @@ class TestSyncLeaderPowerOffUngroup:
         controller, leader = self._sync_leader(mock_mass, PlayerType.PLAYER)
         controller.cmd_ungroup = MagicMock(return_value="ungroup-coro")  # type: ignore[method-assign]
         leader.extra_data[ATTR_POWER_OFF_IN_PROGRESS] = (
-            time.monotonic() - players_controller.POWER_OFF_IN_PROGRESS_EXPIRY
+            time.monotonic() - players_controller.POWER_OFF_IN_PROGRESS_EXPIRY - 1
         )
 
         controller.signal_player_state_update(leader, {"powered": (True, False)})

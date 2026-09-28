@@ -154,9 +154,10 @@ POSITION_ANCHOR_KEYS = frozenset(
 # back some time later, short enough for a change made on the device itself to win again.
 VOLUME_TARGET_EXPIRY = 2.0
 
-# How long an MA power off command claims the power off the player reports back,
-# covering a power control that only reports the new state some time later.
-POWER_OFF_IN_PROGRESS_EXPIRY = 10.0
+# How long an MA power off command claims the power off the player reports back. Covers
+# the stop the command waits on and a power control that reports the new state some
+# time later.
+POWER_OFF_IN_PROGRESS_EXPIRY = 30.0
 
 # How long a freshly started source session may wait for its first stream request
 # before it is considered never started and released.
@@ -4004,6 +4005,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             )
             return  # nothing to do
 
+        if not powered:
+            # the power off the player reports back must not ungroup it a second time: a
+            # device that powers itself off when stopped reports it before the power
+            # command below even reaches it
+            player.extra_data[ATTR_POWER_OFF_IN_PROGRESS] = time.monotonic()
+
         # ungroup player at power off
         player_was_sync_child = bool(player.state.synced_to or player.state.active_group)
         if (
@@ -4033,9 +4040,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                 player_state.name,
             )
             return
-        if not powered:
-            # the power off the player reports back must not ungroup it a second time
-            player.extra_data[ATTR_POWER_OFF_IN_PROGRESS] = time.monotonic()
         if player_state.power_control == PLAYER_CONTROL_NATIVE:
             # player supports power command natively: forward to player provider
             await player.power(powered)
