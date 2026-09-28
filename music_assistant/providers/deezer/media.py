@@ -182,17 +182,14 @@ class DeezerMediaManager:
         :param media_type: Media type of the item.
         :param favorite: False to ban, True or None to unban.
         """
-        gql = self.provider.gql_client
-        if media_type == MediaType.TRACK:
-            if favorite is False:
-                await gql.ban_track_from_recommendation(track_id=prov_item_id)
-            else:
-                await gql.unban_track_from_recommendation(track_id=prov_item_id)
+        if media_type == MediaType.TRACK and favorite is False:
+            await self.provider.gql_client.ban_track_from_recommendation(track_id=prov_item_id)
+        elif media_type == MediaType.TRACK:
+            await self.provider.gql_client.unban_track_from_recommendation(track_id=prov_item_id)
+        elif media_type == MediaType.ARTIST and favorite is False:
+            await self.provider.gql_client.ban_artist_from_recommendation(artist_id=prov_item_id)
         elif media_type == MediaType.ARTIST:
-            if favorite is False:
-                await gql.ban_artist_from_recommendation(artist_id=prov_item_id)
-            else:
-                await gql.unban_artist_from_recommendation(artist_id=prov_item_id)
+            await self.provider.gql_client.unban_artist_from_recommendation(artist_id=prov_item_id)
 
     # -- Pagination helper --
 
