@@ -140,11 +140,12 @@ class MetadataProvider(Provider):
             raise NotImplementedError
         return []
 
-    async def resolve_image(self, path: str) -> str | bytes:
+    async def resolve_image(self, path: str) -> str | bytes | None:
         """
         Resolve an image from an image path.
 
-        This either returns (a generator to get) raw bytes of the image or
-        a string with an http(s) URL or local path that is accessible from the server.
+        This either returns raw bytes of the image, a string with an http(s) URL or local
+        path that is accessible from the server, or None when the provider has no image at
+        the path.
         """
         return path

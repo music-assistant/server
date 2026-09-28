@@ -1,5 +1,6 @@
 """Test Tidal Streaming Manager."""
 
+import asyncio
 import base64
 import json
 from collections.abc import Coroutine
@@ -13,6 +14,20 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat, Track
 
 from music_assistant.providers.tidal.streaming import TidalStreamingManager
+
+
+def _make_task_capturer() -> tuple[list[asyncio.Future[Any]], Mock]:
+    """Return (tasks, mock) that captures coroutines passed to mass.create_task."""
+    tasks: list[asyncio.Future[Any]] = []
+
+    # accept create_task's keyword-only options (task_id, abort_existing, ...) so the stub
+    # keeps matching its signature
+    def _schedule(coro: Any, *_args: Any, **_kwargs: Any) -> asyncio.Future[Any]:
+        task: asyncio.Future[Any] = asyncio.ensure_future(coro)
+        tasks.append(task)
+        return task
+
+    return tasks, Mock(side_effect=_schedule)
 
 
 def _bts_manifest(**fields: Any) -> str:
@@ -262,6 +277,94 @@ async def test_get_stream_details_with_dash_manifest_duplicate_registration(
     assert provider_mock.mass.streams.register_dynamic_route.call_count == 2
     # cleanup was scheduled both times (not skipped on duplicate)
     assert call_later_mock.call_count == 2
+
+
+async def test_get_stream_details_with_replaygain(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock, mock_track: Mock
+) -> None:
+    """Test get_stream_details with ReplayGain values (track and album)."""
+    provider_mock.get_track.return_value = mock_track
+    provider_mock.api.get.return_value = {
+        "urls": ["https://example.com/stream.flac"],
+        "audioQuality": "LOSSLESS",
+        "sampleRate": 44100,
+        "bitDepth": 16,
+        "trackReplayGain": -3.0,
+        "albumReplayGain": -1.5,
+    }
+
+    tasks, task_mock = _make_task_capturer()
+    provider_mock.mass.streams.audio_analysis.set_track_loudness = AsyncMock()
+    provider_mock.mass.create_task = task_mock
+
+    stream_details = await streaming_manager.get_stream_details("123")
+    await asyncio.gather(*tasks)
+
+    assert stream_details.loudness == -15.0
+    assert stream_details.loudness_album == -16.5
+
+    provider_mock.mass.streams.audio_analysis.set_track_loudness.assert_awaited_once_with(
+        item_id="123",
+        provider_instance_id_or_domain="tidal_instance",
+        loudness=-15.0,
+        loudness_album=-16.5,
+    )
+
+
+async def test_get_stream_details_with_replaygain_track_only(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock, mock_track: Mock
+) -> None:
+    """Test get_stream_details with ReplayGain values (track only)."""
+    provider_mock.get_track.return_value = mock_track
+    provider_mock.api.get.return_value = {
+        "urls": ["https://example.com/stream.flac"],
+        "audioQuality": "LOSSLESS",
+        "sampleRate": 44100,
+        "bitDepth": 16,
+        "trackReplayGain": -3.0,
+    }
+
+    tasks, task_mock = _make_task_capturer()
+    provider_mock.mass.streams.audio_analysis.set_track_loudness = AsyncMock()
+    provider_mock.mass.create_task = task_mock
+
+    stream_details = await streaming_manager.get_stream_details("123")
+    await asyncio.gather(*tasks)
+
+    assert stream_details.loudness == -15.0
+    assert stream_details.loudness_album is None
+
+    provider_mock.mass.streams.audio_analysis.set_track_loudness.assert_awaited_once_with(
+        item_id="123",
+        provider_instance_id_or_domain="tidal_instance",
+        loudness=-15.0,
+        loudness_album=None,
+    )
+
+
+async def test_get_stream_details_without_replaygain(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock, mock_track: Mock
+) -> None:
+    """Test that get_stream_details without ReplayGain values does not run set_track_loudness."""
+    provider_mock.get_track.return_value = mock_track
+    provider_mock.api.get.return_value = {
+        "urls": ["https://example.com/stream.flac"],
+        "audioQuality": "LOSSLESS",
+        "sampleRate": 44100,
+        "bitDepth": 16,
+    }
+
+    tasks, task_mock = _make_task_capturer()
+    provider_mock.mass.streams.audio_analysis.set_track_loudness = AsyncMock()
+    provider_mock.mass.create_task = task_mock
+
+    stream_details = await streaming_manager.get_stream_details("123")
+    await asyncio.gather(*tasks)
+
+    assert stream_details.loudness is None
+    assert stream_details.loudness_album is None
+
+    provider_mock.mass.streams.audio_analysis.set_track_loudness.assert_not_awaited()
 
 
 async def test_remove_dash_route(

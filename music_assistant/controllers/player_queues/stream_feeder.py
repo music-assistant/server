@@ -27,8 +27,10 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
 from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
 
@@ -75,6 +77,15 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     # for an item that left it would sit on a buffer no cleanup reaches
                     if self.get_item(queue_id, next_item.queue_item_id) is None:
                         return
+                if holder := self._single_source_slot_holder(queue, next_item):
+                    # the playing item frees that slot only when it ends, and the end of its
+                    # stream schedules this preload again, so waiting for it here is pointless
+                    self.logger.debug(
+                        "Not preparing %s yet: the playing item holds the only %s source slot",
+                        next_item.name,
+                        holder.name,
+                    )
+                    return
                 self.logger.debug(
                     "Preparing audio buffer for next track %s on queue %s",
                     next_item.name,
@@ -348,3 +359,25 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 buffers_cleared,
                 queue_id,
             )
+
+    def _single_source_slot_holder(
+        self, queue: PlayerQueue, next_item: QueueItem
+    ) -> MusicProvider | None:
+        """Return the next item's source if the realtime item playing holds its only slot."""
+        playing = queue.current_item.streamdetails if queue.current_item else None
+        upcoming = next_item.streamdetails
+        if playing is None or upcoming is None or playing.provider != upcoming.provider:
+            return None
+        # the end of a realtime fill schedules this preload again; for any other source
+        # nothing does, so that one keeps waiting for the slot
+        if not playing.is_realtime or (buffer := playing.buffer) is None or buffer.eof:
+            return None
+        # the exact instance: a lookup by domain may land on a sibling instance's budget
+        provider = self.mass.get_provider(playing.provider, return_unavailable=True)
+        if (
+            isinstance(provider, MusicProvider)
+            and provider.max_concurrent_streams == 1
+            and not provider.has_available_stream_slot
+        ):
+            return provider
+        return None

@@ -210,7 +210,7 @@ def parse_album(
     inferred_type = infer_album_type(album.name, "")
     if inferred_type in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
         album.album_type = inferred_type
-    album.favorite = is_favourite or False
+    album.favorite = is_favourite
     return album
 
 
@@ -301,7 +301,7 @@ def parse_track(
     with suppress(TypeError, ValueError):
         if added := raw_attributes.get("dateAdded"):
             track.date_added = datetime.fromisoformat(added).replace(microsecond=0)
-    track.favorite = is_favourite or False
+    track.favorite = is_favourite
     return track
 
 
@@ -343,7 +343,7 @@ def parse_playlist(
         playlist.metadata.add_image(image)
     if description := attributes.get("description"):
         playlist.metadata.description = description.get("standard")
-    playlist.favorite = is_favourite or False
+    playlist.favorite = is_favourite
     return playlist
 
 

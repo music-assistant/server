@@ -38,6 +38,7 @@ from music_assistant.constants import (
     PLAYBACK_REPORT_INTERVAL_SECONDS,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.music.favorites import without_disliked_tracks
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
 from music_assistant.controllers.player_queues.helpers import (
     CompareState,
@@ -488,6 +489,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                     set_current_user(playback_user)
                     dynamic_tracks = await self._media_resolver.get_dynamic_source_tracks(
                         dynamic_source
+                    )
+                    dynamic_tracks = await without_disliked_tracks(
+                        self.mass, queue_data.userid, dynamic_tracks
                     )
                     if self._queue_data.get(queue.queue_id) is not queue_data:
                         # the queue was removed or re-registered while tracks were fetched
