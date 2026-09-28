@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
-import pytest
-from music_assistant_models.enums import MediaType, StreamType
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+import asyncio
+from typing import Any
 
-from music_assistant.controllers.streams.constants import STREAMDETAILS_INBAND_TITLE_KEY
+import pytest
+from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ResourceTemporarilyUnavailable,
+    UnplayableMediaError,
+)
+
+from music_assistant.controllers.streams.constants import (
+    STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY,
+    STREAMDETAILS_INBAND_TITLE_KEY,
+)
+from music_assistant.providers.iheartradio import streaming
 from music_assistant.providers.iheartradio.constants import (
     MAX_EPISODE_PAGES,
     PATH_CATALOG_ALBUM,
@@ -14,6 +26,7 @@ from music_assistant.providers.iheartradio.constants import (
     PATH_NOW_PLAYING,
     PATH_PODCAST,
     PATH_PODCAST_CATEGORIES,
+    PATH_PODCAST_EPISODE,
     PATH_PODCAST_EPISODES,
     PATH_SEARCH,
 )
@@ -23,6 +36,8 @@ from .conftest import EPISODE, NOW_PLAYING, PODCAST, STATION, FakeApi
 
 STATION_ID = str(STATION["id"])
 PODCAST_ID = str(PODCAST["id"])
+EPISODE_ITEM_ID = f"{PODCAST_ID}:{EPISODE['id']}"
+EPISODE_URL = "https://chrt.fm/track/ihr/episode.mp3"
 
 
 async def test_search(provider: IHeartRadioProvider, api: FakeApi) -> None:
@@ -132,6 +147,74 @@ async def test_station_stream_without_now_playing(
     details = await provider.get_stream_details(STATION_ID, MediaType.RADIO)
     assert details.stream_metadata_update_callback is None
     assert details.stream_metadata is None
+
+
+async def test_station_stream_starts_without_slow_now_playing(
+    provider: IHeartRadioProvider, api: FakeApi, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A now-playing lookup that does not answer in time leaves the start to the in-band title."""
+    api.responses[PATH_LIVE_STATION.format(station_id=STATION_ID)] = {"hits": [STATION]}
+
+    async def never_answers(_station_id: str) -> dict[str, Any] | None:
+        await asyncio.Event().wait()
+        return None
+
+    monkeypatch.setattr(streaming, "NOW_PLAYING_START_TIMEOUT", 0.01)
+    monkeypatch.setattr(provider.api, "get_now_playing", never_answers)
+    details = await provider.get_stream_details(STATION_ID, MediaType.RADIO)
+    assert details.path == "https://example.com/kiis.m3u8"
+    assert details.stream_metadata is None
+    assert details.data[STREAMDETAILS_INBAND_TITLE_HANDOFF_KEY] is True
+    assert details.stream_metadata_update_callback is not None
+
+
+async def test_station_metadata_survives_a_failed_refresh(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """A refresh the API fails keeps the metadata shown so far."""
+    api.responses[PATH_LIVE_STATION.format(station_id=STATION_ID)] = {"hits": [STATION]}
+    api.responses[PATH_NOW_PLAYING.format(station_id=STATION_ID)] = NOW_PLAYING
+    details = await provider.get_stream_details(STATION_ID, MediaType.RADIO)
+    shown = details.stream_metadata
+    assert shown is not None
+    api.responses[PATH_NOW_PLAYING.format(station_id=STATION_ID)] = ResourceTemporarilyUnavailable(
+        "timeout"
+    )
+    assert details.stream_metadata_update_callback is not None
+    await details.stream_metadata_update_callback(details, 30)
+    assert details.stream_metadata is shown
+
+
+@pytest.mark.parametrize(
+    ("mime_types", "content_type"),
+    [(["audio/aac"], ContentType.AAC), ([], ContentType.MP3)],
+)
+async def test_episode_stream(
+    provider: IHeartRadioProvider,
+    api: FakeApi,
+    mime_types: list[str],
+    content_type: ContentType,
+) -> None:
+    """An episode streams its media url, typed by its mime type or else its url, and seeks."""
+    api.responses[PATH_PODCAST_EPISODE.format(episode_id=EPISODE["id"])] = {
+        "episode": {**EPISODE, "mimeTypes": mime_types, "mediaUrl": EPISODE_URL}
+    }
+    details = await provider.get_stream_details(EPISODE_ITEM_ID, MediaType.PODCAST_EPISODE)
+    assert details.stream_type == StreamType.HTTP
+    assert details.path == EPISODE_URL
+    assert details.audio_format.content_type == content_type
+    assert details.duration == EPISODE["duration"]
+    assert details.can_seek
+    assert details.allow_seek
+
+
+async def test_episode_without_media_url_is_unplayable(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """An episode that offers no media url raises UnplayableMediaError."""
+    api.responses[PATH_PODCAST_EPISODE.format(episode_id=EPISODE["id"])] = {"episode": EPISODE}
+    with pytest.raises(UnplayableMediaError):
+        await provider.get_stream_details(EPISODE_ITEM_ID, MediaType.PODCAST_EPISODE)
 
 
 async def test_unknown_station(provider: IHeartRadioProvider, api: FakeApi) -> None:

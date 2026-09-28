@@ -11,7 +11,13 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
-from music_assistant_models.errors import MediaNotFoundError, UnplayableMediaError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+    RateLimited,
+    UnplayableMediaError,
+)
 from music_assistant_models.media_items import Podcast, Radio
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
@@ -66,6 +72,31 @@ def _configure(provider: IHeartRadioProvider, **setup: str) -> None:
     """Give the provider setup values, credentials and stored session alike, and no session yet."""
     provider.get_setup_value = Mock(side_effect=setup.get)  # type: ignore[method-assign]
     _auth(provider).session = None
+
+
+def _serve_http(
+    provider: IHeartRadioProvider, *responses: tuple[int, bytes]
+) -> list[dict[str, Any]]:
+    """
+    Answer the provider's real API requests with the given status and body, in order.
+
+    Returns the keyword arguments of each HTTP request, filled in as they are made.
+
+    :param provider: The provider whose API client should send real requests.
+    :param responses: The status and body to answer each request with.
+    """
+    sent: list[dict[str, Any]] = []
+    queue = list(responses)
+
+    @asynccontextmanager
+    async def fake_request(_method: str, _url: str, **kwargs: Any) -> AsyncIterator[Mock]:
+        sent.append(kwargs)
+        status, body = queue.pop(0)
+        yield Mock(status=status, headers={}, read=AsyncMock(return_value=body))
+
+    provider.mass = Mock(http_session=Mock(request=fake_request))
+    provider.api.request = IHeartRadioApiClient.request.__get__(provider.api)  # type: ignore[method-assign]
+    return sent
 
 
 async def _reports(api: FakeApi) -> list[dict[str, Any]]:
@@ -171,6 +202,24 @@ async def test_library_podcasts_follow_the_cursor(
     podcasts = [podcast async for podcast in provider.get_library_podcasts()]
     assert [podcast.name for podcast in podcasts] == [PODCAST["title"], "Second"]
     assert api.calls[-1][1]["pageKey"] == "cursor-2"
+
+
+@pytest.mark.parametrize("page", [{}, {"data": {}}])
+async def test_library_podcasts_reject_a_broken_page(
+    provider: IHeartRadioProvider, api: FakeApi, page: dict[str, Any]
+) -> None:
+    """A follow page without a list of entries raises instead of passing as an empty list."""
+    api.responses[PATH_PODCAST_FOLLOWS] = page
+    with pytest.raises(InvalidDataError):
+        [podcast async for podcast in provider.get_library_podcasts()]
+
+
+async def test_library_podcasts_empty_without_body(
+    provider: IHeartRadioProvider, api: FakeApi
+) -> None:
+    """An empty follow list answered without a body yields no podcasts."""
+    api.responses[PATH_PODCAST_FOLLOWS] = None
+    assert [podcast async for podcast in provider.get_library_podcasts()] == []
 
 
 async def test_library_add_and_remove_routes(provider: IHeartRadioProvider, api: FakeApi) -> None:
@@ -304,20 +353,15 @@ async def test_search_offers_artists_as_artist_radio(
     assert api.calls[-1][1]["artist"] == "true"
 
 
-async def test_rejected_session_is_renewed_once(provider: IHeartRadioProvider) -> None:
-    """A request the API answers with 401 is retried once with a fresh session."""
-    statuses = [401, 200]
-    seen_headers: list[dict[str, str]] = []
-
-    @asynccontextmanager
-    async def fake_request(_method: str, _url: str, **kwargs: Any) -> AsyncIterator[Mock]:
-        seen_headers.append(kwargs["headers"])
-        status = statuses.pop(0)
-        yield Mock(status=status, headers={}, read=AsyncMock(return_value=b'{"ok": true}'))
-
-    provider.mass = Mock(http_session=Mock(request=fake_request))
-    real_request = IHeartRadioApiClient.request.__get__(provider.api)
-    provider.api.request = real_request  # type: ignore[method-assign]
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [(401, b""), (400, b'{"errors": [{"code": 2, "description": "Session expired"}]}')],
+)
+async def test_rejected_session_is_renewed_once(
+    provider: IHeartRadioProvider, status: int, body: bytes
+) -> None:
+    """A request the API answers with a rejected session is retried once with a fresh session."""
+    sent = _serve_http(provider, (status, body), (200, b'{"ok": true}'))
 
     async def relogin(stale: IHeartRadioSession | None = None) -> None:
         assert stale is _auth(provider).session
@@ -325,4 +369,36 @@ async def test_rejected_session_is_renewed_once(provider: IHeartRadioProvider) -
 
     _auth(provider).relogin = relogin  # type: ignore[method-assign]
     assert await provider.api.request("GET", "/api/v3/anything") == {"ok": True}
-    assert [headers["X-IHR-Session-ID"] for headers in seen_headers] == [SESSION_ID, "fresh"]
+    assert [kwargs["headers"]["X-IHR-Session-ID"] for kwargs in sent] == [SESSION_ID, "fresh"]
+
+
+async def test_rejected_login_is_login_failed(provider: IHeartRadioProvider) -> None:
+    """A 400 on a login request raises LoginFailed with the API's own reason."""
+    _serve_http(provider, (400, b'{"errors": [{"code": 1, "description": "Bad password"}]}'))
+    with pytest.raises(LoginFailed, match="Bad password"):
+        await provider.api.request("POST", PATH_LOGIN, authenticated=False)
+
+
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [(400, b'{"error": {"code": 404, "description": "Episode not found"}}'), (404, b"")],
+)
+async def test_missing_content_is_not_found(
+    provider: IHeartRadioProvider, status: int, body: bytes
+) -> None:
+    """A 400 or 404 that is not about the session raises MediaNotFoundError without a relogin."""
+    sent = _serve_http(provider, (status, body))
+    relogin = AsyncMock()
+    _auth(provider).relogin = relogin  # type: ignore[method-assign]
+    with pytest.raises(MediaNotFoundError):
+        await provider.api.request("GET", "/api/v3/podcast/episodes/1")
+    assert len(sent) == 1
+    relogin.assert_not_called()
+
+
+def test_rate_limit_carries_retry_after(provider: IHeartRadioProvider) -> None:
+    """A 429 raises RateLimited with the server's Retry-After as the backoff."""
+    response = Mock(status=429, headers={"Retry-After": "7"})
+    with pytest.raises(RateLimited) as err:
+        provider.api._handle_response("https://au.api.iheart.com/x", response, b"")
+    assert err.value.backoff_time == 7
