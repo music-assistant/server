@@ -799,6 +799,7 @@ def _routed_provider(routes: dict[str, Any]) -> tuple[MusicbrainzProvider, Async
     """
     with patch.object(MusicbrainzProvider, "__init__", lambda *_a, **_kw: None):
         provider = MusicbrainzProvider.__new__(MusicbrainzProvider)
+    provider.logger = MagicMock()
 
     async def _answer(endpoint: str, **kwargs: Any) -> Any:
         if endpoint == "url":
@@ -1240,6 +1241,20 @@ async def test_browse_releases_by_release_group_is_empty_without_a_complete_list
     ):
         provider, _ = _routed_provider({"release?release-group": listing})
         assert await provider.browse_releases_by_release_group("rg-in-rainbows") == []
+
+
+async def test_browse_releases_by_release_group_skips_a_malformed_edition_when_partial() -> None:
+    """Where a partial listing will do, one edition that cannot be parsed costs only itself."""
+    listing = {
+        "release-count": 3,
+        "release-offset": 0,
+        "releases": [_edition("rel-1"), {"title": "no id"}, _edition("rel-2")],
+    }
+    provider, _ = _routed_provider({"release?release-group": listing})
+
+    releases = await provider.browse_releases_by_release_group("rg-in-rainbows", complete=False)
+
+    assert [release.id for release in releases] == ["rel-1", "rel-2"]
 
 
 async def test_browse_releases_by_release_group_pages_through_a_reissued_group() -> None:

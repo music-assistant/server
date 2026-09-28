@@ -587,7 +587,7 @@ class AlbumsController(MediaControllerBase[Album]):
         # the digital editions of one group carry different ids on the providers, so each
         # edition's own links and barcode are tried, never those of the whole group; the
         # editions linked to the user's own services go first, as only those resolve by link
-        services = {source.domain for source in self.mass.music.providers}
+        services = {source.domain for source in self.mass.music.providers if source.available}
         ranked = sorted(editions, key=lambda edition: _streaming_edition_rank(edition, services))
         for edition in ranked[:_MAX_EDITION_LOOKUPS]:
             try:
@@ -1420,16 +1420,17 @@ def _within_sources(
     """
     Return the candidates that name one of the given music sources.
 
-    A candidate on another instance of a service the sources include moves to the first of
-    those; one on a service they do not include is left out.
+    A candidate stays on its own instance when that is an available source; otherwise it
+    moves to the first available instance the sources have of its service, failing that to
+    the first there is. One on a service they do not include is left out.
     """
-    instances = {source.instance_id for source in sources}
+    available = {source.instance_id for source in sources if source.available}
     first_by_domain: dict[str, str] = {}
-    for source in sources:
+    for source in sorted(sources, key=lambda source: not source.available):
         first_by_domain.setdefault(source.domain, source.instance_id)
     within: list[ProviderMapping] = []
     for candidate in candidates:
-        if candidate.provider_instance in instances:
+        if candidate.provider_instance in available:
             within.append(candidate)
         elif instance := first_by_domain.get(candidate.provider_domain):
             within.append(replace(candidate, provider_instance=instance))

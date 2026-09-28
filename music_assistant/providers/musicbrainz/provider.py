@@ -575,10 +575,16 @@ class MusicbrainzProvider(MetadataProvider):
         # a partial listing cannot tell a group's editions apart, so it is no answer at all
         if complete and release_count > len(listing):
             return []
-        try:
-            return [MusicBrainzBarcodeRelease.from_raw(release) for release in listing]
-        except MissingField, InvalidFieldValue:
-            return []
+        editions: list[MusicBrainzBarcodeRelease] = []
+        for entry in listing:
+            try:
+                editions.append(MusicBrainzBarcodeRelease.from_raw(entry))
+            except (MissingField, InvalidFieldValue) as err:
+                # a complete listing with a hole in it is a partial one
+                if complete:
+                    return []
+                self.logger.debug("Skipping malformed release %s: %s", entry.get("id"), err)
+        return editions
 
     async def browse_release_groups_by_artist(
         self, artist_mbid: str

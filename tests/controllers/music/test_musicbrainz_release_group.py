@@ -389,6 +389,29 @@ async def test_resolve_tries_the_editions_linked_to_the_users_services_first() -
     harness.musicbrainz.get_release_details.assert_awaited_once_with("rel-tidal")
 
 
+async def test_resolve_ranks_a_link_to_an_offline_service_no_higher() -> None:
+    """The user's Spotify being offline, the Tidal-linked edition beats the Spotify-linked ones."""
+    editions = [
+        _edition(f"rel-spotify-{index}", date=f"2007-12-{index + 1:02d}", urls=[SPOTIFY_ALBUM_URL])
+        for index in range(_MAX_EDITION_LOOKUPS)
+    ]
+    editions.append(_edition("rel-tidal", date="2008-01-01", urls=[TIDAL_ALBUM_URL]))
+    spotify = _music_provider("spotify_1")
+    spotify.available = False
+    tidal_album = _album("tidal_1", TIDAL_ALBUM_ID)
+    with _harness(
+        editions=editions,
+        releases=[_release("rel-tidal", urls=[TIDAL_ALBUM_URL])],
+        loaded={"spotify": ["spotify_1"], "tidal": ["tidal_1"]},
+        providers=[spotify, _music_provider("tidal_1")],
+        albums={("tidal_1", TIDAL_ALBUM_ID): tidal_album},
+    ) as harness:
+        album = await harness.resolve()
+
+    assert album is tidal_album
+    harness.musicbrainz.get_release_details.assert_awaited_once_with("rel-tidal")
+
+
 async def test_resolve_ranks_an_edition_by_its_usable_album_links_only() -> None:
     """A link to the artist, or a malformed one, earns an edition no place ahead of the others."""
     editions = [
@@ -559,6 +582,26 @@ async def test_resolve_takes_a_link_on_the_instance_the_user_may_see() -> None:
         releases=[_release("rel-digital", urls=[SPOTIFY_ALBUM_URL])],
         loaded={"spotify": ["spotify_1", "spotify_2"]},
         providers=[_music_provider("spotify_2")],
+        albums={("spotify_2", SPOTIFY_ALBUM_ID): spotify_album},
+    ) as harness:
+        album = await harness.resolve()
+
+    assert album is spotify_album
+    harness.get_provider_item.assert_awaited_once_with(
+        SPOTIFY_ALBUM_ID, "spotify_2", **STRICT_FETCH
+    )
+
+
+async def test_resolve_takes_a_link_on_an_available_instance_of_the_service() -> None:
+    """A link to an offline instance is taken on the user's other, working instance of that service."""
+    spotify_offline = _music_provider("spotify_1")
+    spotify_offline.available = False
+    spotify_album = _album("spotify_2", SPOTIFY_ALBUM_ID)
+    with _harness(
+        editions=[_edition("rel-digital", urls=[SPOTIFY_ALBUM_URL])],
+        releases=[_release("rel-digital", urls=[SPOTIFY_ALBUM_URL])],
+        loaded={"spotify": ["spotify_1", "spotify_2"]},
+        providers=[spotify_offline, _music_provider("spotify_2")],
         albums={("spotify_2", SPOTIFY_ALBUM_ID): spotify_album},
     ) as harness:
         album = await harness.resolve()
