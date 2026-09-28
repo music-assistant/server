@@ -3079,26 +3079,23 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """Get player with check if playback related command should be redirected."""
         player = self.get_player(player_id, True)
         assert player is not None  # for type checking
-        if player.state.synced_to and (sync_leader := self.get_player(player.state.synced_to)):
-            self.logger.info(
-                "Player %s is synced to %s and can not accept "
-                "playback related commands itself, "
-                "redirected the command to the sync leader.",
-                player.name,
-                sync_leader.name,
-            )
-            return sync_leader
-        if player.state.active_group and (
-            active_group := self.get_player(player.state.active_group)
+        target = player
+        if target.state.synced_to and (sync_leader := self.get_player(target.state.synced_to)):
+            target = sync_leader
+        # a captured sync leader hands the command on to its group, which owns its
+        # playback and whose lock has to be taken first (see get_group_and_player_lock)
+        if target.state.active_group and (
+            active_group := self.get_player(target.state.active_group)
         ):
+            target = active_group
+        if target is not player:
             self.logger.info(
-                "Player %s is part of a playergroup and can not accept "
-                "playback related commands itself, "
-                "redirected the command to the group leader.",
+                "Player %s is synced or grouped and can not accept playback related "
+                "commands itself, redirected the command to %s.",
                 player.name,
+                target.name,
             )
-            return active_group
-        return player
+        return target
 
     def _get_active_audio_source(self, player: Player) -> tuple[AudioSource, PluginProvider] | None:
         """

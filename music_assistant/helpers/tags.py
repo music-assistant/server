@@ -411,6 +411,20 @@ class AudioTags:
         return ()
 
     @property
+    def series(self) -> str | None:
+        """Return the series an audiobook belongs to."""
+        return self.tags.get("series")
+
+    @property
+    def series_part(self) -> float | str | None:
+        """Return the audiobook's position within its series."""
+        if not (tag := self.tags.get("seriespart")):
+            return None
+        with suppress(ValueError):
+            return float(tag)
+        return str(tag)
+
+    @property
     def album_artists(self) -> tuple[str, ...]:
         """Return (all) album artists (if any)."""
         # Preferred path when unambiguously separated album artist names are available
@@ -930,6 +944,30 @@ def _store_audiobook_tags(
         result["composer"] = composers if len(composers) > 1 else composers[0]
 
 
+def _normalized_tag_values(
+    keys: Iterable[str], get_values: Callable[[str], list[str] | None]
+) -> dict[str, list[str]]:
+    """
+    Return the values of the given tags, keyed by their normalized tag name.
+
+    :param keys: The raw tag names present in the file.
+    :param get_values: Lookup returning all values of a tag name.
+    """
+    return {_normalize_tag_key(key): values for key in keys if (values := get_values(key))}
+
+
+def _store_series_tags(result: dict[str, Any], values_by_key: dict[str, list[str]]) -> None:
+    """
+    Store the series an audiobook belongs to and its position within it.
+
+    :param result: Dictionary to store parsed tags.
+    :param values_by_key: Tag values keyed by normalized tag name.
+    """
+    for key in ("series", "seriespart"):
+        if values := values_by_key.get(key):
+            result[key] = values[0]
+
+
 def _first_present(
     get_values: Callable[[str], list[str] | None], keys: Iterable[str]
 ) -> list[str] | None:
@@ -1080,6 +1118,7 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
         _first_present(freeform.get, _WRITER_TAGS),
         list(tags["©wrt"]) if "©wrt" in tags else None,
     )
+    _store_series_tags(result, freeform)
 
     return result
 
@@ -1195,6 +1234,7 @@ def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:  # noqa: PLR0915
         _first_present(user_frames.get, _WRITER_TAGS),
         list(composer) if (composer := _id3_get_tag_text(tags, "TCOM")) else None,
     )
+    _store_series_tags(result, user_frames)
 
     return result
 
@@ -1340,13 +1380,18 @@ def _parse_vorbis_tags(tags: VCommentDict) -> dict[str, Any]:
     if albumsort := _vorbis_get_single(tags, "ALBUMSORT"):
         result["albumsort"] = albumsort
 
-    # Audiobook credits
+    # Audiobook credits and series, under whatever casing/separator the tagger favours
+    audiobook_tags = _normalized_tag_values(
+        tags.keys(),  # type: ignore[no-untyped-call]
+        lambda key: _vorbis_get_multi(tags, key),
+    )
     _store_audiobook_tags(
         result,
-        _first_present(lambda key: _vorbis_get_multi(tags, key), _NARRATOR_TAGS),
-        _first_present(lambda key: _vorbis_get_multi(tags, key), _WRITER_TAGS),
-        _vorbis_get_multi(tags, "COMPOSER"),
+        _first_present(audiobook_tags.get, _NARRATOR_TAGS),
+        _first_present(audiobook_tags.get, _WRITER_TAGS),
+        audiobook_tags.get("composer"),
     )
+    _store_series_tags(result, audiobook_tags)
 
     return result
 
@@ -1489,13 +1534,18 @@ def _parse_apev2_tags(tags: APEv2) -> dict[str, Any]:  # noqa: PLR0915
     if albumsort := _apev2_get_single(tags, "ALBUMSORT"):
         result["albumsort"] = albumsort
 
-    # Audiobook credits
+    # Audiobook credits and series, under whatever casing/separator the tagger favours
+    audiobook_tags = _normalized_tag_values(
+        tags.keys(),  # type: ignore[no-untyped-call]
+        lambda key: _apev2_get_multi(tags, key),
+    )
     _store_audiobook_tags(
         result,
-        _first_present(lambda key: _apev2_get_multi(tags, key), _NARRATOR_TAGS),
-        _first_present(lambda key: _apev2_get_multi(tags, key), _WRITER_TAGS),
-        _apev2_get_multi(tags, "COMPOSER"),
+        _first_present(audiobook_tags.get, _NARRATOR_TAGS),
+        _first_present(audiobook_tags.get, _WRITER_TAGS),
+        audiobook_tags.get("composer"),
     )
+    _store_series_tags(result, audiobook_tags)
 
     return result
 

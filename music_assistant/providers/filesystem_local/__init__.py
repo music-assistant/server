@@ -43,6 +43,7 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
     MediaItemChapter,
+    MediaItemCollection,
     MediaItemImage,
     MediaItemType,
     Playlist,
@@ -66,6 +67,7 @@ from music_assistant.constants import (
     DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
+    DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
     VERBOSE_LOG_LEVEL,
@@ -114,7 +116,6 @@ from .constants import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PROPAGATE_GENRES,
     CUE_EXTENSIONS,
-    DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     IMAGE_EXTENSIONS,
     METADATA_FILE_CACHE_EXPIRATION,
     METADATA_FILE_EXTENSIONS,
@@ -2977,6 +2978,14 @@ class LocalFileSystemProvider(MusicProvider):
         audio_book.narrators.set(
             [self._parse_audiobook_artist(name, ArtistType.NARRATOR) for name in narrator_names]
         )
+        if series := tags.series:
+            audio_book.metadata.collections = UniqueList(
+                [MediaItemCollection(title=series, sequence=tags.series_part)]
+            )
+        else:
+            # clean up removed collections
+            audio_book.metadata.collections = UniqueList([])
+
         audio_book.metadata.genres = (
             set(tags.genres) if tags.genres else {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
         )
@@ -3094,6 +3103,7 @@ class LocalFileSystemProvider(MusicProvider):
             set(tags.genres) if tags.genres else {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
         )
         episode.metadata.copyright = tags.get("copyright")
+        episode.metadata.release_date = tags.release_date
         episode.metadata.lyrics = tags.lyrics
         episode.metadata.description = tags.get("comment")
         explicit_tag = tags.get("itunesadvisory")

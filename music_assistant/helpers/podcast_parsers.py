@@ -23,6 +23,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
 from music_assistant.helpers.transcripts import (
     cues_to_text,
     document_to_text,
@@ -214,7 +215,7 @@ def parse_podcast(
             elif isinstance(_sub_genre, str):
                 genres.append(_sub_genre)
 
-    mass_podcast.metadata.genres = set(genres)
+    mass_podcast.metadata.genres = set(genres) or {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
     mass_podcast.metadata.description = parsed_feed.get("description", "")
     mass_podcast.metadata.explicit = parsed_feed.get("explicit", False)
     language = parsed_feed.get("language")

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
+from json import loads as json_loads
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
@@ -30,7 +32,7 @@ from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
 
-from .base import MediaControllerBase
+from .base import MediaControllerBase, PodcastSyncDetails
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -480,3 +482,16 @@ class PodcastsController(MediaControllerBase[Podcast]):
         item.publisher = db_row["publisher"]
         item.total_episodes = db_row["total_episodes"]
         return item
+
+    def _sync_details_query_parts(self) -> tuple[str, str, dict[str, Any]]:
+        """Return extra (columns, joins, params) for the podcasts sync-details query."""
+        return f", json_extract({DB_TABLE_PODCASTS}.metadata, '$.genres') AS genres", "", {}
+
+    def _parse_sync_details_row(self, db_row: Mapping[str, Any]) -> PodcastSyncDetails:
+        """Parse a raw sync-details db row into a PodcastSyncDetails object."""
+        return PodcastSyncDetails(
+            item_id=db_row["item_id"],
+            date_added=datetime.fromtimestamp(db_row["timestamp_added"], tz=UTC),
+            provider_mappings=self._parse_sync_details_mappings(db_row),
+            genres=set(json_loads(db_row["genres"])) if db_row["genres"] else set(),
+        )
