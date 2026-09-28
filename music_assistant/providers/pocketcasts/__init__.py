@@ -195,22 +195,7 @@ class PocketCastsProvider(MusicProvider):
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Get all podcasts from the user's library."""
         for podcast_data in await self._client.get_subscribed_podcasts():
-            # the subscribed list carries no genres, so each podcast is looked up in full
-            # (cached for a day)
-            try:
-                podcast = await self.get_podcast(podcast_data["uuid"])
-            except (
-                MediaNotFoundError,
-                LoginFailed,
-                ProviderUnavailableError,
-                ResourceTemporarilyUnavailable,
-                RetriesExhausted,
-            ) as err:
-                self.logger.debug(
-                    "Could not retrieve details for podcast %s: %s", podcast_data["uuid"], err
-                )
-                podcast = self._convert_podcast(podcast_data)
-            yield podcast
+            yield self._convert_podcast(podcast_data)
 
     async def library_add(self, item: MediaItemType) -> bool:
         """
