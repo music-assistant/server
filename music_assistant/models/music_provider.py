@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     from music_assistant.controllers.music.media.base import (
         AudiobookSyncDetails,
         LibraryItemSyncDetails,
+        PodcastSyncDetails,
         TrackSyncDetails,
     )
     from music_assistant.mass import MusicAssistant
@@ -1836,8 +1837,11 @@ class MusicProvider(Provider):
             self._note_listed_sync_item(MediaType.PODCAST, prov_item.item_id)
             db_id: int | None = None
             try:
-                sync_details = await self.mass.music.podcasts.get_library_item_sync_details(
-                    prov_item.provider_mappings,
+                sync_details = cast(
+                    "PodcastSyncDetails | None",
+                    await self.mass.music.podcasts.get_library_item_sync_details(
+                        prov_item.provider_mappings,
+                    ),
                 )
                 db_id = sync_details.item_id if sync_details else None
                 # batch all writes for this item into a single commit
@@ -1848,7 +1852,11 @@ class MusicProvider(Provider):
                             prov_map.in_library = True
                         library_item = await self.mass.music.podcasts.add_item_to_library(prov_item)
                         db_id = int(library_item.item_id)
-                    elif self._library_item_needs_update(sync_details, prov_item):
+                    elif self._library_item_needs_update(sync_details, prov_item) or (
+                        # the genre scan drops any genre link missing from the saved
+                        # genres, so new provider genres must be saved to keep their links
+                        not set(prov_item.metadata.genres or ()) <= sync_details.genres
+                    ):
                         library_item = await self.mass.music.podcasts.update_item_in_library(
                             sync_details.item_id, prov_item
                         )

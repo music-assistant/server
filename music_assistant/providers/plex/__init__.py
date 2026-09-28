@@ -70,6 +70,7 @@ from plexapi.server import PlexServer
 
 from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
+    DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     LOUDNESS_MEASUREMENT_MIN_LUFS,
     UNKNOWN_ARTIST,
 )
@@ -132,6 +133,7 @@ from music_assistant.providers.plex.helpers import (
     get_thumbnail_images,
     is_library_scan_finished,
     parse_plex_lyrics_payload,
+    resolve_server_auth_token,
 )
 
 # Public surface of the provider package. With mypy's no_implicit_reexport,
@@ -362,9 +364,17 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                         # Doing local connection, not via plex.tv.
                         plex_server = PlexServer(plex_url, session=session)
                     else:
+                        # the account token only authenticates against servers this account
+                        # owns; a server shared via Plex Home needs its own access token
+                        server_token = resolve_server_auth_token(
+                            str(token),
+                            str(self.get_setup_value(CONF_LOCAL_SERVER_IP)),
+                            str(self.get_setup_value(CONF_LOCAL_SERVER_PORT)),
+                            myplex_account=self._myplex_account,
+                        )
                         plex_server = PlexServer(
                             plex_url,
-                            token,
+                            server_token,
                             session=session,
                         )
                 # I don't think PlexAPI intends for this to be accessible, but we need it.
@@ -1921,6 +1931,9 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             podcast.metadata.release_date = datetime(plex_album.year, 1, 1, tzinfo=UTC)
         if images := get_thumbnail_images(plex_album, self.instance_id):
             podcast.metadata.images = images
+        podcast.metadata.genres = {genre.tag for genre in plex_album.genres or [] if genre.tag} or {
+            DEFAULT_AUDIOBOOK_PODCAST_GENRE
+        }
         if include_episodes:
             podcast.total_episodes = await self._count_podcast_episodes(plex_album)
         return podcast

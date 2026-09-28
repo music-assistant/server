@@ -48,7 +48,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from music_assistant.constants import UNKNOWN_ARTIST
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE, UNKNOWN_ARTIST
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 
 from .constants import (
@@ -440,6 +440,7 @@ def parse_podcast(
     metadata = MediaItemMetadata(
         images=images,
         explicit=getattr(podcast, "is_explicit", None),
+        genres={DEFAULT_AUDIOBOOK_PODCAST_GENRE},
     )
     if description := getattr(podcast, "description", None):
         metadata.description = description

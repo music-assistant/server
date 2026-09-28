@@ -76,6 +76,13 @@ class AppleMusicLibraryManager:
         )
         for item in album_items:
             if item and item["id"]:
+                if await self._is_withdrawn_library_album(item):
+                    # Apple keeps listing these, but there is nothing left on them to play
+                    self.logger.debug(
+                        "Skipping library album %s: all its songs point at withdrawn catalog ids",
+                        item["id"],
+                    )
+                    continue
                 is_favourite = (
                     rating_catalog_response.get(item["id"])
                     if not is_library_id(item["id"])
@@ -445,6 +452,27 @@ class AppleMusicLibraryManager:
                 {item["id"]: item for item in response.get("data", []) if item.get("id")}
             )
         return details
+
+    async def _is_withdrawn_library_album(self, item: dict[str, Any]) -> bool:
+        """Return True for a catalog-less library album whose songs all lost their catalog id."""
+        album_catalog = item.get("relationships", {}).get("catalog", {}).get("data")
+        if item.get("type") != "library-albums" or album_catalog:
+            return False
+        has_songs = False
+        try:
+            async for song in self.api.iter_all_items(
+                f"me/library/albums/{item['id']}/tracks", include="catalog"
+            ):
+                has_songs = True
+                # uploads never had a catalog version, so only a catalog id that no longer
+                # resolves marks a song as withdrawn
+                catalog_id = song.get("attributes", {}).get("playParams", {}).get("catalogId")
+                if not catalog_id or song.get("relationships", {}).get("catalog", {}).get("data"):
+                    return False
+        except MusicAssistantError as err:
+            self.logger.debug("Unable to check the songs of library album %s: %s", item["id"], err)
+            return False
+        return has_songs
 
 
 def _set_date_added(media_item: MediaItemType, item: dict[str, Any]) -> None:

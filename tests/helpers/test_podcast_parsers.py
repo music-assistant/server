@@ -15,6 +15,7 @@ from music_assistant.helpers.podcast_parsers import (
     get_podcastparser_dict,
     get_stream_url_from_episode,
     parse_chapters_from_json,
+    parse_podcast,
     parse_podcast_episode,
     parse_podcast_persons,
     rank_episodes_by_date,
@@ -184,6 +185,31 @@ def test_missing_description_left_unset() -> None:
     mass_episode = _parse(_episode())
     assert mass_episode is not None
     assert mass_episode.metadata.description is None
+
+
+# --- podcast genres ---------------------------------------------------------------------------
+
+
+def test_podcast_without_categories_gets_spoken_word_genre() -> None:
+    """A feed with no itunes categories falls back to the Spoken Word genre."""
+    mass_podcast = parse_podcast(
+        feed_url="https://example.com/feed.xml",
+        parsed_feed={"title": "My Show"},
+        instance_id="podcastfeed--test",
+        domain="podcastfeed",
+    )
+    assert mass_podcast.metadata.genres == {"Spoken Word"}
+
+
+def test_podcast_with_categories_keeps_them() -> None:
+    """A feed with itunes categories keeps them instead of the fallback genre."""
+    mass_podcast = parse_podcast(
+        feed_url="https://example.com/feed.xml",
+        parsed_feed={"title": "My Show", "itunes_categories": [["News", "Tech"]]},
+        instance_id="podcastfeed--test",
+        domain="podcastfeed",
+    )
+    assert mass_podcast.metadata.genres == {"News", "Tech"}
 
 
 # --- parent podcast reference ----------------------------------------------------------------

@@ -26,6 +26,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
 from music_assistant.helpers.podcast_parsers import parse_podcast_persons
 
 from .constants import (
@@ -160,6 +161,8 @@ def parse_podcast_from_feed(
     categories = feed_data.get("categories", {})
     if categories and isinstance(categories, dict):
         podcast.metadata.genres = set(categories.values())
+    else:
+        podcast.metadata.genres = {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
 
     # Add language
     language = feed_data.get("language", "")
