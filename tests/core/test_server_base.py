@@ -102,7 +102,7 @@ async def test_create_task_names_only_on_request(mass_minimal: MusicAssistant) -
     async def _work() -> None:
         return
 
-    named = mass_minimal.create_task(_work(), name="provider_loaded_some_provider")
+    named = mass_minimal.create_task(_work(), task_name="provider_loaded_some_provider")
     assert named.get_name() == "provider_loaded_some_provider"
 
     # task ids key on arguments such as image urls, so they must stay out of the name

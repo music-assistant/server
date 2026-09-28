@@ -730,7 +730,7 @@ class TestGuardSingleRequest:
         caller = _GuardedCaller(mass_minimal)
         caller.release.set()
 
-        assert await caller.fetch_named(name="abc", task_id="123") == "abc-123"
+        assert await caller.fetch_named(task_name="abc", task_id="123") == "abc-123"
 
     @pytest.mark.asyncio
     async def test_instances_get_their_own_request(self, mass_minimal: MusicAssistant) -> None:
@@ -919,11 +919,11 @@ class _GuardedCaller:
         return f"result-{item_id}"
 
     @guard_single_request
-    async def fetch_named(self, name: str, task_id: str) -> str:
+    async def fetch_named(self, task_name: str, task_id: str) -> str:
         """Return the arguments, which are named after options of mass.create_task."""
         self.calls += 1
         await self.release.wait()
-        return f"{name}-{task_id}"
+        return f"{task_name}-{task_id}"
 
     @guard_single_request
     async def fetch_item(
