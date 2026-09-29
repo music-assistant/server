@@ -3,6 +3,18 @@
     "arl_token": {
       "label": "ARL token",
       "description": "Your Deezer ARL cookie token. See https://www.dumpmedia.com/deezplus/deezer-arl.html"
+    },
+    "flow_tuner_state_discovery": {
+      "label": "Flow mixes in more discoveries. This is a setting of your Deezer account, so it also applies in the Deezer app and on your other devices."
+    },
+    "flow_tuner_state_default": {
+      "label": "Flow uses Deezer's default mix. This is a setting of your Deezer account, so it also applies in the Deezer app and on your other devices."
+    },
+    "flow_tuner_default": {
+      "label": "Switch Flow to the default mix"
+    },
+    "flow_tuner_discovery": {
+      "label": "Switch Flow to more discoveries"
     }
   },
   "media": {

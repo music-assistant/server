@@ -11,13 +11,18 @@ from collections.abc import Callable, Coroutine, Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
+from deezer_python_gql import GraphQLClientError
 from deezer_python_gql.generated.enums import (
+    DiscoveryTuner,
+    DiscoveryTunerInput,
     MusicTogetherRefreshSuggestedTracklistMoodInput,
     MusicTogetherSuggestedTracklistMoodInput,
 )
 from deezer_python_gql.generated.get_made_for_me import (
     GetMadeForMeMeMadeForMeEdgesNodeSmartTracklist,
 )
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     BrowseFolder,
@@ -34,6 +39,8 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.track_filter import filter_tracks
 
 from .constants import (
+    ACTION_FLOW_TUNER_DEFAULT,
+    ACTION_FLOW_TUNER_DISCOVERY,
     BROWSE_ALL_FLOWS,
     BROWSE_AUDIOBOOKS,
     BROWSE_EXPLORE,
@@ -304,6 +311,54 @@ class DeezerBrowseManager:
         if item_id == "new_episodes":
             return UniqueList(await self._get_podcasts_with_new_episodes())
         return UniqueList()
+
+    # -- Flow tuner --
+
+    async def get_flow_tuner_entries(self) -> list[ConfigEntry]:
+        """
+        Return the option entries that show and switch the Flow discovery setting.
+
+        The setting lives on the Deezer account and also applies in the Deezer app, so it
+        is read fresh whenever the options open and never stored in Music Assistant.
+        """
+        try:
+            me = await self.provider.gql_client.get_flow_tuner()
+        except GraphQLClientError as err:
+            self.logger.debug("Could not read the Flow discovery setting: %s", err)
+            return []
+        if me is None:
+            return []
+        discovery = me.flow_tuner.discovery_tuner == DiscoveryTuner.DISCOVERY
+        action = ACTION_FLOW_TUNER_DEFAULT if discovery else ACTION_FLOW_TUNER_DISCOVERY
+        return [
+            ConfigEntry(
+                key="flow_tuner",
+                type=ConfigEntryType.LABEL,
+                translation_key="flow_tuner_state_discovery"
+                if discovery
+                else "flow_tuner_state_default",
+                required=False,
+            ),
+            ConfigEntry(
+                key=action,
+                type=ConfigEntryType.ACTION,
+                translation_key=action,
+                action=action,
+                required=False,
+            ),
+        ]
+
+    async def set_flow_tuner(self, discovery: bool) -> None:
+        """
+        Set the Flow discovery setting of the Deezer account.
+
+        :param discovery: True for more discoveries, False for Deezer's default mix.
+        """
+        await self.provider.gql_client.set_flow_discovery_tuner(
+            discovery_tuner=DiscoveryTunerInput.DISCOVERY
+            if discovery
+            else DiscoveryTunerInput.DEFAULT
+        )
 
     # -- Made For You --
 

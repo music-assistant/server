@@ -24,7 +24,12 @@ from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .browse import DeezerBrowseManager
-from .constants import DECRYPT_KEY_ERROR, DECRYPT_KEY_LENGTH
+from .constants import (
+    ACTION_FLOW_TUNER_DEFAULT,
+    ACTION_FLOW_TUNER_DISCOVERY,
+    DECRYPT_KEY_ERROR,
+    DECRYPT_KEY_LENGTH,
+)
 from .gw_client import (
     DeezerGWAuthError,
     DeezerGWError,
@@ -36,7 +41,7 @@ from .rest_client import DeezerRESTClient
 from .streaming import DeezerStreamingManager
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry
+    from music_assistant_models.config_entries import ConfigActionResult, ConfigEntry
     from music_assistant_models.enums import ExternalID
     from music_assistant_models.media_items import (
         Album,
@@ -109,7 +114,19 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
-        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
+        # also resolved on load, before the client exists
+        if not self.available:
+            return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
+        return (CONF_ENTRY_UNOFFICIAL_PROVIDER, *await self.browse_manager.get_flow_tuner_entries())
+
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
+        """Switch the Flow discovery setting of the Deezer account."""
+        if action not in (ACTION_FLOW_TUNER_DEFAULT, ACTION_FLOW_TUNER_DISCOVERY):
+            return await super().handle_config_action(action)
+        await self.browse_manager.set_flow_tuner(discovery=action == ACTION_FLOW_TUNER_DISCOVERY)
+        return await self.get_config_entries()
 
     async def handle_async_init(self) -> None:
         """Handle async init of the Deezer provider."""

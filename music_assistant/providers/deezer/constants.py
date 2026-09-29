@@ -22,6 +22,11 @@ PERSONAL_ALBUM_PREFIX = "personal_album_"
 # Bump when personal-item parsing changes to invalidate cached parsed items.
 PERSONAL_METADATA_VERSION = "2"
 
+# -- Option buttons for the Flow discovery setting of the Deezer account --
+
+ACTION_FLOW_TUNER_DEFAULT = "flow_tuner_default"
+ACTION_FLOW_TUNER_DISCOVERY = "flow_tuner_discovery"
+
 # -- Pagination page sizes --
 
 FAVORITES_PAGE_SIZE = 50
