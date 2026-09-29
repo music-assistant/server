@@ -14,7 +14,7 @@ aiojellyfin==0.14.1
 aiolibdatachannel @ git+https://github.com/music-assistant/aiolibdatachannel@feat/certpem-testdrive
 aiomusiccast==0.15.0
 aiosendspin[server]==9.1.1
-aioslimproto==3.2.2
+aioslimproto @ git+https://github.com/Carunga/aioslimproto@6e026819361d56df3c3f5c7b266a9194c4bab3d4
 aiosonos==0.1.13
 aiosqlite==0.22.1
 aiosxm==0.3.0

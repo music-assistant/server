@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 from aiohttp import web
 from aioslimproto.models import EventType as SlimEventType
@@ -13,7 +13,7 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, MediaType
 from music_assistant_models.errors import SetupFailedError
 
-from music_assistant.constants import CONF_PORT, CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_PORT, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import is_port_in_use
 from music_assistant.models.player_provider import PlayerProvider
@@ -25,9 +25,6 @@ from .constants import (
     DEFAULT_SLIMPROTO_PORT,
 )
 from .player import SqueezelitePlayer
-
-if TYPE_CHECKING:
-    from aioslimproto.client import SlimClient
 
 
 class SqueezelitePlayerProvider(PlayerProvider):
@@ -120,13 +117,6 @@ class SqueezelitePlayerProvider(PlayerProvider):
         await self._cleanup_server()
         self.mass.streams.unregister_dynamic_route("/slimproto/multi")
         self.mass.streams.unregister_dynamic_route("/jsonrpc.js")
-
-    def get_corrected_elapsed_milliseconds(self, slimplayer: SlimClient) -> int:
-        """Return corrected elapsed milliseconds for a slimplayer."""
-        sync_delay = self.mass.config.get_raw_player_config_value(
-            slimplayer.player_id, CONF_SYNC_ADJUST, 0
-        )
-        return int(slimplayer.elapsed_milliseconds - sync_delay)
 
     async def _validate_all_ports(
         self, control_port: int, telnet_port: int | None, json_port: int | None
