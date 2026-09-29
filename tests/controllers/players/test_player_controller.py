@@ -3181,18 +3181,28 @@ class TestEmulatedPause:
         assert player.state.elapsed_time == pytest.approx(42, abs=1)
         assert published == [PlaybackState.PAUSED]
 
-    async def test_group_player_reports_the_emulated_pause(self, mock_mass: MagicMock) -> None:
-        """A group player (sync or universal group) has no pause either and is paused alike."""
+    async def test_group_player_pause_ends_its_queue(self, mock_mass: MagicMock) -> None:
+        """
+        A group player (sync or universal group) gets a full stop instead of a pause.
+
+        Its members are released on the stop, so it can not resume as the same group.
+        """
         controller, player, published = self._player_on_own_queue(
             mock_mass, player_type=PlayerType.GROUP
         )
+        # the queue stop issues the player stop
+        mock_mass.player_queues._handle_stop = AsyncMock(side_effect=controller._handle_cmd_stop)
 
         await controller._handle_cmd_pause("player_1", emulate_pause=True)
 
+        mock_mass.player_queues._handle_stop.assert_awaited_once_with("player_1")
         cast("AsyncMock", player.stop).assert_awaited_once()
-        assert player.emulated_pause
-        assert _playback_state(player) == PlaybackState.PAUSED
-        assert published == [PlaybackState.PAUSED]
+        assert not player.emulated_pause
+        assert _playback_state(player) == PlaybackState.IDLE
+        assert published == [PlaybackState.IDLE]
+        # the stop schedules the release of the output protocol, which is not run here
+        for scheduled in mock_mass.create_task.call_args_list:
+            scheduled.args[0].close()
 
     async def test_paused_shows_once_the_device_reports_the_stop(
         self, mock_mass: MagicMock

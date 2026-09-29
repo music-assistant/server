@@ -14,7 +14,7 @@ from collections.abc import Coroutine
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import PlaybackState, PlayerType
 from music_assistant_models.player_queue import PlayerQueue
 
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
@@ -27,8 +27,14 @@ from tests.common import MockPlayer, MockProvider
 QUEUE_ID = "player_1"
 
 
-def _setup() -> tuple[PlayerQueuesController, MockPlayer, PlayerQueueData]:
-    """Build a queue playing on its own player, which has no pause support."""
+def _setup(
+    player_type: PlayerType = PlayerType.PLAYER,
+) -> tuple[PlayerQueuesController, MockPlayer, PlayerQueueData]:
+    """
+    Build a queue playing on its own player, which has no pause support.
+
+    :param player_type: The type of the player the queue plays on.
+    """
     mass = MagicMock()
     mass.closing = False
     mass.loop = None
@@ -59,7 +65,10 @@ def _setup() -> tuple[PlayerQueuesController, MockPlayer, PlayerQueueData]:
     players = PlayerController(mass)
     mass.players = players
     player = MockPlayer(
-        MockProvider("test_provider", instance_id="test_prov", mass=mass), QUEUE_ID, "Player"
+        MockProvider("test_provider", instance_id="test_prov", mass=mass),
+        QUEUE_ID,
+        "Player",
+        player_type=player_type,
     )
     player._attr_playback_state = PlaybackState.PLAYING
     player._attr_elapsed_time = 42
@@ -198,6 +207,22 @@ async def test_play_pause_before_the_device_confirms_its_stop_plays() -> None:
 
     ctrl.play.assert_awaited_once_with(QUEUE_ID)
     ctrl.pause.assert_not_awaited()
+
+
+async def test_pause_on_a_group_ends_its_queue_at_once() -> None:
+    """A group can not resume as the same group, so its session is released right away."""
+    ctrl, player, queue_data = _setup(PlayerType.GROUP)
+    mass = cast("MagicMock", ctrl.mass)
+
+    await ctrl.pause(QUEUE_ID)
+
+    assert _playback_state(player) == PlaybackState.IDLE
+    assert not player.emulated_pause
+    assert queue_data.session_id is None
+    mass.streams.audio_processing.clear.assert_called_once_with(QUEUE_ID, "sess-1")
+    await _run_pause_watcher(ctrl)
+    cast("AsyncMock", player.stop).assert_awaited_once()
+    mass.streams.audio_processing.clear.assert_called_once()
 
 
 async def test_pause_during_an_announcement_is_a_plain_stop() -> None:

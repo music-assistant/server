@@ -4899,9 +4899,10 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         Skips permission checks, locking, and all redirect logic (internal use only).
 
         :param player_id: player_id of the player to handle the command.
-        :param emulate_pause: For a player that can not pause: stop its device but keep
-            reporting paused, instead of a plain stop. Only for a caller that ends the
-            emulated pause itself when it lasts too long.
+        :param emulate_pause: For a player that can not pause and plays its own queue:
+            stop its device but keep reporting paused, instead of a plain stop. A group
+            player ends its queue instead. Only for a caller that ends the emulated pause
+            itself when it lasts too long.
         """
         player = self.get_player(player_id, raise_unavailable=True)
         assert player is not None
@@ -4946,15 +4947,20 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             "Player/protocol %s does not support pause, using STOP instead",
             player.state.name,
         )
-        if emulate_pause:
-            # the player reports paused while its device is stopped: its queue keeps the
-            # session to resume from, until the pause watcher ends it like a real pause
-            player.start_emulated_pause()
-            try:
-                await self._stop_player_device(player, keep_output_protocol=True)
-            except BaseException:
-                player.end_emulated_pause()
-                player.refresh_state()
-                raise
+        if not emulate_pause:
+            await self._handle_cmd_stop(player.player_id)
             return
-        await self._handle_cmd_stop(player.player_id)
+        if player.type == PlayerType.GROUP:
+            # a stopped group releases its members and can not resume as the same group,
+            # so its queue ends right away instead of reporting paused
+            await self._stop_player_or_its_queue(player)
+            return
+        # the player reports paused while its device is stopped: its queue keeps the
+        # session to resume from, until the pause watcher ends it like a real pause
+        player.start_emulated_pause()
+        try:
+            await self._stop_player_device(player, keep_output_protocol=True)
+        except BaseException:
+            player.end_emulated_pause()
+            player.refresh_state()
+            raise
