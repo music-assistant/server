@@ -1917,7 +1917,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue_player = self.mass.players.get_player(queue_id, True)
         if queue_player is None:
             raise PlayerUnavailableError(f"Player {queue_id} is not available")
-        if (queue := self.get(queue_id)) and queue.active and queue.state == PlaybackState.PAUSED:
+        if (
+            (queue := self.get(queue_id))
+            and queue.active
+            and queue.state == PlaybackState.PAUSED
+            # an emulated pause stopped the device, so it has nothing to unpause
+            and not queue_player.emulated_pause
+        ):
             # forward the actual play/unpause command to the player,
             # holding the action until the player confirms it resumed playback
             async with self.mass.players.wait_for_player_update(

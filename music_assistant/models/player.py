@@ -2202,6 +2202,35 @@ class Player(ABC):
         self._attr_active_source = None
         self._attr_current_media = None
 
+    # the (elapsed_time, elapsed_time_last_updated) frozen at the start of an emulated pause
+    __emulated_pause: tuple[float | None, float] | None = None
+
+    @final
+    def start_emulated_pause(self) -> None:
+        """
+        Report the player as paused at its current position while its device is stopped.
+
+        For a player that can not pause: once the device reports idle, the player reports
+        paused until playback starts again or :meth:`end_emulated_pause` is called.
+        May only be called by the PlayerController.
+        """
+        self.__emulated_pause = (self._state.corrected_elapsed_time, time.time())
+
+    @final
+    def end_emulated_pause(self) -> None:
+        """
+        End the emulated pause, so the player reports the state of its device again.
+
+        May only be called by the PlayerController, followed by :meth:`refresh_state`.
+        """
+        self.__emulated_pause = None
+
+    @property
+    @final
+    def emulated_pause(self) -> bool:
+        """Return True if the pause of this player is emulated on a stopped device."""
+        return self.__emulated_pause is not None
+
     @final
     def set_current_media(  # noqa: PLR0913
         self,
@@ -2710,6 +2739,14 @@ class Player(ABC):
             self.mass.call_later(
                 5, self.set_active_mass_source, None, task_id=f"set_mass_source_{self.player_id}"
             )
+        # an emulated pause only shows while the device is idle, so leaving the paused
+        # state means the device plays again and the emulated pause is over
+        if (
+            self.__emulated_pause is not None
+            and prev_state.playback_state == PlaybackState.PAUSED
+            and self._state.playback_state != PlaybackState.PAUSED
+        ):
+            self.__emulated_pause = None
         new_fingerprint = _state_fingerprint(self._state)
         self.__state_fingerprint = new_fingerprint
         changed_values: dict[str, tuple[Any, Any]] = {}
@@ -2812,6 +2849,10 @@ class Player(ABC):
             playback_state = self.playback_state
             elapsed_time = self.elapsed_time
             elapsed_time_last_updated = self.elapsed_time_last_updated
+
+        # an emulated pause shows once the device reports the stop it was given
+        if self.__emulated_pause is not None and playback_state == PlaybackState.IDLE:
+            return (PlaybackState.PAUSED, *self.__emulated_pause)
 
         # A live external source reports its own logical position (Spotify Connect,
         # AirPlay, Yandex Ynison). Prefer it over the protocol / self elapsed_time,

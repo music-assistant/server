@@ -683,8 +683,9 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                     player.state.name,
                 )
                 return
-            # player is not paused: check for queue redirect, then delegate to internal handler
-            if player.state.playback_state != PlaybackState.PAUSED:
+            # player is not paused (or its pause is emulated on a stopped device):
+            # check for queue redirect, then delegate to internal handler
+            if player.state.playback_state != PlaybackState.PAUSED or player.emulated_pause:
                 source = player.state.active_source
                 if active_queue := self.mass.player_queues.get(source or player_id):
                     await self.mass.player_queues.resume(active_queue.queue_id)
@@ -4760,8 +4761,20 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
 
         :param player_id: player_id of the player to handle the command.
         """
+        if (player := self.get_player(player_id)) is not None and player.emulated_pause:
+            # ended before the availability check: an unreachable player must not stay paused
+            player.end_emulated_pause()
+            player.refresh_state()
         player = self.get_player(player_id, raise_unavailable=True)
         assert player is not None
+        await self._stop_player_device(player)
+
+    async def _stop_player_device(self, player: Player) -> None:
+        """
+        Stop the device of the player, or its active output protocol, without any redirects.
+
+        :param player: The player to stop.
+        """
         protocol_player: Player | None = None
         if player.active_output_protocol and player.active_output_protocol != "native":
             protocol_player = self.get_player(player.active_output_protocol)
@@ -4918,4 +4931,17 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             "Player/protocol %s does not support pause, using STOP instead",
             player.state.name,
         )
+        if (
+            active_queue := self.get_active_queue(player)
+        ) and active_queue.queue_id == player.player_id:
+            # the player reports paused while its device is stopped: its queue keeps the
+            # session to resume from, until the pause watcher ends it like a real pause
+            player.start_emulated_pause()
+            try:
+                await self._stop_player_device(player)
+            except Exception:
+                player.end_emulated_pause()
+                player.refresh_state()
+                raise
+            return
         await self._handle_cmd_stop(player.player_id)
