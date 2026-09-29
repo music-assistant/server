@@ -42,6 +42,7 @@ from music_assistant_models.errors import (
 from music_assistant.constants import (
     CONF_PATH,
     CONF_PROVIDERS,
+    CONF_STORAGE_FOLDER_MOUNTS,
     CONF_STORAGE_FOLDERS,
     CONF_STORAGE_SHARES,
     FILESYSTEM_PROVIDER_DOMAINS,
@@ -132,6 +133,8 @@ class StorageController(CoreController):
         # every mountpoint the mount table showed since the start: an unmounted drive or share
         # leaves an empty folder behind, which must not pass for the storage itself
         self._seen_mountpoints: set[str] = set()
+        # the registered folders whose drive or share is not mounted, as of the last refresh
+        self._unmounted_folders: set[str] = set()
         # paths whose probe is being waited for; an answer that comes later rebuilds the list
         self._awaited_probes: set[str] = set()
         self._dir_sizes: dict[StorageUsage, float] = {}
@@ -229,7 +232,8 @@ class StorageController(CoreController):
         Register a folder on this server as a media location.
 
         Only possible when the server does not run in a container. The location of a drive or
-        share mounted on the path becomes this folder, and keeps its mount.
+        share mounted on the path is listed as this folder from then on, and is not available
+        while that drive or share is not mounted.
 
         :param path: Absolute path of an existing folder that is neither a registered folder
             nor a network share Music Assistant mounted, also once its symlinks are resolved.
@@ -255,6 +259,13 @@ class StorageController(CoreController):
             self._check_new_folder(path)
             # the location is listed with the answer for its own path
             await self._wait_for_probes([path])
+        table = await asyncio.to_thread(read_mountinfo)
+        mounts = self._get_folder_mounts()
+        if any(mount.mountpoint == path for mount in self._parse_mounts(table)):
+            mounts.append(path)
+        # recorded before the folder is registered: a record only counts for a registered
+        # folder, and one left behind for this path is dropped here
+        self.mass.config.set(CONF_STORAGE_FOLDER_MOUNTS, mounts, immediate=True)
         self.mass.config.set(
             CONF_STORAGE_FOLDERS, [*self._get_registered_folders(), path], immediate=True
         )
@@ -279,6 +290,8 @@ class StorageController(CoreController):
         self.mass.config.set(
             CONF_STORAGE_FOLDERS, [folder for folder in folders if folder != path], immediate=True
         )
+        # dropped after the folder, so a registered folder never goes without its record
+        self.mass.config.set(CONF_STORAGE_FOLDER_MOUNTS, self._get_folder_mounts(), immediate=True)
         await self.refresh()
 
     @api_command("storage/network_shares/add", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
@@ -630,8 +643,15 @@ class StorageController(CoreController):
                 probed=self._has_answer(mount.mountpoint),
             )
         # a registered folder replaces a discovered location on the same path, mount included
+        folder_mounts = set(self._get_folder_mounts())
+        unmounted_folders: set[str] = set()
         for folder in self._get_registered_folders():
             folder_mount = mounts.get(folder)
+            if folder_mount is None and folder in folder_mounts:
+                # the folder left on the path is not the drive or share, and is never probed
+                unmounted_folders.add(folder)
+                media[folder] = _build_unmounted_location(folder)
+                continue
             media[folder] = _build_location(
                 folder,
                 None,
@@ -643,6 +663,7 @@ class StorageController(CoreController):
                 managed=True,
                 probed=self._has_answer(folder),
             )
+        self._unmounted_folders = unmounted_folders
         # a managed network share replaces the location discovered on its path the same way
         for spec in self._get_shares().values():
             media[spec.path] = self._build_share_location(spec, table)
@@ -796,7 +817,8 @@ class StorageController(CoreController):
         Probe the paths whose last answer is missing or outdated, and rebuild the list.
 
         A path whose probe already did not answer in time is not waited for again: it counts as
-        not answering until that probe answers.
+        not answering until that probe answers. A registered folder whose drive or share is not
+        mounted is not probed at all: the mount table tells its state.
 
         :param paths: The paths whose state a caller needs.
         """
@@ -804,8 +826,11 @@ class StorageController(CoreController):
         outdated = [
             path
             for path in paths
-            if (state := self._probes.get(path)) is None
-            or (not state.overdue and not state.is_fresh(now))
+            if path not in self._unmounted_folders
+            and (
+                (state := self._probes.get(path)) is None
+                or (not state.overdue and not state.is_fresh(now))
+            )
         ]
         if outdated:
             await self._wait_for_probes(outdated)
@@ -937,6 +962,14 @@ class StorageController(CoreController):
     def _get_registered_folders(self) -> list[str]:
         """Return the folders registered as a media location."""
         return list(self.mass.config.get(CONF_STORAGE_FOLDERS, []))
+
+    def _get_folder_mounts(self) -> list[str]:
+        """Return the registered folders that were a mountpoint when they were registered."""
+        recorded = self.mass.config.get(CONF_STORAGE_FOLDER_MOUNTS)
+        if not isinstance(recorded, list):
+            return []
+        # anything else in the record, a leftover or a value that is no path, is ignored
+        return [folder for folder in self._get_registered_folders() if folder in recorded]
 
     def _get_source_folders(self) -> list[tuple[str, str]]:
         """
@@ -1571,6 +1604,20 @@ def _build_location(
         used_space_gb=used_space_gb,
         error=error,
         error_key=error_key,
+    )
+
+
+def _build_unmounted_location(path: str) -> StorageLocation:
+    """Build the location of a registered folder whose drive or share is not mounted."""
+    # without a probe answer: the space on the path is that of the disk below the mountpoint
+    location = _build_location(
+        path, None, StorageUsage.MEDIA, StorageKind.MANUAL, None, managed=True
+    )
+    return replace(
+        location,
+        mountpoint=path,
+        error="The drive or share of this folder is not mounted",
+        error_key="folder_not_mounted",
     )
 
 

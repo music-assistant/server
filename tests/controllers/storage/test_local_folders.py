@@ -14,7 +14,12 @@ from music_assistant_models.auth import User, UserRole
 from music_assistant_models.errors import ActionUnavailable, InvalidDataError
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
-from music_assistant.constants import CONF_CORE, CONF_STORAGE_FOLDERS
+from music_assistant.constants import (
+    CONF_CORE,
+    CONF_STORAGE_FOLDER_MOUNTS,
+    CONF_STORAGE_FOLDERS,
+    CONF_STORAGE_SHARES,
+)
 from music_assistant.controllers.storage import (
     StorageController,
     StorageKind,
@@ -23,12 +28,14 @@ from music_assistant.controllers.storage import (
 )
 from music_assistant.controllers.storage import controller as controller_module
 from music_assistant.controllers.storage.constants import PROBE_MAX_AGE
-from music_assistant.controllers.storage.models import ShareType
+from music_assistant.controllers.storage.models import MountBackend, NetworkShareSpec, ShareType
 from music_assistant.controllers.translations import TranslationController
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from tests.controllers.storage.conftest import FakeProbes, MountTable, mount_line, store_source
 
 MEMBER = User(user_id="member", username="member", role=UserRole.USER)
+# the root filesystem: a Linux mount table is never empty
+ROOT_MOUNT = mount_line("/", "ext4")
 
 
 @pytest.fixture(autouse=True)
@@ -159,23 +166,197 @@ async def test_registered_mount_is_available_to_members_until_removed(
 async def test_registered_mount_needs_its_mount(
     storage: StorageController, tmp_path: Path, mount_table: MountTable
 ) -> None:
-    """A registered mountpoint is only available while the mount is there."""
+    """
+    A registered mountpoint is only available while the mount is there.
+
+    It comes back with the next refresh, the one the server runs on its timer.
+    """
     nas = tmp_path / "nas"
     (nas / "Albums").mkdir(parents=True)
-    # the root filesystem: a Linux mount table is never empty
-    root = mount_line("/", "ext4")
-    mount_table.set(root, mount_line(nas, "cifs"))
-    await storage.refresh()
+    mount_table.set(ROOT_MOUNT, mount_line(nas, "cifs"))
     await storage.add_local_folder(str(nas))
     assert await storage.is_available(str(nas / "Albums"))
 
-    mount_table.set(root)
+    mount_table.set(ROOT_MOUNT)
     await storage.refresh()
+    assert not _location(storage.get_locations(), nas).available
     assert not await storage.is_available(str(nas / "Albums"))
 
-    mount_table.set(root, mount_line(nas, "cifs"))
+    mount_table.set(ROOT_MOUNT, mount_line(nas, "cifs"))
     await storage.refresh()
+    location = _location(storage.get_locations(), nas)
+    assert (location.available, location.error, location.fstype) == (True, None, "cifs")
     assert await storage.is_available(str(nas / "Albums"))
+
+
+async def test_unmounted_registered_mount_is_listed_unavailable(
+    storage: StorageController, tmp_path: Path, mount_table: MountTable, probes: FakeProbes
+) -> None:
+    """
+    A registered mountpoint whose mount is gone says so, and is not probed.
+
+    It keeps its path as mountpoint, and shows no space: the folder left behind lies on
+    another disk. A caller that does not manage every source gets the same reason.
+    """
+    nas = tmp_path / "nas"
+    nas.mkdir()
+    mount_table.set(ROOT_MOUNT, mount_line(nas, "cifs"))
+    await storage.add_local_folder(str(nas))
+    mount_table.set(ROOT_MOUNT)
+    probes.calls.clear()
+
+    location = _location((await storage.get_info()).locations, nas)
+    set_current_user(MEMBER)
+    member_view = _location((await storage.get_info()).locations, nas)
+
+    assert (location.available, location.error_key, location.mountpoint, location.fstype) == (
+        False,
+        "folder_not_mounted",
+        str(nas),
+        None,
+    )
+    assert location.error is not None
+    assert (location.free_space_gb, location.total_space_gb) == (None, None)
+    assert (location.kind, location.managed) == (StorageKind.MANUAL, True)
+    assert member_view == location
+    assert str(nas) not in probes.calls
+
+
+async def test_registered_mount_down_after_a_restart(
+    storage: StorageController, tmp_path: Path, mount_table: MountTable, probes: FakeProbes
+) -> None:
+    """
+    A server that starts while the mount of a registered folder is gone never uses the folder.
+
+    A music source inside it finds the folder as its location, which is not available, so it
+    is told the storage is not available rather than that its folder is not allowed.
+    """
+    nas = tmp_path / "nas"
+    (nas / "Albums").mkdir(parents=True)
+    mount_table.set(ROOT_MOUNT, mount_line(nas, "cifs"))
+    await storage.add_local_folder(str(nas))
+    mount_table.set(ROOT_MOUNT)
+    probes.calls.clear()
+    restarted = StorageController(storage.mass)
+    try:
+        await restarted.refresh()
+        listed = _location(restarted.get_locations(), nas)
+        available = [await restarted.is_available(str(path)) for path in (nas, nas / "Albums")]
+        location = restarted.get_location_for_path(str(nas / "Albums"))
+        may_hold = restarted.can_hold_music_source(str(nas / "Albums"), manages_all_sources=False)
+        with pytest.raises(ActionUnavailable) as exc_info:
+            await restarted.list_folders(str(nas), manages_all_sources=False)
+    finally:
+        await restarted.close()
+
+    assert (listed.available, listed.error_key) == (False, "folder_not_mounted")
+    assert available == [False, False]
+    assert location == listed
+    assert may_hold
+    assert exc_info.value.translation_key == "folder_unreadable"
+    assert probes.calls == []
+
+
+async def test_dormant_automount_counts_as_mounted(
+    storage: StorageController, tmp_path: Path, mount_table: MountTable, probes: FakeProbes
+) -> None:
+    """A registered mountpoint behind its automount trigger is probed, which wakes it."""
+    nas = tmp_path / "nas"
+    nas.mkdir()
+    mount_table.set(ROOT_MOUNT, mount_line(nas, "cifs"))
+    await storage.add_local_folder(str(nas))
+    mount_table.set(ROOT_MOUNT, mount_line(nas, "autofs"))
+    probes.results[str(nas)] = None
+    _outdate_answer(storage, nas)
+
+    asleep = _location((await storage.get_info()).locations, nas)
+    del probes.results[str(nas)]
+    probes.side_effects[str(nas)] = partial(mount_table.mount, str(nas), "cifs")
+    _outdate_answer(storage, nas)
+    awake = _location((await storage.get_info()).locations, nas)
+
+    assert (asleep.available, asleep.error_key, asleep.mountpoint) == (
+        False,
+        "storage_not_responding",
+        str(nas),
+    )
+    assert (awake.available, awake.error_key, awake.fstype) == (True, None, "cifs")
+    assert await storage.is_available(str(nas))
+
+
+@pytest.mark.usefixtures("probes")
+@pytest.mark.parametrize("inside_a_mount", [False, True])
+async def test_only_a_mountpoint_is_recorded(
+    storage: StorageController, tmp_path: Path, mount_table: MountTable, inside_a_mount: bool
+) -> None:
+    """A plain folder, or one inside a mount, is not recorded as a mount and goes by its probe."""
+    folder = tmp_path / "nas" / "music"
+    folder.mkdir(parents=True)
+    if inside_a_mount:
+        mount_table.set(ROOT_MOUNT, mount_line(tmp_path / "nas", "cifs"))
+    else:
+        mount_table.set(ROOT_MOUNT)
+    await storage.add_local_folder(str(folder))
+
+    mount_table.set(ROOT_MOUNT)
+    await storage.refresh()
+
+    assert storage.mass.config.get(CONF_STORAGE_FOLDER_MOUNTS) == []
+    location = _location(storage.get_locations(), folder)
+    assert (location.available, location.error_key, location.mountpoint) == (True, None, None)
+
+
+@pytest.mark.usefixtures("probes")
+async def test_removal_drops_the_record(
+    storage: StorageController, tmp_path: Path, mount_table: MountTable
+) -> None:
+    """
+    Removing a registered mountpoint drops its record.
+
+    A record left without its folder, as a removal that stopped halfway leaves it, does not
+    come back when the path is registered again as a plain folder.
+    """
+    nas = tmp_path / "nas"
+    nas.mkdir()
+    mount_table.set(ROOT_MOUNT, mount_line(nas, "cifs"))
+    await storage.add_local_folder(str(nas))
+    assert storage.mass.config.get(CONF_STORAGE_FOLDER_MOUNTS) == [str(nas)]
+
+    await storage.remove_local_folder(str(nas))
+    assert storage.mass.config.get(CONF_STORAGE_FOLDER_MOUNTS) == []
+
+    storage.mass.config.set(CONF_STORAGE_FOLDER_MOUNTS, [str(nas)])
+    mount_table.set(ROOT_MOUNT)
+    location = await storage.add_local_folder(str(nas))
+
+    assert storage.mass.config.get(CONF_STORAGE_FOLDER_MOUNTS) == []
+    assert (location.available, location.error_key, location.mountpoint) == (True, None, None)
+
+
+@pytest.mark.usefixtures("probes")
+@pytest.mark.parametrize(
+    "record",
+    [
+        None,
+        "/mnt/nas",
+        {"/mnt/nas": True},
+        [1, None, {"path": "/mnt/nas"}, ["/mnt/nas"]],
+        ["/mnt/other"],
+    ],
+)
+async def test_malformed_record_is_ignored(
+    storage: StorageController, mount_table: MountTable, record: object
+) -> None:
+    """A record that is missing, no list, or holds no registered folder counts for nothing."""
+    storage.mass.config.set(CONF_STORAGE_FOLDERS, ["/mnt/nas"])
+    storage.mass.config.set(CONF_STORAGE_FOLDER_MOUNTS, record)
+    mount_table.set(ROOT_MOUNT)
+
+    location = _location((await storage.get_info()).locations, Path("/mnt/nas"))
+    await storage.remove_local_folder("/mnt/nas")
+
+    assert (location.available, location.error_key, location.mountpoint) == (True, None, None)
+    assert storage.mass.config.get(CONF_STORAGE_FOLDER_MOUNTS) == []
 
 
 @pytest.mark.usefixtures("probes")
@@ -239,12 +420,26 @@ async def test_add_refuses_the_root_and_the_server_folders(
         ("{cache}", "folder_is_server_folder"),
         ("/", "folder_is_root"),
         ("{registered}", "folder_already_location"),
+        ("{share}", "folder_already_location"),
     ],
 )
 async def test_add_refuses_a_symlink_to_a_refused_folder(
     storage: StorageController, tmp_path: Path, target: str, translation_key: str
 ) -> None:
     """A symlink is refused when the folder it points to would be."""
+    share = tmp_path / "share"
+    share.mkdir()
+    storage.mass.config.set(
+        f"{CONF_STORAGE_SHARES}/music",
+        NetworkShareSpec(
+            name="music",
+            share_type=ShareType.CIFS,
+            server="nas.local",
+            share="music",
+            backend=MountBackend.LOCAL_MOUNT,
+            path=str(share),
+        ).to_dict(),
+    )
     registered = tmp_path / "registered"
     registered.mkdir()
     await storage.add_local_folder(str(registered))
@@ -254,6 +449,7 @@ async def test_add_refuses_a_symlink_to_a_refused_folder(
             data=storage.mass.storage_path,
             cache=storage.mass.cache_path,
             registered=registered,
+            share=share,
         ),
         target_is_directory=True,
     )
@@ -587,6 +783,7 @@ async def test_removed_folder_says_so(storage: StorageController, tmp_path: Path
     ("error_key", "text"),
     [
         ("folder_missing", "This folder does not exist."),
+        ("folder_not_mounted", "The drive or share of this folder is not mounted."),
         ("storage_not_responding", "The storage of this location does not respond."),
     ],
 )

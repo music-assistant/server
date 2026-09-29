@@ -880,6 +880,7 @@
   "core.storage.errors.folder_is_server_folder": "The data and cache folders of Music Assistant can not be added.",
   "core.storage.errors.folder_missing": "This folder does not exist.",
   "core.storage.errors.folder_not_found": "The folder {0} does not exist.",
+  "core.storage.errors.folder_not_mounted": "The drive or share of this folder is not mounted.",
   "core.storage.errors.folder_not_registered": "This folder was not added as a storage location.",
   "core.storage.errors.folder_path_not_absolute": "Enter the full path of the folder, starting with a /.",
   "core.storage.errors.folder_unreadable": "The folder {0} can not be read right now.",
