@@ -129,6 +129,7 @@ from .constants import (
     WALK_EXTENSIONS,
     IsChapterFile,
     content_type_config_entry,
+    folder_config_entry,
 )
 from .cue import (
     CueSheetHandler,
@@ -267,6 +268,7 @@ class LocalFileSystemProvider(MusicProvider):
             self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
         )
         return (
+            folder_config_entry(self.base_path),
             content_type_config_entry(content_type),
             CONF_ENTRY_MISSING_ALBUM_ARTIST,
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
@@ -323,8 +325,17 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        if not await isdir(self.base_path):
-            msg = f"Music Directory {self.base_path} does not exist"
+        if not await self.mass.storage.is_available(self.base_path):
+            location = self.mass.storage.get_location_for_path(self.base_path)
+            if location is not None and not location.available:
+                msg = f"Storage location {location.path} is not available"
+                raise SetupFailedError(
+                    msg,
+                    translation_key="storage_location_unavailable",
+                    translation_owner=self.translation_owner,
+                    translation_args=[location.path],
+                )
+            msg = f"Folder {self.base_path} does not exist"
             raise SetupFailedError(
                 msg,
                 translation_key="music_directory_not_found",
