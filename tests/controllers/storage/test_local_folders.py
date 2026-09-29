@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -141,16 +142,41 @@ async def test_add_refuses_a_symlink_to_a_refused_folder(
 async def test_add_accepts_a_symlink_to_a_folder(
     storage: StorageController, tmp_path: Path
 ) -> None:
-    """A symlink to an ordinary folder is added, stored as typed."""
+    """A symlink to an ordinary folder adds that folder, and the folder can not be added twice."""
     (tmp_path / "music").mkdir()
     link = tmp_path / "link"
     link.symlink_to(tmp_path / "music", target_is_directory=True)
 
     location = await storage.add_local_folder(f"{link}/")
+    with pytest.raises(InvalidDataError) as exc_info:
+        await storage.add_local_folder(str(tmp_path / "music"))
 
-    assert location.path == str(link)
+    assert location.path == str(tmp_path / "music")
     assert location.available
-    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == [str(link)]
+    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == [str(tmp_path / "music")]
+    assert exc_info.value.translation_key == "folder_already_location"
+
+
+async def test_folder_behind_a_symlinked_parent(storage: StorageController, tmp_path: Path) -> None:
+    """
+    A folder reached through a symlinked parent is registered as the folder it is.
+
+    Like /tmp/music on macOS, where /tmp links to /private/tmp: a folder inside it can be listed
+    and a music source can be put on it, with the links resolved the way the folder picker
+    checks a path.
+    """
+    (tmp_path / "private" / "music" / "Albums").mkdir(parents=True)
+    (tmp_path / "tmp").symlink_to(tmp_path / "private", target_is_directory=True)
+    real = tmp_path / "private" / "music"
+
+    location = await storage.add_local_folder(str(tmp_path / "tmp" / "music"))
+
+    assert location.path == str(real)
+    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == [str(real)]
+    assert await storage.list_folders(str(real)) == ["Albums"]
+    albums = os.path.realpath(tmp_path / "tmp" / "music" / "Albums")
+    assert storage.can_hold_music_source(albums, manages_all_sources=True)
+    assert storage.can_hold_music_source(albums, manages_all_sources=False)
 
 
 async def test_add_allows_a_folder_inside_the_data_folder(

@@ -11,6 +11,7 @@ trigger (``autofs``) on its mountpoint, and the real mount is listed on top of i
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -148,6 +149,39 @@ def parse_mountpoints(text: str) -> set[str]:
         for mountpoint, (fstype, _read_only) in _parse_table(text).items()
         if fstype != AUTOMOUNT_FSTYPE
     }
+
+
+def find_share_mount(text: str, mountpoint: str) -> MediaMount | None:
+    """
+    Return the network share mounted on a mountpoint, None when nothing is mounted there.
+
+    Unlike discovery this also finds a mount below a system path such as /tmp. A share that is
+    only behind its dormant automount trigger is returned with fstype autofs.
+
+    :param text: Contents of a mountinfo file.
+    :param mountpoint: Where the share is mounted.
+    """
+    if (mount := _parse_table(text).get(mountpoint)) is None:
+        return None
+    fstype, read_only = mount
+    return MediaMount(mountpoint, fstype, read_only, StorageKind.NETWORK_SHARE)
+
+
+def is_mounted(path: str, text: str) -> bool:
+    """
+    Return whether a filesystem is mounted on a path (blocking).
+
+    Goes by the mount table where the system has one. Without one (macOS) the path must be a
+    mountpoint by itself.
+
+    :param path: The path to check.
+    :param text: Contents of a mountinfo file, empty on a system without one.
+    """
+    # the mount table rather than os.path.ismount, which misses a bind mount of a folder on the
+    # filesystem it is mounted on
+    if text:
+        return path in parse_mountpoints(text)
+    return os.path.ismount(path)
 
 
 def read_mountinfo() -> str:

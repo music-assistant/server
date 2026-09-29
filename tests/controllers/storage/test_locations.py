@@ -262,11 +262,11 @@ async def test_folder_without_a_mount_only_needs_to_exist(
     (tmp_path / "registered" / "music").mkdir(parents=True)
     set_locations(storage, make_location(tmp_path / "registered", kind=StorageKind.MANUAL))
 
-    with patch.object(controller_module, "parse_mountpoints") as parse_mountpoints:
+    with patch.object(controller_module, "is_mounted") as is_mounted:
         assert await storage.is_available(str(tmp_path / "registered" / "music"))
         assert await storage.is_available(str(tmp_path))
         assert not await storage.is_available(str(tmp_path / "gone"))
-    parse_mountpoints.assert_not_called()
+    is_mounted.assert_not_called()
 
 
 async def test_refresh_builds_the_locations(
