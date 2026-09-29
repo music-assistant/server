@@ -100,97 +100,6 @@ class KionMusicClient:
         self._client = None
         self._user_id = None
 
-    async def _ensure_connected(self) -> ClientAsync:
-        """Ensure the client is connected, attempting reconnect if needed."""
-        if self._client is not None:
-            return self._client
-        async with self._reconnect_lock:
-            # Re-check after acquiring lock — another task may have connected already
-            if self._client is not None:
-                return self._client  # type: ignore[unreachable]
-            LOGGER.info("Client disconnected, attempting to reconnect...")
-            try:
-                await self.connect()
-            except LoginFailed:
-                raise
-            except Exception as err:
-                raise ProviderUnavailableError("Client not connected and reconnect failed") from err
-        return cast("ClientAsync", self._client)
-
-    def _is_connection_error(self, err: Exception) -> bool:
-        """Return True if the exception indicates a connection or server drop."""
-        if isinstance(err, NetworkError) and not self._is_rate_limit_error(err):
-            return True
-        msg = str(err).lower()
-        return "disconnect" in msg or "connection" in msg or "timeout" in msg
-
-    def _is_rate_limit_error(self, err: Exception) -> bool:
-        """Return True if the exception indicates a rate-limit response from Kion."""
-        if not isinstance(err, NetworkError):
-            return False
-        msg = str(err).lower()
-        return "429" in msg or "too many requests" in msg or "rate limit" in msg
-
-    async def _reconnect(self) -> None:
-        """
-        Disconnect and connect again to recover from Server disconnected / connection errors.
-
-        Enforces a 30-second cooldown between reconnect attempts to avoid hammering Kion
-        and triggering rate limiting. A lock ensures concurrent callers don't bypass the cooldown.
-        """
-        async with self._reconnect_lock:
-            now = time.monotonic()
-            if now - self._last_reconnect_at < 30.0:
-                raise ProviderUnavailableError("Reconnect cooldown active, skipping")
-            self._last_reconnect_at = now
-            await self.disconnect()
-            await self.connect()
-
-    async def _call_with_retry(self, func: Callable[[ClientAsync], Awaitable[_T]]) -> _T:
-        """
-        Execute an async API call with throttling and one reconnect attempt on connection error.
-
-        :param func: Async callable that takes a ClientAsync and returns a result.
-        :return: The result of the API call.
-        """
-        if not BYPASS_THROTTLER.get():
-            await self._throttler.acquire()
-        client = await self._ensure_connected()
-        try:
-            return await func(client)
-        except Exception as err:
-            if self._is_rate_limit_error(err):
-                raise RateLimited("KION Music rate limit", backoff_time=60) from err
-            if not self._is_connection_error(err):
-                raise
-            LOGGER.warning("Connection error, reconnecting and retrying: %s", err)
-            try:
-                await self._reconnect()
-            except Exception as recon_err:
-                raise ProviderUnavailableError("Reconnect failed") from recon_err
-            client = cast("ClientAsync", self._client)
-            return await func(client)
-
-    async def _call_no_retry(self, func: Callable[[ClientAsync], Awaitable[_T]]) -> _T:
-        """
-        Execute an async API call without reconnect retry on call failure.
-
-        Used for fire-and-forget calls (e.g. rotor feedback) where a failed request
-        should be silently dropped rather than triggering a reconnect cycle that
-        could cause rate limiting. Note: _ensure_connected() is still called to
-        establish the initial connection if needed; only the reconnect-on-error
-        path is skipped.
-
-        :param func: Async callable that takes a ClientAsync and returns a result.
-        :return: The result of the API call.
-        """
-        if not BYPASS_THROTTLER.get():
-            await self._throttler.acquire()
-        client = await self._ensure_connected()
-        return await func(client)
-
-    # Rotor (radio station) methods
-
     async def get_rotor_station_tracks(
         self,
         station_id: str,
@@ -342,8 +251,6 @@ class KionMusicClient:
             LOGGER.warning("Rotor feedback %s failed: %s", feedback_type, err)
             return False
 
-    # Library methods
-
     async def get_liked_tracks(self) -> list[TrackShort]:
         """
         Get user's liked tracks sorted by timestamp (most recent first).
@@ -471,8 +378,6 @@ class KionMusicClient:
             LOGGER.error("Error fetching liked playlists: %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch liked playlists") from err
 
-    # Search
-
     async def search(
         self,
         query: str,
@@ -497,8 +402,6 @@ class KionMusicClient:
         except (NetworkError, ProviderUnavailableError) as err:
             LOGGER.error("Search error: %s", err)
             raise ResourceTemporarilyUnavailable("Search failed") from err
-
-    # Get single items
 
     async def get_track(self, track_id: str) -> KionTrack | None:
         """
@@ -772,8 +675,6 @@ class KionMusicClient:
             LOGGER.warning("Network error fetching playlist %s/%s: %s", user_id, playlist_id, err)
             raise ResourceTemporarilyUnavailable("Failed to fetch playlist") from err
 
-    # Streaming
-
     async def get_track_download_info(
         self, track_id: str, get_direct_links: bool = True
     ) -> list[DownloadInfo]:
@@ -911,8 +812,6 @@ class KionMusicClient:
             )
 
         return None
-
-    # Discovery / recommendations
 
     async def get_feed(self) -> Feed | None:
         """
@@ -1075,36 +974,6 @@ class KionMusicClient:
         """
         return await self._get_landing_waves("waves")
 
-    async def _get_landing_waves(self, block: str) -> list[dict[str, Any]] | None:
-        """
-        Fetch wave categories from a /landing-blocks/<block> endpoint.
-
-        Note: Response keys are auto-converted from camelCase to snake_case
-        by the kion-music library's JSON parser.
-
-        :param block: Block name, e.g. 'waves' or 'mixes-waves'.
-        :return: List of wave category dicts, or None on error.
-        """
-
-        async def _get(c: ClientAsync) -> dict[str, Any]:
-            url = f"{c.base_url}/landing-blocks/{block}"
-            return await c._request.get(url)  # type: ignore[no-any-return]
-
-        try:
-            result = await self._call_with_retry(_get)
-            if result and isinstance(result, dict):
-                waves = result.get("waves", [])
-                LOGGER.debug(
-                    "landing-blocks/%s returned %d categories",
-                    block,
-                    len(waves) if isinstance(waves, list) else -1,
-                )
-                return waves if isinstance(waves, list) else []
-            return None
-        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
-            LOGGER.debug("Error fetching landing-blocks/%s: %s", block, err)
-            return None
-
     async def get_wave_stations(
         self, language: str | None = None
     ) -> list[tuple[str, str, str, str | None]]:
@@ -1202,8 +1071,6 @@ class KionMusicClient:
             stations.append((station_id, name, image_url))
         return stations
 
-    # Library modifications
-
     async def like_track(self, track_id: str) -> bool:
         """
         Add a track to liked tracks.
@@ -1287,3 +1154,122 @@ class KionMusicClient:
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.error("Error unliking artist %s: %s", artist_id, err)
             return False
+
+    async def _ensure_connected(self) -> ClientAsync:
+        """Ensure the client is connected, attempting reconnect if needed."""
+        if self._client is not None:
+            return self._client
+        async with self._reconnect_lock:
+            # Re-check after acquiring lock — another task may have connected already
+            if self._client is not None:
+                return self._client  # type: ignore[unreachable]
+            LOGGER.info("Client disconnected, attempting to reconnect...")
+            try:
+                await self.connect()
+            except LoginFailed:
+                raise
+            except Exception as err:
+                raise ProviderUnavailableError("Client not connected and reconnect failed") from err
+        return cast("ClientAsync", self._client)
+
+    def _is_connection_error(self, err: Exception) -> bool:
+        """Return True if the exception indicates a connection or server drop."""
+        if isinstance(err, NetworkError) and not self._is_rate_limit_error(err):
+            return True
+        msg = str(err).lower()
+        return "disconnect" in msg or "connection" in msg or "timeout" in msg
+
+    def _is_rate_limit_error(self, err: Exception) -> bool:
+        """Return True if the exception indicates a rate-limit response from Kion."""
+        if not isinstance(err, NetworkError):
+            return False
+        msg = str(err).lower()
+        return "429" in msg or "too many requests" in msg or "rate limit" in msg
+
+    async def _reconnect(self) -> None:
+        """
+        Disconnect and connect again to recover from Server disconnected / connection errors.
+
+        Enforces a 30-second cooldown between reconnect attempts to avoid hammering Kion
+        and triggering rate limiting. A lock ensures concurrent callers don't bypass the cooldown.
+        """
+        async with self._reconnect_lock:
+            now = time.monotonic()
+            if now - self._last_reconnect_at < 30.0:
+                raise ProviderUnavailableError("Reconnect cooldown active, skipping")
+            self._last_reconnect_at = now
+            await self.disconnect()
+            await self.connect()
+
+    async def _call_with_retry(self, func: Callable[[ClientAsync], Awaitable[_T]]) -> _T:
+        """
+        Execute an async API call with throttling and one reconnect attempt on connection error.
+
+        :param func: Async callable that takes a ClientAsync and returns a result.
+        :return: The result of the API call.
+        """
+        if not BYPASS_THROTTLER.get():
+            await self._throttler.acquire()
+        client = await self._ensure_connected()
+        try:
+            return await func(client)
+        except Exception as err:
+            if self._is_rate_limit_error(err):
+                raise RateLimited("KION Music rate limit", backoff_time=60) from err
+            if not self._is_connection_error(err):
+                raise
+            LOGGER.warning("Connection error, reconnecting and retrying: %s", err)
+            try:
+                await self._reconnect()
+            except Exception as recon_err:
+                raise ProviderUnavailableError("Reconnect failed") from recon_err
+            client = cast("ClientAsync", self._client)
+            return await func(client)
+
+    async def _call_no_retry(self, func: Callable[[ClientAsync], Awaitable[_T]]) -> _T:
+        """
+        Execute an async API call without reconnect retry on call failure.
+
+        Used for fire-and-forget calls (e.g. rotor feedback) where a failed request
+        should be silently dropped rather than triggering a reconnect cycle that
+        could cause rate limiting. Note: _ensure_connected() is still called to
+        establish the initial connection if needed; only the reconnect-on-error
+        path is skipped.
+
+        :param func: Async callable that takes a ClientAsync and returns a result.
+        :return: The result of the API call.
+        """
+        if not BYPASS_THROTTLER.get():
+            await self._throttler.acquire()
+        client = await self._ensure_connected()
+        return await func(client)
+
+    async def _get_landing_waves(self, block: str) -> list[dict[str, Any]] | None:
+        """
+        Fetch wave categories from a /landing-blocks/<block> endpoint.
+
+        Note: Response keys are auto-converted from camelCase to snake_case
+        by the kion-music library's JSON parser.
+
+        :param block: Block name, e.g. 'waves' or 'mixes-waves'.
+        :return: List of wave category dicts, or None on error.
+        """
+
+        async def _get(c: ClientAsync) -> dict[str, Any]:
+            url = f"{c.base_url}/landing-blocks/{block}"
+            return await c._request.get(url)  # type: ignore[no-any-return]
+
+        try:
+            result = await self._call_with_retry(_get)
+            if result and isinstance(result, dict):
+                waves = result.get("waves", [])
+                LOGGER.debug(
+                    "landing-blocks/%s returned %d categories",
+                    block,
+                    len(waves) if isinstance(waves, list) else -1,
+                )
+                return waves if isinstance(waves, list) else []
+            return None
+        except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
+            LOGGER.debug("Error fetching landing-blocks/%s: %s", block, err)
+            return None
