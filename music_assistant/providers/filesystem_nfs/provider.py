@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.errors import SetupFailedError
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.mount import build_nfs_mount_cmd, classify_mount_error, unmount
 from music_assistant.helpers.process import check_output
@@ -183,7 +182,6 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
         )
 
         self.logger.debug("Mounting %s:%s to %s", server, export_path, self.mount_path)
-        self.logger.log(VERBOSE_LOG_LEVEL, "Using mount command: %s", " ".join(mount_cmd))
         returncode: int
         output: bytes
         returncode, output = await check_output(*mount_cmd)

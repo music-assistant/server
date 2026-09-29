@@ -941,3 +941,31 @@ async def test_errors_with_common_keys_are_translated(
         "Er kan geen verbinding worden gemaakt met de externe locatie: "
         "mount error(112): Host is down"
     )
+
+
+async def test_member_gets_no_detail_of_a_mount_error(
+    storage: StorageController, mounter: FakeMounter
+) -> None:
+    """The error of a mount can name the server and the export: only an admin gets it."""
+    detail = "mount.nfs: access denied by server while mounting nas.local:/volume1/music"
+    _store(storage, "music")
+    mounter.failing["nas.local"] = SetupFailedError(
+        f"NFS mount failed with error: {detail}",
+        translation_key="mount_failed",
+        translation_args=[detail],
+    )
+    await storage.reconcile()
+
+    admin = next(loc for loc in (await storage.get_info()).locations if loc.path == MUSIC_PATH)
+    set_current_user(User(user_id="member", username="member", role=UserRole.USER))
+    member = next(loc for loc in (await storage.get_info()).locations if loc.path == MUSIC_PATH)
+
+    assert (admin.error_key, admin.error_args) == ("mount_failed", [detail])
+    assert admin.error is not None
+    assert "nas.local" in admin.error
+    assert (member.available, member.error_key, member.error_args) == (
+        False,
+        "share_unavailable",
+        [],
+    )
+    assert "nas.local" not in json_dumps(member)

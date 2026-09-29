@@ -1439,7 +1439,19 @@ def _without_share_details(location: StorageLocation) -> StorageLocation:
     """Return a location without the connection details of a managed network share."""
     if location.share_name is None:
         return location
-    return replace(location, share_name=None, server=None, share=None, username=None, version=None)
+    # the error of a mount can name the server and the export
+    has_error = location.error is not None
+    return replace(
+        location,
+        share_name=None,
+        server=None,
+        share=None,
+        username=None,
+        version=None,
+        error="The network share is not available right now" if has_error else None,
+        error_key="share_unavailable" if has_error else None,
+        error_args=[],
+    )
 
 
 def _as_share_error(err: Exception) -> MusicAssistantError:

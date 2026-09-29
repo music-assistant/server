@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+from contextlib import suppress
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -105,3 +107,29 @@ async def test_unsupported_platform() -> None:
         pytest.raises(UnsupportedSystemError),
     ):
         await provider.mount()
+
+
+@pytest.mark.parametrize("system", ["Darwin", "Linux"])
+@pytest.mark.parametrize("returncode", [0, 1])
+async def test_mount_logs_no_password(
+    caplog: pytest.LogCaptureFixture, system: str, returncode: int
+) -> None:
+    """A mount leaves no trace of the password in the log, at any level."""
+    provider = _make_provider(password="pa ss@word,1")
+    provider.logger = logging.getLogger("music_assistant.test.filesystem_smb")
+    caplog.set_level(1)
+    with (
+        patch(
+            "music_assistant.providers.filesystem_smb.check_output",
+            AsyncMock(return_value=(returncode, b"mount error(112): Host is down")),
+        ),
+        patch("music_assistant.providers.filesystem_smb.platform.system", return_value=system),
+        suppress(SetupFailedError),
+    ):
+        await provider.mount()
+
+    assert caplog.records
+    for record in caplog.records:
+        text = f"{record.getMessage()} {record.args}"
+        assert "pa ss@word,1" not in text
+        assert "pa%20ss%40word%2C1" not in text

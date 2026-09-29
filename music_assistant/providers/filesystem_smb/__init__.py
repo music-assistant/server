@@ -9,7 +9,7 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import SetupFailedError
 
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.mount import build_cifs_mount_cmd, classify_mount_error, unmount
 from music_assistant.helpers.process import check_output
@@ -177,8 +177,8 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             cache_mode=str(self.config.get_value(CONF_CACHE_MODE) or "loose"),
         )
 
+        # never the command itself: on macOS it carries the password
         self.logger.debug("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
-        self.logger.log(VERBOSE_LOG_LEVEL, "Using mount command: %s", " ".join(mount_cmd))
         returncode, output = await check_output(*mount_cmd, env=env_vars)
         if returncode != 0:
             raise classify_mount_error("cifs", output.decode().strip())
