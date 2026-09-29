@@ -50,6 +50,7 @@ class ScrobblerHelper:
         self.logger = logger
         self.config = config or ScrobblerConfig(suffix_version=False)
         self.supported_media_types = supported_media_types
+        self._scrobbles_in_flight: set[str] = set()
 
     def get_name(self, report: MediaItemPlaybackProgressReport) -> str:
         """Get the track name to use for scrobbling, possibly appended with version info."""
@@ -60,7 +61,7 @@ class ScrobblerHelper:
 
     def should_scrobble(self, report: MediaItemPlaybackProgressReport) -> bool:
         """Determine if a track should be scrobbled, to be extended later."""
-        if self.last_scrobbled == report.uri:
+        if self.last_scrobbled == report.uri or report.uri in self._scrobbles_in_flight:
             self.logger.debug("skipped scrobbling due to duplicate event")
             return False
 
@@ -114,17 +115,14 @@ class ScrobblerHelper:
                 self.logger.exception("Error while marking track as 'now playing'")
 
         async def scrobble() -> None:
-            # claim the track before awaiting so a concurrent report for it is skipped
-            self.last_scrobbled = report.uri
-            submitted = False
+            self._scrobbles_in_flight.add(report.uri)
             try:
                 await self._scrobble(report)
-                submitted = True
+                self.last_scrobbled = report.uri
             except self.scrobble_exceptions:
                 self.logger.exception("Error while scrobbling track")
             finally:
-                if not submitted and self.last_scrobbled == report.uri:
-                    self.last_scrobbled = None
+                self._scrobbles_in_flight.discard(report.uri)
 
         # update now playing if needed
         if report.is_playing and (
