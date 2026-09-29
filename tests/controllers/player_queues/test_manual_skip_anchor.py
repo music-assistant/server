@@ -275,6 +275,43 @@ async def test_play_index_retry_carries_the_real_predecessor_to_the_next_candida
     assert seen_anchors[1] == (queue_data.items[2].queue_item_id, *real_predecessor)
 
 
+async def test_play_index_leaves_the_anchor_unset_after_a_first_session_retry_failure() -> None:
+    """A candidate that resolves streamdetails before failing is never a real predecessor."""
+    ctrl = _controller()
+    queue_data = cast("PlayerQueueData", ctrl._queue_data["q1"])
+    queue_data.queue.current_index = None
+    queue_data.queue.current_item = None  # nothing has played yet this session
+    seen_anchors: list[tuple[str, str, str] | None] = []
+
+    async def _load_item(queue_item: QueueItem, **_kwargs: object) -> None:
+        seen_anchors.append(queue_data.pending_transition_anchor)
+        if queue_item.queue_item_id == queue_data.items[0].queue_item_id:
+            # resolves streamdetails before failing later in the pipeline (e.g. buffer prep)
+            queue_item.streamdetails = StreamDetails(
+                provider=INSTANCE,
+                item_id="Various Artists/Compilation Album/01 Track.flac",
+                audio_format=AudioFormat(content_type=ContentType.MP3),
+                media_type=MediaType.TRACK,
+            )
+            raise MediaNotFoundError("buffer prep failed")
+        queue_item.streamdetails = StreamDetails(
+            provider=INSTANCE,
+            item_id="doesnt-matter",
+            audio_format=AudioFormat(content_type=ContentType.MP3),
+            media_type=MediaType.TRACK,
+        )
+
+    ctrl._load_item = _load_item
+    ctrl.player_media_from_queue_item = AsyncMock()
+    ctrl.mass.players.play_media = AsyncMock()
+
+    await ctrl.play_index("q1", 0)
+
+    assert seen_anchors[0] is None
+    # t1's own resolved-then-failed streamdetails must not seed an anchor for the retry
+    assert seen_anchors[1] is None
+
+
 async def test_play_index_carries_the_real_predecessor_through_two_consecutive_failures() -> None:
     """current_item stays pinned to the first failed attempt through every retry, not just one."""
     ctrl = _controller()  # current_index=1 (t2): the pre-advanced, about-to-fail target

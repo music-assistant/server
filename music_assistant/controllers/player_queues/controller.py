@@ -1107,10 +1107,17 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 )
                 # re-stash for the new candidate, scoped to the item that just failed rather
                 # than current_item (which stays pinned to the first attempt throughout every
-                # retry) - so a chain of failures keeps carrying the real predecessor forward
-                # instead of losing it to a failed item's own stale streamdetails
+                # retry) - so a chain of failures keeps carrying the real predecessor forward.
+                # The failed item's own streamdetails must never seed a fresh anchor here: it
+                # can resolve them before failing later in the pipeline, but that was never a
+                # real predecessor - only an existing stash scoped to it may carry forward.
                 if (retry_target := self.get_item(queue_id, next_index)) is not None:
-                    self._stash_transition_anchor(queue_id, retry_target.queue_item_id, queue_item)
+                    self._stash_transition_anchor(
+                        queue_id,
+                        retry_target.queue_item_id,
+                        queue_item,
+                        allow_predecessor_streamdetails=False,
+                    )
                 index = next_index
             if loaded_item is None:
                 await self.stop(queue_id)
@@ -1963,7 +1970,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue_data.transitioning = value
 
     def _stash_transition_anchor(
-        self, queue_id: str, target_queue_item_id: str, predecessor: QueueItem | None
+        self,
+        queue_id: str,
+        target_queue_item_id: str,
+        predecessor: QueueItem | None,
+        *,
+        allow_predecessor_streamdetails: bool = True,
     ) -> None:
         """
         Capture the predecessor's streamdetails for get_stream_details' folder tiebreak.
@@ -1971,6 +1983,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param queue_id: The queue transitioning to a new current item.
         :param target_queue_item_id: queue_item_id of the track being transitioned to.
         :param predecessor: The item this transition is moving away from.
+        :param allow_predecessor_streamdetails: Whether predecessor's own streamdetails may
+            seed a fresh anchor when there is nothing to carry forward. False for a failed
+            retry candidate: it can resolve streamdetails before failing later in the
+            pipeline, but that never means it actually played.
         """
         queue_data = self._queue_data[queue_id]
         pending = queue_data.pending_transition_anchor
@@ -1980,6 +1996,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # leftover rather than what's really still playing; carry the real predecessor
             # forward onto the new target instead
             queue_data.pending_transition_anchor = (target_queue_item_id, pending[1], pending[2])
+            return
+        if not allow_predecessor_streamdetails:
+            queue_data.pending_transition_anchor = None
             return
         streamdetails = predecessor.streamdetails if predecessor else None
         queue_data.pending_transition_anchor = (
