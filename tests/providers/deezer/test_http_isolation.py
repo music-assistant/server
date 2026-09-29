@@ -136,8 +136,10 @@ async def test_stream_url_request_times_out(
     monkeypatch: pytest.MonkeyPatch, deezer_server: TestServer
 ) -> None:
     """A stuck request for the stream url gives up instead of hanging the playback start."""
+    reached = asyncio.Event()
 
     async def stuck(_request: web.Request) -> web.Response:
+        reached.set()
         await asyncio.sleep(5)
         return web.json_response({})
 
@@ -152,3 +154,4 @@ async def test_stream_url_request_times_out(
 
         with pytest.raises(TimeoutError):
             await client.get_deezer_track_urls("1")
+        assert reached.is_set()
