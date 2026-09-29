@@ -16,6 +16,12 @@ PROBE_MAX_AGE: Final[float] = 30
 DIR_SIZE_MAX_AGE: Final[int] = 600
 DIR_SIZES_TASK_ID: Final[str] = "storage_dir_sizes"
 MAX_LISTED_FOLDERS: Final[int] = 500
+SHARES_SETUP_TASK_ID: Final[str] = "storage_shares_setup"
+RECONCILE_TASK_ID: Final[str] = "storage_shares_reconcile"
+# the namespace the translated strings of the storage controller resolve under
+TRANSLATION_OWNER: Final[str] = "core.storage"
+# where the documentation explains how to make a network share available to Music Assistant
+SHARES_DOCS_URL: Final[str] = "https://music-assistant.io/installation/"
 
 # files whose presence marks a Docker or Podman container
 CONTAINER_MARKER_FILES: Final[tuple[str, ...]] = ("/.dockerenv", "/run/.containerenv")

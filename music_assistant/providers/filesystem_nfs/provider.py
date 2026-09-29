@@ -8,11 +8,11 @@ from contextlib import suppress
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
-from music_assistant_models.errors import SetupFailedError, UnsupportedSystemError
+from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.json import SerializableType
-from music_assistant.helpers.mount import error_summary, unmount
+from music_assistant.helpers.mount import build_nfs_mount_cmd, classify_mount_error, unmount
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.util import get_ip_from_host
@@ -174,21 +174,13 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
         """Mount the NFS export to a temporary folder."""
         server = str(self.get_setup_value(CONF_HOST))
         export_path = str(self.get_setup_value(CONF_EXPORT_PATH))
-
-        if platform.system() not in ("Linux", "Darwin"):
-            msg = f"NFS provider is not supported on {platform.system()}"
-            raise UnsupportedSystemError(msg)
-
-        mount_options = self._get_mount_options()
-        mount_cmd = [
-            "mount",
-            "-t",
-            "nfs",
-            "-o",
-            ",".join(mount_options),
-            f"{server}:{export_path}",
+        mount_cmd = build_nfs_mount_cmd(
+            platform.system(),
+            server,
+            export_path,
             self.mount_path,
-        ]
+            version=str(self.get_setup_value(CONF_NFS_VERSION) or "") or None,
+        )
 
         self.logger.debug("Mounting %s:%s to %s", server, export_path, self.mount_path)
         self.logger.log(VERBOSE_LOG_LEVEL, "Using mount command: %s", " ".join(mount_cmd))
@@ -196,23 +188,4 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
         output: bytes
         returncode, output = await check_output(*mount_cmd)
         if returncode != 0:
-            error = output.decode().strip()
-            msg = f"NFS mount failed with error: {error}"
-            raise SetupFailedError(
-                msg,
-                translation_key="mount_failed",
-                translation_args=[error_summary(error)],
-            )
-
-    def _get_mount_options(self) -> list[str]:
-        """Get platform-specific NFS mount options."""
-        if platform.system() == "Darwin":
-            options = ["resvport", "noatime", "soft", "timeo=30", "retrans=5"]
-        else:
-            options = ["noatime", "nolock", "tcp", "soft", "timeo=30", "retrans=5"]
-
-        nfs_version = str(self.get_setup_value(CONF_NFS_VERSION) or "")
-        if nfs_version:
-            options.append(f"vers={nfs_version}")
-
-        return options
+            raise classify_mount_error("nfs", output.decode().strip())

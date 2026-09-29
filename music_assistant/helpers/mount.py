@@ -6,13 +6,173 @@ import asyncio
 import os
 import platform
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.errors import LoginFailed, SetupFailedError, UnsupportedSystemError
 
 from music_assistant.helpers.process import check_output
 
 if TYPE_CHECKING:
     from logging import Logger
+
+# lowercase fragments that both mount tools (Linux mount.cifs and macOS mount_smbfs) emit when
+# the server rejected the credentials - only those must be reported back as an auth problem
+_AUTH_FAILURE_MARKERS = (
+    "permission denied",
+    "authentication error",
+    "nt_status_logon_failure",
+    "nt_status_access_denied",
+    "nt_status_account_disabled",
+    "nt_status_account_locked_out",
+    "nt_status_password_expired",
+    "nt_status_wrong_password",
+)
+# lowercase fragments the mount tools emit when the process itself may not mount anything
+_NOT_PERMITTED_MARKERS = ("operation not permitted", "only root can")
+
+
+def build_cifs_mount_cmd(
+    system: str,
+    server: str,
+    share: str,
+    mountpoint: str,
+    *,
+    username: str | None = None,
+    password: str | None = None,
+    version: str | None = None,
+    read_only: bool = False,
+    cache_mode: str = "loose",
+) -> tuple[list[str], dict[str, str]]:
+    """
+    Return the command that mounts a CIFS (SMB) share, and the environment variables it needs.
+
+    On Linux the password travels in the PASSWD environment variable, so a password with
+    special characters (commas, etc.) needs no escaping on the command line.
+
+    :param system: The operating system, as ``platform.system()`` names it.
+    :param server: The hostname or IP address of the server.
+    :param share: The share name, optionally followed by a subfolder (``music/albums``).
+    :param mountpoint: The local folder to mount the share on.
+    :param username: The user to log in as, None or ``guest`` for guest access.
+    :param password: The password of the user.
+    :param version: The SMB protocol version, None to let the client negotiate it.
+    :param read_only: Whether to mount the share read-only.
+    :param cache_mode: The CIFS cache mode (Linux only).
+    :raises UnsupportedSystemError: When the system can not mount a CIFS share.
+    """
+    if system == "Darwin":
+        mount_options = ["-r"] if read_only else []
+        # macOS uses different version format (e.g., smb2, smb3)
+        if version and version.startswith("3"):
+            mount_options.extend(["-o", "protocol_vers_map=6"])  # SMB3
+        elif version and version.startswith("2"):
+            mount_options.extend(["-o", "protocol_vers_map=4"])  # SMB2
+        # macOS mount_smbfs supports special characters in password when URL-encoded
+        encoded_password = f":{quote(password, safe='')}" if password else ""
+        user = username or "guest"
+        url = f"//{user}{encoded_password}@{server}/{share}"
+        return ["mount", "-t", "smbfs", *mount_options, url, mountpoint], {}
+    if system != "Linux":
+        msg = f"Mounting a CIFS share is not supported on {system}"
+        raise UnsupportedSystemError(msg)
+    env_vars: dict[str, str] = {}
+    options = ["ro" if read_only else "rw"]
+    if username and username.lower() != "guest":
+        options.append(f"username={username}")
+        if password:
+            env_vars["PASSWD"] = password
+    else:
+        options.append("guest")
+    # SMB version for better compatibility and performance
+    if version:
+        options.append(f"vers={version}")
+    options.append(f"cache={cache_mode}")
+    # Case insensitive by default (standard for SMB) and other performance options.
+    # Note: emoji and other 4-byte UTF-8 characters (U+10000+) in folder/file names
+    # are NOT supported due to a Linux kernel limitation in the CIFS client's NLS layer.
+    # Items with such characters will be skipped during library sync.
+    options.extend(
+        [
+            "iocharset=utf8",
+            "nocase",
+            "file_mode=0755",
+            "dir_mode=0755",
+            "uid=0",
+            "gid=0",
+            "noperm",
+            "nobrl",
+            "mfsymlinks",
+            "noserverino",
+            "actimeo=30",
+        ]
+    )
+    mount_cmd = ["mount", "-t", "cifs", "-o", ",".join(options), f"//{server}/{share}", mountpoint]
+    return mount_cmd, env_vars
+
+
+def build_nfs_mount_cmd(
+    system: str,
+    server: str,
+    export_path: str,
+    mountpoint: str,
+    *,
+    version: str | None = None,
+    read_only: bool = False,
+) -> list[str]:
+    """
+    Return the command that mounts an NFS export.
+
+    :param system: The operating system, as ``platform.system()`` names it.
+    :param server: The hostname or IP address of the server.
+    :param export_path: The absolute path of the export on the server.
+    :param mountpoint: The local folder to mount the export on.
+    :param version: The NFS protocol version, None to let the client negotiate it.
+    :param read_only: Whether to mount the export read-only.
+    :raises UnsupportedSystemError: When the system can not mount an NFS export.
+    """
+    if system == "Darwin":
+        options = ["resvport", "noatime", "soft", "timeo=30", "retrans=5"]
+    elif system == "Linux":
+        options = ["noatime", "nolock", "tcp", "soft", "timeo=30", "retrans=5"]
+    else:
+        msg = f"Mounting an NFS export is not supported on {system}"
+        raise UnsupportedSystemError(msg)
+    if read_only:
+        options.insert(0, "ro")
+    if version:
+        options.append(f"vers={version}")
+    return ["mount", "-t", "nfs", "-o", ",".join(options), f"{server}:{export_path}", mountpoint]
+
+
+def classify_mount_error(share_type: str, output: str) -> SetupFailedError | LoginFailed:
+    """
+    Return the error for a failed mount of a network share.
+
+    Credentials a CIFS server rejected become a login failure, anything else a failed mount that
+    shows the summary line of the output.
+
+    :param share_type: The protocol of the share: ``cifs`` or ``nfs``.
+    :param output: The output of the mount command, or the message of whatever mounted it.
+    """
+    label = "SMB" if share_type == "cifs" else "NFS"
+    msg = f"{label} mount failed with error: {output}"
+    if share_type == "cifs" and any(marker in output.lower() for marker in _AUTH_FAILURE_MARKERS):
+        return LoginFailed(msg)
+    return SetupFailedError(
+        msg,
+        translation_key="mount_failed",
+        translation_args=[error_summary(output)],
+    )
+
+
+def is_mount_not_permitted(output: str) -> bool:
+    """
+    Return whether a mount command failed because this process may not mount at all.
+
+    :param output: The output of the mount command.
+    """
+    lowered = output.lower()
+    return any(marker in lowered for marker in _NOT_PERMITTED_MARKERS)
 
 
 def error_summary(output: str) -> str:

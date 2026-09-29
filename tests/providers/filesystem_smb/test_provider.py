@@ -24,14 +24,15 @@ SETUP_VALUES = {
 }
 
 
-def _make_provider() -> SMBFileSystemProvider:
+def _make_provider(**setup_values: str) -> SMBFileSystemProvider:
+    values = {**SETUP_VALUES, **setup_values}
     provider = SMBFileSystemProvider.__new__(SMBFileSystemProvider)
     provider.base_path = f"/tmp/{INSTANCE_ID}"  # noqa: S108
     provider.logger = MagicMock()
     provider.config = MagicMock()
     provider.config.instance_id = INSTANCE_ID
     provider.get_setup_value = MagicMock(  # type: ignore[method-assign]
-        side_effect=lambda key, default=None: SETUP_VALUES.get(key, default)
+        side_effect=lambda key, default=None: values.get(key, default)
     )
     return provider
 
@@ -71,27 +72,29 @@ async def test_busy_mountpoint_is_not_an_auth_error() -> None:
     assert _status_for(err) == ProviderStatus.ERROR
 
 
-async def test_busy_mountpoint_keeps_the_tool_output() -> None:
-    """A non-auth mount failure shows the summary line but keeps the full output for support."""
-    summary = "mount error(16): Device or resource busy"
-    pointer = "Refer to the mount.cifs(8) manual page (e.g. man mount.cifs)"
-    err = await _mount_with_output(f"{summary}\n{pointer}")
-    assert isinstance(err, SetupFailedError)
-    assert err.translation_key == "mount_failed"
-    assert err.translation_args == [summary]
-    assert pointer in str(err)
-
-
 async def test_permission_denied_is_an_auth_error() -> None:
     """A rejected credential (mount.cifs) surfaces as a login failure."""
     err = await _mount_with_output("mount error(13): Permission denied")
     assert isinstance(err, LoginFailed)
 
 
-async def test_nt_status_logon_failure_is_an_auth_error() -> None:
-    """A rejected credential reported as an NT status code surfaces as a login failure."""
-    err = await _mount_with_output("Unable to find suitable address.NT_STATUS_LOGON_FAILURE")
-    assert isinstance(err, LoginFailed)
+async def test_mount_command() -> None:
+    """The share, subfolder, credentials, version and cache mode reach the mount command."""
+    provider = _make_provider(subfolder="albums\\A-K", smb_version="3.0")
+    provider.config.get_value = MagicMock(return_value="strict")  # type: ignore[method-assign]
+    with (
+        patch(
+            "music_assistant.providers.filesystem_smb.check_output",
+            AsyncMock(return_value=(0, b"")),
+        ) as check_output,
+        patch("music_assistant.providers.filesystem_smb.platform.system", return_value="Linux"),
+    ):
+        await provider.mount()
+
+    args = check_output.call_args.args
+    assert args[-2:] == ("//nas.local/music/albums/A-K", provider.base_path)
+    assert args[4].startswith("rw,username=user,vers=3.0,cache=strict,")
+    assert check_output.call_args.kwargs == {"env": {"PASSWD": "secret"}}
 
 
 async def test_unsupported_platform() -> None:

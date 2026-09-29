@@ -13,6 +13,18 @@
     "folder_unreadable": "The folder {0} can not be read right now.",
     "folder_not_registered": "This folder was not added as a storage location.",
     "location_in_use": "The music source {0} uses this folder. Remove that music source first.",
-    "path_not_allowed": "This folder is not inside a storage location you can use."
+    "path_not_allowed": "This folder is not inside a storage location you can use.",
+    "no_mount_backend": "This installation of Music Assistant can not mount network shares. Mount the share on the host and make it available to Music Assistant instead, see {0}",
+    "mount_not_permitted": "This installation of Music Assistant is not allowed to mount network shares. Mount the share on the host and make it available to Music Assistant instead, see {0}",
+    "mount_backend_unavailable": "This network share can not be mounted right now: what mounted it is not available.",
+    "share_type_not_supported": "Network shares of type {0} can not be mounted here.",
+    "share_version_not_supported": "Protocol version {0} can not be used here for this type of network share.",
+    "share_name_invalid": "Enter the name of the share without slashes.",
+    "export_path_invalid": "Enter the full path of the export, starting with a /.",
+    "share_already_added": "This network share already is a storage location.",
+    "share_mounted_already": "This network share is mounted already, and available as the storage location {0}.",
+    "share_not_found": "There is no network share named {0}.",
+    "share_not_mounted": "The network share did not become available. Check that its server is online and try again.",
+    "share_unavailable": "The network share is not available right now."
   }
 }
