@@ -42,8 +42,8 @@ def _buffer(*, duration_available: float = 45.0, eof: bool = True) -> AudioBuffe
     audio_buffer.max_size_seconds = 300
     audio_buffer.is_valid.return_value = True
     audio_buffer.duration_available = duration_available
-    audio_buffer.ready = MagicMock()
-    audio_buffer.ready.is_set.return_value = True
+    audio_buffer.ready = asyncio.Event()
+    audio_buffer.ready.set()
     return audio_buffer
 
 
