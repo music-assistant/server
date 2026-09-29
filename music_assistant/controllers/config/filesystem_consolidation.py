@@ -29,7 +29,7 @@ import logging
 import os
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Final
 
@@ -160,9 +160,9 @@ class _Conversion:
 
     instance_id: str
     # the raw provider config of the Local files source it becomes
-    config: dict[str, Any]
+    config: dict[str, Any] = field(repr=False)
     # the network share to store for it, None when its share is a storage location already
-    share: NetworkShareSpec | None
+    share: NetworkShareSpec | None = field(repr=False)
 
 
 @dataclass
@@ -173,7 +173,8 @@ class _RemovedSource:
     server: str
     share: str
     username: str | None
-    password: str | None
+    # decrypted, so left out of the repr like the stored settings of a conversion
+    password: str | None = field(repr=False)
     version: str | None
     # the folder inside the share the source read, relative to the share
     subfolder: str

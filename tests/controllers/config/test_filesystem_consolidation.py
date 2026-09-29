@@ -1103,6 +1103,21 @@ async def test_a_supervisor_that_can_not_be_asked_converts_nothing(
     assert _records(mass)["music"].backend == MountBackend.SUPERVISOR
 
 
+async def test_the_repr_of_a_source_or_a_conversion_shows_no_secret(mass: MusicAssistant) -> None:
+    """What the conversion reads and plans shows neither a password nor stored settings."""
+    _store_source(mass, SMB_ID, SMB_SETUP)
+    raw_configs = mass.config.get(CONF_PROVIDERS)
+    sources = consolidation_module._read_removed_sources(mass, raw_configs)
+
+    [conversion] = await consolidation_module._plan_conversions(mass, raw_configs, sources)
+
+    assert sources[SMB_ID].password == "p@ss,word"
+    assert "p@ss,word" not in repr(sources[SMB_ID])
+    assert conversion.share is not None
+    assert conversion.share.password is not None
+    assert repr(conversion) == f"_Conversion(instance_id='{SMB_ID}')"
+
+
 @pytest.mark.usefixtures("reconcile")
 async def test_a_source_with_unreadable_settings_is_left_as_it_is(
     mass: MusicAssistant, caplog: pytest.LogCaptureFixture
