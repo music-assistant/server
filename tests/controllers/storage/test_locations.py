@@ -393,6 +393,7 @@ async def test_cache_is_not_counted_twice(
     """The data size leaves out a cache directory that lies inside the data directory."""
     storage.mass.storage_path = str(tmp_path / "data")
     storage.mass.cache_path = str(tmp_path / ("data/.cache" if cache_inside_data else "data-cache"))
+    await storage._resolve_server_folders()
     get_folder_size = AsyncMock(return_value=1.0)
 
     with patch.object(controller_module, "get_folder_size", get_folder_size):

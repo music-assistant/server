@@ -87,6 +87,11 @@ class StorageController(CoreController):
         self.manifest.icon = "harddisk"
         self._locations: list[StorageLocation] = []
         self._in_container = False
+        # the data and cache directory of the server, as given until setup resolves them
+        self._server_folders = (
+            os.path.normpath(mass.storage_path),
+            os.path.normpath(mass.cache_path),
+        )
         self._probes: dict[str, _ProbeState] = {}
         # every mountpoint the mount table showed since the start: an unmounted drive or share
         # leaves an empty folder behind, which must not pass for the storage itself
@@ -108,6 +113,7 @@ class StorageController(CoreController):
         self._in_container = self.mass.running_as_hass_addon or await asyncio.to_thread(
             _running_in_container
         )
+        await self._resolve_server_folders()
         # the mount table only: a location is probed once a caller needs its state
         await self._periodic_refresh()
         self._request_dir_sizes()
@@ -169,19 +175,12 @@ class StorageController(CoreController):
                 InvalidDataError, f"Not an absolute path: {path}", "folder_path_not_absolute"
             )
         self._check_new_folder(path)
-        server_paths = self._server_paths()
-        # the probes resolve the symlinks, of the server's own folders as well
-        answers = await self._wait_for_probes([path, *server_paths])
-        if (result := answers[path]) is None:
+        # the probe also resolves the symlinks of the folder
+        if (result := (await self._wait_for_probes([path]))[path]) is None:
             raise self._folder_unreadable(path)
         if not result.is_dir:
             raise self._folder_not_found(path)
-        real_server_paths = [
-            answer.real_path
-            for server_path in server_paths
-            if (answer := answers[server_path]) is not None and answer.real_path is not None
-        ]
-        self._check_new_folder(result.real_path or path, real_server_paths)
+        self._check_new_folder(result.real_path or path)
         self.mass.config.set(
             CONF_STORAGE_FOLDERS, [*self._get_registered_folders(), path], immediate=True
         )
@@ -322,7 +321,7 @@ class StorageController(CoreController):
         """Rebuild the list of storage locations from the mount table, touching no location."""
         table = await asyncio.to_thread(read_mountinfo)
         self._seen_mountpoints.update(parse_mountpoints(table))
-        data_path, cache_path = self._server_paths()
+        data_path, cache_path = self._server_folders
         mounts = {mount.mountpoint: mount for mount in self._parse_mounts(table)}
         media: dict[str, StorageLocation] = {}
         for mount in mounts.values():
@@ -376,18 +375,25 @@ class StorageController(CoreController):
             self.logger.exception("Failed to refresh the storage locations")
         self.mass.call_later(REFRESH_INTERVAL, self._periodic_refresh, task_id=REFRESH_TASK_ID)
 
-    def _check_new_folder(self, path: str, real_server_paths: Iterable[str] = ()) -> None:
+    async def _resolve_server_folders(self) -> None:
+        """Resolve the data and cache directory the server was started with."""
+        # the server may have been started with a relative path or one through a symlink,
+        # while the mount table and the resolved paths of folders hold the real directories
+        self._server_folders = await asyncio.to_thread(
+            _real_paths, self.mass.storage_path, self.mass.cache_path
+        )
+
+    def _check_new_folder(self, path: str) -> None:
         """
         Raise when a path may not be registered as a folder.
 
         :param path: A normalized absolute path.
-        :param real_server_paths: The server's own folders with their symlinks resolved.
         """
         if not path.strip("/"):
             raise self._error(
                 InvalidDataError, "The root folder can not be added", "folder_is_root"
             )
-        if path in {*self._server_paths(), *real_server_paths}:
+        if path in self._server_folders:
             msg = f"{path} is a folder of the server itself"
             raise self._error(InvalidDataError, msg, "folder_is_server_folder")
         if any(loc.path == path for loc in self._locations):
@@ -420,7 +426,7 @@ class StorageController(CoreController):
         """Return the media mounts in a mount table of the server process."""
         return parse_mountinfo(
             table,
-            excluded_paths=self._server_paths(),
+            excluded_paths=self._server_folders,
             in_container=self._in_container,
             supervisor=self.mass.running_as_hass_addon,
         )
@@ -535,7 +541,7 @@ class StorageController(CoreController):
 
     async def _update_dir_sizes(self) -> None:
         """Measure the data and cache directories and show the result on their rows."""
-        data_path, cache_path = self._server_paths()
+        data_path, cache_path = self._server_folders
         # the default cache directory lies inside the data directory, and has a row of its own
         exclude = (cache_path,) if is_within(cache_path, data_path) else ()
         self._dir_sizes = {
@@ -545,10 +551,6 @@ class StorageController(CoreController):
         for location in self._locations:
             if location.usage != StorageUsage.MEDIA:
                 location.used_space_gb = self._dir_sizes.get(location.usage)
-
-    def _server_paths(self) -> tuple[str, str]:
-        """Return the data and the cache directory of the server."""
-        return os.path.normpath(self.mass.storage_path), os.path.normpath(self.mass.cache_path)
 
     def _get_registered_folders(self) -> list[str]:
         """Return the folders registered as a media location."""
@@ -662,6 +664,11 @@ def _caller_manages_all_sources() -> bool:
 def _running_in_container() -> bool:
     """Return whether the server runs in a Docker or Podman container (blocking)."""
     return any(Path(marker).exists() for marker in CONTAINER_MARKER_FILES)
+
+
+def _real_paths(data_path: str, cache_path: str) -> tuple[str, str]:
+    """Return the data and cache directory made absolute, symlinks resolved (blocking)."""
+    return os.path.realpath(data_path), os.path.realpath(cache_path)
 
 
 def _probe_path(path: str) -> _ProbeResult | None:
