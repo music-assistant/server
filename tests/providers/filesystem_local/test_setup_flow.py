@@ -114,8 +114,9 @@ def tree(tmp_path: Path, storage: StorageController) -> Path:
     """
     Provide folders in and around the storage locations, and hold those locations.
 
-    ``media`` is a location every caller may use, ``admin_disk`` one only admins see, and
-    ``data`` the data folder of the server (created by the minimal server).
+    ``media`` is a location every caller may use, ``admin_disk`` and ``media/private_disk`` are
+    ones only admins see, and ``data`` is the data folder of the server (created by the minimal
+    server).
 
     :param tmp_path: Temporary directory for the tree.
     :param storage: The storage controller that holds the locations.
@@ -123,6 +124,7 @@ def tree(tmp_path: Path, storage: StorageController) -> Path:
     media = tmp_path / "media"
     for folder in (
         media / "Music",
+        media / "private_disk" / "Music",
         tmp_path / "outside" / "Music",
         tmp_path / "media-evil",
         tmp_path / "admin_disk" / "Music",
@@ -140,6 +142,7 @@ def tree(tmp_path: Path, storage: StorageController) -> Path:
     set_locations(
         storage,
         make_location(media, kind=StorageKind.MANUAL),
+        make_location(media / "private_disk", kind=StorageKind.LOCAL_DISK),
         make_location(tmp_path / "admin_disk", kind=StorageKind.LOCAL_DISK),
         make_location(tmp_path / "data", kind=StorageKind.LOCAL_DISK, usage=StorageUsage.DATA),
     )
@@ -267,8 +270,8 @@ async def test_a_refused_folder_can_be_corrected(
 )
 @pytest.mark.parametrize(
     "folder",
-    ["admin_disk/Music", "media/to_admin_disk"],
-    ids=["folder", "link_from_a_shared_location"],
+    ["admin_disk/Music", "media/private_disk/Music", "media/to_admin_disk"],
+    ids=["folder", "nested_in_a_shared_location", "link_from_a_shared_location"],
 )
 async def test_a_location_only_admins_see_is_refused_to_a_member(
     start_flow: Callable[..., Awaitable[_Flow]],
@@ -280,8 +283,8 @@ async def test_a_location_only_admins_see_is_refused_to_a_member(
     """
     A member may not put a source on a location that was not made available to it.
 
-    Neither through a symlink in a location it may use: the member's rule also holds for the
-    folder the link leads to.
+    Also not when that location lies inside one the member may use, nor through a symlink in
+    such a location: the member's rule also holds for the folder the link leads to.
 
     :param manages_all_sources: Whether the caller manages every music source.
     :param allowed: Whether the caller may use the location.
