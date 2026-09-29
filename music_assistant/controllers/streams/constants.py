@@ -90,7 +90,10 @@ class PacingProfile(StrEnum):
 
 _PACING: Final[dict[PacingProfile, tuple[str, str]]] = {
     PacingProfile.DEFAULT: ("1.1", "60"),
-    PacingProfile.NEAR_REALTIME: ("1.03", "3"),
+    # The closer to playback speed, the more of a slow source's pace is left as room
+    # for its crossfades, from the first track on. The burst is what the player has
+    # to play while a fade waits for the next track's source to start.
+    PacingProfile.NEAR_REALTIME: ("1.01", "3"),
     PacingProfile.LOW_LATENCY: ("1.02", "0.5"),
 }
 
