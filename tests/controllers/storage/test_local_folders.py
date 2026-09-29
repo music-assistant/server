@@ -319,6 +319,81 @@ async def test_only_a_mountpoint_is_recorded(
 
 
 @pytest.mark.usefixtures("probes")
+@pytest.mark.parametrize(
+    ("folder", "fstype", "system_path"),
+    [
+        # like /var/mnt/nas, where /mnt links to /var/mnt as on Fedora Atomic
+        pytest.param("var/mnt/nas", "cifs", "var", id="below_a_system_path"),
+        pytest.param("nas", "ceph", None, id="other_filesystem"),
+    ],
+)
+async def test_mount_left_out_by_discovery(
+    storage: StorageController,
+    tmp_path: Path,
+    mount_table: MountTable,
+    monkeypatch: pytest.MonkeyPatch,
+    folder: str,
+    fstype: str,
+    system_path: str | None,
+) -> None:
+    """
+    A mount discovery leaves out is no location by itself, but is a mount once registered.
+
+    It is not available while nothing is mounted on it, also after a restart, and comes back
+    with its mount, probed like any other location.
+    """
+    nas = tmp_path / folder
+    nas.mkdir(parents=True)
+    if system_path is not None:
+        monkeypatch.setattr(mountinfo, "SYSTEM_PATHS", (str(tmp_path / system_path),))
+    mount_table.set(ROOT_MOUNT, mount_line(nas, fstype))
+    await storage.refresh()
+    assert str(nas) not in [loc.path for loc in storage.get_locations()]
+
+    location = await storage.add_local_folder(str(nas))
+    assert storage.mass.config.get(CONF_STORAGE_FOLDER_MOUNTS) == [str(nas)]
+    assert (location.available, location.mountpoint, location.fstype) == (True, str(nas), fstype)
+    assert location.free_space_gb == 75.0
+
+    mount_table.set(ROOT_MOUNT)
+    await storage.refresh()
+    assert _location(storage.get_locations(), nas).error_key == "folder_not_mounted"
+    restarted = StorageController(storage.mass)
+    try:
+        await restarted.refresh()
+        assert _location(restarted.get_locations(), nas).error_key == "folder_not_mounted"
+        assert not await restarted.is_available(str(nas))
+
+        mount_table.set(ROOT_MOUNT, mount_line(nas, fstype))
+        await restarted.refresh()
+        assert await restarted.is_available(str(nas))
+        location = _location(restarted.get_locations(), nas)
+    finally:
+        await restarted.close()
+    assert (location.available, location.error_key, location.fstype) == (True, None, fstype)
+    assert location.free_space_gb == 75.0
+
+
+@pytest.mark.usefixtures("probes")
+async def test_folder_on_a_mount_below_a_system_path_is_not_recorded(
+    storage: StorageController,
+    tmp_path: Path,
+    mount_table: MountTable,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A folder inside a mount below a system path is a plain folder, like any other."""
+    var = tmp_path / "var"
+    (var / "music").mkdir(parents=True)
+    monkeypatch.setattr(mountinfo, "SYSTEM_PATHS", (str(var),))
+    mount_table.set(ROOT_MOUNT, mount_line(var, "ext4"))
+
+    location = await storage.add_local_folder(str(var / "music"))
+
+    assert storage.mass.config.get(CONF_STORAGE_FOLDER_MOUNTS) == []
+    assert (location.available, location.mountpoint) == (True, None)
+
+
+@pytest.mark.usefixtures("probes")
 async def test_removal_drops_the_record(
     storage: StorageController, tmp_path: Path, mount_table: MountTable
 ) -> None:

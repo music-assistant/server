@@ -56,7 +56,7 @@ from music_assistant.controllers.storage.backends.local_mount import create_loca
 from music_assistant.controllers.storage.backends.mountinfo import (
     AUTOMOUNT_FSTYPE,
     MediaMount,
-    find_share_mount,
+    find_mount,
     is_mounted,
     parse_mountinfo,
     parse_mountpoints,
@@ -231,9 +231,9 @@ class StorageController(CoreController):
         """
         Register a folder on this server as a media location.
 
-        Only possible when the server does not run in a container. The location of a drive or
-        share mounted on the path is listed as this folder from then on, and is not available
-        while that drive or share is not mounted.
+        Only possible when the server does not run in a container. A folder that is the
+        mountpoint of a drive or share replaces any location found for that mount, and is not
+        available while nothing is mounted on it.
 
         :param path: Absolute path of an existing folder that is neither a registered folder
             nor a network share Music Assistant mounted, also once its symlinks are resolved.
@@ -261,7 +261,7 @@ class StorageController(CoreController):
             await self._wait_for_probes([path])
         table = await asyncio.to_thread(read_mountinfo)
         mounts = self._get_folder_mounts()
-        if any(mount.mountpoint == path for mount in self._parse_mounts(table)):
+        if find_mount(table, path, StorageKind.MANUAL) is not None:
             mounts.append(path)
         # recorded before the folder is registered: a record only counts for a registered
         # folder, and one left behind for this path is dropped here
@@ -647,11 +647,14 @@ class StorageController(CoreController):
         unmounted_folders: set[str] = set()
         for folder in self._get_registered_folders():
             folder_mount = mounts.get(folder)
-            if folder_mount is None and folder in folder_mounts:
-                # the folder left on the path is not the drive or share, and is never probed
-                unmounted_folders.add(folder)
-                media[folder] = _build_unmounted_location(folder)
-                continue
+            if folder in folder_mounts:
+                # also a mount discovery leaves out: below a system path, or of another type
+                folder_mount = find_mount(table, folder, StorageKind.MANUAL)
+                if folder_mount is None:
+                    # the folder left on the path is not the drive or share, and is never probed
+                    unmounted_folders.add(folder)
+                    media[folder] = _build_unmounted_location(folder)
+                    continue
             media[folder] = _build_location(
                 folder,
                 None,
@@ -1366,7 +1369,7 @@ class StorageController(CoreController):
         :param spec: The share.
         :param table: The mount table of the server process, empty on a system without one.
         """
-        share_mount = find_share_mount(table, spec.path)
+        share_mount = find_mount(table, spec.path, StorageKind.NETWORK_SHARE)
         changed = spec.name in self._changed_shares
         # the folder an unmounted share leaves behind is not the share, and a mount changed into
         # another share is not this one; without a mount table (macOS) the probe decides
