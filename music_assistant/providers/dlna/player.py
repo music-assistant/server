@@ -124,6 +124,17 @@ class DLNAPlayer(Player):
             self.logger.debug("Ignoring %s - passive stereo pair speaker", self.device.name)
             return False
 
+        if self.device and self._is_raumfeld_zone_renderer():
+            self.logger.debug("Ignoring %s - Raumfeld zone renderer", self.device.name)
+            # Creating this player already stored a config for it, and an install from
+            # before zone renderers were ignored may still link it to a player that keeps
+            # being restored. Deleting the config drops those links as well.
+            try:
+                self.mass.players.delete_player_config(self.player_id)
+            except Exception as err:
+                self.logger.debug("Could not remove config of %s: %r", self.player_id, err)
+            return False
+
         self.set_static_attributes()
         await self.mass.players.register_or_update(self)
         return True
@@ -496,6 +507,22 @@ class DLNAPlayer(Player):
         if self.device.has_pause:
             supported_features.add(PlayerFeature.PAUSE)
         self._attr_supported_features = supported_features
+
+    def _is_raumfeld_zone_renderer(self) -> bool:
+        """Check if this is a virtual zone renderer published by a Teufel Raumfeld host."""
+        if not self.device:
+            return False
+        if "teufel" not in (self.device.manufacturer or "").lower():
+            return False
+        # A Raumfeld host publishes a renderer for every zone next to the speakers' own
+        # renderers, all under the host's IP and with the host's model, so MA would link
+        # them to the host speaker and list each one as a speaker of its own. They are
+        # created per zone and change with every regrouping. Only a speaker's own renderer
+        # carries the RaumfeldGenerator service.
+        return not any(
+            "RaumfeldGenerator" in service.service_type
+            for service in self.device.profile_device.root_device.all_services
+        )
 
     async def _is_sonos_passive_speaker(self) -> bool:
         """
