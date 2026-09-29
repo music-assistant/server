@@ -100,7 +100,7 @@ async def _check_folder(session: SetupSession, path: str) -> None:
         raise _folder_not_allowed(path)
     if not available:
         raise SetupFlowError(
-            f"Music directory {path} does not exist",
+            f"Folder {path} does not exist",
             translation_key="music_directory_not_found",
             translation_args=[path],
         )

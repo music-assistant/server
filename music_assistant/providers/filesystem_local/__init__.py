@@ -335,7 +335,7 @@ class LocalFileSystemProvider(MusicProvider):
                     translation_owner=self.translation_owner,
                     translation_args=[location.path],
                 )
-            msg = f"Music Directory {self.base_path} does not exist"
+            msg = f"Folder {self.base_path} does not exist"
             raise SetupFailedError(
                 msg,
                 translation_key="music_directory_not_found",
