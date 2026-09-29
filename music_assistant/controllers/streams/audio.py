@@ -170,6 +170,7 @@ if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamDetails
 
+    from music_assistant.controllers.player_queues.state import PlayerQueueData
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
     from music_assistant.models.plugin import PluginProvider
@@ -650,23 +651,9 @@ class StreamsAudio:
 
             media_item = queue_item.media_item
             assert media_item is not None  # for type checking
-            # the item still playing when this call was made (get_stream_details is called
-            # ahead of the switch, so current_item is the predecessor, not queue_item itself):
-            # used to break same-quality ties toward the mapping in its folder. A manual
-            # next/previous instead advances current_item to queue_item itself before this
-            # runs, so that case falls back to the predecessor the queue controller stashed
-            # for exactly this purpose.
             anchor: tuple[str, str] | None = None
             if queue_data := mass.player_queues.queue_data_or_none(queue_item.queue_id):
-                current_item = queue_data.queue.current_item
-                if (
-                    current_item
-                    and current_item.queue_item_id != queue_item.queue_item_id
-                    and (current_streamdetails := current_item.streamdetails)
-                ):
-                    anchor = (current_streamdetails.provider, current_streamdetails.item_id)
-                else:
-                    anchor = queue_data.pending_transition_anchor
+                anchor = self._resolve_transition_anchor(queue_data, queue_item)
             candidates = self._get_streamdetail_candidates(
                 media_item.provider_mappings,
                 preferred_providers,
@@ -3622,6 +3609,36 @@ class StreamsAudio:
                 else:
                     fallback_candidates.append(candidate)
         return [*preferred_candidates, *fallback_candidates]
+
+    @staticmethod
+    def _resolve_transition_anchor(
+        queue_data: PlayerQueueData, queue_item: QueueItem
+    ) -> tuple[str, str] | None:
+        """
+        Return the (provider_instance, item_id) to break same-quality mapping ties toward.
+
+        The item still playing when this call was made (get_stream_details is called ahead
+        of the switch, so current_item is the predecessor, not queue_item itself) anchors the
+        tiebreak. A manual next/previous instead advances current_item to queue_item itself
+        before this runs, so that case falls back to the predecessor the queue controller
+        stashed - but only when it was stashed for this exact target, so a value left behind
+        for some other transition never biases this resolution.
+
+        :param queue_data: The queue's server-side record.
+        :param queue_item: Queue item streamdetails are being resolved for.
+        """
+        current_item = queue_data.queue.current_item
+        if (
+            current_item
+            and current_item.queue_item_id != queue_item.queue_item_id
+            and (current_streamdetails := current_item.streamdetails)
+        ):
+            return (current_streamdetails.provider, current_streamdetails.item_id)
+        if (pending := queue_data.pending_transition_anchor) and pending[
+            0
+        ] == queue_item.queue_item_id:
+            return (pending[1], pending[2])
+        return None
 
     @staticmethod
     def _folder_affinity(mapping: ProviderMapping, anchor: tuple[str, str] | None) -> int:

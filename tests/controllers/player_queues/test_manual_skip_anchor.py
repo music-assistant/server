@@ -7,6 +7,10 @@ current_item is the target itself rather than the predecessor it needs to break 
 mapping ties toward the currently playing folder. _stash_transition_anchor captures the
 outgoing item's streamdetails onto PlayerQueueData.pending_transition_anchor before that
 overwrite, for get_stream_details to fall back to.
+
+The stash is scoped to the specific target it was captured for, and play_index/_clear both
+clear it once that transition ends (successfully or not) - so a value left behind by one
+transition can never bias a later, unrelated get_stream_details call.
 """
 
 from __future__ import annotations
@@ -90,7 +94,11 @@ async def test_next_stashes_the_outgoing_tracks_streamdetails_before_advancing()
 
     await ctrl.next("q1")
 
-    assert queue_data.pending_transition_anchor == (INSTANCE, outgoing_details.item_id)
+    assert queue_data.pending_transition_anchor == (
+        queue_data.items[2].queue_item_id,
+        INSTANCE,
+        outgoing_details.item_id,
+    )
     # the target advanced too, ahead of play_index resolving its own streamdetails
     assert queue_data.queue.current_index == 2
     assert queue_data.queue.current_item is not None
@@ -113,7 +121,11 @@ async def test_previous_stashes_the_outgoing_tracks_streamdetails_before_advanci
 
     await ctrl.previous("q1")
 
-    assert queue_data.pending_transition_anchor == (INSTANCE, outgoing_details.item_id)
+    assert queue_data.pending_transition_anchor == (
+        queue_data.items[0].queue_item_id,
+        INSTANCE,
+        outgoing_details.item_id,
+    )
     assert queue_data.queue.current_index == 0
     assert queue_data.queue.current_item is not None
     assert queue_data.queue.current_item.queue_item_id == queue_data.items[0].queue_item_id
@@ -127,5 +139,34 @@ async def test_next_leaves_the_anchor_unset_when_the_outgoing_track_has_no_strea
     assert queue_data.queue.current_item.streamdetails is None
 
     await ctrl.next("q1")
+
+    assert queue_data.pending_transition_anchor is None
+
+
+async def test_clear_drops_a_pending_transition_anchor() -> None:
+    """A queue reset must not leave a stash behind for whatever plays next to stumble into."""
+    ctrl = _controller()
+    queue_data = cast("PlayerQueueData", ctrl._queue_data["q1"])
+    queue_data.pending_transition_anchor = ("t3", INSTANCE, "Various Artists/Comp/02 Track.flac")
+    ctrl.store_sources = Mock()
+    ctrl.is_smart_shuffle_active = Mock(return_value=False)
+    ctrl._cleanup_queue_audio_data = AsyncMock()
+
+    ctrl._clear("q1", skip_stop=True)
+
+    assert queue_data.pending_transition_anchor is None
+
+
+async def test_play_index_clears_the_pending_transition_anchor_once_it_finishes() -> None:
+    """The stash next/previous left behind is consumed by its own transition and then dropped."""
+    ctrl = _controller()
+    queue_data = cast("PlayerQueueData", ctrl._queue_data["q1"])
+    # a stash left over from some earlier, unrelated transition
+    queue_data.pending_transition_anchor = ("t3", INSTANCE, "Various Artists/Comp/02 Track.flac")
+    ctrl._load_item = AsyncMock()
+    ctrl.player_media_from_queue_item = AsyncMock()
+    ctrl.mass.players.play_media = AsyncMock()
+
+    await ctrl.play_index("q1", 2)
 
     assert queue_data.pending_transition_anchor is None

@@ -394,6 +394,7 @@ async def test_same_quality_mapping_falls_back_to_the_stashed_anchor_after_a_man
     queue_data = MagicMock()
     queue_data.queue.current_item.queue_item_id = queue_item.queue_item_id
     queue_data.pending_transition_anchor = (
+        queue_item.queue_item_id,
         fs_instance,
         "Various Artists/Compilation Album/01 Track.flac",
     )
@@ -402,3 +403,31 @@ async def test_same_quality_mapping_falls_back_to_the_stashed_anchor_after_a_man
     streamdetails = await audio.get_stream_details(queue_item=queue_item)
 
     assert streamdetails.item_id == same_folder_item_id
+
+
+def test_resolve_transition_anchor_ignores_a_stash_for_a_different_target() -> None:
+    """A stash left over from an unrelated transition must not be reused as an anchor."""
+    queue_item = _queue_item(_mapping(INSTANCE))
+    queue_data = MagicMock()
+    queue_data.queue.current_item.queue_item_id = queue_item.queue_item_id
+    queue_data.queue.current_item.streamdetails = None
+    # e.g. left behind by a next() whose play_index never got to consume/clear it before
+    # something else (a fresh play, a retry) resolved this unrelated item
+    queue_data.pending_transition_anchor = ("some-other-queue-item-id", INSTANCE, ITEM_ID)
+
+    anchor = StreamsAudio._resolve_transition_anchor(queue_data, queue_item)
+
+    assert anchor is None
+
+
+def test_resolve_transition_anchor_uses_a_stash_scoped_to_this_target() -> None:
+    """A stash captured for exactly this target is used as the anchor."""
+    queue_item = _queue_item(_mapping(INSTANCE))
+    queue_data = MagicMock()
+    queue_data.queue.current_item.queue_item_id = queue_item.queue_item_id
+    queue_data.queue.current_item.streamdetails = None
+    queue_data.pending_transition_anchor = (queue_item.queue_item_id, INSTANCE, ITEM_ID)
+
+    anchor = StreamsAudio._resolve_transition_anchor(queue_data, queue_item)
+
+    assert anchor == (INSTANCE, ITEM_ID)

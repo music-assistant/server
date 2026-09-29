@@ -792,10 +792,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             self._set_transitioning(queue_id, False)
             return
 
-        self._stash_transition_anchor(queue_id)
+        target_item = self.get_item(queue_id, next_index)
+        if target_item is not None:
+            self._stash_transition_anchor(queue_id, target_item.queue_item_id)
         # immediately update current item so UI shows the new track right away
         queue.current_index = next_index
-        queue.current_item = self.get_item(queue_id, next_index)
+        queue.current_item = target_item
         queue.elapsed_time = 0
         queue.elapsed_time_last_updated = time.time()
         self.signal_update(queue_id)
@@ -832,10 +834,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue.corrected_elapsed_time < 5:
             prev_index = max(current_index - 1, 0)
 
-        self._stash_transition_anchor(queue_id)
+        target_item = self.get_item(queue_id, prev_index)
+        if target_item is not None:
+            self._stash_transition_anchor(queue_id, target_item.queue_item_id)
         # immediately update current item so UI shows the new track right away
         queue.current_index = prev_index
-        queue.current_item = self.get_item(queue_id, prev_index)
+        queue.current_item = target_item
         queue.elapsed_time = 0
         queue.elapsed_time_last_updated = time.time()
         self.signal_update(queue_id)
@@ -1117,6 +1121,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 self.signal_update(queue_id)
         finally:
             self._set_transitioning(queue_id, False)
+            # whatever next/previous stashed for this attempt has now been consumed (or the
+            # attempt ended without ever reaching get_stream_details), so it must not leak
+            # into a later, unrelated resolution
+            if (final_queue_data := self._queue_data.get(queue_id)) is not None:
+                final_queue_data.pending_transition_anchor = None
 
     @api_command("player_queues/transfer", required_scope=Scope.QUEUES_CONTROL)
     async def transfer_queue(
@@ -1938,19 +1947,28 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (queue_data := self._queue_data.get(queue_id)) is not None:
             queue_data.transitioning = value
 
-    def _stash_transition_anchor(self, queue_id: str) -> None:
+    def _stash_transition_anchor(self, queue_id: str, target_queue_item_id: str) -> None:
         """
         Capture the outgoing track's streamdetails before next/previous advance current_item.
 
         next/previous overwrite current_item with the target ahead of their debounced
         play_index resolving its streamdetails, so by then current_item no longer holds the
-        predecessor get_stream_details needs for its same-quality folder tiebreak.
+        predecessor get_stream_details needs for its same-quality folder tiebreak. Scoped to
+        the target this transition is headed to, so it cannot bias a later, unrelated
+        resolution; play_index also clears it once that target is reached (or the attempt
+        ends), and _clear drops it on a queue reset.
+
+        :param queue_id: The queue transitioning to a new current item.
+        :param target_queue_item_id: queue_item_id of the track being transitioned to.
         """
         queue_data = self._queue_data[queue_id]
-        if (outgoing := queue_data.queue.current_item) and (
-            streamdetails := outgoing.streamdetails
-        ):
-            queue_data.pending_transition_anchor = (streamdetails.provider, streamdetails.item_id)
+        outgoing = queue_data.queue.current_item
+        streamdetails = outgoing.streamdetails if outgoing else None
+        queue_data.pending_transition_anchor = (
+            (target_queue_item_id, streamdetails.provider, streamdetails.item_id)
+            if streamdetails
+            else None
+        )
 
     def _clamp_skip_target(self, target: float, duration: int) -> float:
         """
@@ -1963,7 +1981,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     def _clear(self, queue_id: str, skip_stop: bool = False) -> None:
         """Drop the queue's items and playback position, leaving user settings untouched."""
-        queue = self._queue_data[queue_id].queue
+        queue_data = self._queue_data[queue_id]
+        queue = queue_data.queue
         self.mass.streams.audio_processing.clear(queue_id)
         self.store_sources(queue, [])
         if queue.is_dynamic:
@@ -1978,6 +1997,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             self.mass.create_task(self.stop(queue_id))
         queue.current_index = None
         queue.current_item = None
+        # a stashed predecessor is meaningless once there is nothing left to transition into
+        queue_data.pending_transition_anchor = None
         queue.elapsed_time = 0
         queue.elapsed_time_last_updated = time.time()
         queue.index_in_buffer = None
