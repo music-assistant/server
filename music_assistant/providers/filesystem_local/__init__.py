@@ -2388,7 +2388,13 @@ class LocalFileSystemProvider(MusicProvider):
             if library_item := await controller.get_library_item_by_prov_id(
                 file_path, self.instance_id
             ):
-                if is_track(library_item):
+                is_last_mapping = all(
+                    x.provider_instance == self.instance_id and x.item_id == file_path
+                    for x in library_item.provider_mappings
+                )
+                # a track that is kept via another provider still references its
+                # album and artists, so those need no orphan check
+                if is_track(library_item) and is_last_mapping:
                     if library_item.album:
                         album_ids.add(library_item.album.item_id)
                         # need to fetch the library album to resolve the itemmapping

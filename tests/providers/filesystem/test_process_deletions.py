@@ -100,8 +100,11 @@ async def test_unsupported_extension_is_skipped() -> None:
         controller.get_library_item_by_prov_id.assert_not_called()
 
 
-async def test_deleted_file_keeps_other_provider_mappings(mass: MusicAssistant) -> None:
-    """Deleting a local file keeps a library track that is also in another provider's library."""
+@pytest.mark.parametrize("other_in_library", [True, False])
+async def test_deleted_file_keeps_other_provider_mappings(
+    mass: MusicAssistant, other_in_library: bool
+) -> None:
+    """Deleting a local file keeps a library track that another provider still maps."""
     provider, _ = _create_provider()
     provider.mass = mass
     file_path = "Artist/Album/01 - Track.flac"
@@ -137,7 +140,7 @@ async def test_deleted_file_keeps_other_provider_mappings(mass: MusicAssistant) 
                     item_id="sp1",
                     provider_domain="spotify",
                     provider_instance="spotify--test",
-                    in_library=True,
+                    in_library=other_in_library,
                 ),
             },
         )
