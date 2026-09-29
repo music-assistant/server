@@ -209,7 +209,7 @@ class SpotifyProvider(MusicProvider):
                         "Developer session must use the same Spotify account as the main session."
                     )
                 # loosen the throttler when a custom client id is used
-                self.throttler = ThrottlerManager(rate_limit=45, period=30)
+                self.throttler = ThrottlerManager(rate_limit=30, period=30)
                 self.dev_session_active = True
                 self.logger.info("Developer Spotify session active.")
 
