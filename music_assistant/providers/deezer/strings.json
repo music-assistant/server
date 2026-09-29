@@ -80,6 +80,9 @@
       },
       "recently_played": {
         "name": "Recently Played"
+      },
+      "new_episodes": {
+        "name": "New Episodes"
       }
     },
     "playlist": {

@@ -8,6 +8,7 @@ infrastructure, and all track-fetching methods for virtual playlists.
 from __future__ import annotations
 
 from collections.abc import Callable, Coroutine, Sequence
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 from deezer_python_gql.generated.enums import (
@@ -17,11 +18,13 @@ from deezer_python_gql.generated.enums import (
 from deezer_python_gql.generated.get_made_for_me import (
     GetMadeForMeMeMadeForMeEdgesNodeSmartTracklist,
 )
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
     MediaItemType,
     Playlist,
+    PodcastEpisode,
     RecommendationFolder,
     Track,
     UniqueList,
@@ -264,6 +267,12 @@ class DeezerBrowseManager:
                 name=BROWSE_RECENTLY_PLAYED,
                 translation_key="recently_played",
             ),
+            RecommendationFolder(
+                item_id="new_episodes",
+                provider=self.instance_id,
+                name="New Episodes",
+                translation_key="new_episodes",
+            ),
         ]
 
     async def get_recommendation_items(
@@ -292,6 +301,8 @@ class DeezerBrowseManager:
             )
         if item_id == "recently_played":
             return UniqueList(await self._get_recently_played_items())
+        if item_id == "new_episodes":
+            return UniqueList(await self._get_new_episodes())
         return UniqueList()
 
     # -- Made For You --
@@ -820,6 +831,26 @@ class DeezerBrowseManager:
         if not result:
             return []
         return parse_recently_played_edges(self.provider, result.recently_played.edges)
+
+    # -- New podcast episodes --
+
+    @use_cache(3600)
+    async def _get_new_episodes(self) -> list[PodcastEpisode]:
+        """Get the newest episodes of the user's favorite podcasts (cached)."""
+        # a query of its own: it costs about 15000 of Deezer's 25000 query budget
+        result = await self.provider.gql_client.get_latest_podcast_episodes()
+        if not result:
+            return []
+        newest = sorted(
+            result.raw_latest_podcast_episodes,
+            key=lambda episode: episode.publication_date or "",
+            reverse=True,
+        )
+        episodes: list[PodcastEpisode] = []
+        for episode in newest[:50]:
+            with suppress(MediaNotFoundError):
+                episodes.append(await self.provider.media_manager.get_podcast_episode(episode.id))
+        return episodes
 
     # -- Virtual playlist metadata --
 
