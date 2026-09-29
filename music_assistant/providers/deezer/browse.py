@@ -24,7 +24,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemType,
     Playlist,
-    PodcastEpisode,
+    Podcast,
     RecommendationFolder,
     Track,
     UniqueList,
@@ -302,7 +302,7 @@ class DeezerBrowseManager:
         if item_id == "recently_played":
             return UniqueList(await self._get_recently_played_items())
         if item_id == "new_episodes":
-            return UniqueList(await self._get_new_episodes())
+            return UniqueList(await self._get_podcasts_with_new_episodes())
         return UniqueList()
 
     # -- Made For You --
@@ -835,8 +835,8 @@ class DeezerBrowseManager:
     # -- New podcast episodes --
 
     @use_cache(3600)
-    async def _get_new_episodes(self) -> list[PodcastEpisode]:
-        """Get the newest episodes of the user's favorite podcasts (cached)."""
+    async def _get_podcasts_with_new_episodes(self) -> list[Podcast]:
+        """Get the user's favorite podcasts with a new episode, newest episode first (cached)."""
         # a query of its own: it costs about 15000 of Deezer's 25000 query budget
         result = await self.provider.gql_client.get_latest_podcast_episodes()
         if not result:
@@ -846,11 +846,18 @@ class DeezerBrowseManager:
             key=lambda episode: episode.publication_date or "",
             reverse=True,
         )
-        episodes: list[PodcastEpisode] = []
+        # the row lists podcasts, not episodes: the frontend can open a podcast but not an episode
+        podcast_ids: list[str] = []
         for episode in newest[:50]:
             with suppress(MediaNotFoundError):
-                episodes.append(await self.provider.media_manager.get_podcast_episode(episode.id))
-        return episodes
+                parsed = await self.provider.media_manager.get_podcast_episode(episode.id)
+                if parsed.podcast.item_id not in podcast_ids:
+                    podcast_ids.append(parsed.podcast.item_id)
+        podcasts: list[Podcast] = []
+        for podcast_id in podcast_ids:
+            with suppress(MediaNotFoundError):
+                podcasts.append(await self.provider.media_manager.get_podcast(podcast_id))
+        return podcasts
 
     # -- Virtual playlist metadata --
 

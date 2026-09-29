@@ -205,31 +205,35 @@ async def test_items_recently_played(provider: DeezerProvider) -> None:
 
 @pytest.mark.asyncio
 async def test_items_new_episodes(provider: DeezerProvider) -> None:
-    """new_episodes lists the newest episode first and skips one Deezer no longer has."""
+    """new_episodes lists each podcast once, the one with the newest episode first."""
     _install_cache_mocks(provider)
     gql = _stub_gql_client(provider)
     gql.get_latest_podcast_episodes = AsyncMock(
         return_value=SimpleNamespace(
             raw_latest_podcast_episodes=[
-                SimpleNamespace(id="older", publication_date="2026-09-20"),
-                SimpleNamespace(id="newer", publication_date="2026-09-28"),
-                SimpleNamespace(id="gone", publication_date="2026-09-25"),
+                SimpleNamespace(id="b-old", publication_date="2026-09-20"),
+                SimpleNamespace(id="a-new", publication_date="2026-09-28"),
+                SimpleNamespace(id="gone", publication_date="2026-09-26"),
+                SimpleNamespace(id="a-mid", publication_date="2026-09-25"),
             ]
         )
     )
-    episodes = {"older": Mock(item_id="older"), "newer": Mock(item_id="newer")}
+    episode_podcast = {"b-old": "b", "a-new": "a", "a-mid": "a"}
 
     async def get_podcast_episode(prov_episode_id: str) -> Mock:
-        if prov_episode_id not in episodes:
+        if prov_episode_id not in episode_podcast:
             raise MediaNotFoundError(prov_episode_id)
-        return episodes[prov_episode_id]
+        return Mock(podcast=Mock(item_id=episode_podcast[prov_episode_id]))
 
     provider.media_manager = Mock()
     provider.media_manager.get_podcast_episode = AsyncMock(side_effect=get_podcast_episode)
+    provider.media_manager.get_podcast = AsyncMock(
+        side_effect=lambda prov_podcast_id: Mock(item_id=prov_podcast_id)
+    )
 
     items = await provider.get_recommendation_items("new_episodes")
 
-    assert [item.item_id for item in items] == ["newer", "older"]
+    assert [item.item_id for item in items] == ["a", "b"]
     gql.get_latest_podcast_episodes.assert_awaited_once()
     gql.get_recommendations.assert_not_awaited()
     gql.get_recently_played.assert_not_awaited()
