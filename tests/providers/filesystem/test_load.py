@@ -79,7 +79,7 @@ async def test_an_unavailable_location_is_named(
 
     assert error.translation_key == "storage_location_unavailable"
     assert error.translation_owner == "provider.filesystem_local"
-    assert error.translation_args == ["nas"]
+    assert error.translation_args == [str(tmp_path / "nas")]
 
 
 @pytest.mark.parametrize(

@@ -42,6 +42,6 @@
   "errors": {
     "music_directory_not_found": "Music directory {0} does not exist.",
     "folder_not_allowed": "The folder {0} is not in a storage location you can use.",
-    "storage_location_unavailable": "The storage location {0} is not available right now."
+    "storage_location_unavailable": "The storage location at {0} is not available right now."
   }
 }
