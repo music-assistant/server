@@ -527,11 +527,18 @@ async def test_the_content_type_is_a_question_with_a_button_per_type(
     start_flow: Callable[..., Awaitable[_Flow]],
     localize: Callable[[DataClassDictMixin], dict[str, Any]],
 ) -> None:
-    """The setup asks what to add, one button per type, starting on music without a default."""
+    """
+    The setup asks what to add, one button per type, starting on music without a default.
+
+    The step carries a title and no description, which would only repeat the question.
+    """
     form = await (await start_flow()).form()
 
+    step = localize(form)
     shown = localize(next(entry for entry in form.entries if entry.key == CONF_CONTENT_TYPE))
 
+    assert step["title"] == "Choose a folder"
+    assert step.get("description") is None
     assert shown["label"] == "What do you want to add?"
     assert shown["expanded_options"] is True
     assert shown["default_value"] is None
@@ -540,7 +547,7 @@ async def test_the_content_type_is_a_question_with_a_button_per_type(
         "Music",
         "Audiobooks",
         "Podcasts",
-        "Sound Effects",
+        "Sound effects",
     ]
 
 

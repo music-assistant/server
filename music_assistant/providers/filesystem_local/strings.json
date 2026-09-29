@@ -12,7 +12,7 @@
         "music": "Music",
         "audiobooks": "Audiobooks",
         "podcasts": "Podcasts",
-        "sound_effects": "Sound Effects"
+        "sound_effects": "Sound effects"
       }
     },
     "content_type": {
@@ -48,8 +48,7 @@
   },
   "setup_flow": {
     "user": {
-      "title": "Choose a folder",
-      "description": "Choose what you want to add, then pick the folder it is stored in."
+      "title": "Choose a folder"
     }
   },
   "errors": {
