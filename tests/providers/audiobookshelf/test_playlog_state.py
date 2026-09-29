@@ -125,3 +125,16 @@ async def test_position_update_of_a_finished_book_is_applied(
     )
 
     assert _played_calls(playlog_provider) == [False]
+
+
+async def test_failed_report_is_retried(playlog_provider: Audiobookshelf) -> None:
+    """A play mass never recorded must not be treated as applied."""
+    played = cast("AsyncMock", playlog_provider.mass.music.mark_item_played)
+    played.side_effect = [RuntimeError("abs unreachable"), None]
+    progress = _progress(last_update=1000, is_finished=True)
+
+    with pytest.raises(RuntimeError):
+        await playlog_provider._update_playlog_book(progress)
+    await playlog_provider._update_playlog_book(progress)
+
+    assert played.await_count == 2
