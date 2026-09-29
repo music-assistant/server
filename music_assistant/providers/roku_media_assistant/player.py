@@ -16,7 +16,7 @@ from .constants import CONF_ROKU_APP_ID
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
-    from rokuecp import Roku
+    from rokuecp import Device, Roku
 
     from .provider import MediaAssistantprovider
 
@@ -80,11 +80,7 @@ class MediaAssistantPlayer(Player):
 
         try:
             device_info = await self.roku.update()
-            app_running = False
-            if device_info.app is not None:
-                app_running = device_info.app.app_id == self.provider.config.get_value(
-                    CONF_ROKU_APP_ID
-                )
+            app_running = self._app_in_front(device_info)
         except Exception:
             self.logger.error("Failed to get app state on: %s", self.name)
 
@@ -126,12 +122,7 @@ class MediaAssistantPlayer(Player):
         try:
             device_info = await self.roku.update()
 
-            app_running = False
-
-            if device_info.app is not None:
-                app_running = device_info.app.app_id == self.provider.config.get_value(
-                    CONF_ROKU_APP_ID
-                )
+            app_running = self._app_in_front(device_info)
 
             if app_running:
                 # The closet thing the app has to playback stop,
@@ -168,14 +159,8 @@ class MediaAssistantPlayer(Player):
         try:
             device_info = await self.roku.update()
 
-            app_running = False
-
-            if device_info.app is not None:
-                app_running = (
-                    device_info.app.app_id == self.provider.config.get_value(CONF_ROKU_APP_ID)
-                    if not device_info.app.screensaver
-                    else False
-                )
+            # under the screensaver the app is launched again instead
+            app_running = self._app_in_front(device_info, screensaver_counts=False)
 
             f_media = {
                 "u": stream_url,
@@ -226,12 +211,7 @@ class MediaAssistantPlayer(Player):
         try:
             device_info = await self.roku.update()
 
-            app_running = False
-
-            if device_info.app is not None:
-                app_running = device_info.app.app_id == self.provider.config.get_value(
-                    CONF_ROKU_APP_ID
-                )
+            app_running = self._app_in_front(device_info)
 
             if app_running:
                 await self.roku_input(
@@ -264,10 +244,7 @@ class MediaAssistantPlayer(Player):
             self.update_state()
             return
 
-        app_running = False
-
-        if device_info.app is not None:
-            app_running = device_info.app.app_id == self.provider.config.get_value(CONF_ROKU_APP_ID)
+        app_running = self._app_in_front(device_info)
 
         self._attr_powered = app_running
 
@@ -339,3 +316,17 @@ class MediaAssistantPlayer(Player):
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         self.logger.info("Player %s unloaded", self.name)
+
+    def _app_in_front(self, device: Device, screensaver_counts: bool = True) -> bool:
+        """
+        Return whether the configured app is in front on the Roku.
+
+        :param device: The Roku's state, from the latest update.
+        :param screensaver_counts: Whether the app under the screensaver counts as in front.
+        """
+        app = device.app
+        if app is None:
+            return False
+        if app.screensaver and not screensaver_counts:
+            return False
+        return app.app_id == self.provider.config.get_value(CONF_ROKU_APP_ID)
