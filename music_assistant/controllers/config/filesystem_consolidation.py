@@ -5,8 +5,8 @@ The SMB and NFS providers mounted their network share themselves. A network shar
 location now, mounted by the Home Assistant Supervisor or by the server itself, and a Local
 files source reads a folder in a storage location. So each SMB and NFS source gets the storage
 location of its share and becomes a Local files source on the same folder. It keeps its
-instance id, and with that its library, its access record and its options, and it keeps the
-name it was shown with.
+instance id, and with that its library, its access record, its options and a name of its own.
+Without a name of its own it shows the default name of a Local files source.
 
 It runs at every start, as such a source can come back with a downgrade or a restored backup,
 and does something only when one is there. Unlike the `settings.json` migrations in
@@ -55,11 +55,7 @@ LOGGER = logging.getLogger(__name__)
 SMB_DOMAIN: Final[str] = "filesystem_smb"
 NFS_DOMAIN: Final[str] = "filesystem_nfs"
 LOCAL_FILES_DOMAIN: Final[str] = "filesystem_local"
-# the names of the removed providers, which a source without a name of its own was shown with
-REMOVED_PROVIDER_NAMES: Final[dict[str, str]] = {
-    SMB_DOMAIN: "Filesystem (remote share)",
-    NFS_DOMAIN: "Filesystem (NFS share)",
-}
+REMOVED_PROVIDER_DOMAINS: Final[frozenset[str]] = frozenset({SMB_DOMAIN, NFS_DOMAIN})
 # the setup values of the removed providers; the content type is a setup value of Local files too
 CONF_CONTENT_TYPE: Final[str] = "content_type"
 DEFAULT_CONTENT_TYPE: Final[str] = "music"
@@ -159,8 +155,6 @@ class _RemovedSource:
     # the folder inside the share the source read, relative to the share
     subfolder: str
     content_type: str
-    # what the removed provider appended to its name when it had more than one source
-    name_postfix: str | None
 
 
 class _Unconvertible(Exception):
@@ -181,7 +175,7 @@ def _read_removed_sources(
     """
     sources: dict[str, _RemovedSource] = {}
     for instance_id, raw_conf in raw_configs.items():
-        if not isinstance(raw_conf, dict) or raw_conf.get("domain") not in REMOVED_PROVIDER_NAMES:
+        if not isinstance(raw_conf, dict) or raw_conf.get("domain") not in REMOVED_PROVIDER_DOMAINS:
             continue
         try:
             sources[instance_id] = _read_removed_source(mass, raw_conf)
@@ -247,16 +241,16 @@ async def _plan_conversions(
                     mass, spec, (holder_id, sources[holder_id]), (instance_id, source)
                 )
             share_path = spec.path
-        raw_conf = raw_configs[instance_id]
+        path = os.path.normpath(os.path.join(share_path, source.subfolder))
         conversions.append(
             _Conversion(
                 instance_id=instance_id,
                 config=_converted_config(
                     mass,
-                    raw_conf,
+                    raw_configs[instance_id],
                     source,
-                    os.path.normpath(os.path.join(share_path, source.subfolder)),
-                    _shown_name(raw_configs, instance_id, raw_conf["domain"], source),
+                    path,
+                    _default_name(mass, raw_configs, sources, path),
                 ),
                 share=new_share,
             )
@@ -302,7 +296,6 @@ def _read_removed_source(mass: MusicAssistant, raw_conf: Mapping[str, Any]) -> _
     stored_subfolder = str(values.get(CONF_SUBFOLDER) or "")
     content_type = str(values.get(CONF_CONTENT_TYPE) or DEFAULT_CONTENT_TYPE)
     if raw_conf["domain"] == SMB_DOMAIN:
-        stored_share = str(values.get(CONF_SHARE) or "")
         username = str(values.get(CONF_USERNAME) or "").strip()
         password = str(values.get(CONF_PASSWORD) or "")
         # the SMB provider mounted as guest without a user, or with the user named guest; the
@@ -311,20 +304,18 @@ def _read_removed_source(mass: MusicAssistant, raw_conf: Mapping[str, Any]) -> _
         source = _RemovedSource(
             share_type=ShareType.CIFS,
             server=server,
-            share=stored_share.strip(),
+            share=str(values.get(CONF_SHARE) or "").strip(),
             username=username if has_credentials else None,
             password=password if has_credentials else None,
             version=str(values.get(CONF_SMB_VERSION) or "") or None,
             subfolder=stored_subfolder.replace("\\", "/").strip("/"),
             content_type=content_type,
-            name_postfix=stored_subfolder or stored_share or None,
         )
         # the SMB provider refused such a share
         if not source.share or any(char in source.share for char in "/\\"):
             raise _Unconvertible("its share name is not valid")
     else:
-        stored_export_path = str(values.get(CONF_EXPORT_PATH) or "")
-        export_path = stored_export_path.strip()
+        export_path = str(values.get(CONF_EXPORT_PATH) or "").strip()
         source = _RemovedSource(
             share_type=ShareType.NFS,
             server=server,
@@ -335,7 +326,6 @@ def _read_removed_source(mass: MusicAssistant, raw_conf: Mapping[str, Any]) -> _
             version=str(values.get(CONF_NFS_VERSION) or "") or None,
             subfolder=stored_subfolder.strip().lstrip("/"),
             content_type=content_type,
-            name_postfix=stored_subfolder or PurePosixPath(stored_export_path).name or None,
         )
         # the NFS provider refused such an export
         if not export_path.startswith("/") or not is_safe_path(export_path):
@@ -446,7 +436,11 @@ def _share_credentials(
 
 
 def _converted_config(
-    mass: MusicAssistant, raw_conf: Mapping[str, Any], source: _RemovedSource, path: str, name: str
+    mass: MusicAssistant,
+    raw_conf: Mapping[str, Any],
+    source: _RemovedSource,
+    path: str,
+    default_name: str,
 ) -> dict[str, Any]:
     """
     Return the raw provider config of the Local files source that a source becomes.
@@ -455,12 +449,14 @@ def _converted_config(
     :param raw_conf: The raw (stored) provider config of the source.
     :param source: The source.
     :param path: The folder the Local files source reads.
-    :param name: The name the source was shown with.
+    :param default_name: The default name Local files gives the source.
     """
     config = {
         **raw_conf,
         "domain": LOCAL_FILES_DOMAIN,
-        "name": name,
+        # without a name of its own it holds none, as a new Local files source does
+        "name": raw_conf.get("name") or None,
+        "default_name": default_name,
         "last_error": None,
         "setup_data": {
             CONF_CONTENT_TYPE: mass.config.encrypt_string(source.content_type),
@@ -472,29 +468,33 @@ def _converted_config(
     return config
 
 
-def _shown_name(
-    raw_configs: Mapping[str, Any], instance_id: str, domain: str, source: _RemovedSource
+def _default_name(
+    mass: MusicAssistant,
+    raw_configs: Mapping[str, Any],
+    sources: Mapping[str, _RemovedSource],
+    path: str,
 ) -> str:
     """
-    Return the name a source was shown with: its own, else the one its provider gave it.
+    Return the default name Local files gives a converted source when it loads.
 
+    :param mass: The MusicAssistant instance.
     :param raw_configs: The raw (stored) provider configs, before any conversion.
-    :param instance_id: The instance id of the source.
-    :param domain: The domain of the removed provider of the source.
-    :param source: The source.
+    :param sources: What each source to convert reads, by instance id.
+    :param path: The folder the converted source reads.
     """
-    if name := raw_configs[instance_id].get("name"):
-        return str(name)
-    provider_name = REMOVED_PROVIDER_NAMES[domain]
-    instances = [
-        key
-        for key, raw_conf in raw_configs.items()
-        if isinstance(raw_conf, dict) and raw_conf.get("domain") == domain
+    name = mass.get_provider_manifest(LOCAL_FILES_DOMAIN).name
+    # as Provider.default_name derives it with the postfix of Local files, the name of the folder
+    # it reads, which is never empty for a folder in a share; written now, so a source that can
+    # not load yet is told apart from the others
+    local_files = [
+        instance_id
+        for instance_id, raw_conf in raw_configs.items()
+        if instance_id in sources
+        or (isinstance(raw_conf, dict) and raw_conf.get("domain") == LOCAL_FILES_DOMAIN)
     ]
-    if len(instances) <= 1:
-        return provider_name
-    postfix = source.name_postfix or str(instances.index(instance_id) + 1)
-    return f"{provider_name} [{postfix}]"
+    if len(local_files) <= 1:
+        return name
+    return f"{name} [{PurePosixPath(path).name}]"
 
 
 async def _update_library(mass: MusicAssistant, instance_ids: list[str]) -> None:

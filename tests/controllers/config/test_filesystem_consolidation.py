@@ -4,8 +4,8 @@ Tests for the conversion of the SMB and NFS music sources into Local files sourc
 An SMB or NFS source mounted its share itself; a network share is a storage location now and a
 Local files source reads a folder in one. The conversion stores the share where it is not a
 storage location yet and rewrites the source in place, so it keeps its instance id and with
-that its library, its access record, its options and the name it was shown with. It runs at
-every start and only changes data: mounting the share is left to the storage controller.
+that its library, its access record, its options and a name of its own. It runs at every
+start and only changes data: mounting the share is left to the storage controller.
 """
 
 from __future__ import annotations
@@ -14,14 +14,14 @@ import copy
 import json
 import sqlite3
 from contextlib import closing, contextmanager
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp.test_utils import TestServer
 from cryptography.fernet import Fernet
 from music_assistant_models.auth import UserRole
-from music_assistant_models.config_entries import ProviderAccess
+from music_assistant_models.config_entries import ProviderAccess, ProviderConfig
 from music_assistant_models.enums import ProviderSharing
 
 from music_assistant.constants import (
@@ -32,6 +32,7 @@ from music_assistant.constants import (
     DB_TABLE_AUDIO_ANALYSIS_FAILURES,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACKS,
+    DEFAULT_PROVIDER_CONFIG_ENTRIES,
     ENCRYPT_SUFFIX,
 )
 from music_assistant.controllers.config import filesystem_consolidation as consolidation_module
@@ -50,6 +51,7 @@ from music_assistant.controllers.storage.models import MountBackend, NetworkShar
 from music_assistant.helpers import hassio
 from music_assistant.helpers.json import json_dumps
 from music_assistant.helpers.provider_access import visible_music_sources
+from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from tests.conftest import full_mass_context
 from tests.controllers.storage.conftest import (
     SUPERVISOR_TOKEN,
@@ -196,6 +198,16 @@ def _setup_values(mass: MusicAssistant, instance_id: str) -> dict[str, Any]:
 def _path(mass: MusicAssistant, instance_id: str) -> str:
     """Return the folder a converted source reads."""
     return str(_setup_values(mass, instance_id)["path"])
+
+
+def _default_name_on_load(mass: MusicAssistant, instance_id: str) -> str:
+    """Return the default name the Local files provider gives a converted source on its load."""
+    config = cast(
+        "ProviderConfig",
+        ProviderConfig.parse(DEFAULT_PROVIDER_CONFIG_ENTRIES, _config(mass, instance_id)),
+    )
+    manifest = mass.get_provider_manifest("filesystem_local")
+    return LocalFileSystemProvider(mass, manifest, config).default_name
 
 
 def _records(mass: MusicAssistant) -> dict[str, NetworkShareSpec]:
@@ -487,8 +499,9 @@ async def test_smb_and_nfs_sources_become_local_files_sources(
     assert smb["enabled"] is True
     assert smb["access"] == ACCESS.to_dict()
     assert smb["last_error"] is None
-    # a single source of its provider was shown with the name of the provider
-    assert smb["name"] == "Filesystem (remote share)"
+    # without a name of its own it shows the default name of Local files, as one of three
+    assert smb["name"] is None
+    assert smb["default_name"] == "Local files [music]"
     # the options Local files has too are kept, the cache mode of the SMB mount goes
     assert smb["values"] == VALUES
     assert set(smb["setup_data"]) == {"content_type", "path"}
@@ -497,6 +510,7 @@ async def test_smb_and_nfs_sources_become_local_files_sources(
     nfs = _config(mass, NFS_ID)
     assert nfs["domain"] == "filesystem_local"
     assert nfs["name"] == "Audiobooks on the NAS"
+    assert nfs["default_name"] == "Local files [books]"
     assert nfs["access"] == ACCESS.to_dict()
     assert _setup_values(mass, NFS_ID) == {
         "content_type": "audiobooks",
@@ -533,42 +547,65 @@ async def test_smb_and_nfs_sources_become_local_files_sources(
 
 
 @pytest.mark.usefixtures("reconcile")
-async def test_sources_keep_the_name_their_provider_showed(mass: MusicAssistant) -> None:
-    """Next to another source of its provider a source was named after its subfolder or share."""
-    _store_source(mass, SMB_ID, {**SMB_SETUP, "subfolder": "albums\\A-K"})
-    _store_source(mass, SMB_ID_2, SMB_SETUP)
-    _store_source(mass, NFS_ID, {**NFS_SETUP, "export_path": "/"})
-
-    await consolidate_filesystem_sources(mass)
-
-    assert _config(mass, SMB_ID)["name"] == "Filesystem (remote share) [albums\\A-K]"
-    assert _config(mass, SMB_ID_2)["name"] == "Filesystem (remote share) [Music]"
-    assert _config(mass, NFS_ID)["name"] == "Filesystem (NFS share)"
-
-
-@pytest.mark.usefixtures("reconcile")
-async def test_sources_without_a_subfolder_or_folder_name_were_numbered(
+async def test_sources_without_a_name_of_their_own_show_the_default_name_of_local_files(
     mass: MusicAssistant,
 ) -> None:
-    """NFS sources on the root of their export and without a subfolder were named by number."""
-    _store_source(mass, NFS_ID, {**NFS_SETUP, "export_path": "/"})
+    """
+    Sources converted in one start hold no name and the default name Local files gives them.
+
+    Local files names each after the folder it reads, also a source on the root of an export,
+    which the NFS provider numbered: its share is mounted on a folder of its own.
+    """
+    _store_source(mass, SMB_ID, {**SMB_SETUP, "subfolder": "albums\\A-K"})
+    _store_source(mass, SMB_ID_2, SMB_SETUP, name="")
+    _store_source(mass, NFS_ID, NFS_SETUP)
     _store_source(mass, NFS_ID_2, {**NFS_SETUP, "host": "192.168.1.21", "export_path": "/"})
+    instance_ids = (SMB_ID, SMB_ID_2, NFS_ID, NFS_ID_2)
 
     await consolidate_filesystem_sources(mass)
 
-    assert _config(mass, NFS_ID)["name"] == "Filesystem (NFS share) [1]"
-    assert _config(mass, NFS_ID_2)["name"] == "Filesystem (NFS share) [2]"
+    assert {
+        instance_id: (
+            _config(mass, instance_id)["name"],
+            _config(mass, instance_id)["default_name"],
+        )
+        for instance_id in instance_ids
+    } == {
+        SMB_ID: (None, "Local files [A-K]"),
+        SMB_ID_2: (None, "Local files [music]"),
+        NFS_ID: (None, "Local files [books]"),
+        NFS_ID_2: (None, "Local files [share]"),
+    }
+    for instance_id in instance_ids:
+        assert _config(mass, instance_id)["default_name"] == _default_name_on_load(
+            mass, instance_id
+        )
 
 
 @pytest.mark.usefixtures("reconcile")
-async def test_a_source_left_as_it_is_counts_for_the_names(mass: MusicAssistant) -> None:
-    """A source that is not converted was shown next to the others, so the names count it."""
+async def test_a_source_with_a_name_of_its_own_keeps_it(mass: MusicAssistant) -> None:
+    """A name the user gave a source stays exactly as it was."""
+    _store_source(mass, SMB_ID, SMB_SETUP, name="Music on the NAS")
+    _store_source(mass, NFS_ID, NFS_SETUP)
+
+    await consolidate_filesystem_sources(mass)
+
+    assert _config(mass, SMB_ID)["name"] == "Music on the NAS"
+    assert _config(mass, SMB_ID)["default_name"] == "Local files [music]"
+
+
+@pytest.mark.usefixtures("reconcile")
+async def test_a_source_left_as_it_is_does_not_count_for_the_default_names(
+    mass: MusicAssistant,
+) -> None:
+    """A source that is not converted is no Local files source, so the only one has no postfix."""
     _store_source(mass, SMB_ID, SMB_SETUP)
     _store_source(mass, SMB_ID_2, {**SMB_SETUP, "share": "music/albums"})
 
     await consolidate_filesystem_sources(mass)
 
-    assert _config(mass, SMB_ID)["name"] == "Filesystem (remote share) [Music]"
+    assert _config(mass, SMB_ID)["default_name"] == "Local files"
+    assert _default_name_on_load(mass, SMB_ID) == "Local files"
     assert _config(mass, SMB_ID_2)["domain"] == "filesystem_smb"
 
 
@@ -1385,6 +1422,41 @@ async def test_a_source_converts_on_the_first_start_before_the_providers_load(
             assert mass.config.get(CONF_PROVIDER_ACCESS_MIGRATED) is True
             assert raw_conf["access"] == ProviderAccess(sharing=ProviderSharing.EVERYONE).to_dict()
             assert raw_conf["last_error"]["translation_key"] == "storage_location_unavailable"
+
+
+async def test_a_converted_source_that_can_not_load_shows_the_default_name_of_local_files(
+    tmp_path: Path,
+) -> None:
+    """A source whose share is not mounted shows the default name of Local files, not the old one."""
+    storage_path = tmp_path / "data"
+    storage_path.mkdir(parents=True)
+    shares = {SMB_ID: "music", SMB_ID_2: "books"}
+    providers = {
+        instance_id: {
+            "type": "music",
+            "domain": "filesystem_smb",
+            "instance_id": instance_id,
+            "enabled": True,
+            "name": None,
+            "default_name": f"Filesystem (remote share) [{share}]",
+            "values": {},
+            "setup_data": {"host": "nas.local", "share": share},
+        }
+        for instance_id, share in shares.items()
+    }
+    (storage_path / "settings.json").write_text(
+        json.dumps({CONF_PROVIDERS: providers}), encoding="utf-8"
+    )
+
+    with _without_mount_backends():
+        async with full_mass_context(tmp_path) as mass:
+            locations = {location.path: location for location in mass.storage.get_locations()}
+            for instance_id, share in shares.items():
+                raw_conf = _config(mass, instance_id)
+                assert raw_conf["last_error"]["translation_key"] == "storage_location_unavailable"
+                assert raw_conf["name"] is None
+                assert raw_conf["default_name"] == f"Local files [{share}]"
+                assert locations[f"{MOUNT_ROOT}/{share}"].used_by == [f"Local files [{share}]"]
 
 
 async def test_a_conversion_killed_after_the_library_update_converts_on_the_next_start(
