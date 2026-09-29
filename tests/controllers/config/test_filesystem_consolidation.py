@@ -1,11 +1,11 @@
 """
-Tests for the one-shot conversion of the SMB and NFS music sources into Local files sources.
+Tests for the conversion of the SMB and NFS music sources into Local files sources.
 
 An SMB or NFS source mounted its share itself; a network share is a storage location now and a
 Local files source reads a folder in one. The conversion stores the share where it is not a
 storage location yet and rewrites the source in place, so it keeps its instance id and with
-that its library, its access record, its options and the name it was shown with. It only
-changes data: mounting the share is left to the storage controller.
+that its library, its access record, its options and the name it was shown with. It runs at
+every start and only changes data: mounting the share is left to the storage controller.
 """
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import ProviderSharing
 
 from music_assistant.constants import (
-    CONF_FILESYSTEM_SOURCES_CONSOLIDATED,
     CONF_PROVIDER_ACCESS_MIGRATED,
     CONF_PROVIDERS,
     CONF_STORAGE_SHARES,
@@ -50,8 +49,15 @@ from music_assistant.controllers.storage.backends.local_mount import MOUNT_ROOT
 from music_assistant.controllers.storage.models import MountBackend, NetworkShareSpec, ShareType
 from music_assistant.helpers import hassio
 from music_assistant.helpers.json import json_dumps
+from music_assistant.helpers.provider_access import visible_music_sources
 from tests.conftest import full_mass_context
-from tests.controllers.storage.conftest import SUPERVISOR_TOKEN, FakeSupervisor, MountTable
+from tests.controllers.storage.conftest import (
+    SUPERVISOR_TOKEN,
+    FakeSupervisor,
+    MountTable,
+    mount_line,
+    wait_until,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Iterator
@@ -96,13 +102,11 @@ class _Killed(BaseException):
 @pytest.fixture
 def reconcile(mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     """
-    Stand in for the mounting of the storage controller, and undo the conversion of the boot.
+    Stand in for the mounting of the storage controller.
 
     :param mass: The started server.
     :param monkeypatch: Pytest monkeypatch fixture.
     """
-    # the full boot of the fixture already ran (and marked) the conversion
-    mass.config.remove(CONF_FILESYSTEM_SOURCES_CONSOLIDATED)
     mock = AsyncMock()
     monkeypatch.setattr(mass.storage, "reconcile", mock)
     return mock
@@ -247,6 +251,47 @@ def _credentials_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
     ]
 
 
+def _leaving_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """Return the logged warnings about sources left as they are."""
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelname == "WARNING" and record.getMessage().startswith("Leaving music source")
+    ]
+
+
+def _consolidation_records(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """Return every message the conversion logged."""
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == consolidation_module.LOGGER.name
+    ]
+
+
+def _watch_writes(mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch) -> list[MagicMock]:
+    """
+    Watch every way to write the settings or the library, and return the watchers.
+
+    :param mass: The started server.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    watchers: list[MagicMock] = []
+    for target, name, mock_type in (
+        (mass.config, "set", MagicMock),
+        (mass.config, "remove", MagicMock),
+        (mass.config, "save", MagicMock),
+        (mass.config, "async_save", AsyncMock),
+        (mass.music.database, "execute_write", AsyncMock),
+        (mass.music.database, "insert", AsyncMock),
+        (mass.music.database, "update", AsyncMock),
+    ):
+        watcher = mock_type(wraps=getattr(target, name))
+        monkeypatch.setattr(target, name, watcher)
+        watchers.append(watcher)
+    return watchers
+
+
 def _location_for_the_owner(mass: MusicAssistant, instance_id: str) -> StorageLocation:
     """
     Return the storage location a converted source reads, asserting its owner may use it.
@@ -329,13 +374,11 @@ async def _prepare_install_to_convert(tmp_path: Path) -> None:
                 (LOCAL_ID, "Other/Album/01.flac"),
                 (SPOTIFY_ID, "spotify-track"),
             )
-            # the boot already ran (and marked) the conversion
-            mass.config.remove(CONF_FILESYSTEM_SOURCES_CONSOLIDATED)
 
 
 async def _prepare_install_with_a_restricted_user(tmp_path: Path) -> str:
     """
-    Leave an install from before both conversions: an SMB source and a user restricted to it.
+    Leave an install from before the access records: an SMB source and a user restricted to it.
 
     Returns the user id of the restricted user.
 
@@ -348,8 +391,7 @@ async def _prepare_install_with_a_restricted_user(tmp_path: Path) -> str:
                 "users", {"user_id": user.user_id}, {"provider_filter": json_dumps([SMB_ID])}
             )
             _store_source(mass, SMB_ID, SMB_SETUP, access=None)
-            # the boot already ran (and marked) both conversions
-            mass.config.remove(CONF_FILESYSTEM_SOURCES_CONSOLIDATED)
+            # the boot already made the access records
             mass.config.remove(CONF_PROVIDER_ACCESS_MIGRATED)
     return user.user_id
 
@@ -487,7 +529,6 @@ async def test_smb_and_nfs_sources_become_local_files_sources(
         (SPOTIFY_ID, "spotify", "track", "spotify-track"),
     ]
     assert _deleted_providers(mass) == deleted_before
-    assert mass.config.get(CONF_FILESYSTEM_SOURCES_CONSOLIDATED) is True
     reconcile.assert_awaited_once()
 
 
@@ -739,7 +780,7 @@ async def test_under_a_supervisor_its_mount_of_the_share_is_used(
     assert _path(mass, NFS_ID) == supervisor.path("books")
     assert _records(mass) == {}
     assert [request[0] for request in supervisor.requests] == ["GET"] * len(supervisor.requests)
-    assert mass.config.get(CONF_FILESYSTEM_SOURCES_CONSOLIDATED) is True
+    assert _config(mass, NFS_ID)["domain"] == "filesystem_local"
     reconcile.assert_not_awaited()
 
 
@@ -846,6 +887,38 @@ async def test_under_a_supervisor_only_versions_it_can_pin_are_kept(mass: MusicA
     assert records["books_2"].share_type == ShareType.NFS
 
 
+async def test_the_share_of_a_converted_source_mounts_without_a_known_backend(
+    mass: MusicAssistant, supervisor: FakeSupervisor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The share stored for a converted source is mounted by the reconcile the conversion starts.
+
+    Also when the storage controller found no mount backend before, e.g. because the Supervisor
+    did not answer yet at its start: the reconcile looks for the backends again.
+    """
+    supervisor.mount_table.set(mount_line("/", "ext4"))
+    monkeypatch.setattr(
+        storage_controller_module, "read_mountinfo", lambda: supervisor.mount_table.text
+    )
+    monkeypatch.setattr(mass.storage, "_mounters", {})
+    _store_source(mass, SMB_ID, SMB_SETUP)
+
+    await consolidate_filesystem_sources(mass)
+
+    def _available() -> bool:
+        location = mass.storage.get_location_for_path(_path(mass, SMB_ID))
+        return location is not None and location.available
+
+    await wait_until(_available)
+    assert _records(mass)["music"].backend == MountBackend.SUPERVISOR
+    assert MountBackend.SUPERVISOR in mass.storage._mounters
+    assert ("POST", "/mounts") in [request[:2] for request in supervisor.requests]
+    assert (supervisor.mounts["music"]["server"], supervisor.mounts["music"]["share"]) == (
+        "nas.local",
+        "Music",
+    )
+
+
 @pytest.mark.parametrize("problem", ["no_manager_role", "gone", "slow"])
 async def test_a_supervisor_that_can_not_be_asked_converts_nothing(
     mass: MusicAssistant,
@@ -875,8 +948,12 @@ async def test_a_supervisor_that_can_not_be_asked_converts_nothing(
     assert await _mappings(mass) == [
         (SMB_ID, "filesystem_smb", "track", "Artist/Album/01.flac"),
     ]
-    assert mass.config.get(CONF_FILESYSTEM_SOURCES_CONSOLIDATED) is None
-    assert "Unable to convert the SMB and NFS music sources" in caplog.text
+    [warning] = _leaving_warnings(caplog)
+    assert warning.startswith(
+        f"Leaving music sources {SMB_ID} as they are, the Supervisor can not tell which network "
+        "shares it has mounted ("
+    )
+    assert warning.endswith("The next start tries again.")
     reconcile.assert_not_awaited()
 
     # the next start finds the Supervisor
@@ -887,7 +964,6 @@ async def test_a_supervisor_that_can_not_be_asked_converts_nothing(
 
     assert _config(mass, SMB_ID)["domain"] == "filesystem_local"
     assert _records(mass)["music"].backend == MountBackend.SUPERVISOR
-    assert mass.config.get(CONF_FILESYSTEM_SOURCES_CONSOLIDATED) is True
 
 
 @pytest.mark.usefixtures("reconcile")
@@ -915,32 +991,39 @@ async def test_a_source_with_unreadable_settings_is_left_as_it_is(
         (SMB_ID_2, "filesystem_smb", "track", "two.flac"),
     ]
     assert list(_records(mass)) == ["music"]
-    assert f"Leaving music source {SMB_ID_2} as it is" in caplog.text
+    assert _leaving_warnings(caplog) == [
+        f"Leaving music source {SMB_ID_2} as it is, its settings can not be decrypted. "
+        "The next start tries again."
+    ]
     assert "secret" not in caplog.text
-    assert mass.config.get(CONF_FILESYSTEM_SOURCES_CONSOLIDATED) is True
 
 
 @pytest.mark.parametrize(
-    ("instance_id", "setup"),
+    ("instance_id", "setup", "reason"),
     [
         # the SMB provider refused a share name with a folder in it
-        (SMB_ID, {**SMB_SETUP, "share": "music/albums"}),
-        (SMB_ID, {**SMB_SETUP, "host": ""}),
+        (SMB_ID, {**SMB_SETUP, "share": "music/albums"}, "its share name is not valid"),
+        (SMB_ID, {**SMB_SETUP, "share": ""}, "its share name is not valid"),
+        (SMB_ID, {**SMB_SETUP, "host": ""}, "it names no server"),
         # a step up may lead out of the share, also where it looks as if it stays inside
-        (SMB_ID, {**SMB_SETUP, "subfolder": "../music"}),
-        (SMB_ID, {**SMB_SETUP, "subfolder": "..\\music"}),
-        (SMB_ID, {**SMB_SETUP, "subfolder": "a/../../b"}),
-        (SMB_ID, {**SMB_SETUP, "subfolder": "a/../b"}),
+        (SMB_ID, {**SMB_SETUP, "subfolder": "../music"}, "its subfolder goes up a folder"),
+        (SMB_ID, {**SMB_SETUP, "subfolder": "..\\music"}, "its subfolder goes up a folder"),
+        (SMB_ID, {**SMB_SETUP, "subfolder": "a/../../b"}, "its subfolder goes up a folder"),
+        (SMB_ID, {**SMB_SETUP, "subfolder": "a/../b"}, "its subfolder goes up a folder"),
         # the NFS provider refused an export path that is not absolute
-        (NFS_ID, {**NFS_SETUP, "export_path": "volume1/books"}),
-        (NFS_ID, {**NFS_SETUP, "subfolder": "../other"}),
+        (NFS_ID, {**NFS_SETUP, "export_path": "volume1/books"}, "its export path is not valid"),
+        (NFS_ID, {**NFS_SETUP, "subfolder": "../other"}, "its subfolder goes up a folder"),
     ],
 )
 @pytest.mark.usefixtures("reconcile")
 async def test_a_source_that_could_not_mount_is_left_as_it_is(
-    mass: MusicAssistant, instance_id: str, setup: dict[str, Any]
+    mass: MusicAssistant,
+    caplog: pytest.LogCaptureFixture,
+    instance_id: str,
+    setup: dict[str, Any],
+    reason: str,
 ) -> None:
-    """Settings that never mounted a share are not guessed at."""
+    """Settings that never mounted a share are not guessed at, and the log says why."""
     _store_source(mass, instance_id, setup)
     before = copy.deepcopy(_config(mass, instance_id))
 
@@ -948,7 +1031,38 @@ async def test_a_source_that_could_not_mount_is_left_as_it_is(
 
     assert _config(mass, instance_id) == before
     assert _records(mass) == {}
-    assert mass.config.get(CONF_FILESYSTEM_SOURCES_CONSOLIDATED) is True
+    assert _leaving_warnings(caplog) == [
+        f"Leaving music source {instance_id} as it is, {reason}. The next start tries again."
+    ]
+    assert "p@ss,word" not in caplog.text
+
+
+@pytest.mark.usefixtures("reconcile")
+async def test_a_source_without_settings_or_with_odd_ones_is_left_as_it_is(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A source with no settings, or settings that fail in an unforeseen way, waits too."""
+    _store_source(mass, SMB_ID, SMB_SETUP)
+    mass.config.remove(f"{CONF_PROVIDERS}/{SMB_ID}/setup_data")
+    _store_source(mass, NFS_ID, NFS_SETUP)
+    read = consolidation_module._read_removed_source
+
+    def _read(mass: MusicAssistant, raw_conf: dict[str, Any]) -> Any:
+        if raw_conf["instance_id"] == NFS_ID:
+            raise ValueError("an odd value")
+        return read(mass, raw_conf)
+
+    monkeypatch.setattr(consolidation_module, "_read_removed_source", _read)
+
+    await consolidate_filesystem_sources(mass)
+
+    assert _config(mass, SMB_ID)["domain"] == "filesystem_smb"
+    assert _config(mass, NFS_ID)["domain"] == "filesystem_nfs"
+    assert _leaving_warnings(caplog) == [
+        f"Leaving music source {SMB_ID} as it is, it has no settings. The next start tries again.",
+        f"Leaving music source {NFS_ID} as it is, its settings can not be read (ValueError). "
+        "The next start tries again.",
+    ]
 
 
 @pytest.mark.usefixtures("reconcile")
@@ -962,39 +1076,74 @@ async def test_a_disabled_source_converts_and_stays_disabled(mass: MusicAssistan
     assert _config(mass, NFS_ID)["enabled"] is False
 
 
-async def test_a_second_run_is_a_no_op(mass: MusicAssistant, reconcile: AsyncMock) -> None:
-    """Once marked, the conversion does not run again."""
-    await consolidate_filesystem_sources(mass)
-    assert mass.config.get(CONF_FILESYSTEM_SOURCES_CONSOLIDATED) is True
-
-    _store_source(mass, SMB_ID, SMB_SETUP)
-    await consolidate_filesystem_sources(mass)
-
-    assert _config(mass, SMB_ID)["domain"] == "filesystem_smb"
-    assert _records(mass) == {}
-    reconcile.assert_not_awaited()
-
-
-@pytest.mark.usefixtures("reconcile")
-async def test_an_install_without_smb_or_nfs_sources_is_marked(
-    mass: MusicAssistant, supervisor: FakeSupervisor
+async def test_a_second_start_with_nothing_new_changes_nothing(
+    mass: MusicAssistant,
+    reconcile: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """With nothing to convert the conversion is marked done, without asking the Supervisor."""
+    """A start after the one that converted everything finds nothing to do, and does nothing."""
+    _store_source(mass, SMB_ID, SMB_SETUP)
+    await _store_mappings(mass, ("track", SMB_ID, "one.flac"))
+    await consolidate_filesystem_sources(mass)
+    converted = copy.deepcopy(mass.config.get(CONF_PROVIDERS))
+    records = copy.deepcopy(mass.config.get(CONF_STORAGE_SHARES))
+    writes = _watch_writes(mass, monkeypatch)
+    caplog.clear()
+
     await consolidate_filesystem_sources(mass)
 
-    assert mass.config.get(CONF_FILESYSTEM_SOURCES_CONSOLIDATED) is True
-    assert supervisor.requests == []
+    assert mass.config.get(CONF_PROVIDERS) == converted
+    assert mass.config.get(CONF_STORAGE_SHARES) == records
+    assert await _mappings(mass) == [(SMB_ID, "filesystem_local", "track", "one.flac")]
+    assert [mock.call_count for mock in writes] == [0] * len(writes)
+    assert _consolidation_records(caplog) == []
+    reconcile.assert_awaited_once()
 
 
 @pytest.mark.usefixtures("reconcile")
-async def test_sources_that_can_not_be_converted_do_not_wait_for_the_supervisor(
-    mass: MusicAssistant, supervisor: FakeSupervisor, monkeypatch: pytest.MonkeyPatch
+async def test_a_start_without_smb_or_nfs_sources_does_nothing(
+    mass: MusicAssistant,
+    supervisor: FakeSupervisor,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Without such a source nothing is asked, decrypted, logged or written, at every start."""
+    mass.config.set(
+        f"{CONF_PROVIDERS}/{LOCAL_ID}",
+        {
+            "type": "music",
+            "domain": "filesystem_local",
+            "instance_id": LOCAL_ID,
+            "values": {},
+            "setup_data": {"path": mass.config.encrypt_string("/media")},
+        },
+    )
+    writes = _watch_writes(mass, monkeypatch)
+    decrypt = MagicMock(side_effect=mass.config.decrypt_string)
+    monkeypatch.setattr(mass.config, "decrypt_string", decrypt)
+    caplog.clear()
+
+    await consolidate_filesystem_sources(mass)
+    await consolidate_filesystem_sources(mass)
+
+    assert supervisor.requests == []
+    decrypt.assert_not_called()
+    assert [mock.call_count for mock in writes] == [0] * len(writes)
+    assert _consolidation_records(caplog) == []
+
+
+@pytest.mark.usefixtures("reconcile")
+async def test_sources_that_can_not_be_converted_do_not_ask_the_supervisor(
+    mass: MusicAssistant,
+    supervisor: FakeSupervisor,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """
-    Sources that can not be converted leave the Supervisor unasked, and mark the conversion.
+    With only sources that can not be converted the Supervisor is not asked.
 
-    A refusing Supervisor would otherwise keep the conversion, and its warning, coming back on
-    every start without anything it could convert.
+    A refusing Supervisor would otherwise add its own warning to theirs on every start.
     """
     supervisor.refuse_access = True
     ask = AsyncMock(wraps=supervisor_module.create_supervisor_mounter)
@@ -1006,7 +1155,95 @@ async def test_sources_that_can_not_be_converted_do_not_wait_for_the_supervisor(
 
     ask.assert_not_awaited()
     assert _config(mass, SMB_ID) == before
-    assert mass.config.get(CONF_FILESYSTEM_SOURCES_CONSOLIDATED) is True
+    assert _leaving_warnings(caplog) == [
+        f"Leaving music source {SMB_ID} as it is, its share name is not valid. "
+        "The next start tries again."
+    ]
+
+
+@pytest.mark.usefixtures("reconcile")
+async def test_a_source_that_can_not_be_converted_is_tried_again_at_every_start(
+    mass: MusicAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A source that waits is tried at every start, with one warning, until it converts."""
+    _store_source(mass, SMB_ID, {**SMB_SETUP, "share": "music/albums"})
+
+    await consolidate_filesystem_sources(mass)
+    await consolidate_filesystem_sources(mass)
+
+    assert _config(mass, SMB_ID)["domain"] == "filesystem_smb"
+    assert len(_leaving_warnings(caplog)) == 2
+
+    # the reason is gone, e.g. the settings were fixed in an older version
+    _store_source(mass, SMB_ID, SMB_SETUP)
+    caplog.clear()
+    await consolidate_filesystem_sources(mass)
+
+    assert _config(mass, SMB_ID)["domain"] == "filesystem_local"
+    assert _leaving_warnings(caplog) == []
+
+
+@pytest.mark.usefixtures("reconcile")
+async def test_a_source_that_appears_after_an_earlier_start_is_converted(
+    mass: MusicAssistant,
+) -> None:
+    """
+    A source that comes back later, e.g. after a downgrade, converts at the next start.
+
+    Also on an install that ran a build which marked the conversion done in its settings.
+    """
+    mass.config.set("filesystem_sources_consolidated", True)
+    await consolidate_filesystem_sources(mass)
+
+    _store_source(mass, SMB_ID, SMB_SETUP)
+    await consolidate_filesystem_sources(mass)
+
+    assert _config(mass, SMB_ID)["domain"] == "filesystem_local"
+    assert _path(mass, SMB_ID) == f"{MOUNT_ROOT}/music"
+
+
+@pytest.mark.usefixtures("reconcile")
+async def test_a_later_source_on_the_share_of_a_converted_one_shares_its_share(
+    mass: MusicAssistant,
+) -> None:
+    """A source that appears after another on the same share was converted reads that share."""
+    _store_source(mass, SMB_ID, {**SMB_SETUP, "subfolder": "music"})
+    await consolidate_filesystem_sources(mass)
+    converted = copy.deepcopy(_config(mass, SMB_ID))
+    records = copy.deepcopy(mass.config.get(CONF_STORAGE_SHARES))
+
+    _store_source(mass, SMB_ID_2, {**SMB_SETUP, "share": "music", "subfolder": "books"})
+    await consolidate_filesystem_sources(mass)
+
+    assert mass.config.get(CONF_STORAGE_SHARES) == records
+    assert _config(mass, SMB_ID) == converted
+    assert _path(mass, SMB_ID_2) == f"{MOUNT_ROOT}/music/books"
+
+
+@pytest.mark.usefixtures("reconcile")
+async def test_a_source_that_appears_after_the_access_records_keeps_its_own(
+    mass: MusicAssistant,
+) -> None:
+    """
+    A source added after the access records were made keeps the record it was created with.
+
+    An admin creates it without a record, as a Local files source, which makes it a source of
+    the whole home; a record set on it later stays as it is.
+    """
+    assert mass.config.get(CONF_PROVIDER_ACCESS_MIGRATED) is True
+    _store_source(mass, SMB_ID, SMB_SETUP, access=None)
+    _store_source(mass, SMB_ID_2, {**SMB_SETUP, "share": "books"})
+    member = await mass.webserver.auth.create_user(username="bob", role=UserRole.USER)
+
+    await consolidate_filesystem_sources(mass)
+
+    assert _config(mass, SMB_ID)["domain"] == "filesystem_local"
+    assert _config(mass, SMB_ID)["access"] is None
+    assert _config(mass, SMB_ID_2)["access"] == ACCESS.to_dict()
+    visible = visible_music_sources(mass, member)
+    assert visible is not None
+    assert SMB_ID in visible
+    assert SMB_ID_2 not in visible
 
 
 async def test_a_failing_listing_after_the_conversion_is_logged_as_such(
@@ -1022,7 +1259,6 @@ async def test_a_failing_listing_after_the_conversion_is_logged_as_such(
     await consolidate_filesystem_sources(mass)
 
     assert _config(mass, SMB_ID)["domain"] == "filesystem_local"
-    assert mass.config.get(CONF_FILESYSTEM_SOURCES_CONSOLIDATED) is True
     assert "Unable to list the network shares of the converted music sources" in caplog.text
     assert "Unable to convert" not in caplog.text
     reconcile.assert_awaited_once()
@@ -1043,7 +1279,7 @@ async def test_a_failing_library_update_changes_nothing(
     assert mass.config.get(CONF_PROVIDERS) == before
     assert _records(mass) == {}
     assert await _mappings(mass) == [(SMB_ID, "filesystem_smb", "track", "one.flac")]
-    assert mass.config.get(CONF_FILESYSTEM_SOURCES_CONSOLIDATED) is None
+    assert f"Unable to convert music sources {SMB_ID}, the next start tries again" in caplog.text
     assert "database is locked" in caplog.text
     reconcile.assert_not_awaited()
 
@@ -1051,7 +1287,6 @@ async def test_a_failing_library_update_changes_nothing(
 
     assert _config(mass, SMB_ID)["domain"] == "filesystem_local"
     assert await _mappings(mass) == [(SMB_ID, "filesystem_local", "track", "one.flac")]
-    assert mass.config.get(CONF_FILESYSTEM_SOURCES_CONSOLIDATED) is True
 
 
 async def test_settings_that_do_not_reach_the_disk_are_converted_again(
@@ -1072,7 +1307,6 @@ async def test_settings_that_do_not_reach_the_disk_are_converted_again(
         await consolidate_filesystem_sources(mass)
 
     assert "disk full" in caplog.text
-    assert mass.config.get(CONF_FILESYSTEM_SOURCES_CONSOLIDATED) is None
     assert await _mappings(mass) == [(SMB_ID, "filesystem_local", "track", "one.flac")]
     reconcile.assert_not_awaited()
 
@@ -1085,7 +1319,6 @@ async def test_settings_that_do_not_reach_the_disk_are_converted_again(
     assert _path(mass, SMB_ID) == f"{MOUNT_ROOT}/music/albums"
     assert list(_records(mass)) == ["music"]
     assert await _mappings(mass) == [(SMB_ID, "filesystem_local", "track", "one.flac")]
-    assert mass.config.get(CONF_FILESYSTEM_SOURCES_CONSOLIDATED) is True
 
 
 @pytest.mark.usefixtures("reconcile")
@@ -1161,7 +1394,7 @@ async def test_a_conversion_killed_after_the_library_update_converts_on_the_next
     A conversion killed between its library update and its save converts on the next start.
 
     The kill leaves the library rows of the source on the Local files domain, while the
-    settings on disk still hold the SMB source and no marker. Until a start converts it, the
+    settings on disk still hold the SMB source. Until a start converts it, the
     source is not listed and not loaded, as its provider is gone; neither that, the library
     maintenance nor background audio analysis touches its rows. The next start converts it as
     if the first one had not been cut short.
@@ -1190,7 +1423,6 @@ async def test_a_conversion_killed_after_the_library_update_converts_on_the_next
 
     settings = json.loads((storage_path / "settings.json").read_text(encoding="utf-8"))
     assert settings[CONF_PROVIDERS][SMB_ID]["domain"] == "filesystem_smb"
-    assert CONF_FILESYSTEM_SOURCES_CONSOLIDATED not in settings
     assert CONF_STORAGE_SHARES not in settings
     assert _library_on_disk(storage_path) == (killed_library, tracks_before)
 
@@ -1201,7 +1433,7 @@ async def test_a_conversion_killed_after_the_library_update_converts_on_the_next
         patch.object(consolidation_module, "_get_mounter", no_supervisor),
     ):
         async with full_mass_context(tmp_path) as mass:
-            assert mass.config.get(CONF_FILESYSTEM_SOURCES_CONSOLIDATED) is None
+            assert _config(mass, SMB_ID)["domain"] == "filesystem_smb"
             assert mass.get_provider(SMB_ID, return_unavailable=True) is None
             listed = {config.instance_id for config in await mass.config.get_provider_configs()}
             assert SMB_ID not in listed
@@ -1216,7 +1448,6 @@ async def test_a_conversion_killed_after_the_library_update_converts_on_the_next
             assert raw_conf["access"] == ACCESS.to_dict()
             assert _path(mass, SMB_ID) == f"{MOUNT_ROOT}/music/albums"
             assert list(_records(mass)) == ["music"]
-            assert mass.config.get(CONF_FILESYSTEM_SOURCES_CONSOLIDATED) is True
     assert _library_on_disk(storage_path) == (killed_library, tracks_before)
 
 

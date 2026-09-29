@@ -338,9 +338,10 @@ class MusicAssistant:
         # and must precede the provider load so its tombstone never flashes a banner.
         # TODO: remove after 2.11 release
         await cleanup_retired_local_audio(self)
-        # one-off: turn the SMB and NFS music sources into Local files sources on a storage
-        # location. Needs the library database, so it cannot run with the settings migrations,
-        # and must precede the provider load so a converted source loads as Local files.
+        # turn the SMB and NFS music sources into Local files sources on a storage location. Runs
+        # at every start and only does something when such a source exists. Needs the library
+        # database, so it cannot run with the settings migrations, and must precede the provider
+        # load so a converted source loads as Local files.
         # TODO: remove after 2.13 release
         await consolidate_filesystem_sources(self)
         # one-off: convert the music source restrictions that used to live on each user into

@@ -101,7 +101,6 @@ CONF_ENCRYPTION_KEY_MIGRATED: Final[str] = "encryption_key_migrated"
 CONF_NFS_SUBFOLDER_MIGRATED: Final[str] = "nfs_subfolder_migrated"
 CONF_RETIRED_LOCAL_AUDIO_CLEANED: Final[str] = "retired_local_audio_cleaned"
 CONF_PROVIDER_ACCESS_MIGRATED: Final[str] = "provider_access_migrated"
-CONF_FILESYSTEM_SOURCES_CONSOLIDATED: Final[str] = "filesystem_sources_consolidated"
 CONF_STORAGE_FOLDERS: Final[str] = "storage_folders"
 # the registered folders that were a mountpoint when they were registered
 CONF_STORAGE_FOLDER_MOUNTS: Final[str] = "storage_folder_mounts"

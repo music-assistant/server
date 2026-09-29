@@ -1,5 +1,5 @@
 """
-One-shot conversion of the SMB and NFS music sources into Local files sources.
+Conversion of the SMB and NFS music sources into Local files sources.
 
 The SMB and NFS providers mounted their network share themselves. A network share is a storage
 location now, mounted by the Home Assistant Supervisor or by the server itself, and a Local
@@ -8,10 +8,12 @@ location of its share and becomes a Local files source on the same folder. It ke
 instance id, and with that its library, its access record and its options, and it keeps the
 name it was shown with.
 
-Unlike the `settings.json` migrations in `migrations.py`, this needs the library database and,
-under a Supervisor, the mounts the Supervisor has, so it runs from `MusicAssistant.start()` once
-the core controllers are up. It never mounts anything itself: a share whose server is off at
-this point is still converted, and its source loads once the storage controller mounted it.
+It runs at every start, as such a source can come back with a downgrade or a restored backup,
+and does something only when one is there. Unlike the `settings.json` migrations in
+`migrations.py`, it needs the library database and, under a Supervisor, the mounts the
+Supervisor has, so it runs from `MusicAssistant.start()` once the core controllers are up. It
+never mounts anything itself: a share whose server is off at this point is still converted,
+and its source loads once the storage controller mounted it.
 
 TODO: remove after 2.13 release
 """
@@ -28,7 +30,6 @@ from typing import TYPE_CHECKING, Any, Final
 from music_assistant_models.errors import InvalidDataError, SetupFailedError
 
 from music_assistant.constants import (
-    CONF_FILESYSTEM_SOURCES_CONSOLIDATED,
     CONF_PASSWORD,
     CONF_PATH,
     CONF_PROVIDERS,
@@ -78,47 +79,51 @@ async def consolidate_filesystem_sources(mass: MusicAssistant) -> None:
     """
     Turn every SMB and NFS music source into a Local files source on a storage location.
 
-    Runs at most once per install and never raises. A source whose settings can not be read is
-    left as it is. When there is a source to convert but the Supervisor can not say which shares
-    it has mounted, nothing is converted and the next start tries again.
+    Changes nothing when there is no such source. Never raises: a source that can not be
+    converted now, e.g. because the Supervisor can not say which shares it has mounted, stays
+    as it is and is tried again at the next start.
 
     :param mass: The MusicAssistant instance, with its core controllers set up.
     """
-    if mass.config.get(CONF_FILESYSTEM_SOURCES_CONSOLIDATED, False):
+    raw_configs: dict[str, Any] = mass.config.get(CONF_PROVIDERS, {})
+    if not (sources := _read_removed_sources(mass, raw_configs)):
         return
     try:
         async with asyncio.timeout(SUPERVISOR_TIMEOUT):
-            conversions = await _plan_conversions(mass)
+            conversions = await _plan_conversions(mass, raw_configs, sources)
     except (BackendUnavailable, SetupFailedError, TimeoutError) as err:
         LOGGER.warning(
-            "Unable to convert the SMB and NFS music sources, the Supervisor can not tell which "
-            "network shares it has mounted (%s). The next start tries again.",
+            "Leaving music sources %s as they are, the Supervisor can not tell which network "
+            "shares it has mounted (%s). The next start tries again.",
+            ", ".join(sources),
             str(err) or type(err).__name__,
         )
         return
     except Exception:
-        LOGGER.exception("Unable to convert the SMB and NFS music sources")
+        LOGGER.exception(
+            "Unable to convert music sources %s, the next start tries again", ", ".join(sources)
+        )
         return
     try:
-        if conversions:
-            # the library goes first: its update can be repeated as it is, so when the settings
-            # below do not reach the disk the next start simply converts again
-            await _update_library(mass, [conversion.instance_id for conversion in conversions])
-            for conversion in conversions:
-                if conversion.share is not None:
-                    mass.config.set(
-                        f"{CONF_STORAGE_SHARES}/{conversion.share.name}", conversion.share.to_dict()
-                    )
-                mass.config.set(f"{CONF_PROVIDERS}/{conversion.instance_id}", conversion.config)
-                LOGGER.info(
-                    "Converted music source %s into a Local files source", conversion.instance_id
+        # the library goes first: its update can be repeated as it is, so when the settings
+        # below do not reach the disk the next start simply converts again
+        await _update_library(mass, [conversion.instance_id for conversion in conversions])
+        for conversion in conversions:
+            if conversion.share is not None:
+                mass.config.set(
+                    f"{CONF_STORAGE_SHARES}/{conversion.share.name}", conversion.share.to_dict()
                 )
-            await mass.config.async_save()
-        mass.config.set(CONF_FILESYSTEM_SOURCES_CONSOLIDATED, True, immediate=True)
+            mass.config.set(f"{CONF_PROVIDERS}/{conversion.instance_id}", conversion.config)
+            LOGGER.info(
+                "Converted music source %s into a Local files source", conversion.instance_id
+            )
+        await mass.config.async_save()
     except Exception:
-        # an escape here would abort the boot; the marker is not stored, so the next start
-        # converts what is left
-        LOGGER.exception("Unable to convert the SMB and NFS music sources")
+        # an escape here would abort the boot; what did not reach the disk is converted again
+        # at the next start
+        LOGGER.exception(
+            "Unable to convert music sources %s, the next start tries again", ", ".join(sources)
+        )
         return
     if any(conversion.share is not None for conversion in conversions):
         try:
@@ -158,35 +163,62 @@ class _RemovedSource:
     name_postfix: str | None
 
 
-async def _plan_conversions(mass: MusicAssistant) -> list[_Conversion]:
-    """
-    Return the conversion of every SMB and NFS music source that can be converted.
+class _Unconvertible(Exception):
+    """A source that can not be converted; the message says why, naming none of its settings."""
 
-    Changes nothing.
+
+def _read_removed_sources(
+    mass: MusicAssistant, raw_configs: Mapping[str, Any]
+) -> dict[str, _RemovedSource]:
+    """
+    Return what each SMB and NFS music source that can be converted reads, by instance id.
+
+    A source that can not be converted is logged with the reason and left out: its config stays
+    as it is, neither listed nor loaded now that its provider is gone, and its library stays.
 
     :param mass: The MusicAssistant instance.
-    :raises BackendUnavailable: When the Supervisor does not let this server manage its mounts.
-    :raises SetupFailedError: When the Supervisor does not list its mounts.
+    :param raw_configs: The raw (stored) provider configs.
     """
-    raw_configs: dict[str, Any] = mass.config.get(CONF_PROVIDERS, {})
     sources: dict[str, _RemovedSource] = {}
     for instance_id, raw_conf in raw_configs.items():
         if not isinstance(raw_conf, dict) or raw_conf.get("domain") not in REMOVED_PROVIDER_NAMES:
             continue
         try:
-            source = _read_removed_source(mass, raw_conf)
-        except InvalidDataError:
-            source = None
-        if source is None:
-            # the removed provider could not mount its share either; its config stays as it is,
-            # neither listed nor loaded now that its provider is gone, and its library stays
+            sources[instance_id] = _read_removed_source(mass, raw_conf)
+        except Exception as err:
             LOGGER.warning(
-                "Leaving music source %s as it is: its settings can not be converted", instance_id
+                "Leaving music source %s as it is, %s. The next start tries again.",
+                instance_id,
+                _reason(err),
             )
-            continue
-        sources[instance_id] = source
-    if not sources:
-        return []
+    return sources
+
+
+def _reason(err: Exception) -> str:
+    """
+    Return why a source can not be converted, naming none of its settings.
+
+    :param err: What reading the source raised.
+    """
+    if isinstance(err, _Unconvertible):
+        return str(err)
+    if isinstance(err, InvalidDataError):
+        return "its settings can not be decrypted"
+    return f"its settings can not be read ({type(err).__name__})"
+
+
+async def _plan_conversions(
+    mass: MusicAssistant, raw_configs: Mapping[str, Any], sources: dict[str, _RemovedSource]
+) -> list[_Conversion]:
+    """
+    Return the conversion of each source. Changes nothing.
+
+    :param mass: The MusicAssistant instance.
+    :param raw_configs: The raw (stored) provider configs.
+    :param sources: What each source to convert reads, by instance id.
+    :raises BackendUnavailable: When the Supervisor does not let this server manage its mounts.
+    :raises SetupFailedError: When the Supervisor does not list its mounts.
+    """
     mounter = await _get_mounter(mass)
     raw_shares: dict[str, Any] = mass.config.get(CONF_STORAGE_SHARES, {})
     shares: dict[str, NetworkShareSpec] = {}
@@ -250,19 +282,18 @@ async def _get_mounter(mass: MusicAssistant) -> ShareMounter:
     )
 
 
-def _read_removed_source(
-    mass: MusicAssistant, raw_conf: Mapping[str, Any]
-) -> _RemovedSource | None:
+def _read_removed_source(mass: MusicAssistant, raw_conf: Mapping[str, Any]) -> _RemovedSource:
     """
-    Return what an SMB or NFS music source read, None when its settings could not mount a share.
+    Return what an SMB or NFS music source read.
 
     :param mass: The MusicAssistant instance.
     :param raw_conf: The raw (stored) provider config of the source.
     :raises InvalidDataError: When a setup value can not be decrypted.
+    :raises _Unconvertible: When its settings could not mount a share.
     """
     setup_data = raw_conf.get("setup_data")
     if not isinstance(setup_data, dict):
-        return None
+        raise _Unconvertible("it has no settings")
     values = {
         key: mass.config.decrypt_string(value) if isinstance(value, str) else value
         for key, value in setup_data.items()
@@ -289,7 +320,8 @@ def _read_removed_source(
             name_postfix=stored_subfolder or stored_share or None,
         )
         # the SMB provider refused such a share
-        valid_share = bool(source.share) and not any(char in source.share for char in "/\\")
+        if not source.share or any(char in source.share for char in "/\\"):
+            raise _Unconvertible("its share name is not valid")
     else:
         stored_export_path = str(values.get(CONF_EXPORT_PATH) or "")
         export_path = stored_export_path.strip()
@@ -306,9 +338,12 @@ def _read_removed_source(
             name_postfix=stored_subfolder or PurePosixPath(stored_export_path).name or None,
         )
         # the NFS provider refused such an export
-        valid_share = export_path.startswith("/") and is_safe_path(export_path)
-    if not server or not valid_share or _steps_up(source.subfolder):
-        return None
+        if not export_path.startswith("/") or not is_safe_path(export_path):
+            raise _Unconvertible("its export path is not valid")
+    if not server:
+        raise _Unconvertible("it names no server")
+    if _steps_up(source.subfolder):
+        raise _Unconvertible("its subfolder goes up a folder")
     return source
 
 
