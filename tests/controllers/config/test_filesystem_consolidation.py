@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import copy
 import json
+import shutil
 import sqlite3
 from contextlib import closing, contextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,7 +24,15 @@ from aiohttp.test_utils import TestServer
 from cryptography.fernet import Fernet
 from music_assistant_models.auth import UserRole
 from music_assistant_models.config_entries import ProviderAccess, ProviderConfig
-from music_assistant_models.enums import ProviderSharing
+from music_assistant_models.enums import ImageType, ProviderSharing
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    MediaItemImage,
+    ProviderMapping,
+    Track,
+)
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
     CONF_PROVIDER_ACCESS_MIGRATED,
@@ -50,7 +60,15 @@ from music_assistant.controllers.storage.backends.local_mount import MOUNT_ROOT
 from music_assistant.controllers.storage.models import MountBackend, NetworkShareSpec, ShareType
 from music_assistant.helpers import hassio
 from music_assistant.helpers.json import json_dumps
+from music_assistant.helpers.playlists import (
+    PlaylistItem,
+    ProviderMappingInfo,
+    generate_m3u,
+    media_item_to_playlist_item,
+    parse_m3u,
+)
 from music_assistant.helpers.provider_access import visible_music_sources
+from music_assistant.providers.builtin import BuiltinProvider
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from tests.conftest import full_mass_context
 from tests.controllers.storage.conftest import (
@@ -63,7 +81,6 @@ from tests.controllers.storage.conftest import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Iterator
-    from pathlib import Path
 
     from music_assistant.mass import MusicAssistant
 
@@ -272,6 +289,77 @@ def _leaving_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
     ]
 
 
+def _playlist_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """Return the logged warnings about playlists left as they are."""
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelname == "WARNING" and record.getMessage().startswith("Leaving playlist")
+    ]
+
+
+def _track(instance_id: str, item_id: str, domain: str | None = None) -> Track:
+    """
+    Return a track of a music source, with an artist, an album and an image of that source.
+
+    :param instance_id: The instance id of the source.
+    :param item_id: The id of the track on the source.
+    :param domain: The domain of the source, by default the one its instance id starts with.
+    """
+    domain = domain or instance_id.split("--", maxsplit=1)[0]
+
+    def _mappings(prov_item_id: str) -> set[ProviderMapping]:
+        return {
+            ProviderMapping(
+                item_id=prov_item_id, provider_domain=domain, provider_instance=instance_id
+            )
+        }
+
+    track = Track(
+        item_id=item_id,
+        provider=instance_id,
+        name=item_id.rpartition("/")[2],
+        duration=180,
+        provider_mappings=_mappings(item_id),
+        artists=UniqueList(
+            [
+                Artist(
+                    item_id="Artist",
+                    provider=instance_id,
+                    name="Artist",
+                    provider_mappings=_mappings("Artist"),
+                )
+            ]
+        ),
+        album=Album(
+            item_id="Artist/Album",
+            provider=instance_id,
+            name="Album",
+            provider_mappings=_mappings("Artist/Album"),
+        ),
+    )
+    track.metadata.add_image(
+        MediaItemImage(type=ImageType.THUMB, path="Artist/Album/cover.jpg", provider=instance_id)
+    )
+    return track
+
+
+def _write_playlist(
+    mass: MusicAssistant, name: str, *entries: PlaylistItem, newline: str = "\n"
+) -> Path:
+    """
+    Store a playlist of the builtin provider as it writes one, and return its file.
+
+    :param mass: The started server.
+    :param name: The name of the playlist, also that of its file.
+    :param entries: The entries of the playlist.
+    :param newline: The line ending of the file.
+    """
+    path = Path(mass.storage_path, "playlists", f"{name}.m3u")
+    path.write_bytes(generate_m3u(name, list(entries)).replace("\n", newline).encode("utf-8"))
+    return path
+
+
 def _consolidation_records(caplog: pytest.LogCaptureFixture) -> list[str]:
     """Return every message the conversion logged."""
     return [
@@ -353,6 +441,7 @@ async def _store_tracks(mass: MusicAssistant, *rows: tuple[str, str]) -> None:
                 "provider_item_id": item_id,
                 "available": True,
                 "in_library": True,
+                "audio_format": "{}",
             },
         )
 
@@ -1356,6 +1445,224 @@ async def test_settings_that_do_not_reach_the_disk_are_converted_again(
     assert _path(mass, SMB_ID) == f"{MOUNT_ROOT}/music/albums"
     assert list(_records(mass)) == ["music"]
     assert await _mappings(mass) == [(SMB_ID, "filesystem_local", "track", "one.flac")]
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+@pytest.mark.usefixtures("reconcile")
+async def test_playlist_entries_of_a_converted_source_get_the_domain_of_local_files(
+    mass: MusicAssistant, newline: str
+) -> None:
+    """
+    Only the entries of a converted source change, in every part that names the domain.
+
+    The entries of a source left as it is and of a streaming service stay, and so do the line
+    endings. A playlist without an entry of a converted source is not written at all.
+    """
+    _store_source(mass, SMB_ID, SMB_SETUP)
+    _store_source(mass, SMB_ID_2, {**SMB_SETUP, "share": "music/albums"})
+    kept = _track(SMB_ID_2, "Kept/Album/01.flac")
+    streamed = _track(SPOTIFY_ID, "spotify-track")
+    playlist = _write_playlist(
+        mass,
+        "Road trip",
+        *(
+            media_item_to_playlist_item(track)
+            for track in (_track(SMB_ID, "Artist/Album/01.flac"), kept, streamed)
+        ),
+        newline=newline,
+    )
+    other = _write_playlist(mass, "Streamed", media_item_to_playlist_item(streamed))
+    other_written = other.stat().st_mtime_ns
+
+    await consolidate_filesystem_sources(mass)
+
+    assert _config(mass, SMB_ID)["domain"] == "filesystem_local"
+    # exactly as Music Assistant writes the playlist with the track of the converted source
+    expected = generate_m3u(
+        "Road trip",
+        [
+            media_item_to_playlist_item(track)
+            for track in (
+                _track(SMB_ID, "Artist/Album/01.flac", "filesystem_local"),
+                kept,
+                streamed,
+            )
+        ],
+    )
+    assert playlist.read_bytes() == expected.replace("\n", newline).encode("utf-8")
+    assert other.stat().st_mtime_ns == other_written
+
+
+@pytest.mark.parametrize("smb_left", [False, True])
+@pytest.mark.usefixtures("reconcile")
+async def test_playlist_entries_that_name_only_the_domain(
+    mass: MusicAssistant, smb_left: bool
+) -> None:
+    """
+    An entry that names only the SMB domain changes once no SMB source is left as it is.
+
+    An entry of a source this server does not have, e.g. in an imported playlist, stays.
+    """
+    _store_source(mass, SMB_ID, SMB_SETUP)
+    if smb_left:
+        _store_source(mass, SMB_ID_2, {**SMB_SETUP, "share": "music/albums"})
+    entries = [
+        PlaylistItem(path="filesystem_smb://track/Old/01.flac", title="Old - 01"),
+        PlaylistItem(
+            path="filesystem_smb://track/Old/02.flac",
+            title="Old - 02",
+            providers=[ProviderMappingInfo(domain="filesystem_smb", item_id="Old/02.flac")],
+        ),
+        media_item_to_playlist_item(_track("filesystem_smb--Elsewhere", "Else/01.flac")),
+    ]
+    playlist = _write_playlist(mass, "Old", *copy.deepcopy(entries))
+
+    await consolidate_filesystem_sources(mass)
+
+    if not smb_left:
+        entries[0].path = "filesystem_local://track/Old/01.flac"
+        entries[1].path = "filesystem_local://track/Old/02.flac"
+        entries[1].providers[0].domain = "filesystem_local"
+    assert playlist.read_text(encoding="utf-8") == generate_m3u("Old", entries)
+
+
+@pytest.mark.usefixtures("reconcile")
+async def test_the_builtin_provider_finds_a_converted_entry_without_its_source(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    With its source not loaded a converted entry resolves to the library track.
+
+    Adding that track again finds it in the playlist already.
+    """
+    item_id = "Artist/Album/01.flac"
+    _store_source(mass, SMB_ID, SMB_SETUP)
+    await _store_tracks(mass, (SMB_ID, item_id))
+    playlist = _write_playlist(
+        mass, "Road trip", media_item_to_playlist_item(_track(SMB_ID, item_id))
+    )
+
+    await consolidate_filesystem_sources(mass)
+
+    builtin = cast("BuiltinProvider", mass.get_provider("builtin"))
+    assert mass.get_provider(SMB_ID, return_unavailable=True) is None
+    [entry] = parse_m3u(playlist.read_text(encoding="utf-8"))
+    resolved = await builtin._resolve_playlist_item(entry)
+    assert resolved is not None
+    assert resolved.provider == "library"
+    # the track as the converted source serves it, once it is loaded
+    served = media_item_to_playlist_item(_track(SMB_ID, item_id, "filesystem_local"))
+    monkeypatch.setattr(builtin, "_build_m3u_entry_from_uri", AsyncMock(return_value=served))
+    await builtin.add_playlist_tracks("Road trip", [f"{SMB_ID}://track/{item_id}"])
+    assert parse_m3u(playlist.read_text(encoding="utf-8")) == [served]
+
+
+@pytest.mark.usefixtures("reconcile")
+async def test_a_later_start_does_not_write_a_converted_playlist_again(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A start that converts another source leaves a playlist alone that was converted before."""
+    _store_source(mass, SMB_ID, SMB_SETUP)
+    playlist = _write_playlist(
+        mass, "Road trip", media_item_to_playlist_item(_track(SMB_ID, "Artist/Album/01.flac"))
+    )
+    await consolidate_filesystem_sources(mass)
+    converted = playlist.read_text(encoding="utf-8")
+    written = playlist.stat().st_mtime_ns
+    replace = MagicMock(wraps=consolidation_module._replace_file)
+    monkeypatch.setattr(consolidation_module, "_replace_file", replace)
+
+    _store_source(mass, NFS_ID, NFS_SETUP)
+    await consolidate_filesystem_sources(mass)
+
+    assert _config(mass, NFS_ID)["domain"] == "filesystem_local"
+    replace.assert_not_called()
+    assert playlist.stat().st_mtime_ns == written
+    assert playlist.read_text(encoding="utf-8") == converted
+
+
+@pytest.mark.parametrize("problem", ["unreadable", "malformed", "unwritable"])
+@pytest.mark.usefixtures("reconcile")
+async def test_a_playlist_that_can_not_be_updated_is_left_as_it_is(
+    mass: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    problem: str,
+) -> None:
+    """A playlist that can not be read or written back as it is stays, with one warning."""
+    _store_source(mass, SMB_ID, SMB_SETUP)
+    content = generate_m3u(
+        "Road trip", [media_item_to_playlist_item(_track(SMB_ID, "Artist/Album/01.flac"))]
+    )
+    if problem == "unreadable":
+        data = content.encode("utf-8") + b"\xff"
+        reason = "it can not be read (UnicodeDecodeError)"
+    elif problem == "malformed":
+        # the parser skips a mapping with a sample rate that is no number
+        odd_line = f"#EXTPROV:filesystem_smb||Artist/Album/02.flac||{SMB_ID}||flac||high||0||0"
+        data = content.replace("#EXTINF", f"{odd_line}\n#EXTINF").encode("utf-8")
+        reason = "it is not in the form Music Assistant writes it"
+    else:
+        data = content.encode("utf-8")
+        failing = MagicMock(side_effect=PermissionError("read-only"))
+        monkeypatch.setattr(consolidation_module, "_replace_file", failing)
+        reason = "it can not be written (PermissionError)"
+    playlist = Path(mass.storage_path, "playlists", "Road trip.m3u")
+    playlist.write_bytes(data)
+
+    await consolidate_filesystem_sources(mass)
+
+    assert playlist.read_bytes() == data
+    assert _playlist_warnings(caplog) == [f"Leaving playlist Road trip.m3u as it is, {reason}"]
+    assert not any("Artist/Album" in message for message in _consolidation_records(caplog))
+    assert _config(mass, SMB_ID)["domain"] == "filesystem_local"
+
+
+async def test_playlists_cut_short_are_finished_by_the_next_start(
+    mass: MusicAssistant, reconcile: AsyncMock
+) -> None:
+    """
+    A start killed while it writes the playlists converts the sources and the rest next time.
+
+    The playlists go before the settings: a start after the settings were saved has nothing to
+    convert, so it would leave a playlist that was not written yet as it is.
+    """
+    _store_source(mass, SMB_ID, SMB_SETUP)
+    first = _write_playlist(
+        mass, "A", media_item_to_playlist_item(_track(SMB_ID, "Artist/Album/01.flac"))
+    )
+    second = _write_playlist(
+        mass, "B", media_item_to_playlist_item(_track(SMB_ID, "Artist/Album/02.flac"))
+    )
+    second_before = second.read_text(encoding="utf-8")
+    real_copymode = shutil.copymode
+    calls = 0
+
+    def _copymode_then_kill(source: Path, target: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise _Killed
+        real_copymode(source, target)
+
+    with (
+        patch.object(shutil, "copymode", _copymode_then_kill),
+        pytest.raises(_Killed),
+    ):
+        await consolidate_filesystem_sources(mass)
+
+    first_converted = first.read_text(encoding="utf-8")
+    assert "filesystem_local://track/Artist/Album/01.flac" in first_converted
+    assert second.read_text(encoding="utf-8") == second_before
+    assert sorted(path.name for path in first.parent.iterdir()) == ["A.m3u", "B.m3u"]
+    assert _config(mass, SMB_ID)["domain"] == "filesystem_smb"
+    reconcile.assert_not_called()
+
+    await consolidate_filesystem_sources(mass)
+
+    assert _config(mass, SMB_ID)["domain"] == "filesystem_local"
+    assert first.read_text(encoding="utf-8") == first_converted
+    assert "filesystem_local://track/Artist/Album/02.flac" in second.read_text(encoding="utf-8")
 
 
 @pytest.mark.usefixtures("reconcile")

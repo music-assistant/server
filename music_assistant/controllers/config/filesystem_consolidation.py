@@ -6,7 +6,9 @@ location now, mounted by the Home Assistant Supervisor or by the server itself, 
 files source reads a folder in a storage location. So each SMB and NFS source gets the storage
 location of its share and becomes a Local files source on the same folder. It keeps its
 instance id, and with that its library, its access record, its options and a name of its own.
-Without a name of its own it shows the default name of a Local files source.
+Without a name of its own it shows the default name of a Local files source. The playlists of
+the builtin provider name the domain of an entry's provider, so their entries of a converted
+source get the domain of Local files.
 
 It runs at every start, as such a source can come back with a downgrade or a restored backup,
 and does something only when one is there. Unlike the `settings.json` migrations in
@@ -21,10 +23,13 @@ TODO: remove after 2.13 release
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
+import shutil
+import tempfile
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.errors import InvalidDataError, SetupFailedError
@@ -42,12 +47,19 @@ from music_assistant.controllers.storage.backends.local_mount import LOCAL_VERSI
 from music_assistant.controllers.storage.backends.supervisor import create_supervisor_mounter
 from music_assistant.controllers.storage.helpers import share_key
 from music_assistant.controllers.storage.models import NetworkShareSpec, ShareType
+from music_assistant.helpers.playlists import (
+    generate_m3u,
+    parse_m3u,
+    parse_m3u_playlist_image,
+    parse_m3u_playlist_name,
+)
 from music_assistant.helpers.security import is_safe_path
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from music_assistant.controllers.storage.backends.base import ShareMounter
+    from music_assistant.helpers.playlists import PlaylistItem
     from music_assistant.mass import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
@@ -69,6 +81,8 @@ CONF_SUBFOLDER: Final[str] = "subfolder"
 CONF_CACHE_MODE: Final[str] = "cache_mode"
 # how long the conversion waits for the Supervisor at most, in seconds
 SUPERVISOR_TIMEOUT: Final[float] = 30
+# the folder in the storage path that the builtin provider keeps its playlists in
+PLAYLISTS_FOLDER: Final[str] = "playlists"
 
 
 async def consolidate_filesystem_sources(mass: MusicAssistant) -> None:
@@ -100,10 +114,13 @@ async def consolidate_filesystem_sources(mass: MusicAssistant) -> None:
             "Unable to convert music sources %s, the next start tries again", ", ".join(sources)
         )
         return
+    instance_ids = [conversion.instance_id for conversion in conversions]
+    # the playlists and the library go before the settings: both updates can be repeated as
+    # they are, and only a start that still finds the sources converts, so the next start
+    # finishes an update that was cut short
+    await _update_playlists(mass, raw_configs, set(instance_ids))
     try:
-        # the library goes first: its update can be repeated as it is, so when the settings
-        # below do not reach the disk the next start simply converts again
-        await _update_library(mass, [conversion.instance_id for conversion in conversions])
+        await _update_library(mass, instance_ids)
         for conversion in conversions:
             if conversion.share is not None:
                 mass.config.set(
@@ -512,3 +529,157 @@ async def _update_library(mass: MusicAssistant, instance_ids: list[str]) -> None
         f"WHERE provider_instance IN ({placeholders})",
         {"domain": LOCAL_FILES_DOMAIN, **params},
     )
+
+
+async def _update_playlists(
+    mass: MusicAssistant, raw_configs: Mapping[str, Any], instance_ids: set[str]
+) -> None:
+    """
+    Give the converted sources' entries in the builtin provider's playlists the Local files domain.
+
+    Never raises: a playlist that can not be read or written is left as it is.
+
+    :param mass: The MusicAssistant instance.
+    :param raw_configs: The raw (stored) provider configs, before any conversion.
+    :param instance_ids: The instance ids of the sources this start converts.
+    """
+    # an entry that names only the domain of its source can be of any source of that domain,
+    # so it is converted only when no source of the domain is left as it is
+    left = {
+        raw_conf["domain"]
+        for instance_id, raw_conf in raw_configs.items()
+        if isinstance(raw_conf, dict)
+        and raw_conf.get("domain") in REMOVED_PROVIDER_DOMAINS
+        and instance_id not in instance_ids
+    }
+    domains = {raw_configs[instance_id]["domain"] for instance_id in instance_ids} - left
+    folder = Path(mass.storage_path, PLAYLISTS_FOLDER)
+    try:
+        filenames = sorted(await asyncio.to_thread(os.listdir, folder))
+    except FileNotFoundError:
+        return
+    except OSError as err:
+        LOGGER.warning(
+            "Leaving the playlists as they are, their folder can not be read (%s)",
+            type(err).__name__,
+        )
+        return
+    for filename in filenames:
+        if filename.endswith(".m3u"):
+            await asyncio.to_thread(_update_playlist, folder / filename, instance_ids, domains)
+
+
+def _update_playlist(path: Path, instance_ids: set[str], domains: set[str]) -> None:
+    """
+    Give the entries of converted sources in a playlist file the Local files domain (blocking).
+
+    Leaves a file alone that holds no such entry, or that can not be read or written.
+
+    :param path: The playlist file.
+    :param instance_ids: The instance ids of the sources this start converts.
+    :param domains: The domains whose entries that name no source are converted too.
+    """
+    filename = path.name
+    try:
+        with path.open(encoding="utf-8", newline="") as file:
+            data = file.read()
+        # the writer ends its lines with \n, a file with \r\n gets those back
+        text = data.replace("\r\n", "\n")
+        name = parse_m3u_playlist_name(text) or path.stem
+        image = parse_m3u_playlist_image(text)
+        entries = parse_m3u(text)
+        as_read = generate_m3u(name, entries, image)
+        changed = False
+        for entry in entries:
+            changed |= _point_at_local_files(entry, instance_ids, domains)
+    except Exception as err:
+        LOGGER.warning(
+            "Leaving playlist %s as it is, it can not be read (%s)", filename, type(err).__name__
+        )
+        return
+    if not changed:
+        return
+    if as_read != text:
+        # the parser skips what it does not understand, so writing this file back would change
+        # more than the domains
+        LOGGER.warning(
+            "Leaving playlist %s as it is, it is not in the form Music Assistant writes it",
+            filename,
+        )
+        return
+    content = generate_m3u(name, entries, image)
+    try:
+        _replace_file(path, content if text == data else content.replace("\n", "\r\n"))
+    except Exception as err:
+        LOGGER.warning(
+            "Leaving playlist %s as it is, it can not be written (%s)",
+            filename,
+            type(err).__name__,
+        )
+        return
+    LOGGER.info("Updated the entries of converted music sources in playlist %s", filename)
+
+
+def _point_at_local_files(entry: PlaylistItem, instance_ids: set[str], domains: set[str]) -> bool:
+    """
+    Give each part of a playlist entry that names a converted source the domain of Local files.
+
+    Returns whether the entry changed.
+
+    :param entry: The playlist entry, changed in place.
+    :param instance_ids: The instance ids of the sources this start converts.
+    :param domains: The domains whose parts that name no source are converted too.
+    """
+
+    def _converts(domain: str, instance_id: str) -> bool:
+        if domain not in REMOVED_PROVIDER_DOMAINS:
+            return False
+        # a part names only the domain with no instance, or with the domain in its place
+        return instance_id in instance_ids or (instance_id in ("", domain) and domain in domains)
+
+    changed = False
+    # the path is the URI of the entry's mapping on the provider with that domain and item id
+    scheme, _, rest = entry.path.partition("://")
+    item_id = rest.partition("/")[2]
+    path_instance = next(
+        (
+            mapping.instance_id
+            for mapping in entry.providers
+            if (mapping.domain, mapping.item_id) == (scheme, item_id)
+        ),
+        "",
+    )
+    if _converts(scheme, path_instance):
+        entry.path = f"{LOCAL_FILES_DOMAIN}://{rest}"
+        changed = True
+    for mapping in entry.providers:
+        if _converts(mapping.domain, mapping.instance_id):
+            mapping.domain = LOCAL_FILES_DOMAIN
+            changed = True
+    for reference in (*entry.artists, entry.album, entry.podcast):
+        if reference is not None and _converts(
+            reference.provider_domain, reference.provider_instance
+        ):
+            reference.provider_domain = LOCAL_FILES_DOMAIN
+            changed = True
+    return changed
+
+
+def _replace_file(path: Path, content: str) -> None:
+    """
+    Replace the content of a file in one step, keeping its permissions (blocking).
+
+    :param path: The file.
+    :param content: The new content.
+    """
+    fd, temp_name = tempfile.mkstemp(dir=path.parent, prefix=".", suffix=".tmp")
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as file:
+            file.write(content)
+        shutil.copymode(path, temp_path)
+        temp_path.replace(path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            temp_path.unlink()
+        raise
