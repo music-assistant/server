@@ -13,7 +13,6 @@ from typing import Any, cast
 from urllib.parse import quote, unquote
 from uuid import uuid4
 
-import aiohttp
 from music_assistant_models.enums import MediaType, StreamType
 from music_assistant_models.errors import (
     InvalidDataError,
@@ -37,8 +36,6 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.aiohttp_client import create_clientsession
-from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.music_provider import MusicProvider
 
 from .client import AuthenticationError, FeiNiuClient
@@ -58,7 +55,7 @@ class FeiNiuProvider(MusicProvider):
     """A personal library with authentication and caches isolated per instance."""
 
     async def handle_async_init(self) -> None:
-        """Open an isolated session and authenticate with the configured music account."""
+        """Authenticate this account using MA's shared HTTP session."""
         self._login_lock = asyncio.Lock()
         self._collection_locks: dict[str, asyncio.Lock] = {}
         self._cache_id = uuid4().hex
@@ -67,26 +64,21 @@ class FeiNiuProvider(MusicProvider):
         self._closed = False
         self._generation = 0
         self._failed_login_generation: int | None = None
-        self._throttler = Throttler(rate_limit=1, period=0.25)
         self._client = FeiNiuClient(
             str(self.get_setup_value("url")),
             PROFILE,
-            session_factory=lambda: create_clientsession(
-                self.mass,
-                cookie_jar=aiohttp.DummyCookieJar(),
-                trust_env=False,
-            ),
-            acquire=self._throttler.acquire,
+            session=self.mass.http_session,
         )
         await self._client.__aenter__()
         try:
             await self._login()
         except BaseException:
+            self._closed = True
             await self._client.__aexit__(None, None, None)
             raise
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Close only this instance's HTTP session."""
+        """Stop this instance's requests without closing MA's HTTP session."""
         self._closed = True
         if hasattr(self, "_client"):
             await self._client.__aexit__(None, None, None)

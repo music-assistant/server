@@ -28,7 +28,7 @@ def number(value: Any) -> int:
 
 
 def audio_format(spec: dict[str, Any]) -> AudioFormat:
-    """Translate known audio fields, leaving missing numeric fields unknown."""
+    """Translate known audio fields, using MA's channel default when unspecified."""
     try:
         content_type = ContentType(str(spec.get("format", "?")))
     except ValueError:
@@ -42,7 +42,7 @@ def audio_format(spec: dict[str, Any]) -> AudioFormat:
         codec_type=codec,
         sample_rate=number(spec.get("sampleRate")),
         bit_depth=number(spec.get("bitDepth")),
-        channels=number(spec.get("channel")),
+        channels=number(spec.get("channel")) or 2,
         bit_rate=number(spec.get("bitrate")) // 1000 or None,
     )
 

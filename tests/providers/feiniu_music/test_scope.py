@@ -327,12 +327,11 @@ async def test_native_relationship_filtering_does_not_scan_collection(
     provider._client.detail.assert_not_awaited()
 
 
-async def test_reload_closes_its_owned_http_connector(provider: Any, monkeypatch: Any) -> None:
-    """MA's session helper creates a connector; unloading must release that resource."""
+async def test_reload_preserves_ma_owned_http_connector(provider: Any, monkeypatch: Any) -> None:
+    """Reload discards local credentials while preserving MA's session and pool."""
     connector = aiohttp.TCPConnector()
-
-    def session_factory(_mass: Any, **kwargs: Any) -> aiohttp.ClientSession:
-        return aiohttp.ClientSession(connector=connector, **kwargs)
+    session = aiohttp.ClientSession(connector=connector)
+    provider.mass.http_session = session
 
     values = {
         "url": "http://synthetic.invalid/music/",
@@ -342,15 +341,21 @@ async def test_reload_closes_its_owned_http_connector(provider: Any, monkeypatch
     }
     provider.get_setup_value = values.get
     monkeypatch.setattr(
-        "music_assistant.providers.feiniu_music.provider.create_clientsession", session_factory
-    )
-    monkeypatch.setattr(
         "music_assistant.providers.feiniu_music.client.FeiNiuClient.login",
         AsyncMock(return_value={"guid": "synthetic-account"}),
     )
     try:
         await provider.handle_async_init()
+        before_unload = provider._client._session
+        assert before_unload is session
         await provider.unload()
-        assert connector.closed
+        assert provider._client._session is None
+        assert not session.closed
+        assert not connector.closed
+        await provider.handle_async_init()
+        reloaded = provider._client
+        assert reloaded._session is session
+        await provider.unload()
+        assert not session.closed
     finally:
-        await connector.close()
+        await session.close()

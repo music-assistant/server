@@ -152,7 +152,7 @@ def test_missing_metadata_does_not_fabricate_audio_quality(extra: dict[str, Any]
     assert item.artists[0].provider == "instance-a"
     assert item.album is None
     fmt = next(iter(item.provider_mappings)).audio_format
-    assert (fmt.sample_rate, fmt.bit_depth, fmt.channels) == (0, 0, 0)
+    assert (fmt.sample_rate, fmt.bit_depth, fmt.channels) == (0, 0, 2)
     with pytest.raises(InvalidDataError):
         parse_track({"title": "No stable ID"}, "instance-a")
 

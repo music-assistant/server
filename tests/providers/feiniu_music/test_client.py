@@ -7,7 +7,7 @@ import socket
 import traceback
 from collections.abc import AsyncIterator
 from typing import Any, Self
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import aiohttp
 import pytest
@@ -107,8 +107,8 @@ PROFILE = ProtocolProfile("/music/api/v1", "synthetic-salt", "synthetic-api-key"
 async def test_login_overlap_is_limited_per_server(second_origin: str, expected_peak: int) -> None:
     """The observed server login race is avoided without serializing unrelated servers."""
     clients: list[Any] = [
-        FeiNiuClient("http://one.invalid", PROFILE),
-        FeiNiuClient(second_origin, PROFILE),
+        FeiNiuClient("http://one.invalid", PROFILE, session=Mock()),
+        FeiNiuClient(second_origin, PROFILE, session=Mock()),
     ]
     active = peak = 0
     requests = []
@@ -180,6 +180,7 @@ class Session:
     def __init__(self, *responses: Response | Exception) -> None:
         """Initialize the synthetic fixture."""
         self.responses = list(responses)
+        self.cookie_jar = aiohttp.DummyCookieJar()
         self.calls: list[tuple[str, str, dict[str, Any]]] = []
 
     def request(self, method: str, url: str, **kwargs: Any) -> Response:
@@ -197,8 +198,8 @@ class Session:
 
 def client_with(*responses: Response | Exception) -> Any:
     """Build a real client around a synthetic transport."""
-    client: Any = FeiNiuClient("http://test.invalid/music/", PROFILE)
-    client._session = Session(*responses)
+    session: Any = Session(*responses)
+    client: Any = FeiNiuClient("http://test.invalid/music/", PROFILE, session=session)
     return client
 
 
@@ -356,7 +357,10 @@ async def test_actual_http_parser_does_not_echo_response_fragments(
 
     async with await asyncio.start_server(connected, "127.0.0.1", 0) as server:
         port = server.sockets[0].getsockname()[1]
-        async with FeiNiuClient(f"http://127.0.0.1:{port}", PROFILE) as client:
+        async with (
+            aiohttp.ClientSession() as session,
+            FeiNiuClient(f"http://127.0.0.1:{port}", PROFILE, session=session) as client,
+        ):
             client._token = "synthetic-request-cookie"
             operation = (
                 anext(client.audio_stream("synthetic-id")) if media else client.current_user()
@@ -377,8 +381,8 @@ async def test_actual_http_parser_does_not_echo_response_fragments(
                 await asyncio.gather(*handlers)
 
 
-async def test_instance_authentication_and_no_cookie_jar_dependency() -> None:
-    """Instance authentication and no cookie jar dependency."""
+async def test_instance_authentication_uses_request_cookies() -> None:
+    """Pass only this instance's token, or an explicit empty value, per request."""
     first = client_with(
         envelope({"userToken": "synthetic-token", "user": {"guid": "user-a"}}),
         envelope({}),
@@ -390,8 +394,10 @@ async def test_instance_authentication_and_no_cookie_jar_dependency() -> None:
     login_body = first._session.calls[0][2]["data"]
     assert b"synthetic-password" not in login_body
     assert "Cookie" not in first._session.calls[0][2]["headers"]
-    assert first._session.calls[1][2]["headers"]["Cookie"] == "music-token=synthetic-token"
+    assert first._session.calls[0][2]["cookies"] == {"music-token": ""}
+    assert first._session.calls[1][2]["cookies"] == {"music-token": "synthetic-token"}
     assert "Cookie" not in second._session.calls[0][2]["headers"]
+    assert second._session.calls[0][2]["cookies"] == {"music-token": ""}
 
 
 async def test_full_pagination_and_empty_library() -> None:
@@ -481,7 +487,7 @@ def test_signature_is_query_order_independent_and_body_sensitive() -> None:
 def test_no_password_url_and_no_protocol_profile_repr_secrets() -> None:
     """No password url and no protocol profile repr secrets."""
     with pytest.raises(ValueError, match="credential-free"):
-        FeiNiuClient("http://user:password@test.invalid", PROFILE)
+        FeiNiuClient("http://user:password@test.invalid", PROFILE, session=Mock())
     assert "synthetic-api-key" not in repr(PROFILE)
     assert classify_media(b'{"error":"expired"}') == "html-or-json"
 

@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -172,6 +172,6 @@ async def test_login_retry_retains_submitted_secret_without_prefill(
 
 async def test_first_empty_password_cannot_authenticate() -> None:
     """The real client's input validation rejects empty credentials before I/O."""
-    client = FeiNiuClient("http://test.invalid", PROFILE)
+    client = FeiNiuClient("http://test.invalid", PROFILE, session=Mock())
     with pytest.raises(ValueError, match="Missing credentials"):
         await client.login("synthetic", "", "a" * 32)

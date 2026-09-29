@@ -8,7 +8,8 @@ import json
 import re
 import secrets
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any, Self, cast
@@ -24,6 +25,13 @@ from music_assistant_models.errors import (
     RateLimited,
     ResourceTemporarilyUnavailable,
     UnplayableMediaError,
+)
+from yarl import URL
+
+from music_assistant.helpers.throttle_retry import (
+    MAX_RETRY_AFTER,
+    ThrottlerManager,
+    parse_retry_after,
 )
 
 _LOGIN_LOCKS: WeakValueDictionary[tuple[asyncio.AbstractEventLoop, str], asyncio.Lock] = (
@@ -161,9 +169,8 @@ class FeiNiuClient:
         web_url: str,
         profile: ProtocolProfile,
         *,
+        session: aiohttp.ClientSession,
         timeout: float = 15,
-        session_factory: Callable[[], aiohttp.ClientSession] | None = None,
-        acquire: Callable[[], Awaitable[float]] | None = None,
     ) -> None:
         """Initialize an instance without opening a connection."""
         parsed = urlsplit(web_url)
@@ -181,24 +188,17 @@ class FeiNiuClient:
         self._origin = f"{parsed.scheme}://{parsed.netloc}"
         self._profile = profile
         self._timeout = timeout
-        self._session: aiohttp.ClientSession | None = None
+        self._session: aiohttp.ClientSession | None = session
         self._token: str | None = None
         self._lock = asyncio.Lock()
-        self._last_request = 0.0
-        self._session_factory = session_factory
-        self._acquire = acquire
+        self._throttler = ThrottlerManager(rate_limit=1, period=0.25)
+        self._closed = False
+        self._operations: set[asyncio.Task[Any]] = set()
+        self._unload_cancellations: dict[asyncio.Task[Any], object] = {}
+        self._responses: set[aiohttp.ClientResponse] = set()
 
     async def __aenter__(self) -> Self:
-        """Open an isolated HTTP session."""
-        if self._session_factory:
-            self._session = self._session_factory()
-            return self
-        self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=self._timeout, connect=min(5, self._timeout)),
-            cookie_jar=aiohttp.DummyCookieJar(),
-            trust_env=False,
-            connector=aiohttp.TCPConnector(limit=2),
-        )
+        """Use the caller-owned HTTP session."""
         return self
 
     async def __aexit__(
@@ -207,11 +207,24 @@ class FeiNiuClient:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        """Close the session and forget authentication."""
-        if self._session:
-            await self._session.close()
+        """Stop this client's HTTP operations without closing the caller's session."""
+        if self._closed:
+            return
+        self._closed = True
         self._session = None
         self._token = None
+        for response in self._responses:
+            response.close()
+        self._responses.clear()
+        tasks = self._operations - {asyncio.current_task()}
+        for task in tasks:
+            # A caller's pending cancellation takes precedence over instance shutdown.
+            if not task.cancelling():
+                marker = object()
+                if task.cancel(marker):
+                    self._unload_cancellations[task] = marker
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def login(self, username: str, password: str, device_id: str) -> dict[str, Any]:
         """Authenticate the music account, without reusing a browser cookie."""
@@ -221,7 +234,7 @@ class FeiNiuClient:
         # Serialize only login on the same origin; no sleep, retry or shared token.
         key = (asyncio.get_running_loop(), self._origin)
         lock = _LOGIN_LOCKS.setdefault(key, asyncio.Lock())
-        async with lock:
+        async with self._operation(), lock:
             self._token = None
             data = await self._json(
                 "POST",
@@ -240,6 +253,7 @@ class FeiNiuClient:
                 raise ProtocolError("Login response lacks a token")
             if not isinstance(data.get("user"), dict):
                 raise ProtocolError("Login response lacks a user")
+            self._check_open()
             self._token = data["userToken"]
             return cast("dict[str, Any]", data["user"])
 
@@ -367,41 +381,54 @@ class FeiNiuClient:
 
     async def audio_stream(self, identifier: str) -> AsyncGenerator[bytes]:
         """Stream original audio to a consumer; credentials never enter ffmpeg arguments."""
-        if not self._session or not identifier:
-            raise ValueError("Client not open or missing track ID")
+        self._check_open()
+        if not identifier:
+            raise ValueError("Missing track ID")
         if not self._token:
             raise AuthenticationError("No active session")
-        async with self._lock:
-            await self._throttle()
         url = (
             self._origin + self._profile.prefix + "/track/stream?" + urlencode({"guid": identifier})
         )
         try:
-            async with self._session.get(
-                url,
-                headers={"Cookie": "music-token=" + quote(self._token, safe="")},
-                allow_redirects=False,
-                timeout=aiohttp.ClientTimeout(total=None, connect=5, sock_read=30),
-            ) as response:
-                prefix = bytearray()
-                while len(prefix) < 4096:
-                    chunk = await response.content.read(4096 - len(prefix))
-                    if not chunk:
-                        break
-                    prefix.extend(chunk)
-                check_media_response(response.status, bytes(prefix), stream=True)
-                if classify_media(bytes(prefix)) not in {
-                    "id3-tagged-audio",
-                    "mpeg-or-aac-frame",
-                    "flac",
-                    "ogg-container",
-                    "wav",
-                    "mp4-container",
-                }:
-                    raise ProtocolError("Stream did not start with recognized audio")
-                yield bytes(prefix)
-                async for chunk in response.content.iter_chunked(65536):
-                    yield chunk
+            async with AsyncExitStack() as stack:
+                async with self._operation() as session, self._lock, self._throttler.acquire():
+                    self._check_open()
+                    response = await stack.enter_async_context(
+                        session.get(
+                            url,
+                            cookies=self._request_cookies(url),
+                            allow_redirects=False,
+                            timeout=aiohttp.ClientTimeout(total=None, connect=5, sock_read=30),
+                        )
+                    )
+                    self._responses.add(response)
+                # Track the response, not the consumer's task across yields: the
+                # consumer may suspend indefinitely or resume in a different task.
+                try:
+                    self._check_rate_limit(response.status, response.headers)
+                    prefix = bytearray()
+                    while len(prefix) < 4096:
+                        chunk = await response.content.read(4096 - len(prefix))
+                        if not chunk:
+                            break
+                        prefix.extend(chunk)
+                    self._check_open()
+                    check_media_response(response.status, bytes(prefix), stream=True)
+                    if classify_media(bytes(prefix)) not in {
+                        "id3-tagged-audio",
+                        "mpeg-or-aac-frame",
+                        "flac",
+                        "ogg-container",
+                        "wav",
+                        "mp4-container",
+                    }:
+                        raise ProtocolError("Stream did not start with recognized audio")
+                    yield bytes(prefix)
+                    async for chunk in response.content.iter_chunked(65536):
+                        self._check_open()
+                        yield chunk
+                finally:
+                    self._responses.discard(response)
         except (TimeoutError, aiohttp.ClientError, OSError) as err:
             if isinstance(err, aiohttp.ClientResponseError | aiohttp.ClientPayloadError) or (
                 isinstance(err, aiohttp.ServerDisconnectedError)
@@ -476,8 +503,6 @@ class FeiNiuClient:
             raise PermissionDeniedError("Operation denied")
         if status == 404:
             raise NotFoundError("HTTP 404")
-        if status == 429:
-            raise RateLimitError("HTTP 429", backoff_time=60)
         if status >= 500:
             raise NetworkError("Service temporarily unavailable", backoff_time=30)
         if status != 200:
@@ -515,8 +540,6 @@ class FeiNiuClient:
         truncate: bool = False,
         signed: bool = True,
     ) -> tuple[int, Mapping[str, str], bytes]:
-        if self._session is None:
-            raise RuntimeError("Use the client as an async context manager")
         full_path = self._profile.prefix + path
         body_text = (
             json.dumps(body, separators=(",", ":"), ensure_ascii=False) if body is not None else ""
@@ -530,21 +553,21 @@ class FeiNiuClient:
         url = self._origin + full_path
         if params:
             url += "?" + urlencode(params, quote_via=quote)
-        async with self._lock:
-            await self._throttle()
-            if self._token and authenticated:
-                headers["Cookie"] = "music-token=" + quote(self._token, safe="")
+        async with self._operation() as session, self._lock, self._throttler.acquire():
+            self._check_open()
             try:
-                async with self._session.request(
+                async with session.request(
                     method,
                     url,
                     headers=headers,
+                    cookies=self._request_cookies(url, authenticated=authenticated),
                     data=body_text.encode() if body is not None else None,
                     timeout=aiohttp.ClientTimeout(
                         total=self._timeout, connect=min(5, self._timeout)
                     ),
                     allow_redirects=False,
                 ) as response:
+                    self._check_rate_limit(response.status, response.headers)
                     chunks = bytearray()
                     while len(chunks) < limit + (not truncate):
                         chunk = await response.content.read(
@@ -568,9 +591,54 @@ class FeiNiuClient:
                     ) from None
                 raise NetworkError("HTTP connection failed or timed out", backoff_time=30) from err
 
-    async def _throttle(self) -> None:
-        if self._acquire:
-            await self._acquire()
-        else:
-            await asyncio.sleep(max(0, 0.25 - (time.monotonic() - self._last_request)))
-        self._last_request = time.monotonic()
+    def _request_cookies(self, url: str, *, authenticated: bool = True) -> dict[str, str]:
+        """Neutralize shared cookies before applying this instance's music token."""
+        if self._session is None:
+            raise RuntimeError("Client is closed")
+        # aiohttp merges request cookies with the shared jar. Empty foreign values
+        # only for this request; Music 1.0.1 accepts an empty token as unauthenticated.
+        cookies = dict.fromkeys(self._session.cookie_jar.filter_cookies(URL(url)), "")
+        cookies["music-token"] = (
+            quote(self._token, safe="") if authenticated and self._token else ""
+        )
+        return cookies
+
+    def _check_open(self) -> None:
+        if self._closed:
+            raise NetworkError("FeiNiu client is closed", backoff_time=30)
+
+    @asynccontextmanager
+    async def _operation(self) -> AsyncIterator[aiohttp.ClientSession]:
+        """Register finite work owned by this client, including waits before HTTP."""
+        self._check_open()
+        assert self._session is not None
+        task = asyncio.current_task()
+        assert task is not None
+        nested = task in self._operations
+        self._operations.add(task)
+        try:
+            yield self._session
+        except asyncio.CancelledError as err:
+            marker = self._unload_cancellations.get(task)
+            # Only the outer operation owns cancellation accounting. A second cancel
+            # or an unrecognized cause belongs to the caller and must propagate.
+            if (
+                not nested
+                and marker is not None
+                and len(err.args) == 1
+                and err.args[0] is marker
+                and task.cancelling() == 1
+            ):
+                task.uncancel()
+                raise NetworkError("FeiNiu client is unloading", backoff_time=30) from err
+            raise
+        finally:
+            if not nested:
+                self._operations.discard(task)
+                self._unload_cancellations.pop(task, None)
+
+    def _check_rate_limit(self, status: int, headers: Mapping[str, str]) -> None:
+        if status == 429:
+            delay = min(parse_retry_after(headers.get("Retry-After")) or 60, MAX_RETRY_AFTER)
+            self._throttler.set_cooldown(delay)
+            raise RateLimitError("HTTP 429", backoff_time=delay)
