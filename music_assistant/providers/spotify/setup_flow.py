@@ -25,6 +25,7 @@ from music_assistant.helpers.oauth import (
     authorization_code_from_url,
     hosted_bounce_redirect,
 )
+from music_assistant.helpers.util import get_ip_addresses
 from music_assistant.models.setup_flow import AbortFlow, SetupFlowError, StepExpiredError
 from music_assistant.providers.spotify_connect.soloist import (
     SoloistError,
@@ -589,7 +590,10 @@ async def _authorize_playback(session: SetupSession, account_id: str | None) -> 
         raise SetupFlowError(str(err), translation_key="librespot_unavailable") from err
     # same address the streamserver advertises to players, so pairing lands on the LAN
     # instead of a Docker bridge or other side interface on multi-homed hosts
-    zeroconf_interface = session.mass.streams.publish_ip
+    publish_ip = session.mass.streams.publish_ip
+    # a configured NAT/external publish IP is not a local interface librespot can advertise on
+    local_ips = await get_ip_addresses(include_ipv6=True)
+    zeroconf_interface = publish_ip if publish_ip in local_ips else None
     errors: dict[str, str | SetupFlowError] | None = None
     while True:
         method_values = await session.form(

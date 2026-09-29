@@ -120,6 +120,7 @@ async def test_failed_attempt_loops_back_to_the_choice(monkeypatch: pytest.Monke
         side_effect=[_raising(LoginFailed("nope")), _returning(STORED_CREDENTIALS)]
     )
     monkeypatch.setattr(setup_flow, "librespot_credentials_via_pairing", pairing_mock)
+    monkeypatch.setattr(setup_flow, "get_ip_addresses", AsyncMock(return_value=("192.168.1.50",)))
     session = MagicMock()
     session.mass.streams.publish_ip = "192.168.1.50"
     session.form = AsyncMock(return_value={setup_flow.CONF_PLAYBACK_AUTH_METHOD: "spotify_app"})
@@ -130,6 +131,37 @@ async def test_failed_attempt_loops_back_to_the_choice(monkeypatch: pytest.Monke
     assert session.form.await_count == 2
     assert session.form.await_args_list[1].kwargs["errors"] == {"base": "playback_auth_failed"}
     pairing_mock.assert_called_with("/bin/librespot", PAIRING_DEVICE_NAME, "192.168.1.50")
+
+
+@pytest.mark.parametrize(
+    ("publish_ip", "expected_interface"),
+    [
+        ("192.168.1.50", "192.168.1.50"),
+        # a NAT/port-forward publish IP is not ours, so librespot advertises on all interfaces
+        ("203.0.113.7", None),
+    ],
+)
+async def test_pairing_interface_is_a_local_address(
+    monkeypatch: pytest.MonkeyPatch, publish_ip: str, expected_interface: str | None
+) -> None:
+    """Pairing is pinned to the publish IP only when it is an address of this host."""
+    from music_assistant.providers.spotify import setup_flow  # noqa: PLC0415
+
+    monkeypatch.setattr(
+        setup_flow, "get_librespot_binary", AsyncMock(return_value="/bin/librespot")
+    )
+    pairing_mock = MagicMock(side_effect=[_returning(STORED_CREDENTIALS)])
+    monkeypatch.setattr(setup_flow, "librespot_credentials_via_pairing", pairing_mock)
+    monkeypatch.setattr(
+        setup_flow, "get_ip_addresses", AsyncMock(return_value=("192.168.1.50", "172.17.0.1"))
+    )
+    session = MagicMock()
+    session.mass.streams.publish_ip = publish_ip
+    session.form = AsyncMock(return_value={setup_flow.CONF_PLAYBACK_AUTH_METHOD: "spotify_app"})
+    session.progress_until = AsyncMock(side_effect=_run_awaitable)
+
+    assert await setup_flow._authorize_playback(session, None) == STORED_CREDENTIALS
+    pairing_mock.assert_called_once_with("/bin/librespot", PAIRING_DEVICE_NAME, expected_interface)
 
 
 def test_pairing_device_name_matches_setup_text() -> None:
