@@ -738,7 +738,7 @@ class StorageController(CoreController):
 
         :param path: The path of the location.
         """
-        # which location a source reads from depends on every location there is right now
+        # the sources are matched against the listed locations, which may not hold this one yet
         await self.refresh()
         if used_by := self._get_sources_by_location().get(path):
             msg = f"{used_by[0]} uses {path}"
@@ -916,20 +916,20 @@ class StorageController(CoreController):
 
     def _get_sources_by_location(self) -> dict[str, list[str]]:
         """
-        Return the sorted names of the loaded music sources, by the location they read from.
+        Return the sorted names of the loaded music sources, by the locations they read from.
 
-        A source counts for the most specific location that contains its folder only.
+        A source counts for every location that contains its folder, nested locations included.
         """
         sources: dict[str, list[str]] = {}
         for provider in self.mass.providers:
             if provider.domain not in FILESYSTEM_PROVIDER_DOMAINS:
                 continue
             base_path = getattr(provider, "base_path", None)
-            if (
-                isinstance(base_path, str)
-                and (location := self.get_location_for_path(base_path)) is not None
-            ):
-                sources.setdefault(location.path, []).append(provider.name)
+            if not isinstance(base_path, str):
+                continue
+            for location in self._locations:
+                if is_within(base_path, location.path):
+                    sources.setdefault(location.path, []).append(provider.name)
         return {path: sorted(names, key=str.casefold) for path, names in sources.items()}
 
     async def _setup_network_shares(self) -> None:

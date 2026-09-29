@@ -374,10 +374,10 @@ async def test_used_by(storage: StorageController, tmp_path: Path) -> None:
     assert all(loc.used_by == [] for loc in info.locations if loc.path != str(music))
 
 
-async def test_used_by_the_most_specific_location(
+async def test_used_by_every_location_around_the_source(
     storage: StorageController, tmp_path: Path
 ) -> None:
-    """A source counts for the deepest location that holds its folder, which alone is in use."""
+    """A source in a nested location uses the outer location too, so neither can be removed."""
     music = tmp_path / "music"
     classical = music / "classical"
     (classical / "Bach").mkdir(parents=True)
@@ -389,13 +389,13 @@ async def test_used_by_the_most_specific_location(
 
     info = await storage.get_info()
 
-    assert _location(info.locations, music).used_by == []
+    assert _location(info.locations, music).used_by == ["My music"]
     assert _location(info.locations, classical).used_by == ["My music"]
-    with pytest.raises(ActionUnavailable) as exc_info:
-        await storage.remove_local_folder(str(classical))
-    assert exc_info.value.translation_key == "location_in_use"
-    await storage.remove_local_folder(str(music))
-    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == [str(classical)]
+    for folder in (classical, music):
+        with pytest.raises(ActionUnavailable) as exc_info:
+            await storage.remove_local_folder(str(folder))
+        assert exc_info.value.translation_key == "location_in_use"
+    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == [str(music), str(classical)]
 
 
 async def test_used_by_loaded_sources_only(storage: StorageController, tmp_path: Path) -> None:
