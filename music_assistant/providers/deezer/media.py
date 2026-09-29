@@ -167,6 +167,30 @@ class DeezerMediaManager:
         album.external_ids.add((ExternalID.BARCODE, normalize_external_id(ExternalID.BARCODE, upc)))
         return album
 
+    # -- Recommendation bans --
+
+    async def set_favorite(
+        self, prov_item_id: str, media_type: MediaType, favorite: bool | None
+    ) -> None:
+        """
+        Ban or unban a track or artist from the user's Deezer recommendations.
+
+        A like only lifts an earlier ban, adding the item to the Deezer favorites is
+        library_add's job. Deezer can't ban albums.
+
+        :param prov_item_id: The Deezer id of the track or artist.
+        :param media_type: Media type of the item.
+        :param favorite: False to ban, True or None to unban.
+        """
+        if media_type == MediaType.TRACK and favorite is False:
+            await self.provider.gql_client.ban_track_from_recommendation(track_id=prov_item_id)
+        elif media_type == MediaType.TRACK:
+            await self.provider.gql_client.unban_track_from_recommendation(track_id=prov_item_id)
+        elif media_type == MediaType.ARTIST and favorite is False:
+            await self.provider.gql_client.ban_artist_from_recommendation(artist_id=prov_item_id)
+        elif media_type == MediaType.ARTIST:
+            await self.provider.gql_client.unban_artist_from_recommendation(artist_id=prov_item_id)
+
     # -- Pagination helper --
 
     async def _iter_paged(
