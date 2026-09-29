@@ -9,7 +9,7 @@ Future enhancements may include automatic genre detection and AI-generated descr
 Supported artwork templates:
 - artist_mosaic: Dominant artist large in centre, others as smaller tiles around it
 - artist_grid: Equal-sized grid of unique artist images (up to 4)
-- album_grid:  Classic album-cover grid (same as the built-in collage, kept as fallback)
+- album_grid:  Classic album-cover grid (default, also used as fallback)
 - artist_radio: Artist-focused layout with main artist centered on a solid background with overlapping circles of secondary artists
 - artist_banner: Full-bleed artist image with playlist name text overlay (Tidal / Apple Music Essentials style)
 - album_fan:     Up to three album covers as framed photo-print cards in a rotated stack (Apple Music collage style)
@@ -817,7 +817,7 @@ async def _render_artist_grid(
 
 async def _render_album_grid(mass: MusicAssistant, images: list[MediaItemImage]) -> bytes:
     """
-    Render the classic album-grid template (identical to the built-in collage).
+    Render the classic album-grid template.
 
     250x250 tiles tiled across the canvas, with repetition if needed.
     """
