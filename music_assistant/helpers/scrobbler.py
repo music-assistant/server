@@ -116,11 +116,15 @@ class ScrobblerHelper:
         async def scrobble() -> None:
             # claim the track before awaiting so a concurrent report for it is skipped
             self.last_scrobbled = report.uri
+            submitted = False
             try:
                 await self._scrobble(report)
+                submitted = True
             except self.scrobble_exceptions:
                 self.logger.exception("Error while scrobbling track")
-                self.last_scrobbled = None
+            finally:
+                if not submitted and self.last_scrobbled == report.uri:
+                    self.last_scrobbled = None
 
         # update now playing if needed
         if report.is_playing and (
