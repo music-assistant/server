@@ -237,3 +237,13 @@ def test_parse_album_type_is_language_independent(
     provider.language = language
     album = provider._parse_album({"title": "Test", "type": type_label}, "MPREb_test")
     assert album.album_type == album_type
+
+
+def test_parse_thumbnails_skips_zero_height(provider: YoutubeMusicProvider) -> None:
+    """A thumbnail reporting a zero height is skipped instead of crashing the parse."""
+    thumbnails = [
+        {"url": "https://lh3.googleusercontent.com/bad=w544-h544", "width": 544, "height": 0},
+        {"url": "https://lh3.googleusercontent.com/good=w544-h544", "width": 544, "height": 544},
+    ]
+    images = provider._parse_thumbnails(thumbnails)
+    assert [img.path for img in images] == ["https://lh3.googleusercontent.com/good=w600-h600-p"]
