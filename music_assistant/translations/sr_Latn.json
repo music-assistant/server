@@ -3559,5 +3559,17 @@
   "provider.plex_connect.config_entries.unlink.action_label": "Prekini vezu sa plex.tv",
   "provider.plex_connect.config_entries.unlink.description": "Zaboravi token plex.tv uređaja za ovaj plejer. Unos uređaja takođe može biti uklonjen iz ovlašćenih uređaja vašeg Plex naloga.",
   "provider.plex_connect.config_entries.unlink.label": "Prekini vezu sa plex.tv",
-  "provider.plex_connect.errors.plextv_unlink_required": "Prekinite vezu sa plex.tv u podešavanjima ovog provajdera pre promene plejera ili Plex muzičkog provajdera."
+  "provider.plex_connect.errors.plextv_unlink_required": "Prekinite vezu sa plex.tv u podešavanjima ovog provajdera pre promene plejera ili Plex muzičkog provajdera.",
+  "provider.listenbrainz_scrobble.errors.token_invalid": "Vaš korisnički token za ListenBrainz više nije važeći. Ponovo konfigurišite ovaj dodatak da biste nastavili skroblovanje.",
+  "provider.raumfeld.config_entries.ip_address.description": "IP adresa uređaja na kome je pokrenut servis Raumfeld hosta (fizički Raumfeld uređaj ili Raumfeld aplikacija koja ima ulogu hosta).",
+  "provider.raumfeld.config_entries.ip_address.label": "Raumfeld host",
+  "provider.raumfeld.config_entries.port.description": "Port veb-servisa Raumfeld hosta. Promenite ovo samo ako host radi na portu koji nije podrazumevan.",
+  "provider.raumfeld.config_entries.port.label": "Port Raumfeld hosta",
+  "provider.raumfeld.errors.no_host_found": "Nije pronađen Raumfeld host na zadatoj adresi. Proverite IP adresu i port i uverite se da je Raumfeld uređaj uključen ili da je pokrenuta aplikacija Raumfeld host.",
+  "provider.raumfeld.manifest.description": "Strimujte muziku na Teufel Raumfeld (pametni zvučnik) multiroom uređaje.",
+  "core.metadata.background_task.link_library_to_musicbrainz": "Poveži biblioteku sa platformom MusicBrainz",
+  "core.metadata.background_task.scan_missing_metadata": "Skeniraj nedostajuće metapodatke",
+  "core.metadata.config_entries.link_providers_via_musicbrainz.description": "Koristite veze koje MusicBrainz čuva kako biste pronašli izvođače, albume i numere iz svoje biblioteke na drugim muzičkim servisima, umesto da ih pojedinačno pretražujete na svakom servisu.\n\nKada je ova opcija omogućena, pozadinski zadatak prolazi kroz vašu biblioteku u malim grupama, odmah nakon sinhronizacije biblioteke i jednom svakog sata, a stavke se takođe povezuju kad god se njihovi metapodaci osveže. Prepoznavanje stavki na samoj platformi MusicBrainz i dalje se dešava pri svakom osvežavanju metapodataka, jer se drugi provajderi metapodataka oslanjaju na nju, tako da će stavke koje su osvežene dok je ova opcija bila onemogućena biti povezane prilikom sledećeg osvežavanja metapodataka.",
+  "core.metadata.config_entries.link_providers_via_musicbrainz.label": "Povežite stavke sa svojim drugim muzičkim servisima putem platforme MusicBrainz",
+  "core.music.errors.album_not_available_on_music_services": "Ovaj album nije dostupan ni na jednom od vaših muzičkih servisa."
 }

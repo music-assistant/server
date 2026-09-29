@@ -69,7 +69,7 @@ def _provider(
 
 
 def _recordings(*first_release_dates: str | None) -> dict[str, Any]:
-    """Return an isrc lookup response with a recording per given release date."""
+    """Return an isrc lookup or search response with a recording per given release date."""
     return {
         "isrc": "GBAYE8600477",
         "recordings": [
@@ -93,13 +93,20 @@ async def test_release_year_parses_all_date_precisions() -> None:
         assert await provider.get_release_year_by_isrc("GBAYE8600477") == 1986
 
 
-async def test_release_year_looks_up_the_normalized_isrc() -> None:
-    """Look the recording up on the isrc resource, with its credits and links."""
+async def test_release_year_searches_recordings_by_the_normalized_isrc() -> None:
+    """Search recordings by ISRC in a single request, which carries the first release date."""
     provider, get_data = _provider(_recordings("1986"))
 
     await provider.get_release_year_by_isrc("GB-AYE-86-00477")
 
-    get_data.assert_awaited_once_with("isrc/GBAYE8600477?inc=isrcs+artist-credits+url-rels")
+    get_data.assert_awaited_once_with("recording", query="isrc:GBAYE8600477", limit="100")
+
+
+async def test_release_year_is_none_for_a_truncated_search() -> None:
+    """Refuse to date a song when the search does not return every recording."""
+    response = {**_recordings("1986"), "count": 2}
+    provider, _ = _provider(response)
+    assert await provider.get_release_year_by_isrc("GBAYE8600477") is None
 
 
 async def test_release_year_returns_earliest_of_multiple_recordings() -> None:

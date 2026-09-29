@@ -306,6 +306,17 @@ async def test_aborted_sync_starts_checking_for_the_storage() -> None:
     cast("MagicMock", provider.mass.call_later).assert_called_once()
 
 
+@pytest.mark.parametrize("available", [True, False])
+async def test_reachability_comes_from_the_storage_controller(available: bool) -> None:
+    """The storage controller decides whether the folder can be read, mount included."""
+    provider = _create_unavailable_provider()
+    is_available = AsyncMock(return_value=available)
+    cast("MagicMock", provider.mass.storage).is_available = is_available
+
+    assert await provider._is_reachable() is available
+    is_available.assert_awaited_once_with("/media")
+
+
 async def test_probe_keeps_waiting_while_the_storage_is_gone() -> None:
     """A provider whose storage is still missing stays down and checks again later."""
     provider = _create_unavailable_provider()
