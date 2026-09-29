@@ -226,7 +226,7 @@ async def test_set_favorite_ignores_other_media_types(provider: YoutubeMusicProv
         ("cs", "Singl", AlbumType.SINGLE),  # codespell:ignore
         ("cs", "EP", AlbumType.EP),
         ("nl", "Ep", AlbumType.EP),
-        ("es", "Álbum", AlbumType.ALBUM),
+        ("es", "Álbum", AlbumType.UNKNOWN),
         ("de", "Playlist", AlbumType.UNKNOWN),
     ],
 )

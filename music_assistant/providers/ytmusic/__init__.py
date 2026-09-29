@@ -7,6 +7,7 @@ import gettext
 import importlib
 import logging
 import time
+from collections import Counter
 from collections.abc import AsyncGenerator
 from contextlib import suppress
 from datetime import datetime
@@ -1349,7 +1350,7 @@ def _album_type_labels(language: str) -> dict[str, AlbumType]:
         fallback=True,
     )
     labels = {"album": AlbumType.ALBUM, "ep": AlbumType.EP, "single": AlbumType.SINGLE}
-    # some languages share one label between types (e.g. Spanish), the first type wins
-    for label, album_type in list(labels.items()):
-        labels.setdefault(translation.gettext(label).casefold(), album_type)
-    return labels
+    translated = {label: translation.gettext(label).casefold() for label in labels}
+    # a label shared by several types (e.g. Spanish) can't tell them apart, so it stays unknown
+    counts = Counter(translated.values())
+    return labels | {text: labels[label] for label, text in translated.items() if counts[text] == 1}
