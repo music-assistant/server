@@ -2361,8 +2361,16 @@ class LocalFileSystemProvider(MusicProvider):
         for file_path in deleted_files:
             if parse_cue_track_id(file_path) is not None and self.media_content_type == "music":
                 controller = self.mass.music.get_controller(MediaType.TRACK)
-            elif "." not in file_path:
+            elif not file_path:
+                # an empty id matches no single library item
                 continue
+            elif "." not in file_path:
+                # a folder path that an older scan stored as the id of the files below it
+                controller = self.mass.music.get_controller(
+                    MediaType.AUDIOBOOK
+                    if self.media_content_type == "audiobooks"
+                    else MediaType.TRACK
+                )
             else:
                 ext = file_path.rsplit(".", 1)[1].lower()
                 if ext in PODCAST_EPISODE_EXTENSIONS and self.media_content_type == "podcasts":
