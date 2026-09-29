@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from types import SimpleNamespace
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self, cast
 from unittest.mock import AsyncMock
 
 from music_assistant.providers.ai_radio.constants import (
@@ -18,6 +18,9 @@ from music_assistant.providers.ai_radio.rendering import (
     _parse_rss_articles,
     _rss_tokens_in,
 )
+
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
 
 # --- fixtures / sample documents -------------------------------------------------
 
@@ -183,11 +186,16 @@ class RssRenderer(AIRadioRenderMixin):
             assert self._response is not None
             return self._response
 
-        self.mass = SimpleNamespace(
-            cache=SimpleNamespace(
-                get=AsyncMock(side_effect=_cache_get), set=AsyncMock(side_effect=_cache_set)
+        # keep typed references so the awaited-assertions are visible to the type checker
+        self.cache_get: AsyncMock = AsyncMock(side_effect=_cache_get)
+        self.cache_set: AsyncMock = AsyncMock(side_effect=_cache_set)
+
+        self.mass = cast(
+            "MusicAssistant",
+            SimpleNamespace(
+                cache=SimpleNamespace(get=self.cache_get, set=self.cache_set),
+                http_session=SimpleNamespace(get=_session_get),
             ),
-            http_session=SimpleNamespace(get=_session_get),
         )
 
 
@@ -239,7 +247,7 @@ def test_fetch_feed_document_caches_and_reuses() -> None:
 
     first = asyncio.run(renderer._fetch_feed_document("https://a.example/feed"))
     assert "<rss" in first
-    renderer.mass.cache.set.assert_awaited_once()
+    renderer.cache_set.assert_awaited_once()
 
     # a second call should hit the cache (get returns the stored value) without erroring even if
     # the http layer would fail
@@ -255,7 +263,7 @@ def test_fetch_feed_document_non_200_returns_empty() -> None:
 
     result = asyncio.run(renderer._fetch_feed_document("https://a.example/feed"))
     assert result == ""
-    renderer.mass.cache.set.assert_not_awaited()
+    renderer.cache_set.assert_not_awaited()
 
 
 def test_fetch_feed_document_truncates_oversized_body() -> None:
