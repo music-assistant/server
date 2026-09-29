@@ -208,8 +208,6 @@ class CoreConfigMixin:
             self.set(conf_key, prev_config)
             self.save(immediate=True)
             raise
-        # reload succeeded; clear last_error and persist the final state
-        config.last_error = None
         # return full config
         return await self.get_core_config(domain)
 
