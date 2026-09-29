@@ -2040,6 +2040,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue.current_item = None
         # a stashed predecessor is meaningless once there is nothing left to transition into
         queue_data.pending_transition_anchor = None
+        queue_data.cached_selection_anchors = {}
         queue.elapsed_time = 0
         queue.elapsed_time_last_updated = time.time()
         queue.index_in_buffer = None

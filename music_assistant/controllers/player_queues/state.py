@@ -88,6 +88,11 @@ class PlayerQueueData:
     # (target queue_item_id, provider_instance, item_id) anchoring get_stream_details' folder
     # tiebreak across a manual next/previous, before its play_index resolves streamdetails
     pending_transition_anchor: tuple[str, str, str] | None = None
+    # queue_item_id -> anchor in effect when that item's current streamdetails were accepted.
+    # Lets get_stream_details tell a same-quality mapping cached as a fallback (its preferred
+    # candidate failed) apart from one that is genuinely outranked: only the latter is
+    # reselected, when the anchor recorded here no longer matches the current one.
+    cached_selection_anchors: dict[str, tuple[str, str] | None] = field(default_factory=dict)
     # set when the queue items changed since the last cache write; the debounced saver writes the
     # (heavier) items payload only when this is set
     items_cache_dirty: bool = False

@@ -442,6 +442,51 @@ async def test_cached_streamdetails_are_reselected_when_the_anchor_no_longer_pre
     assert streamdetails.item_id == same_folder_item_id
 
 
+async def test_cached_streamdetails_are_reused_when_the_anchor_is_unchanged() -> None:
+    """A mapping cached as a fallback (its preferred candidate failed) is not retried forever."""
+    fs_instance = "filesystem_local--main"
+    preferred_item_id = "Various Artists/Compilation Album/01 Track.flac"
+    fallback_item_id = "Original Artist/Original Album/07 Track.flac"
+    calls: list[str] = []
+
+    async def _by_item_id(item_id: str, media_type: MediaType) -> StreamDetails:
+        calls.append(item_id)
+        if item_id == preferred_item_id:
+            raise MediaNotFoundError(f"{item_id} unavailable")
+        return _streamdetails(item_id, media_type, fs_instance)
+
+    provider = MagicMock()
+    provider.get_stream_details = _by_item_id
+    audio = _audio({fs_instance: provider})
+    queue_item = _queue_item(
+        _mapping(fs_instance, item_id=fallback_item_id),
+        _mapping(fs_instance, item_id=preferred_item_id),
+    )
+    anchor_item = QueueItem(
+        queue_id="q1", queue_item_id="qi0", name="Anchor", duration=None, media_item=None
+    )
+    anchor_item.streamdetails = _streamdetails(
+        preferred_item_id, MediaType.SOUND_EFFECT, fs_instance
+    )
+    queue_data = MagicMock()
+    queue_data.queue.current_item = anchor_item
+    queue_data.items = [queue_item]
+    queue_data.cached_selection_anchors = {}
+    cast("MagicMock", audio.mass).player_queues.queue_data_or_none.return_value = queue_data
+
+    first = await audio.get_stream_details(queue_item=queue_item)
+
+    assert first.item_id == fallback_item_id
+    assert calls == [preferred_item_id, fallback_item_id]
+
+    # the preferred candidate is still the theoretical best (its folder matches the
+    # unchanged anchor) - it already failed once, and the anchor has not moved since
+    second = await audio.get_stream_details(queue_item=queue_item)
+
+    assert second.item_id == fallback_item_id
+    assert calls == [preferred_item_id, fallback_item_id]  # no repeat attempt on either
+
+
 def test_resolve_transition_anchor_ignores_a_stash_for_a_different_target() -> None:
     """A stash left over from an unrelated transition must not be reused as an anchor."""
     queue_item = _queue_item(_mapping(INSTANCE))

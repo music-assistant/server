@@ -3326,8 +3326,9 @@ class StreamsAudio:
         media_item = queue_item.media_item
         anchor: tuple[str, str] | None = None
         candidates: list[tuple[ProviderMapping, Provider]] = []
+        queue_data = mass.player_queues.queue_data_or_none(queue_item.queue_id)
         if media_item is not None:
-            if queue_data := mass.player_queues.queue_data_or_none(queue_item.queue_id):
+            if queue_data is not None:
                 anchor = self._resolve_transition_anchor(queue_data, queue_item)
             candidates = self._get_streamdetail_candidates(
                 media_item.provider_mappings,
@@ -3338,12 +3339,18 @@ class StreamsAudio:
             )
         # a cached mapping the anchor no longer prefers must not be reused just because it
         # has not expired yet (e.g. previous() back onto a track whose currently-playing
-        # neighbor has since changed folder). Gated on an anchor actually being present, so
-        # same-quality mappings that only ever tied arbitrarily are not churned for no reason.
-        # The live-buffer fast-seek path is exempt: tearing down an already-open buffer for a
-        # folder preference would cost far more than it is worth.
+        # neighbor has since changed folder). Only worth checking once the anchor itself has
+        # actually changed since this item's cache was accepted - a mapping cached as a
+        # fallback (its preferred candidate failed, not lost the tiebreak) always differs from
+        # the theoretical best, and would otherwise be retried on every single call. The
+        # live-buffer fast-seek path is exempt regardless: tearing down an already-open buffer
+        # for a folder preference would cost far more than it is worth.
+        anchor_changed = queue_data is not None and (
+            queue_data.cached_selection_anchors.get(queue_item.queue_item_id) != anchor
+        )
         cache_outranked = bool(
-            anchor is not None
+            anchor_changed
+            and anchor is not None
             and candidates
             and queue_item.streamdetails
             and (
@@ -3416,6 +3423,9 @@ class StreamsAudio:
                         self._update_hls_radio_metadata
                     )
                     streamdetails.stream_metadata_update_interval = 5
+
+        if queue_data is not None:
+            self._record_selection_anchor(queue_data, queue_item.queue_item_id, anchor)
 
         # providers report an unknown duration as either None or 0
         if not streamdetails.duration:
@@ -3721,6 +3731,29 @@ class StreamsAudio:
         ):
             return (current_streamdetails.provider, current_streamdetails.item_id)
         return None
+
+    @staticmethod
+    def _record_selection_anchor(
+        queue_data: PlayerQueueData, queue_item_id: str, anchor: tuple[str, str] | None
+    ) -> None:
+        """
+        Remember the anchor an item's current streamdetails were accepted under.
+
+        Consulted the next time that item's cache is considered for reuse, so a mapping
+        cached as a fallback (its preferred candidate failed, not lost the tiebreak) is not
+        retried on every later call just because it differs from the theoretical best - only
+        when the anchor itself has since changed. Entries for items no longer in the queue
+        are dropped here too, bounding the map to the queue's own size.
+
+        :param queue_data: The queue's server-side record.
+        :param queue_item_id: queue_item_id the streamdetails were accepted for.
+        :param anchor: (provider_instance, item_id) the acceptance was anchored on, or None.
+        """
+        current_ids = {item.queue_item_id for item in queue_data.items}
+        queue_data.cached_selection_anchors = {
+            k: v for k, v in queue_data.cached_selection_anchors.items() if k in current_ids
+        }
+        queue_data.cached_selection_anchors[queue_item_id] = anchor
 
     @staticmethod
     def _folder_affinity(mapping: ProviderMapping, anchor: tuple[str, str] | None) -> int:
