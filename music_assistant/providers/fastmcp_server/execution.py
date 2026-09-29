@@ -18,7 +18,7 @@ from fastmcp.exceptions import ToolError
 from mcp.shared.exceptions import McpError
 from mcp.types import INVALID_REQUEST, METHOD_NOT_FOUND
 from music_assistant_models.auth import AuthProviderType, Scope
-from music_assistant_models.errors import InsufficientPermissions
+from music_assistant_models.errors import InsufficientPermissions, UserNotFoundError
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from .audit import (
@@ -1417,8 +1417,8 @@ class DynamicAPIAdapter:
                 AuthProviderType.BUILTIN,
                 requested_user,
             )
-        except Exception as exc:
-            raise ToolError(f"Unable to impersonate requested user: {exc}") from exc
+        except (InsufficientPermissions, UserNotFoundError) as exc:
+            raise ToolError("Requested user was not found or is not permitted") from exc
         finally:
             for variable, token in reversed(context_tokens):
                 variable.reset(token)

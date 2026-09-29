@@ -21,6 +21,7 @@ from fastmcp.server.auth import AccessToken
 from music_assistant_models.auth import AuthProviderType, Scope
 from music_assistant_models.config_entries import ConfigActionResult, ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.errors import InsufficientPermissions, UserNotFoundError
 
 from music_assistant.providers.fastmcp_server import dynamic_serialization, meta_discovery
 from music_assistant.providers.fastmcp_server.capabilities import Capability
@@ -727,6 +728,43 @@ async def test_impersonation_resolves_a_builtin_ma_user(
 
     assert result is expected_user
     resolve.assert_awaited_once_with(adapter.mass, AuthProviderType.BUILTIN, "listener")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        UserNotFoundError("user 'db-row-17' missing in table auth_users"),
+        InsufficientPermissions("internal scope table mismatch"),
+    ],
+)
+async def test_impersonation_denials_do_not_echo_ma_error_text(
+    error: Exception, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Expected impersonation failures become a fixed message without MA's exception text."""
+    adapter = _real_adapter(_handler("music/search", lambda: None))
+    monkeypatch.setattr(
+        "music_assistant.controllers.webserver.helpers.auth_middleware.resolve_impersonated_user",
+        AsyncMock(side_effect=error),
+    )
+
+    with pytest.raises(ToolError) as exc_info:
+        await adapter._resolve_impersonated_user(None, "listener")
+
+    assert str(exc_info.value) == "Requested user was not found or is not permitted"
+
+
+async def test_unexpected_impersonation_failure_propagates_to_the_sanitizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unexpected lookup failures are not turned into a tool error carrying internal text."""
+    adapter = _real_adapter(_handler("music/search", lambda: None))
+    monkeypatch.setattr(
+        "music_assistant.controllers.webserver.helpers.auth_middleware.resolve_impersonated_user",
+        AsyncMock(side_effect=RuntimeError("sqlite3.OperationalError: database is locked")),
+    )
+
+    with pytest.raises(RuntimeError):
+        await adapter._resolve_impersonated_user(None, "listener")
 
 
 async def test_adapter_discovers_handler_and_compiles_schema() -> None:
@@ -2880,7 +2918,7 @@ async def test_impersonation_is_authorized_before_confirmation_and_execution() -
         side_effect=lambda identifier: caller if identifier == "u1" else target
     )
     adapter.mass.webserver.auth.get_user_by_username = AsyncMock(return_value=None)
-    with pytest.raises(ToolError, match=r"\[execution_failed\]"):
+    with pytest.raises(ToolError, match=r"\[not_found_or_forbidden\]"):
         await adapter.call(
             "ma_api:music/search",
             {"user": "u2"},
