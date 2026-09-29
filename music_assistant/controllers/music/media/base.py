@@ -1507,9 +1507,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "provider": provider_instance_id,
             },
         )
-        # cleanup audio analysis rows for the removed mapping(s)
+        # cleanup audio analysis rows for the removed mapping(s), keeping a domain-keyed
+        # row while another instance of that domain still maps the same item
         for prov_mapping in library_item.provider_mappings - remaining_mappings:
-            for prov_key in (prov_mapping.provider_domain, prov_mapping.provider_instance):
+            prov_keys = {prov_mapping.provider_instance}
+            if not any(
+                x.provider_domain == prov_mapping.provider_domain and x.item_id == provider_item_id
+                for x in remaining_mappings
+            ):
+                prov_keys.add(prov_mapping.provider_domain)
+            for prov_key in prov_keys:
                 await self.mass.music.database.delete(
                     DB_TABLE_AUDIO_ANALYSIS,
                     {
