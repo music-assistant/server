@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from copy import deepcopy
 from types import SimpleNamespace
@@ -1464,6 +1465,8 @@ async def test_flow_zero_audio_skip_restores_seek_position(
         extra_attributes={},
     )
     raw_seek_position = 12
+    skipped_ready = asyncio.Event()
+    skipped_ready.set()
     skipped_streamdetails = SimpleNamespace(
         audio_format=pcm_format,
         buffer=SimpleNamespace(
@@ -1471,7 +1474,7 @@ async def test_flow_zero_audio_skip_restores_seek_position(
             is_valid=lambda *_args: True,
             duration_available=16,
             eof=False,
-            ready=SimpleNamespace(is_set=lambda: True),
+            ready=skipped_ready,
         ),
         fade_in=False,
         stream_error=False,
