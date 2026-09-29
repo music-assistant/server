@@ -17,56 +17,7 @@
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns="http://www.w3.org/2000/svg"
    xmlns:svg="http://www.w3.org/2000/svg"><defs
-   id="defs2"><filter
-     style="color-interpolation-filters:sRGB;"
-     inkscape:label="Lightness-Contrast"
-     id="filter2"
-     x="0"
-     y="0"
-     width="1"
-     height="1"><feColorMatrix
-       values="0.21 0.72 0.072 0 0 0.21 0.72 0.072 0 0 0.21 0.72 0.072 0 0 0 0 0 1 0 "
-       id="feColorMatrix2"
-       result="fbSourceGraphic" /><feColorMatrix
-       result="fbSourceGraphicAlpha"
-       in="fbSourceGraphic"
-       values="0 0 0 -1 0 0 0 0 -1 0 0 0 0 -1 0 0 0 0 1 0"
-       id="feColorMatrix3" /><feColorMatrix
-       id="feColorMatrix4"
-       values="0.21 0.72 0.072 0 0 0.21 0.72 0.072 0 0 0.21 0.72 0.072 0 0 0 0 0 1 0 "
-       in="fbSourceGraphic"
-       result="fbSourceGraphic" /><feColorMatrix
-       result="fbSourceGraphicAlpha"
-       in="fbSourceGraphic"
-       values="0 0 0 -1 0 0 0 0 -1 0 0 0 0 -1 0 0 0 0 1 0"
-       id="feColorMatrix5" /><feColorMatrix
-       id="feColorMatrix6"
-       values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 -0.21 -0.72 -0.07 2 0 "
-       result="fbSourceGraphic"
-       in="fbSourceGraphic" /><feColorMatrix
-       result="fbSourceGraphicAlpha"
-       in="fbSourceGraphic"
-       values="0 0 0 -1 0 0 0 0 -1 0 0 0 0 -1 0 0 0 0 1 0"
-       id="feColorMatrix21" /><feColorMatrix
-       id="feColorMatrix22"
-       values="-1 0 0 0 1 0 -1 0 0 1 0 0 -1 0 1 -0.21 -0.72 -0.07 2 0 "
-       result="fbSourceGraphic"
-       in="fbSourceGraphic" /><feColorMatrix
-       result="fbSourceGraphicAlpha"
-       in="fbSourceGraphic"
-       values="0 0 0 -1 0 0 0 0 -1 0 0 0 0 -1 0 0 0 0 1 0"
-       id="feColorMatrix45" /><feColorMatrix
-       id="feColorMatrix46"
-       values="2.46417 0 0 0.717656 -0.732087 0 2.46417 0 0.717656 -0.732087 0 0 2.46417 0.717656 -0.732087 0 0 0 1 0"
-       in="fbSourceGraphic"
-       result="fbSourceGraphic" /><feColorMatrix
-       result="fbSourceGraphicAlpha"
-       in="fbSourceGraphic"
-       values="0 0 0 -1 0 0 0 0 -1 0 0 0 0 -1 0 0 0 0 1 0"
-       id="feColorMatrix47" /><feColorMatrix
-       id="feColorMatrix48"
-       values="2.46417 0 0 0.717656 -0.732087 0 2.46417 0 0.717656 -0.732087 0 0 2.46417 0.717656 -0.732087 0 0 0 1 0"
-       in="fbSourceGraphic" /></filter></defs><sodipodi:namedview
+   id="defs2" /><sodipodi:namedview
    id="namedview2"
    pagecolor="#ffffff"
    bordercolor="#000000"
@@ -86,8 +37,7 @@
    inkscape:current-layer="Livello_1" />
 <g
    id="XMLID_632_"
-   transform="matrix(1.7041812,0,0,1.7092152,0.50716881,0)"
-   style="filter:url(#filter2)">
+   transform="matrix(1.7041812,0,0,1.7092152,0.50716881,0)">
 	<linearGradient
    id="XMLID_2_"
    gradientUnits="userSpaceOnUse"
@@ -97,11 +47,11 @@
    y2="300">
 		<stop
    offset="0"
-   style="stop-color:#F452FF"
+   style="stop-color:#bababa"
    id="stop1" />
 		<stop
    offset="1"
-   style="stop-color:#832BC1"
+   style="stop-color:#9b9b9b"
    id="stop2" />
 	</linearGradient>
 	<path
