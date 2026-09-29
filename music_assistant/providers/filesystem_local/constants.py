@@ -34,10 +34,12 @@ CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
 )
 
 
+# the folder a new source is offered by default, where the caller may use it
+DEFAULT_MEDIA_FOLDER: Final[str] = "/media"
+
 CONF_ENTRY_PATH = ConfigEntry(
     key="path",
-    type=ConfigEntryType.STRING,
-    default_value="/media",
+    type=ConfigEntryType.FOLDER,
 )
 
 CONF_ENTRY_CONTENT_TYPE = ConfigEntry(
