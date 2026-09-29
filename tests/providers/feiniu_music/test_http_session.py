@@ -21,8 +21,8 @@ from music_assistant_models.enums import MediaType
 from yarl import URL
 
 from music_assistant.helpers import aiohttp_client
-from music_assistant.mass import MusicAssistant
 from music_assistant.helpers.throttle_retry import MAX_RETRY_AFTER
+from music_assistant.mass import MusicAssistant
 from music_assistant.providers.feiniu_music.client import (
     AuthenticationError,
     NetworkError,
@@ -59,7 +59,7 @@ class LoopbackResolver(AbstractResolver):
 
 
 @pytest.fixture
-async def http_environment(
+async def http_environment(  # noqa: PLR0915
     provider: Any, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ) -> AsyncGenerator[Any]:
     """Run real provider initialization against a cookie-setting loopback service."""
@@ -430,7 +430,7 @@ async def test_unload_cancels_delayed_and_queued_login(http_environment: Any) ->
 
 
 @pytest.mark.parametrize("ending", ["unload", "external_first", "unload_first", "unknown"])
-async def test_nested_operation_cancellation_ownership(
+async def test_nested_operation_cancellation_ownership(  # noqa: PLR0915
     http_environment: Any, monkeypatch: pytest.MonkeyPatch, ending: str
 ) -> None:
     """Nested scopes defer ownership to the outer exit and never consume external cancels."""
@@ -634,7 +634,9 @@ async def test_rate_limit_gates_all_request_paths(http_environment: Any, limited
 
 
 @pytest.mark.parametrize("header", [None, "invalid", "date", "999999"])
-async def test_retry_after_and_instance_isolation(http_environment: Any, header: str | None) -> None:
+async def test_retry_after_and_instance_isolation(
+    http_environment: Any, header: str | None
+) -> None:
     """Date/fallback/cap feed the same gate and backoff; another account stays usable."""
     env = http_environment
     first, second = env.make_provider("limited"), env.make_provider("sibling")
