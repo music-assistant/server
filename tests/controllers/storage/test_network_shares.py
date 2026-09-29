@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from functools import partial
@@ -514,6 +515,78 @@ async def test_failed_update_and_rollback(storage: StorageController, mounter: F
         "mount_failed",
     )
     assert storage.mass.config.get(f"{CONF_STORAGE_SHARES}/music")["server"] == "nas.local"
+
+
+async def test_rollback_is_available_right_away(
+    storage: StorageController,
+    mounter: FakeMounter,
+    probes: FakeProbes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Settings whose server does not answer are rolled back, and the share is usable at once.
+
+    The probe of the new mount did not answer; a fresh probe of the restored mount decides, so
+    the share does not wait for the age of the last answer to run out.
+    """
+    monkeypatch.setattr(controller_module, "PROBE_TIMEOUT", 0.3)
+    await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
+    silent = threading.Event()
+
+    def _hang_on_the_dead_server() -> None:
+        if (mounted := mounter.mounted.get("music")) is not None and mounted.server == "dead.local":
+            silent.wait(5)
+
+    probes.side_effects[MUSIC_PATH] = _hang_on_the_dead_server
+    try:
+        with pytest.raises(SetupFailedError) as exc_info:
+            await storage.update_network_share("music", "dead.local", "music")
+    finally:
+        silent.set()
+
+    assert exc_info.value.translation_key == "share_not_mounted"
+    assert [call[:2] for call in mounter.calls[-2:]] == [
+        ("update", "music"),
+        ("update", "music"),
+    ]
+    assert storage.mass.config.get(f"{CONF_STORAGE_SHARES}/music")["server"] == "nas.local"
+    location = storage.get_location_for_path(MUSIC_PATH)
+    assert location is not None
+    assert (location.server, location.available, location.error) == ("nas.local", True, None)
+
+
+@pytest.mark.usefixtures("mounter")
+async def test_rollback_that_does_not_answer_either(
+    storage: StorageController, probes: FakeProbes, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A restored mount that does not answer either leaves the share unavailable, saying so."""
+    await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
+    probes.results[MUSIC_PATH] = None
+
+    with caplog.at_level(logging.WARNING), pytest.raises(SetupFailedError):
+        await storage.update_network_share("music", "nas2.local", "music")
+
+    location = storage.get_location_for_path(MUSIC_PATH)
+    assert location is not None
+    assert (location.server, location.available, location.error_key) == (
+        "nas.local",
+        False,
+        "share_not_mounted",
+    )
+    assert "Unable to mount network share music with its previous settings" in caplog.text
+
+
+async def test_successful_update_is_verified_once(
+    storage: StorageController, mounter: FakeMounter, probes: FakeProbes
+) -> None:
+    """Settings that mount are probed once, no rollback in sight."""
+    await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
+    probes.calls.clear()
+
+    await storage.update_network_share("music", "nas2.local", "music")
+
+    assert probes.calls == [MUSIC_PATH]
+    assert mounter.calls[-1][:2] == ("update", "music")
 
 
 @pytest.mark.usefixtures("mounter")

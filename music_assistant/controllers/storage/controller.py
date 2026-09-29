@@ -1148,11 +1148,16 @@ class StorageController(CoreController):
         """
         Mount a network share with its previous settings again, as far as possible.
 
+        The share only counts as restored once a fresh probe finds it mounted.
+
         :param operation: The operation of the backend that mounts the share again.
         :param spec: The share with its previous settings.
         """
         try:
             await operation(spec, self._get_password(spec))
+            # the last probe of the path went to the settings that did not mount
+            if not await self._is_share_mounted(spec):
+                raise self._share_not_mounted(spec)
         except Exception as err:
             self.logger.warning(
                 "Unable to mount network share %s with its previous settings: %s", spec.name, err
