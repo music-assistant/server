@@ -12,6 +12,7 @@
     "folder_not_found": "The folder {0} does not exist.",
     "folder_unreadable": "The folder {0} can not be read right now.",
     "folder_missing": "This folder does not exist.",
+    "folder_not_mounted": "The drive or share of this folder is not mounted.",
     "storage_not_responding": "The storage of this location does not respond. Check that the drive is connected, or that the server of the network share is online.",
     "folder_not_registered": "This folder was not added as a storage location.",
     "location_in_use": "The music source {0} uses this folder. Remove that music source first.",

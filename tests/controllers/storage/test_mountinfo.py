@@ -9,6 +9,7 @@ import pytest
 from music_assistant.controllers.storage.backends import mountinfo
 from music_assistant.controllers.storage.backends.mountinfo import (
     MediaMount,
+    find_mount,
     parse_mountinfo,
     parse_mountpoints,
     read_mountinfo,
@@ -273,6 +274,44 @@ def test_dormant_automount_trigger_is_no_mount() -> None:
     assert "/media/nas" not in dormant
     assert "/media/nas" in woken
     assert "/media/archive" not in parse_mountpoints(_fixture("haos_addon"))
+
+
+def test_find_mount_ignores_the_discovery_filters() -> None:
+    """A mount below a system path, or of a type discovery leaves out, is found on its path."""
+    table = "\n".join(
+        (
+            _line("/", "ext4"),
+            _line("/var/mnt/nas", "cifs"),
+            _line("/srv/ceph", "ceph", options="ro,relatime"),
+        )
+    )
+
+    assert _parse(table) == {}
+    assert find_mount(table, "/var/mnt/nas", StorageKind.MANUAL) == MediaMount(
+        "/var/mnt/nas", "cifs", read_only=False, kind=StorageKind.MANUAL
+    )
+    assert find_mount(table, "/srv/ceph", StorageKind.MANUAL) == MediaMount(
+        "/srv/ceph", "ceph", read_only=True, kind=StorageKind.MANUAL
+    )
+    # only a mount on exactly the path counts
+    assert find_mount(table, "/var/mnt", StorageKind.MANUAL) is None
+    assert find_mount(table, "/var/mnt/nas/music", StorageKind.MANUAL) is None
+    assert find_mount("", "/var/mnt/nas", StorageKind.MANUAL) is None
+
+
+def test_find_mount_returns_a_dormant_trigger() -> None:
+    """A mount only behind its automount trigger is found as the trigger until it is woken."""
+    trigger = _line("/var/mnt/nas", "autofs")
+
+    dormant = find_mount(trigger, "/var/mnt/nas", StorageKind.MANUAL)
+    woken = find_mount(
+        "\n".join((trigger, _line("/var/mnt/nas", "cifs"))), "/var/mnt/nas", StorageKind.MANUAL
+    )
+
+    assert dormant is not None
+    assert dormant.fstype == "autofs"
+    assert woken is not None
+    assert woken.fstype == "cifs"
 
 
 def test_no_mount_table_outside_linux(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
