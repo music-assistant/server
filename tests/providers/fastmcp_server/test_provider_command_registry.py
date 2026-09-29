@@ -1120,3 +1120,151 @@ def test_stop_attempts_all_unregistrations_then_raises_first_error() -> None:
     assert mass.handlers == {}
     assert mass.unsubscribed == 1
     command_set.stop()
+
+
+def _filtered_member() -> User:
+    return User(
+        user_id="u2",
+        username="member",
+        role=UserRole.USER,
+        enabled=True,
+        player_filter=["kitchen"],
+        provider_filter=["spotify--user"],
+    )
+
+
+def _filtered_mass() -> CommandRegistry:
+    mass = CommandRegistry()
+    players = [SimpleNamespace(player_id="kitchen"), SimpleNamespace(player_id="bedroom")]
+    queues = [SimpleNamespace(queue_id="kitchen"), SimpleNamespace(queue_id="bedroom")]
+    cast("Any", mass).players = SimpleNamespace(all=lambda: players)
+    cast("Any", mass).player_queues = SimpleNamespace(all=lambda: queues)
+    cast("Any", mass).providers = [
+        SimpleNamespace(
+            instance_id="spotify--user",
+            domain="spotify",
+            name="Spotify",
+            available=False,
+            enabled=True,
+            last_error="token expired",
+        ),
+        SimpleNamespace(
+            instance_id="qobuz--other",
+            domain="qobuz",
+            name="Qobuz of someone else",
+            available=False,
+            enabled=True,
+            last_error="login failed for other@example.org",
+        ),
+    ]
+    return mass
+
+
+def _start_debug_set(
+    mass: CommandRegistry, monkeypatch: pytest.MonkeyPatch, user: User, *caps: Capability
+) -> ProviderCommandSet:
+    policy = policy_snapshot(PolicyProfile.CUSTOM, dict.fromkeys(caps, PolicyMode.ALLOW))
+    command_set = ProviderCommandSet(mass, _config(*caps), policy_provider=lambda _bearer: policy)
+    command_set.start()
+    monkeypatch.setattr(authorization, "has_scope", lambda _user, _scope: True, raising=False)
+    monkeypatch.setattr(authorization, "get_current_user", lambda: user)
+    monkeypatch.setattr(authorization, "get_current_token", lambda: "request-token")
+    return command_set
+
+
+async def test_recent_events_hide_objects_outside_a_members_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A filtered member only sees events attributable to their own players and providers."""
+    mass = _filtered_mass()
+    _start_debug_set(mass, monkeypatch, _filtered_member(), Capability.DEBUG_EVENTS)
+    for object_id in (
+        "kitchen",
+        "bedroom",
+        "spotify--user",
+        "qobuz--other",
+        "spotify--user://track/1",
+        "qobuz--other://track/2",
+        None,
+        "unknown-thing",
+    ):
+        for subscriber in mass.subscribers:
+            subscriber(SimpleNamespace(event="player_updated", object_id=object_id, data={}))
+
+    snapshot = await mass.handlers["fastmcp/debug/recent_events"](limit=100)
+
+    assert [event.object_id for event in snapshot.events] == [
+        "kitchen",
+        "spotify--user",
+        "spotify--user://track/1",
+    ]
+
+
+async def test_recent_events_filter_before_applying_the_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hidden events do not consume the requested limit."""
+    mass = _filtered_mass()
+    _start_debug_set(mass, monkeypatch, _filtered_member(), Capability.DEBUG_EVENTS)
+    for object_id in ("kitchen", "bedroom", "bedroom"):
+        for subscriber in mass.subscribers:
+            subscriber(SimpleNamespace(event="player_updated", object_id=object_id, data={}))
+
+    snapshot = await mass.handlers["fastmcp/debug/recent_events"](limit=1)
+
+    assert [event.object_id for event in snapshot.events] == ["kitchen"]
+
+
+async def test_recent_events_are_unfiltered_for_admins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Admins keep the full event buffer."""
+    mass = _filtered_mass()
+    _start_debug_set(mass, monkeypatch, _user(UserRole.ADMIN), Capability.DEBUG_EVENTS)
+    for object_id in ("kitchen", "bedroom", None):
+        for subscriber in mass.subscribers:
+            subscriber(SimpleNamespace(event="player_updated", object_id=object_id, data={}))
+
+    snapshot = await mass.handlers["fastmcp/debug/recent_events"](limit=100)
+
+    assert [event.object_id for event in snapshot.events] == ["kitchen", "bedroom", None]
+
+
+async def test_health_only_summarizes_a_members_visible_providers_and_queues(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hidden providers and queues are not counted, named, or reported with errors."""
+    mass = _filtered_mass()
+    _start_debug_set(mass, monkeypatch, _filtered_member(), Capability.DEBUG_PROVIDERS)
+
+    summary = await mass.handlers["fastmcp/debug/health"]()
+
+    assert [error.instance_id for error in summary.providers_error_details] == ["spotify--user"]
+    assert summary.providers_error == 1
+    assert summary.queues_total == 1
+    assert "qobuz" not in repr(summary)
+
+
+@pytest.mark.parametrize("command", ["fastmcp/debug/tail_log", "fastmcp/debug/log_stats"])
+async def test_global_logs_are_denied_to_filtered_members(
+    command: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Global log lines cannot be scoped per user, so filtered members are refused and audited."""
+    records: list[Any] = []
+    mass = _filtered_mass()
+    policy = policy_snapshot(PolicyProfile.CUSTOM, {Capability.DEBUG_LOGS: PolicyMode.ALLOW})
+    command_set = ProviderCommandSet(
+        mass,
+        _config(Capability.DEBUG_LOGS),
+        policy_provider=lambda _bearer: policy,
+        audit_sink=records.append,
+    )
+    command_set.start()
+    monkeypatch.setattr(authorization, "has_scope", lambda _user, _scope: True, raising=False)
+    monkeypatch.setattr(authorization, "get_current_user", _filtered_member)
+    monkeypatch.setattr(authorization, "get_current_token", lambda: "request-token")
+
+    with pytest.raises(InsufficientPermissions):
+        await mass.handlers[command]()
+
+    assert [record.outcome for record in records] == ["authorization.denied"]

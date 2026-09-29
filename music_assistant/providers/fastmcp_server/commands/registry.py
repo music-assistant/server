@@ -34,6 +34,12 @@ from ..models import (
     RouteList,
 )
 from ..policy_config import policy_event_buffer_enabled
+from ..target_filters import (
+    event_object_visible,
+    provider_visible,
+    queue_visible,
+    user_has_target_filters,
+)
 from . import authorization, debug, queue
 from .authorization import authorize_extension
 
@@ -215,6 +221,8 @@ class ProviderCommandSet:
         scope: str,
         capability: Capability,
         arguments: dict[str, object] | None = None,
+        *,
+        deny_target_filtered: bool = False,
     ) -> _ProviderAuditContext:
         """Authorize one provider command and audit a controlled denial."""
         from ..policy import PolicyMode  # noqa: PLC0415
@@ -245,6 +253,11 @@ class ProviderCommandSet:
                 arguments=arguments,
                 mass=self._mass,
             )
+            if deny_target_filtered and user_has_target_filters(user):
+                raise InsufficientPermissions(
+                    "Server-wide diagnostics are not available to users with player "
+                    "or provider filters"
+                )
         except AuthenticationRequired, InsufficientPermissions:
             self._emit_audit(context, "authorization.denied")
             raise
@@ -329,7 +342,12 @@ class ProviderCommandSet:
             before: str | None = None,
             name: str = "musicassistant.log",
         ) -> LogTailResult:
-            audit = self._guard("fastmcp/debug/tail_log", "system.read", Capability.DEBUG_LOGS)
+            audit = self._guard(
+                "fastmcp/debug/tail_log",
+                "system.read",
+                Capability.DEBUG_LOGS,
+                deny_target_filtered=True,
+            )
             return await self._execute_audited(
                 audit,
                 debug.tail_log(
@@ -348,7 +366,12 @@ class ProviderCommandSet:
             since_seconds: int | None = None,
             name: str = "musicassistant.log",
         ) -> LogStatsResult:
-            audit = self._guard("fastmcp/debug/log_stats", "system.read", Capability.DEBUG_LOGS)
+            audit = self._guard(
+                "fastmcp/debug/log_stats",
+                "system.read",
+                Capability.DEBUG_LOGS,
+                deny_target_filtered=True,
+            )
             return await self._execute_audited(
                 audit,
                 debug.log_stats(self._mass, since_seconds=since_seconds, name=name),
@@ -363,6 +386,7 @@ class ProviderCommandSet:
             audit = self._guard(
                 "fastmcp/debug/recent_events", "system.read", Capability.DEBUG_EVENTS
             )
+            user = authorization.current_user()
             return await self._execute_audited(
                 audit,
                 debug.recent_events(
@@ -371,6 +395,7 @@ class ProviderCommandSet:
                     event_types=event_types,
                     id_filter=id_filter,
                     since_seconds=since_seconds,
+                    visible=lambda record: event_object_visible(self._mass, user, record.object_id),
                 ),
             )
 
@@ -382,6 +407,7 @@ class ProviderCommandSet:
 
         async def health() -> HealthSummary:
             audit = self._guard("fastmcp/debug/health", "system.read", Capability.DEBUG_PROVIDERS)
+            user = authorization.current_user()
             runtime_diagnostics = self._runtime_diagnostics()
             return await self._execute_audited(
                 audit,
@@ -395,6 +421,8 @@ class ProviderCommandSet:
                     token_resolution_failures=int(
                         runtime_diagnostics.get("token_resolution_failures", 0)
                     ),
+                    provider_visible=lambda provider: provider_visible(user, provider),
+                    queue_visible=lambda queue: queue_visible(user, queue),
                 ),
             )
 

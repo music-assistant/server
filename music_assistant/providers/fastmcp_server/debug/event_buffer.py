@@ -22,6 +22,8 @@ from ..dynamic_serialization import bounded_json_value
 from ..models import EventBufferStats, EventRecord
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from music_assistant.mass import MusicAssistant
 
 
@@ -84,8 +86,17 @@ class EventBuffer:
         event_types: list[str] | None = None,
         id_filter: str | None = None,
         since_seconds: int | None = None,
+        visible: Callable[[EventRecord], bool] | None = None,
     ) -> list[EventRecord]:
-        """Return a filtered copy of the buffer, newest last."""
+        """
+        Return a filtered copy of the buffer, newest last.
+
+        :param limit: Maximum number of records to return.
+        :param event_types: Optional event types to keep.
+        :param id_filter: Optional exact object id to keep.
+        :param since_seconds: Optional maximum record age in seconds.
+        :param visible: Optional predicate hiding records from the caller before the limit.
+        """
         limit = max(1, min(int(limit), 1000))
         now = _now()
         type_set = set(event_types) if event_types else None
@@ -102,6 +113,8 @@ class EventBuffer:
                     continue
                 if (now - when).total_seconds() > since_seconds:
                     continue
+            if visible is not None and not visible(record):
+                continue
             results.append(record)
         return results[-limit:]
 

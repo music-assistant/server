@@ -218,6 +218,75 @@ def filter_collection_result(user: Any, command: str, result: Any) -> Any:
     return _filter_rows(result, allowed, rule.row_attributes)
 
 
+def user_has_target_filters(user: Any) -> bool:
+    """
+    Return whether a non-admin user is restricted by a player or provider filter.
+
+    :param user: Authenticated Music Assistant user, or None.
+    """
+    if user is None or str(getattr(user, "role", "")).casefold() == "admin":
+        return False
+    return (
+        _allowed_values(getattr(user, "player_filter", None)) is not None
+        or _allowed_values(getattr(user, "provider_filter", None)) is not None
+    )
+
+
+def event_object_visible(mass: Any, user: Any, object_id: str | None) -> bool:
+    """
+    Return whether an event about ``object_id`` may be shown to ``user``.
+
+    Events that cannot be attributed to a known player, queue, provider, or
+    provider reference are hidden from filtered users.
+
+    :param mass: Music Assistant instance used to classify the object id.
+    :param user: Authenticated Music Assistant user, or None.
+    :param object_id: Object id carried by the event.
+    """
+    if not user_has_target_filters(user):
+        return True
+    if not object_id:
+        return False
+    players = _allowed_values(getattr(user, "player_filter", None))
+    providers = _allowed_values(getattr(user, "provider_filter", None))
+    if object_id in _known_player_ids(mass):
+        return players is None or object_id in players
+    if object_id in _known_provider_ids(mass):
+        return providers is None or object_id in providers
+    if "://" not in object_id and object_id.count(":") != 2:
+        return False
+    references = _reference_provider_ids(object_id)
+    if not references:
+        return False
+    return providers is None or references <= providers | _INTERNAL_MUSIC_TARGETS
+
+
+def provider_visible(user: Any, provider: Any) -> bool:
+    """
+    Return whether a provider instance may be summarized for ``user``.
+
+    :param user: Authenticated Music Assistant user, or None.
+    :param provider: Provider instance with an ``instance_id``.
+    """
+    if not user_has_target_filters(user):
+        return True
+    providers = _allowed_values(getattr(user, "provider_filter", None))
+    return providers is None or str(getattr(provider, "instance_id", "")) in providers
+
+
+def queue_visible(user: Any, queue: Any) -> bool:
+    """
+    Return whether a player queue may be summarized for ``user``.
+
+    :param user: Authenticated Music Assistant user, or None.
+    :param queue: Player queue with a ``queue_id``.
+    """
+    if not user_has_target_filters(user):
+        return True
+    players = _allowed_values(getattr(user, "player_filter", None))
+    return players is None or str(getattr(queue, "queue_id", "")) in players
+
+
 _PLAYER_KINDS = frozenset({TargetKind.PLAYER, TargetKind.PLAYERS})
 _SEQUENCE_KINDS = frozenset({TargetKind.PLAYERS, TargetKind.MUSIC_PROVIDERS})
 _REFERENCE_KINDS = frozenset({TargetKind.MUSIC_REFERENCE, TargetKind.MUSIC_REFERENCES})
@@ -350,3 +419,26 @@ def _enforce_music_providers(mass: Any, requested: set[str], configured: Any) ->
             or str(getattr(provider, "instance_id", "")) not in allowed
         ):
             raise InsufficientPermissions("Command target is not permitted for the current user")
+
+
+def _known_player_ids(mass: Any) -> set[str]:
+    """Return live player and queue ids, or an empty set when unavailable."""
+    ids: set[str] = set()
+    for controller, attribute in (("players", "player_id"), ("player_queues", "queue_id")):
+        try:
+            items = list(getattr(mass, controller).all())
+        except AttributeError, TypeError:
+            continue
+        ids.update(str(value) for item in items if (value := getattr(item, attribute, None)))
+    return ids
+
+
+def _known_provider_ids(mass: Any) -> set[str]:
+    """Return live provider instance ids, or an empty set when unavailable."""
+    try:
+        providers = list(getattr(mass, "providers", None) or ())
+    except TypeError:
+        return set()
+    return {
+        str(value) for provider in providers if (value := getattr(provider, "instance_id", None))
+    }

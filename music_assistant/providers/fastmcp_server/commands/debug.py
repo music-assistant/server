@@ -15,6 +15,7 @@ from ..debug.event_buffer import EventBuffer
 from ..debug.log_reader import SafeLogTail
 from ..models import (
     EventBufferStats,
+    EventRecord,
     EventSnapshot,
     HealthSummary,
     LogStatsResult,
@@ -72,6 +73,7 @@ async def recent_events(
     event_types: list[str] | None = None,
     id_filter: str | None = None,
     since_seconds: int | None = None,
+    visible: Callable[[EventRecord], bool] | None = None,
 ) -> EventSnapshot:
     """Return a bounded snapshot of the optional event ring buffer."""
     if buffer is None:
@@ -83,6 +85,7 @@ async def recent_events(
             event_types=event_types,
             id_filter=id_filter,
             since_seconds=since_seconds,
+            visible=visible,
         ),
         buffer_capacity=stats.capacity,
         total_seen=stats.total_seen,
@@ -112,9 +115,15 @@ async def health(
     policy_schema_version: int = 2,
     policy_profile: str = "Safe queries",
     token_resolution_failures: int = 0,
+    provider_visible: Callable[[Any], bool] | None = None,
+    queue_visible: Callable[[Any], bool] | None = None,
 ) -> HealthSummary:
     """Roll up provider, queue, event, and permitted log diagnostics."""
-    providers = list(getattr(mass, "providers", []))
+    providers = [
+        provider
+        for provider in getattr(mass, "providers", [])
+        if provider_visible is None or provider_visible(provider)
+    ]
     loaded = sum(1 for provider in providers if getattr(provider, "available", False))
     disabled = sum(1 for provider in providers if not getattr(provider, "enabled", True))
     errors = [
@@ -130,7 +139,11 @@ async def health(
         if getattr(provider, "last_error", None)
     ]
     try:
-        queues = list(mass.player_queues.all())
+        queues = [
+            queue
+            for queue in mass.player_queues.all()
+            if queue_visible is None or queue_visible(queue)
+        ]
     except AttributeError, TypeError:
         queues = []
     disabled_capabilities: list[str] = []
