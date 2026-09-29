@@ -70,6 +70,7 @@ from music_assistant.controllers.storage.constants import (
     RECONCILE_TASK_ID,
     REFRESH_INTERVAL,
     REFRESH_TASK_ID,
+    SHARE_STATES_TIMEOUT,
     SHARES_DOCS_URL,
     SHARES_SETUP_TASK_ID,
 )
@@ -182,6 +183,8 @@ class StorageController(CoreController):
         if manages_all_sources:
             # the used space is only shown on the data and cache rows these callers see
             self._request_dir_sizes()
+            # a share may have been changed in Home Assistant since it was last looked at
+            await self._refresh_share_states()
         # a drive or share mounted since the last refresh shows up right away
         await self.refresh()
         await self._probe_outdated(loc.path for loc in self.get_locations(manages_all_sources))
@@ -990,6 +993,30 @@ class StorageController(CoreController):
                 self._share_errors[spec.name] = _as_share_error(err)
             else:
                 self._share_errors.pop(spec.name, None)
+
+    async def _refresh_share_states(self) -> None:
+        """Note which managed shares had their mount changed into another share, changing nothing."""
+        if self._shares_lock.locked():
+            # a share command is at work: the states are known again when it is done
+            return
+        async with self._shares_lock:
+            shares = list(self._get_shares().values())
+            for backend, mounter in self._mounters.items():
+                if not (specs := [spec for spec in shares if spec.backend == backend]):
+                    continue
+                try:
+                    async with asyncio.timeout(SHARE_STATES_TIMEOUT):
+                        states = await mounter.get_states(specs)
+                except Exception as err:
+                    self.logger.debug(
+                        "Unable to check the network shares mounted by %s: %s", backend, err
+                    )
+                    continue
+                for spec in specs:
+                    if states.get(spec.name) == ShareState.CHANGED:
+                        self._changed_shares.add(spec.name)
+                    else:
+                        self._changed_shares.discard(spec.name)
 
     async def _check_share(self, mounter: ShareMounter, spec: NetworkShareSpec) -> NetworkShareSpec:
         """

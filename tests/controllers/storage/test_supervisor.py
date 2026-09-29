@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.errors import ActionUnavailable, InvalidDataError, SetupFailedError
 
 from music_assistant.constants import CONF_STORAGE_SHARES
 from music_assistant.controllers.storage import StorageController, StorageKind
+from music_assistant.controllers.storage import controller as controller_module
 from music_assistant.controllers.storage.backends.base import BackendUnavailable
 from music_assistant.controllers.storage.backends.supervisor import create_supervisor_mounter
 from music_assistant.controllers.storage.models import MountBackend, NetworkShareSpec, ShareType
+from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from tests.controllers.storage.conftest import FakeBackends, FakeMounter, FakeSupervisor
 
 pytestmark = pytest.mark.usefixtures("probes")
@@ -691,6 +695,81 @@ async def test_changed_mount_is_not_forgotten_while_in_use(
 
     assert exc_info.value.translation_key == "location_in_use"
     assert "music" in storage.mass.config.get(CONF_STORAGE_SHARES)
+
+
+async def test_info_notes_a_mount_changed_in_home_assistant(
+    storage: StorageController, ready: FakeSupervisor
+) -> None:
+    """Opening the storage page shows a share edited in Home Assistant meanwhile, and back again."""
+    await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
+    ready.mounts["music"]["server"] = "nas2.local"
+    ready.requests.clear()
+
+    info = await storage.get_info()
+
+    location = next(loc for loc in info.locations if loc.path == ready.path("music"))
+    assert (location.available, location.error_key) == (False, "share_changed")
+    assert _mutations(ready) == []
+    ready.mounts["music"]["server"] = "NAS.local"
+    location = next(
+        loc for loc in (await storage.get_info()).locations if loc.path == ready.path("music")
+    )
+    assert (location.available, location.error) == (True, None)
+
+
+async def test_member_info_does_not_ask_the_supervisor(
+    storage: StorageController, ready: FakeSupervisor
+) -> None:
+    """A caller that does not manage every source makes the server ask the Supervisor nothing."""
+    await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
+    ready.mounts["music"]["server"] = "nas2.local"
+    ready.requests.clear()
+    set_current_user(User(user_id="member", username="member", role=UserRole.USER))
+
+    info = await storage.get_info()
+
+    assert ready.requests == []
+    location = next(loc for loc in info.locations if loc.path == ready.path("music"))
+    assert (location.available, location.error) == (True, None)
+
+
+@pytest.mark.parametrize("trouble", ["failing", "slow", "busy"])
+async def test_info_while_the_share_states_are_unknown(
+    storage: StorageController,
+    ready: FakeSupervisor,
+    monkeypatch: pytest.MonkeyPatch,
+    trouble: str,
+) -> None:
+    """
+    A Supervisor that fails or is slow, or a share command at work, leaves the list as it was.
+
+    The info still answers, and quickly.
+    """
+    monkeypatch.setattr(controller_module, "SHARE_STATES_TIMEOUT", 0.2)
+    _store(storage, ready, "music")
+    _store(storage, ready, "movies")
+    ready.add_mount("music", type="cifs", server="nas.local", share="music")
+    ready.add_mount("movies", type="cifs", server="nas2.local", share="movies")
+    await storage.reconcile()
+    # edited back and forth in Home Assistant: the info can not know
+    ready.mounts["music"]["server"] = "nas2.local"
+    ready.mounts["movies"]["server"] = "nas.local"
+    if trouble == "failing":
+        ready.refuse_access = True
+    elif trouble == "slow":
+        ready.list_delay = 1
+
+    started = time.monotonic()
+    if trouble == "busy":
+        async with storage._shares_lock:
+            info = await storage.get_info()
+    else:
+        info = await storage.get_info()
+
+    assert time.monotonic() - started < 0.8
+    by_name = {loc.share_name: loc for loc in info.locations if loc.share_name}
+    assert (by_name["music"].available, by_name["music"].error) == (True, None)
+    assert (by_name["movies"].available, by_name["movies"].error_key) == (False, "share_changed")
 
 
 async def test_mount_that_only_differs_in_case_is_the_same_share(

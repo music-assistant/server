@@ -18,6 +18,8 @@ DIR_SIZES_TASK_ID: Final[str] = "storage_dir_sizes"
 MAX_LISTED_FOLDERS: Final[int] = 500
 SHARES_SETUP_TASK_ID: Final[str] = "storage_shares_setup"
 RECONCILE_TASK_ID: Final[str] = "storage_shares_reconcile"
+# how long the storage info waits for a mount backend to say which shares it still has
+SHARE_STATES_TIMEOUT: Final[float] = 3
 # the namespace the translated strings of the storage controller resolve under
 TRANSLATION_OWNER: Final[str] = "core.storage"
 # where the documentation explains how to make a network share available to Music Assistant

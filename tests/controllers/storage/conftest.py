@@ -430,6 +430,8 @@ class FakeSupervisor:
         self.dormant: set[str] = set()
         # mounts the Supervisor fails to remove
         self.stuck: set[str] = set()
+        # how long the Supervisor takes to list its mounts, in seconds
+        self.list_delay = 0.0
         self.app = web.Application(middlewares=[self._security])
         self.app.router.add_get("/mounts", self._list)
         self.app.router.add_post("/mounts", self._create)
@@ -470,6 +472,7 @@ class FakeSupervisor:
 
     async def _list(self, _request: web.Request) -> web.Response:
         """List the mounts without their credentials."""
+        await asyncio.sleep(self.list_delay)
         mounts = [
             {key: value for key, value in mount.items() if key not in ("username", "password")}
             | {"state": "active", "user_path": f"/media/{name}"}
