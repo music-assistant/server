@@ -299,6 +299,7 @@ def test_parse_nfo_root_returns_none_for_malformed_content(data: bytes, root_tag
         ("/media/music", "Artist/a.flac", "Artist/a.flac"),
         # a folder name that starts with the name of the base folder
         ("/media", "/media/Music/mediaeval/a.flac", "Music/mediaeval/a.flac"),
+        ("/media", "/media/mediaeval/a.flac", "mediaeval/a.flac"),
         # a folder that holds a copy of the base path, e.g. a backup
         ("/media/music", "/media/music/backup/media/music/a.flac", "backup/media/music/a.flac"),
         # a sibling folder that only starts with the same text is outside the base

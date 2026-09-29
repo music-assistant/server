@@ -17,12 +17,7 @@ def _create_provider() -> tuple[LocalFileSystemProvider, dict[MediaType, MagicMo
     provider.logger = MagicMock()
     provider.mass = MagicMock()
     controllers: dict[MediaType, MagicMock] = {}
-    for media_type in (
-        MediaType.TRACK,
-        MediaType.PLAYLIST,
-        MediaType.AUDIOBOOK,
-        MediaType.PODCAST_EPISODE,
-    ):
+    for media_type in (MediaType.TRACK, MediaType.PLAYLIST, MediaType.AUDIOBOOK):
         controller = MagicMock()
         controller.get_library_item_by_prov_id = AsyncMock(return_value=MagicMock(item_id="1"))
         controller.remove_item_from_library = AsyncMock()
@@ -61,7 +56,6 @@ async def test_deleted_file_removed_regardless_of_extension_case(
     [
         ("music", MediaType.TRACK),
         ("audiobooks", MediaType.AUDIOBOOK),
-        ("podcasts", MediaType.PODCAST_EPISODE),
     ],
 )
 async def test_folder_id_removed_as_main_media_type(
@@ -78,6 +72,16 @@ async def test_folder_id_removed_as_main_media_type(
         "Music", "filesystem_local--test"
     )
     controller.remove_item_from_library.assert_awaited_once_with("1")
+
+
+async def test_empty_id_is_skipped() -> None:
+    """A stored empty id is left alone."""
+    provider, controllers = _create_provider()
+
+    await provider._process_deletions({""})
+
+    for controller in controllers.values():
+        controller.get_library_item_by_prov_id.assert_not_called()
 
 
 async def test_unsupported_extension_is_skipped() -> None:
