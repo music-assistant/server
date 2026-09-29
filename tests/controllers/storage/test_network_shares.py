@@ -44,6 +44,7 @@ from music_assistant.controllers.storage.models import (
 from music_assistant.controllers.translations import TranslationController
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.helpers.json import json_dumps
+from tests.common import capture_log_records
 from tests.controllers.storage.conftest import (
     FakeBackends,
     FakeMounter,
@@ -86,6 +87,17 @@ def _store(
     )
     storage.mass.config.set(f"{CONF_STORAGE_SHARES}/{name}", spec.to_dict())
     return spec
+
+
+def _logged(records: list[logging.LogRecord], level: int, text: str) -> bool:
+    """
+    Return whether a captured record of a level holds a text.
+
+    :param records: The captured records.
+    :param level: The level of the record.
+    :param text: The text the message of the record holds.
+    """
+    return any(record.levelno == level and text in record.getMessage() for record in records)
 
 
 def _source(base_path: str) -> MagicMock:
@@ -299,20 +311,19 @@ async def test_undo_that_fails_keeps_the_reason(
     storage: StorageController,
     mounter: FakeMounter,
     probes: FakeProbes,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A mount that can not be undone is logged; the caller still learns why the share failed."""
     probes.results[MUSIC_PATH] = None
 
     with (
-        caplog.at_level(logging.WARNING),
+        capture_log_records(storage.logger) as records,
         patch.object(mounter, "remove", AsyncMock(side_effect=OSError("busy"))),
         pytest.raises(SetupFailedError) as exc_info,
     ):
         await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
 
     assert exc_info.value.translation_key == "share_not_mounted"
-    assert "Unable to remove the mount of network share music: busy" in caplog.text
+    assert _logged(records, logging.WARNING, "Unable to remove the mount of network share music")
     assert storage.mass.config.get(CONF_STORAGE_SHARES) is None
 
 
@@ -557,13 +568,13 @@ async def test_rollback_is_available_right_away(
 
 @pytest.mark.usefixtures("mounter")
 async def test_rollback_that_does_not_answer_either(
-    storage: StorageController, probes: FakeProbes, caplog: pytest.LogCaptureFixture
+    storage: StorageController, probes: FakeProbes
 ) -> None:
     """A restored mount that does not answer either leaves the share unavailable, saying so."""
     await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
     probes.results[MUSIC_PATH] = None
 
-    with caplog.at_level(logging.WARNING), pytest.raises(SetupFailedError):
+    with capture_log_records(storage.logger) as records, pytest.raises(SetupFailedError):
         await storage.update_network_share("music", "nas2.local", "music")
 
     location = storage.get_location_for_path(MUSIC_PATH)
@@ -573,7 +584,9 @@ async def test_rollback_that_does_not_answer_either(
         False,
         "share_not_mounted",
     )
-    assert "Unable to mount network share music with its previous settings" in caplog.text
+    assert _logged(
+        records, logging.WARNING, "Unable to mount network share music with its previous settings"
+    )
 
 
 async def test_successful_update_is_verified_once(
@@ -661,20 +674,17 @@ async def test_remove_refused_while_in_use(
     ],
 )
 async def test_remove_without_its_backend(
-    storage: StorageController,
-    caplog: pytest.LogCaptureFixture,
-    backend: MountBackend,
-    under_supervisor: bool,
+    storage: StorageController, backend: MountBackend, under_supervisor: bool
 ) -> None:
     """A share of a backend this installation does not have is forgotten, and that is logged."""
     storage.mass.running_as_hass_addon = under_supervisor
     _store(storage, "music", backend=backend)
 
-    with caplog.at_level(logging.WARNING):
+    with capture_log_records(storage.logger) as records:
         await storage.remove_network_share("music")
 
     assert storage.mass.config.get(CONF_STORAGE_SHARES) == {}
-    assert "Forgetting network share music" in caplog.text
+    assert _logged(records, logging.WARNING, "Forgetting network share music")
 
 
 async def test_reconcile(storage: StorageController, mounter: FakeMounter) -> None:
@@ -703,18 +713,18 @@ async def test_reconcile(storage: StorageController, mounter: FakeMounter) -> No
 
 
 async def test_reconcile_survives_anything(
-    storage: StorageController, mounter: FakeMounter, caplog: pytest.LogCaptureFixture
+    storage: StorageController, mounter: FakeMounter
 ) -> None:
     """Whatever goes wrong while the shares are mounted is logged, never raised."""
     _store(storage, "music")
 
     with (
-        caplog.at_level(logging.ERROR),
+        capture_log_records(storage.logger) as records,
         patch.object(storage, "refresh", AsyncMock(side_effect=RuntimeError("boom"))),
     ):
         await storage.reconcile()
 
-    assert "Failed to mount the network shares" in caplog.text
+    assert _logged(records, logging.ERROR, "Failed to mount the network shares")
     assert "music" in mounter.mounted
 
 

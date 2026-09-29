@@ -18,6 +18,7 @@ from music_assistant.controllers.storage.backends.base import BackendUnavailable
 from music_assistant.controllers.storage.backends.supervisor import create_supervisor_mounter
 from music_assistant.controllers.storage.models import MountBackend, NetworkShareSpec, ShareType
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
+from tests.common import capture_log_records
 from tests.controllers.storage.conftest import FakeBackends, FakeMounter, FakeSupervisor
 
 pytestmark = pytest.mark.usefixtures("probes")
@@ -557,17 +558,21 @@ async def test_remove_while_the_supervisor_does_not_answer(
 
 
 async def test_remove_where_there_is_no_supervisor(
-    storage: StorageController, supervisor: FakeSupervisor, caplog: pytest.LogCaptureFixture
+    storage: StorageController, supervisor: FakeSupervisor
 ) -> None:
     """A share of a Supervisor this installation no longer has is forgotten, and that is logged."""
     _store(storage, supervisor, "music")
     storage.mass.running_as_hass_addon = False
 
-    with caplog.at_level(logging.WARNING):
+    with capture_log_records(storage.logger) as records:
         await storage.remove_network_share("music")
 
     assert storage.mass.config.get(CONF_STORAGE_SHARES) == {}
-    assert "Forgetting network share music" in caplog.text
+    assert any(
+        record.levelno == logging.WARNING
+        and record.getMessage().startswith("Forgetting network share music")
+        for record in records
+    )
     assert supervisor.requests == []
 
 

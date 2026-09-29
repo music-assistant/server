@@ -14,6 +14,7 @@ from music_assistant_models.errors import LoginFailed, SetupFailedError, Unsuppo
 from music_assistant.controllers.config.helpers import _provider_status
 from music_assistant.mass import _provider_error_from_exc
 from music_assistant.providers.filesystem_smb import SMBFileSystemProvider
+from tests.common import capture_log_records
 
 INSTANCE_ID = "filesystem_smb--test"
 SETUP_VALUES = {
@@ -111,14 +112,12 @@ async def test_unsupported_platform() -> None:
 
 @pytest.mark.parametrize("system", ["Darwin", "Linux"])
 @pytest.mark.parametrize("returncode", [0, 1])
-async def test_mount_logs_no_password(
-    caplog: pytest.LogCaptureFixture, system: str, returncode: int
-) -> None:
-    """A mount leaves no trace of the password in the log, at any level."""
+async def test_mount_logs_no_password(system: str, returncode: int) -> None:
+    """A mount logs what is mounted where, and leaves no trace of the password at any level."""
     provider = _make_provider(password="pa ss@word,1")
-    provider.logger = logging.getLogger("music_assistant.test.filesystem_smb")
-    caplog.set_level(1)
+    provider.logger = logging.getLogger(f"{__name__}.mount")
     with (
+        capture_log_records(provider.logger) as records,
         patch(
             "music_assistant.providers.filesystem_smb.check_output",
             AsyncMock(return_value=(returncode, b"mount error(112): Host is down")),
@@ -128,8 +127,10 @@ async def test_mount_logs_no_password(
     ):
         await provider.mount()
 
-    assert caplog.records
-    for record in caplog.records:
+    assert f"Mounting //nas.local/music to {provider.base_path}" in [
+        record.getMessage() for record in records
+    ]
+    for record in records:
         text = f"{record.getMessage()} {record.args}"
         assert "pa ss@word,1" not in text
         assert "pa%20ss%40word%2C1" not in text
