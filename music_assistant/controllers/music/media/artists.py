@@ -39,8 +39,10 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
+    DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOK_ARTISTS,
+    DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
@@ -89,6 +91,11 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         self.mass.register_api_command(
             f"music/{api_base}/artist_tracks", self.tracks, required_scope=Scope.LIBRARY_READ
+        )
+        self.mass.register_api_command(
+            f"music/{api_base}/artist_appears_on",
+            self.appears_on,
+            required_scope=Scope.LIBRARY_READ,
         )
         self.mass.register_api_command(
             f"music/{api_base}/discography", self.discography, required_scope=Scope.LIBRARY_READ
@@ -268,6 +275,26 @@ class ArtistsController(MediaControllerBase[Artist]):
             return await self.get_library_artist_albums(item_id, provider_filter=provider_filter)
         self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
         return await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain)
+
+    async def appears_on(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        provider_filter: str | None = None,
+    ) -> list[Album]:
+        """
+        Return the albums an artist appears on without being an album artist.
+
+        These are the albums of the artist's library tracks, newest first, as summary items.
+        Only available for library artists; empty for a provider item.
+
+        :param item_id: The item ID of the artist.
+        :param provider_instance_id_or_domain: The provider instance ID or domain of the artist.
+        :param provider_filter: Optional provider instance ID to limit the tracks to.
+        """
+        if provider_instance_id_or_domain != "library":
+            return []
+        return await self.get_library_artist_appears_on(item_id, provider_filter=provider_filter)
 
     async def discography(self, item_id: str, provider_instance_id_or_domain: str) -> list[Album]:
         """
@@ -861,6 +888,53 @@ class ArtistsController(MediaControllerBase[Artist]):
             extra_query_params={"artist_id": db_id},
             provider_filter=self._ensure_provider_filter(provider_filter),
             in_library_only=True,
+        )
+
+    async def get_library_artist_appears_on(
+        self,
+        item_id: str | int,
+        provider_filter: str | None = None,
+    ) -> list[Album]:
+        """
+        Return the albums of an artist's library tracks on which it is not an album artist.
+
+        :param item_id: The library item ID of the artist.
+        :param provider_filter: Optional provider instance ID to limit the tracks to.
+        """
+        db_id = int(item_id)  # ensure integer
+        library_item = await self.get_library_item(db_id)
+        if library_item.artist_type != ArtistType.SINGER:
+            self.logger.debug("Albums only available for artists of type ARTIST")
+            return []
+        query_params: dict[str, Any] = {"artist_id": db_id}
+        track_mapping_conditions = [
+            f"{DB_TABLE_PROVIDER_MAPPINGS}.item_id = {DB_TABLE_ALBUM_TRACKS}.track_id",
+            f"{DB_TABLE_PROVIDER_MAPPINGS}.media_type = '{MediaType.TRACK.value}'",
+            f"{DB_TABLE_PROVIDER_MAPPINGS}.in_library = 1",
+        ]
+        if provider_instances := self._ensure_provider_filter(provider_filter):
+            track_mapping_conditions.append(
+                f"{DB_TABLE_PROVIDER_MAPPINGS}.provider_instance IN :provider_instances"
+            )
+            query_params["provider_instances"] = provider_instances
+        track_albums = (
+            f"SELECT {DB_TABLE_ALBUM_TRACKS}.album_id FROM {DB_TABLE_ALBUM_TRACKS} "
+            f"JOIN {DB_TABLE_TRACK_ARTISTS} "
+            f"ON {DB_TABLE_TRACK_ARTISTS}.track_id = {DB_TABLE_ALBUM_TRACKS}.track_id "
+            f"WHERE {DB_TABLE_TRACK_ARTISTS}.artist_id = :artist_id "
+            f"AND EXISTS(SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            f"WHERE {' AND '.join(track_mapping_conditions)})"
+        )
+        own_albums = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id"
+        return await self.mass.music.albums.get_library_items_by_query(
+            extra_query_parts=[
+                f"albums.item_id IN ({track_albums})",
+                f"albums.item_id NOT IN ({own_albums})",
+            ],
+            extra_query_params=query_params,
+            limit=0,  # no limit, the full list is returned
+            order_by="year_desc",
+            summary=True,
         )
 
     async def get_provider_artist_similar_artists(
