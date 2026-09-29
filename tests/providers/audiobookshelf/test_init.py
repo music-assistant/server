@@ -29,7 +29,7 @@ async def test_sync_library_clears_stale_library_ids(provider: Audiobookshelf) -
     provider._client.get_library_narrators = AsyncMock(return_value=[])  # type: ignore[method-assign]
     provider._client.get_my_user = AsyncMock()  # type: ignore[method-assign]
     provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
-    provider.mass.music.get_playlog_provider_item_ids = AsyncMock(return_value=set())  # type: ignore[method-assign]
+    provider.mass.music.get_playlog_provider_items = AsyncMock(return_value=[])  # type: ignore[method-assign]
 
     with patch.object(MusicProvider, "sync_library", AsyncMock()):
         await provider.sync_library(MediaType.AUDIOBOOK)

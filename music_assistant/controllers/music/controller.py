@@ -175,6 +175,15 @@ class RecentPlayedTrack(NamedTuple):
     artists: list[ItemMapping]
 
 
+class PlaylogProviderItem(NamedTuple):
+    """A playlog entry of one provider item, with the progress state recorded for it."""
+
+    media_type: MediaType
+    item_id: str
+    fully_played: bool
+    seconds_played: int
+
+
 def _album_title_match(base: str, other: str) -> str:
     """
     Return a query part relating two album rows that may name the same album.
@@ -1177,10 +1186,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
         return result
 
-    async def get_playlog_provider_item_ids(
+    async def get_playlog_provider_items(
         self, provider_instance_id: str, limit: int = 0, userid: str | None = None
-    ) -> list[tuple[MediaType, str]]:
-        """Return a list of MediaType and provider_item_id of items in playlog of provider."""
+    ) -> list[PlaylogProviderItem]:
+        """
+        Return the playlog entries of a provider, keyed by its own item ids.
+
+        Carries the recorded progress state, so a provider syncing progress both ways can tell
+        whether an incoming update would change anything before it reports a play.
+
+        :param provider_instance_id: Instance id of the provider whose items to return.
+        :param limit: Maximum number of playlog rows to read, 0 for all of them.
+        :param userid: Look the playlog up for this user instead of the provider's own.
+        """
         # check if there is a provider user
         # this method is not available in the frontend, so no need to check for session users.
         user: User | None = None
@@ -1202,8 +1220,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             query += f" AND userid = '{user.user_id}'"
         db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
 
-        result: list[tuple[MediaType, str]] = []
+        result: list[PlaylogProviderItem] = []
         for db_row in db_rows:
+            # fully_played is a nullable column; treat an unknown (NULL) value as not played
+            fully_played = parse_optional_bool(db_row["fully_played"]) or False
+            seconds_played = db_row["seconds_played"] or 0
             if db_row["provider"] == "library":
                 # If the provider is library, we need to make sure that the item
                 # is part of the passed provider_instance_id.
@@ -1217,10 +1238,24 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 subrow = await self.mass.music.database.get_rows_from_query(subquery)
                 if len(subrow) != 1:
                     continue
-                result.append((MediaType.AUDIOBOOK, subrow[0]["provider_item_id"]))
+                result.append(
+                    PlaylogProviderItem(
+                        MediaType.AUDIOBOOK,
+                        subrow[0]["provider_item_id"],
+                        fully_played,
+                        seconds_played,
+                    )
+                )
                 continue
             # non library - item id is provider_item_id
-            result.append((MediaType(db_row["media_type"]), db_row["item_id"]))
+            result.append(
+                PlaylogProviderItem(
+                    MediaType(db_row["media_type"]),
+                    db_row["item_id"],
+                    fully_played,
+                    seconds_played,
+                )
+            )
 
         return result
 
