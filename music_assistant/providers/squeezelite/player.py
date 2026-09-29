@@ -128,6 +128,9 @@ class SqueezelitePlayer(Player):
         # position is a different clock (the multi-client stream runs the players
         # ahead of the queue), so using it added the stream headroom as a resume delay.
         self._paused_at: float = 0.0
+        # set when the group membership changed while not playing, so the next resume
+        # must rebuild the stream session instead of taking the LMS _Resume path
+        self._restream_needed: bool = False
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
@@ -234,11 +237,17 @@ class SqueezelitePlayer(Player):
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
-        if self.group_members and self._paused_at > 0:
-            # resuming a paused group: align the members on a common instant via the
-            # LMS resume (coordinated startAt + check holdoff)
-            await self._sync_group.resume(self._get_sync_clients(), self._paused_at)
-            return
+        if self.group_members:
+            if self._restream_needed or self._group_needs_restream():
+                # a member was (re)added or its stream is gone: LMS takes the stream-idle
+                # path (re-stream, then coordinated _syncStart), not _Resume
+                self._restream_needed = False
+                self.mass.create_task(self.mass.players.cmd_resume(self.player_id))
+                return
+            if self._paused_at > 0:
+                # stream still live: LMS _Resume (coordinated startAt + check holdoff)
+                await self._sync_group.resume(self._get_sync_clients(), self._paused_at)
+                return
         async with TaskManager(self.mass) as tg:
             for client in self._get_sync_clients():
                 tg.create_task(client.play())
@@ -402,14 +411,15 @@ class SqueezelitePlayer(Player):
         # always update the state after modifying group members
         self.update_state()
 
-        if (
-            (players_added or player_ids_to_remove)
-            and self.state.current_media
-            and self._attr_playback_state == PlaybackState.PLAYING
-        ):
-            # restart stream session if it was already playing
-            # for now, we dont support late joining into an existing stream
-            self.mass.create_task(self.mass.players.cmd_resume(self.player_id))
+        if (players_added or player_ids_to_remove) and self.state.current_media:
+            if self._attr_playback_state == PlaybackState.PLAYING:
+                # restart stream session if it was already playing
+                # for now, we dont support late joining into an existing stream
+                self.mass.create_task(self.mass.players.cmd_resume(self.player_id))
+            else:
+                # membership changed while not playing: the stream must be rebuilt on
+                # the next resume (LMS takes the stream-idle / _syncStart path, not _Resume)
+                self._restream_needed = True
 
     def handle_slim_event(self, event: SlimEvent) -> None:
         """Handle player event from slimproto server."""
@@ -631,6 +641,18 @@ class SqueezelitePlayer(Player):
         if not self.group_members:
             return
         self.mass.create_task(self._sync_group.check(self._get_sync_clients()))
+
+    def _group_needs_restream(self) -> bool:
+        """
+        Return if the group stream must be rebuilt before it can resume.
+
+        Mirrors LMS's stream-state check: a group whose stream is gone, or that has a
+        member without a live stream (e.g. one just added by set_members), needs the
+        re-stream / _syncStart path rather than _Resume.
+        """
+        if self.multi_client_stream is None or self.multi_client_stream.done:
+            return True
+        return any(client.state == SlimPlayerState.STOPPED for client in self._get_sync_clients())
 
     async def _set_preset_items(self) -> None:
         """Set the presets for a player."""
