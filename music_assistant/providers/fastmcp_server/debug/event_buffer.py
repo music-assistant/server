@@ -18,8 +18,8 @@ from collections import Counter, deque
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from ..dynamic_serialization import bounded_json_value
 from ..models import EventBufferStats, EventRecord
-from .inspect_serializer import dump
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -37,7 +37,9 @@ def _now() -> datetime:
     # init (and optional deps) at module load; here it runs inside the host.
     from music_assistant.helpers.datetime import now as ma_now  # noqa: PLC0415
 
-    return ma_now()
+    # MA's source is fully typed when transplanted under its package; standalone
+    # provider checks see the external package as untyped.
+    return ma_now()  # type: ignore[no-any-return, unused-ignore]
 
 
 class EventBuffer:
@@ -115,14 +117,69 @@ class EventBuffer:
         )
 
     def _on_event(self, event: Any) -> None:
-        event_type = str(getattr(event, "event", getattr(event, "event_type", "")))
-        object_id = getattr(event, "object_id", None)
+        event_type = _event_type(event)
+        object_id = _event_object_id(event)
         record = EventRecord(
             timestamp=_now().isoformat(),
             event_type=event_type,
-            object_id=str(object_id) if object_id is not None else None,
-            data=dump(getattr(event, "data", None), max_depth=4, max_str=1024),
+            object_id=object_id,
+            data=_event_data(event),
         )
         self._queue.append(record)
         self._counts[event_type] += 1
         self._total_seen += 1
+
+
+def _bounded_event_data(value: Any) -> Any:
+    """Convert event payloads to compact JSON values without retaining MA objects."""
+    try:
+        return bounded_json_value(
+            value,
+            item_cap=100,
+            string_cap=1024,
+            max_depth=4,
+        ).value
+    except Exception:
+        return "<unserializable event data>"
+
+
+def _event_type(event: Any) -> str:
+    """Read the primary or legacy event type without escaping user-defined accessors."""
+    value = _safe_attr(event, "event", None)
+    if value is None:
+        value = _safe_attr(event, "event_type", "<unavailable>")
+    return _safe_text(value)
+
+
+def _event_object_id(event: Any) -> str | None:
+    """Read an optional object id without trusting its string conversion."""
+    value = _safe_attr(event, "object_id", None)
+    return None if value is None else _safe_text(value)
+
+
+def _event_data(event: Any) -> Any:
+    """Read and serialize event data behind one synchronous callback boundary."""
+    try:
+        value = event.data
+    except AttributeError:
+        value = None
+    except Exception:
+        return "<unserializable event data>"
+    return _bounded_event_data(value)
+
+
+def _safe_attr(value: Any, name: str, default: Any) -> Any:
+    """Read one event attribute while isolating custom descriptors."""
+    try:
+        return getattr(value, name, default)
+    except Exception:
+        return default
+
+
+def _safe_text(value: Any) -> str:
+    """Convert event metadata to a bounded string without invoking a failing repr."""
+    try:
+        text = str(value)
+    except Exception:
+        return "<unavailable>"
+    return text if len(text) <= 1024 else f"{text[:1024]}…({len(text) - 1024} more chars)"

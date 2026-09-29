@@ -27,7 +27,48 @@ from fastmcp.server.auth.auth import AccessToken
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
+    from .token_identity import TokenIdentityRegistry
+
 LOGGER = logging.getLogger(__name__)
+
+# Bandit B105: this is a non-secret audit category, never credential material.
+LEGACY_TOKEN_CLIENT_ID = "ma-token:legacy"  # nosec B105
+LOOKUP_FAILURE_CLIENT_ID = "ma-token:lookup-failed"
+
+
+def request_identity_holds(
+    token: AccessToken,
+    user: object,
+    identity: object | None,
+    *,
+    live_token_id: object = None,
+    lookup_failed: bool = False,
+) -> bool:
+    """Return whether one sealed request identity still matches the live user."""
+    if user is None or getattr(user, "enabled", True) is False:
+        return False
+    if identity is None:
+        return False
+    if str(getattr(user, "user_id", "")) != getattr(identity, "user_id", None):
+        return False
+    expected = getattr(identity, "token_id", None) or LEGACY_TOKEN_CLIENT_ID
+    if token.client_id != expected:
+        return False
+    if lookup_failed:
+        return False
+    if live_token_id is None:
+        return True
+    return live_token_id == getattr(identity, "token_id", None)
+
+
+def _is_valid_token_id(value: object) -> bool:
+    """Return whether a lookup result has MA's non-empty URL-safe token-ID shape."""
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value == value.strip()
+        and all(char.isascii() and (char.isalnum() or char in "_-") for char in value)
+    )
 
 
 def _extract_jwt_audience(token: str) -> str | list[str] | None:
@@ -76,6 +117,7 @@ class MASTokenVerifier(TokenVerifier):
         base_url: str | None = None,
         public_resource_uri: str | None = None,
         enforce_audience: bool = False,
+        identity_registry: TokenIdentityRegistry | None = None,
     ) -> None:
         """
         Bind the verifier to a MusicAssistant instance.
@@ -91,6 +133,8 @@ class MASTokenVerifier(TokenVerifier):
             ``aud`` claim is missing or does not contain ``public_resource_uri``.
             When ``False`` (default), only logs a warning so operators can
             migrate gracefully once MA-side issues audience-bound tokens.
+        :param identity_registry: Shared bounded token-identity registry. A
+            private registry is created when omitted.
         """
         # ``base_url`` is optional on TokenVerifier — passing ``None`` is
         # equivalent to not setting it. Forward verbatim so FastMCP can later
@@ -99,6 +143,11 @@ class MASTokenVerifier(TokenVerifier):
         self._mass = mass
         self._public_resource_uri = public_resource_uri
         self._enforce_audience = enforce_audience
+        if identity_registry is None:
+            from .token_identity import TokenIdentityRegistry  # noqa: PLC0415
+
+            identity_registry = TokenIdentityRegistry()
+        self._identity_registry = identity_registry
 
     async def verify_token(self, token: str) -> AccessToken | None:
         """
@@ -114,22 +163,54 @@ class MASTokenVerifier(TokenVerifier):
         # expiry for that token on every MCP request, keeping an attacker's
         # stolen non-MCP token alive indefinitely via the MCP endpoint.
         if not self._check_audience(token):
+            self._identity_registry.discard(token)
             return None
 
         try:
             user = await self._mass.webserver.auth.authenticate_with_token(token)
         except Exception:
-            LOGGER.exception("MA token verification raised")
+            self._identity_registry.discard(token)
+            LOGGER.error("MA token verification raised")
             return None
 
         if user is None or not getattr(user, "enabled", True):
+            self._identity_registry.discard(token)
             return None
+
+        client_id = LOOKUP_FAILURE_CLIENT_ID
+        try:
+            token_id = await self._mass.webserver.auth.get_token_id_from_token(token)
+        except Exception:
+            self._identity_registry.discard(token)
+            self._identity_registry.record_resolution_failure()
+            LOGGER.error("MA token identity lookup raised; using Safe queries policy")
+        else:
+            if token_id is None:
+                self._identity_registry.bind(
+                    token,
+                    user_id=str(getattr(user, "user_id", "")),
+                    token_id=None,
+                )
+                client_id = LEGACY_TOKEN_CLIENT_ID
+            elif _is_valid_token_id(token_id):
+                self._identity_registry.bind(
+                    token,
+                    user_id=str(getattr(user, "user_id", "")),
+                    token_id=token_id,
+                )
+                client_id = token_id
+            else:
+                self._identity_registry.discard(token)
+                self._identity_registry.record_resolution_failure()
+                LOGGER.error(
+                    "MA token identity lookup returned invalid data; using Safe queries policy"
+                )
 
         # MCP SDK's AccessToken pydantic model has no `claims` field — extras
         # are silently dropped — so we don't try to forward username/role here.
         return AccessToken(
             token=token,
-            client_id=str(getattr(user, "user_id", "")) or "music-assistant",
+            client_id=client_id,
             scopes=[],
             expires_at=None,
             resource=self._public_resource_uri,

@@ -1,94 +1,63 @@
-"""Lifecycle tests for the debug sub-server inside MCPServerRuntime."""
+"""Lifecycle tests for the provider-owned debug event subscription."""
 
 from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from music_assistant.providers.fastmcp_server.capabilities import Capability
+from music_assistant.providers.fastmcp_server.commands import ProviderCommandSet
+from music_assistant.providers.fastmcp_server.constants import CONF_DEFAULT_POLICY
+from music_assistant.providers.fastmcp_server.policy import (
+    PolicyProfile,
+    PolicySnapshot,
+    policy_snapshot,
+)
+from music_assistant.providers.fastmcp_server.policy_config import policy_mode_key
 
-async def test_setup_subscribes_when_debug_events_enabled(
+
+def _policy(_bearer: str | None) -> PolicySnapshot:
+    """Return a complete policy for lifecycle-only command tests."""
+    return policy_snapshot(PolicyProfile.TRUSTED)
+
+
+def test_command_set_subscribes_when_debug_events_enabled(
     mock_mass: MagicMock, mock_config: MagicMock
 ) -> None:
-    """When DEBUG_EVENTS=True, EventBuffer is started during runtime.start()."""
+    """When v2 debug:events is allowed, the provider command set starts the buffer."""
     mock_config.get_value.side_effect = lambda key, default=None: {
-        "debug_events": True,
+        CONF_DEFAULT_POLICY: "Custom",
+        policy_mode_key(Capability.DEBUG_EVENTS): "allow",
         "debug_event_buffer_capacity": 100,
     }.get(key, default if default is not None else False)
 
-    from music_assistant.providers.fastmcp_server.server import MCPServerRuntime  # noqa: PLC0415
-
-    runtime = MCPServerRuntime(mock_mass, mock_config, logger=MagicMock())
-    await runtime.start()
-    try:
-        assert mock_mass.subscribe.called
-        assert runtime._event_buffer is not None
-    finally:
-        await runtime.stop()
+    commands = ProviderCommandSet(mock_mass, mock_config, policy_provider=_policy)
+    commands.start()
+    assert mock_mass.subscribe.called
+    commands.stop()
 
 
-async def test_unload_does_not_raise_when_events_disabled(
+def test_command_set_does_not_subscribe_when_events_disabled(
     mock_mass: MagicMock, mock_config: MagicMock
 ) -> None:
-    """With DEBUG_EVENTS=False, no subscription is created and stop() doesn't raise."""
+    """With missing v2 policy, no event subscription is created and stop is safe."""
     mock_config.get_value.return_value = False
-    from music_assistant.providers.fastmcp_server.server import MCPServerRuntime  # noqa: PLC0415
-
-    runtime = MCPServerRuntime(mock_mass, mock_config, logger=MagicMock())
-    await runtime.start()
-    await runtime.stop()  # must not raise
+    commands = ProviderCommandSet(mock_mass, mock_config, policy_provider=_policy)
+    commands.start()
+    commands.stop()  # must not raise
     assert mock_mass.subscribe.called is False
 
 
-async def test_unload_stops_event_buffer_before_unmount(
-    mock_mass: MagicMock, mock_config: MagicMock
-) -> None:
-    """EventBuffer.stop() runs BEFORE FastMCP transport teardown (lifespan-race protection)."""
-    mock_config.get_value.side_effect = lambda key, default=None: {
-        "debug_events": True,
-        "debug_event_buffer_capacity": 100,
-    }.get(key, default if default is not None else False)
-
-    from music_assistant.providers.fastmcp_server.server import MCPServerRuntime  # noqa: PLC0415
-
-    runtime = MCPServerRuntime(mock_mass, mock_config, logger=MagicMock())
-    await runtime.start()
-
-    call_order: list[str] = []
-    buf = runtime._event_buffer
-    assert buf is not None
-    original_stop = buf.stop
-
-    def _stop_record() -> None:
-        call_order.append("buffer_stop")
-        original_stop()
-
-    setattr(buf, "stop", _stop_record)  # noqa: B010 -- patch bound method for call-order assertion
-
-    original_unmount = runtime._unmount
-
-    async def _unmount_record() -> None:
-        call_order.append("unmount")
-        if original_unmount is not None:
-            await original_unmount()
-
-    setattr(runtime, "_unmount", _unmount_record)  # noqa: B010 -- patch teardown hook for call-order assertion
-
-    await runtime.stop()
-    assert call_order, "no recorded teardown calls"
-    assert call_order[0] == "buffer_stop", call_order
-
-
-async def test_event_buffer_stop_idempotent_during_unload(
+def test_event_buffer_stop_is_idempotent_during_command_unload(
     mock_mass: MagicMock, mock_config: MagicMock
 ) -> None:
     """Double-stop must not raise."""
     mock_config.get_value.side_effect = lambda key, default=None: {
-        "debug_events": True,
+        CONF_DEFAULT_POLICY: "Custom",
+        policy_mode_key(Capability.DEBUG_EVENTS): "allow",
         "debug_event_buffer_capacity": 100,
     }.get(key, default if default is not None else False)
 
-    from music_assistant.providers.fastmcp_server.server import MCPServerRuntime  # noqa: PLC0415
-
-    runtime = MCPServerRuntime(mock_mass, mock_config, logger=MagicMock())
-    await runtime.start()
-    await runtime.stop()
-    await runtime.stop()  # must not raise — second call is a no-op
+    commands = ProviderCommandSet(mock_mass, mock_config, policy_provider=_policy)
+    commands.start()
+    commands.stop()
+    commands.stop()  # must not raise — second call is a no-op
