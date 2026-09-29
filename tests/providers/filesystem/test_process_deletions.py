@@ -6,6 +6,7 @@ import pytest
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import Artist, ProviderMapping, Track, UniqueList
 
+from music_assistant.constants import DB_TABLE_AUDIO_ANALYSIS
 from music_assistant.mass import MusicAssistant
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 
@@ -146,7 +147,19 @@ async def test_deleted_file_keeps_other_provider_mappings(
         )
     )
 
+    analysis_row = {
+        "media_type": MediaType.TRACK.value,
+        "item_id": file_path,
+        "provider": "filesystem_local--test",
+    }
+    await mass.music.database.insert(
+        DB_TABLE_AUDIO_ANALYSIS,
+        {**analysis_row, "aa_provider_domain": "test", "analysis_data": "{}"},
+    )
+
     await provider._process_deletions({file_path})
 
     library_track = await mass.music.tracks.get_library_item(db_track.item_id)
     assert {x.provider_instance for x in library_track.provider_mappings} == {"spotify--test"}
+    # the deleted file's audio analysis must not be reused by a new file at the same path
+    assert not await mass.music.database.get_row(DB_TABLE_AUDIO_ANALYSIS, analysis_row)

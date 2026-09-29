@@ -1507,6 +1507,17 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "provider": provider_instance_id,
             },
         )
+        # cleanup audio analysis rows for the removed mapping(s)
+        for prov_mapping in library_item.provider_mappings - remaining_mappings:
+            for prov_key in (prov_mapping.provider_domain, prov_mapping.provider_instance):
+                await self.mass.music.database.delete(
+                    DB_TABLE_AUDIO_ANALYSIS,
+                    {
+                        "media_type": self.media_type.value,
+                        "item_id": provider_item_id,
+                        "provider": prov_key,
+                    },
+                )
         library_item.provider_mappings = remaining_mappings
         # if this was the last mapping for the provider instance, strip any artwork
         # that belonged to it (e.g. local file paths that are no longer resolvable)
