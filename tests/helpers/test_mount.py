@@ -14,7 +14,7 @@ from music_assistant.helpers.mount import (
     unmount,
 )
 
-MOUNT_PATH = "/tmp/filesystem_smb--test"  # noqa: S108
+MOUNT_PATH = "/tmp/music-assistant-mounts/music"  # noqa: S108
 ISMOUNT = "music_assistant.helpers.mount.os.path.ismount"
 CHECK_OUTPUT = "music_assistant.helpers.mount.check_output"
 PLATFORM_SYSTEM = "music_assistant.helpers.mount.platform.system"
@@ -60,14 +60,12 @@ def test_cifs_command_on_linux_as_guest(username: str | None) -> None:
     assert env == {}
 
 
-def test_cifs_command_on_linux_read_only_with_subfolder_and_cache_mode() -> None:
-    """A read-only mount of a subfolder keeps the other options of today's SMB source."""
-    cmd, _env = build_cifs_mount_cmd(
-        "Linux", "nas.local", "music/albums", MOUNT_PATH, read_only=True, cache_mode="strict"
-    )
+def test_cifs_command_on_linux_read_only() -> None:
+    """A read-only mount keeps the other options."""
+    cmd, _env = build_cifs_mount_cmd("Linux", "nas.local", "music", MOUNT_PATH, read_only=True)
 
-    assert cmd[4].startswith("ro,guest,cache=strict,iocharset=utf8,")
-    assert cmd[5] == "//nas.local/music/albums"
+    assert cmd[4] == f"ro,guest,{LINUX_CIFS_OPTIONS}"
+    assert cmd[5] == "//nas.local/music"
 
 
 @pytest.mark.parametrize(
@@ -159,7 +157,7 @@ def test_cifs_command_on_macos_as_guest_read_only(
     ],
 )
 def test_nfs_command(system: str, options: str) -> None:
-    """An NFS export is mounted with the options of today's NFS source."""
+    """An NFS export is mounted soft, with short timeouts and without access times."""
     assert build_nfs_mount_cmd(system, "nas.local", "/volume1/music", MOUNT_PATH) == [
         "mount",
         "-t",

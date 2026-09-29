@@ -18,9 +18,7 @@ from music_assistant.providers.filesystem_google_drive.provider import (
 )
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import CONF_CONTENT_TYPE
-from music_assistant.providers.filesystem_nfs.provider import NFSFileSystemProvider
 from music_assistant.providers.filesystem_onedrive.provider import OneDriveFileSystemProvider
-from music_assistant.providers.filesystem_smb import SMBFileSystemProvider
 from music_assistant.providers.webdav.provider import WebDAVFileSystemProvider
 from tests.providers.filesystem_local.conftest import make_provider
 
@@ -66,13 +64,11 @@ async def test_the_options_keep_the_content_type_as_it_was(
 @pytest.mark.parametrize(
     "provider_class",
     [
-        SMBFileSystemProvider,
-        NFSFileSystemProvider,
         WebDAVFileSystemProvider,
         GoogleDriveFileSystemProvider,
         OneDriveFileSystemProvider,
     ],
-    ids=["smb", "nfs", "webdav", "google_drive", "onedrive"],
+    ids=["webdav", "google_drive", "onedrive"],
 )
 async def test_the_other_file_sources_do_not_show_a_folder(
     provider_class: type[LocalFileSystemProvider],

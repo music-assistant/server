@@ -9,7 +9,7 @@ from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_CONTENT_TYPE,
 )
 
-INSTANCE_ID = "filesystem_smb--test"
+INSTANCE_ID = "filesystem_local--test"
 
 
 def _create_provider(setup_data: dict[str, Any]) -> LocalFileSystemProvider:
@@ -33,7 +33,7 @@ def _create_provider(setup_data: dict[str, Any]) -> LocalFileSystemProvider:
     config.values = {}
     config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
     manifest = MagicMock()
-    manifest.domain = "filesystem_smb"
+    manifest.domain = "filesystem_local"
     return LocalFileSystemProvider(mass, manifest, config, base_path="/media")
 
 

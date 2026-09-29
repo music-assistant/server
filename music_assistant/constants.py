@@ -346,11 +346,7 @@ PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music", "deezer")
 # The music sources that read the user's own files. Background audio analysis is deliberately
 # limited to these: pulling a streaming service's catalogue for audio nobody asked to hear is
 # not something we do. Keep it that way.
-FILESYSTEM_PROVIDER_DOMAINS: Final[tuple[str, ...]] = (
-    "filesystem_local",
-    "filesystem_smb",
-    "filesystem_nfs",
-)
+FILESYSTEM_PROVIDER_DOMAINS: Final[tuple[str, ...]] = ("filesystem_local",)
 
 
 ####### REUSABLE CONFIG ENTRIES #######

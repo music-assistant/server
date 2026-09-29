@@ -13,13 +13,14 @@ from __future__ import annotations
 import copy
 import json
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp.test_utils import TestServer
 from cryptography.fernet import Fernet
+from music_assistant_models.auth import UserRole
 from music_assistant_models.config_entries import ProviderAccess
 from music_assistant_models.enums import ProviderSharing
 
@@ -28,7 +29,10 @@ from music_assistant.constants import (
     CONF_PROVIDER_ACCESS_MIGRATED,
     CONF_PROVIDERS,
     CONF_STORAGE_SHARES,
+    DB_TABLE_AUDIO_ANALYSIS,
+    DB_TABLE_AUDIO_ANALYSIS_FAILURES,
     DB_TABLE_PROVIDER_MAPPINGS,
+    DB_TABLE_TRACKS,
     ENCRYPT_SUFFIX,
 )
 from music_assistant.controllers.config import filesystem_consolidation as consolidation_module
@@ -45,6 +49,7 @@ from music_assistant.controllers.storage.backends.base import BackendUnavailable
 from music_assistant.controllers.storage.backends.local_mount import MOUNT_ROOT
 from music_assistant.controllers.storage.models import MountBackend, NetworkShareSpec, ShareType
 from music_assistant.helpers import hassio
+from music_assistant.helpers.json import json_dumps
 from tests.conftest import full_mass_context
 from tests.controllers.storage.conftest import SUPERVISOR_TOKEN, FakeSupervisor, MountTable
 
@@ -82,6 +87,10 @@ VALUES: dict[str, Any] = {
     "library_sync_playlists": False,
 }
 ACCESS = ProviderAccess(owner="user-1", sharing=ProviderSharing.SELECTED, shared_users=["user-2"])
+
+
+class _Killed(BaseException):
+    """The server process being killed: nothing after it runs, nothing catches it."""
 
 
 @pytest.fixture
@@ -133,6 +142,7 @@ def _store_source(
     name: str | None = None,
     enabled: bool = True,
     values: dict[str, Any] | None = None,
+    access: ProviderAccess | None = ACCESS,
 ) -> None:
     """
     Store a music source the way an install that is about to be converted holds it.
@@ -143,6 +153,7 @@ def _store_source(
     :param name: The name the user gave the source.
     :param enabled: Whether the source is enabled.
     :param values: The option values of the source.
+    :param access: The access record of the source, None for an install from before them.
     """
     mass.config.set(
         f"{CONF_PROVIDERS}/{instance_id}",
@@ -158,7 +169,7 @@ def _store_source(
                 key: mass.config.encrypt_string(value) if isinstance(value, str) else value
                 for key, value in setup.items()
             },
-            "access": ACCESS.to_dict(),
+            "access": access.to_dict() if access is not None else None,
             "last_error": {"error_code": 999, "message": "Unable to mount the share"},
         },
     )
@@ -253,6 +264,134 @@ def _location_for_the_owner(mass: MusicAssistant, instance_id: str) -> StorageLo
     assert location is not None
     assert location.usage == StorageUsage.MEDIA
     return location
+
+
+async def _store_tracks(mass: MusicAssistant, *rows: tuple[str, str]) -> None:
+    """
+    Store library tracks, each held by one music source.
+
+    :param mass: The started server.
+    :param rows: The (provider instance, provider item id) of each track.
+    """
+    for instance_id, item_id in rows:
+        name = item_id.rsplit("/", 1)[-1]
+        db_id = await mass.music.database.insert(
+            DB_TABLE_TRACKS,
+            {
+                "name": name,
+                "sort_name": name,
+                "metadata": "{}",
+                "search_name": name,
+                "search_sort_name": name,
+                "duration": 180,
+            },
+        )
+        await mass.music.database.insert(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": "track",
+                "item_id": db_id,
+                "provider_domain": instance_id.split("--")[0],
+                "provider_instance": instance_id,
+                "provider_item_id": item_id,
+                "available": True,
+                "in_library": True,
+            },
+        )
+
+
+async def _prepare_install_to_convert(tmp_path: Path) -> None:
+    """
+    Leave an install with an SMB source to convert and a Local files source, both with tracks.
+
+    :param tmp_path: The directory the server keeps its data in.
+    """
+    folder = tmp_path / "music"
+    folder.mkdir()
+    with _without_mount_backends():
+        async with full_mass_context(tmp_path) as mass:
+            _store_source(mass, SMB_ID, {**SMB_SETUP, "subfolder": "albums"})
+            mass.config.set(
+                f"{CONF_PROVIDERS}/{LOCAL_ID}",
+                {
+                    "type": "music",
+                    "domain": "filesystem_local",
+                    "instance_id": LOCAL_ID,
+                    "enabled": True,
+                    "values": {},
+                    "setup_data": {"path": mass.config.encrypt_string(str(folder))},
+                },
+            )
+            await _store_tracks(
+                mass,
+                (SMB_ID, "Artist/Album/01.flac"),
+                (SMB_ID, "Artist/Album/02.flac"),
+                (LOCAL_ID, "Other/Album/01.flac"),
+                (SPOTIFY_ID, "spotify-track"),
+            )
+            # the boot already ran (and marked) the conversion
+            mass.config.remove(CONF_FILESYSTEM_SOURCES_CONSOLIDATED)
+
+
+async def _prepare_install_with_a_restricted_user(tmp_path: Path) -> str:
+    """
+    Leave an install from before both conversions: an SMB source and a user restricted to it.
+
+    Returns the user id of the restricted user.
+
+    :param tmp_path: The directory the server keeps its data in.
+    """
+    with _without_mount_backends():
+        async with full_mass_context(tmp_path) as mass:
+            user = await mass.webserver.auth.create_user(username="alice", role=UserRole.USER)
+            await mass.webserver.auth.database.update(
+                "users", {"user_id": user.user_id}, {"provider_filter": json_dumps([SMB_ID])}
+            )
+            _store_source(mass, SMB_ID, SMB_SETUP, access=None)
+            # the boot already ran (and marked) both conversions
+            mass.config.remove(CONF_FILESYSTEM_SOURCES_CONSOLIDATED)
+            mass.config.remove(CONF_PROVIDER_ACCESS_MIGRATED)
+    return user.user_id
+
+
+async def _run_library_maintenance(mass: MusicAssistant) -> None:
+    """
+    Run what reads or tidies the library on its own: background analysis and the cleanups.
+
+    Asserts that the SMB source is among the analysis candidates, as its rows carry the Local
+    files domain, and that it got neither an analysis nor a failure for them.
+
+    :param mass: The started server, with a Local files source loaded.
+    """
+    assert mass.get_provider(LOCAL_ID) is not None
+    analysis = mass.streams.audio_analysis
+    versions = {provider.domain: provider.analysis_version for provider in analysis.providers}
+    candidates = await analysis._find_candidates_missing_analysis(versions, limit=0)
+    assert SMB_ID in {candidate["provider_instance"] for candidate in candidates}
+    await analysis._run_background_scan()
+    await mass.music.correct_multi_instance_provider_mappings()
+    await mass.music._cleanup_database()
+    for table in (DB_TABLE_AUDIO_ANALYSIS, DB_TABLE_AUDIO_ANALYSIS_FAILURES):
+        assert await mass.music.database.get_rows(table, {"provider": SMB_ID}) == []
+
+
+def _library_on_disk(storage_path: Path) -> tuple[list[tuple[str, str, str, str]], int]:
+    """
+    Return the library rows as a stopped server left them, and the number of tracks.
+
+    :param storage_path: The data directory of the server.
+    """
+    with closing(sqlite3.connect(storage_path / "library.db")) as db:
+        rows = db.execute(
+            "SELECT provider_instance, provider_domain, media_type, provider_item_id "
+            f"FROM {DB_TABLE_PROVIDER_MAPPINGS}"
+        ).fetchall()
+        (tracks,) = db.execute(f"SELECT count(*) FROM {DB_TABLE_TRACKS}").fetchone()
+    mappings = sorted(
+        (str(instance_id), str(domain), str(media_type), str(item_id))
+        for instance_id, domain, media_type, item_id in rows
+    )
+    return mappings, int(tracks)
 
 
 def _deleted_providers(mass: MusicAssistant) -> list[str]:
@@ -1013,3 +1152,106 @@ async def test_a_source_converts_on_the_first_start_before_the_providers_load(
             assert mass.config.get(CONF_PROVIDER_ACCESS_MIGRATED) is True
             assert raw_conf["access"] == ProviderAccess(sharing=ProviderSharing.EVERYONE).to_dict()
             assert raw_conf["last_error"]["translation_key"] == "storage_location_unavailable"
+
+
+async def test_a_conversion_killed_after_the_library_update_converts_on_the_next_start(
+    tmp_path: Path,
+) -> None:
+    """
+    A conversion killed between its library update and its save converts on the next start.
+
+    The kill leaves the library rows of the source on the Local files domain, while the
+    settings on disk still hold the SMB source and no marker. Until a start converts it, the
+    source is not listed and not loaded, as its provider is gone; neither that, the library
+    maintenance nor background audio analysis touches its rows. The next start converts it as
+    if the first one had not been cut short.
+    """
+    storage_path = tmp_path / "data"
+    await _prepare_install_to_convert(tmp_path)
+    library_before, tracks_before = _library_on_disk(storage_path)
+    killed_library = [
+        (instance_id, "filesystem_local" if instance_id == SMB_ID else domain, *rest)
+        for instance_id, domain, *rest in library_before
+    ]
+
+    real_update = consolidation_module._update_library
+
+    async def _update_then_kill(mass: MusicAssistant, instance_ids: list[str]) -> None:
+        await real_update(mass, instance_ids)
+        raise _Killed
+
+    with (
+        _without_mount_backends(),
+        patch.object(consolidation_module, "_update_library", _update_then_kill),
+        pytest.raises(_Killed),
+    ):
+        async with full_mass_context(tmp_path):
+            pass
+
+    settings = json.loads((storage_path / "settings.json").read_text(encoding="utf-8"))
+    assert settings[CONF_PROVIDERS][SMB_ID]["domain"] == "filesystem_smb"
+    assert CONF_FILESYSTEM_SOURCES_CONSOLIDATED not in settings
+    assert CONF_STORAGE_SHARES not in settings
+    assert _library_on_disk(storage_path) == (killed_library, tracks_before)
+
+    # a start that can not convert: the Supervisor does not answer
+    no_supervisor = AsyncMock(side_effect=BackendUnavailable("the Supervisor did not answer"))
+    with (
+        _without_mount_backends(),
+        patch.object(consolidation_module, "_get_mounter", no_supervisor),
+    ):
+        async with full_mass_context(tmp_path) as mass:
+            assert mass.config.get(CONF_FILESYSTEM_SOURCES_CONSOLIDATED) is None
+            assert mass.get_provider(SMB_ID, return_unavailable=True) is None
+            listed = {config.instance_id for config in await mass.config.get_provider_configs()}
+            assert SMB_ID not in listed
+            await _run_library_maintenance(mass)
+            assert _deleted_providers(mass) == []
+    assert _library_on_disk(storage_path) == (killed_library, tracks_before)
+
+    with _without_mount_backends():
+        async with full_mass_context(tmp_path) as mass:
+            raw_conf = _config(mass, SMB_ID)
+            assert raw_conf["domain"] == "filesystem_local"
+            assert raw_conf["access"] == ACCESS.to_dict()
+            assert _path(mass, SMB_ID) == f"{MOUNT_ROOT}/music/albums"
+            assert list(_records(mass)) == ["music"]
+            assert mass.config.get(CONF_FILESYSTEM_SOURCES_CONSOLIDATED) is True
+    assert _library_on_disk(storage_path) == (killed_library, tracks_before)
+
+
+async def test_a_source_converted_on_a_later_start_gets_the_access_of_local_files(
+    tmp_path: Path,
+) -> None:
+    """
+    A source whose conversion waits for a later start gets the access record it gets otherwise.
+
+    The access records are made on the first start also when the Supervisor keeps the SMB
+    source from being converted then, while its provider is gone. The source gets the record
+    a Local files source gets, not a hidden one, and the conversion on the next start keeps it.
+    """
+    deferred_path, first_path = tmp_path / "deferred", tmp_path / "first"
+    alice = await _prepare_install_with_a_restricted_user(deferred_path)
+    no_supervisor = AsyncMock(side_effect=BackendUnavailable("the Supervisor did not answer"))
+    with (
+        _without_mount_backends(),
+        patch.object(consolidation_module, "_get_mounter", no_supervisor),
+    ):
+        async with full_mass_context(deferred_path) as mass:
+            assert _config(mass, SMB_ID)["domain"] == "filesystem_smb"
+            assert mass.config.get(CONF_PROVIDER_ACCESS_MIGRATED) is True
+            deferred = _config(mass, SMB_ID)["access"]
+    with _without_mount_backends():
+        async with full_mass_context(deferred_path) as mass:
+            assert _config(mass, SMB_ID)["domain"] == "filesystem_local"
+            assert _config(mass, SMB_ID)["access"] == deferred
+
+    # the same install, converted on its first start
+    alice_first = await _prepare_install_with_a_restricted_user(first_path)
+    with _without_mount_backends():
+        async with full_mass_context(first_path) as mass:
+            assert _config(mass, SMB_ID)["domain"] == "filesystem_local"
+            first = _config(mass, SMB_ID)["access"]
+
+    assert first == ProviderAccess(owner=alice_first, sharing=ProviderSharing.EVERYONE).to_dict()
+    assert deferred == ProviderAccess(owner=alice, sharing=ProviderSharing.EVERYONE).to_dict()

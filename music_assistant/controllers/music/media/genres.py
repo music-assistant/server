@@ -1695,8 +1695,8 @@ class GenreController(MediaControllerBase[Genre]):
         """
         Propagate track genre mappings to albums and artists for filesystem provider instances.
 
-        Only runs when at least one filesystem_local or filesystem_smb provider instance has
-        the 'propagate_track_genres' config option enabled. Albums and artists that already
+        Only runs when at least one Local files provider instance has the
+        'propagate_track_genres' config option enabled. Albums and artists that already
         have their own genre metadata (e.g. from an NFO file) are skipped.
 
         Derived mappings are stored with is_derived=1 and rebuilt from scratch on each
@@ -1705,7 +1705,7 @@ class GenreController(MediaControllerBase[Genre]):
         """
         enabled_instance_ids: list[str] = []
         for p in self.mass.music.providers:
-            if p.domain in {"filesystem_local", "filesystem_smb"}:
+            if p.domain == "filesystem_local":
                 enabled = await self.mass.config.get_provider_config_value(
                     p.instance_id, "propagate_track_genres", default=False
                 )

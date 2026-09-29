@@ -83,8 +83,8 @@ def test_home_assistant_addon_folders_are_never_media() -> None:
     assert "/ssl" not in mounts
 
 
-def test_share_mounted_by_a_music_source_is_not_a_location() -> None:
-    """The mount an SMB music source makes below /tmp for itself is not offered to anyone."""
+def test_share_mounted_below_tmp_is_not_a_location() -> None:
+    """A share mounted below /tmp is not discovered as a location of its own."""
     mounts = _parse(*_fixture("haos_addon").splitlines(), in_container=True, supervisor=True)
 
     assert not any(mountpoint.startswith("/tmp/") for mountpoint in mounts)  # noqa: S108

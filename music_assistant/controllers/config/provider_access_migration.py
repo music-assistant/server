@@ -28,6 +28,7 @@ from music_assistant.constants import (
     CONF_PROVIDER_ACCESS_MIGRATED,
     CONF_PROVIDERS,
 )
+from music_assistant.controllers.config.filesystem_consolidation import REMOVED_PROVIDER_NAMES
 from music_assistant.helpers.json import json_loads
 
 if TYPE_CHECKING:
@@ -111,7 +112,10 @@ def _access_for_source(
     """
     if raw_conf.get("type") != ProviderType.MUSIC or raw_conf.get("access") is not None:
         return None
-    if mass.get_provider_manifest(raw_conf["domain"]).builtin:
+    domain = raw_conf["domain"]
+    # an SMB or NFS source becomes a Local files source, on this start or a later one, so it
+    # gets the record of one although its provider is gone
+    if domain not in REMOVED_PROVIDER_NAMES and mass.get_provider_manifest(domain).builtin:
         # the builtin provider serves the entire household and carries no access record
         return None
     listed_by = [user_id for user_id, user in users.items() if instance_id in user.sources]
