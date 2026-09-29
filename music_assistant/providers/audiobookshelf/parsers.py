@@ -39,6 +39,7 @@ from music_assistant_models.media_items import Playlist as MassPlaylist
 from music_assistant_models.media_items import Podcast as MassPodcast
 from music_assistant_models.media_items import PodcastEpisode as MassPodcastEpisode
 
+from music_assistant.constants import DEFAULT_AUDIOBOOK_PODCAST_GENRE
 from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.providers.audiobookshelf.helpers import NarratorHelper
 
@@ -153,11 +154,9 @@ def parse_podcast(
         if abs_podcast.media.metadata.language is not None
         else UniqueList([])
     )
-    mass_podcast.metadata.genres = (
-        set(abs_podcast.media.metadata.genres)
-        if abs_podcast.media.metadata.genres is not None
-        else set()
-    )
+    mass_podcast.metadata.genres = set(abs_podcast.media.metadata.genres or []) or {
+        DEFAULT_AUDIOBOOK_PODCAST_GENRE
+    }
 
     # podcast object has no published_at int, but an iso string
     if abs_podcast.media.metadata.release_date is not None:

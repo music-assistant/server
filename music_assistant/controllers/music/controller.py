@@ -331,6 +331,31 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 category="generic",
                 advanced=True,
             ),
+            # the three entries below hold state kept across restarts; they are declared so a
+            # config save carries them over
+            ConfigEntry(
+                key=CONF_DELETED_PROVIDERS,
+                type=ConfigEntryType.STRING,
+                required=False,
+                multi_value=True,
+                default_value=[],
+                hidden=True,
+            ),
+            ConfigEntry(
+                key=CONF_TRACK_RECONCILIATION_CURSOR,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                multi_value=True,
+                default_value=[0, 0],
+                hidden=True,
+            ),
+            ConfigEntry(
+                key=CONF_TRACK_RECONCILIATION_RESCAN_DUE,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=False,
+                hidden=True,
+            ),
         )
 
     async def handle_config_action(
@@ -1552,7 +1577,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         await self.mass.metadata.update_metadata(library_item, overwrite_existing)
         return library_item
 
-    @api_command("music/refresh_item", required_scope=Scope.LIBRARY_MANAGE)
+    @api_command("music/refresh_item", required_scope=Scope.LIBRARY_WRITE)
     async def refresh_item(  # noqa: PLR0915
         self,
         media_item: str | MediaItemType,
@@ -1586,13 +1611,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         for prov_mapping in sorted(
             media_item.provider_mappings, key=lambda x: x.priority, reverse=True
         ):
-            if not self.mass.get_provider(prov_mapping.provider_instance):
-                # ignore unavailable providers
+            if not (source := self._visible_provider_for(prov_mapping)):
+                # unavailable, or not one of the caller's music sources
                 continue
             with suppress(MediaNotFoundError):
                 media_item = await ctrl.get_provider_item(
                     prov_mapping.item_id,
-                    prov_mapping.provider_instance,
+                    source.instance_id,
                     force_refresh=True,
                 )
                 provider = media_item.provider
@@ -1646,7 +1671,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 library_item.item_id, library_item.provider, True
             ):
                 for prov_mapping in album_track.provider_mappings:
-                    if not (prov := self.mass.get_provider(prov_mapping.provider_instance)):
+                    if not (prov := self._visible_provider_for(prov_mapping)):
                         continue
                     if not isinstance(prov, MusicProvider):
                         continue
@@ -2729,6 +2754,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if user is None or (allowed := visible_music_sources(self.mass, user)) is None:
             return list(providers)
         return [p for p in providers if p.type != ProviderType.MUSIC or p.instance_id in allowed]
+
+    def _visible_provider_for(self, mapping: ProviderMapping) -> ProviderInstanceType | None:
+        """
+        Return the loaded provider that serves the mapping, if the current user may see it.
+
+        :param mapping: The provider mapping to resolve.
+        """
+        # an unavailable account of a streaming service resolves to another loaded account
+        # of that service, so the account actually serving the mapping is the one to check
+        provider = self.mass.get_provider(mapping.provider_instance)
+        if provider is None or not self._apply_user_provider_filter([provider]):
+            return None
+        return provider
 
     async def _search_shareable_url(self, search_query: str) -> SearchResults | None:
         """

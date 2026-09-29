@@ -1,0 +1,35 @@
+{
+  "manifest": {
+    "name": "Storage",
+    "description": "Keeps track of the storage the server can use."
+  },
+  "errors": {
+    "local_folder_not_allowed": "A folder can only be added when Music Assistant does not run in a container. Map the folder into the container as a volume instead.",
+    "folder_path_not_absolute": "Enter the full path of the folder, starting with a /.",
+    "folder_is_root": "The root folder of the server can not be added.",
+    "folder_is_server_folder": "The data and cache folders of Music Assistant can not be added.",
+    "folder_already_location": "This folder already is a storage location.",
+    "folder_not_found": "The folder {0} does not exist.",
+    "folder_unreadable": "The folder {0} can not be read right now.",
+    "folder_not_registered": "This folder was not added as a storage location.",
+    "location_in_use": "The music source {0} uses this folder. Remove that music source first.",
+    "path_not_allowed": "This folder is not inside a storage location you can use.",
+    "no_mount_backend": "This installation of Music Assistant can not mount network shares. Mount the share on the host and make it available to Music Assistant instead, see {0}",
+    "mount_not_permitted": "This installation of Music Assistant is not allowed to mount network shares. Mount the share on the host and make it available to Music Assistant instead, see {0}",
+    "mount_backend_unavailable": "This network share can not be mounted right now: what mounted it is not available.",
+    "share_type_not_supported": "Network shares of type {0} can not be mounted here.",
+    "share_version_not_supported": "Protocol version {0} can not be used here for this type of network share.",
+    "share_name_invalid": "Enter the name of the share without slashes or commas.",
+    "share_username_invalid": "A user name can not contain a comma.",
+    "share_password_missing": "Enter the password of the user, or leave the user empty to connect as a guest.",
+    "share_changed": "This network share was changed in Home Assistant, so Music Assistant leaves it alone. Change it back or remove it in Home Assistant.",
+    "supervisor_mounts_unavailable": "Home Assistant does not mount network shares for Music Assistant right now. Try again later, and update the Music Assistant app when this keeps happening.",
+    "export_path_invalid": "Enter the full path of the export, starting with a /.",
+    "share_already_added": "This network share already is a storage location.",
+    "mount_folder_unsafe": "Music Assistant does not mount network shares on {0}: another user of this server could have prepared that folder. Remove it, and try again.",
+    "share_mounted_already": "This network share is mounted already, and available as the storage location {0}.",
+    "share_not_found": "There is no network share named {0}.",
+    "share_not_mounted": "The network share did not become available. Check that its server is online and try again.",
+    "share_unavailable": "The network share is not available right now."
+  }
+}

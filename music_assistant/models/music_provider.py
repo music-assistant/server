@@ -26,6 +26,7 @@ from music_assistant_models.media_items import (
     Audiobook,
     BrowseFolder,
     ItemMapping,
+    MediaItemTranscriptCue,
     MediaItemType,
     Playlist,
     Podcast,
@@ -62,6 +63,7 @@ if TYPE_CHECKING:
     from music_assistant.controllers.music.media.base import (
         AudiobookSyncDetails,
         LibraryItemSyncDetails,
+        PodcastSyncDetails,
         TrackSyncDetails,
     )
     from music_assistant.mass import MusicAssistant
@@ -264,6 +266,18 @@ class MusicProvider(Provider):
         return True
 
     @property
+    def stream_format_supersedes_catalog(self) -> bool:
+        """
+        Return whether the format a stream declares replaces the one stored on a library mapping.
+
+        By default a mapping keeps the format the catalog gave it and only a mapping without
+        a format takes the one its stream declares. Return True when the catalog does not
+        carry the full format, such as a hi-res flag without the sample rate, so mappings
+        take the real format the first time they play.
+        """
+        return False
+
+    @property
     def supported_media_types(self) -> set[MediaType]:
         """
         Return the media types this provider can serve.
@@ -439,6 +453,16 @@ class MusicProvider(Provider):
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get (full) podcast episode details by id."""
         raise NotImplementedError
+
+    async def get_podcast_episode_transcript(
+        self, prov_episode_id: str
+    ) -> tuple[str | None, list[MediaItemTranscriptCue] | None]:
+        """
+        Get a podcast episode's transcript as (readable text, timed cues).
+
+        Returns (None, None) when the provider has no transcript for the episode.
+        """
+        return None, None
 
     async def get_sound_effect(self, prov_sound_effect_id: str) -> SoundEffect:
         """Get full sound effect details by id."""
@@ -1836,8 +1860,11 @@ class MusicProvider(Provider):
             self._note_listed_sync_item(MediaType.PODCAST, prov_item.item_id)
             db_id: int | None = None
             try:
-                sync_details = await self.mass.music.podcasts.get_library_item_sync_details(
-                    prov_item.provider_mappings,
+                sync_details = cast(
+                    "PodcastSyncDetails | None",
+                    await self.mass.music.podcasts.get_library_item_sync_details(
+                        prov_item.provider_mappings,
+                    ),
                 )
                 db_id = sync_details.item_id if sync_details else None
                 # batch all writes for this item into a single commit
@@ -1848,7 +1875,11 @@ class MusicProvider(Provider):
                             prov_map.in_library = True
                         library_item = await self.mass.music.podcasts.add_item_to_library(prov_item)
                         db_id = int(library_item.item_id)
-                    elif self._library_item_needs_update(sync_details, prov_item):
+                    elif self._library_item_needs_update(sync_details, prov_item) or (
+                        # the genre scan drops any genre link missing from the saved
+                        # genres, so new provider genres must be saved to keep their links
+                        not set(prov_item.metadata.genres or ()) <= sync_details.genres
+                    ):
                         library_item = await self.mass.music.podcasts.update_item_in_library(
                             sync_details.item_id, prov_item
                         )

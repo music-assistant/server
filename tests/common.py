@@ -6,7 +6,7 @@ import inspect
 import logging
 import pathlib
 from collections.abc import AsyncGenerator, Iterator, Mapping
-from types import MethodType
+from types import CoroutineType, MethodType
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -88,6 +88,50 @@ def collect_loop_errors() -> Iterator[list[dict[str, Any]]]:
         yield reported
     finally:
         loop.set_exception_handler(previous)
+
+
+class _RecordCollector(logging.Handler):
+    """Log handler that keeps every record it gets."""
+
+    def __init__(self, records: list[logging.LogRecord]) -> None:
+        """
+        Initialize the handler at the lowest level.
+
+        :param records: The list the records are appended to.
+        """
+        super().__init__(level=1)
+        self.records = records
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Keep a record."""
+        self.records.append(record)
+
+
+@contextlib.contextmanager
+def capture_log_records(logger: logging.Logger) -> Iterator[list[logging.LogRecord]]:
+    """
+    Capture every record of a logger, whatever other tests did to the logging setup.
+
+    Yields the (initially empty) list of records. The logger gets a handler of its own and
+    the lowest level, so neither the level an ancestor was given, nor its propagation or the
+    handlers of the root logger, decide what is captured; all of it is restored on exit.
+
+    :param logger: The logger the code under test writes to.
+    """
+    records: list[logging.LogRecord] = []
+    handler = _RecordCollector(records)
+    level, disabled, disabled_below = logger.level, logger.disabled, logging.root.manager.disable
+    logger.addHandler(handler)
+    logger.setLevel(1)
+    logger.disabled = False
+    logging.disable(logging.NOTSET)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(level)
+        logger.disabled = disabled
+        logging.disable(disabled_below)
 
 
 @contextlib.asynccontextmanager
@@ -193,6 +237,25 @@ def suppress_initial_library_sync() -> Iterator[None]:
     """
     with patch("music_assistant.controllers.music.controller.INITIAL_SYNC_DELAY", None):
         yield
+
+
+def scheduled_call(coro: CoroutineType[Any, Any, Any]) -> tuple[str, dict[str, Any]]:
+    """
+    Return the name and bound arguments of a coroutine handed to mass.create_task.
+
+    Callers build the coroutine before handing it over, so a test asserting on what was
+    scheduled reads it back off the coroutine. It is closed here, since a test that only
+    asserts on the scheduling never awaits it.
+
+    :param coro: The coroutine the caller passed to create_task.
+    """
+    name = coro.cr_code.co_qualname
+    # cr_frame is None only once a coroutine has finished; one handed to create_task has
+    # not been started yet, so its frame still holds the arguments it was built with
+    assert coro.cr_frame is not None
+    arguments = dict(coro.cr_frame.f_locals)
+    coro.close()
+    return name, arguments
 
 
 # Mock classes for testing

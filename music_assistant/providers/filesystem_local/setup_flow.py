@@ -19,7 +19,7 @@ _ENTRIES = (CONF_ENTRY_CONTENT_TYPE, CONF_ENTRY_PATH)
 
 async def run_setup(session: SetupSession) -> None:
     """Run the setup flow: collect the content type and path, then create the provider."""
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     setup_data = dict(session.context.setup_data)
     while True:
         entries = [
@@ -31,4 +31,4 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(setup_data)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}

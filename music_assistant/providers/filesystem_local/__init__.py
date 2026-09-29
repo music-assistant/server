@@ -67,6 +67,7 @@ from music_assistant.constants import (
     DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
+    DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
     VERBOSE_LOG_LEVEL,
@@ -115,7 +116,6 @@ from .constants import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PROPAGATE_GENRES,
     CUE_EXTENSIONS,
-    DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     IMAGE_EXTENSIONS,
     METADATA_FILE_CACHE_EXPIRATION,
     METADATA_FILE_EXTENSIONS,
@@ -2138,7 +2138,7 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def _is_reachable(self) -> bool:
         """Return whether the storage backing this provider can be read."""
-        return bool(await isdir(self.base_path))
+        return await self.mass.storage.is_available(self.base_path)
 
     @property
     def _availability_probe_id(self) -> str:
@@ -3103,6 +3103,7 @@ class LocalFileSystemProvider(MusicProvider):
             set(tags.genres) if tags.genres else {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
         )
         episode.metadata.copyright = tags.get("copyright")
+        episode.metadata.release_date = tags.release_date
         episode.metadata.lyrics = tags.lyrics
         episode.metadata.description = tags.get("comment")
         explicit_tag = tags.get("itunesadvisory")
