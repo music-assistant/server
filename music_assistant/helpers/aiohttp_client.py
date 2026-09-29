@@ -55,6 +55,8 @@ def create_clientsession(
     """Create a new ClientSession with kwargs, i.e. for cookies."""
     clientsession = aiohttp.ClientSession(
         connector=_get_connector(mass, verify_ssl, socks_url),
+        # honour the (NO_|HTTP_|HTTPS_)PROXY env vars, unless an explicit socks proxy is set
+        trust_env=not socks_url,
         json_serialize=json_dumps,
         response_class=MassClientResponse,
         **kwargs,
