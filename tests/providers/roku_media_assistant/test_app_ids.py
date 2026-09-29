@@ -5,10 +5,14 @@ from __future__ import annotations
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
 from music_assistant_models.player import PlayerMedia
 
-from music_assistant.providers.roku_media_assistant.player import MediaAssistantPlayer
+from music_assistant.providers.roku_media_assistant.player import (
+    MediaAssistantPlayer,
+    parse_app_ids,
+)
 
 PLAYER_ID = "ROKU_TEST0001"
 MEDIA_ASSISTANT = "782875"
@@ -69,6 +73,31 @@ def _media() -> PlayerMedia:
     return PlayerMedia(
         uri="library://track/1", media_type=MediaType.TRACK, title="Song", duration=200
     )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("782875", ["782875"]),
+        (None, []),
+        (782875, ["782875"]),
+        (True, []),
+    ],
+)
+def test_parse_app_ids(value: object, expected: list[str]) -> None:
+    """The setting's app ID as a string; a number counts, anything else gives none."""
+    assert parse_app_ids(value) == expected
+
+
+async def test_play_launches_nothing_without_an_app_id(caplog: pytest.LogCaptureFixture) -> None:
+    """A setting with no app ID (not a string or a number) launches nothing; the log says why."""
+    player = _make_player(MEDIA_ASSISTANT)
+    player.provider.config.get_value.return_value = True  # type: ignore[attr-defined]
+    with caplog.at_level(logging.ERROR):
+        await player.play_media(_media())
+
+    player.roku.launch.assert_not_awaited()  # type: ignore[attr-defined]
+    assert "No Roku app ID is configured" in caplog.text
 
 
 async def test_play_goes_to_the_app_in_front() -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
@@ -19,6 +19,16 @@ if TYPE_CHECKING:
     from rokuecp import Device, Roku
 
     from .provider import MediaAssistantprovider
+
+
+def parse_app_ids(value: object) -> list[str]:
+    """Return the app ID of a roku_app_id setting."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        # a number set through the API, which a string entry keeps as is
+        value = str(value)
+    if not isinstance(value, str):
+        return []
+    return [value]
 
 
 class MediaAssistantPlayer(Player):
@@ -64,6 +74,11 @@ class MediaAssistantPlayer(Player):
     def poll_interval(self) -> int:
         """Return the interval in seconds to poll the player for state updates."""
         return 5 if self.powered else 30
+
+    @property
+    def app_ids(self) -> list[str]:
+        """Return the IDs of the Roku apps to play in, in order of preference."""
+        return parse_app_ids(self.provider.config.get_value(CONF_ROKU_APP_ID))
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
@@ -189,10 +204,10 @@ class MediaAssistantPlayer(Player):
             if app_running:
                 await self.roku_input(f_media)
             else:
-                await self.roku.launch(
-                    cast("str", self.provider.config.get_value(CONF_ROKU_APP_ID)),
-                    f_media,
-                )
+                if not self.app_ids:
+                    self.logger.error("No Roku app ID is configured for %s", self.name)
+                    return
+                await self.roku.launch(self.app_ids[0], f_media)
 
             logger = self.provider.logger.getChild(self.player_id)
             logger.info(
@@ -319,7 +334,7 @@ class MediaAssistantPlayer(Player):
 
     def _app_in_front(self, device: Device, screensaver_counts: bool = True) -> bool:
         """
-        Return whether the configured app is in front on the Roku.
+        Return whether one of the listed apps is in front on the Roku.
 
         :param device: The Roku's state, from the latest update.
         :param screensaver_counts: Whether the app under the screensaver counts as in front.
@@ -329,4 +344,4 @@ class MediaAssistantPlayer(Player):
             return False
         if app.screensaver and not screensaver_counts:
             return False
-        return app.app_id == self.provider.config.get_value(CONF_ROKU_APP_ID)
+        return app.app_id in self.app_ids
