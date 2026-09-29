@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import time
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.auth import User, UserRole
@@ -23,6 +22,7 @@ from tests.controllers.storage.conftest import (
     FakeBackends,
     FakeMounter,
     FakeSupervisor,
+    store_source,
     wait_until,
 )
 
@@ -696,9 +696,7 @@ async def test_changed_mount_is_not_forgotten_while_in_use(
     """A share a loaded music source reads from is not removed, whatever became of its mount."""
     _store(storage, ready, "music")
     ready.add_mount("music", type="cifs", server="nas2.local", share="music")
-    source = MagicMock(domain="filesystem_local", base_path=ready.path("music"))
-    source.name = "My music"
-    storage.mass._providers["filesystem_local--abc"] = source
+    store_source(storage, ready.path("music"))
 
     with pytest.raises(ActionUnavailable) as exc_info:
         await storage.remove_network_share("music")

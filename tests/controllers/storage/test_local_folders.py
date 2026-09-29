@@ -3,17 +3,31 @@
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Iterator
+from functools import partial
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.errors import ActionUnavailable, InvalidDataError
+from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.constants import CONF_CORE, CONF_STORAGE_FOLDERS
-from music_assistant.controllers.storage import StorageController, StorageKind
+from music_assistant.controllers.storage import (
+    StorageController,
+    StorageKind,
+    StorageLocation,
+    StorageUsage,
+)
 from music_assistant.controllers.storage import controller as controller_module
-from tests.controllers.storage.conftest import mount_line
+from music_assistant.controllers.storage.constants import PROBE_MAX_AGE
+from music_assistant.controllers.translations import TranslationController
+from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
+from tests.controllers.storage.conftest import FakeProbes, mount_line, store_source
+
+MEMBER = User(user_id="member", username="member", role=UserRole.USER)
 
 
 @pytest.fixture(autouse=True)
@@ -23,19 +37,24 @@ def empty_mount_table() -> Iterator[None]:
         yield
 
 
-def _source(domain: str, base_path: str, name: str = "My music") -> MagicMock:
+def _location(locations: list[StorageLocation], path: Path) -> StorageLocation:
     """
-    Return a stand-in for a loaded music source reading its files from a path.
+    Return the location on a path.
 
-    :param domain: The provider domain of the source.
-    :param base_path: The folder the source reads its files from.
-    :param name: The name of the source.
+    :param locations: The locations to pick from.
+    :param path: The path of the location.
     """
-    source = MagicMock()
-    source.domain = domain
-    source.base_path = base_path
-    source.name = name
-    return source
+    return next(loc for loc in locations if loc.path == str(path))
+
+
+def _outdate_answer(storage: StorageController, path: Path) -> None:
+    """
+    Make the last answer for a path too old to go by, so the next caller probes it again.
+
+    :param storage: The storage controller.
+    :param path: The probed path.
+    """
+    storage._probes[str(path)].answered_at = time.monotonic() - PROBE_MAX_AGE - 1
 
 
 async def test_add_folder(storage: StorageController, tmp_path: Path) -> None:
@@ -264,9 +283,7 @@ async def test_remove_refused_while_in_use(
 ) -> None:
     """A folder a music source reads from, directly or below it, stays registered."""
     await storage.add_local_folder(str(tmp_path))
-    storage.mass._providers["filesystem_local--abc"] = _source(
-        "filesystem_local", f"{tmp_path}{subfolder}"
-    )
+    store_source(storage, f"{tmp_path}{subfolder}")
 
     with pytest.raises(ActionUnavailable) as exc_info:
         await storage.remove_local_folder(str(tmp_path))
@@ -293,8 +310,11 @@ async def test_remove_allowed_when_no_source_reads_from_it(
     folder = tmp_path / "music"
     folder.mkdir()
     await storage.add_local_folder(str(folder))
-    storage.mass._providers["other--abc"] = _source(
-        domain, base_path.format(folder=folder, parent=tmp_path)
+    store_source(
+        storage,
+        base_path.format(folder=folder, parent=tmp_path),
+        instance_id=f"{domain}--abc",
+        domain=domain,
     )
 
     await storage.remove_local_folder(str(folder))
@@ -312,3 +332,177 @@ async def test_remove_refuses_an_unregistered_folder(
         await storage.remove_local_folder(str(tmp_path / "music"))
 
     assert exc_info.value.translation_key == "folder_not_registered"
+
+
+async def test_used_by(storage: StorageController, tmp_path: Path) -> None:
+    """
+    A location names the sources that read from it or from a folder inside it, sorted.
+
+    A source without a name of its own shows its default name. A source on a sibling folder
+    whose name only starts the same way, or one that reads no local folder, is no user of it.
+    """
+    music = tmp_path / "music"
+    (music / "Albums").mkdir(parents=True)
+    (tmp_path / "music-old").mkdir()
+    await storage.add_local_folder(str(music))
+    store_source(storage, music, "filesystem_local--a", "Music")
+    store_source(storage, f"{music}/Albums/", "filesystem_local--b", "albums")
+    store_source(storage, music, "filesystem_local--c", None)
+    store_source(storage, f"{music}-old", "filesystem_local--d", "Old music")
+    store_source(storage, music, "webdav--e", "Cloud", domain="webdav")
+
+    info = await storage.get_info()
+
+    assert _location(info.locations, music).used_by == ["albums", "Local files", "Music"]
+    assert all(loc.used_by == [] for loc in info.locations if loc.path != str(music))
+
+
+async def test_used_by_every_location_around_the_source(
+    storage: StorageController, tmp_path: Path
+) -> None:
+    """A source in a nested location uses the outer location too, so neither can be removed."""
+    music = tmp_path / "music"
+    classical = music / "classical"
+    (classical / "Bach").mkdir(parents=True)
+    await storage.add_local_folder(str(music))
+    await storage.add_local_folder(str(classical))
+    store_source(storage, classical / "Bach")
+
+    info = await storage.get_info()
+
+    assert _location(info.locations, music).used_by == ["My music"]
+    assert _location(info.locations, classical).used_by == ["My music"]
+    for folder in (classical, music):
+        with pytest.raises(ActionUnavailable) as exc_info:
+            await storage.remove_local_folder(str(folder))
+        assert exc_info.value.translation_key == "location_in_use"
+    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == [str(music), str(classical)]
+
+
+async def test_source_that_failed_to_load_uses_its_location(
+    storage: StorageController, tmp_path: Path
+) -> None:
+    """A source that did not load, e.g. because its share is down, still keeps its location."""
+    await storage.add_local_folder(str(tmp_path))
+    store_source(storage, tmp_path)
+
+    info = await storage.get_info()
+
+    assert _location(info.locations, tmp_path).used_by == ["My music"]
+    with pytest.raises(ActionUnavailable) as exc_info:
+        await storage.remove_local_folder(str(tmp_path))
+    assert exc_info.value.translation_key == "location_in_use"
+    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == [str(tmp_path)]
+
+
+async def test_disabled_source_uses_no_location(storage: StorageController, tmp_path: Path) -> None:
+    """A disabled source does not keep its location from removal."""
+    await storage.add_local_folder(str(tmp_path))
+    store_source(storage, tmp_path, enabled=False)
+
+    info = await storage.get_info()
+
+    assert _location(info.locations, tmp_path).used_by == []
+    await storage.remove_local_folder(str(tmp_path))
+    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == []
+
+
+async def test_loaded_source_is_listed_once(storage: StorageController, tmp_path: Path) -> None:
+    """A loaded source and its stored config are one source."""
+    await storage.add_local_folder(str(tmp_path))
+    store_source(storage, tmp_path)
+    loaded = MagicMock(domain="filesystem_local", base_path=str(tmp_path))
+    loaded.name = "My music"
+    storage.mass._providers["filesystem_local--abc"] = loaded
+
+    info = await storage.get_info()
+
+    assert _location(info.locations, tmp_path).used_by == ["My music"]
+
+
+async def test_refused_removal_probes_nothing(
+    storage: StorageController, tmp_path: Path, probes: FakeProbes
+) -> None:
+    """Refusing to remove a folder in use touches no location."""
+    await storage.add_local_folder(str(tmp_path))
+    store_source(storage, tmp_path)
+    probes.calls.clear()
+
+    with pytest.raises(ActionUnavailable):
+        await storage.remove_local_folder(str(tmp_path))
+
+    assert probes.calls == []
+
+
+async def test_member_does_not_see_the_sources(storage: StorageController, tmp_path: Path) -> None:
+    """A caller that does not manage every source never learns which sources use a location."""
+    await storage.add_local_folder(str(tmp_path))
+    store_source(storage, tmp_path)
+    set_current_user(MEMBER)
+
+    info = await storage.get_info()
+
+    assert _location(info.locations, tmp_path).used_by == []
+    assert _location(storage.get_locations(), tmp_path).used_by == ["My music"]
+
+
+async def test_removed_folder_says_so(storage: StorageController, tmp_path: Path) -> None:
+    """
+    A registered folder removed from disk says it does not exist, until it is back.
+
+    A caller that does not manage every source gets the same reason: it names nothing more than
+    the location itself.
+    """
+    music = tmp_path / "music"
+    music.mkdir()
+    await storage.add_local_folder(str(music))
+    music.rmdir()
+    _outdate_answer(storage, music)
+
+    location = _location((await storage.get_info()).locations, music)
+    set_current_user(MEMBER)
+    member_view = _location((await storage.get_info()).locations, music)
+
+    assert (location.available, location.error_key, location.error_args) == (
+        False,
+        "folder_missing",
+        [],
+    )
+    assert location.error is not None
+    assert member_view == location
+    music.mkdir()
+    _outdate_answer(storage, music)
+    location = _location((await storage.get_info()).locations, music)
+    assert (location.available, location.error, location.error_key) == (True, None, None)
+
+
+@pytest.mark.parametrize(
+    ("error_key", "text"),
+    [
+        ("folder_missing", "This folder does not exist."),
+        ("storage_not_responding", "The storage of this location does not respond."),
+    ],
+)
+async def test_location_errors_are_translated(
+    storage: StorageController, error_key: str, text: str
+) -> None:
+    """The reason a location is not available reads from the strings of the server."""
+    translations = TranslationController(storage.mass)
+    await translations.setup(MagicMock())
+    location = StorageLocation(
+        path="/srv/music",
+        name="music",
+        usage=StorageUsage.MEDIA,
+        kind=StorageKind.MANUAL,
+        available=False,
+        error="English fallback",
+        error_key=error_key,
+    )
+
+    token = TRANSLATION_RESOLVER.set(partial(translations.get_translation, locale="en"))
+    try:
+        serialized = location.to_dict()
+    finally:
+        TRANSLATION_RESOLVER.reset(token)
+
+    assert serialized["error"].startswith(text)

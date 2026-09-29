@@ -78,6 +78,10 @@ class StorageLocation(DataClassDictMixin):
     error_args: list[str] = field(
         default_factory=list, metadata=field_options(serialize="omit"), repr=False
     )
+    # the names of the enabled music sources, loaded or not, that read their files from this
+    # location or a folder inside it, also inside a nested location; a location in use can not
+    # be removed
+    used_by: list[str] = field(default_factory=list)
 
     def __post_serialize__(self, d: dict[str, Any]) -> dict[str, Any]:
         """Localize the error when a resolver for the language of the client is active."""

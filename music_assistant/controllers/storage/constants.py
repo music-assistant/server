@@ -15,6 +15,8 @@ PROBE_MAX_AGE: Final[float] = 30
 # this often (in seconds)
 DIR_SIZE_MAX_AGE: Final[int] = 600
 DIR_SIZES_TASK_ID: Final[str] = "storage_dir_sizes"
+# the decimals the sizes (in gibibytes) are rounded to, so a folder of a few megabytes is not 0
+SIZE_DECIMALS: Final[int] = 4
 MAX_LISTED_FOLDERS: Final[int] = 500
 SHARES_SETUP_TASK_ID: Final[str] = "storage_shares_setup"
 RECONCILE_TASK_ID: Final[str] = "storage_shares_reconcile"
