@@ -14,6 +14,7 @@ themselves at the mercy of set iteration order.
 
 from __future__ import annotations
 
+import asyncio
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -451,3 +452,29 @@ def test_resolve_transition_anchor_prefers_a_matching_stash_over_current_items_o
     anchor = StreamsAudio._resolve_transition_anchor(queue_data, queue_item)
 
     assert anchor == (INSTANCE, ITEM_ID)
+
+
+async def test_concurrent_callers_for_one_queue_item_share_one_resolution() -> None:
+    """Two callers resolving the same queue item at once ask the provider only once."""
+    calls: list[str] = []
+    release = asyncio.Event()
+
+    async def _slow(item_id: str, media_type: MediaType) -> StreamDetails:
+        calls.append(item_id)
+        await release.wait()
+        return _streamdetails(item_id, media_type, INSTANCE)
+
+    provider = MagicMock()
+    provider.get_stream_details = _slow
+    audio = _audio({INSTANCE: provider})
+    queue_item = _queue_item(_mapping(INSTANCE))
+
+    first = asyncio.create_task(audio.get_stream_details(queue_item=queue_item))
+    second = asyncio.create_task(audio.get_stream_details(queue_item=queue_item))
+    await asyncio.sleep(0)
+    release.set()
+    first_details, second_details = await asyncio.gather(first, second)
+
+    assert calls == [ITEM_ID]
+    assert first_details is second_details
+    assert queue_item.streamdetails is first_details

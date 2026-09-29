@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 from xml.etree.ElementTree import ParseError
 
 import defusedxml.ElementTree as DefusedET
+from aiohttp import ClientPayloadError
+from aiohttp.http_exceptions import ContentLengthError
 from async_upnp_client.exceptions import UpnpError, UpnpResponseError
 from async_upnp_client.profiles.dlna import DmrDevice, TransportState
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
@@ -347,6 +349,13 @@ class DLNAPlayer(Player):
             # connected; the next poll will likely succeed.
             if isinstance(err.__cause__, UnicodeDecodeError):
                 self.logger.debug("Ignoring non-UTF-8 SOAP response from device: %r", err)
+                return
+            # Some firmware (e.g. Busch-Jaeger 8216 U) announces a Content-Length one byte
+            # larger than the complete body it sends; that is a quirk, not a lost connection.
+            if isinstance(err.__cause__, ClientPayloadError) and isinstance(
+                err.__cause__.__cause__, ContentLengthError
+            ):
+                self.logger.debug("Ignoring Content-Length mismatch from device: %r", err)
                 return
             self.logger.debug("Device unavailable: %r", err)
             await self._device_disconnect()

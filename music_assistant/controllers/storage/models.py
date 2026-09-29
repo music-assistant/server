@@ -82,6 +82,10 @@ class StorageLocation(DataClassDictMixin):
     # location or a folder inside it, also inside a nested location; a location in use can not
     # be removed
     used_by: list[str] = field(default_factory=list)
+    # the names of the enabled music sources, loaded or not, whose folder contains this media
+    # location, so they read its files as part of their own folder; they do not keep the
+    # location from being removed
+    read_by: list[str] = field(default_factory=list)
 
     def __post_serialize__(self, d: dict[str, Any]) -> dict[str, Any]:
         """Localize the error when a resolver for the language of the client is active."""

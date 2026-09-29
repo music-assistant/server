@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
@@ -38,8 +39,13 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant import MusicAssistant
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.constants import (
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    DEFAULT_AUDIOBOOK_PODCAST_GENRE,
+)
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.datetime import from_iso_string
 from music_assistant.helpers.podcast_parsers import (
     get_episode_transcript,
     rank_episodes_by_date,
@@ -233,7 +239,14 @@ class PocketCastsProvider(MusicProvider):
             raise MediaNotFoundError(
                 f"podcast://{prov_podcast_id} not found on provider {self.domain}"
             )
-        return self._convert_podcast(podcast_data)
+        podcast = self._convert_podcast(podcast_data)
+        # only this endpoint carries the category, one genre per line with sub-genres indented
+        podcast.metadata.genres = {
+            genre
+            for line in (podcast_data.get("category") or "").splitlines()
+            if (genre := line.strip())
+        } or {DEFAULT_AUDIOBOOK_PODCAST_GENRE}
+        return podcast
 
     async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """
@@ -630,6 +643,9 @@ class PocketCastsProvider(MusicProvider):
             episode_item.duration = int(episode_data["duration"])
         if title := episode_data.get("title"):
             episode_item.metadata.label = title
+        if published := episode_data.get("published"):
+            with contextlib.suppress(ValueError, TypeError):
+                episode_item.metadata.release_date = from_iso_string(published)
         details = show_notes or {}
         if description := details.get("description"):
             episode_item.metadata.description = description

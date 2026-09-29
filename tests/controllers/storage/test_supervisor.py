@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+from collections.abc import Callable
 from typing import Any
 
 import pytest
 from music_assistant_models.auth import User, UserRole
 from music_assistant_models.errors import ActionUnavailable, InvalidDataError, SetupFailedError
 
-from music_assistant.constants import CONF_STORAGE_SHARES
+from music_assistant.constants import CONF_STORAGE_SHARES, MASS_LOGGER_NAME
 from music_assistant.controllers.storage import StorageController, StorageKind
 from music_assistant.controllers.storage import controller as controller_module
 from music_assistant.controllers.storage.backends.base import BackendUnavailable
 from music_assistant.controllers.storage.backends.supervisor import create_supervisor_mounter
+from music_assistant.controllers.storage.constants import RECONCILE_TASK_ID, SHARES_SETUP_TASK_ID
 from music_assistant.controllers.storage.models import MountBackend, NetworkShareSpec, ShareType
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from tests.common import capture_log_records
@@ -75,6 +78,33 @@ def _store(
 def _mutations(supervisor: FakeSupervisor) -> list[tuple[str, str]]:
     """Return the requests that changed a mount at the fake Supervisor."""
     return [request[:2] for request in supervisor.requests if request[0] != "GET"]
+
+
+def _before_discovery(storage: StorageController) -> Callable[[], None]:
+    """
+    Put the server back in its start, before its discovery controller is set up.
+
+    Until then the server can not create its http session, so a request to the Supervisor fails
+    the way it does in a real start. Returns what sets up the discovery controller.
+
+    :param storage: The storage controller.
+    """
+    mass = storage.mass
+    session = mass._http_session_no_ssl
+    mass._http_session_no_ssl = None
+    mass.discovery.initialized.clear()
+
+    def set_up_discovery() -> None:
+        # the session to the fake Supervisor stands in for the one the server can create now
+        mass._http_session_no_ssl = session
+        mass.discovery.initialized.set()
+
+    return set_up_discovery
+
+
+def _problems(records: list[logging.LogRecord]) -> list[str]:
+    """Return the captured messages of level warning and up."""
+    return [record.getMessage() for record in records if record.levelno >= logging.WARNING]
 
 
 async def test_backend_found(storage: StorageController, supervisor: FakeSupervisor) -> None:
@@ -505,6 +535,146 @@ async def test_supervisor_found_later(
     info = await storage.get_info()
 
     assert (info.can_mount_shares, info.mount_backend) == (True, MountBackend.SUPERVISOR)
+
+
+async def test_start_asks_the_supervisor_once_discovery_is_set_up(
+    storage: StorageController, supervisor: FakeSupervisor
+) -> None:
+    """
+    At start the Supervisor is asked nothing until discovery is set up, then the shares mount.
+
+    The server sets up its discovery controller after the storage controller.
+    """
+    _store(storage, supervisor, "music")
+    set_up_discovery = _before_discovery(storage)
+
+    with capture_log_records(logging.getLogger(MASS_LOGGER_NAME)) as records:
+        await storage.setup(await storage.mass.config.get_core_config(storage.domain))
+        shares_setup = storage.mass._tracked_tasks[SHARES_SETUP_TASK_ID]
+        await asyncio.sleep(0.1)
+
+        assert not shares_setup.done()
+        assert supervisor.requests == []
+
+        set_up_discovery()
+        await wait_until(lambda: SHARES_SETUP_TASK_ID not in storage.mass._tracked_tasks)
+
+    # the probe of the backends, then the reconcile, which mounts the share
+    assert [request[:2] for request in supervisor.requests] == [
+        ("GET", "/mounts"),
+        ("GET", "/mounts"),
+        ("POST", "/mounts"),
+    ]
+    location = storage.get_location_for_path(supervisor.path("music"))
+    assert location is not None
+    assert location.available
+    assert _problems(records) == []
+
+
+async def test_info_before_discovery_is_set_up(
+    storage: StorageController, supervisor: FakeSupervisor
+) -> None:
+    """The info asked for before discovery is set up answers once it is, asking nothing before."""
+    set_up_discovery = _before_discovery(storage)
+
+    with capture_log_records(logging.getLogger(MASS_LOGGER_NAME)) as records:
+        info_task = asyncio.create_task(storage.get_info())
+        # the info got as far as looking for a mount backend
+        await wait_until(lambda: info_task.done() or storage._backends_lock.locked())
+        await asyncio.sleep(0.1)
+
+        assert not info_task.done()
+        assert supervisor.requests == []
+
+        set_up_discovery()
+        info = await info_task
+
+    assert (info.can_mount_shares, info.mount_backend) == (True, MountBackend.SUPERVISOR)
+    assert _problems(records) == []
+
+
+async def test_reconcile_while_the_start_looks_for_the_supervisor(
+    storage: StorageController, supervisor: FakeSupervisor
+) -> None:
+    """
+    A reconcile asked for while the start still looks for the Supervisor waits for the answer.
+
+    Its share is mounted once, although the start mounts the shares as well.
+    """
+    set_up_discovery = _before_discovery(storage)
+    await storage.setup(await storage.mass.config.get_core_config(storage.domain))
+    # a share stored at start, e.g. by a conversion of a music source
+    _store(storage, supervisor, "music")
+    await storage.refresh()
+
+    reconcile = asyncio.create_task(storage.reconcile())
+    await asyncio.sleep(0.1)
+    set_up_discovery()
+    await reconcile
+
+    location = storage.get_location_for_path(supervisor.path("music"))
+    assert location is not None
+    assert (location.available, location.error) == (True, None)
+    await wait_until(lambda: SHARES_SETUP_TASK_ID not in storage.mass._tracked_tasks)
+    # both probed and looked at the mounts, only the start added the share
+    assert sorted(request[:2] for request in supervisor.requests) == [
+        *[("GET", "/mounts")] * 4,
+        ("POST", "/mounts"),
+    ]
+
+
+async def test_info_while_the_start_looks_for_the_supervisor(
+    storage: StorageController, supervisor: FakeSupervisor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The info asked for while the start still looks for the Supervisor probes once more.
+
+    It starts no reconcile of its own: the start mounts the shares.
+    """
+    _store(storage, supervisor, "music")
+    set_up_discovery = _before_discovery(storage)
+    await storage.setup(await storage.mass.config.get_core_config(storage.domain))
+    probe_backends = storage._probe_backends
+    asked = 0
+
+    async def _probe_backends() -> set[MountBackend]:
+        nonlocal asked
+        asked += 1
+        return await probe_backends()
+
+    monkeypatch.setattr(storage, "_probe_backends", _probe_backends)
+    info_task = asyncio.create_task(storage.get_info())
+    await wait_until(lambda: asked == 1)
+    set_up_discovery()
+    info = await info_task
+    await wait_until(lambda: SHARES_SETUP_TASK_ID not in storage.mass._tracked_tasks)
+    await wait_until(lambda: RECONCILE_TASK_ID not in storage.mass._tracked_tasks)
+
+    assert (info.can_mount_shares, info.mount_backend) == (True, MountBackend.SUPERVISOR)
+    # the probe of the start and of the info, and the one reconcile, of the start
+    assert sorted(request[:2] for request in supervisor.requests) == [
+        *[("GET", "/mounts")] * 3,
+        ("POST", "/mounts"),
+    ]
+
+
+async def test_stop_before_discovery_is_set_up(
+    storage: StorageController, supervisor: FakeSupervisor
+) -> None:
+    """A server that stops before discovery is set up asks the Supervisor nothing, quietly."""
+    _store(storage, supervisor, "music")
+    _before_discovery(storage)
+
+    with capture_log_records(logging.getLogger(MASS_LOGGER_NAME)) as records:
+        await storage.setup(await storage.mass.config.get_core_config(storage.domain))
+        shares_setup = storage.mass._tracked_tasks[SHARES_SETUP_TASK_ID]
+
+        await storage.close()
+        await wait_until(shares_setup.done)
+
+    assert shares_setup.cancelled()
+    assert supervisor.requests == []
+    assert _problems(records) == []
 
 
 async def test_remove(storage: StorageController, ready: FakeSupervisor) -> None:

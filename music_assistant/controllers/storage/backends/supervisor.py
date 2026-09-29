@@ -46,12 +46,17 @@ async def create_supervisor_mounter(mass: MusicAssistant) -> SupervisorMounter:
     """
     Return the mounter of the Supervisor, when this app may manage the Supervisor's mounts.
 
+    Under a Supervisor this waits until the discovery controller of the server is set up.
+
     :param mass: The Music Assistant instance.
     :raises BackendUnavailable: When there is no Supervisor, or it refuses access to its mounts.
     """
     if not mass.running_as_hass_addon:
         msg = "not running under a Supervisor"
         raise BackendUnavailable(msg)
+    # a request goes through the http session of the server, which it can only create once its
+    # discovery controller is set up: at start that comes after the storage controller
+    await mass.discovery.initialized.wait()
     try:
         await supervisor_request(mass, "get", "/mounts")
     except SupervisorError as err:

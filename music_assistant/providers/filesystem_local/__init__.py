@@ -129,6 +129,7 @@ from .constants import (
     WALK_EXTENSIONS,
     IsChapterFile,
     content_type_config_entry,
+    folder_config_entry,
 )
 from .cue import (
     CueSheetHandler,
@@ -267,6 +268,7 @@ class LocalFileSystemProvider(MusicProvider):
             self.get_setup_value(CONF_CONTENT_TYPE, CONF_ENTRY_CONTENT_TYPE.default_value)
         )
         return (
+            folder_config_entry(self.base_path),
             content_type_config_entry(content_type),
             CONF_ENTRY_MISSING_ALBUM_ARTIST,
             CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
@@ -323,8 +325,17 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        if not await isdir(self.base_path):
-            msg = f"Music Directory {self.base_path} does not exist"
+        if not await self.mass.storage.is_available(self.base_path):
+            location = self.mass.storage.get_location_for_path(self.base_path)
+            if location is not None and not location.available:
+                msg = f"Storage location {location.path} is not available"
+                raise SetupFailedError(
+                    msg,
+                    translation_key="storage_location_unavailable",
+                    translation_owner=self.translation_owner,
+                    translation_args=[location.path],
+                )
+            msg = f"Folder {self.base_path} does not exist"
             raise SetupFailedError(
                 msg,
                 translation_key="music_directory_not_found",
@@ -977,7 +988,7 @@ class LocalFileSystemProvider(MusicProvider):
         if cached_data is not None:
             return cached_data  # type: ignore[no-any-return]
 
-        _, ext = prov_playlist_id.rsplit(".", 1)
+        ext = prov_playlist_id.rsplit(".", 1)[1].lower()
         try:
             # get playlist file contents
             playlist_data_raw = await self._read_file(prov_playlist_id)
@@ -1115,7 +1126,7 @@ class LocalFileSystemProvider(MusicProvider):
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
-        _, ext = prov_playlist_id.rsplit(".", 1)
+        ext = prov_playlist_id.rsplit(".", 1)[1].lower()
         # get playlist file contents
         playlist_filename = self.get_absolute_path(prov_playlist_id)
         async with aiofiles.open(playlist_filename, encoding="utf-8") as _file:
@@ -2356,7 +2367,7 @@ class LocalFileSystemProvider(MusicProvider):
             elif "." not in file_path:
                 continue
             else:
-                _, ext = file_path.rsplit(".", 1)
+                ext = file_path.rsplit(".", 1)[1].lower()
                 if ext in PODCAST_EPISODE_EXTENSIONS and self.media_content_type == "podcasts":
                     controller = self.mass.music.get_controller(MediaType.PODCAST_EPISODE)
                 elif ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":

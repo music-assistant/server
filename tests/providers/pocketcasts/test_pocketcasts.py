@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -243,6 +244,42 @@ async def test_single_episode_gets_its_description(
     assert episode.metadata.description == "All about it."
 
 
+async def test_episodes_get_their_publish_date(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """An episode's publish date becomes its release date, and a malformed one is skipped."""
+    client.get_podcast_episodes.return_value = (
+        "Podcast One",
+        [
+            _feed_episode(uuid="episode-1", published="2026-09-16T22:55:58Z"),
+            _feed_episode(uuid="episode-2", published="not a date"),
+        ],
+    )
+    client.get_in_progress_episodes.return_value = []
+    client.get_history.return_value = []
+
+    episodes = [episode async for episode in provider.get_podcast_episodes("podcast-1")]
+
+    assert episodes[0].metadata.release_date == datetime(2026, 9, 16, 22, 55, 58, tzinfo=UTC)
+    assert episodes[1].metadata.release_date is None
+
+
+async def test_single_episode_gets_its_publish_date(
+    provider: PocketCastsProvider, client: AsyncMock
+) -> None:
+    """Fetching one episode also fills in its release date."""
+    client.get_episode_details.return_value = {
+        "uuid": "episode-1",
+        "title": "Episode 1",
+        "url": "https://example.com/ep1.mp3",
+        "published": "2026-09-16T22:55:58Z",
+    }
+
+    episode = await provider.get_podcast_episode("podcast-1:episode-1")
+
+    assert episode.metadata.release_date == datetime(2026, 9, 16, 22, 55, 58, tzinfo=UTC)
+
+
 async def test_episodes_name_their_podcast(
     provider: PocketCastsProvider, client: AsyncMock
 ) -> None:
@@ -331,6 +368,26 @@ async def test_special_folder_looks_each_podcast_up_once(
     episodes = [item for item in items if isinstance(item, PodcastEpisode)]
     assert [episode.podcast.name for episode in episodes] == ["Podcast One"] * 3
     assert client.get_podcast.await_count == 1
+
+
+async def test_podcast_gets_its_genres(provider: PocketCastsProvider, client: AsyncMock) -> None:
+    """Each category line, sub-genres included, becomes a genre."""
+    client.get_podcast.return_value = {
+        "uuid": "podcast-1",
+        "title": "Podcast One",
+        "category": "Science\n  Physics\n  Mathematics",
+    }
+
+    podcast = await provider.get_podcast("podcast-1")
+
+    assert podcast.metadata.genres == {"Science", "Physics", "Mathematics"}
+
+
+async def test_podcast_without_category_is_spoken_word(provider: PocketCastsProvider) -> None:
+    """A podcast without a category falls back to Spoken Word."""
+    podcast = await provider.get_podcast("podcast-1")
+
+    assert podcast.metadata.genres == {"Spoken Word"}
 
 
 async def test_sync_flags_episodes_that_have_a_transcript(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import struct
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
@@ -32,6 +33,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.streams import controller as controller_mod
 from music_assistant.controllers.streams.audio import (
+    FADE_SOURCE_WAIT,
     MIN_CROSSFADE_DURATION,
     CrossfadeHandover,
     StreamsAudio,
@@ -161,8 +163,9 @@ def _buffer(duration_available: float, ready: bool, eof: bool = False) -> AudioB
     audio_buffer.is_valid.return_value = True
     audio_buffer.duration_available = duration_available
     audio_buffer.eof = eof
-    audio_buffer.ready = MagicMock()
-    audio_buffer.ready.is_set.return_value = ready
+    audio_buffer.ready = asyncio.Event()
+    if ready:
+        audio_buffer.ready.set()
     return audio_buffer
 
 
@@ -476,6 +479,102 @@ def test_realtime_incoming_source_not_yet_delivering_skips_the_fade() -> None:
 
     assert mode == CrossfadeMode.DISABLED
     assert duration == 0
+
+
+def test_a_fade_skipped_for_missing_audio_says_why(caplog: pytest.LogCaptureFixture) -> None:
+    """A requested fade that turns into a hard cut leaves a trace naming the reason."""
+    audio = StreamsAudio(MagicMock())
+    caplog.set_level(logging.DEBUG, logger=audio.logger.name)
+
+    mode, _duration = audio._select_buffered_crossfade(
+        _streamdetails_for_crossfade(None),
+        CrossfadeMode.STANDARD_CROSSFADE,
+        standard_crossfade_duration=8,
+        fade_out_seconds=8,
+    )
+
+    assert mode == CrossfadeMode.DISABLED
+    assert "Not fading into test--1://track/track-1: no prepared audio" in caplog.text
+
+
+# -- StreamsAudio._await_fade_source --
+
+
+def _incoming_item(streamdetails: StreamDetails) -> SimpleNamespace:
+    """Build the incoming queue item of a fade boundary."""
+    return SimpleNamespace(queue_id="queue-1", queue_item_id="item-2", streamdetails=streamdetails)
+
+
+async def _finished_preparation() -> asyncio.Task[None]:
+    """Return a preparation that is already over."""
+
+    async def _nothing() -> None:
+        return None
+
+    preparation = asyncio.create_task(_nothing())
+    await preparation
+    return preparation
+
+
+async def test_the_fade_waits_for_a_running_preparation_to_attach_its_audio() -> None:
+    """A preparation that is still running and attaches its buffer late is waited for."""
+    audio = StreamsAudio(MagicMock())
+    streamdetails = _streamdetails_for_crossfade(None)
+    late_buffer = _buffer(20, ready=False)
+
+    async def _prepare_late() -> None:
+        await asyncio.sleep(0.2)
+        streamdetails.buffer = late_buffer
+        await asyncio.sleep(0.1)
+        late_buffer.ready.set()
+
+    preparation = asyncio.create_task(_prepare_late())
+    await asyncio.wait_for(
+        audio._await_fade_source(cast("Any", _incoming_item(streamdetails)), preparation),
+        FADE_SOURCE_WAIT,
+    )
+
+    assert streamdetails.buffer is late_buffer
+    assert late_buffer.ready.is_set()
+    await preparation
+
+
+async def test_the_fade_finds_audio_attached_to_replaced_details() -> None:
+    """A preparation that swaps in new stream details still has its buffer found."""
+    audio = StreamsAudio(MagicMock())
+    incoming = _incoming_item(_streamdetails_for_crossfade(None))
+    late_buffer = _buffer(20, ready=True)
+
+    async def _reselect_late() -> None:
+        await asyncio.sleep(0.2)
+        # a capacity reselection hands the item a new details object
+        incoming.streamdetails = _streamdetails_for_crossfade(late_buffer)
+
+    preparation = asyncio.create_task(_reselect_late())
+    await asyncio.wait_for(
+        audio._await_fade_source(cast("Any", incoming), preparation), FADE_SOURCE_WAIT
+    )
+
+    assert incoming.streamdetails.buffer is late_buffer
+    await preparation
+
+
+async def test_the_fade_stops_waiting_once_the_preparation_gave_up() -> None:
+    """A preparation that ended without attaching audio costs the boundary no wait."""
+    audio = StreamsAudio(MagicMock())
+    incoming = _incoming_item(_streamdetails_for_crossfade(None))
+
+    await asyncio.wait_for(
+        audio._await_fade_source(cast("Any", incoming), await _finished_preparation()), 0.05
+    )
+
+
+async def test_the_fade_does_not_wait_for_audio_that_is_ready() -> None:
+    """Incoming audio that is already in hand costs the boundary nothing."""
+    audio = StreamsAudio(MagicMock())
+    incoming = _incoming_item(_streamdetails_for_crossfade(_buffer(20, ready=True)))
+
+    await asyncio.wait_for(audio._await_fade_source(cast("Any", incoming), None), 0.05)
 
 
 # -- Path level: get_queue_item_stream_with_smartfade --
@@ -834,7 +933,7 @@ async def test_the_handoff_is_claimed_before_the_fade_is_even_sized(
     """
     The claim must beat the awaits that size the fade, not follow them.
 
-    Sizing a fade waits on the incoming source, up to REALTIME_FADE_SOURCE_WAIT. A
+    Sizing a fade waits on the incoming source, up to FADE_SOURCE_WAIT. A
     speaker can ask for that item's url inside that window, and it has nothing to
     wait for unless the claim is already registered.
     """
@@ -845,13 +944,13 @@ async def test_the_handoff_is_claimed_before_the_fade_is_even_sized(
     audio.setup()
     claimed_during_sizing = asyncio.Event()
 
-    async def _slow_sizing(_streamdetails: object) -> None:
-        # stands in for the wait on a realtime incoming source
+    async def _slow_sizing(_queue_item: object, _preparation: object) -> None:
+        # stands in for the wait on the incoming source
         if "queue-1" in audio._crossfade_pending:
             claimed_during_sizing.set()
         await asyncio.sleep(0)
 
-    monkeypatch.setattr(audio, "_await_realtime_fade_source", _slow_sizing)
+    monkeypatch.setattr(audio, "_await_fade_source", _slow_sizing)
     await _run_smartfade_boundary(monkeypatch, audio, pcm_format)
 
     assert claimed_during_sizing.is_set(), (

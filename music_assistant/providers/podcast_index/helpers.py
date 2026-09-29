@@ -255,7 +255,26 @@ def parse_episode_from_data(
             )
         )
 
+    # transcript availability from the Podcast Index API
+    episode.metadata.has_transcript = bool(
+        episode_data.get("transcripts") or episode_data.get("transcriptUrl")
+    )
+
     return episode
+
+
+def get_episode_transcripts_from_data(episode_data: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """
+    Extract the transcript entries from a Podcast Index API episode response.
+
+    :param episode_data: The raw episode dict from the API.
+    """
+    if transcripts := episode_data.get("transcripts"):
+        if isinstance(transcripts, list):
+            return transcripts
+    if transcript_url := episode_data.get("transcriptUrl"):
+        return [{"url": transcript_url}]
+    return None
 
 
 def _response_detail(body: str, *secrets: str) -> str:
