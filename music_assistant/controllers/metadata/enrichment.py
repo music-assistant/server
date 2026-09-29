@@ -373,7 +373,7 @@ class MetadataEnrichmentMixin:
         self, playlist: Playlist, force_refresh: bool = False
     ) -> None:
         """Get/update rich metadata for a playlist."""
-        # collect metadata + create collage images
+        # collect metadata from the playlist tracks and the metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
         needs_refresh = (time() - (playlist.metadata.last_refresh or 0)) > REFRESH_INTERVAL
         if not (force_refresh or needs_refresh):
