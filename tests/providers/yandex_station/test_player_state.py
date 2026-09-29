@@ -9,6 +9,7 @@ instead of silently holding the optimistic PLAYING state.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from types import SimpleNamespace
@@ -33,6 +34,7 @@ def _make_player() -> YandexStationPlayer:
     player._player_id = "test_player"
     player._external_playing = False
     player._external_media = None
+    vars(player)["_external_play_generation"] = 0
     player._external_play_confirmed = False
     vars(player)["_external_stop_observed"] = False
     vars(player)["_audio_client"] = False
@@ -216,6 +218,110 @@ async def test_audio_play_attributes_state_while_command_is_pending() -> None:
     await player.play_media(media)
 
     assert player._external_play_confirmed is False
+
+
+@pytest.mark.parametrize(
+    ("progress", "expected_state"),
+    [(30, PlaybackState.PAUSED), (180, PlaybackState.IDLE)],
+)
+async def test_terminal_state_during_pending_play_command_is_preserved(
+    progress: int, expected_state: PlaybackState
+) -> None:
+    """A late command acknowledgement must not undo a terminal state."""
+    player, _ = _make_play_media_player([{"status": "SUCCESS"}])
+    _disable_voice_control(player)
+    object.__setattr__(player._provider, "config", _StubConfig())
+    vars(player)["_audio_client"] = True
+    media = cast(
+        "PlayerMedia",
+        SimpleNamespace(
+            uri="yandex_music://track/3",
+            title="Requested Track",
+            artist="Artist",
+            duration=180,
+            image_url=None,
+        ),
+    )
+
+    async def send_with_pause(_payload: dict[str, Any]) -> dict[str, Any]:
+        for playing in (True, False):
+            player._on_glagol_update(
+                {
+                    "supported_features": ["audio_client"],
+                    "state": {
+                        "playing": playing,
+                        "aliceState": "IDLE",
+                        "playerState": {
+                            "progress": progress,
+                            "duration": 180,
+                            "title": "Requested Track",
+                        },
+                    },
+                }
+            )
+        return {"status": "SUCCESS"}
+
+    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send_with_pause))
+
+    await player.play_media(media)
+
+    assert player._attr_playback_state == expected_state
+
+
+@pytest.mark.parametrize("first_fails", [False, True])
+async def test_late_play_command_response_preserves_newer_request(first_fails: bool) -> None:
+    """A late response cannot publish or clear a newer playback request."""
+    player, _ = _make_play_media_player([{"status": "SUCCESS"}])
+    first_media = cast(
+        "PlayerMedia",
+        SimpleNamespace(
+            uri="yandex_music://track/old",
+            title="Old Track",
+            artist="Artist",
+            duration=180,
+            image_url=None,
+        ),
+    )
+    new_media = cast(
+        "PlayerMedia",
+        SimpleNamespace(
+            uri="yandex_music://track/new",
+            title="New Track",
+            artist="Artist",
+            duration=180,
+            image_url=None,
+        ),
+    )
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    published_media: list[str] = []
+    object.__setattr__(
+        player,
+        "set_current_media",
+        lambda **kwargs: published_media.append(kwargs["uri"]),
+    )
+
+    async def send_in_order(_payload: dict[str, Any]) -> dict[str, Any]:
+        if not first_started.is_set():
+            first_started.set()
+            await release_first.wait()
+            return {"status": "ERROR" if first_fails else "SUCCESS"}
+        return {"status": "SUCCESS"}
+
+    player.glagol = cast("YandexGlagol", SimpleNamespace(send=send_in_order))
+    first_task = asyncio.create_task(player.play_media(first_media))
+    await asyncio.wait_for(first_started.wait(), 1)
+    await player.play_media(new_media)
+    release_first.set()
+    if first_fails:
+        with pytest.raises(PlayerCommandFailed):
+            await first_task
+    else:
+        await first_task
+
+    assert published_media == ["yandex_music://track/new"]
+    assert player._external_media is new_media
+    assert player._external_playing is True
 
 
 async def test_play_media_falls_back_to_legacy_radio_play() -> None:

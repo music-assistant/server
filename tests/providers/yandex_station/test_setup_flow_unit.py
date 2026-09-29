@@ -12,7 +12,7 @@ from ya_passport_auth import Credentials, DeviceCodeSession, QrSession, SecretSt
 from ya_passport_auth.exceptions import InvalidCredentialsError
 from ya_passport_auth.ma import BORROW_SOURCE_OWN
 
-from music_assistant.models.setup_flow import AbortFlow, StepExpiredError
+from music_assistant.models.setup_flow import AbortFlow, SetupFlowError, StepExpiredError
 from music_assistant.providers.yandex_station import setup_flow as station_flow
 from music_assistant.providers.yandex_station.constants import (
     CONF_COOKIES,
@@ -71,7 +71,7 @@ class _FakeSession:
         self.context = SimpleNamespace(setup_data={})
         self._responses = responses
         self._progress_errors = progress_errors or []
-        self.steps: list[tuple[str, dict[str, str] | None]] = []
+        self.steps: list[tuple[str, dict[str, str | SetupFlowError] | None]] = []
         self.finished: dict[str, Any] | None = None
 
     async def form(
@@ -79,7 +79,7 @@ class _FakeSession:
         _entries: list[Any],
         *,
         step_id: str,
-        errors: dict[str, str] | None = None,
+        errors: dict[str, str | SetupFlowError] | None = None,
     ) -> dict[str, Any]:
         self.steps.append((step_id, errors))
         expected_step, response = self._responses.pop(0)
@@ -106,6 +106,28 @@ async def test_borrow_mode_finishes_with_instance_only() -> None:
     await station_flow.run_setup(session)  # type: ignore[arg-type]
 
     assert session.finished == {CONF_YM_INSTANCE: "ym-a"}
+
+
+async def test_borrow_finish_retries_with_original_translated_error() -> None:
+    """A failed borrowed setup keeps the error's translation owner and arguments."""
+    session = _FakeSession(
+        [("user", {CONF_YM_INSTANCE: "ym-a"}), ("user", {CONF_YM_INSTANCE: "ym-a"})],
+        providers={"ym-a": {"domain": "yandex_music", "name": "Main"}},
+    )
+    error = SetupFlowError(
+        "Account unavailable",
+        translation_key="account_unavailable",
+        translation_args=["Main"],
+        translation_owner="yandex_music",
+    )
+    session.finish = mock.AsyncMock(side_effect=[error, None])  # type: ignore[method-assign]
+
+    await station_flow.run_setup(session)  # type: ignore[arg-type]
+
+    form_errors = session.steps[1][1]
+    assert form_errors is not None
+    assert form_errors["base"] is error
+    assert session.finish.await_count == 2
 
 
 async def test_own_device_login_persists_full_triple() -> None:
@@ -170,6 +192,50 @@ async def test_own_cookie_login_persists_tokens() -> None:
         CONF_X_TOKEN: "XT",
         CONF_REFRESH_TOKEN: None,
     }
+
+
+async def test_own_finish_retries_with_original_translated_error() -> None:
+    """A failed own-account setup keeps the error's translation metadata."""
+    session = _FakeSession(
+        [
+            ("user", {CONF_YM_INSTANCE: BORROW_SOURCE_OWN}),
+            (
+                "method",
+                {
+                    station_flow.CONF_METHOD: station_flow.METHOD_COOKIES,
+                    CONF_REMEMBER_SESSION: True,
+                },
+            ),
+            ("cookies", {CONF_COOKIES: "Session_id=abc"}),
+            (
+                "method",
+                {
+                    station_flow.CONF_METHOD: station_flow.METHOD_COOKIES,
+                    CONF_REMEMBER_SESSION: True,
+                },
+            ),
+            ("cookies", {CONF_COOKIES: "Session_id=abc"}),
+        ]
+    )
+    error = SetupFlowError(
+        "Login failed",
+        translation_key="login_failed",
+        translation_args=["Main"],
+        translation_owner="yandex_music",
+    )
+    session.finish = mock.AsyncMock(side_effect=[error, None])  # type: ignore[method-assign]
+
+    with mock.patch.object(
+        station_flow,
+        "login_with_cookies",
+        new=mock.AsyncMock(return_value=("XT", "MT")),
+    ):
+        await station_flow.run_setup(session)  # type: ignore[arg-type]
+
+    form_errors = session.steps[3][1]
+    assert form_errors is not None
+    assert form_errors["base"] is error
+    assert session.finish.await_count == 2
 
 
 async def test_own_qr_without_remember_clears_long_lived_tokens() -> None:

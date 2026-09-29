@@ -23,7 +23,6 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeaturedException
 
 from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE_DEFAULT_3, CONF_ENTRY_OUTPUT_CODEC
-from music_assistant.helpers.config_entries import PLAYBACK_TARGET_TYPES
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from . import protobuf
@@ -178,6 +177,7 @@ class YandexStationPlayer(Player):
         self._external_playing = False
         self._external_audio_client = False
         self._external_media: PlayerMedia | None = None
+        self._external_play_generation = 0
         # Becomes True once Glagol reports playing=True during external playback.
         # Used to distinguish the startup window (station fetching stream) from
         # a user-initiated physical pause on the speaker.
@@ -280,7 +280,8 @@ class YandexStationPlayer(Player):
             (
                 ConfigValueOption(p.player_id, p.display_name)
                 for p in self.mass.players.all_players(return_unavailable=True)
-                if p.player_id != self.player_id and p.type in PLAYBACK_TARGET_TYPES
+                if p.player_id != self.player_id
+                and p.type in (PlayerType.PLAYER, PlayerType.STEREO_PAIR, PlayerType.GROUP)
             ),
             key=lambda o: (o.title or "").lower(),
         )
@@ -443,6 +444,8 @@ class YandexStationPlayer(Player):
         stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         _LOGGER.debug("[%s] Stream URL resolved (length=%d)", self.player_id, len(stream_url))
 
+        self._external_play_generation += 1
+        generation = self._external_play_generation
         self._external_playing = True
         self._external_audio_client = self._audio_client
         self._external_media = media
@@ -457,12 +460,16 @@ class YandexStationPlayer(Player):
             _LOGGER.debug("[%s] %s result: %s", self.player_id, directive, result)
             _raise_if_failed(result, directive)
         except Exception:
-            self._external_playing = False
-            self._external_audio_client = False
-            self._external_media = None
-            self._external_play_confirmed = False
-            self._external_stop_observed = False
+            if self._external_play_generation == generation:
+                self._external_playing = False
+                self._external_audio_client = False
+                self._external_media = None
+                self._external_play_confirmed = False
+                self._external_stop_observed = False
             raise
+
+        if self._external_play_generation != generation or not self._external_playing:
+            return
 
         # Legacy bypass playback is optimistic; audio_play is later confirmed
         # by the station's playerState updates.
