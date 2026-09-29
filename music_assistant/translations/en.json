@@ -885,6 +885,7 @@
   "core.storage.errors.local_folder_not_allowed": "A folder can only be added when Music Assistant does not run in a container. Map the folder into the container as a volume instead.",
   "core.storage.errors.location_in_use": "The music source {0} uses this folder. Remove that music source first.",
   "core.storage.errors.mount_backend_unavailable": "This network share can not be mounted right now: what mounted it is not available.",
+  "core.storage.errors.mount_folder_unsafe": "Music Assistant does not mount network shares on {0}: another user of this server could have prepared that folder. Remove it, and try again.",
   "core.storage.errors.mount_not_permitted": "This installation of Music Assistant is not allowed to mount network shares. Mount the share on the host and make it available to Music Assistant instead, see {0}",
   "core.storage.errors.no_mount_backend": "This installation of Music Assistant can not mount network shares. Mount the share on the host and make it available to Music Assistant instead, see {0}",
   "core.storage.errors.path_not_allowed": "This folder is not inside a storage location you can use.",

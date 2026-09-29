@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import stat
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -121,12 +123,12 @@ async def test_backend_reads_the_capabilities(
 @pytest.fixture
 def mounter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LocalMounter:
     """
-    Provide a mounter on Linux that mounts below a temporary folder.
+    Provide a mounter on Linux whose mount root is a folder that does not exist yet.
 
     :param tmp_path: Temporary directory for the mountpoints.
     :param monkeypatch: Pytest monkeypatch fixture.
     """
-    monkeypatch.setattr(local_mount, "MOUNT_ROOT", str(tmp_path))
+    monkeypatch.setattr(local_mount, "MOUNT_ROOT", str(tmp_path / "mounts"))
     monkeypatch.setattr(f"{local_mount.__name__}.platform.system", lambda: "Linux")
     return LocalMounter(
         {ShareType.CIFS: ALL_CIFS, ShareType.NFS: ALL_NFS}, logging.getLogger(__name__)
@@ -277,7 +279,7 @@ async def test_mount_logs_no_password(
     returncode: int,
 ) -> None:
     """A mount leaves no trace of the password in the log, at any level."""
-    monkeypatch.setattr(local_mount, "MOUNT_ROOT", str(tmp_path))
+    monkeypatch.setattr(local_mount, "MOUNT_ROOT", str(tmp_path / "mounts"))
     monkeypatch.setattr(f"{local_mount.__name__}.platform.system", lambda: system)
     monkeypatch.setattr(
         local_mount,
@@ -297,3 +299,101 @@ async def test_mount_logs_no_password(
         text = f"{record.getMessage()} {record.args}"
         assert "pa ss@word,1" not in text
         assert "pa%20ss%40word%2C1" not in text
+
+
+async def test_fresh_mount_root_is_private(
+    mounter: LocalMounter, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mount root is created for this process alone."""
+    monkeypatch.setattr(local_mount, "check_output", AsyncMock(return_value=(0, b"")))
+
+    await mounter.add(_spec(mounter), "secret")
+
+    assert stat.S_IMODE((tmp_path / "mounts").stat().st_mode) == 0o700
+    assert (tmp_path / "mounts" / "music").is_dir()
+
+
+def _symlinked_root(tmp_path: Path) -> str:
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "mounts").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    return str(tmp_path / "mounts")
+
+
+def _shared_root(tmp_path: Path) -> str:
+    (tmp_path / "mounts").mkdir()
+    (tmp_path / "mounts").chmod(0o777)
+    return str(tmp_path / "mounts")
+
+
+def _root_of_another_user(tmp_path: Path) -> str:
+    (tmp_path / "mounts").mkdir(mode=0o700)
+    return str(tmp_path / "mounts")
+
+
+def _symlinked_mountpoint(tmp_path: Path) -> str:
+    (tmp_path / "mounts").mkdir(mode=0o700)
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "mounts" / "music").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    return str(tmp_path / "mounts" / "music")
+
+
+@pytest.mark.parametrize(
+    "prepare",
+    [_symlinked_root, _shared_root, _root_of_another_user, _symlinked_mountpoint],
+)
+async def test_folder_another_user_could_have_prepared_is_refused(
+    mounter: LocalMounter,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    prepare: Callable[[Path], str],
+) -> None:
+    """Nothing is mounted on a folder that is a link, open to others or not our own."""
+    check_output = AsyncMock(return_value=(0, b""))
+    monkeypatch.setattr(local_mount, "check_output", check_output)
+    unsafe = prepare(tmp_path)
+    if prepare is _root_of_another_user:
+        other_user = os.geteuid() + 1
+        monkeypatch.setattr(f"{local_mount.__name__}.os.geteuid", lambda: other_user)
+
+    with pytest.raises(SetupFailedError) as exc_info:
+        await mounter.add(_spec(mounter), "secret")
+
+    assert exc_info.value.translation_key == "mount_folder_unsafe"
+    assert exc_info.value.translation_owner == TRANSLATION_OWNER
+    assert exc_info.value.translation_args == [unsafe]
+    check_output.assert_not_called()
+    assert not (tmp_path / "elsewhere" / "music").exists()
+
+
+async def test_existing_root_and_mountpoint_are_used(
+    mounter: LocalMounter, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A root of this process with a mountpoint in it is mounted on as it is."""
+    check_output = AsyncMock(return_value=(0, b""))
+    monkeypatch.setattr(local_mount, "check_output", check_output)
+    (tmp_path / "mounts" / "music").mkdir(parents=True)
+    (tmp_path / "mounts").chmod(0o700)
+
+    await mounter.add(_spec(mounter), "secret")
+
+    check_output.assert_awaited_once()
+
+
+async def test_folder_that_is_not_ours_is_not_unmounted(
+    mounter: LocalMounter, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reload or removal never unmounts what a link in place of the mount root points to."""
+    unmount = AsyncMock()
+    check_output = AsyncMock(return_value=(0, b""))
+    monkeypatch.setattr(local_mount, "unmount", unmount)
+    monkeypatch.setattr(local_mount, "check_output", check_output)
+    _symlinked_root(tmp_path)
+    (tmp_path / "elsewhere" / "music").mkdir()
+
+    await mounter.remove(_spec(mounter))
+    with pytest.raises(SetupFailedError):
+        await mounter.reload(_spec(mounter), "secret")
+
+    unmount.assert_not_called()
+    check_output.assert_not_called()
+    assert (tmp_path / "elsewhere" / "music").is_dir()

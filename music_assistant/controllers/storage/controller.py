@@ -640,8 +640,9 @@ class StorageController(CoreController):
         """
         Mount the managed network shares that are not mounted, each through its own backend.
 
-        A share that can not be mounted stays a location that is not available and says why,
-        until a reload or the next start of the server mounts it. Never raises.
+        That includes a mount the backend has but reports as not working. A share that can not
+        be mounted stays a location that is not available and says why, until a reload or the
+        next start of the server mounts it. Never raises.
         """
         try:
             async with self._shares_lock:
@@ -995,8 +996,9 @@ class StorageController(CoreController):
             if state == ShareState.PRESENT:
                 self._share_errors.pop(spec.name, None)
                 continue
+            operation = mounter.reload if state == ShareState.FAILED else mounter.add
             try:
-                await mounter.add(spec, self._get_password(spec))
+                await operation(spec, self._get_password(spec))
             except Exception as err:
                 self.logger.warning("Unable to mount network share %s: %s", spec.name, err)
                 self._share_errors[spec.name] = _as_share_error(err)

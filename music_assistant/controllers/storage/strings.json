@@ -26,6 +26,7 @@
     "supervisor_mounts_unavailable": "Home Assistant does not mount network shares for Music Assistant right now. Try again later, and update the Music Assistant app when this keeps happening.",
     "export_path_invalid": "Enter the full path of the export, starting with a /.",
     "share_already_added": "This network share already is a storage location.",
+    "mount_folder_unsafe": "Music Assistant does not mount network shares on {0}: another user of this server could have prepared that folder. Remove it, and try again.",
     "share_mounted_already": "This network share is mounted already, and available as the storage location {0}.",
     "share_not_found": "There is no network share named {0}.",
     "share_not_mounted": "The network share did not become available. Check that its server is online and try again.",

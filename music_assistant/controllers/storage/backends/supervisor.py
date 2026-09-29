@@ -37,6 +37,9 @@ SUPERVISOR_CIFS_VERSIONS: Final[tuple[str, ...]] = ("1.0", "2.0")
 MOUNT_REQUEST_TIMEOUT: Final[float] = 120
 # the usage of a mount that shows up in the media folder of the apps
 MEDIA_USAGE: Final[str] = "media"
+# the state the Supervisor reports for a mount it could not mount: a network mount reports the
+# outcome of the Supervisor's own probe of the share (active or inactive), or failed from systemd
+FAILED_STATES: Final[tuple[str, ...]] = ("inactive", "failed")
 
 
 async def create_supervisor_mounter(mass: MusicAssistant) -> SupervisorMounter:
@@ -181,10 +184,12 @@ class SupervisorMounter(ShareMounter):
 
     async def get_states(self, specs: list[NetworkShareSpec]) -> dict[str, ShareState]:
         """
-        Return for each share, by name, whether the Supervisor has its mount.
+        Return for each share, by name, whether the Supervisor has its mount, and whether it works.
 
         A mount under the name of a share that the user changed into another share in Home
-        Assistant is the user's now.
+        Assistant is the user's now. A mount that the Supervisor reports as active works, also
+        while its automount trigger is dormant: the Supervisor probes a mount when it arms it
+        and on its own reconcile, and reports inactive when that probe did not reach the share.
 
         :param specs: The shares of this backend.
         """
@@ -195,6 +200,8 @@ class SupervisorMounter(ShareMounter):
                 states[spec.name] = ShareState.MISSING
             elif _media_share_key(mount) != share_key(spec.share_type, spec.server, spec.share):
                 states[spec.name] = ShareState.CHANGED
+            elif mount.get("state") in FAILED_STATES:
+                states[spec.name] = ShareState.FAILED
             else:
                 states[spec.name] = ShareState.PRESENT
         return states

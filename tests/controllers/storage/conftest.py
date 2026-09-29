@@ -404,7 +404,9 @@ class FakeSupervisor:
 
     It answers the way the real one does: a mount whose share does not answer fails to be
     created and is not kept, a failed update leaves the previous mount unmounted, a missing
-    mount is a 404, and listed mounts never carry their credentials. It takes a user and a
+    mount is a 404, and listed mounts never carry their credentials. A listed mount has the
+    state of the Supervisor's last probe of its share: active, or inactive when that probe or a
+    reload failed. It takes a user and a
     password together or neither, creates the folder of a mount in the media folder and leaves it
     behind when the mount fails or goes, and refuses a mount on a folder that holds files. A
     mounted folder holds a file of the share, so it can not be removed.
@@ -432,6 +434,8 @@ class FakeSupervisor:
         self.stuck: set[str] = set()
         # how long the Supervisor takes to list its mounts, in seconds
         self.list_delay = 0.0
+        # the state of each mount, None while it is not armed
+        self.states: dict[str, str | None] = {}
         self.app = web.Application(middlewares=[self._security])
         self.app.router.add_get("/mounts", self._list)
         self.app.router.add_post("/mounts", self._create)
@@ -447,15 +451,21 @@ class FakeSupervisor:
         """
         return str(self.media / name)
 
-    def add_mount(self, name: str, **settings: Any) -> None:
+    def add_mount(self, name: str, state: str = "active", **settings: Any) -> None:
         """
         Add a mount as if it was added in Home Assistant.
 
         :param name: The name of the mount.
+        :param state: The state of the mount: active, or inactive or failed for a mount whose
+            share did not answer, which leaves only its automount trigger in the mount table.
         :param settings: The settings of the mount as the Supervisor takes them.
         """
         self.mounts[name] = {"name": name, "usage": "media", "read_only": False, **settings}
-        self._activate(name)
+        if state == "active":
+            self._activate(name)
+        else:
+            self._arm(name)
+            self.states[name] = state
 
     @web.middleware
     async def _security(
@@ -475,7 +485,7 @@ class FakeSupervisor:
         await asyncio.sleep(self.list_delay)
         mounts = [
             {key: value for key, value in mount.items() if key not in ("username", "password")}
-            | {"state": "active", "user_path": f"/media/{name}"}
+            | {"state": self.states.get(name), "user_path": f"/media/{name}"}
             for name, mount in self.mounts.items()
         ]
         return _ok({"default_backup_mount": None, "mounts": mounts})
@@ -512,6 +522,7 @@ class FakeSupervisor:
             return invalid
         self._deactivate(name)
         if body["server"] in self.unreachable:
+            # the previous mount stays, unmounted
             return _not_reachable(name)
         self.mounts[name] = body
         self._activate(name)
@@ -535,24 +546,33 @@ class FakeSupervisor:
             return _error(404, f"No mount exists with name {name}")
         self._deactivate(name)
         if self.mounts[name]["server"] in self.unreachable:
+            # the trigger stays armed, the share did not answer its probe
+            self._arm(name)
+            self.states[name] = "inactive"
             return _not_reachable(name)
         self._activate(name)
         return _ok({})
 
-    def _activate(self, name: str) -> None:
-        """Put a mount in the mount table, the share on top of its automount trigger."""
+    def _arm(self, name: str) -> None:
+        """Put the automount trigger of a mount in the mount table."""
         folder = self.media / name
         folder.mkdir(exist_ok=True)
         (folder / "share.txt").touch()
         self.mount_table.mount(str(folder), "autofs")
+
+    def _activate(self, name: str) -> None:
+        """Mount a mount: the share on top of its trigger, unless it stays dormant."""
+        self._arm(name)
+        self.states[name] = "active"
         if name not in self.dormant:
-            self.mount_table.mount(str(folder), str(self.mounts[name]["type"]))
+            self.mount_table.mount(str(self.media / name), str(self.mounts[name]["type"]))
 
     def _deactivate(self, name: str) -> None:
         """Remove a mount from the mount table."""
         folder = self.media / name
         (folder / "share.txt").unlink(missing_ok=True)
         self.mount_table.unmount(str(folder))
+        self.states[name] = None
 
 
 def _ok(data: dict[str, Any]) -> web.Response:

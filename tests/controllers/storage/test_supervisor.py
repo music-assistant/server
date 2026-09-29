@@ -795,3 +795,61 @@ async def test_mounter_without_supervisor_answers_is_unavailable(
 
     with pytest.raises(BackendUnavailable, match="manager role"):
         await create_supervisor_mounter(storage.mass)
+
+
+@pytest.mark.parametrize("state", ["failed", "inactive"])
+async def test_reconcile_mounts_a_failed_mount_again(
+    storage: StorageController, ready: FakeSupervisor, state: str
+) -> None:
+    """A mount the Supervisor reports as not working is reloaded once, and works again."""
+    _store(storage, ready, "music")
+    ready.add_mount("music", state=state, type="cifs", server="nas.local", share="music")
+    ready.requests.clear()
+
+    await storage.reconcile()
+
+    assert _mutations(ready) == [("POST", "/mounts/music/reload")]
+    location = storage.get_location_for_path(ready.path("music"))
+    assert location is not None
+    assert (location.available, location.error) == (True, None)
+    ready.requests.clear()
+    await storage.reconcile()
+    assert _mutations(ready) == []
+
+
+async def test_failed_mount_that_does_not_answer_stays_unavailable(
+    storage: StorageController, ready: FakeSupervisor
+) -> None:
+    """A failed mount whose reload fails as well says why."""
+    _store(storage, ready, "music")
+    ready.add_mount("music", state="failed", type="cifs", server="nas.local", share="music")
+    ready.unreachable.add("nas.local")
+    ready.requests.clear()
+
+    await storage.reconcile()
+
+    assert _mutations(ready) == [("POST", "/mounts/music/reload")]
+    location = storage.get_location_for_path(ready.path("music"))
+    assert location is not None
+    assert (location.available, location.error_key, location.error_args) == (
+        False,
+        "mount_failed",
+        [NOT_REACHABLE],
+    )
+
+
+@pytest.mark.parametrize("dormant", [False, True])
+async def test_mount_that_works_is_not_reloaded(
+    storage: StorageController, ready: FakeSupervisor, dormant: bool
+) -> None:
+    """An active mount is left alone, also while its automount trigger is dormant."""
+    _store(storage, ready, "music")
+    if dormant:
+        ready.dormant.add("music")
+    ready.add_mount("music", type="cifs", server="nas.local", share="music")
+    ready.requests.clear()
+
+    await storage.reconcile()
+
+    assert _mutations(ready) == []
+    assert "music" not in storage._share_errors

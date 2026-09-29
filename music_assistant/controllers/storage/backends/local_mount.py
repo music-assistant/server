@@ -4,7 +4,9 @@ Network shares mounted by the server itself, where nothing better can mount them
 On Linux this needs root with CAP_SYS_ADMIN and CAP_DAC_READ_SEARCH (which a container only has
 when it was started with them) and the mount helper of the protocol; macOS mounts a CIFS share for any user and an
 NFS export for root only. The shares are mounted below ``/tmp/music-assistant-mounts``: outside
-the data directory, so no backup walks a NAS.
+the data directory, so no backup walks a NAS. As ``/tmp`` is open to every user of the server,
+the mount root is a folder of this process that nobody else can change, and nothing is mounted on
+a folder another user could have prepared.
 """
 
 from __future__ import annotations
@@ -13,8 +15,10 @@ import asyncio
 import os
 import platform
 import shutil
+import stat
 from collections.abc import Callable
 from contextlib import suppress
+from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from music_assistant_models.errors import SetupFailedError
@@ -51,6 +55,10 @@ MOUNT_HELPERS: Final[dict[ShareType, str]] = {
 CAP_DAC_READ_SEARCH: Final[int] = 2
 CAP_SYS_ADMIN: Final[int] = 21
 PROC_STATUS_PATH: Final[str] = "/proc/self/status"
+
+
+class UnsafeFolderError(Exception):
+    """A folder to mount on that another user could have prepared; the message is its path."""
 
 
 def get_local_mount_support(
@@ -158,8 +166,16 @@ class LocalMounter(ShareMounter):
             )
         self.logger.debug("Mounting network share %s on %s", spec.name, spec.path)
         try:
-            await asyncio.to_thread(os.makedirs, spec.path, exist_ok=True)
+            await asyncio.to_thread(_prepare_mountpoint, MOUNT_ROOT, spec.path)
             returncode, output = await check_output(*mount_cmd, env=env)
+        except UnsafeFolderError as err:
+            msg = f"Not mounting {spec.name} on {err}: another user could have prepared it"
+            raise SetupFailedError(
+                msg,
+                translation_key="mount_folder_unsafe",
+                translation_owner=TRANSLATION_OWNER,
+                translation_args=[str(err)],
+            ) from err
         except OSError as err:
             msg = f"Unable to mount {spec.name}: {err}"
             raise SetupFailedError(
@@ -194,7 +210,7 @@ class LocalMounter(ShareMounter):
         :param spec: The share.
         :param password: The password of the share, decrypted.
         """
-        await unmount(spec.path, self.logger)
+        await self._unmount(spec)
         await self.add(spec, password)
 
     async def remove(self, spec: NetworkShareSpec) -> None:
@@ -203,9 +219,9 @@ class LocalMounter(ShareMounter):
 
         :param spec: The share.
         """
-        await unmount(spec.path, self.logger)
-        with suppress(OSError):
-            await asyncio.to_thread(os.rmdir, spec.path)
+        if await self._unmount(spec):
+            with suppress(OSError):
+                await asyncio.to_thread(os.rmdir, spec.path)
 
     async def get_states(self, specs: list[NetworkShareSpec]) -> dict[str, ShareState]:
         """
@@ -224,6 +240,20 @@ class LocalMounter(ShareMounter):
             }
 
         return await asyncio.to_thread(_get_states)
+
+    async def _unmount(self, spec: NetworkShareSpec) -> bool:
+        """
+        Unmount a share, unless its mountpoint is no folder of this backend any more.
+
+        Returns whether the mountpoint is one: nothing this process mounted can be anywhere else.
+
+        :param spec: The share.
+        """
+        if not await asyncio.to_thread(_is_own_mountpoint, MOUNT_ROOT, spec.path):
+            self.logger.warning("Leaving %s alone: it is no folder of this server", spec.path)
+            return False
+        await unmount(spec.path, self.logger)
+        return True
 
 
 def _probe_local_mount_support() -> tuple[dict[ShareType, list[str]], str | None]:
@@ -251,3 +281,53 @@ def _has_helper(binary: str) -> bool:
     """Return whether a mount helper is installed, also outside the PATH (blocking)."""
     search_path = os.pathsep.join((os.environ.get("PATH", ""), "/sbin", "/usr/sbin"))
     return shutil.which(binary, path=search_path) is not None
+
+
+def _prepare_mountpoint(root: str, path: str) -> None:
+    """
+    Create the mount root and a mountpoint in it where missing, and check both (blocking).
+
+    :param root: The mount root.
+    :param path: The mountpoint of a share, right below the root.
+    :raises UnsafeFolderError: For a folder another user could have prepared.
+    """
+    with suppress(FileExistsError):
+        Path(root).mkdir(mode=0o700)
+        # whatever the umask of the process
+        Path(root).chmod(0o700)
+    _check_root(root, path)
+    with suppress(FileExistsError):
+        Path(path).mkdir()
+    if not stat.S_ISDIR(os.lstat(path).st_mode):
+        raise UnsafeFolderError(path)
+
+
+def _is_own_mountpoint(root: str, path: str) -> bool:
+    """Return whether a mountpoint is a folder of this backend, or not there at all (blocking)."""
+    try:
+        _check_root(root, path)
+        return stat.S_ISDIR(os.lstat(path).st_mode)
+    except FileNotFoundError:
+        # nothing is mounted on what is not there
+        return True
+    except UnsafeFolderError, OSError:
+        return False
+
+
+def _check_root(root: str, path: str) -> None:
+    """
+    Raise when the mount root is no folder this process alone can change, or not the parent.
+
+    :param root: The mount root.
+    :param path: The mountpoint of a share.
+    :raises UnsafeFolderError: For a root another user could have prepared.
+    """
+    if os.path.dirname(path) != root:
+        raise UnsafeFolderError(path)
+    info = os.lstat(root)
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise UnsafeFolderError(root)

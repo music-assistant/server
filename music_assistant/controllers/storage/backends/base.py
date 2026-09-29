@@ -19,6 +19,7 @@ class ShareState(StrEnum):
     """What a mount backend has for a network share Music Assistant manages."""
 
     PRESENT = "present"  # the mount of the share
+    FAILED = "failed"  # the mount of the share, which did not mount: it needs to be mounted again
     MISSING = "missing"  # nothing: the share needs to be mounted
     CHANGED = "changed"  # a mount under its name that is another share now, not ours to touch
 
