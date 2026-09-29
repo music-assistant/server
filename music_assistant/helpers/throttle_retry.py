@@ -176,6 +176,16 @@ class ThrottlerManager:
         """
         self._cooldown_until = max(self._cooldown_until, time.monotonic() + seconds)
 
+    def set_rate_limit(self, rate_limit: int, period: float = 1) -> None:
+        """
+        Change the rate limit of this throttler, an active cooldown stays in place.
+
+        :param rate_limit: Number of requests allowed per period.
+        :param period: Length of the period in seconds.
+        """
+        self.throttler.rate_limit = rate_limit
+        self.throttler.period = period
+
     async def _wait_until(self, deadline: float) -> float:
         """Sleep until the given monotonic deadline, return the time waited."""
         remaining = deadline - time.monotonic()

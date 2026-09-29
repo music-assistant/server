@@ -487,6 +487,35 @@ class TestLongWaits:
         assert provider.throttler.cooldown_remaining == pytest.approx(3600 - fake_clock.now)
 
 
+class TestSetRateLimit:
+    """Changing the rate limit of a throttler keeps its cooldown."""
+
+    def test_cooldown_survives_a_rate_limit_change(self, fake_clock: FakeClock) -> None:
+        """An armed cooldown is unchanged by a new rate limit."""
+        throttler = ThrottlerManager(rate_limit=1, period=2)
+        throttler.set_cooldown(3600)
+        throttler.set_rate_limit(rate_limit=30, period=30)
+        assert throttler.cooldown_remaining == pytest.approx(3600)
+
+    async def test_rate_limit_holds_back_a_second_call(self) -> None:
+        """A second call within the period waits for a free slot."""
+        throttler = ThrottlerManager(rate_limit=1, period=0.2)
+        async with throttler.acquire() as delay:
+            assert delay == 0
+        async with throttler.acquire() as delay:
+            assert delay >= 0.2
+
+    async def test_new_rate_limit_applies(self) -> None:
+        """A raised rate limit lets a second call within the period through right away."""
+        throttler = ThrottlerManager(rate_limit=1, period=100)
+        throttler.set_rate_limit(rate_limit=2, period=100)
+        async with throttler.acquire() as delay:
+            assert delay == 0
+        # a call held to the previous limit would wait out the period
+        async with asyncio.timeout(1), throttler.acquire() as delay:
+            assert delay == 0
+
+
 class TestExponentialBackoffWithJitter:
     """When no server backoff is provided, use exponential backoff with jitter."""
 
