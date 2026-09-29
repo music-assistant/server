@@ -657,6 +657,23 @@ async def test_remove_refused_while_in_use(
     assert probes.calls == []
 
 
+async def test_remove_a_share_read_by_a_source_around_it(
+    storage: StorageController, mounter: FakeMounter
+) -> None:
+    """A share inside the folder of a music source is read by it, and can be removed."""
+    await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
+    store_source(storage, MOUNT_ROOT)
+    await storage.refresh()
+
+    location = storage.get_location_for_path(MUSIC_PATH)
+    assert location is not None
+    assert (location.used_by, location.read_by) == ([], ["My music"])
+    await storage.remove_network_share("music")
+
+    assert mounter.calls[-1][:2] == ("remove", "music")
+    assert storage.mass.config.get(CONF_STORAGE_SHARES) == {}
+
+
 @pytest.mark.usefixtures("mounter")
 async def test_member_does_not_see_the_sources_of_a_share(storage: StorageController) -> None:
     """A caller that does not manage every source never learns which sources use a share."""

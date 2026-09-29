@@ -277,7 +277,8 @@ class StorageController(CoreController):
         """
         Remove a registered folder from the media locations.
 
-        Refused while a music source uses the folder.
+        Refused while a music source uses the folder, not while one only reads it as part of
+        its own folder.
 
         :param path: Path of the registered folder.
         """
@@ -430,9 +431,9 @@ class StorageController(CoreController):
         """
         Unmount a network share and remove it from the media locations.
 
-        Refused while a music source uses the share, and when its mount can not be removed. A
-        mount that was changed into another share in Home Assistant is the user's: it stays, and
-        only the share is forgotten here.
+        Refused while a music source uses the share, not while one only reads it as part of its
+        own folder, and when its mount can not be removed. A mount that was changed into another
+        share in Home Assistant is the user's: it stays, and only the share is forgotten here.
 
         :param name: The name of the share.
         """
@@ -693,6 +694,8 @@ class StorageController(CoreController):
         sources = self._get_source_folders()
         for location in self._locations:
             location.used_by = _sources_using(location.path, sources)
+            if location.usage == StorageUsage.MEDIA:
+                location.read_by = _sources_around(location.path, sources)
 
     async def reconcile(self) -> None:
         """
@@ -777,7 +780,7 @@ class StorageController(CoreController):
 
     def _check_not_in_use(self, path: str) -> None:
         """
-        Raise when a music source reads its files from a location.
+        Raise when the folder of a music source is the location or lies inside it.
 
         :param path: The path of the location.
         """
@@ -1643,6 +1646,23 @@ def _sources_using(path: str, sources: list[tuple[str, str]]) -> list[str]:
     return sorted((name for name, folder in sources if is_within(folder, path)), key=str.casefold)
 
 
+def _sources_around(path: str, sources: list[tuple[str, str]]) -> list[str]:
+    """
+    Return the sorted names of the music sources whose folder contains a path, not being it.
+
+    :param path: The path of a location.
+    :param sources: The name and folder of each music source.
+    """
+    return sorted(
+        (
+            name
+            for name, folder in sources
+            if is_within(path, folder) and not is_within(folder, path)
+        ),
+        key=str.casefold,
+    )
+
+
 def _is_available(path: str, mountpoint: str | None) -> bool:
     """Return whether a folder is there, and its mount when it has one (blocking)."""
     if mountpoint is not None and not _is_mountpoint(mountpoint):
@@ -1659,10 +1679,10 @@ def _without_private_details(location: StorageLocation) -> StorageLocation:
     """
     Return a location as a caller that does not manage every music source may see it.
 
-    Without the music sources that use it, and without the connection details of a managed
-    network share.
+    Without the music sources that use or read it, and without the connection details of a
+    managed network share.
     """
-    location = replace(location, used_by=[])
+    location = replace(location, used_by=[], read_by=[])
     if location.share_name is None:
         return location
     # the error of a mount can name the server and the export
