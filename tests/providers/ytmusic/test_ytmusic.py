@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import ytmusicapi
 from aiohttp import ClientError, ServerDisconnectedError
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import AlbumType, MediaType
 from music_assistant_models.errors import LoginFailed, SetupFailedError
 from ytmusicapi import LikeStatus
 
@@ -215,3 +215,25 @@ async def test_set_favorite_ignores_other_media_types(provider: YoutubeMusicProv
     with patch("music_assistant.providers.ytmusic.rate_track", AsyncMock()) as mock_rate:
         await provider.set_favorite("album", MediaType.ALBUM, True)
     mock_rate.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("language", "type_label", "album_type"),
+    [
+        ("en", "Single", AlbumType.SINGLE),
+        ("en", "EP", AlbumType.EP),
+        ("en", "Album", AlbumType.ALBUM),
+        ("cs", "Singl", AlbumType.SINGLE),  # codespell:ignore
+        ("cs", "EP", AlbumType.EP),
+        ("nl", "Ep", AlbumType.EP),
+        ("es", "Álbum", AlbumType.ALBUM),
+        ("de", "Playlist", AlbumType.UNKNOWN),
+    ],
+)
+def test_parse_album_type_is_language_independent(
+    provider: YoutubeMusicProvider, language: str, type_label: str, album_type: AlbumType
+) -> None:
+    """The album type YouTube Music reports in the account's language maps to the same type."""
+    provider.language = language
+    album = provider._parse_album({"title": "Test", "type": type_label}, "MPREb_test")
+    assert album.album_type == album_type
