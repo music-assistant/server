@@ -407,8 +407,9 @@ class StorageController(CoreController):
         """
         Unmount a network share and remove it from the media locations.
 
-        Refused while a music source uses the share, when its mount can not be removed, and when
-        it was changed into another share in Home Assistant.
+        Refused while a music source uses the share, and when its mount can not be removed. A
+        mount that was changed into another share in Home Assistant is the user's: it stays, and
+        only the share is forgotten here.
 
         :param name: The name of the share.
         """
@@ -417,18 +418,22 @@ class StorageController(CoreController):
             if (source := self._get_source_using(spec.path)) is not None:
                 msg = f"{source.name} uses {spec.path}"
                 raise self._error(ActionUnavailable, msg, "location_in_use", source.name)
-            if (mounter := await self._get_mounter(spec.backend)) is not None:
-                await self._check_not_changed(mounter, spec)
-                await mounter.remove(spec)
-            elif spec.backend == MountBackend.SUPERVISOR and self.mass.running_as_hass_addon:
-                # the Supervisor may only be busy: its mount stays until it can be removed
-                raise self._backend_unavailable(spec)
-            else:
+            if (mounter := await self._get_mounter(spec.backend)) is None:
+                if spec.backend == MountBackend.SUPERVISOR and self.mass.running_as_hass_addon:
+                    # the Supervisor may only be busy: its mount stays until it can be removed
+                    raise self._backend_unavailable(spec)
                 self.logger.warning(
                     "Forgetting network share %s: %s has no mount of it on this installation",
                     name,
                     spec.backend,
                 )
+            elif (await mounter.get_states([spec]))[spec.name] == ShareState.CHANGED:
+                # the mount is another share now, the user's: it stays
+                self.logger.info(
+                    "Forgetting network share %s, its mount was changed into another share", name
+                )
+            else:
+                await mounter.remove(spec)
             self._share_errors.pop(name, None)
             self._changed_shares.discard(name)
             self.mass.config.remove(f"{CONF_STORAGE_SHARES}/{name}")

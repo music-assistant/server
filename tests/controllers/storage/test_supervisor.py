@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.errors import ActionUnavailable, InvalidDataError, SetupFailedError
@@ -637,26 +638,24 @@ async def test_mount_changed_in_home_assistant_is_left_alone(
     """
     A mount under the name of a share that the user changed in Home Assistant is theirs now.
 
-    It is neither mounted again, changed nor removed, the share is kept, and its location says
-    why it is not available.
+    It is neither mounted again nor changed: the share stays and its location says why it is not
+    available, until the share is removed, which forgets it and leaves the mount where it is.
     """
     _store(storage, ready, "music")
     ready.add_mount("music", **mount)
+    changed = {"name": "music", "usage": "media", "read_only": False, **mount}
     ready.requests.clear()
 
     await storage.reconcile()
-    for command, args in (
-        (storage.reload_network_share, ("music",)),
-        (storage.update_network_share, ("music", "nas.local", "music")),
-        (storage.remove_network_share, ("music",)),
-    ):
-        with pytest.raises(ActionUnavailable) as exc_info:
-            await command(*args)
-        assert exc_info.value.translation_key == "share_changed"
+    with pytest.raises(ActionUnavailable) as reload_error:
+        await storage.reload_network_share("music")
+    with pytest.raises(ActionUnavailable) as update_error:
+        await storage.update_network_share("music", "nas.local", "music")
 
+    assert reload_error.value.translation_key == "share_changed"
+    assert update_error.value.translation_key == "share_changed"
     assert _mutations(ready) == []
-    assert ready.mounts["music"] == {"name": "music", "usage": "media", "read_only": False, **mount}
-    assert "music" in storage.mass.config.get(CONF_STORAGE_SHARES)
+    assert ready.mounts["music"] == changed
     location = storage.get_location_for_path(ready.path("music"))
     assert location is not None
     assert (location.managed, location.available, location.error_key) == (
@@ -664,6 +663,34 @@ async def test_mount_changed_in_home_assistant_is_left_alone(
         False,
         "share_changed",
     )
+
+    await storage.remove_network_share("music")
+
+    assert _mutations(ready) == []
+    assert ready.mounts["music"] == changed
+    assert (ready.media / "music" / "share.txt").exists()
+    assert storage.mass.config.get(CONF_STORAGE_SHARES) == {}
+    # whatever discovery shows there is no managed share any more
+    assert not any(
+        loc.managed for loc in storage.get_locations() if loc.path == ready.path("music")
+    )
+
+
+async def test_changed_mount_is_not_forgotten_while_in_use(
+    storage: StorageController, ready: FakeSupervisor
+) -> None:
+    """A share a loaded music source reads from is not removed, whatever became of its mount."""
+    _store(storage, ready, "music")
+    ready.add_mount("music", type="cifs", server="nas2.local", share="music")
+    source = MagicMock(domain="filesystem_local", base_path=ready.path("music"))
+    source.name = "My music"
+    storage.mass._providers["filesystem_local--abc"] = source
+
+    with pytest.raises(ActionUnavailable) as exc_info:
+        await storage.remove_network_share("music")
+
+    assert exc_info.value.translation_key == "location_in_use"
+    assert "music" in storage.mass.config.get(CONF_STORAGE_SHARES)
 
 
 async def test_mount_that_only_differs_in_case_is_the_same_share(
