@@ -26,7 +26,6 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
-from music_assistant.controllers.player_queues.helpers import committed_index
 from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
 from music_assistant.models.music_provider import MusicProvider
 
@@ -75,6 +74,8 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     prepared_item = await self.load_next_queue_item(queue_id, queue_item_id)
                 except QueueEmpty:
                     return
+                # unplayable items are skipped, so the prepared item can be a later one
+                queue_data.next_item_id_preparing = prepared_item.queue_item_id
                 # the queue can be replaced while the details are fetched, and audio warmed
                 # for an item that left it would sit on a buffer no cleanup reaches
                 if self.get_item(queue_id, prepared_item.queue_item_id) is None:
@@ -142,19 +143,17 @@ class StreamFeederMixin(_PlayerQueuesBase):
         :param queue_id: The queue the item belongs to.
         :param item_id: The queue item whose audio has fully arrived.
         """
-        queue = self.get(queue_id)
+        queue_data = self._queue_data.get(queue_id)
         item = self.get_item(queue_id, item_id)
-        if queue is None or item is None or (streamdetails := item.streamdetails) is None:
+        if queue_data is None or item is None or (streamdetails := item.streamdetails) is None:
             return
         # a source that fills ahead of playback is done long before its item ends; its
         # successor is prepared when the stream of the item nears its end
         if not streamdetails.is_realtime or streamdetails.media_type != MediaType.TRACK:
             return
-        # only an item the player already owns may chain into preparing its successor,
+        # only the item the player is fetching may chain into preparing its successor,
         # so the fills cannot run ahead of the player on their own
-        item_index = self.index_by_id(queue_id, item_id)
-        owned_index = committed_index(queue)
-        if item_index is None or owned_index is None or item_index > owned_index:
+        if queue_data.last_served_item_id != item_id:
             return
         self.prepare_next_audio_buffer(queue_id, item_id)
 

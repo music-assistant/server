@@ -150,6 +150,7 @@ def _controller_with_next_item() -> tuple[PlayerQueuesController, SimpleNamespac
                 items=[current_item, next_item],
                 session_id="session-1",
                 next_item_id_preparing=None,
+                last_served_item_id=None,
             ),
         )
     }
@@ -458,25 +459,27 @@ async def test_prepare_next_does_nothing_when_the_item_repeats_itself() -> None:
 
 
 def _fully_buffered_controller(
-    *, is_realtime: bool, committed: int
+    *, is_realtime: bool, served: str | None
 ) -> tuple[PlayerQueuesController, MagicMock]:
-    """Build a controller whose streamed item has fully arrived, with a stubbed preparation."""
+    """
+    Build a controller whose streamed item has fully arrived, with a stubbed preparation.
+
+    :param is_realtime: Whether the streamed item's source hands over its audio just-in-time.
+    :param served: The item the player is fetching, or None when it fetched nothing yet.
+    """
     controller, _next_item, _mass = _controller_with_next_item()
     _streamed_item(controller).streamdetails = SimpleNamespace(
         is_realtime=is_realtime, media_type=MediaType.TRACK
     )
-    queue = cast("Any", controller._queue_data["queue-1"].queue)
-    # the streamed item sits at index 0; the player owns everything up to `committed`
-    queue.current_index = committed
-    queue.index_in_buffer = committed
+    controller._queue_data["queue-1"].last_served_item_id = served
     prepare = MagicMock()
     controller.prepare_next_audio_buffer = prepare  # type: ignore[method-assign]
     return controller, prepare
 
 
 async def test_a_fully_arrived_realtime_track_prepares_its_successor() -> None:
-    """A realtime track the player already owns chains into preparing the next item."""
-    controller, prepare = _fully_buffered_controller(is_realtime=True, committed=0)
+    """A realtime track the player is fetching chains into preparing the next item."""
+    controller, prepare = _fully_buffered_controller(is_realtime=True, served="current")
 
     controller.track_fully_buffered("queue-1", "current")
 
@@ -485,32 +488,37 @@ async def test_a_fully_arrived_realtime_track_prepares_its_successor() -> None:
 
 async def test_a_fully_arrived_source_that_fills_ahead_prepares_nothing() -> None:
     """A source that fills ahead of playback leaves its successor to the end of its stream."""
-    controller, prepare = _fully_buffered_controller(is_realtime=False, committed=0)
+    controller, prepare = _fully_buffered_controller(is_realtime=False, served="current")
 
     controller.track_fully_buffered("queue-1", "current")
 
     prepare.assert_not_called()
 
 
-async def test_a_fully_arrived_track_beyond_the_player_prepares_nothing() -> None:
-    """The fills do not chain ahead of what the player has fetched."""
-    controller, prepare = _fully_buffered_controller(is_realtime=True, committed=0)
-    # the player owns only the item before the streamed one
-    controller._queue_data["queue-1"].items.insert(
+async def test_a_fully_arrived_track_the_player_has_not_fetched_prepares_nothing() -> None:
+    """
+    The fills do not chain ahead of what the player has fetched.
+
+    The crossfade path raises the buffered index to the incoming track before the player
+    asks for it, so that index does not count as the player fetching the track.
+    """
+    controller, prepare = _fully_buffered_controller(is_realtime=True, served="audible")
+    queue_data = controller._queue_data["queue-1"]
+    queue_data.items.insert(
         0, cast("Any", SimpleNamespace(queue_item_id="audible", available=True))
     )
+    queue = cast("Any", queue_data.queue)
+    queue.current_index = 0
+    queue.index_in_buffer = 1
 
     controller.track_fully_buffered("queue-1", "current")
 
     prepare.assert_not_called()
 
 
-async def test_a_fully_arrived_track_without_a_player_position_prepares_nothing() -> None:
-    """A queue whose player owns no item yet gives the fills nothing to chain on."""
-    controller, prepare = _fully_buffered_controller(is_realtime=True, committed=0)
-    queue = cast("Any", controller._queue_data["queue-1"].queue)
-    queue.current_index = None
-    queue.index_in_buffer = None
+async def test_a_fully_arrived_track_without_a_served_item_prepares_nothing() -> None:
+    """A queue whose player fetched nothing yet gives the fills nothing to chain on."""
+    controller, prepare = _fully_buffered_controller(is_realtime=True, served=None)
 
     controller.track_fully_buffered("queue-1", "current")
 
@@ -581,3 +589,43 @@ async def test_a_repeated_prepare_hands_back_the_preparation_already_running(
     first.cancel()
     with pytest.raises(asyncio.CancelledError):
         await first
+
+
+async def test_a_repeated_prepare_joins_a_preparation_that_skipped_ahead() -> None:
+    """A preparation that skipped an unplayable item is joined, not restarted."""
+    controller, next_item, mass = _controller_with_next_item()
+    later_item = SimpleNamespace(
+        queue_item_id="later",
+        media_type=MediaType.TRACK,
+        streamdetails=None,
+        name="Later",
+        available=True,
+    )
+    controller._queue_data["queue-1"].items.append(cast("Any", later_item))
+    filling = asyncio.Event()
+
+    async def _skip_unplayable(*_args: object) -> SimpleNamespace:
+        next_item.available = False
+        return later_item
+
+    async def _hang(*_args: object, **_kwargs: object) -> None:
+        # no buffer is attached yet while the source is being opened
+        filling.set()
+        await asyncio.Event().wait()
+
+    controller.load_next_queue_item = _skip_unplayable  # type: ignore[method-assign, assignment]
+    mass.streams.audio.get_audio_buffer = _hang
+
+    controller.prepare_next_audio_buffer("queue-1", "current")
+    preparation = asyncio.create_task(mass.create_task.call_args.args[0])
+    await filling.wait()
+    controller.prepare_next_audio_buffer("queue-1", "current")
+
+    assert [call.kwargs["abort_existing"] for call in mass.create_task.call_args_list] == [
+        True,
+        False,
+    ]
+    mass.create_task.call_args.args[0].close()
+    preparation.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await preparation
