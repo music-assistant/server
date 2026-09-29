@@ -150,8 +150,8 @@ RSS_REQUEST_TIMEOUT = 10
 
 # substituted for an unresolved RSS token in clips that still air
 NO_RSS_DATA_INSTRUCTION = (
-    "(no RSS news data available - do not mention specific news items, "
-    "deliver a brief general news update or transition smoothly)"
+    "(no RSS news data available - do not invent or mention news items; "
+    "omit the news segment or transition smoothly)"
 )
 
 # HA drops a tts_proxy token 60s after its last use at the lowest configurable time_memory
