@@ -29,6 +29,8 @@ _AUTH_FAILURE_MARKERS = (
 )
 # lowercase fragments the mount tools emit when the process itself may not mount anything
 _NOT_PERMITTED_MARKERS = ("operation not permitted", "only root can")
+# the bit of each SMB major version in the protocol_vers_map of macOS
+_SMBFS_VERSION_BITS = {"1": 1, "2": 2, "3": 4}
 
 
 def build_cifs_mount_cmd(
@@ -63,15 +65,15 @@ def build_cifs_mount_cmd(
     is_guest = not username or username.lower() == "guest"
     if system == "Darwin":
         mount_options = ["-r"] if read_only else []
-        # macOS uses different version format (e.g., smb2, smb3)
-        if version and version.startswith("3"):
-            mount_options.extend(["-o", "protocol_vers_map=6"])  # SMB3
-        elif version and version.startswith("2"):
-            mount_options.extend(["-o", "protocol_vers_map=4"])  # SMB2
-        # macOS mount_smbfs supports special characters in password when URL-encoded
+        # macOS takes the allowed SMB major versions as a bitmap (nsmb.conf): 1, 2 and 4 for
+        # SMB 1, 2 and 3
+        if version and (version_bit := _SMBFS_VERSION_BITS.get(version.split(".")[0])):
+            mount_options.extend(["-o", f"protocol_vers_map={version_bit}"])
+        # the credentials and the share are parts of a URL, so special characters are encoded
         encoded_password = f":{quote(password, safe='')}" if password and not is_guest else ""
-        user = "guest" if is_guest else username
-        url = f"//{user}{encoded_password}@{server}/{share}"
+        user = "guest" if is_guest else quote(str(username), safe="")
+        path = "/".join(quote(part, safe="") for part in share.split("/"))
+        url = f"//{user}{encoded_password}@{server}/{path}"
         return ["mount", "-t", "smbfs", *mount_options, url, mountpoint], {}
     if system != "Linux":
         msg = f"Mounting a CIFS share is not supported on {system}"

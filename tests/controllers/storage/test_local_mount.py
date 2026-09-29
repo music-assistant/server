@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock
 import pytest
 from music_assistant_models.errors import LoginFailed, MusicAssistantError, SetupFailedError
 
+from music_assistant.constants import CONF_STORAGE_SHARES
+from music_assistant.controllers.storage import StorageController
 from music_assistant.controllers.storage.backends import local_mount
 from music_assistant.controllers.storage.backends.base import BackendUnavailable, ShareState
 from music_assistant.controllers.storage.backends.local_mount import (
@@ -387,13 +389,71 @@ async def test_folder_that_is_not_ours_is_not_unmounted(
     check_output = AsyncMock(return_value=(0, b""))
     monkeypatch.setattr(local_mount, "unmount", unmount)
     monkeypatch.setattr(local_mount, "check_output", check_output)
-    _symlinked_root(tmp_path)
+    root = _symlinked_root(tmp_path)
     (tmp_path / "elsewhere" / "music").mkdir()
 
-    await mounter.remove(_spec(mounter))
-    with pytest.raises(SetupFailedError):
-        await mounter.reload(_spec(mounter), "secret")
+    for command in (mounter.remove(_spec(mounter)), mounter.reload(_spec(mounter), "secret")):
+        with pytest.raises(SetupFailedError) as exc_info:
+            await command
+        assert exc_info.value.translation_key == "mount_folder_unsafe"
+        assert exc_info.value.translation_args == [root]
 
     unmount.assert_not_called()
     check_output.assert_not_called()
     assert (tmp_path / "elsewhere" / "music").is_dir()
+
+
+async def test_readable_root_of_our_own_is_made_private(
+    mounter: LocalMounter, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A root of this process that others may look into is closed before it is used."""
+    check_output = AsyncMock(return_value=(0, b""))
+    monkeypatch.setattr(local_mount, "check_output", check_output)
+    (tmp_path / "mounts").mkdir()
+    (tmp_path / "mounts").chmod(0o755)
+
+    await mounter.add(_spec(mounter), "secret")
+
+    assert stat.S_IMODE((tmp_path / "mounts").stat().st_mode) == 0o700
+    check_output.assert_awaited_once()
+
+
+async def test_root_that_can_not_be_made_private_is_refused(
+    mounter: LocalMounter, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A root whose mode can not be changed is not used."""
+    check_output = AsyncMock(return_value=(0, b""))
+    monkeypatch.setattr(local_mount, "check_output", check_output)
+    (tmp_path / "mounts").mkdir()
+    (tmp_path / "mounts").chmod(0o755)
+
+    def _refuse(*_args: object) -> None:
+        raise PermissionError("read-only file system")
+
+    monkeypatch.setattr(Path, "chmod", _refuse)
+    with pytest.raises(SetupFailedError) as exc_info:
+        await mounter.add(_spec(mounter), "secret")
+
+    assert exc_info.value.translation_key == "mount_folder_unsafe"
+    assert exc_info.value.translation_args == [str(tmp_path / "mounts")]
+    check_output.assert_not_called()
+
+
+async def test_remove_on_an_unsafe_root_keeps_the_share(
+    storage: StorageController, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A share that may still be mounted where the root now points to is not forgotten."""
+    root = _symlinked_root(tmp_path)
+    monkeypatch.setattr(local_mount, "MOUNT_ROOT", root)
+    unmount = AsyncMock()
+    monkeypatch.setattr(local_mount, "unmount", unmount)
+    mounter = LocalMounter({ShareType.CIFS: ALL_CIFS}, logging.getLogger(__name__))
+    storage._mounters = {MountBackend.LOCAL_MOUNT: mounter}
+    storage.mass.config.set(f"{CONF_STORAGE_SHARES}/music", _spec(mounter).to_dict())
+
+    with pytest.raises(SetupFailedError) as exc_info:
+        await storage.remove_network_share("music")
+
+    assert exc_info.value.translation_key == "mount_folder_unsafe"
+    assert "music" in storage.mass.config.get(CONF_STORAGE_SHARES)
+    unmount.assert_not_called()

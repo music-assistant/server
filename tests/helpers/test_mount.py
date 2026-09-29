@@ -74,13 +74,16 @@ def test_cifs_command_on_linux_read_only_with_subfolder_and_cache_mode() -> None
     ("version", "options"),
     [
         (None, []),
-        ("1.0", []),
-        ("2.1", ["-o", "protocol_vers_map=4"]),
-        ("3.1.1", ["-o", "protocol_vers_map=6"]),
+        # one bit per SMB major version: 1, 2 and 4
+        ("1.0", ["-o", "protocol_vers_map=1"]),
+        ("2.0", ["-o", "protocol_vers_map=2"]),
+        ("2.1", ["-o", "protocol_vers_map=2"]),
+        ("3.0", ["-o", "protocol_vers_map=4"]),
+        ("3.1.1", ["-o", "protocol_vers_map=4"]),
     ],
 )
 def test_cifs_command_on_macos(version: str | None, options: list[str]) -> None:
-    """On macOS the credentials go URL-encoded into the share URL, the version as a map."""
+    """On macOS the credentials go URL-encoded into the share URL, the version as a bitmap."""
     cmd, env = build_cifs_mount_cmd(
         "Darwin",
         "nas.local",
@@ -100,6 +103,34 @@ def test_cifs_command_on_macos(version: str | None, options: list[str]) -> None:
         MOUNT_PATH,
     ]
     assert env == {}
+
+
+@pytest.mark.parametrize(
+    ("username", "share", "url"),
+    [
+        ("user@realm", "music", "//user%40realm:pw@nas.local/music"),
+        ("marcel", "My Music", "//marcel:pw@nas.local/My%20Music"),
+        ("marcel", "music/albums A-K", "//marcel:pw@nas.local/music/albums%20A-K"),
+        ("DOMAIN\\marcel", "music#1/a?b", "//DOMAIN%5Cmarcel:pw@nas.local/music%231/a%3Fb"),
+    ],
+)
+def test_cifs_url_on_macos_is_encoded(username: str, share: str, url: str) -> None:
+    """The user and every part of the share path are encoded, the slashes between them kept."""
+    cmd, _env = build_cifs_mount_cmd(
+        "Darwin", "nas.local", share, MOUNT_PATH, username=username, password="pw"
+    )
+
+    assert cmd[-2] == url
+
+
+def test_cifs_command_on_linux_keeps_names_as_they_are() -> None:
+    """The Linux command is no URL: the share and the user go in as typed."""
+    cmd, _env = build_cifs_mount_cmd(
+        "Linux", "nas.local", "My Music/albums", MOUNT_PATH, username="user@realm", password="pw"
+    )
+
+    assert cmd[5] == "//nas.local/My Music/albums"
+    assert "username=user@realm" in cmd[4]
 
 
 @pytest.mark.parametrize(("username", "password"), [(None, None), ("Guest", "pw"), ("", "pw")])
