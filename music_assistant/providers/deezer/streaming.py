@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from collections.abc import AsyncGenerator
-from datetime import datetime
+from datetime import UTC, datetime
 from math import ceil
 from typing import TYPE_CHECKING, NoReturn
 
@@ -61,7 +61,11 @@ class DeezerStreamingManager:
         bookmarks = await fetch_all_bookmarks(self.provider.gql_client)
         if item_id in bookmarks:
             is_played, position_ms, bookmarked_at = bookmarks[item_id]
-            return (is_played, position_ms, parse_date(bookmarked_at))
+            timestamp = parse_date(bookmarked_at)
+            if timestamp is not None and timestamp.tzinfo is None:
+                # the core compares against an aware timestamp; Deezer's times are UTC
+                timestamp = timestamp.replace(tzinfo=UTC)
+            return (is_played, position_ms, timestamp)
         return (False, 0, None)
 
     # -- Playback callbacks --

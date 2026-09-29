@@ -54,6 +54,17 @@ async def test_resume_position_carries_the_bookmark_time(
     assert result == (False, 30000, datetime(2026, 9, 10, 6, 14, 42, tzinfo=UTC))
 
 
+async def test_bookmark_time_without_zone_is_read_as_utc(
+    provider: DeezerProvider, gql: AsyncMock
+) -> None:
+    """A bookmark time without a zone still compares with Music Assistant's own timestamps."""
+    gql.get_podcast_episode_bookmarks.return_value = _bookmarks(_bookmark("100", "2025-07-10"))
+
+    result = await provider.get_resume_position("100", MediaType.PODCAST_EPISODE)
+
+    assert result == (False, 30000, datetime(2025, 7, 10, tzinfo=UTC))
+
+
 async def test_episode_without_bookmark(provider: DeezerProvider, gql: AsyncMock) -> None:
     """An episode Deezer has no bookmark for starts from the beginning."""
     gql.get_podcast_episode_bookmarks.return_value = _bookmarks(
