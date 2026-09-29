@@ -176,7 +176,7 @@ class RecentPlayedTrack(NamedTuple):
 
 
 class PlaylogProviderItem(NamedTuple):
-    """A playlog entry of one provider item, with the progress state recorded for it."""
+    """A provider's playlog entry with the progress state recorded for it."""
 
     media_type: MediaType
     item_id: str
@@ -1190,14 +1190,11 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self, provider_instance_id: str, limit: int = 0, userid: str | None = None
     ) -> list[PlaylogProviderItem]:
         """
-        Return the playlog entries of a provider, keyed by its own item ids.
+        Return a provider's playlog entries, with the ids and progress state it uses itself.
 
-        Carries the recorded progress state, so a provider syncing progress both ways can tell
-        whether an incoming update would change anything before it reports a play.
-
-        :param provider_instance_id: Instance id of the provider whose items to return.
-        :param limit: Maximum number of playlog rows to read, 0 for all of them.
-        :param userid: Look the playlog up for this user instead of the provider's own.
+        :param provider_instance_id: Provider whose entries to return.
+        :param limit: Maximum number of rows to read, 0 for all.
+        :param userid: Look up this user instead of the provider's own.
         """
         # check if there is a provider user
         # this method is not available in the frontend, so no need to check for session users.
@@ -1222,7 +1219,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
         result: list[PlaylogProviderItem] = []
         for db_row in db_rows:
-            # fully_played is a nullable column; treat an unknown (NULL) value as not played
+            # fully_played is nullable, an unknown value is not played
             fully_played = parse_optional_bool(db_row["fully_played"]) or False
             seconds_played = db_row["seconds_played"] or 0
             if db_row["provider"] == "library":

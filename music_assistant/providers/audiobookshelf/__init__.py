@@ -189,7 +189,7 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
         self.libraries = LibrariesHelper()
         # library_id -> {narrator name: ABS narrator id}, refreshed on each audiobook sync
         self._narrator_ids: dict[str, dict[str, str]] = {}
-        # abs item id -> fully_played as mass recorded it, see _refresh_playlog_state
+        # abs item id -> fully_played as mass recorded it
         self._playlog_state: dict[str, bool] = {}
 
     @staticmethod
@@ -2027,15 +2027,13 @@ for more details.
         if mass_audiobook is None:
             return
         if progress.is_finished and self._playlog_state.get(progress.library_item_id):
-            # mass already counted this play, reporting it again would raise play_count
+            # already counted by mass, reporting it again would raise play_count
             return
         if int(progress.current_time) == 0 and not progress.is_finished:
-            self._playlog_state[progress.library_item_id] = False
             await self.mass.music.mark_item_unplayed(
                 mass_audiobook, provider_instance_id=self.instance_id
             )
         else:
-            self._playlog_state[progress.library_item_id] = progress.is_finished
             await self.mass.music.mark_item_played(
                 mass_audiobook,
                 fully_played=progress.is_finished,
@@ -2043,6 +2041,8 @@ for more details.
                 user_initiated=False,
                 provider_instance_id=self.instance_id,
             )
+        # only once mass holds it, so a failed call is not taken for an applied one
+        self._playlog_state[progress.library_item_id] = progress.is_finished
 
     async def _update_playlog_episode(self, progress: MediaProgress) -> None:
         # helper progress also ensures no useless progress updates,
@@ -2057,15 +2057,13 @@ for more details.
         except MediaNotFoundError:
             return
         if progress.is_finished and self._playlog_state.get(_episode_id):
-            # mass already counted this play, reporting it again would raise play_count
+            # already counted by mass, reporting it again would raise play_count
             return
         if int(progress.current_time) == 0 and not progress.is_finished:
-            self._playlog_state[_episode_id] = False
             await self.mass.music.mark_item_unplayed(
                 mass_episode, provider_instance_id=self.instance_id
             )
         else:
-            self._playlog_state[_episode_id] = progress.is_finished
             await self.mass.music.mark_item_played(
                 mass_episode,
                 fully_played=progress.is_finished,
@@ -2073,9 +2071,11 @@ for more details.
                 user_initiated=False,
                 provider_instance_id=self.instance_id,
             )
+        # only once mass holds it, so a failed call is not taken for an applied one
+        self._playlog_state[_episode_id] = progress.is_finished
 
     async def _refresh_playlog_state(self) -> set[str]:
-        """Reload what mass recorded for this provider, returns the ids it holds a progress for."""
+        """Reload what mass recorded for this provider, returns the ids with a progress."""
         self._playlog_state = {
             x.item_id: x.fully_played
             for x in await self.mass.music.get_playlog_provider_items(
