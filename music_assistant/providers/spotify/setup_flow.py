@@ -587,6 +587,9 @@ async def _authorize_playback(session: SetupSession, account_id: str | None) -> 
         librespot_bin = await get_librespot_binary()
     except RuntimeError as err:
         raise SetupFlowError(str(err), translation_key="librespot_unavailable") from err
+    # same address the streamserver advertises to players, so pairing lands on the LAN
+    # instead of a Docker bridge or other side interface on multi-homed hosts
+    zeroconf_interface = session.mass.streams.publish_ip
     errors: dict[str, str | SetupFlowError] | None = None
     while True:
         method_values = await session.form(
@@ -600,7 +603,9 @@ async def _authorize_playback(session: SetupSession, account_id: str | None) -> 
         try:
             if method == PLAYBACK_AUTH_APP:
                 credentials = await session.progress_until(
-                    librespot_credentials_via_pairing(librespot_bin, PAIRING_DEVICE_NAME),
+                    librespot_credentials_via_pairing(
+                        librespot_bin, PAIRING_DEVICE_NAME, zeroconf_interface
+                    ),
                     step_id="playback_pairing",
                     text="pairing_instructions",
                     expires_in=PAIRING_TIMEOUT,

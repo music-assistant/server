@@ -72,7 +72,9 @@ async def get_librespot_binary() -> str:
     raise RuntimeError(msg)
 
 
-async def librespot_credentials_via_pairing(librespot_bin: str, device_name: str) -> str:
+async def librespot_credentials_via_pairing(
+    librespot_bin: str, device_name: str, zeroconf_interface: str | None = None
+) -> str:
     """
     Advertise a Spotify Connect device and return the credential librespot stores once paired.
 
@@ -81,6 +83,8 @@ async def librespot_credentials_via_pairing(librespot_bin: str, device_name: str
 
     :param librespot_bin: Path to the librespot binary.
     :param device_name: Device name to advertise to the Spotify app.
+    :param zeroconf_interface: Local IP to advertise the pairing device on, or None to advertise
+        on all interfaces.
     """
     with tempfile.TemporaryDirectory() as cache_dir:
         args = [
@@ -93,6 +97,10 @@ async def librespot_credentials_via_pairing(librespot_bin: str, device_name: str
             "--name",
             device_name,
         ]
+        if zeroconf_interface:
+            # without this, librespot's bundled mDNS responder advertises every local
+            # interface, including Docker bridge networks the Spotify app can't reach
+            args += ["--zeroconf-interface", zeroconf_interface]
         # stdout carries decoded audio once the user hits play; discard it so the pairing
         # daemon never blocks on a pipe nobody reads
         async with AsyncProcess(

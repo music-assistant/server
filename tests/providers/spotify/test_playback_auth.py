@@ -9,11 +9,12 @@ and must be sent back through the setup flow.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -22,13 +23,17 @@ from music_assistant_models.errors import LoginFailed
 from music_assistant.controllers.config.helpers import _AUTH_ERROR_CODES
 from music_assistant.helpers.oauth import authorization_code_from_url
 from music_assistant.models.setup_flow import SetupFlowError
+from music_assistant.providers.spotify import helpers as spotify_helpers
 from music_assistant.providers.spotify.backends.librespot import LibrespotBackend
 from music_assistant.providers.spotify.constants import (
     CONF_LIBRESPOT_CREDENTIALS,
     CREDENTIALS_FILE,
     PAIRING_DEVICE_NAME,
 )
-from music_assistant.providers.spotify.helpers import _log_pairing_output
+from music_assistant.providers.spotify.helpers import (
+    _log_pairing_output,
+    librespot_credentials_via_pairing,
+)
 from music_assistant.providers.spotify.provider import SpotifyProvider
 
 STORED_CREDENTIALS = '{"username": "tester", "auth_type": 1, "auth_data": "blob"}'
@@ -116,6 +121,7 @@ async def test_failed_attempt_loops_back_to_the_choice(monkeypatch: pytest.Monke
     )
     monkeypatch.setattr(setup_flow, "librespot_credentials_via_pairing", pairing_mock)
     session = MagicMock()
+    session.mass.streams.publish_ip = "192.168.1.50"
     session.form = AsyncMock(return_value={setup_flow.CONF_PLAYBACK_AUTH_METHOD: "spotify_app"})
     session.progress_until = AsyncMock(side_effect=_run_awaitable)
 
@@ -123,7 +129,7 @@ async def test_failed_attempt_loops_back_to_the_choice(monkeypatch: pytest.Monke
     # the form was re-shown, carrying the failure reason rather than aborting the flow
     assert session.form.await_count == 2
     assert session.form.await_args_list[1].kwargs["errors"] == {"base": "playback_auth_failed"}
-    pairing_mock.assert_called_with("/bin/librespot", PAIRING_DEVICE_NAME)
+    pairing_mock.assert_called_with("/bin/librespot", PAIRING_DEVICE_NAME, "192.168.1.50")
 
 
 def test_pairing_device_name_matches_setup_text() -> None:
@@ -136,6 +142,63 @@ def test_pairing_device_name_matches_setup_text() -> None:
     assert PAIRING_DEVICE_NAME in strings["setup_flow"]["playback_pairing"]["title"]
     assert PAIRING_DEVICE_NAME in strings["setup_flow"]["playback_pairing"]["progress_text"]
     assert PAIRING_DEVICE_NAME in strings["errors"]["pairing_not_completed"]
+
+
+class _FakePairingProcess:
+    """AsyncProcess stand-in for the pairing librespot run, recording its argv."""
+
+    def __init__(self, args: list[str], **_kwargs: Any) -> None:
+        self.args = args
+        self._stderr_task: asyncio.Task[None] | None = None
+        recorded_pairing_argv.append(args)
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> None:
+        if self._stderr_task is not None:
+            await self._stderr_task
+
+    def attach_stderr_reader(self, task: asyncio.Task[None]) -> None:
+        self._stderr_task = task
+
+    async def iter_stderr(self) -> AsyncIterator[str]:
+        # nothing to log; the fake daemon pairs immediately
+        return
+        yield  # pragma: no cover
+
+
+recorded_pairing_argv: list[list[str]] = []
+
+
+@pytest.mark.parametrize(
+    ("zeroconf_interface", "expected_flag_present"),
+    [
+        # a known publish IP pins the advertisement, keeping it off Docker bridges
+        ("192.168.1.169", True),
+        # no publish IP: librespot advertises on all interfaces
+        (None, False),
+    ],
+)
+async def test_pairing_advertises_only_the_configured_interface(
+    monkeypatch: pytest.MonkeyPatch, zeroconf_interface: str | None, expected_flag_present: bool
+) -> None:
+    """The pairing daemon is told which interface to advertise its mDNS record on."""
+    recorded_pairing_argv.clear()
+    monkeypatch.setattr(spotify_helpers, "AsyncProcess", _FakePairingProcess)
+    monkeypatch.setattr(
+        spotify_helpers, "_await_credentials_file", AsyncMock(return_value=STORED_CREDENTIALS)
+    )
+
+    result = await librespot_credentials_via_pairing(
+        "/bin/librespot", PAIRING_DEVICE_NAME, zeroconf_interface
+    )
+
+    assert result == STORED_CREDENTIALS
+    argv = recorded_pairing_argv[0]
+    assert ("--zeroconf-interface" in argv) is expected_flag_present
+    if expected_flag_present:
+        assert argv[argv.index("--zeroconf-interface") + 1] == zeroconf_interface
 
 
 async def test_pairing_output_demotes_duplicate_warnings(
