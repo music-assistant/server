@@ -11,6 +11,7 @@ import pytest
 from deezer_python_gql.generated.get_recently_played import (
     GetRecentlyPlayedMeRecentlyPlayedEdgesNodeFlow,
 )
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.providers.deezer.provider import DeezerProvider
@@ -25,6 +26,7 @@ ALL_ROW_IDS = [
     "mood_flows",
     "genre_flows",
     "recently_played",
+    "new_episodes",
 ]
 
 
@@ -101,6 +103,7 @@ def _stub_gql_client(provider: DeezerProvider) -> Mock:
     gql.get_made_for_me = AsyncMock(return_value=None)  # smart tracklists -> []
     gql.get_flow_configs = AsyncMock(return_value=_flow_configs_data())
     gql.get_recently_played = AsyncMock(return_value=_recently_played_data())
+    gql.get_latest_podcast_episodes = AsyncMock(return_value=None)
     provider.gql_client = gql
     return gql
 
@@ -165,6 +168,7 @@ async def test_get_recommendations_static_rows_zero_backend_calls(
     gql.get_made_for_me.assert_not_awaited()
     gql.get_flow_configs.assert_not_awaited()
     gql.get_recently_played.assert_not_awaited()
+    gql.get_latest_podcast_episodes.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -197,6 +201,38 @@ async def test_items_recently_played(provider: DeezerProvider) -> None:
     gql.get_made_for_me.assert_not_awaited()
     gql.get_flow_configs.assert_not_awaited()
     assert [item.name for item in items] == ["My Flow"]
+
+
+@pytest.mark.asyncio
+async def test_items_new_episodes(provider: DeezerProvider) -> None:
+    """new_episodes lists the newest episode first and skips one Deezer no longer has."""
+    _install_cache_mocks(provider)
+    gql = _stub_gql_client(provider)
+    gql.get_latest_podcast_episodes = AsyncMock(
+        return_value=SimpleNamespace(
+            raw_latest_podcast_episodes=[
+                SimpleNamespace(id="older", publication_date="2026-09-20"),
+                SimpleNamespace(id="newer", publication_date="2026-09-28"),
+                SimpleNamespace(id="gone", publication_date="2026-09-25"),
+            ]
+        )
+    )
+    episodes = {"older": Mock(item_id="older"), "newer": Mock(item_id="newer")}
+
+    async def get_podcast_episode(prov_episode_id: str) -> Mock:
+        if prov_episode_id not in episodes:
+            raise MediaNotFoundError(prov_episode_id)
+        return episodes[prov_episode_id]
+
+    provider.media_manager = Mock()
+    provider.media_manager.get_podcast_episode = AsyncMock(side_effect=get_podcast_episode)
+
+    items = await provider.get_recommendation_items("new_episodes")
+
+    assert [item.item_id for item in items] == ["newer", "older"]
+    gql.get_latest_podcast_episodes.assert_awaited_once()
+    gql.get_recommendations.assert_not_awaited()
+    gql.get_recently_played.assert_not_awaited()
 
 
 @pytest.mark.asyncio
