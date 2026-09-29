@@ -109,6 +109,7 @@ from music_assistant_models.media_items.media_item import RecommendationFolder
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 from music_assistant.constants import PLAYBACK_REPORT_INTERVAL_SECONDS, PlaylistPlayableItem
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
@@ -1885,9 +1886,7 @@ for more details.
                     )
             else:
                 with suppress(MediaNotFoundError):
-                    discarded_item = await self.get_podcast_episode(
-                        prov_episode_id=discarded_progress_id, add_progress=False
-                    )
+                    discarded_item = await self._get_playlog_podcast_episode(discarded_progress_id)
                     self.progress_guard.add_progress(*discarded_progress_id.split(" "))
                     self._playlog_state.pop(discarded_progress_id, None)
                     await self.mass.music.mark_item_unplayed(
@@ -1935,7 +1934,7 @@ for more details.
         _episode_id = f"{progress.library_item_id} {progress.episode_id}"
         try:
             # need to obtain full podcast, and then search for episode
-            mass_episode = await self.get_podcast_episode(_episode_id, add_progress=False)
+            mass_episode = await self._get_playlog_podcast_episode(_episode_id)
         except MediaNotFoundError:
             return
         if progress.is_finished and self._playlog_state.get(_episode_id):
@@ -1965,6 +1964,11 @@ for more details.
             )
         }
         return set(self._playlog_state)
+
+    # other abs clients report the progress of a playing episode every 15s
+    @use_cache(300)
+    async def _get_playlog_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
+        return await self.get_podcast_episode(prov_episode_id, add_progress=False)
 
     async def _get_audiobook_narrators(
         self, book: AbsLibraryItemExpandedBook
