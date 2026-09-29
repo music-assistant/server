@@ -342,13 +342,9 @@ class FFMpeg(AsyncProcess):
 
     def _is_expected_task_error(self, err: BaseException) -> bool:
         """Return whether a helper task error is an expected outcome rather than a failure."""
-        # deferred import: the provider models pull the controller graph in at
-        # import time, which this low-level helper must stay clear of
-        from music_assistant.models.music_provider import ProviderStreamLimitError  # noqa: PLC0415
-
         # a provider with no free source-stream slot is a normal outcome of a
         # speculative prefetch: the caller retries once the current stream releases it
-        return isinstance(err, ProviderStreamLimitError)
+        return _is_stream_limit_error(err)
 
 
 def parse_ffmpeg_stream_info(line: str) -> FFMpegStreamInfo | None:
@@ -950,10 +946,16 @@ def _raise_feeder_error(feeder_exception: Exception) -> NoReturn:
     :raises ProviderStreamLimitError: When the source had no free stream slot.
     :raises AudioError: For any other feeder failure, caused by the feeder exception.
     """
-    # deferred import: the provider models pull the controller graph in at import time
-    from music_assistant.models.music_provider import ProviderStreamLimitError  # noqa: PLC0415
-
     # keep the capacity error's type so callers can tell a busy source apart
-    if isinstance(feeder_exception, ProviderStreamLimitError):
+    if _is_stream_limit_error(feeder_exception):
         raise feeder_exception
     raise AudioError("Error while feeding audio to FFmpeg") from feeder_exception
+
+
+def _is_stream_limit_error(err: BaseException) -> bool:
+    """Return whether the error means a provider had no free source-stream slot."""
+    # deferred import: the provider models pull the controller graph in at
+    # import time, which this low-level helper must stay clear of
+    from music_assistant.models.music_provider import ProviderStreamLimitError  # noqa: PLC0415
+
+    return isinstance(err, ProviderStreamLimitError)
