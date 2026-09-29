@@ -649,11 +649,23 @@ class StreamsAudio:
 
             media_item = queue_item.media_item
             assert media_item is not None  # for type checking
+            # the item still playing when this call was made (get_stream_details is called
+            # ahead of the switch, so current_item is the predecessor, not queue_item itself):
+            # used to break same-quality ties toward the mapping in its folder
+            anchor: tuple[str, str] | None = None
+            if (
+                (current_queue := mass.player_queues.get(queue_item.queue_id))
+                and (current_item := current_queue.current_item)
+                and current_item.queue_item_id != queue_item.queue_item_id
+                and (current_streamdetails := current_item.streamdetails)
+            ):
+                anchor = (current_streamdetails.provider, current_streamdetails.item_id)
             candidates = self._get_streamdetail_candidates(
                 media_item.provider_mappings,
                 preferred_providers,
                 excluded_provider_instances,
                 allowed,
+                anchor,
             )
             if not candidates and allowed is not None:
                 # tell an item blocked by the user's music sources apart from one whose
@@ -663,6 +675,7 @@ class StreamsAudio:
                     preferred_providers,
                     excluded_provider_instances,
                     None,
+                    anchor,
                 )
                 if blocked:
                     msg = f"{queue_item.name} is not available on any music source of this user"
@@ -3559,6 +3572,7 @@ class StreamsAudio:
         preferred_providers: list[str],
         excluded_provider_instances: set[str],
         allowed: list[str] | None,
+        anchor: tuple[str, str] | None = None,
     ) -> list[tuple[ProviderMapping, Provider]]:
         """
         Return mapping candidates in steering, quality, and instance-fallback order.
@@ -3567,10 +3581,15 @@ class StreamsAudio:
         :param preferred_providers: Provider instances tried before widening to the rest.
         :param excluded_provider_instances: Provider instances unavailable to this attempt.
         :param allowed: Music sources the playback user may use, or None for all of them.
+        :param anchor: (provider_instance, item_id) of the currently playing track, used to
+            break same-quality ties in favor of the mapping that shares its folder. None for
+            the first track of a session, where there is nothing yet to stay close to.
         :return: Ordered provider mapping candidates.
         """
         ordered_mappings = sorted(
-            provider_mappings, key=lambda mapping: mapping.quality or 0, reverse=True
+            provider_mappings,
+            key=lambda mapping: (mapping.quality or 0, self._folder_affinity(mapping, anchor)),
+            reverse=True,
         )
         preferred_candidates: list[tuple[ProviderMapping, Provider]] = []
         fallback_candidates: list[tuple[ProviderMapping, Provider]] = []
@@ -3593,6 +3612,31 @@ class StreamsAudio:
                 else:
                     fallback_candidates.append(candidate)
         return [*preferred_candidates, *fallback_candidates]
+
+    @staticmethod
+    def _folder_affinity(mapping: ProviderMapping, anchor: tuple[str, str] | None) -> int:
+        """
+        Return the number of leading path segments this mapping shares with the anchor track.
+
+        Consolidated duplicate tracks (e.g. a compilation track also present on its original
+        album) tie on quality, and an arbitrary pick between them can switch the actual
+        playing file mid-album, which is audible through volume normalization and gapless
+        playback. Preferring the same-quality mapping that stays in the currently playing
+        track's folder avoids that switch.
+
+        :param mapping: Candidate mapping being scored.
+        :param anchor: (provider_instance, item_id) of the currently playing track, or None.
+        """
+        if anchor is None or mapping.provider_instance != anchor[0]:
+            return 0
+        mapping_folder = mapping.item_id.replace("\\", "/").split("/")[:-1]
+        anchor_folder = anchor[1].replace("\\", "/").split("/")[:-1]
+        affinity = 0
+        for mapping_segment, anchor_segment in zip(mapping_folder, anchor_folder, strict=False):
+            if mapping_segment != anchor_segment:
+                break
+            affinity += 1
+        return affinity
 
     def _may_serve_playback(self, instance_id: str, allowed: list[str] | None) -> bool:
         """

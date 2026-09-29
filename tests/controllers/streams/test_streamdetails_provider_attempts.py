@@ -335,3 +335,38 @@ async def test_playback_user_steering_precedes_cross_domain_quality() -> None:
     assert streamdetails.provider == preferred_instance
     preferred.get_stream_details.assert_awaited_once()
     high_quality.get_stream_details.assert_not_awaited()
+
+
+async def test_same_quality_mapping_prefers_currently_playing_tracks_folder() -> None:
+    """A consolidated track's same-quality mappings favor the anchor track's folder."""
+    fs_instance = "filesystem_local--main"
+    same_folder_item_id = "Various Artists/Compilation Album/07 Other Track.flac"
+    other_folder_item_id = "Original Artist/Original Album/01 Track.flac"
+
+    async def _by_item_id(item_id: str, media_type: MediaType) -> StreamDetails:
+        return _streamdetails(item_id, media_type, fs_instance)
+
+    provider = MagicMock()
+    provider.get_stream_details = _by_item_id
+    audio = _audio({fs_instance: provider})
+    # the item still playing when this call is made: its streamdetails point at the
+    # compilation album's copy of the track
+    anchor_item = QueueItem(
+        queue_id="q1", queue_item_id="qi0", name="Anchor", duration=None, media_item=None
+    )
+    anchor_item.streamdetails = _streamdetails(
+        "Various Artists/Compilation Album/01 Track.flac", MediaType.SOUND_EFFECT, fs_instance
+    )
+    cast("MagicMock", audio.mass).player_queues.get.return_value = MagicMock(
+        current_item=anchor_item
+    )
+
+    streamdetails = await audio.get_stream_details(
+        # both mappings tie on quality, so only the folder tiebreak decides between them
+        queue_item=_queue_item(
+            _mapping(fs_instance, item_id=other_folder_item_id),
+            _mapping(fs_instance, item_id=same_folder_item_id),
+        )
+    )
+
+    assert streamdetails.item_id == same_folder_item_id
