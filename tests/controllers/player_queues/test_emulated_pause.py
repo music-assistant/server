@@ -8,13 +8,16 @@ like any other pause that lasts too long.
 
 from __future__ import annotations
 
+import inspect
 import time
+from collections.abc import Coroutine
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.player_queue import PlayerQueue
 
+from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.players import PlayerController
@@ -83,6 +86,47 @@ def _playback_state(player: Player) -> PlaybackState:
     return player.state.playback_state
 
 
+def _pause_watchers(ctrl: PlayerQueuesController) -> list[Coroutine[Any, Any, None]]:
+    """
+    Return the pause watchers the pause handed to create_task, closing any other coroutine.
+
+    :param ctrl: The controller the pause ran on.
+    """
+    watchers: list[Coroutine[Any, Any, None]] = []
+    for call in cast("MagicMock", ctrl.mass).create_task.call_args_list:
+        target = call.args[0]
+        if not inspect.iscoroutine(target):
+            continue
+        if target.__name__ == "_watch_pause":
+            watchers.append(target)
+        else:
+            target.close()
+    return watchers
+
+
+def _take_pause_watcher(ctrl: PlayerQueuesController) -> Coroutine[Any, Any, None]:
+    """
+    Return the one pause watcher the pause started.
+
+    :param ctrl: The controller the pause ran on.
+    """
+    watchers = _pause_watchers(ctrl)
+    assert len(watchers) == 1
+    return watchers[0]
+
+
+async def _run_pause_watcher(ctrl: PlayerQueuesController) -> None:
+    """
+    Run the pause watcher to its end, without waiting out its sleeps.
+
+    :param ctrl: The controller the pause ran on.
+    """
+    with patch(
+        "music_assistant.controllers.player_queues.controller.asyncio.sleep", new=AsyncMock()
+    ):
+        await _take_pause_watcher(ctrl)
+
+
 async def test_pause_watcher_ends_the_queue_and_releases_its_session() -> None:
     """After thirty seconds of the emulated pause, the queue is stopped for real."""
     ctrl, player, queue_data = _setup()
@@ -94,11 +138,7 @@ async def test_pause_watcher_ends_the_queue_and_releases_its_session() -> None:
     session_while_paused = queue_data.session_id
     assert session_while_paused == "sess-1"
     mass.streams.audio_processing.clear.assert_not_called()
-    watcher = mass.create_task.call_args.args[0]
-    with patch(
-        "music_assistant.controllers.player_queues.controller.asyncio.sleep", new=AsyncMock()
-    ):
-        await watcher
+    await _run_pause_watcher(ctrl)
 
     assert _playback_state(player) == PlaybackState.IDLE
     assert not player.emulated_pause
@@ -107,10 +147,39 @@ async def test_pause_watcher_ends_the_queue_and_releases_its_session() -> None:
     cast("AsyncMock", player.stop).assert_awaited_once()
 
 
+async def test_pause_watcher_leaves_a_restart_in_flight_alone() -> None:
+    """A resume that is still starting when the pause runs out keeps its new session."""
+    ctrl, player, queue_data = _setup()
+    mass = cast("MagicMock", ctrl.mass)
+    await ctrl.pause(QUEUE_ID)
+    # the resume started a new session, the device does not report playing yet
+    queue_data.session_id = "sess-2"
+
+    await _run_pause_watcher(ctrl)
+
+    assert queue_data.session_id == "sess-2"
+    mass.streams.audio_processing.clear.assert_not_called()
+    cast("AsyncMock", player.stop).assert_awaited_once()
+
+
+async def test_pause_during_an_announcement_is_a_plain_stop() -> None:
+    """Without a pause watcher to end it, a pause is not emulated."""
+    ctrl, player, _queue_data = _setup()
+    player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
+
+    await ctrl.pause(QUEUE_ID)
+
+    cast("AsyncMock", player.stop).assert_awaited_once()
+    assert not player.emulated_pause
+    assert _playback_state(player) == PlaybackState.IDLE
+    assert _pause_watchers(ctrl) == []
+
+
 async def test_play_resumes_the_queue_instead_of_unpausing_the_device() -> None:
     """The stopped device has nothing to unpause, the queue restarts at the saved position."""
     ctrl, player, queue_data = _setup()
     await ctrl.pause(QUEUE_ID)
+    _take_pause_watcher(ctrl).close()
     # the queue follows the paused player (the tracker is stubbed out here)
     queue_data.queue.state = PlaybackState.PAUSED
     ctrl.resume = AsyncMock()  # type: ignore[method-assign]

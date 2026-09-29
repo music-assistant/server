@@ -2747,6 +2747,7 @@ class Player(ABC):
             and self._state.playback_state != PlaybackState.PAUSED
         ):
             self.__emulated_pause = None
+            self.__stop_called = False
         new_fingerprint = _state_fingerprint(self._state)
         self.__state_fingerprint = new_fingerprint
         changed_values: dict[str, tuple[Any, Any]] = {}

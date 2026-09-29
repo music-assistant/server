@@ -2906,6 +2906,9 @@ class TestExternalSourcePlayPause:
 
         assert not player.emulated_pause
         assert player.state.playback_state == PlaybackState.IDLE
+        # the stop schedules the release of the output protocol, which is not run here
+        for scheduled in mock_mass.create_task.call_args_list:
+            scheduled.args[0].close()
 
 
 class TestProtocolOutputPlayPause:
@@ -2937,6 +2940,8 @@ class TestProtocolOutputPlayPause:
         queue = MagicMock()
         queue.items = [MagicMock()]
         queue.queue_id = "player_1"
+        # no current item, so no artwork palette gets fetched in the background
+        queue.current_item = None
         mock_mass.player_queues.get = MagicMock(return_value=queue)
         player.set_linked_output_protocols(
             [
@@ -2968,7 +2973,7 @@ class TestProtocolOutputPlayPause:
             )
         )
 
-        await controller._handle_cmd_pause("player_1")
+        await controller._handle_cmd_pause("player_1", emulate_pause=True)
         player.refresh_state(signal_event=False)
 
         # the native transport has no session to pause while a protocol renders the audio
@@ -2976,6 +2981,85 @@ class TestProtocolOutputPlayPause:
         protocol_player.stop.assert_awaited_once()
         assert _playback_state(protocol_player) == PlaybackState.IDLE
         assert _playback_state(player) == PlaybackState.PAUSED
+
+    @staticmethod
+    def _protocol_clear_tasks(mock_mass: MagicMock) -> list[Any]:
+        """
+        Return the scheduled clears of the active output protocol.
+
+        :param mock_mass: The mock MusicAssistant instance the clears were scheduled on.
+        """
+        return [
+            scheduled.args[0]
+            for scheduled in mock_mass.create_task.call_args_list
+            if str(scheduled.kwargs.get("task_id", "")).startswith("clear_active_protocol_")
+        ]
+
+    @staticmethod
+    async def _emulated_pause_on_protocol(
+        mock_mass: MagicMock, controller: PlayerController
+    ) -> MockPlayer:
+        """
+        Pause a player on a protocol that cannot pause, whose native state stays playing.
+
+        :param mock_mass: The mock MusicAssistant instance to build it on.
+        :param controller: The player controller to pause it through.
+        :return: The visible player, reporting the emulated pause.
+        """
+        player = TestProtocolOutputPlayPause._make_player_on_protocol(
+            mock_mass, controller, playback_state=PlaybackState.PLAYING
+        )
+        protocol_player = cast("MockPlayer", controller._players["proto_1"])
+        protocol_player.stop = AsyncMock(  # type: ignore[method-assign]
+            side_effect=lambda: TestEmulatedPause._report_device_state(
+                protocol_player, PlaybackState.IDLE
+            )
+        )
+        await controller._handle_cmd_pause("player_1", emulate_pause=True)
+        player.refresh_state(signal_event=False)
+        return player
+
+    async def test_emulated_pause_keeps_the_active_output_protocol(
+        self, mock_mass: MagicMock, controller: PlayerController
+    ) -> None:
+        """A paused player resumes on the protocol it was paused on, like a real pause."""
+        player = await self._emulated_pause_on_protocol(mock_mass, controller)
+
+        assert self._protocol_clear_tasks(mock_mass) == []
+        assert player.active_output_protocol == "proto_1"
+
+    async def test_emulated_pause_outlasts_the_protocol_clear_delay(
+        self, mock_mass: MagicMock, controller: PlayerController
+    ) -> None:
+        """
+        The paused state keeps coming from the stopped protocol player.
+
+        The native player's own state still reports playing here, so losing the protocol
+        would turn the pause into playing and let the pause watcher miss the queue stop.
+        """
+        player = await self._emulated_pause_on_protocol(mock_mass, controller)
+        assert player.playback_state == PlaybackState.PLAYING
+
+        with patch.object(controller, "_wait_for_playback_state", new=AsyncMock()):
+            for clear in self._protocol_clear_tasks(mock_mass):
+                await clear
+        player.refresh_state(signal_event=False)
+
+        assert _playback_state(player) == PlaybackState.PAUSED
+        assert player.emulated_pause
+
+    async def test_stop_after_an_emulated_pause_clears_the_output_protocol(
+        self, mock_mass: MagicMock, controller: PlayerController
+    ) -> None:
+        """The real stop that ends the emulated pause releases the protocol as usual."""
+        await self._emulated_pause_on_protocol(mock_mass, controller)
+
+        await controller._handle_cmd_stop("player_1")
+
+        clears = self._protocol_clear_tasks(mock_mass)
+        assert len(clears) == 1
+        for clear in clears:
+            clear.close()
 
     async def test_play_on_protocol_without_pause_does_not_unpause_natively(
         self, mock_mass: MagicMock, controller: PlayerController
@@ -2992,6 +3076,16 @@ class TestProtocolOutputPlayPause:
         player.play.assert_not_called()
         # the MA queue source is restarted, not some other source
         controller._handle_select_source.assert_awaited_once_with("player_1", "player_1")
+
+
+def _queue_media() -> PlayerMedia:
+    """Return a queue item of the player's own queue to play."""
+    return PlayerMedia(
+        uri="http://ma/single/player_1/item_1.flac",
+        media_type=MediaType.TRACK,
+        source_id="player_1",
+        queue_item_id="item_1",
+    )
 
 
 def _playback_state(player: Player) -> PlaybackState:
@@ -3013,18 +3107,23 @@ class TestEmulatedPause:
 
     @staticmethod
     def _player_on_own_queue(
-        mock_mass: MagicMock, *, device_reports_stop: bool = True
+        mock_mass: MagicMock,
+        *,
+        device_reports_stop: bool = True,
+        player_type: PlayerType = PlayerType.PLAYER,
     ) -> tuple[PlayerController, MockPlayer, list[PlaybackState]]:
         """
         Build a player without pause support that plays its own queue.
 
         :param mock_mass: The mock MusicAssistant instance to build it on.
         :param device_reports_stop: Whether the device reports idle while handling its stop.
+        :param player_type: The type to register the player as.
         :return: The controller, the player and the playback states it published.
         """
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
-        player = MockPlayer(provider, "player_1", "Player 1")
+        player = MockPlayer(provider, "player_1", "Player 1", player_type=player_type)
+        player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
         player._attr_playback_state = PlaybackState.PLAYING
         player._attr_elapsed_time = 42
         player._attr_elapsed_time_last_updated = time.time()
@@ -3074,12 +3173,25 @@ class TestEmulatedPause:
         """The device is stopped, the player reports paused where it was paused."""
         controller, player, published = self._player_on_own_queue(mock_mass)
 
-        await controller._handle_cmd_pause("player_1")
+        await controller._handle_cmd_pause("player_1", emulate_pause=True)
 
         cast("AsyncMock", player.stop).assert_awaited_once()
         assert player.emulated_pause
         assert _playback_state(player) == PlaybackState.PAUSED
         assert player.state.elapsed_time == pytest.approx(42, abs=1)
+        assert published == [PlaybackState.PAUSED]
+
+    async def test_group_player_reports_the_emulated_pause(self, mock_mass: MagicMock) -> None:
+        """A group player (sync or universal group) has no pause either and is paused alike."""
+        controller, player, published = self._player_on_own_queue(
+            mock_mass, player_type=PlayerType.GROUP
+        )
+
+        await controller._handle_cmd_pause("player_1", emulate_pause=True)
+
+        cast("AsyncMock", player.stop).assert_awaited_once()
+        assert player.emulated_pause
+        assert _playback_state(player) == PlaybackState.PAUSED
         assert published == [PlaybackState.PAUSED]
 
     async def test_paused_shows_once_the_device_reports_the_stop(
@@ -3090,7 +3202,7 @@ class TestEmulatedPause:
             mock_mass, device_reports_stop=False
         )
 
-        await controller._handle_cmd_pause("player_1")
+        await controller._handle_cmd_pause("player_1", emulate_pause=True)
         assert _playback_state(player) == PlaybackState.PLAYING
         self._report_device_state(player, PlaybackState.IDLE)
 
@@ -3101,13 +3213,17 @@ class TestEmulatedPause:
     async def test_playback_starting_again_ends_the_emulated_pause(
         self, mock_mass: MagicMock
     ) -> None:
-        """Once the device plays again, the end of that playback is a plain idle."""
+        """Once the device plays again, it is a normal playback that ends in a plain idle."""
         controller, player, _published = self._player_on_own_queue(mock_mass)
-        await controller._handle_cmd_pause("player_1")
+        await controller._handle_cmd_pause("player_1", emulate_pause=True)
+        stopped_for_the_pause = player.stop_called
+        assert stopped_for_the_pause
 
         self._report_device_state(player, PlaybackState.PLAYING)
         assert _playback_state(player) == PlaybackState.PLAYING
         assert not player.emulated_pause
+        # the new playback is not one the user stopped
+        assert not player.stop_called
         self._report_device_state(player, PlaybackState.IDLE)
 
         assert _playback_state(player) == PlaybackState.IDLE
@@ -3117,7 +3233,7 @@ class TestEmulatedPause:
     ) -> None:
         """The stopped device has nothing to unpause, the queue resumes at its position."""
         controller, player, _published = self._player_on_own_queue(mock_mass)
-        await controller._handle_cmd_pause("player_1")
+        await controller._handle_cmd_pause("player_1", emulate_pause=True)
         player.play = AsyncMock()  # type: ignore[method-assign]
         mock_mass.player_queues.resume = AsyncMock()
 
@@ -3129,7 +3245,7 @@ class TestEmulatedPause:
     async def test_stop_ends_the_emulated_pause(self, mock_mass: MagicMock) -> None:
         """A stop turns the paused player idle, without stopping the device again."""
         controller, player, published = self._player_on_own_queue(mock_mass)
-        await controller._handle_cmd_pause("player_1")
+        await controller._handle_cmd_pause("player_1", emulate_pause=True)
 
         await controller._handle_cmd_stop("player_1")
 
@@ -3143,7 +3259,7 @@ class TestEmulatedPause:
     ) -> None:
         """A player that dropped off the network can not stay paused."""
         controller, player, _published = self._player_on_own_queue(mock_mass)
-        await controller._handle_cmd_pause("player_1")
+        await controller._handle_cmd_pause("player_1", emulate_pause=True)
         player._attr_available = False
         player.update_state(signal_event=False)
         assert _playback_state(player) == PlaybackState.PAUSED
@@ -3160,7 +3276,7 @@ class TestEmulatedPause:
             side_effect=_player_config_stub({CONF_POWER_CONTROL: PLAYER_CONTROL_NONE})
         )
         controller, player, _published = self._player_on_own_queue(mock_mass)
-        await controller._handle_cmd_pause("player_1")
+        await controller._handle_cmd_pause("player_1", emulate_pause=True)
         # the queue stop issues the player stop
         mock_mass.player_queues._handle_stop = AsyncMock(side_effect=controller._handle_cmd_stop)
 
@@ -3183,7 +3299,81 @@ class TestEmulatedPause:
         player.stop = AsyncMock(side_effect=PlayerCommandFailed("no answer"))  # type: ignore[method-assign]
 
         with pytest.raises(PlayerCommandFailed):
-            await controller._handle_cmd_pause("player_1")
+            await controller._handle_cmd_pause("player_1", emulate_pause=True)
+
+        assert not player.emulated_pause
+        self._report_device_state(player, PlaybackState.IDLE)
+        assert _playback_state(player) == PlaybackState.IDLE
+
+    async def test_play_before_the_device_confirms_its_stop_resumes_the_queue(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A play while the stopped device still reports playing is not dropped."""
+        controller, player, _published = self._player_on_own_queue(
+            mock_mass, device_reports_stop=False
+        )
+        await controller._handle_cmd_pause("player_1", emulate_pause=True)
+        assert _playback_state(player) == PlaybackState.PLAYING
+        player.play = AsyncMock()  # type: ignore[method-assign]
+        mock_mass.player_queues.resume = AsyncMock()
+
+        await controller.cmd_play("player_1")
+
+        mock_mass.player_queues.resume.assert_awaited_once_with("player_1")
+        player.play.assert_not_called()
+
+    async def test_new_playback_ends_an_emulated_pause_that_does_not_show_yet(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Playback started before the device confirmed its stop ends like any playback."""
+        controller, player, _published = self._player_on_own_queue(
+            mock_mass, device_reports_stop=False
+        )
+        await controller._handle_cmd_pause("player_1", emulate_pause=True)
+        player.play_media = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._handle_play_media("player_1", _queue_media())
+
+        assert not player.emulated_pause
+        self._report_device_state(player, PlaybackState.IDLE)
+        assert _playback_state(player) == PlaybackState.IDLE
+
+    async def test_new_playback_from_the_emulated_pause_publishes_no_idle(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Restarting from the shown pause goes from paused straight to playing."""
+        controller, player, published = self._player_on_own_queue(mock_mass)
+        await controller._handle_cmd_pause("player_1", emulate_pause=True)
+        player.play_media = AsyncMock(  # type: ignore[method-assign]
+            side_effect=lambda _media: self._report_device_state(player, PlaybackState.PLAYING)
+        )
+
+        await controller._handle_play_media("player_1", _queue_media())
+
+        assert PlaybackState.IDLE not in published
+        assert published[-1] == PlaybackState.PLAYING
+        assert not player.emulated_pause
+
+    async def test_cancelled_pause_does_not_leave_an_emulated_pause(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A pause cancelled while it waits for the device stop leaves the player as it was."""
+        controller, player, _published = self._player_on_own_queue(mock_mass)
+        stop_started = asyncio.Event()
+
+        async def _hanging_stop() -> None:
+            stop_started.set()
+            await asyncio.Event().wait()
+
+        player.stop = AsyncMock(side_effect=_hanging_stop)  # type: ignore[method-assign]
+        pause_task = asyncio.create_task(
+            controller._handle_cmd_pause("player_1", emulate_pause=True)
+        )
+        await stop_started.wait()
+
+        pause_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pause_task
 
         assert not player.emulated_pause
         self._report_device_state(player, PlaybackState.IDLE)
@@ -3200,7 +3390,7 @@ class TestEmulatedPause:
         member.update_state(signal_event=False)
         assert member.state.synced_to == "player_1"
 
-        await controller._handle_cmd_pause("player_1")
+        await controller._handle_cmd_pause("player_1", emulate_pause=True)
         member.refresh_state(signal_event=False)
 
         assert _playback_state(member) == PlaybackState.PAUSED

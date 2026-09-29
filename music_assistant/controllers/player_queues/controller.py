@@ -726,12 +726,20 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._set_transitioning(queue_id, False)
         if not (queue := self.get(queue_id)):
             return
-        queue_active = queue.active
         if queue.active and queue.state == PlaybackState.PLAYING:
             queue.resume_pos = int(queue.corrected_elapsed_time)
+        # we auto stop a player from paused when its paused for 30 seconds
+        queue_player = self.mass.players.get_player(queue_id)
+        watch_pause = bool(
+            queue.active
+            and queue_player
+            and not queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
+        )
         # Use internal handler to avoid circular redirect
         # (cmd_pause redirects to queue.pause, which calls cmd_pause again)
-        await self.mass.players._handle_cmd_pause(queue_id)
+        await self.mass.players._handle_cmd_pause(queue_id, emulate_pause=watch_pause)
+        # a restart (resume, seek, skip) starts a new session, which is not ours to stop
+        session_id = self._queue_data[queue_id].session_id
 
         async def _watch_pause(player: Player) -> None:
             count = 0
@@ -747,15 +755,13 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 count += 1
                 await asyncio.sleep(1)
             # if player is still paused when the limit is reached, send stop
-            if player.state.playback_state == PlaybackState.PAUSED:
+            if (
+                player.state.playback_state == PlaybackState.PAUSED
+                and self._queue_data[queue_id].session_id == session_id
+            ):
                 await self.stop(queue_id)
 
-        # we auto stop a player from paused when its paused for 30 seconds
-        if (
-            queue_active
-            and (queue_player := self.mass.players.get_player(queue_id))
-            and not queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
-        ):
+        if watch_pause and queue_player:
             self.mass.create_task(_watch_pause(queue_player))
 
     @api_command("player_queues/play_pause", required_scope=Scope.QUEUES_CONTROL)
