@@ -90,6 +90,7 @@ from music_assistant.providers.plex.constants import (
     ERR_INVALID_CREDENTIALS,
     ERR_ITEM_NOT_FOUND,
     ERR_NO_ARTIST_FOR_TRACK,
+    ERR_SERVER_ACCESS_DENIED,
     ERR_TRACK_NOT_FOUND,
     FAKE_ARTIST_PREFIX,
     MAX_TOP_TRACKS,
@@ -106,6 +107,7 @@ from music_assistant.providers.plex.helpers import (
     LIBRARY_TYPE_TO_MEDIA_TYPES,
     PODCAST_FEATURES,
     SUPPORTED_FEATURES,
+    PlexServerAccessError,
     extract_library_name,
     get_explicit,
     get_favorite_from_rating,
@@ -316,8 +318,8 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                         # owns; a server shared via Plex Home needs its own access token
                         server_token = resolve_server_auth_token(
                             str(token),
-                            str(self.get_setup_value(CONF_LOCAL_SERVER_IP)),
-                            str(self.get_setup_value(CONF_LOCAL_SERVER_PORT)),
+                            plex_url,
+                            session,
                             myplex_account=self._myplex_account,
                         )
                         plex_server = PlexServer(
@@ -328,6 +330,8 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
                 # I don't think PlexAPI intends for this to be accessible, but we need it.
                 self._baseurl = plex_server._baseurl
 
+            except PlexServerAccessError as err:
+                raise LoginFailed(ERR_SERVER_ACCESS_DENIED.format(reason=err)) from err
             except plexapi.exceptions.BadRequest as err:
                 if "Invalid token" in str(err):
                     # the stored token is invalid; surface an auth failure so the user is
