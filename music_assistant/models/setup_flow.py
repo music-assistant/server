@@ -127,6 +127,9 @@ class SetupFlowContext:
     setup_data: dict[str, Any] = field(default_factory=dict)
     # values: the target's existing (options) config values, for prefill
     values: dict[str, ConfigValueType] = field(default_factory=dict)
+    # manages_all_sources: whether the caller manages every music source (the server itself
+    # or such a user); false for a user who adds a music source of its own
+    manages_all_sources: bool = True
 
 
 class SetupSession:

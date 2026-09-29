@@ -1910,6 +1910,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         returns as a brand new player once it is discovered again. Protocol players that
         are still registered or that already moved to another parent keep their config;
         registered ones are detached from the removed player and re-evaluated.
+        A deleted protocol player is dropped from the parent that links it.
         Any group that lists the player as a member follows the replacement, or loses
         the member when there is none.
 
@@ -1919,6 +1920,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
                                       the replacement.
         """
         self._detach_protocol_children(player_id)
+        self._unlink_protocol_from_parents(player_id)
         self._update_group_memberships(player_id, replacement_player_id)
         player_ids = [
             protocol_id

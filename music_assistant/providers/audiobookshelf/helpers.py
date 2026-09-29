@@ -44,8 +44,6 @@ class LibrariesHelper(DataClassDictMixin):
     playlists_podcasts: dict[str, set[str]] = field(default_factory=dict)
     authors: dict[str, set[str]] = field(default_factory=dict)
     narrators: dict[str, set[str]] = field(default_factory=dict)
-    # audiobook_id is key. Abs does not have a dedicated narrator endpoint.
-    audiobook_narrators: dict[str, set[NarratorHelper]] = field(default_factory=dict)
 
 
 @dataclass(kw_only=True)

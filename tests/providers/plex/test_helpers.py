@@ -5,8 +5,10 @@ from unittest.mock import Mock, patch
 
 import pytest
 import requests
+from plexapi.exceptions import BadRequest
 
 from music_assistant.providers.plex.helpers import (
+    PlexServerAccessError,
     get_explicit,
     get_musicbrainz_id,
     is_library_scan_finished,
@@ -145,25 +147,21 @@ def test_is_library_scan_finished(notification: dict[str, Any], expected: bool) 
 
 ACCOUNT_TOKEN = "account-token"
 RESOURCE_TOKEN = "resource-token"
-SERVER_IP = "192.168.1.10"
-SERVER_PORT = "32400"
+PLEX_URL = "http://192.168.1.10:32400"
+MACHINE_ID = "server-abc"
 
 
 def _plex_resource(
     *,
     owned: bool,
-    address: str = SERVER_IP,
-    port: int = 32400,
-    provides: str = "server",
+    machine_id: str = MACHINE_ID,
+    provides: str | None = "server",
 ) -> Mock:
-    connection = Mock()
-    connection.address = address
-    connection.port = port
     resource = Mock()
     resource.owned = owned
     resource.provides = provides
     resource.accessToken = RESOURCE_TOKEN
-    resource.connections = [connection]
+    resource.clientIdentifier = machine_id
     return resource
 
 
@@ -173,66 +171,73 @@ def _plex_account(*resources: Mock) -> Mock:
     return account
 
 
+def _plex_session(machine_id: str = MACHINE_ID) -> Mock:
+    """Build a requests session whose /identity response reports the given machine id."""
+    session = Mock(spec=requests.Session)
+    session.get.return_value.json.return_value = {
+        "MediaContainer": {"machineIdentifier": machine_id}
+    }
+    return session
+
+
+def _resolve(account: Mock) -> str:
+    return resolve_server_auth_token(
+        ACCOUNT_TOKEN, PLEX_URL, _plex_session(), myplex_account=account
+    )
+
+
 def test_resolve_server_auth_token_owned_server() -> None:
     """A server owned by the account keeps using the account-level token."""
-    account = _plex_account(_plex_resource(owned=True))
-    assert (
-        resolve_server_auth_token(ACCOUNT_TOKEN, SERVER_IP, SERVER_PORT, myplex_account=account)
-        == ACCOUNT_TOKEN
-    )
+    assert _resolve(_plex_account(_plex_resource(owned=True))) == ACCOUNT_TOKEN
 
 
 def test_resolve_server_auth_token_shared_server() -> None:
     """A server shared with the account resolves to that resource's own access token."""
+    session = _plex_session()
     account = _plex_account(_plex_resource(owned=False))
     assert (
-        resolve_server_auth_token(ACCOUNT_TOKEN, SERVER_IP, SERVER_PORT, myplex_account=account)
+        resolve_server_auth_token(ACCOUNT_TOKEN, PLEX_URL, session, myplex_account=account)
         == RESOURCE_TOKEN
+    )
+    session.get.assert_called_once_with(
+        f"{PLEX_URL}/identity", headers={"Accept": "application/json"}, timeout=10
     )
 
 
 def test_resolve_server_auth_token_skips_non_server_resource() -> None:
-    """A resource at the same address that is not a server is ignored."""
-    account = _plex_account(_plex_resource(owned=False, provides="player"))
-    assert (
-        resolve_server_auth_token(ACCOUNT_TOKEN, SERVER_IP, SERVER_PORT, myplex_account=account)
-        == ACCOUNT_TOKEN
-    )
+    """A resource with the same identifier that is not a server is ignored."""
+    with pytest.raises(PlexServerAccessError):
+        _resolve(_plex_account(_plex_resource(owned=False, provides="player")))
 
 
-@pytest.mark.parametrize(
-    ("address", "port"),
-    [("10.0.0.5", 32400), (SERVER_IP, 32401)],
-)
-def test_resolve_server_auth_token_no_matching_connection(address: str, port: int) -> None:
-    """A configured address matching no resource connection keeps the account token."""
-    account = _plex_account(_plex_resource(owned=False, address=address, port=port))
-    assert (
-        resolve_server_auth_token(ACCOUNT_TOKEN, SERVER_IP, SERVER_PORT, myplex_account=account)
-        == ACCOUNT_TOKEN
-    )
+def test_resolve_server_auth_token_no_matching_resource() -> None:
+    """A server that isn't among the account's resources fails instead of using the account token."""
+    with pytest.raises(PlexServerAccessError):
+        _resolve(_plex_account(_plex_resource(owned=False, machine_id="other-server")))
 
 
 def test_resolve_server_auth_token_matches_shared_among_several_resources() -> None:
     """The shared server is found even when the account also holds unrelated resources."""
-    account = _plex_account(
-        _plex_resource(owned=True, address="10.0.0.5"),
-        _plex_resource(owned=False, provides="server,player"),
-    )
-    assert (
-        resolve_server_auth_token(ACCOUNT_TOKEN, SERVER_IP, SERVER_PORT, myplex_account=account)
-        == RESOURCE_TOKEN
-    )
+    other = _plex_resource(owned=True, machine_id="other-server")
+    other.accessToken = "other-token"
+    account = _plex_account(other, _plex_resource(owned=False, provides="server,player"))
+    assert _resolve(account) == RESOURCE_TOKEN
+
+
+def test_resolve_server_auth_token_plextv_error() -> None:
+    """A plex.tv error while listing the resources fails instead of using the account token."""
+    account = Mock()
+    account.resources.side_effect = BadRequest("(401) unauthorized")
+    with pytest.raises(PlexServerAccessError):
+        _resolve(account)
 
 
 def test_resolve_server_auth_token_plextv_unreachable() -> None:
-    """A failure while querying plex.tv falls back to the account token instead of raising."""
+    """plex.tv being unreachable surfaces as a connection error, not as the account token."""
     account = Mock()
     account.resources.side_effect = requests.exceptions.ConnectionError("plex.tv unreachable")
-    assert (
-        resolve_server_auth_token(ACCOUNT_TOKEN, SERVER_IP, SERVER_PORT, myplex_account=account)
-        == ACCOUNT_TOKEN
-    )
+    with pytest.raises(requests.exceptions.ConnectionError):
+        _resolve(account)
 
 
 def test_resolve_server_auth_token_builds_account_when_not_supplied() -> None:
@@ -241,28 +246,46 @@ def test_resolve_server_auth_token_builds_account_when_not_supplied() -> None:
     with patch(
         "music_assistant.providers.plex.helpers.MyPlexAccount", return_value=account
     ) as account_cls:
-        result = resolve_server_auth_token(ACCOUNT_TOKEN, SERVER_IP, SERVER_PORT)
+        result = resolve_server_auth_token(ACCOUNT_TOKEN, PLEX_URL, _plex_session())
     account_cls.assert_called_once_with(token=ACCOUNT_TOKEN)
     assert result == RESOURCE_TOKEN
 
 
-def test_resolve_server_auth_token_shared_server_without_access_token() -> None:
-    """A shared server without its own access token falls back to the account token."""
+@pytest.mark.parametrize("access_token", [None, ""])
+def test_resolve_server_auth_token_shared_server_without_access_token(
+    access_token: str | None,
+) -> None:
+    """A shared server without its own access token fails instead of using the account token."""
     resource = _plex_resource(owned=False)
-    resource.accessToken = None
-    account = _plex_account(resource)
-    assert (
-        resolve_server_auth_token(ACCOUNT_TOKEN, SERVER_IP, SERVER_PORT, myplex_account=account)
-        == ACCOUNT_TOKEN
-    )
+    resource.accessToken = access_token
+    with pytest.raises(PlexServerAccessError):
+        _resolve(_plex_account(resource))
 
 
 def test_resolve_server_auth_token_resource_without_provides() -> None:
     """A resource that does not advertise what it provides is skipped, not fatal."""
-    resource = _plex_resource(owned=False)
-    resource.provides = None
-    account = _plex_account(resource, _plex_resource(owned=False, address="10.0.0.5"))
-    assert (
-        resolve_server_auth_token(ACCOUNT_TOKEN, SERVER_IP, SERVER_PORT, myplex_account=account)
-        == ACCOUNT_TOKEN
-    )
+    resource = _plex_resource(owned=False, provides=None)
+    account = _plex_account(resource, _plex_resource(owned=False, machine_id="other-server"))
+    with pytest.raises(PlexServerAccessError):
+        _resolve(account)
+
+
+@pytest.mark.parametrize(
+    "payload", [{}, {"MediaContainer": {}}, []], ids=["empty", "no-machine-id", "not-a-dict"]
+)
+def test_resolve_server_auth_token_server_without_identity(payload: Any) -> None:
+    """A server that doesn't report its machine identifier can't be matched."""
+    session = _plex_session()
+    session.get.return_value.json.return_value = payload
+    account = _plex_account(_plex_resource(owned=False))
+    with pytest.raises(PlexServerAccessError):
+        resolve_server_auth_token(ACCOUNT_TOKEN, PLEX_URL, session, myplex_account=account)
+    account.resources.assert_not_called()
+
+
+def test_resolve_server_auth_token_server_unreachable() -> None:
+    """An unreachable server surfaces as a connection error."""
+    session = _plex_session()
+    session.get.side_effect = requests.exceptions.ConnectionError("unreachable")
+    with pytest.raises(requests.exceptions.ConnectionError):
+        resolve_server_auth_token(ACCOUNT_TOKEN, PLEX_URL, session, myplex_account=_plex_account())

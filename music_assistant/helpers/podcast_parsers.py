@@ -5,9 +5,12 @@ from datetime import UTC, datetime
 from io import BytesIO
 from math import isfinite
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urljoin
+from xml.etree.ElementTree import ParseError as XMLParseError
 
 import podcastparser
 from aiohttp.client import ClientError, ClientTimeout
+from defusedxml.ElementTree import fromstring as parse_xml
 from music_assistant_models.enums import ContentType, ImageType, LinkType, MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
@@ -31,6 +34,8 @@ from music_assistant.helpers.transcripts import (
 )
 
 if TYPE_CHECKING:
+    from xml.etree.ElementTree import Element
+
     import aiohttp
 
     from music_assistant.mass import MusicAssistant
@@ -58,6 +63,17 @@ _TIMED_TRANSCRIPT_TYPES = (
     "application/srt",
     "text/srt",
     "application/json",
+)
+
+# podcast:transcript under the current Podcasting 2.0 namespace and the older addresses
+# that feeds still declare
+_TRANSCRIPT_TAGS = frozenset(
+    f"{{{namespace}}}transcript"
+    for namespace in (
+        "https://podcastindex.org/namespace/1.0",
+        "https://github.com/Podcastindex-org/podcast-namespace/blob/main/docs/1.0.md",
+        "https://github.com/podcastindex-org/podcast-namespace/blob/main/docs/1.0.md",
+    )
 )
 
 # defaults for the parsed-feed cache shared by the podcast providers
@@ -98,9 +114,14 @@ async def get_podcastparser_dict(
         )
     feed_stream = BytesIO(feed_data)
     try:
-        return podcastparser.parse(feed_url, feed_stream, max_episodes=max_episodes)  # type: ignore[no-any-return]
+        parsed: dict[str, Any] = podcastparser.parse(
+            feed_url, feed_stream, max_episodes=max_episodes
+        )
     except podcastparser.FeedParseError:
         raise MediaNotFoundError(f"The url at {feed_url} returns invalid RSS data.")
+    # enrich with transcript data that podcastparser does not capture
+    _inject_episode_transcripts(feed_url, feed_data, parsed)
+    return parsed
 
 
 async def get_cached_podcast(
@@ -298,6 +319,25 @@ def find_episode_stream_url(*, parsed_feed: dict[str, Any], guid_or_stream_url: 
     return None
 
 
+def find_episode_transcripts(
+    *, parsed_feed: dict[str, Any], guid_or_stream_url: str
+) -> list[dict[str, Any]] | None:
+    """
+    Return the transcript entries for an episode in a parsed feed, or None.
+
+    :param parsed_feed: The parsed podcast feed.
+    :param guid_or_stream_url: Episode part of the item_id, see parse_podcast_episode.
+    """
+    for episode in parsed_feed.get("episodes", []):
+        try:
+            stream_url, guid = get_stream_url_and_guid_from_episode(episode=episode)
+        except ValueError:
+            continue
+        if guid_or_stream_url == (stream_url if guid is None else guid):
+            return episode.get("transcripts") or None
+    return None
+
+
 def rank_episodes_by_date(dates: list[Any]) -> list[int]:
     """
     Return the position of every episode, in the order the provider lists them.
@@ -439,6 +479,8 @@ def parse_podcast_episode(
                 )
         if _chapters:
             mass_episode.metadata.chapters = _chapters
+
+    mass_episode.metadata.has_transcript = bool(episode.get("transcripts"))
 
     # cover image
     if episode_cover is not None:
@@ -651,3 +693,55 @@ async def _fetch_transcript(*, session: aiohttp.ClientSession, url: str) -> str 
     except (ClientError, TimeoutError) as err:
         LOGGER.warning("Failed to fetch podcast transcript from %s: %s", url, err)
         return None
+
+
+def _inject_episode_transcripts(feed_url: str, feed_data: bytes, parsed: dict[str, Any]) -> None:
+    """Add each episode's transcript entries from the raw feed to the parsed feed."""
+    # podcastparser keeps at most one transcript url per episode, and none on the current
+    # namespace address
+    try:
+        root = parse_xml(feed_data)
+    except XMLParseError, ValueError:
+        return
+
+    channel = root.find("channel")
+    if channel is None:
+        return
+
+    # podcastparser reorders and filters the items, so they are matched on its guid
+    transcripts_by_guid: dict[str, list[dict[str, str]]] = {}
+    for item in channel.iter("item"):
+        transcripts: list[dict[str, str]] = []
+        for child in item:
+            if child.tag not in _TRANSCRIPT_TAGS:
+                continue
+            url = child.get("url")
+            if not url:
+                continue
+            entry: dict[str, str] = {"url": url}
+            if mime_type := child.get("type"):
+                entry["type"] = mime_type
+            if language := child.get("language"):
+                entry["language"] = language
+            transcripts.append(entry)
+        if transcripts and (guid := _podcastparser_guid(feed_url, item)):
+            transcripts_by_guid[guid] = transcripts
+
+    for episode in parsed.get("episodes", []):
+        if episode_transcripts := transcripts_by_guid.get(episode.get("guid", "")):
+            episode["transcripts"] = episode_transcripts
+
+
+def _podcastparser_guid(feed_url: str, item: Element) -> str | None:
+    """Return the guid podcastparser gives an RSS item, or None."""
+    guid_tag = item.find("guid")
+    if guid_tag is not None and (guid := (guid_tag.text or "").strip()):
+        if guid_tag.get("isPermaLink", "true").lower() == "true":
+            return urljoin(feed_url, guid)
+        return guid
+    if link := (item.findtext("link") or "").strip():
+        return urljoin(feed_url, link)
+    enclosure = item.find("enclosure")
+    if enclosure is not None and (url := enclosure.get("url")):
+        return str(podcastparser.parse_url(urljoin(feed_url, url.lstrip())))
+    return None

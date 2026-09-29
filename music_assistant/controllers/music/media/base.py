@@ -8,7 +8,7 @@ from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
 from contextlib import suppress
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, final, overload
 
@@ -68,6 +68,7 @@ from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RE
 from music_assistant.controllers.music.helpers import (
     provider_mappings_from_urls,
     search_name_match_clause,
+    sibling_instance_mappings,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.collections import (
@@ -2960,7 +2961,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             library_item = await self.get_library_item(db_id)
             # the copies for sibling provider instances pass the ownership check as well;
             # a copy another item holds merges that item or drops the group, never moves it
-            mappings = self._with_sibling_instance_mappings(library_item, mappings)
+            mappings += sibling_instance_mappings(
+                self.mass, mappings, library_item.provider_mappings
+            )
             for mapping in list(mappings):
                 if mapping not in mappings:
                     continue  # dropped along with its group
@@ -2999,30 +3002,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             await self.set_provider_mappings(db_id, library_item.provider_mappings)
             self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
             return added
-
-    def _with_sibling_instance_mappings(
-        self, library_item: ItemCls, mappings: list[ProviderMapping]
-    ) -> list[ProviderMapping]:
-        """Return the mappings followed by their copies for the other instances of each provider."""
-        mapped_instances = {x.provider_instance for x in library_item.provider_mappings}
-        mapped_instances.update(x.provider_instance for x in mappings)
-        copies: list[ProviderMapping] = []
-        for mapping in mappings:
-            if mapping.is_unique:
-                continue
-            # unavailable instances count too: a mapping they hold must not be taken over
-            # once they are back
-            for instance in self.mass.music.get_provider_instances(
-                mapping.provider_domain, return_unavailable=True
-            ):
-                if instance.instance_id in mapped_instances or not instance.is_streaming_provider:
-                    continue
-                # whether the other instance holds the item in its library is unknown
-                copies.append(
-                    replace(mapping, provider_instance=instance.instance_id, in_library=None)
-                )
-                mapped_instances.add(instance.instance_id)
-        return mappings + copies
 
     async def _merge_library_items_batched(self, target_id: int, source_id: int) -> ItemCls:
         """Merge library items while batching the transfer's database writes."""

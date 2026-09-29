@@ -55,6 +55,9 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
+from music_assistant.controllers.config.filesystem_consolidation import (
+    consolidate_filesystem_sources,
+)
 from music_assistant.controllers.config.provider_access_migration import (
     migrate_provider_access,
 )
@@ -68,6 +71,7 @@ from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.storage import StorageController
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.tasks import TasksController
 from music_assistant.controllers.translations import TranslationController
@@ -228,6 +232,7 @@ class MusicAssistant:
     translations: TranslationController
     diagnostics: DiagnosticsController
     dashboard: DashboardController
+    storage: StorageController
 
     def __init__(self, storage_path: str, cache_path: str, safe_mode: bool = False) -> None:
         """Initialize the MusicAssistant Server."""
@@ -309,6 +314,7 @@ class MusicAssistant:
             tg.create_task(setup_controller(self.player_queues))
             tg.create_task(setup_controller(self.diagnostics))
             tg.create_task(setup_controller(self.dashboard))
+            tg.create_task(setup_controller(self.storage))
 
         for controller_name in (
             "cache",
@@ -332,6 +338,12 @@ class MusicAssistant:
         # and must precede the provider load so its tombstone never flashes a banner.
         # TODO: remove after 2.11 release
         await cleanup_retired_local_audio(self)
+        # turn the SMB and NFS music sources into Local files sources on a storage location. Runs
+        # at every start and only does something when such a source exists. Needs the library
+        # database, so it cannot run with the settings migrations, and must precede the provider
+        # load so a converted source loads as Local files.
+        # TODO: remove after 2.13 release
+        await consolidate_filesystem_sources(self)
         # one-off: convert the music source restrictions that used to live on each user into
         # the access records that now live on the sources. Needs the users from the auth
         # database, so it cannot run with the settings migrations, and must precede the
@@ -392,6 +404,7 @@ class MusicAssistant:
             "translations",
             "diagnostics",
             "dashboard",
+            "storage",
             "config",
             "cache",
         ):
@@ -1236,6 +1249,7 @@ class MusicAssistant:
             self.streams.audio_analysis,
             self.diagnostics,
             self.dashboard,
+            self.storage,
         ):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):
@@ -1272,6 +1286,7 @@ class MusicAssistant:
         self.translations = TranslationController(self)
         self.diagnostics = DiagnosticsController(self)
         self.dashboard = DashboardController(self)
+        self.storage = StorageController(self)
         # add manifests for core controllers
         for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
             controller: CoreController = getattr(self, controller_name)
