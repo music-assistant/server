@@ -142,7 +142,7 @@ class PlaylistMetadataProvider(MetadataProvider):
     @property
     def priority(self) -> int:
         """Priority for this provider (lower = more preferred)."""
-        return 90  # Run after theaudiodb/fanart.tv but before builtin collage
+        return 90  # Run after theaudiodb/fanart.tv
 
     _images_dir: str
 

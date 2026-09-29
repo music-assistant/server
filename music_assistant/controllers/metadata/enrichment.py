@@ -56,16 +56,15 @@ class MetadataEnrichmentMixin:
     """
     Rich metadata enrichment functionality for the MetaDataController.
 
-    Expects to be mixed with a class providing ``mass``, ``logger``, ``config``,
-    the ``providers`` and ``preferred_language`` properties, the
-    ``create_collage_image`` method and the ``_collage_images_dir`` attribute.
+    Expects to be mixed with a class providing ``mass``, ``logger``, ``config``
+    and the ``providers``, ``preferred_language`` and
+    ``link_providers_via_musicbrainz`` properties.
     """
 
     if TYPE_CHECKING:
         mass: MusicAssistant
         logger: logging.Logger
         config: CoreConfig
-        _collage_images_dir: str
 
         @property
         def preferred_language(self) -> str: ...  # noqa: D102
@@ -75,13 +74,6 @@ class MetadataEnrichmentMixin:
 
         @property
         def link_providers_via_musicbrainz(self) -> bool: ...  # noqa: D102
-
-        async def create_collage_image(  # noqa: D102
-            self,
-            images: list[MediaItemImage],
-            filename: str,
-            fanart: bool = False,
-        ) -> MediaItemImage | None: ...
 
     async def _update_artist_metadata(self, artist: Artist, force_refresh: bool = False) -> None:
         """Get/update rich metadata for an artist."""
@@ -388,20 +380,10 @@ class MetadataEnrichmentMixin:
             return
         self.logger.debug("Updating metadata for Playlist %s", playlist.name)
         playlist.metadata.genres = set()
-        all_playlist_tracks_images: list[MediaItemImage] = []
         playlist_genres: dict[str, int] = {}
         # retrieve metadata for the playlist from the tracks (such as genres etc.)
         # TODO: retrieve style/mood ?
         async for track in self.mass.music.playlists.tracks(playlist.item_id, playlist.provider):
-            if (
-                track.image
-                and track.image not in all_playlist_tracks_images
-                and (
-                    track.image.provider in ("url", "builtin", "http")
-                    or self.mass.get_provider(track.image.provider)
-                )
-            ):
-                all_playlist_tracks_images.append(track.image)
             if track.metadata.genres:
                 genres = track.metadata.genres
             elif (
