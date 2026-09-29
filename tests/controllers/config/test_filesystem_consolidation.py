@@ -71,13 +71,19 @@ from music_assistant.helpers.playlists import (
     parse_m3u,
 )
 from music_assistant.helpers.provider_access import visible_music_sources
+from music_assistant.helpers.tags import AudioTags
 from music_assistant.models.music_provider import CACHE_CATEGORY_PREV_LIBRARY_IDS
 from music_assistant.providers.builtin import BuiltinProvider
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
+    CACHE_CATEGORY_ALBUM_INFO,
+    CACHE_CATEGORY_ARTIST_INFO,
     CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
+    CACHE_CATEGORY_CUE_SHEETS,
+    CACHE_CATEGORY_FOLDER_IMAGES,
     CACHE_CATEGORY_METADATA_FILE,
     CACHE_CATEGORY_PODCAST_EPISODES,
+    CACHE_CATEGORY_PODCAST_METADATA,
     CACHE_CATEGORY_SOUND_EFFECTS,
 )
 from tests.common import capture_log_records
@@ -1696,25 +1702,38 @@ async def test_the_cached_items_of_a_converted_source_are_removed(mass: MusicAss
     """
     The media items a converted source cached are removed, as they name its old domain.
 
-    The rest of what it cached stays: the items of its last sync, which the next sync needs,
-    and what holds no domain. So does everything other sources cached, and the image ids.
+    The rest of what it cached stays: the items of its last sync, which the next sync needs
+    and which share their category with the artists, and what holds no domain. So does
+    everything other sources cached, and the image ids.
     """
     _store_source(mass, SMB_ID, SMB_SETUP)
     _store_source(mass, SMB_ID_2, {**SMB_SETUP, "share": "music/albums"})
-    items = [_track(SMB_ID, "Artist/Album/01.flac").to_dict()]
-    removed = [
-        ("get_playlist_tracks.Mix.m3u", 0),
-        ("sound_effect.Effects/ding.mp3", CACHE_CATEGORY_SOUND_EFFECTS),
-        ("podcast_episodes.Podcasts/Show", CACHE_CATEGORY_PODCAST_EPISODES),
+    track = _track(SMB_ID, "Artist/Album/01.flac")
+    assert track.album is not None
+    image = MediaItemImage(type=ImageType.THUMB, path="Artist/cover.jpg", provider=SMB_ID)
+    # what each category of Local files holds
+    removed: list[tuple[str, int, Any]] = [
+        ("get_playlist_tracks.Mix.m3u", 0, [track.to_dict()]),
+        ("Artist", CACHE_CATEGORY_ARTIST_INFO, track.artists[0].to_dict()),
+        ("Artist/Album", CACHE_CATEGORY_ALBUM_INFO, track.album.to_dict()),
+        ("sound_effect.Effects/ding.mp3", CACHE_CATEGORY_SOUND_EFFECTS, track.to_dict()),
+        ("podcast_episodes.Podcasts/Show", CACHE_CATEGORY_PODCAST_EPISODES, [track.to_dict()]),
     ]
-    kept = [
-        ("track", CACHE_CATEGORY_PREV_LIBRARY_IDS),
-        ("Books/Book.m4b", CACHE_CATEGORY_AUDIOBOOK_CHAPTERS),
-        ("Artist/artist.nfo", CACHE_CATEGORY_METADATA_FILE),
+    kept: list[tuple[str, int, Any]] = [
+        ("track", CACHE_CATEGORY_PREV_LIBRARY_IDS, [1, 2, 3]),
+        ("Artist", CACHE_CATEGORY_FOLDER_IMAGES, [image.to_dict()]),
+        ("Books/Book.m4b", CACHE_CATEGORY_AUDIOBOOK_CHAPTERS, [["Books/Book.m4b", 60.0]]),
+        ("Podcasts/Show", CACHE_CATEGORY_PODCAST_METADATA, {"title": "Show"}),
+        ("Albums/Album.cue", CACHE_CATEGORY_CUE_SHEETS, {"title": "Album", "tracks": []}),
+        (
+            "Artist/artist.nfo",
+            CACHE_CATEGORY_METADATA_FILE,
+            {"token": "1", "track": "Artist/Album/01.flac"},
+        ),
     ]
     for instance_id in (SMB_ID, SMB_ID_2):
-        for key, category in (*removed, *kept):
-            await mass.cache.set(key, items, provider=instance_id, category=category)
+        for key, category, data in (*removed, *kept):
+            await mass.cache.set(key, data, provider=instance_id, category=category)
     image_id = {"provider": SMB_ID, "path": "Artist/Album/cover.jpg"}
     await mass.cache.set(
         "image-1", image_id, provider="metadata", category=CACHE_CATEGORY_IMAGE_IDS
@@ -1723,16 +1742,83 @@ async def test_the_cached_items_of_a_converted_source_are_removed(mass: MusicAss
     await consolidate_filesystem_sources(mass)
 
     assert _config(mass, SMB_ID)["domain"] == "filesystem_local"
-    for key, category in removed:
+    for key, category, _data in removed:
         assert await mass.cache.get(key, provider=SMB_ID, category=category) is None
-    for key, category in kept:
-        assert await mass.cache.get(key, provider=SMB_ID, category=category) == items
-    for key, category in (*removed, *kept):
-        assert await mass.cache.get(key, provider=SMB_ID_2, category=category) == items
+    for key, category, data in kept:
+        assert await mass.cache.get(key, provider=SMB_ID, category=category) == data
+    for key, category, data in (*removed, *kept):
+        assert await mass.cache.get(key, provider=SMB_ID_2, category=category) == data
     assert (
         await mass.cache.get("image-1", provider="metadata", category=CACHE_CATEGORY_IMAGE_IDS)
         == image_id
     )
+
+
+@pytest.mark.usefixtures("reconcile", "supervisor")
+async def test_album_and_artist_cached_before_a_restart_keep_the_domain_of_local_files(
+    mass: MusicAssistant,
+) -> None:
+    """
+    An album and an artist the old provider cached just before a restart name no old domain.
+
+    The first sync after the start reads the album and artist info of the source from the cache
+    and writes what it reads over the library rows the conversion gave the Local files domain.
+    """
+    _store_source(mass, SMB_ID, SMB_SETUP)
+    old = _track(SMB_ID, "Artist/Album/01.flac")
+    old_artist, old_album = old.artists[0], old.album
+    assert isinstance(old_artist, Artist)
+    assert isinstance(old_album, Album)
+    old_album.artists = UniqueList([old_artist])
+    # the library and the caches as the old version left them, a moment before the restart
+    await mass.music.artists.add_item_to_library(old_artist)
+    await mass.music.albums.add_item_to_library(old_album)
+    for key, item, category in (
+        ("Artist", old_artist, CACHE_CATEGORY_ARTIST_INFO),
+        ("Artist/Album", old_album, CACHE_CATEGORY_ALBUM_INFO),
+    ):
+        await mass.cache.set(
+            key, item.to_dict(), provider=SMB_ID, category=category, expiration=120
+        )
+    # the items of the last sync share their category with the artists
+    await mass.cache.set("album", [1], provider=SMB_ID, category=CACHE_CATEGORY_PREV_LIBRARY_IDS)
+
+    await consolidate_filesystem_sources(mass)
+
+    # what the first sync runs for a changed track of that album
+    Path(_path(mass, SMB_ID), "Artist", "Album").mkdir(parents=True)
+    source = LocalFileSystemProvider(
+        mass,
+        mass.get_provider_manifest("filesystem_local"),
+        cast(
+            "ProviderConfig",
+            ProviderConfig.parse(DEFAULT_PROVIDER_CONFIG_ENTRIES, _config(mass, SMB_ID)),
+        ),
+    )
+    tags = AudioTags(
+        raw={},
+        sample_rate=44100,
+        channels=2,
+        bits_per_sample=16,
+        format="flac",
+        bit_rate=None,
+        duration=180.0,
+        tags={"album": "Album", "albumartist": "Artist", "artist": "Artist", "title": "01"},
+        has_cover_image=False,
+        filename="Artist/Album/01.flac",
+    )
+    album = await source._parse_album("Artist/Album/01.flac", tags)
+    artist = await source._parse_artist("Artist", artist_path="Artist")
+    await mass.music.albums.add_item_to_library(album, overwrite_existing=True)
+    await mass.music.artists.add_item_to_library(artist, overwrite_existing=True)
+
+    assert await _mappings(mass) == [
+        (SMB_ID, "filesystem_local", "album", "Artist/Album"),
+        (SMB_ID, "filesystem_local", "artist", "Artist"),
+    ]
+    assert await mass.cache.get(
+        "album", provider=SMB_ID, category=CACHE_CATEGORY_PREV_LIBRARY_IDS
+    ) == [1]
 
 
 @pytest.mark.usefixtures("reconcile")

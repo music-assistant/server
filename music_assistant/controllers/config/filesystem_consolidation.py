@@ -56,6 +56,8 @@ from music_assistant.helpers.playlists import (
 )
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.providers.filesystem_local.constants import (
+    CACHE_CATEGORY_ALBUM_INFO,
+    CACHE_CATEGORY_ARTIST_INFO,
     CACHE_CATEGORY_PODCAST_EPISODES,
     CACHE_CATEGORY_SOUND_EFFECTS,
 )
@@ -547,13 +549,28 @@ async def _clear_cached_items(mass: MusicAssistant, instance_ids: list[str]) -> 
     :param mass: The MusicAssistant instance.
     :param instance_ids: The instance ids of the sources this start converts.
     """
-    # the tracks of a playlist file are cached without a category. What else these sources
-    # cache holds no domain, expires within minutes, or lists the items of the last sync,
-    # which the next sync needs to find what was deleted.
+    # the tracks of a playlist file are cached without a category. The album and artist info
+    # lasts only minutes, but a sync right after the restart of an upgrade would write it to
+    # the library. What else these sources cache holds no domain.
     try:
         for instance_id in instance_ids:
-            for category in (0, CACHE_CATEGORY_SOUND_EFFECTS, CACHE_CATEGORY_PODCAST_EPISODES):
+            for category in (
+                0,
+                CACHE_CATEGORY_ALBUM_INFO,
+                CACHE_CATEGORY_SOUND_EFFECTS,
+                CACHE_CATEGORY_PODCAST_EPISODES,
+            ):
                 await mass.cache.delete(None, category=category, provider=instance_id)
+            # the artists share their category with the list of items of the last sync, which
+            # the next sync needs to find what was deleted
+            artists = await mass.cache.get_all(
+                provider=instance_id, category=CACHE_CATEGORY_ARTIST_INFO
+            )
+            for key, data in artists.items():
+                if isinstance(data, dict):
+                    await mass.cache.delete(
+                        key, category=CACHE_CATEGORY_ARTIST_INFO, provider=instance_id
+                    )
     except Exception as err:
         LOGGER.warning(
             "Unable to remove the cached items of music sources %s (%s)",
