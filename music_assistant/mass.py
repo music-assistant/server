@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Self, TypeGuard, TypeVar, cast, overload
 from uuid import uuid4
 
 import aiofiles
+import aiohttp
 from aiofiles.os import wrap
 from music_assistant_models.api import ServerInfoMessage
 from music_assistant_models.auth import Scope
@@ -168,7 +169,10 @@ def _provider_error_traceback(exc: BaseException) -> BaseException | None:
     """Return the exception to log a traceback for, or None when its message says enough."""
     # a handled condition (auth required, unsupported system, ...) explains itself, but anything
     # unexpected - or a setup failure wrapping an underlying error - can only be diagnosed from a
-    # traceback, and by the time it is reported the user rarely still has verbose logging on
+    # traceback, and by the time it is reported the user rarely still has verbose logging on.
+    # A connection failure is a handled condition too: its message names the host and the reason.
+    if isinstance(exc, aiohttp.ClientConnectionError):
+        return exc if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else None
     if not isinstance(exc, MusicAssistantError) or exc.__cause__ is not None:
         return exc
     return exc if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else None
@@ -1076,10 +1080,11 @@ class MusicAssistant:
             self.config.update_provider_last_error(instance_id, prov_conf.last_error)
 
             # auto schedule a retry if the (re)load failed with a handled exception
-            # unhandled exceptions (e.g. ValueError) are likely bugs that won't resolve themselves
+            # unhandled exceptions (e.g. ValueError) are likely bugs that won't resolve themselves,
+            # but a connection failure (e.g. no network yet at startup) usually does
             will_retry = (
                 allow_retry
-                and isinstance(exc, MusicAssistantError)
+                and isinstance(exc, MusicAssistantError | aiohttp.ClientConnectionError)
                 and not isinstance(
                     exc,
                     (AuthenticationRequired, AuthenticationFailed, LoginFailed, InvalidToken),
