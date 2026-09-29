@@ -26,6 +26,9 @@ CONF_HIDE_EMPTY_PODCASTS = "hide_empty_podcasts"
 CACHE_CATEGORY_LIBRARIES = 0
 CACHE_KEY_LIBRARIES = "libraries"
 
+# abs emits user_updated on every progress patch, so let a burst settle first
+USER_UPDATED_DEBOUNCE_SECONDS = 5
+
 
 # BROWSE
 class AbsBrowsePaths(StrEnum):

@@ -138,6 +138,7 @@ from .constants import (
     CONF_USERNAME,
     CONF_VERIFY_SSL,
     STREAMDETAILS_EXPIRATION_S,
+    USER_UPDATED_DEBOUNCE_SECONDS,
     AbsBrowseItemsBookTranslationKey,
     AbsBrowseItemsPodcastTranslationKey,
     AbsBrowsePaths,
@@ -356,6 +357,10 @@ for more details.
         self.playlist_lock = asyncio.Lock()
         self.playlist_last = 0.0
 
+        # safe guard user updates
+        self._pending_user_update: User | None = None
+        self._user_update_task: asyncio.Task[None] | None = None
+
         # create close sessions task
         self._close_sessions_task = self.mass.create_task(self._cleanup_open_sessions_loop())
 
@@ -376,6 +381,12 @@ for more details.
         # run the unload chain first: RecommendationPayloadMixin cancels and awaits its
         # payload tasks, so no fetch is still running against the clients logging out below
         await super().unload(is_removed)
+
+        # cancel a pending user update, it would outlive the clients it syncs against
+        if self._user_update_task:
+            self._user_update_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._user_update_task
 
         # cancel close sessions task, and close remaining
         if self._close_sessions_task:
@@ -1719,7 +1730,17 @@ for more details.
         # admins also receive updates of other users
         if user.id_ != self.abs_user_id:
             return
-        await self._set_playlog_from_user(user)
+        # a full playlog sync per progress patch would be far too much, so coalesce
+        self._pending_user_update = user
+        if self._user_update_task is None or self._user_update_task.done():
+            self._user_update_task = self.mass.create_task(self._sync_pending_user_update())
+
+    async def _sync_pending_user_update(self) -> None:
+        while self._pending_user_update is not None:
+            await asyncio.sleep(USER_UPDATED_DEBOUNCE_SECONDS)
+            user = self._pending_user_update
+            self._pending_user_update = None
+            await self._set_playlog_from_user(user)
 
     async def _socket_abs_playlist_changed(self, abs_playlist: AbsPlaylistExpanded) -> None:
         if time.time() - self.playlist_last < 5:

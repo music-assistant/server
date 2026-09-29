@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
@@ -42,6 +43,9 @@ def playlog_provider(provider: Audiobookshelf) -> Audiobookshelf:
     provider.mass.music.mark_item_unplayed = AsyncMock()  # type: ignore[method-assign]
     provider.mass.music.get_library_item_by_prov_id = AsyncMock(return_value=Mock())  # type: ignore[method-assign]
     provider.mass.music.get_playlog_provider_item_ids = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    provider.mass.create_task = Mock(side_effect=asyncio.ensure_future)  # type: ignore[method-assign]
+    provider._pending_user_update = None
+    provider._user_update_task = None
     return provider
 
 
@@ -148,7 +152,10 @@ async def test_progress_of_web_ui_applied(playlog_provider: Audiobookshelf) -> N
     user.id_ = "user1"
     user.media_progress = [_progress(last_update=1000, is_finished=True)]
 
-    await playlog_provider._socket_abs_user_updated(user)
+    with patch("music_assistant.providers.audiobookshelf.USER_UPDATED_DEBOUNCE_SECONDS", 0):
+        await playlog_provider._socket_abs_user_updated(user)
+        assert playlog_provider._user_update_task is not None
+        await playlog_provider._user_update_task
 
     assert _played_calls(playlog_provider) == [True]
 
@@ -162,4 +169,5 @@ async def test_progress_of_other_user_ignored(playlog_provider: Audiobookshelf) 
 
     await playlog_provider._socket_abs_user_updated(user)
 
+    assert playlog_provider._user_update_task is None
     cast("AsyncMock", playlog_provider.mass.music.mark_item_played).assert_not_called()
