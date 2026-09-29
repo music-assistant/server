@@ -977,7 +977,7 @@ async def _iter_mixed_stream(
         log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[-5:])
         raise AudioError(log_tail)
     if feeder_exception := ffmpeg_proc.stdin_feeder_exception:
-        raise AudioError("Error while feeding audio to FFmpeg") from feeder_exception
+        _raise_feeder_error(feeder_exception)
 
 
 def _build_filtergraph_args(
