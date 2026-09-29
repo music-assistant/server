@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncGenerator
+from functools import partial
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -386,6 +388,43 @@ async def test_flow_mode_skips_the_item_on_capacity_exhaustion() -> None:
     audio.get_audio_buffer = AsyncMock(  # type: ignore[method-assign]
         side_effect=_limit_error(BUSY_INSTANCE)
     )
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE,
+        sample_rate=8000,
+        bit_depth=16,
+        channels=2,
+    )
+
+    chunks = [
+        chunk
+        async for chunk in audio.get_queue_item_stream(queue_item, pcm_format, raise_on_error=False)
+    ]
+
+    assert chunks == []
+    assert queue_item.available
+    assert streamdetails.stream_error is True
+
+
+async def test_item_stays_playable_when_its_filtered_buffer_read_hits_the_limit() -> None:
+    """A capacity error raised through the buffer's FFmpeg stage keeps the item playable."""
+    queue_item = _queue_item(_mapping(BUSY_INSTANCE, ContentType.FLAC))
+    streamdetails = _streamdetails(BUSY_INSTANCE)
+    streamdetails.loudness = -10.0  # skip the audio-analysis hydration call
+    queue_item.streamdetails = streamdetails
+    audio = StreamsAudio(_mass())
+    buffer = MagicMock(spec=AudioBuffer)
+    # a buffer format other than the requested one routes the read through FFmpeg
+    buffer.pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=16000, bit_depth=16, channels=2
+    )
+
+    async def _busy_raw_stream(**_kwargs: object) -> AsyncGenerator[bytes]:
+        raise _limit_error(BUSY_INSTANCE)
+        yield b""  # type: ignore[unreachable]  # pragma: no cover
+
+    buffer.get_raw_stream = _busy_raw_stream
+    buffer.get_stream = partial(AudioBuffer.get_stream, buffer)
+    audio.get_audio_buffer = AsyncMock(return_value=buffer)  # type: ignore[method-assign]
     pcm_format = AudioFormat(
         content_type=ContentType.PCM_S16LE,
         sample_rate=8000,
