@@ -3359,6 +3359,11 @@ class StreamsAudio:
             )
         )
 
+        buffer_is_live = bool(
+            queue_item.streamdetails
+            and queue_item.streamdetails.buffer
+            and queue_item.streamdetails.buffer.is_valid(int(seek_position * 1000))
+        )
         if (
             queue_item.streamdetails
             # cached details of an excluded instance are exactly what we select away from
@@ -3367,10 +3372,7 @@ class StreamsAudio:
             and self._may_serve_playback(queue_item.streamdetails.provider, allowed)
             and (
                 # reuse if the buffer can serve this seek position (fast seek path)
-                (
-                    queue_item.streamdetails.buffer
-                    and queue_item.streamdetails.buffer.is_valid(int(seek_position * 1000))
-                )
+                buffer_is_live
                 # or reuse if streamdetails hasn't expired yet and the tiebreak still agrees
                 or (
                     not cache_outranked
@@ -3424,7 +3426,11 @@ class StreamsAudio:
                     )
                     streamdetails.stream_metadata_update_interval = 5
 
-        if queue_data is not None:
+        # the live-buffer path can reuse a mapping the current anchor no longer prefers (tearing
+        # down an open stream for a folder preference is not worth it) - recording the anchor
+        # for that mapping here would wrongly mark it accepted, hiding the still-pending
+        # reselection from the next call once the buffer is no longer live
+        if queue_data is not None and not (buffer_is_live and cache_outranked):
             self._record_selection_anchor(queue_data, queue_item.queue_item_id, anchor)
 
         # providers report an unknown duration as either None or 0

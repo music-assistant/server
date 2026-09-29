@@ -487,6 +487,60 @@ async def test_cached_streamdetails_are_reused_when_the_anchor_is_unchanged() ->
     assert calls == [preferred_item_id, fallback_item_id]  # no repeat attempt on either
 
 
+async def test_live_buffer_reuse_does_not_mask_a_pending_reselection() -> None:
+    """Reusing an outranked mapping through its live buffer must not record the new anchor."""
+    fs_instance = "filesystem_local--main"
+    folder_a_item_id = "Folder A/01 Track.flac"
+    folder_b_item_id = "Folder B/01 Track.flac"
+
+    async def _by_item_id(item_id: str, media_type: MediaType) -> StreamDetails:
+        return _streamdetails(item_id, media_type, fs_instance)
+
+    provider = MagicMock()
+    provider.get_stream_details = _by_item_id
+    audio = _audio({fs_instance: provider})
+    queue_item = _queue_item(
+        _mapping(fs_instance, item_id=folder_a_item_id),
+        _mapping(fs_instance, item_id=folder_b_item_id),
+    )
+    # already playing folder A's mapping through a live buffer, resolved and accepted while
+    # the anchor still pointed at folder A
+    queue_item.streamdetails = _streamdetails(folder_a_item_id, MediaType.SOUND_EFFECT, fs_instance)
+    queue_item.streamdetails.buffer = MagicMock(is_valid=MagicMock(return_value=True))
+    anchor_a_details = _streamdetails("Folder A/00 Prev.flac", MediaType.SOUND_EFFECT, fs_instance)
+    queue_data = MagicMock()
+    queue_data.items = [queue_item]
+    queue_data.cached_selection_anchors = {
+        queue_item.queue_item_id: (fs_instance, anchor_a_details.item_id)
+    }
+    cast("MagicMock", audio.mass).player_queues.queue_data_or_none.return_value = queue_data
+
+    # the anchor moves to folder B while the buffer is still live
+    anchor_b_item = QueueItem(
+        queue_id="q1", queue_item_id="qb", name="B", duration=None, media_item=None
+    )
+    anchor_b_item.streamdetails = _streamdetails(
+        "Folder B/00 Prev.flac", MediaType.SOUND_EFFECT, fs_instance
+    )
+    queue_data.queue.current_item = anchor_b_item
+
+    reused = await audio.get_stream_details(queue_item=queue_item)
+
+    assert reused.item_id == folder_a_item_id  # the live buffer wins, unchanged
+    # the pending reselection toward folder B must not be masked as already handled
+    assert queue_data.cached_selection_anchors[queue_item.queue_item_id] == (
+        fs_instance,
+        anchor_a_details.item_id,
+    )
+
+    # the buffer goes away (playback moved past it); the anchor (folder B) is still active
+    queue_item.streamdetails.buffer = None
+
+    reselected = await audio.get_stream_details(queue_item=queue_item)
+
+    assert reselected.item_id == folder_b_item_id
+
+
 def test_resolve_transition_anchor_ignores_a_stash_for_a_different_target() -> None:
     """A stash left over from an unrelated transition must not be reused as an anchor."""
     queue_item = _queue_item(_mapping(INSTANCE))
