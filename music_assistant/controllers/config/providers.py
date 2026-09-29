@@ -525,9 +525,16 @@ class ProviderConfigMixin:
         self.remove(conf_key)
 
     def set_provider_default_name(self, instance_id: str, default_name: str) -> None:
-        """Set (or update) the default name for a provider."""
-        conf_key = f"{CONF_PROVIDERS}/{instance_id}/default_name"
-        self.set(conf_key, default_name)
+        """
+        Set (or update) the default name for a provider.
+
+        Does nothing when its config no longer exists, so a removed provider does not come
+        back as a config without a domain.
+        """
+        conf_key = f"{CONF_PROVIDERS}/{instance_id}"
+        if not self.get(conf_key):
+            return
+        self.set(f"{conf_key}/default_name", default_name)
 
     def update_provider_last_error(self, instance_id: str, error: ProviderError | None) -> None:
         """
@@ -843,11 +850,13 @@ class ProviderConfigMixin:
         """
         for provider in self.mass.providers:
             conf_key = f"{CONF_PROVIDERS}/{provider.instance_id}"
-            # a removed config must not come back as a stub without a domain
+            # an instance whose config was removed no longer counts as an instance of its
+            # domain, so it has no default name to compute
             if provider.domain != domain or not self.get(conf_key):
                 continue
-            if self.get(f"{conf_key}/default_name") != provider.default_name:
-                self.set_provider_default_name(provider.instance_id, provider.default_name)
+            default_name = provider.default_name
+            if self.get(f"{conf_key}/default_name") != default_name:
+                self.set_provider_default_name(provider.instance_id, default_name)
 
     def _access_caller(self) -> tuple[User | None, bool]:
         """Return the calling user (None when internal) and whether it manages all sources."""

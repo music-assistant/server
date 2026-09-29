@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import ProviderType
-from music_assistant_models.errors import ActionUnavailable
+from music_assistant_models.errors import ActionUnavailable, SetupFailedError
 from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import CONF_PATH, CONF_PROVIDERS, DEFAULT_PROVIDER_CONFIG_ENTRIES
@@ -30,6 +30,10 @@ class _LocalFiles(MusicProvider):
     def instance_name_postfix(self) -> str | None:
         """Return the name of the folder of the source."""
         return Path(str(self.get_setup_value(CONF_PATH))).name
+
+
+class _Numbered(MusicProvider):
+    """Stand-in for a loaded source of a kind that tells its instances apart by number."""
 
 
 @pytest.fixture
@@ -54,27 +58,44 @@ def local_files(storage: StorageController) -> MusicAssistant:
     return mass
 
 
-def _load(mass: MusicAssistant, config: ProviderConfig) -> None:
+def _load(
+    mass: MusicAssistant, config: ProviderConfig, provider_class: type[MusicProvider] = _LocalFiles
+) -> None:
     """
-    Load a stand-in for a Local files source and store its name, as a real load does.
+    Load a stand-in for a source and store its name, as a real load does.
 
     :param mass: The server.
     :param config: The config of the source.
+    :param provider_class: The stand-in to load.
     """
-    provider = _LocalFiles(mass, mass.get_provider_manifest(DOMAIN), config)
+    provider = provider_class(mass, mass.get_provider_manifest(DOMAIN), config)
     mass._providers[config.instance_id] = provider
     mass.config.set_provider_default_name(config.instance_id, provider.default_name)
 
 
-def _load_stored(mass: MusicAssistant, instance_id: str) -> None:
+def _load_stored(
+    mass: MusicAssistant, instance_id: str, provider_class: type[MusicProvider] = _LocalFiles
+) -> None:
     """
-    Load a stand-in for a stored Local files source.
+    Load a stand-in for a stored source.
 
     :param mass: The server.
     :param instance_id: The instance id of the source.
+    :param provider_class: The stand-in to load.
     """
     raw = mass.config.get(f"{CONF_PROVIDERS}/{instance_id}")
-    _load(mass, cast("ProviderConfig", ProviderConfig.parse(DEFAULT_PROVIDER_CONFIG_ENTRIES, raw)))
+    config = cast("ProviderConfig", ProviderConfig.parse(DEFAULT_PROVIDER_CONFIG_ENTRIES, raw))
+    _load(mass, config, provider_class)
+
+
+def _stored_names(mass: MusicAssistant, instance_ids: list[str]) -> list[str | None]:
+    """
+    Return the stored default name of each source.
+
+    :param mass: The server.
+    :param instance_ids: The instance ids of the sources.
+    """
+    return [mass.config.get(f"{CONF_PROVIDERS}/{i}/default_name") for i in instance_ids]
 
 
 async def _add_source(mass: MusicAssistant, folder: Path) -> str:
@@ -189,3 +210,76 @@ async def test_source_that_is_not_loaded_is_listed(
     assert _location(info.locations, music).used_by == ["Local files [Music]"]
     assert _location(info.locations, offline).used_by == ["Local files"]
     assert OFFLINE not in local_files._providers
+
+
+@pytest.mark.parametrize(
+    ("folders", "names"),
+    [
+        pytest.param(["Music"], ["Local files"], id="one_loaded"),
+        pytest.param(
+            ["Jazz", "Music"], ["Local files [Jazz]", "Local files [Music]"], id="two_loaded"
+        ),
+    ],
+)
+async def test_source_that_fails_to_load_leaves_the_names(
+    storage: StorageController,
+    local_files: MusicAssistant,
+    tmp_path: Path,
+    folders: list[str],
+    names: list[str],
+) -> None:
+    """
+    A source that fails to load leaves the names of the others as they were before.
+
+    While it loads it counts as an instance of its kind, so a source that stores its name in
+    the meantime, e.g. because it reloads, stores the name it would have next to it. The error
+    of the load reaches the caller as it was.
+    """
+    loaded = [f"{DOMAIN}--{folder.lower()}" for folder in folders]
+    for instance_id, folder in zip(loaded, folders, strict=True):
+        (tmp_path / folder).mkdir()
+        store_source(storage, tmp_path / folder, instance_id, None)
+    for instance_id in loaded:
+        _load_stored(local_files, instance_id)
+    error = SetupFailedError("The folder can not be read")
+
+    async def fail(_config: ProviderConfig) -> None:
+        for instance_id in loaded:
+            _load_stored(local_files, instance_id)
+        raise error
+
+    setup_data = {CONF_PATH: local_files.config.encrypt_string(str(tmp_path / "Radiohead"))}
+    with (
+        patch.object(local_files, "load_provider_config", AsyncMock(side_effect=fail)),
+        pytest.raises(SetupFailedError) as exc_info,
+    ):
+        await local_files.config._create_provider_instance(DOMAIN, {}, setup_data)
+
+    assert exc_info.value is error
+    assert _stored_names(local_files, loaded) == names
+    assert sorted(local_files.config.get(CONF_PROVIDERS)) == sorted(loaded)
+
+
+async def test_removing_one_of_three_numbered_sources(
+    storage: StorageController, local_files: MusicAssistant, tmp_path: Path
+) -> None:
+    """
+    Removing one of three sources told apart by number renumbers the other two.
+
+    The removed source is still loaded after its config is gone, and is left out.
+    """
+    sources = [f"{DOMAIN}--{letter}" for letter in "abc"]
+    for instance_id in sources:
+        store_source(storage, tmp_path, instance_id, None)
+    for instance_id in sources:
+        _load_stored(local_files, instance_id, _Numbered)
+    assert _stored_names(local_files, sources) == [
+        "Local files [1]",
+        "Local files [2]",
+        "Local files [3]",
+    ]
+
+    await _remove_source(local_files, sources[0])
+
+    assert _stored_names(local_files, sources[1:]) == ["Local files [1]", "Local files [2]"]
+    assert local_files.config.get(f"{CONF_PROVIDERS}/{sources[0]}") is None
