@@ -496,6 +496,7 @@ class ProviderConfigMixin:
             msg = f"Builtin provider {prov_manifest.name} can not be removed."
             raise RuntimeError(msg)
         self.remove(conf_key)
+        self._store_default_names(existing["domain"])
         await self.mass.unload_provider(instance_id, True)
         if existing["type"] == "music":
             # rewrite shortcuts before cleanup removes the items they point at
@@ -821,6 +822,8 @@ class ProviderConfigMixin:
             # loading failed, remove config
             self.remove(conf_key)
             raise
+        finally:
+            self._store_default_names(provider_domain)
         if not self.onboard_done:
             # mark onboard as complete as soon as the first provider is added
             await self.set_onboard_complete()
@@ -828,6 +831,23 @@ class ProviderConfigMixin:
             # correct any multi-instance provider mappings
             self.mass.music.queue_provider_mapping_correction_task()
         return config
+
+    def _store_default_names(self, domain: str) -> None:
+        """
+        Store the default name of every loaded instance of a provider domain.
+
+        The default name of an instance depends on how many instances its domain has, so it
+        changes when an instance of that domain is added or removed.
+
+        :param domain: The provider domain.
+        """
+        for provider in self.mass.providers:
+            conf_key = f"{CONF_PROVIDERS}/{provider.instance_id}"
+            # a removed config must not come back as a stub without a domain
+            if provider.domain != domain or not self.get(conf_key):
+                continue
+            if self.get(f"{conf_key}/default_name") != provider.default_name:
+                self.set_provider_default_name(provider.instance_id, provider.default_name)
 
     def _access_caller(self) -> tuple[User | None, bool]:
         """Return the calling user (None when internal) and whether it manages all sources."""
