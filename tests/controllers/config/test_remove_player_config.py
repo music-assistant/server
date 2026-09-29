@@ -27,7 +27,7 @@ import logging
 from collections.abc import Callable, Generator
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import (
@@ -388,6 +388,54 @@ async def test_delete_unregistered_protocol_unlinks_unregistered_parent(
 
     assert mass.config.get(f"{CONF_PLAYERS}/{PROTOCOL_ID}") is None
     assert mass.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/values/{CONF_LINKED_PROTOCOL_IDS}") == []
+
+
+async def test_delete_unregistered_protocol_purges_every_cached_parent(
+    mass: MusicAssistant,
+) -> None:
+    """A stale link on a former parent is dropped along with the current one."""
+    _store_player_config(mass, PLAYER_ID)
+    _store_protocol_config(mass, PLAYER_ID)
+    _store_player_config(mass, "cast_1")
+    mass.config.set(f"{CONF_PLAYERS}/cast_1/values/{CONF_LINKED_PROTOCOL_IDS}", [PROTOCOL_ID])
+
+    mass.players.delete_player_config(PROTOCOL_ID)
+
+    assert mass.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/values/{CONF_LINKED_PROTOCOL_IDS}") == []
+    assert mass.config.get(f"{CONF_PLAYERS}/cast_1/values/{CONF_LINKED_PROTOCOL_IDS}") == []
+
+
+async def test_delete_last_protocol_unregisters_universal_parent(
+    mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A universal player that loses its last output is unregistered, keeping its config."""
+    _store_configs(mass, enabled=True)
+    parent = SimpleNamespace(
+        player_id=PARENT_ID,
+        state=SimpleNamespace(type=PlayerType.PLAYER, available=True, enabled=True),
+        provider=SimpleNamespace(domain="universal_player"),
+        linked_output_protocols=[
+            LinkedOutputProtocol(output_protocol_id=PROTOCOL_ID, protocol_domain="sendspin")
+        ],
+        refresh_state=MagicMock(),
+    )
+    parent.set_linked_output_protocols = lambda links: setattr(
+        parent, "linked_output_protocols", links
+    )
+    unregister = AsyncMock()
+    monkeypatch.setattr(mass.players, "unregister", unregister)
+    mass.players._players[PARENT_ID] = parent  # type: ignore[assignment]
+
+    try:
+        mass.players.delete_player_config(PROTOCOL_ID)
+        await asyncio.sleep(0)
+    finally:
+        mass.players._players.pop(PARENT_ID, None)
+
+    assert parent.linked_output_protocols == []
+    unregister.assert_called_once_with(PARENT_ID, permanent=False)
+    parent.refresh_state.assert_not_called()
+    assert mass.config.get(f"{CONF_PLAYERS}/{PARENT_ID}") is not None
 
 
 async def test_remove_config_wipes_queue_config(mass: MusicAssistant) -> None:
