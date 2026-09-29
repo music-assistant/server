@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import logging
+from typing import Any
+
 import pytest
-from music_assistant_models.errors import InvalidDataError, SetupFailedError
+from music_assistant_models.errors import ActionUnavailable, InvalidDataError, SetupFailedError
 
 from music_assistant.constants import CONF_STORAGE_SHARES
 from music_assistant.controllers.storage import StorageController, StorageKind
 from music_assistant.controllers.storage.backends.base import BackendUnavailable
 from music_assistant.controllers.storage.backends.supervisor import create_supervisor_mounter
 from music_assistant.controllers.storage.models import MountBackend, NetworkShareSpec, ShareType
-from tests.controllers.storage.conftest import FakeSupervisor
+from tests.controllers.storage.conftest import FakeBackends, FakeMounter, FakeSupervisor
 
 pytestmark = pytest.mark.usefixtures("probes")
 
@@ -30,11 +33,18 @@ async def ready(storage: StorageController, supervisor: FakeSupervisor) -> FakeS
     return supervisor
 
 
-def _store(storage: StorageController, name: str, server: str = "nas.local", **kwargs: str) -> None:
+def _store(
+    storage: StorageController,
+    supervisor: FakeSupervisor,
+    name: str,
+    server: str = "nas.local",
+    **kwargs: Any,
+) -> None:
     """
     Store a share the Supervisor mounted, as an earlier add did.
 
     :param storage: The storage controller.
+    :param supervisor: The fake Supervisor.
     :param name: The name of the share.
     :param server: The server of the share.
     :param kwargs: Other settings of the share.
@@ -45,10 +55,15 @@ def _store(storage: StorageController, name: str, server: str = "nas.local", **k
         server=server,
         share=kwargs.pop("share", name),
         backend=MountBackend.SUPERVISOR,
-        path=f"/media/{name}",
-        **kwargs,  # type: ignore[arg-type]
+        path=supervisor.path(name),
+        **kwargs,
     )
     storage.mass.config.set(f"{CONF_STORAGE_SHARES}/{name}", spec.to_dict())
+
+
+def _mutations(supervisor: FakeSupervisor) -> list[tuple[str, str]]:
+    """Return the requests that changed a mount at the fake Supervisor."""
+    return [request[:2] for request in supervisor.requests if request[0] != "GET"]
 
 
 async def test_backend_found(storage: StorageController, supervisor: FakeSupervisor) -> None:
@@ -87,8 +102,57 @@ async def test_no_supervisor(storage: StorageController, supervisor: FakeSupervi
     assert supervisor.requests == []
 
 
+async def test_only_the_supervisor_mounts_under_a_supervisor(
+    storage: StorageController,
+    supervisor: FakeSupervisor,
+    backends: FakeBackends,
+    mount_table: Any,
+) -> None:
+    """
+    While the Supervisor does not answer, nothing mounts: never the server itself.
+
+    The app does not keep its mount privileges, so a share it mounted itself could not be
+    mounted again later.
+    """
+    local = FakeMounter(mount_table)
+    backends.available[MountBackend.LOCAL_MOUNT] = local
+    supervisor.refuse_access = True
+    await storage._probe_backends()
+
+    with pytest.raises(ActionUnavailable) as exc_info:
+        await storage.add_network_share(ShareType.CIFS, "nas.local", "music", "marcel", "pw")
+
+    assert exc_info.value.translation_key == "supervisor_mounts_unavailable"
+    assert local.calls == []
+    assert backends.probes == 0
+    assert storage.mass.config.get(CONF_STORAGE_SHARES) is None
+
+
+async def test_info_under_a_supervisor_that_does_not_answer(
+    storage: StorageController,
+    supervisor: FakeSupervisor,
+    backends: FakeBackends,
+    mount_table: Any,
+) -> None:
+    """The info says nothing can mount while the Supervisor does not answer, then it can."""
+    backends.available[MountBackend.LOCAL_MOUNT] = FakeMounter(mount_table)
+    supervisor.refuse_access = True
+    await storage._probe_backends()
+
+    info = await storage.get_info()
+    assert (info.can_mount_shares, info.mount_backend, info.supported_share_types) == (
+        False,
+        None,
+        [],
+    )
+
+    supervisor.refuse_access = False
+    info = await storage.get_info()
+    assert (info.can_mount_shares, info.mount_backend) == (True, MountBackend.SUPERVISOR)
+
+
 async def test_add(storage: StorageController, ready: FakeSupervisor) -> None:
-    """A share becomes a media mount at /media/<name>, replacing what discovery sees there."""
+    """A share becomes a media mount in the media folder, replacing what discovery sees there."""
     location = await storage.add_network_share(
         ShareType.CIFS, " nas.local ", "Music", username="marcel", password="secret", version="2.0"
     )
@@ -113,20 +177,21 @@ async def test_add(storage: StorageController, ready: FakeSupervisor) -> None:
             },
         ),
     ]
+    path = ready.path("music")
     assert (location.path, location.kind, location.managed, location.available) == (
-        "/media/music",
+        path,
         StorageKind.NETWORK_SHARE,
         True,
         True,
     )
     assert (location.backend, location.mountpoint, location.fstype) == (
         MountBackend.SUPERVISOR,
-        "/media/music",
+        path,
         "cifs",
     )
-    assert [loc.path for loc in storage.get_locations()].count("/media/music") == 1
+    assert [loc.path for loc in storage.get_locations()].count(path) == 1
     stored = storage.mass.config.get(f"{CONF_STORAGE_SHARES}/music")
-    assert (stored["backend"], stored["path"]) == ("supervisor", "/media/music")
+    assert (stored["backend"], stored["path"]) == ("supervisor", path)
 
 
 async def test_add_as_guest(storage: StorageController, ready: FakeSupervisor) -> None:
@@ -150,7 +215,7 @@ async def test_add_nfs(storage: StorageController, ready: FakeSupervisor) -> Non
         "read_only": False,
         "path": "/volume1/My Music",
     }
-    assert location.path == "/media/my_music"
+    assert location.path == ready.path("my_music")
 
 
 @pytest.mark.parametrize(
@@ -174,7 +239,7 @@ async def test_stored_version_is_only_sent_when_the_supervisor_takes_it(
     storage: StorageController, ready: FakeSupervisor
 ) -> None:
     """A share stored with another version is mounted with the version negotiated."""
-    _store(storage, "music", version="3.0")
+    _store(storage, ready, "music", version="3.0")
 
     await storage.reconcile()
 
@@ -184,17 +249,70 @@ async def test_stored_version_is_only_sent_when_the_supervisor_takes_it(
     assert "music" in ready.mounts
 
 
+async def test_user_without_password_is_never_sent(
+    storage: StorageController, ready: FakeSupervisor
+) -> None:
+    """A stored user without password mounts as guest instead of breaking the mount."""
+    _store(storage, ready, "music", username="marcel")
+
+    await storage.reconcile()
+
+    body = ready.requests[-1][2]
+    assert body is not None
+    assert not {"username", "password"} & body.keys()
+    assert "music" in ready.mounts
+
+
 async def test_name_collision(storage: StorageController, ready: FakeSupervisor) -> None:
     """A name taken by a stored share, a Supervisor mount or the media folder gets a suffix."""
-    _store(storage, "music", server="other.local")
+    _store(storage, ready, "music", server="other.local")
     ready.add_mount("music_2", type="cifs", server="other.local", share="music_2")
-    ready.media_folder = {"music", "music_2", "music_3"}
+    (ready.media / "music_3").mkdir()
 
     location = await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
 
     assert location.share_name == "music_4"
-    assert location.path == "/media/music_4"
+    assert location.path == ready.path("music_4")
     assert "music_4" in ready.mounts
+
+
+async def test_folder_with_files_is_taken(
+    storage: StorageController, ready: FakeSupervisor
+) -> None:
+    """A folder of the user in the media folder is left alone."""
+    (ready.media / "music").mkdir()
+    (ready.media / "music" / "song.flac").touch()
+
+    location = await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
+
+    assert location.share_name == "music_2"
+    assert (ready.media / "music" / "song.flac").exists()
+
+
+async def test_failed_add_leaves_no_folder_behind(
+    storage: StorageController, ready: FakeSupervisor
+) -> None:
+    """A first attempt that fails does not push the next one to another name."""
+    ready.unreachable.add("nas.local")
+    with pytest.raises(SetupFailedError):
+        await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
+    assert not (ready.media / "music").exists()
+
+    ready.unreachable.clear()
+    location = await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
+
+    assert location.share_name == "music"
+
+
+async def test_remove_and_add_again(storage: StorageController, ready: FakeSupervisor) -> None:
+    """A share removed and added again gets its name back."""
+    await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
+    await storage.remove_network_share("music")
+    assert not (ready.media / "music").exists()
+
+    location = await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
+
+    assert location.share_name == "music"
 
 
 async def test_share_mounted_in_home_assistant_is_refused(
@@ -214,13 +332,9 @@ async def test_share_mounted_in_home_assistant_is_refused(
         )
 
     assert exc_info.value.translation_key == "share_mounted_already"
-    assert exc_info.value.translation_args == ["/media/nas_music"]
+    assert exc_info.value.translation_args == [ready.path("nas_music")]
     assert [request[:2] for request in ready.requests] == [("GET", "/mounts")]
     assert storage.mass.config.get(CONF_STORAGE_SHARES) is None
-    await storage.refresh()
-    location = storage.get_location_for_path("/media/nas_music")
-    assert location is not None
-    assert (location.kind, location.managed) == (StorageKind.NETWORK_SHARE, False)
 
 
 async def test_export_mounted_in_home_assistant_is_refused(
@@ -232,7 +346,7 @@ async def test_export_mounted_in_home_assistant_is_refused(
     with pytest.raises(InvalidDataError) as exc_info:
         await storage.add_network_share(ShareType.NFS, "nas.local", "/volume1/music/")
 
-    assert exc_info.value.translation_args == ["/media/music"]
+    assert exc_info.value.translation_args == [ready.path("music")]
 
 
 @pytest.mark.parametrize(
@@ -300,6 +414,7 @@ async def test_share_that_stays_behind_its_trigger_is_not_kept(
     assert exc_info.value.translation_key == "share_not_mounted"
     assert ready.requests[-1][:2] == ("DELETE", "/mounts/music")
     assert ready.mounts == {}
+    assert not (ready.media / "music").exists()
     assert storage.mass.config.get(CONF_STORAGE_SHARES) is None
 
 
@@ -315,9 +430,22 @@ async def test_update(storage: StorageController, ready: FakeSupervisor) -> None
     assert ready.mounts["music"]["password"] == "secret"
     assert (location.server, location.path, location.available) == (
         "nas2.local",
-        "/media/music",
+        ready.path("music"),
         True,
     )
+
+
+async def test_update_of_a_mount_removed_in_home_assistant(
+    storage: StorageController, ready: FakeSupervisor
+) -> None:
+    """A share whose mount was deleted in Home Assistant is created with its new settings."""
+    _store(storage, ready, "music")
+
+    location = await storage.update_network_share("music", "nas2.local", "music")
+
+    assert _mutations(ready) == [("PUT", "/mounts/music"), ("POST", "/mounts")]
+    assert ready.mounts["music"]["server"] == "nas2.local"
+    assert location.available
 
 
 async def test_failed_update_restores_the_previous_mount(
@@ -336,7 +464,7 @@ async def test_failed_update_restores_the_previous_mount(
     ]
     assert ready.mounts["music"]["server"] == "nas.local"
     assert storage.mass.config.get(f"{CONF_STORAGE_SHARES}/music")["server"] == "nas.local"
-    assert storage.get_location_for_path("/media/music").available  # type: ignore[union-attr]
+    assert storage.get_location_for_path(ready.path("music")).available  # type: ignore[union-attr]
 
 
 async def test_update_that_does_not_show_up_is_rolled_back(
@@ -369,40 +497,90 @@ async def test_supervisor_found_later(
 
 
 async def test_remove(storage: StorageController, ready: FakeSupervisor) -> None:
-    """Removing a share removes its mount from the Supervisor."""
+    """Removing a share removes its mount from the Supervisor, and its folder."""
     await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
 
     await storage.remove_network_share("music")
 
     assert ready.mounts == {}
     assert storage.mass.config.get(CONF_STORAGE_SHARES) == {}
-    assert storage.get_location_for_path("/media/music") is None
+    assert storage.get_location_for_path(ready.path("music")) is None
+    assert not (ready.media / "music").exists()
 
 
 async def test_remove_a_mount_that_is_gone(
     storage: StorageController, ready: FakeSupervisor
 ) -> None:
     """A share whose mount was removed in Home Assistant already is removed without an error."""
-    _store(storage, "music")
+    _store(storage, ready, "music")
+    (ready.media / "music").mkdir()
 
     await storage.remove_network_share("music")
 
     assert ready.requests[-1][:2] == ("DELETE", "/mounts/music")
     assert storage.mass.config.get(CONF_STORAGE_SHARES) == {}
+    assert not (ready.media / "music").exists()
+
+
+async def test_remove_that_fails_keeps_the_share(
+    storage: StorageController, ready: FakeSupervisor
+) -> None:
+    """A mount the Supervisor could not remove stays a managed share, and the user is told."""
+    await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
+    ready.stuck.add("music")
+
+    with pytest.raises(SetupFailedError) as exc_info:
+        await storage.remove_network_share("music")
+
+    assert exc_info.value.translation_key == "unmount_failed"
+    assert "music" in storage.mass.config.get(CONF_STORAGE_SHARES)
+    assert (ready.media / "music").exists()
+
+
+async def test_remove_while_the_supervisor_does_not_answer(
+    storage: StorageController, supervisor: FakeSupervisor
+) -> None:
+    """A Supervisor that may only be busy keeps its mount, and so does the record."""
+    _store(storage, supervisor, "music")
+    supervisor.refuse_access = True
+
+    with pytest.raises(ActionUnavailable) as exc_info:
+        await storage.remove_network_share("music")
+
+    assert exc_info.value.translation_key == "mount_backend_unavailable"
+    assert "music" in storage.mass.config.get(CONF_STORAGE_SHARES)
+
+
+async def test_remove_where_there_is_no_supervisor(
+    storage: StorageController, supervisor: FakeSupervisor, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A share of a Supervisor this installation no longer has is forgotten, and that is logged."""
+    _store(storage, supervisor, "music")
+    storage.mass.running_as_hass_addon = False
+
+    with caplog.at_level(logging.WARNING):
+        await storage.remove_network_share("music")
+
+    assert storage.mass.config.get(CONF_STORAGE_SHARES) == {}
+    assert "Forgetting network share music" in caplog.text
+    assert supervisor.requests == []
 
 
 async def test_reload_recreates_a_mount_that_is_gone(
     storage: StorageController, ready: FakeSupervisor
 ) -> None:
     """A share whose mount was removed in Home Assistant gets it back from its stored settings."""
-    _store(storage, "music", username="marcel", password=storage.mass.config.encrypt_string("pw"))
+    _store(
+        storage,
+        ready,
+        "music",
+        username="marcel",
+        password=storage.mass.config.encrypt_string("pw"),
+    )
 
     location = await storage.reload_network_share("music")
 
-    assert [request[:2] for request in ready.requests] == [
-        ("POST", "/mounts/music/reload"),
-        ("POST", "/mounts"),
-    ]
+    assert _mutations(ready) == [("POST", "/mounts/music/reload"), ("POST", "/mounts")]
     assert ready.mounts["music"]["password"] == "pw"
     assert location.available
 
@@ -417,7 +595,7 @@ async def test_reload_of_a_share_that_does_not_answer(
     with pytest.raises(SetupFailedError):
         await storage.reload_network_share("music")
 
-    location = storage.get_location_for_path("/media/music")
+    location = storage.get_location_for_path(ready.path("music"))
     assert location is not None
     assert (location.available, location.error_key, location.error_args) == (
         False,
@@ -430,8 +608,8 @@ async def test_reload_of_a_share_that_does_not_answer(
 
 async def test_reconcile(storage: StorageController, ready: FakeSupervisor) -> None:
     """A missing mount is created again, a mount that is there is left alone."""
-    _store(storage, "music")
-    _store(storage, "movies")
+    _store(storage, ready, "music")
+    _store(storage, ready, "movies")
     ready.add_mount("movies", type="cifs", server="nas.local", share="movies")
     ready.requests.clear()
 
@@ -439,7 +617,68 @@ async def test_reconcile(storage: StorageController, ready: FakeSupervisor) -> N
 
     assert [request[:2] for request in ready.requests] == [("GET", "/mounts"), ("POST", "/mounts")]
     assert set(ready.mounts) == {"music", "movies"}
-    assert storage.get_location_for_path("/media/music").available  # type: ignore[union-attr]
+    assert storage.get_location_for_path(ready.path("music")).available  # type: ignore[union-attr]
+
+
+CHANGED_MOUNTS = [
+    pytest.param({"type": "cifs", "server": "nas2.local", "share": "music"}, id="server"),
+    pytest.param({"type": "cifs", "server": "nas.local", "share": "movies"}, id="share"),
+    pytest.param({"type": "nfs", "server": "nas.local", "path": "/music"}, id="type"),
+    pytest.param(
+        {"type": "cifs", "server": "nas.local", "share": "music", "usage": "share"}, id="usage"
+    ),
+]
+
+
+@pytest.mark.parametrize("mount", CHANGED_MOUNTS)
+async def test_mount_changed_in_home_assistant_is_left_alone(
+    storage: StorageController, ready: FakeSupervisor, mount: dict[str, str]
+) -> None:
+    """
+    A mount under the name of a share that the user changed in Home Assistant is theirs now.
+
+    It is neither mounted again, changed nor removed, the share is kept, and its location says
+    why it is not available.
+    """
+    _store(storage, ready, "music")
+    ready.add_mount("music", **mount)
+    ready.requests.clear()
+
+    await storage.reconcile()
+    for command, args in (
+        (storage.reload_network_share, ("music",)),
+        (storage.update_network_share, ("music", "nas.local", "music")),
+        (storage.remove_network_share, ("music",)),
+    ):
+        with pytest.raises(ActionUnavailable) as exc_info:
+            await command(*args)
+        assert exc_info.value.translation_key == "share_changed"
+
+    assert _mutations(ready) == []
+    assert ready.mounts["music"] == {"name": "music", "usage": "media", "read_only": False, **mount}
+    assert "music" in storage.mass.config.get(CONF_STORAGE_SHARES)
+    location = storage.get_location_for_path(ready.path("music"))
+    assert location is not None
+    assert (location.managed, location.available, location.error_key) == (
+        True,
+        False,
+        "share_changed",
+    )
+
+
+async def test_mount_that_only_differs_in_case_is_the_same_share(
+    storage: StorageController, ready: FakeSupervisor
+) -> None:
+    """Server and share names compare case-insensitively: the mount is still ours."""
+    _store(storage, ready, "music", server="nas.local", share="Music")
+    ready.add_mount("music", type="cifs", server="NAS.LOCAL", share="MUSIC")
+    ready.requests.clear()
+
+    await storage.reconcile()
+    location = await storage.reload_network_share("music")
+
+    assert _mutations(ready) == [("POST", "/mounts/music/reload")]
+    assert (location.available, location.error) == (True, None)
 
 
 async def test_mounter_without_supervisor_answers_is_unavailable(

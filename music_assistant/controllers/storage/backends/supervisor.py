@@ -11,12 +11,17 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Collection
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.errors import SetupFailedError
 
-from music_assistant.controllers.storage.backends.base import BackendUnavailable, ShareMounter
+from music_assistant.controllers.storage.backends.base import (
+    BackendUnavailable,
+    ShareMounter,
+    ShareState,
+)
 from music_assistant.controllers.storage.backends.mountinfo import SUPERVISOR_MEDIA_PATH
 from music_assistant.controllers.storage.helpers import share_key
 from music_assistant.controllers.storage.models import MountBackend, NetworkShareSpec, ShareType
@@ -94,12 +99,7 @@ class SupervisorMounter(ShareMounter):
         """
         wanted = share_key(share_type, server, share)
         for mount in await self._get_mounts():
-            mount_share = mount.get("share" if mount.get("type") == ShareType.CIFS else "path")
-            if (
-                mount.get("usage") == MEDIA_USAGE
-                and share_key(str(mount.get("type")), str(mount.get("server")), str(mount_share))
-                == wanted
-            ):
+            if _media_share_key(mount) == wanted:
                 return self.get_path(mount["name"])
         return None
 
@@ -111,7 +111,8 @@ class SupervisorMounter(ShareMounter):
         :param taken: The names of the shares Music Assistant manages.
         """
         in_use = {mount["name"] for mount in await self._get_mounts()}
-        # anything in the media folder blocks a mount on its path when it holds files
+        # a name in the media folder is taken whatever the folder holds: the Supervisor refuses a
+        # folder with files, and an empty one may belong to someone else
         in_use |= await asyncio.to_thread(_list_media_folder)
         return await super().assign_name(spec, {*taken, *in_use})
 
@@ -122,17 +123,27 @@ class SupervisorMounter(ShareMounter):
         :param spec: The share.
         :param password: The password of the share, decrypted.
         """
-        await self._mount_request(spec, "post", "/mounts", _mount_payload(spec, password))
+        try:
+            await self._request("post", "/mounts", _mount_payload(spec, password))
+        except SupervisorError as err:
+            # the Supervisor leaves the folder it created for the mount behind
+            await asyncio.to_thread(_remove_empty_folder, spec.path)
+            raise classify_mount_error(spec.share_type, err.message) from err
 
     async def update(self, spec: NetworkShareSpec, password: str | None) -> None:
         """
-        Mount a share again with changed settings.
+        Mount a share again with changed settings, also when it is gone from the Supervisor.
 
         :param spec: The share with its new settings.
         :param password: The password of the share, decrypted.
         """
-        payload = _mount_payload(spec, password)
-        await self._mount_request(spec, "put", f"/mounts/{spec.name}", payload)
+        try:
+            await self._request("put", f"/mounts/{spec.name}", _mount_payload(spec, password))
+        except SupervisorError as err:
+            if err.status != 404:
+                raise classify_mount_error(spec.share_type, err.message) from err
+            # removed in Home Assistant: create it with the new settings
+            await self.add(spec, password)
 
     async def reload(self, spec: NetworkShareSpec, password: str | None) -> None:
         """
@@ -142,9 +153,7 @@ class SupervisorMounter(ShareMounter):
         :param password: The password of the share, decrypted.
         """
         try:
-            await supervisor_request(
-                self.mass, "post", f"/mounts/{spec.name}/reload", timeout=MOUNT_REQUEST_TIMEOUT
-            )
+            await self._request("post", f"/mounts/{spec.name}/reload")
         except SupervisorError as err:
             if err.status != 404:
                 raise classify_mount_error(spec.share_type, err.message) from err
@@ -158,25 +167,37 @@ class SupervisorMounter(ShareMounter):
         :param spec: The share.
         """
         try:
-            await supervisor_request(
-                self.mass, "delete", f"/mounts/{spec.name}", timeout=MOUNT_REQUEST_TIMEOUT
-            )
+            await self._request("delete", f"/mounts/{spec.name}")
         except SupervisorError as err:
-            if err.status == 404:
-                return
-            msg = f"Unable to remove the mount of {spec.name}: {err.message}"
-            raise SetupFailedError(
-                msg, translation_key="unmount_failed", translation_args=[error_summary(err.message)]
-            ) from err
+            if err.status != 404:
+                msg = f"Unable to remove the mount of {spec.name}: {err.message}"
+                raise SetupFailedError(
+                    msg,
+                    translation_key="unmount_failed",
+                    translation_args=[error_summary(err.message)],
+                ) from err
+        # the Supervisor leaves the folder of the mount behind
+        await asyncio.to_thread(_remove_empty_folder, spec.path)
 
-    async def get_unmounted(self, specs: list[NetworkShareSpec]) -> list[NetworkShareSpec]:
+    async def get_states(self, specs: list[NetworkShareSpec]) -> dict[str, ShareState]:
         """
-        Return the shares the Supervisor has no mount for.
+        Return for each share, by name, whether the Supervisor has its mount.
+
+        A mount under the name of a share that the user changed into another share in Home
+        Assistant is the user's now.
 
         :param specs: The shares of this backend.
         """
-        names = {mount["name"] for mount in await self._get_mounts()}
-        return [spec for spec in specs if spec.name not in names]
+        mounts = {mount["name"]: mount for mount in await self._get_mounts()}
+        states: dict[str, ShareState] = {}
+        for spec in specs:
+            if (mount := mounts.get(spec.name)) is None:
+                states[spec.name] = ShareState.MISSING
+            elif _media_share_key(mount) != share_key(spec.share_type, spec.server, spec.share):
+                states[spec.name] = ShareState.CHANGED
+            else:
+                states[spec.name] = ShareState.PRESENT
+        return states
 
     async def _get_mounts(self) -> list[dict[str, Any]]:
         """Return the mounts of the Supervisor, secrets left out."""
@@ -189,23 +210,18 @@ class SupervisorMounter(ShareMounter):
             ) from err
         return list(data.get("mounts", [])) if isinstance(data, dict) else []
 
-    async def _mount_request(
-        self, spec: NetworkShareSpec, method: str, path: str, payload: dict[str, Any]
-    ) -> None:
+    async def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> None:
         """
-        Send a request that mounts a share, raising the error to show when it failed.
+        Send a request that changes a mount, which waits until the Supervisor mounted it.
 
-        :param spec: The share.
         :param method: The HTTP method of the request.
         :param path: The path of the API endpoint.
         :param payload: The mount as the Supervisor takes it.
+        :raises SupervisorError: When the Supervisor answers with an error.
         """
-        try:
-            await supervisor_request(
-                self.mass, method, path, json_data=payload, timeout=MOUNT_REQUEST_TIMEOUT
-            )
-        except SupervisorError as err:
-            raise classify_mount_error(spec.share_type, err.message) from err
+        await supervisor_request(
+            self.mass, method, path, json_data=payload, timeout=MOUNT_REQUEST_TIMEOUT
+        )
 
 
 def _mount_payload(spec: NetworkShareSpec, password: str | None) -> dict[str, Any]:
@@ -226,13 +242,26 @@ def _mount_payload(spec: NetworkShareSpec, password: str | None) -> dict[str, An
         payload["path"] = spec.share
         return payload
     payload["share"] = spec.share
-    if spec.username:
-        # the Supervisor takes both or neither, and mounts as guest without them
+    # the Supervisor takes both or neither, and mounts as guest without them (also with a user
+    # but an empty password)
+    if spec.username and password:
         payload["username"] = spec.username
-        payload["password"] = password or ""
+        payload["password"] = password
     if spec.version in SUPERVISOR_CIFS_VERSIONS:
         payload["version"] = spec.version
     return payload
+
+
+def _media_share_key(mount: dict[str, Any]) -> tuple[str, str, str] | None:
+    """
+    Return what identifies the share of a media mount of the Supervisor, None for another usage.
+
+    :param mount: A mount as the Supervisor lists it.
+    """
+    if mount.get("usage") != MEDIA_USAGE:
+        return None
+    share = mount.get("share" if mount.get("type") == ShareType.CIFS else "path")
+    return share_key(str(mount.get("type")), str(mount.get("server")), str(share))
 
 
 def _list_media_folder() -> set[str]:
@@ -241,3 +270,9 @@ def _list_media_folder() -> set[str]:
         return {entry.name for entry in Path(SUPERVISOR_MEDIA_PATH).iterdir()}
     except OSError:
         return set()
+
+
+def _remove_empty_folder(path: str) -> None:
+    """Remove a folder when it is empty and no mountpoint (blocking)."""
+    with suppress(OSError):
+        Path(path).rmdir()

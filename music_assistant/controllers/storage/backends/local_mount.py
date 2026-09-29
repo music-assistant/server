@@ -1,8 +1,8 @@
 """
 Network shares mounted by the server itself, where nothing better can mount them.
 
-On Linux this needs root with CAP_SYS_ADMIN (which a container only has when it was started
-with it) and the mount helper of the protocol; macOS mounts a CIFS share for any user and an
+On Linux this needs root with CAP_SYS_ADMIN and CAP_DAC_READ_SEARCH (which a container only has
+when it was started with them) and the mount helper of the protocol; macOS mounts a CIFS share for any user and an
 NFS export for root only. The shares are mounted below ``/tmp/music-assistant-mounts``: outside
 the data directory, so no backup walks a NAS.
 """
@@ -19,7 +19,11 @@ from typing import TYPE_CHECKING, Final
 
 from music_assistant_models.errors import SetupFailedError
 
-from music_assistant.controllers.storage.backends.base import BackendUnavailable, ShareMounter
+from music_assistant.controllers.storage.backends.base import (
+    BackendUnavailable,
+    ShareMounter,
+    ShareState,
+)
 from music_assistant.controllers.storage.backends.mountinfo import is_mounted, read_mountinfo
 from music_assistant.controllers.storage.constants import SHARES_DOCS_URL, TRANSLATION_OWNER
 from music_assistant.controllers.storage.models import MountBackend, NetworkShareSpec, ShareType
@@ -44,12 +48,13 @@ MOUNT_HELPERS: Final[dict[ShareType, str]] = {
     ShareType.CIFS: "mount.cifs",
     ShareType.NFS: "mount.nfs",
 }
+CAP_DAC_READ_SEARCH: Final[int] = 2
 CAP_SYS_ADMIN: Final[int] = 21
 PROC_STATUS_PATH: Final[str] = "/proc/self/status"
 
 
 def get_local_mount_support(
-    system: str, euid: int, cap_eff: int | None, has_helper: Callable[[str], bool]
+    system: str, euid: int | None, cap_eff: int | None, has_helper: Callable[[str], bool]
 ) -> tuple[dict[ShareType, list[str]], str | None]:
     """
     Return the share types this process can mount itself, and why when it can mount none.
@@ -57,7 +62,7 @@ def get_local_mount_support(
     Each share type comes with the protocol versions a share can be pinned to.
 
     :param system: The operating system, as ``platform.system()`` names it.
-    :param euid: The effective user id of the process.
+    :param euid: The effective user id of the process, None on a system without user ids.
     :param cap_eff: The effective capability set of the process (Linux), None when unknown.
     :param has_helper: Returns whether a mount helper binary is installed.
     """
@@ -68,8 +73,15 @@ def get_local_mount_support(
         return {}, f"mounting is not supported on {system}"
     elif euid != 0:
         return {}, "not running as root"
-    elif cap_eff is None or not cap_eff & (1 << CAP_SYS_ADMIN):
-        return {}, "no CAP_SYS_ADMIN capability"
+    elif missing := [
+        name
+        for name, capability in (
+            ("CAP_SYS_ADMIN", CAP_SYS_ADMIN),
+            ("CAP_DAC_READ_SEARCH", CAP_DAC_READ_SEARCH),
+        )
+        if cap_eff is None or not cap_eff & (1 << capability)
+    ]:
+        return {}, f"no {' and no '.join(missing)} capability"
     else:
         share_types = [
             share_type for share_type in ShareType if has_helper(MOUNT_HELPERS[share_type])
@@ -195,25 +207,32 @@ class LocalMounter(ShareMounter):
         with suppress(OSError):
             await asyncio.to_thread(os.rmdir, spec.path)
 
-    async def get_unmounted(self, specs: list[NetworkShareSpec]) -> list[NetworkShareSpec]:
+    async def get_states(self, specs: list[NetworkShareSpec]) -> dict[str, ShareState]:
         """
-        Return the shares that are not mounted.
+        Return for each share, by name, whether it is mounted.
 
         :param specs: The shares of this backend.
         """
 
-        def _get_unmounted() -> list[NetworkShareSpec]:
+        def _get_states() -> dict[str, ShareState]:
             table = read_mountinfo()
-            return [spec for spec in specs if not is_mounted(spec.path, table)]
+            return {
+                spec.name: ShareState.PRESENT
+                if is_mounted(spec.path, table)
+                else ShareState.MISSING
+                for spec in specs
+            }
 
-        return await asyncio.to_thread(_get_unmounted)
+        return await asyncio.to_thread(_get_states)
 
 
 def _probe_local_mount_support() -> tuple[dict[ShareType, list[str]], str | None]:
     """Return what this process can mount itself, and why when nothing (blocking)."""
     system = platform.system()
+    # another system may not even know user ids
+    euid = os.geteuid() if system in ("Linux", "Darwin") else None
     cap_eff = _read_cap_eff() if system == "Linux" else None
-    return get_local_mount_support(system, os.geteuid(), cap_eff, _has_helper)
+    return get_local_mount_support(system, euid, cap_eff, _has_helper)
 
 
 def _read_cap_eff() -> int | None:

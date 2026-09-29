@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Collection
 from dataclasses import replace
+from enum import StrEnum
 
 from music_assistant.controllers.storage.helpers import allocate_share_name
 from music_assistant.controllers.storage.models import MountBackend, NetworkShareSpec, ShareType
@@ -12,6 +13,14 @@ from music_assistant.controllers.storage.models import MountBackend, NetworkShar
 
 class BackendUnavailable(Exception):
     """A mount backend can not be used on this server; the message says why."""
+
+
+class ShareState(StrEnum):
+    """What a mount backend has for a network share Music Assistant manages."""
+
+    PRESENT = "present"  # the mount of the share
+    MISSING = "missing"  # nothing: the share needs to be mounted
+    CHANGED = "changed"  # a mount under its name that is another share now, not ours to touch
 
 
 class ShareMounter(ABC):
@@ -96,9 +105,9 @@ class ShareMounter(ABC):
         """
 
     @abstractmethod
-    async def get_unmounted(self, specs: list[NetworkShareSpec]) -> list[NetworkShareSpec]:
+    async def get_states(self, specs: list[NetworkShareSpec]) -> dict[str, ShareState]:
         """
-        Return the shares that need to be mounted.
+        Return what the backend has for each share, by name.
 
         :param specs: The shares of this backend.
         """

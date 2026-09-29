@@ -60,6 +60,7 @@ def build_cifs_mount_cmd(
     :param cache_mode: The CIFS cache mode (Linux only).
     :raises UnsupportedSystemError: When the system can not mount a CIFS share.
     """
+    is_guest = not username or username.lower() == "guest"
     if system == "Darwin":
         mount_options = ["-r"] if read_only else []
         # macOS uses different version format (e.g., smb2, smb3)
@@ -68,8 +69,8 @@ def build_cifs_mount_cmd(
         elif version and version.startswith("2"):
             mount_options.extend(["-o", "protocol_vers_map=4"])  # SMB2
         # macOS mount_smbfs supports special characters in password when URL-encoded
-        encoded_password = f":{quote(password, safe='')}" if password else ""
-        user = username or "guest"
+        encoded_password = f":{quote(password, safe='')}" if password and not is_guest else ""
+        user = "guest" if is_guest else username
         url = f"//{user}{encoded_password}@{server}/{share}"
         return ["mount", "-t", "smbfs", *mount_options, url, mountpoint], {}
     if system != "Linux":
@@ -77,7 +78,7 @@ def build_cifs_mount_cmd(
         raise UnsupportedSystemError(msg)
     env_vars: dict[str, str] = {}
     options = ["ro" if read_only else "rw"]
-    if username and username.lower() != "guest":
+    if not is_guest:
         options.append(f"username={username}")
         if password:
             env_vars["PASSWD"] = password

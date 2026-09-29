@@ -11,7 +11,7 @@ import pytest
 from music_assistant_models.errors import LoginFailed, MusicAssistantError, SetupFailedError
 
 from music_assistant.controllers.storage.backends import local_mount
-from music_assistant.controllers.storage.backends.base import BackendUnavailable
+from music_assistant.controllers.storage.backends.base import BackendUnavailable, ShareState
 from music_assistant.controllers.storage.backends.local_mount import (
     LocalMounter,
     create_local_mounter,
@@ -23,10 +23,14 @@ from tests.controllers.storage.conftest import mount_line
 
 ALL_CIFS = ["1.0", "2.0", "2.1", "3.0", "3.1.1"]
 ALL_NFS = ["3", "4", "4.1", "4.2"]
-# the effective capabilities of root in a container started without extra capabilities, and
-# with --cap-add SYS_ADMIN
+BOTH = {ShareType.CIFS: ALL_CIFS, ShareType.NFS: ALL_NFS}
+HELPERS = ("mount.cifs", "mount.nfs")
+SYS_ADMIN = 1 << 21
+DAC_READ_SEARCH = 1 << 2
+# the effective capabilities of root in a container started without extra capabilities (it has
+# neither of the two), and with --cap-add SYS_ADMIN --cap-add DAC_READ_SEARCH
 DOCKER_DEFAULT_CAPS = 0x00000000A80425FB
-DOCKER_SYS_ADMIN_CAPS = DOCKER_DEFAULT_CAPS | 1 << 21
+DOCKER_MOUNT_CAPS = DOCKER_DEFAULT_CAPS | SYS_ADMIN | DAC_READ_SEARCH
 FULL_ROOT_CAPS = 0x000001FFFFFFFFFF
 
 
@@ -38,35 +42,42 @@ def _helpers(*installed: str) -> Callable[[str], bool]:
 @pytest.mark.parametrize(
     ("system", "euid", "cap_eff", "installed", "supported", "reason"),
     [
+        ("Linux", 0, FULL_ROOT_CAPS, HELPERS, BOTH, None),
+        ("Linux", 0, DOCKER_MOUNT_CAPS, HELPERS, BOTH, None),
+        ("Linux", 0, DOCKER_MOUNT_CAPS, ("mount.cifs",), {ShareType.CIFS: ALL_CIFS}, None),
+        ("Linux", 0, DOCKER_MOUNT_CAPS, ("mount.nfs",), {ShareType.NFS: ALL_NFS}, None),
+        ("Linux", 0, DOCKER_MOUNT_CAPS, (), {}, "no mount helpers"),
+        # each capability missing on its own, and both
+        ("Linux", 0, DOCKER_DEFAULT_CAPS | DAC_READ_SEARCH, HELPERS, {}, "no CAP_SYS_ADMIN"),
+        ("Linux", 0, DOCKER_DEFAULT_CAPS | SYS_ADMIN, HELPERS, {}, "no CAP_DAC_READ_SEARCH"),
         (
             "Linux",
             0,
-            FULL_ROOT_CAPS,
-            ("mount.cifs", "mount.nfs"),
-            {ShareType.CIFS: ALL_CIFS, ShareType.NFS: ALL_NFS},
-            None,
+            DOCKER_DEFAULT_CAPS,
+            HELPERS,
+            {},
+            "no CAP_SYS_ADMIN and no CAP_DAC_READ_SEARCH",
         ),
-        ("Linux", 0, DOCKER_SYS_ADMIN_CAPS, ("mount.cifs",), {ShareType.CIFS: ALL_CIFS}, None),
-        ("Linux", 0, DOCKER_SYS_ADMIN_CAPS, ("mount.nfs",), {ShareType.NFS: ALL_NFS}, None),
-        ("Linux", 0, DOCKER_SYS_ADMIN_CAPS, (), {}, "no mount helpers"),
-        # root in a container without SYS_ADMIN
-        ("Linux", 0, DOCKER_DEFAULT_CAPS, ("mount.cifs", "mount.nfs"), {}, "CAP_SYS_ADMIN"),
-        ("Linux", 0, None, ("mount.cifs", "mount.nfs"), {}, "CAP_SYS_ADMIN"),
-        ("Linux", 1000, FULL_ROOT_CAPS, ("mount.cifs", "mount.nfs"), {}, "not running as root"),
+        ("Linux", 0, None, HELPERS, {}, "no CAP_SYS_ADMIN and no CAP_DAC_READ_SEARCH"),
+        ("Linux", 1000, FULL_ROOT_CAPS, HELPERS, {}, "not running as root"),
         ("Darwin", 501, None, (), {ShareType.CIFS: ALL_CIFS}, None),
-        ("Darwin", 0, None, (), {ShareType.CIFS: ALL_CIFS, ShareType.NFS: ALL_NFS}, None),
-        ("Windows", 0, None, ("mount.cifs",), {}, "not supported on Windows"),
+        ("Darwin", 0, None, (), BOTH, None),
+        ("Windows", None, None, HELPERS, {}, "not supported on Windows"),
     ],
 )
 def test_what_this_process_can_mount(
     system: str,
-    euid: int,
+    euid: int | None,
     cap_eff: int | None,
     installed: tuple[str, ...],
     supported: dict[ShareType, list[str]],
     reason: str | None,
 ) -> None:
-    """Linux needs root, CAP_SYS_ADMIN and the helper; macOS mounts NFS as root only."""
+    """
+    Linux needs root, the capabilities to mount and read any folder, and the mount helper.
+
+    macOS mounts NFS as root only, any other system mounts nothing.
+    """
     result, problem = get_local_mount_support(system, euid, cap_eff, _helpers(*installed))
 
     assert result == supported
@@ -75,6 +86,15 @@ def test_what_this_process_can_mount(
     else:
         assert problem is not None
         assert reason in problem
+
+
+async def test_system_without_user_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A system that does not know user ids reports that it can not mount, and nothing breaks."""
+    monkeypatch.setattr(f"{local_mount.__name__}.platform.system", lambda: "Windows")
+    monkeypatch.delattr(f"{local_mount.__name__}.os.geteuid", raising=False)
+
+    with pytest.raises(BackendUnavailable, match="not supported on Windows"):
+        await create_local_mounter(logging.getLogger(__name__))
 
 
 async def test_backend_reads_the_capabilities(
@@ -91,7 +111,7 @@ async def test_backend_reads_the_capabilities(
     with pytest.raises(BackendUnavailable, match="CAP_SYS_ADMIN"):
         await create_local_mounter(logging.getLogger(__name__))
 
-    status.write_text("CapEff:\t00000000a82425fb\n")
+    status.write_text("CapEff:\t00000000a82425ff\n")
     mounter = await create_local_mounter(logging.getLogger(__name__))
     assert mounter.backend == MountBackend.LOCAL_MOUNT
     assert set(mounter.supported_versions) == {ShareType.CIFS, ShareType.NFS}
@@ -226,7 +246,7 @@ async def test_reload_and_remove(mounter: LocalMounter, monkeypatch: pytest.Monk
     assert not Path(spec.path).exists()
 
 
-async def test_unmounted_shares(mounter: LocalMounter, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_share_states(mounter: LocalMounter, monkeypatch: pytest.MonkeyPatch) -> None:
     """The mount table tells which shares need to be mounted, without touching them."""
     mounted = _spec(mounter)
     unmounted = NetworkShareSpec(
@@ -240,4 +260,7 @@ async def test_unmounted_shares(mounter: LocalMounter, monkeypatch: pytest.Monke
     table = "\n".join((mount_line("/", "ext4"), mount_line(mounted.path, "cifs")))
     monkeypatch.setattr(local_mount, "read_mountinfo", lambda: table)
 
-    assert await mounter.get_unmounted([mounted, unmounted]) == [unmounted]
+    assert await mounter.get_states([mounted, unmounted]) == {
+        "music": ShareState.PRESENT,
+        "movies": ShareState.MISSING,
+    }

@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Awaitable, Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.api import ErrorResultMessage
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.errors import (
     ActionUnavailable,
     InvalidDataError,
@@ -36,6 +40,8 @@ from music_assistant.controllers.storage.models import (
     StorageLocation,
     StorageUsage,
 )
+from music_assistant.controllers.translations import TranslationController
+from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from music_assistant.helpers.json import json_dumps
 from tests.controllers.storage.conftest import (
     FakeBackends,
@@ -162,6 +168,8 @@ async def test_info_reports_the_backend(storage: StorageController, mounter: Fak
         (ShareType.CIFS, "nas.local", "music/albums", None, "share_name_invalid"),
         (ShareType.CIFS, "nas.local", "music\\albums", None, "share_name_invalid"),
         (ShareType.CIFS, "nas.local", "  ", None, "share_name_invalid"),
+        # a comma would add options to the mount command
+        (ShareType.CIFS, "nas.local", "music,uid=0", None, "share_name_invalid"),
         (ShareType.NFS, "nas.local", "volume1/music", None, "export_path_invalid"),
         (ShareType.NFS, "nas.local", "../volume1/music", None, "export_path_invalid"),
         (ShareType.NFS, "nas.local", "", None, "export_path_invalid"),
@@ -284,6 +292,107 @@ async def test_share_that_does_not_show_up_is_not_kept(
     assert exc_info.value.translation_key == "share_not_mounted"
     assert mounter.calls[-1][:2] == ("remove", "music")
     assert storage.mass.config.get(CONF_STORAGE_SHARES) is None
+
+
+async def test_undo_that_fails_keeps_the_reason(
+    storage: StorageController,
+    mounter: FakeMounter,
+    probes: FakeProbes,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A mount that can not be undone is logged; the caller still learns why the share failed."""
+    probes.results[MUSIC_PATH] = None
+
+    with (
+        caplog.at_level(logging.WARNING),
+        patch.object(mounter, "remove", AsyncMock(side_effect=OSError("busy"))),
+        pytest.raises(SetupFailedError) as exc_info,
+    ):
+        await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
+
+    assert exc_info.value.translation_key == "share_not_mounted"
+    assert "Unable to remove the mount of network share music: busy" in caplog.text
+    assert storage.mass.config.get(CONF_STORAGE_SHARES) is None
+
+
+@pytest.mark.parametrize("password", [None, ""])
+async def test_user_needs_a_password(
+    storage: StorageController, mounter: FakeMounter, password: str | None
+) -> None:
+    """A user without a password is refused before anything is mounted."""
+    with pytest.raises(InvalidDataError) as exc_info:
+        await storage.add_network_share(
+            ShareType.CIFS, "nas.local", "music", "marcel", password=password
+        )
+
+    assert exc_info.value.translation_key == "share_password_missing"
+    assert mounter.calls == []
+
+
+async def test_update_to_a_user_needs_a_password(
+    storage: StorageController, mounter: FakeMounter
+) -> None:
+    """A guest share that gets a user needs a password; a share with a stored one keeps it."""
+    await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
+    await storage.add_network_share(ShareType.CIFS, "nas.local", "movies", "marcel", SECRET)
+
+    with pytest.raises(InvalidDataError) as exc_info:
+        await storage.update_network_share("music", "nas.local", "music", "marcel")
+    await storage.update_network_share("movies", "nas.local", "movies", "other")
+
+    assert exc_info.value.translation_key == "share_password_missing"
+    assert mounter.calls[-1] == ("update", "movies", SECRET)
+
+
+@pytest.mark.parametrize("username", ["x,uid=0", "marcel,"])
+async def test_user_name_with_a_comma(
+    storage: StorageController, mounter: FakeMounter, username: str
+) -> None:
+    """A comma in a user name would add options to the mount command: it is refused."""
+    await storage.add_network_share(ShareType.CIFS, "nas.local", "music", "marcel", SECRET)
+
+    with pytest.raises(InvalidDataError) as add_error:
+        await storage.add_network_share(ShareType.CIFS, "nas.local", "movies", username, "pw")
+    with pytest.raises(InvalidDataError) as update_error:
+        await storage.update_network_share("music", "nas.local", "music", username, "pw")
+
+    assert add_error.value.translation_key == "share_username_invalid"
+    assert update_error.value.translation_key == "share_username_invalid"
+    assert [call[0] for call in mounter.calls] == ["add"]
+
+
+async def test_info_for_a_member(
+    storage: StorageController, mount_table: MountTable, backends: FakeBackends
+) -> None:
+    """
+    A member sees a managed share without its connection details, and starts no probe.
+
+    What the server knows about mounting is reported as it is; the reason a share is not
+    available stays.
+    """
+    mount_table.set(mount_line("/", "ext4"))
+    _store(storage, "music", username="marcel", version="3.0")
+    set_current_user(User(user_id="member", username="member", role=UserRole.USER))
+
+    info = await storage.get_info()
+
+    assert backends.probes == 0
+    assert RECONCILE_TASK_ID not in storage.mass._tracked_tasks
+    assert (info.can_mount_shares, info.mount_backend) == (False, None)
+    location = next(loc for loc in info.locations if loc.path == MUSIC_PATH)
+    assert (location.share_name, location.server, location.share) == (None, None, None)
+    assert (location.username, location.version) == (None, None)
+    assert (location.share_type, location.managed, location.available) == (
+        ShareType.CIFS,
+        True,
+        False,
+    )
+    assert location.error_key == "share_unavailable"
+    # the stored share itself is untouched, and an admin gets every detail
+    assert storage.get_location_for_path(MUSIC_PATH).server == "nas.local"  # type: ignore[union-attr]
+    set_current_user(User(user_id="admin", username="admin", role=UserRole.ADMIN))
+    await storage.get_info()
+    assert backends.probes == 2
 
 
 @pytest.mark.parametrize(
@@ -469,13 +578,30 @@ async def test_remove_refused_while_in_use(
 
 
 @pytest.mark.usefixtures("mount_table", "backends")
-async def test_remove_without_its_backend(storage: StorageController) -> None:
-    """A share whose backend is gone can still be removed; there is nothing to unmount here."""
-    _store(storage, "music", backend=MountBackend.SUPERVISOR)
+@pytest.mark.parametrize(
+    ("backend", "under_supervisor"),
+    [
+        (MountBackend.SUPERVISOR, False),
+        (MountBackend.LOCAL_MOUNT, False),
+        # the server never mounts itself under a Supervisor
+        (MountBackend.LOCAL_MOUNT, True),
+    ],
+)
+async def test_remove_without_its_backend(
+    storage: StorageController,
+    caplog: pytest.LogCaptureFixture,
+    backend: MountBackend,
+    under_supervisor: bool,
+) -> None:
+    """A share of a backend this installation does not have is forgotten, and that is logged."""
+    storage.mass.running_as_hass_addon = under_supervisor
+    _store(storage, "music", backend=backend)
 
-    await storage.remove_network_share("music")
+    with caplog.at_level(logging.WARNING):
+        await storage.remove_network_share("music")
 
     assert storage.mass.config.get(CONF_STORAGE_SHARES) == {}
+    assert "Forgetting network share music" in caplog.text
 
 
 async def test_reconcile(storage: StorageController, mounter: FakeMounter) -> None:
@@ -501,6 +627,22 @@ async def test_reconcile(storage: StorageController, mounter: FakeMounter) -> No
     storage._share_errors["music"] = SetupFailedError("old")
     await storage.reconcile()
     assert "music" not in storage._share_errors
+
+
+async def test_reconcile_survives_anything(
+    storage: StorageController, mounter: FakeMounter, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Whatever goes wrong while the shares are mounted is logged, never raised."""
+    _store(storage, "music")
+
+    with (
+        caplog.at_level(logging.ERROR),
+        patch.object(storage, "refresh", AsyncMock(side_effect=RuntimeError("boom"))),
+    ):
+        await storage.reconcile()
+
+    assert "Failed to mount the network shares" in caplog.text
+    assert "music" in mounter.mounted
 
 
 @pytest.mark.usefixtures("mounter")
@@ -654,7 +796,7 @@ async def test_setup_mounts_the_stored_shares(
 async def test_diagnostics_hold_no_names_or_paths(storage: StorageController) -> None:
     """The report says how shares are mounted and how locations are, never where or what."""
     await storage._probe_backends()
-    await storage.add_network_share(ShareType.CIFS, "nas.local", "private_music", "marcel")
+    await storage.add_network_share(ShareType.CIFS, "nas.local", "private_music", "marcel", "pw")
 
     diagnostics = await storage.get_diagnostics()
 
@@ -749,3 +891,53 @@ async def test_share_without_a_mount_table(
 
     # the probe finds the folder, but it is no mountpoint
     assert not await storage.is_available(str(share / "Albums"))
+
+
+async def test_errors_with_common_keys_are_translated(
+    storage: StorageController, mounter: FakeMounter
+) -> None:
+    """
+    An error of this controller with a key of the common strings reads in the client's language.
+
+    Goes the real way: the translations of the server, in a language other than English, for an
+    error a command raised and for the error a stored share carries.
+    """
+    translations = TranslationController(storage.mass)
+    await translations.setup(MagicMock())
+    await translations.ensure_locale_loaded("nl")
+    with pytest.raises(InvalidDataError) as exc_info:
+        await storage.add_network_share(ShareType.CIFS, "nas.invalid", "music")
+    raised = exc_info.value
+    _store(storage, "music")
+    mounter.failing["nas.local"] = SetupFailedError(
+        "SMB mount failed with error: mount error(112): Host is down",
+        translation_key="mount_failed",
+        translation_args=["mount error(112): Host is down"],
+    )
+    await storage.reconcile()
+    location = storage.get_location_for_path(MUSIC_PATH)
+    assert location is not None
+
+    token = TRANSLATION_RESOLVER.set(partial(translations.get_translation, locale="nl"))
+    try:
+        message = ErrorResultMessage(
+            "1",
+            raised.error_code,
+            str(raised),
+            translation_key=raised.translation_key,
+            translation_args=raised.translation_args,
+            translation_owner=raised.translation_owner,
+        ).to_dict()
+        serialized = location.to_dict()
+    finally:
+        TRANSLATION_RESOLVER.reset(token)
+
+    assert raised.translation_owner == TRANSLATION_OWNER
+    assert message["details"] == translations.get_translation(
+        "common.errors.host_unresolvable", locale="nl", params=["nas.invalid"]
+    )
+    assert message["details"].startswith("Het bereiken van nas.invalid")
+    assert serialized["error"] == (
+        "Er kan geen verbinding worden gemaakt met de externe locatie: "
+        "mount error(112): Host is down"
+    )

@@ -21,7 +21,11 @@ from music_assistant.controllers.storage import (
 )
 from music_assistant.controllers.storage import controller as controller_module
 from music_assistant.controllers.storage.backends import supervisor as supervisor_module
-from music_assistant.controllers.storage.backends.base import BackendUnavailable, ShareMounter
+from music_assistant.controllers.storage.backends.base import (
+    BackendUnavailable,
+    ShareMounter,
+    ShareState,
+)
 from music_assistant.controllers.storage.backends.local_mount import MOUNT_ROOT
 from music_assistant.controllers.storage.controller import _ProbeResult, _ProbeState
 from music_assistant.controllers.storage.models import MountBackend, NetworkShareSpec, ShareType
@@ -292,13 +296,16 @@ class FakeMounter(ShareMounter):
         self.calls.append(("remove", spec.name, None))
         self._unmount(spec)
 
-    async def get_unmounted(self, specs: list[NetworkShareSpec]) -> list[NetworkShareSpec]:
+    async def get_states(self, specs: list[NetworkShareSpec]) -> dict[str, ShareState]:
         """
-        Return the shares that are not mounted.
+        Return for each share, by name, whether it is mounted.
 
         :param specs: The shares of this backend.
         """
-        return [spec for spec in specs if spec.name not in self.mounted]
+        return {
+            spec.name: ShareState.PRESENT if spec.name in self.mounted else ShareState.MISSING
+            for spec in specs
+        }
 
     def _mount(self, spec: NetworkShareSpec) -> None:
         """Mount a share, unless its server is failing."""
@@ -397,16 +404,21 @@ class FakeSupervisor:
 
     It answers the way the real one does: a mount whose share does not answer fails to be
     created and is not kept, a failed update leaves the previous mount unmounted, a missing
-    mount is a 404, and listed mounts never carry their credentials.
+    mount is a 404, and listed mounts never carry their credentials. It takes a user and a
+    password together or neither, creates the folder of a mount in the media folder and leaves it
+    behind when the mount fails or goes, and refuses a mount on a folder that holds files. A
+    mounted folder holds a file of the share, so it can not be removed.
     """
 
-    def __init__(self, mount_table: MountTable) -> None:
+    def __init__(self, mount_table: MountTable, media: Path) -> None:
         """
         Initialize the fake Supervisor without any mount.
 
         :param mount_table: The mount table the mounts land in.
+        :param media: The media folder the mounts show up in.
         """
         self.mount_table = mount_table
+        self.media = media
         self.mounts: dict[str, dict[str, Any]] = {}
         # (method, path, body) of every request
         self.requests: list[tuple[str, str, dict[str, Any] | None]] = []
@@ -416,14 +428,22 @@ class FakeSupervisor:
         self.unreachable: set[str] = set()
         # mounts that stay behind their automount trigger although the Supervisor mounted them
         self.dormant: set[str] = set()
-        # what else is in the media folder
-        self.media_folder: set[str] = set()
+        # mounts the Supervisor fails to remove
+        self.stuck: set[str] = set()
         self.app = web.Application(middlewares=[self._security])
         self.app.router.add_get("/mounts", self._list)
         self.app.router.add_post("/mounts", self._create)
         self.app.router.add_put("/mounts/{name}", self._update)
         self.app.router.add_delete("/mounts/{name}", self._delete)
         self.app.router.add_post("/mounts/{name}/reload", self._reload)
+
+    def path(self, name: str) -> str:
+        """
+        Return where a mount with this name shows up.
+
+        :param name: The name of the mount.
+        """
+        return str(self.media / name)
 
     def add_mount(self, name: str, **settings: Any) -> None:
         """
@@ -460,12 +480,23 @@ class FakeSupervisor:
     async def _create(self, request: web.Request) -> web.Response:
         """Create a mount, which is only kept when its share answers."""
         body = await request.json()
-        if body["name"] in self.mounts:
-            return _error(400, f"A mount already exists with name {body['name']}")
+        if (invalid := _invalid(body)) is not None:
+            return invalid
+        name = body["name"]
+        if name in self.mounts:
+            return _error(400, f"A mount already exists with name {name}")
+        folder = self.media / name
+        if folder.is_dir() and any(folder.iterdir()):
+            return _error(
+                400,
+                f"Cannot mount {name} because there is existing data at {folder}. "
+                "Move it away first, then retry",
+            )
+        folder.mkdir(exist_ok=True)
         if body["server"] in self.unreachable:
-            return _not_reachable(body["name"])
-        self.mounts[body["name"]] = body
-        self._activate(body["name"])
+            return _not_reachable(name)
+        self.mounts[name] = body
+        self._activate(name)
         return _ok({})
 
     async def _update(self, request: web.Request) -> web.Response:
@@ -474,6 +505,8 @@ class FakeSupervisor:
         if name not in self.mounts:
             return _error(404, f"No mount exists with name {name}")
         body = await request.json()
+        if (invalid := _invalid(body)) is not None:
+            return invalid
         self._deactivate(name)
         if body["server"] in self.unreachable:
             return _not_reachable(name)
@@ -482,10 +515,12 @@ class FakeSupervisor:
         return _ok({})
 
     async def _delete(self, request: web.Request) -> web.Response:
-        """Remove a mount."""
+        """Remove a mount, leaving its folder behind."""
         name = request.match_info["name"]
         if name not in self.mounts:
             return _error(404, f"No mount exists with name {name}")
+        if name in self.stuck:
+            return _error(400, f"Could not unmount {name}. Check the Supervisor logs for details")
         self._deactivate(name)
         del self.mounts[name]
         return _ok({})
@@ -503,14 +538,18 @@ class FakeSupervisor:
 
     def _activate(self, name: str) -> None:
         """Put a mount in the mount table, the share on top of its automount trigger."""
-        path = f"/media/{name}"
-        self.mount_table.mount(path, "autofs")
+        folder = self.media / name
+        folder.mkdir(exist_ok=True)
+        (folder / "share.txt").touch()
+        self.mount_table.mount(str(folder), "autofs")
         if name not in self.dormant:
-            self.mount_table.mount(path, str(self.mounts[name]["type"]))
+            self.mount_table.mount(str(folder), str(self.mounts[name]["type"]))
 
     def _deactivate(self, name: str) -> None:
         """Remove a mount from the mount table."""
-        self.mount_table.unmount(f"/media/{name}")
+        folder = self.media / name
+        (folder / "share.txt").unlink(missing_ok=True)
+        self.mount_table.unmount(str(folder))
 
 
 def _ok(data: dict[str, Any]) -> web.Response:
@@ -521,6 +560,17 @@ def _ok(data: dict[str, Any]) -> web.Response:
 def _error(status: int, message: str) -> web.Response:
     """Return an error answer of the Supervisor."""
     return web.json_response({"result": "error", "message": message}, status=status)
+
+
+def _invalid(body: dict[str, Any]) -> web.Response | None:
+    """Return the answer of the Supervisor to a mount with a user without password or back."""
+    if ("username" in body) != ("password" in body):
+        return _error(
+            400,
+            "some but not all values in the same group of inclusion 'basic_auth' @ "
+            "data[<basic_auth>]",
+        )
+    return None
 
 
 def _not_reachable(name: str) -> web.Response:
@@ -538,7 +588,10 @@ def _not_reachable(name: str) -> web.Response:
 
 @pytest.fixture
 async def supervisor(
-    storage: StorageController, mount_table: MountTable, monkeypatch: pytest.MonkeyPatch
+    storage: StorageController,
+    mount_table: MountTable,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> AsyncGenerator[FakeSupervisor]:
     """
     Run the storage controller under a fake Supervisor, which is its only mount backend.
@@ -546,10 +599,13 @@ async def supervisor(
     :param storage: The storage controller.
     :param mount_table: The mount table the mounts land in.
     :param monkeypatch: Pytest monkeypatch fixture.
+    :param tmp_path: Temporary directory for the media folder.
     """
     # the root filesystem: a Linux mount table is never empty
     mount_table.set(mount_line("/", "ext4"))
-    fake = FakeSupervisor(mount_table)
+    media = tmp_path / "media"
+    media.mkdir()
+    fake = FakeSupervisor(mount_table, media)
     server = TestServer(fake.app)
     await server.start_server()
     session = ClientSession()
@@ -557,7 +613,7 @@ async def supervisor(
     storage.mass.running_as_hass_addon = True
     monkeypatch.setattr(hassio, "SUPERVISOR_URL", str(server.make_url("")).rstrip("/"))
     monkeypatch.setenv("SUPERVISOR_TOKEN", SUPERVISOR_TOKEN)
-    monkeypatch.setattr(supervisor_module, "_list_media_folder", lambda: set(fake.media_folder))
+    monkeypatch.setattr(supervisor_module, "SUPERVISOR_MEDIA_PATH", str(media))
     monkeypatch.setattr(
         controller_module, "create_supervisor_mounter", supervisor_module.create_supervisor_mounter
     )

@@ -102,9 +102,20 @@ def test_cifs_command_on_macos(version: str | None, options: list[str]) -> None:
     assert env == {}
 
 
-def test_cifs_command_on_macos_as_guest_read_only() -> None:
-    """On macOS a share without a user is mounted as guest, read-only when asked."""
-    cmd, _env = build_cifs_mount_cmd("Darwin", "nas.local", "music", MOUNT_PATH, read_only=True)
+@pytest.mark.parametrize(("username", "password"), [(None, None), ("Guest", "pw"), ("", "pw")])
+def test_cifs_command_on_macos_as_guest_read_only(
+    username: str | None, password: str | None
+) -> None:
+    """On macOS a share without a user, or as guest, is mounted as guest without a password."""
+    cmd, _env = build_cifs_mount_cmd(
+        "Darwin",
+        "nas.local",
+        "music",
+        MOUNT_PATH,
+        username=username,
+        password=password,
+        read_only=True,
+    )
 
     assert cmd == ["mount", "-t", "smbfs", "-r", "//guest@nas.local/music", MOUNT_PATH]
 
