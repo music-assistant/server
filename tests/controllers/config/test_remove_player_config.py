@@ -15,6 +15,9 @@ Also covers removing a whole player provider: its unregistered players must have
 DSP/queue settings and persisted queue cache wiped along with their player config,
 while players of other providers are left untouched.
 
+Deleting the config of a protocol player that is not registered must also drop it from
+the parent that still links it, so the parent no longer offers an output without config.
+
 Finally, a removed player must also disappear from the per user access filters, which
 would otherwise keep pointing at something that no longer exists.
 """
@@ -36,6 +39,7 @@ from music_assistant_models.enums import (
 )
 
 from music_assistant.constants import (
+    CONF_LINKED_PROTOCOL_IDS,
     CONF_PLAYER_DSP,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
@@ -48,7 +52,7 @@ from music_assistant.controllers.player_queues.constants import (
 )
 from music_assistant.helpers.json import json_loads
 from music_assistant.mass import MusicAssistant
-from music_assistant.models.player import DeviceInfo, Player
+from music_assistant.models.player import DeviceInfo, LinkedOutputProtocol, Player
 
 PARENT_ID = "up_esp32"
 PROTOCOL_ID = "spb_esp32"
@@ -333,6 +337,57 @@ async def test_remove_leaves_unrelated_protocol_player_alone(
 
     assert protocol_player.protocol_parent_id == "cast_1"
     assert not _pop_scheduled_evaluation(mass)
+
+
+def _store_protocol_config(mass: MusicAssistant, parent_id: str) -> None:
+    """Store an (unregistered) protocol player config linked to the given parent."""
+    mass.config.set(f"{CONF_PLAYERS}/{parent_id}/values/{CONF_LINKED_PROTOCOL_IDS}", [PROTOCOL_ID])
+    mass.config.set(
+        f"{CONF_PLAYERS}/{PROTOCOL_ID}",
+        {
+            "player_id": PROTOCOL_ID,
+            "provider": "sendspin",
+            "player_type": "protocol",
+            "enabled": True,
+            "values": {CONF_PROTOCOL_PARENT_ID: parent_id},
+        },
+    )
+
+
+async def test_delete_unregistered_protocol_unlinks_registered_parent(
+    mass: MusicAssistant,
+) -> None:
+    """Deleting an unregistered protocol player drops it from its registered parent."""
+    _store_player_config(mass, PLAYER_ID, enabled=True)
+    _store_protocol_config(mass, PLAYER_ID)
+    parent = _TestPlayer(_TestProvider(mass), PLAYER_ID)
+    mass.players._players[PLAYER_ID] = parent
+    parent.set_linked_output_protocols(
+        [LinkedOutputProtocol(output_protocol_id=PROTOCOL_ID, protocol_domain="sendspin")]
+    )
+
+    try:
+        mass.players.delete_player_config(PROTOCOL_ID)
+    finally:
+        mass.players._players.pop(PLAYER_ID, None)
+
+    assert mass.config.get(f"{CONF_PLAYERS}/{PROTOCOL_ID}") is None
+    assert parent.linked_output_protocols == []
+    assert all(p.output_protocol_id != PROTOCOL_ID for p in parent.output_protocols)
+    assert mass.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/values/{CONF_LINKED_PROTOCOL_IDS}") == []
+
+
+async def test_delete_unregistered_protocol_unlinks_unregistered_parent(
+    mass: MusicAssistant,
+) -> None:
+    """Deleting a protocol player also drops it from the cached links of an absent parent."""
+    _store_player_config(mass, PLAYER_ID)
+    _store_protocol_config(mass, PLAYER_ID)
+
+    mass.players.delete_player_config(PROTOCOL_ID)
+
+    assert mass.config.get(f"{CONF_PLAYERS}/{PROTOCOL_ID}") is None
+    assert mass.config.get(f"{CONF_PLAYERS}/{PLAYER_ID}/values/{CONF_LINKED_PROTOCOL_IDS}") == []
 
 
 async def test_remove_config_wipes_queue_config(mass: MusicAssistant) -> None:

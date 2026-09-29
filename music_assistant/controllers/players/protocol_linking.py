@@ -1728,6 +1728,26 @@ class ProtocolLinkingMixin:
                 # Parent not registered yet — still purge the cached id
                 self._remove_protocol_id_from_cache(parent_id, player.player_id)
 
+    def _unlink_protocol_from_parents(self, protocol_player_id: str) -> None:
+        """
+        Drop a protocol player from every parent that still links it, live or cached.
+
+        Also covers a protocol player that is not registered, which the removal paths
+        that start from a registered player cannot reach.
+
+        :param protocol_player_id: Player id of the protocol player to unlink.
+        """
+        for parent in list(self._players.values()):
+            if parent.state.type == PlayerType.PROTOCOL:
+                continue
+            if protocol_player_id in self._get_known_protocol_ids(parent):
+                self._remove_protocol_ids_from_parent(parent, {protocol_player_id})
+                parent.refresh_state()
+        # the persisted parent may not be registered (yet), so its cached list
+        # is not reachable through the loop above
+        if parent_id := self._get_cached_protocol_parent_id(protocol_player_id):
+            self._remove_protocol_id_from_cache(parent_id, protocol_player_id)
+
     def _detach_owned_protocols(self, player: Player) -> None:
         """Detach the protocol players a parent owns so they can find a new parent."""
         # collect the ids from both the active links and the cached state, since
