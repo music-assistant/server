@@ -290,6 +290,26 @@ def test_parse_nfo_root_returns_none_for_malformed_content(data: bytes, root_tag
     assert helpers.parse_nfo_root(data, root_tag) is None
 
 
+@pytest.mark.parametrize(
+    ("base_path", "path", "expected"),
+    [
+        ("/media/music", "/media/music/Artist/a.flac", "Artist/a.flac"),
+        ("/media/music/", "/media/music/Artist/a.flac", "Artist/a.flac"),
+        ("/media/music", "/media/music", ""),
+        ("/media/music", "Artist/a.flac", "Artist/a.flac"),
+        # a folder name that starts with the name of the base folder
+        ("/media", "/media/Music/mediaeval/a.flac", "Music/mediaeval/a.flac"),
+        # a folder that holds a copy of the base path, e.g. a backup
+        ("/media/music", "/media/music/backup/media/music/a.flac", "backup/media/music/a.flac"),
+        # a sibling folder that only starts with the same text is outside the base
+        ("/media/music", "/media/musicbox/a.flac", "media/musicbox/a.flac"),
+    ],
+)
+def test_get_relative_path(base_path: str, path: str, expected: str) -> None:
+    """Test that only a leading base path at a folder boundary is removed."""
+    assert helpers.get_relative_path(base_path, path) == expected
+
+
 SUPPORTED = {"mp3", "flac"}
 
 
