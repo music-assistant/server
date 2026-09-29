@@ -1169,10 +1169,18 @@ class ArtistsController(MediaControllerBase[Artist]):
     def _provider_mappings_for_feature(
         self, ref_item: Artist, feature: ProviderFeature, allowed: list[str] | None
     ) -> list[ProviderMapping]:
-        """Return the artist's provider mappings that can be queried for the given feature."""
+        """
+        Return the artist's provider mappings that can be queried for the given feature.
+
+        A streaming provider is returned once, through one of its instances.
+        """
         mappings: list[ProviderMapping] = []
         queried_streaming_domains: set[str] = set()
-        for provider_mapping in ref_item.provider_mappings:
+        # sorted so the same (preferably available) instance is picked each time
+        for provider_mapping in sorted(
+            ref_item.provider_mappings,
+            key=lambda mapping: (not mapping.available, mapping.provider_instance),
+        ):
             if allowed is not None and provider_mapping.provider_instance not in allowed:
                 continue
             music_prov = self.mass.get_provider(

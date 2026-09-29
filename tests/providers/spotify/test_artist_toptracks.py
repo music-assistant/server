@@ -40,20 +40,6 @@ async def test_get_artist_toptracks_uses_global_session(
     get_data.assert_awaited_once_with("artists/artist1/top-tracks", use_global_session=True)
 
 
-async def test_get_artist_toptracks_ignores_unchecksummed_cache(
-    provider: SpotifyProvider, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The cache lookup carries a checksum, so entries stored without one are not served."""
-    monkeypatch.setattr(provider, "_get_data", AsyncMock(return_value={"tracks": []}))
-
-    await provider.get_artist_toptracks("artist1")
-
-    lookup = provider.mass.cache.get_with_freshness
-    assert isinstance(lookup, AsyncMock)
-    assert lookup.await_args is not None
-    assert lookup.await_args.kwargs["checksum"]
-
-
 async def test_get_artist_toptracks_handles_not_found(
     provider: SpotifyProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:

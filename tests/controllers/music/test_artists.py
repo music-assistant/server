@@ -287,7 +287,5 @@ async def test_library_artist_listings_query_one_instance_per_streaming_domain(
         await getattr(ctrl, library_method)("1")
 
     queried = {call.args[1] for call in provider_listing.await_args_list}
-    assert len(queried) == 3
-    # exactly one Spotify instance, and both (non-streaming) filesystem instances
-    assert len(queried & {"spotify_1", "spotify_2"}) == 1
-    assert {"filesystem_local_1", "filesystem_local_2"} <= queried
+    # one Spotify instance, and both (non-streaming) filesystem instances
+    assert queried == {"spotify_1", "filesystem_local_1", "filesystem_local_2"}
