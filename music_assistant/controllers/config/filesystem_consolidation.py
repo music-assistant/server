@@ -43,6 +43,7 @@ from music_assistant.constants import (
     CONF_USERNAME,
     DB_TABLE_PROVIDER_MAPPINGS,
 )
+from music_assistant.controllers.music.constants import CACHE_CATEGORY_SEARCH_RESULTS
 from music_assistant.controllers.storage.backends.base import BackendUnavailable
 from music_assistant.controllers.storage.backends.local_mount import LOCAL_VERSIONS, LocalMounter
 from music_assistant.controllers.storage.backends.supervisor import create_supervisor_mounter
@@ -549,9 +550,10 @@ async def _clear_cached_items(mass: MusicAssistant, instance_ids: list[str]) -> 
     :param mass: The MusicAssistant instance.
     :param instance_ids: The instance ids of the sources this start converts.
     """
-    # the tracks of a playlist file are cached without a category. The album and artist info
-    # lasts only minutes, but a sync right after the restart of an upgrade would write it to
-    # the library. What else these sources cache holds no domain.
+    # the tracks of a playlist file are cached without a category, and the search results are
+    # cached by the music controller, per source and combined. The album and artist info lasts
+    # only minutes, but a sync right after the restart of an upgrade would write it to the
+    # library. What else the Local files provider caches for these sources holds no domain.
     try:
         for instance_id in instance_ids:
             for category in (
@@ -559,6 +561,7 @@ async def _clear_cached_items(mass: MusicAssistant, instance_ids: list[str]) -> 
                 CACHE_CATEGORY_ALBUM_INFO,
                 CACHE_CATEGORY_SOUND_EFFECTS,
                 CACHE_CATEGORY_PODCAST_EPISODES,
+                CACHE_CATEGORY_SEARCH_RESULTS,
             ):
                 await mass.cache.delete(None, category=category, provider=instance_id)
             # the artists share their category with the list of items of the last sync, which
@@ -571,6 +574,10 @@ async def _clear_cached_items(mass: MusicAssistant, instance_ids: list[str]) -> 
                     await mass.cache.delete(
                         key, category=CACHE_CATEGORY_ARTIST_INFO, provider=instance_id
                     )
+        # the search results combined over all sources
+        await mass.cache.delete(
+            None, category=CACHE_CATEGORY_SEARCH_RESULTS, provider=mass.music.domain
+        )
     except Exception as err:
         LOGGER.warning(
             "Unable to remove the cached items of music sources %s (%s)",

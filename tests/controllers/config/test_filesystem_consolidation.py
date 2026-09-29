@@ -52,7 +52,10 @@ from music_assistant.controllers.config.filesystem_consolidation import (
     consolidate_filesystem_sources,
 )
 from music_assistant.controllers.metadata.constants import CACHE_CATEGORY_IMAGE_IDS
-from music_assistant.controllers.music.constants import CONF_DELETED_PROVIDERS
+from music_assistant.controllers.music.constants import (
+    CACHE_CATEGORY_SEARCH_RESULTS,
+    CONF_DELETED_PROVIDERS,
+)
 from music_assistant.controllers.storage import StorageKind, StorageLocation, StorageUsage
 from music_assistant.controllers.storage import controller as storage_controller_module
 from music_assistant.controllers.storage.backends import local_mount as local_mount_module
@@ -1702,9 +1705,10 @@ async def test_the_cached_items_of_a_converted_source_are_removed(mass: MusicAss
     """
     The media items a converted source cached are removed, as they name its old domain.
 
-    The rest of what it cached stays: the items of its last sync, which the next sync needs
-    and which share their category with the artists, and what holds no domain. So does
-    everything other sources cached, and the image ids.
+    So are the search results combined over all sources. The rest of what it cached stays:
+    the items of its last sync, which the next sync needs and which share their category with
+    the artists, and what holds no domain. So does everything other sources cached, and the
+    image ids.
     """
     _store_source(mass, SMB_ID, SMB_SETUP)
     _store_source(mass, SMB_ID_2, {**SMB_SETUP, "share": "music/albums"})
@@ -1718,6 +1722,8 @@ async def test_the_cached_items_of_a_converted_source_are_removed(mass: MusicAss
         ("Artist/Album", CACHE_CATEGORY_ALBUM_INFO, track.album.to_dict()),
         ("sound_effect.Effects/ding.mp3", CACHE_CATEGORY_SOUND_EFFECTS, track.to_dict()),
         ("podcast_episodes.Podcasts/Show", CACHE_CATEGORY_PODCAST_EPISODES, [track.to_dict()]),
+        # written by the music controller for a search on the source
+        ("jazz-track-25", CACHE_CATEGORY_SEARCH_RESULTS, {"tracks": [track.to_dict()]}),
     ]
     kept: list[tuple[str, int, Any]] = [
         ("track", CACHE_CATEGORY_PREV_LIBRARY_IDS, [1, 2, 3]),
@@ -1738,10 +1744,25 @@ async def test_the_cached_items_of_a_converted_source_are_removed(mass: MusicAss
     await mass.cache.set(
         "image-1", image_id, provider="metadata", category=CACHE_CATEGORY_IMAGE_IDS
     )
+    combined = {"tracks": [track.to_dict()]}
+    await mass.cache.set(
+        "jazz-track-25-1-all",
+        combined,
+        provider=mass.music.domain,
+        category=CACHE_CATEGORY_SEARCH_RESULTS,
+    )
 
     await consolidate_filesystem_sources(mass)
 
     assert _config(mass, SMB_ID)["domain"] == "filesystem_local"
+    assert (
+        await mass.cache.get(
+            "jazz-track-25-1-all",
+            provider=mass.music.domain,
+            category=CACHE_CATEGORY_SEARCH_RESULTS,
+        )
+        is None
+    )
     for key, category, _data in removed:
         assert await mass.cache.get(key, provider=SMB_ID, category=category) is None
     for key, category, data in kept:
