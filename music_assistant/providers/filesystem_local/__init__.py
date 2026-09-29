@@ -2138,7 +2138,7 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def _is_reachable(self) -> bool:
         """Return whether the storage backing this provider can be read."""
-        return bool(await isdir(self.base_path))
+        return await self.mass.storage.is_available(self.base_path)
 
     @property
     def _availability_probe_id(self) -> str:

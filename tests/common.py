@@ -90,6 +90,50 @@ def collect_loop_errors() -> Iterator[list[dict[str, Any]]]:
         loop.set_exception_handler(previous)
 
 
+class _RecordCollector(logging.Handler):
+    """Log handler that keeps every record it gets."""
+
+    def __init__(self, records: list[logging.LogRecord]) -> None:
+        """
+        Initialize the handler at the lowest level.
+
+        :param records: The list the records are appended to.
+        """
+        super().__init__(level=1)
+        self.records = records
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Keep a record."""
+        self.records.append(record)
+
+
+@contextlib.contextmanager
+def capture_log_records(logger: logging.Logger) -> Iterator[list[logging.LogRecord]]:
+    """
+    Capture every record of a logger, whatever other tests did to the logging setup.
+
+    Yields the (initially empty) list of records. The logger gets a handler of its own and
+    the lowest level, so neither the level an ancestor was given, nor its propagation or the
+    handlers of the root logger, decide what is captured; all of it is restored on exit.
+
+    :param logger: The logger the code under test writes to.
+    """
+    records: list[logging.LogRecord] = []
+    handler = _RecordCollector(records)
+    level, disabled, disabled_below = logger.level, logger.disabled, logging.root.manager.disable
+    logger.addHandler(handler)
+    logger.setLevel(1)
+    logger.disabled = False
+    logging.disable(logging.NOTSET)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(level)
+        logger.disabled = disabled
+        logging.disable(disabled_below)
+
+
 @contextlib.asynccontextmanager
 async def wait_for_sync_completion(mass: MusicAssistant) -> AsyncGenerator[None]:
     """Wait for a sync to finish."""
