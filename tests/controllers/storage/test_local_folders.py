@@ -27,6 +27,7 @@ from music_assistant.controllers.storage import (
     StorageUsage,
 )
 from music_assistant.controllers.storage import controller as controller_module
+from music_assistant.controllers.storage.backends import mountinfo
 from music_assistant.controllers.storage.constants import PROBE_MAX_AGE
 from music_assistant.controllers.storage.models import MountBackend, NetworkShareSpec, ShareType
 from music_assistant.controllers.translations import TranslationController
@@ -43,6 +44,17 @@ def empty_mount_table() -> Iterator[None]:
     """Keep the mount table of the machine running the tests out of the locations."""
     with patch.object(controller_module, "read_mountinfo", return_value=""):
         yield
+
+
+@pytest.fixture(autouse=True)
+def discoverable_tmp_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Let discovery find a mount in the temporary folder of a test.
+
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    # the temporary folder of the tests may lie below a system path, which discovery leaves out
+    monkeypatch.setattr(mountinfo, "SYSTEM_PATHS", ())
 
 
 def _location(locations: list[StorageLocation], path: Path) -> StorageLocation:
