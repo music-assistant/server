@@ -228,11 +228,12 @@ class StorageController(CoreController):
         """
         Register a folder on this server as a media location.
 
-        Only possible when the server does not run in a container.
+        Only possible when the server does not run in a container. The location of a drive or
+        share mounted on the path becomes this folder, and keeps its mount.
 
-        :param path: Absolute path of an existing folder that is no storage location yet, also
-            once its symlinks are resolved. It is stored, and returned, with its symlinks
-            resolved.
+        :param path: Absolute path of an existing folder that is neither a registered folder
+            nor a network share Music Assistant mounted, also once its symlinks are resolved.
+            It is stored, and returned, with its symlinks resolved.
         """
         if not self.can_add_local_folder:
             msg = "A folder can not be added when the server runs in a container"
@@ -742,7 +743,8 @@ class StorageController(CoreController):
         if path in self._server_folders:
             msg = f"{path} is a folder of the server itself"
             raise self._error(InvalidDataError, msg, "folder_is_server_folder")
-        if any(loc.path == path for loc in self._locations):
+        # a location found in the mount table becomes the registered folder
+        if any(loc.path == path and loc.managed for loc in self._locations):
             msg = f"{path} already is a storage location"
             raise self._error(InvalidDataError, msg, "folder_already_location")
 

@@ -23,9 +23,10 @@ from music_assistant.controllers.storage import (
 )
 from music_assistant.controllers.storage import controller as controller_module
 from music_assistant.controllers.storage.constants import PROBE_MAX_AGE
+from music_assistant.controllers.storage.models import ShareType
 from music_assistant.controllers.translations import TranslationController
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
-from tests.controllers.storage.conftest import FakeProbes, mount_line, store_source
+from tests.controllers.storage.conftest import FakeProbes, MountTable, mount_line, store_source
 
 MEMBER = User(user_id="member", username="member", role=UserRole.USER)
 
@@ -84,21 +85,127 @@ async def test_add_folder_twice(storage: StorageController, tmp_path: Path) -> N
 
 
 @pytest.mark.usefixtures("probes")
-async def test_add_refuses_a_discovered_location(
+async def test_add_a_discovered_location(
     storage: StorageController, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A mount that is a location already keeps its mount check instead of becoming a folder."""
+    """A mount that is a location already becomes a registered folder that keeps its mount."""
     table = mount_line("/mnt/music", "ext4")
     monkeypatch.setattr(controller_module, "read_mountinfo", lambda: table)
     await storage.refresh()
 
-    with pytest.raises(InvalidDataError) as exc_info:
-        await storage.add_local_folder("/mnt/music/")
+    location = await storage.add_local_folder("/mnt/music/")
     # a folder inside the mount is fine
     await storage.add_local_folder("/mnt/music/Albums")
 
+    assert (location.path, location.kind, location.managed) == (
+        "/mnt/music",
+        StorageKind.MANUAL,
+        True,
+    )
+    assert (location.mountpoint, location.fstype) == ("/mnt/music", "ext4")
+    assert [loc.path for loc in storage.get_locations()].count("/mnt/music") == 1
+    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == ["/mnt/music", "/mnt/music/Albums"]
+
+
+async def test_add_a_symlink_to_a_discovered_location(
+    storage: StorageController, tmp_path: Path, mount_table: MountTable
+) -> None:
+    """A symlink to a mount the server found registers the mount itself."""
+    nas = tmp_path / "nas"
+    nas.mkdir()
+    (tmp_path / "link").symlink_to(nas, target_is_directory=True)
+    mount_table.set(mount_line(nas, "cifs"))
+    await storage.refresh()
+
+    location = await storage.add_local_folder(str(tmp_path / "link"))
+
+    assert (location.path, location.kind, location.mountpoint) == (
+        str(nas),
+        StorageKind.MANUAL,
+        str(nas),
+    )
+    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == [str(nas)]
+
+
+@pytest.mark.usefixtures("probes")
+async def test_registered_mount_is_available_to_members_until_removed(
+    storage: StorageController, mount_table: MountTable
+) -> None:
+    """
+    A mounted share on a host reaches members once registered.
+
+    Removing the folder again lists the mount as found, for callers that manage every source.
+    """
+    mount_table.set(mount_line("/mnt/nas", "cifs"))
+    await storage.refresh()
+    assert storage.get_locations(manages_all_sources=False) == []
+
+    await storage.add_local_folder("/mnt/nas")
+    member_paths = [loc.path for loc in storage.get_locations(manages_all_sources=False)]
+    await storage.remove_local_folder("/mnt/nas")
+
+    assert member_paths == ["/mnt/nas"]
+    assert storage.get_locations(manages_all_sources=False) == []
+    location = _location(storage.get_locations(), Path("/mnt/nas"))
+    assert (location.kind, location.managed, location.mountpoint) == (
+        StorageKind.NETWORK_SHARE,
+        False,
+        "/mnt/nas",
+    )
+    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == []
+
+
+@pytest.mark.usefixtures("probes")
+async def test_registered_mount_needs_its_mount(
+    storage: StorageController, tmp_path: Path, mount_table: MountTable
+) -> None:
+    """A registered mountpoint is only available while the mount is there."""
+    nas = tmp_path / "nas"
+    (nas / "Albums").mkdir(parents=True)
+    # the root filesystem: a Linux mount table is never empty
+    root = mount_line("/", "ext4")
+    mount_table.set(root, mount_line(nas, "cifs"))
+    await storage.refresh()
+    await storage.add_local_folder(str(nas))
+    assert await storage.is_available(str(nas / "Albums"))
+
+    mount_table.set(root)
+    await storage.refresh()
+    assert not await storage.is_available(str(nas / "Albums"))
+
+    mount_table.set(root, mount_line(nas, "cifs"))
+    await storage.refresh()
+    assert await storage.is_available(str(nas / "Albums"))
+
+
+@pytest.mark.usefixtures("probes")
+async def test_registered_mount_in_use_stays(
+    storage: StorageController, mount_table: MountTable
+) -> None:
+    """A music source on a registered mountpoint keeps it registered."""
+    mount_table.set(mount_line("/mnt/nas", "cifs"))
+    store_source(storage, "/mnt/nas/music")
+    await storage.refresh()
+
+    location = await storage.add_local_folder("/mnt/nas")
+    with pytest.raises(ActionUnavailable) as exc_info:
+        await storage.remove_local_folder("/mnt/nas")
+
+    assert location.used_by == ["My music"]
+    assert exc_info.value.translation_key == "location_in_use"
+    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == ["/mnt/nas"]
+
+
+@pytest.mark.usefixtures("probes", "mounter")
+async def test_add_refuses_a_managed_network_share(storage: StorageController) -> None:
+    """The mountpoint of a network share Music Assistant added can not be added as a folder."""
+    share = await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
+
+    with pytest.raises(InvalidDataError) as exc_info:
+        await storage.add_local_folder(f"{share.path}/")
+
     assert exc_info.value.translation_key == "folder_already_location"
-    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == ["/mnt/music/Albums"]
+    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) is None
 
 
 @pytest.mark.parametrize(
