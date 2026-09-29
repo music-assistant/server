@@ -123,6 +123,11 @@ class SqueezelitePlayer(Player):
         ]
         self.multi_client_stream: MultiClientStream | None = None
         self._sync_group = SyncGroup()
+        # song position captured at pause (LMS resumeTime, the master's extrapolated
+        # song elapsed); the group resume uses it to align the members. The queue
+        # position is a different clock (the multi-client stream runs the players
+        # ahead of the queue), so using it added the stream headroom as a resume delay.
+        self._paused_at: float = 0.0
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
@@ -229,12 +234,10 @@ class SqueezelitePlayer(Player):
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
-        if self.group_members:
+        if self.group_members and self._paused_at > 0:
             # resuming a paused group: align the members on a common instant via the
             # LMS resume (coordinated startAt + check holdoff)
-            queue = self.mass.player_queues.get_active_queue(self.player_id)
-            paused_at = float(queue.resume_pos or queue.elapsed_time or 0) if queue else 0.0
-            await self._sync_group.resume(self._get_sync_clients(), paused_at)
+            await self._sync_group.resume(self._get_sync_clients(), self._paused_at)
             return
         async with TaskManager(self.mass) as tg:
             for client in self._get_sync_clients():
@@ -242,6 +245,11 @@ class SqueezelitePlayer(Player):
 
     async def pause(self) -> None:
         """Handle PAUSE command on the player."""
+        if self.group_members:
+            # remember where the group was paused, in the players' own clock (LMS
+            # resumeTime = the master's extrapolated song elapsed); the group resume
+            # needs it to align the members
+            self._paused_at = self.client.song_elapsed_seconds
         async with TaskManager(self.mass) as tg:
             for client in self._get_sync_clients():
                 tg.create_task(client.pause())
