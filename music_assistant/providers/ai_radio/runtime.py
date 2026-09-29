@@ -59,6 +59,8 @@ from .constants import (
     DEFAULT_WEATHER_TIMEOUT_SECONDS,
     DEFERRED_PLACEHOLDERS,
     FAHRENHEIT_COUNTRY_CODES,
+    RSS_FEED_PLACEHOLDER,
+    RSS_MAX_FEEDS_PER_SECTION,
     SHOW_START_TIMEOUT_SECONDS,
     TTS_PRONUNCIATION_INSTRUCTIONS,
     VALID_WEB_SEARCH_MODES,
@@ -692,6 +694,13 @@ class AIRadioRuntimeMixin:
             prompt = self._apply_placeholders(str(section.get("prompt", "")), placeholders)
             weather_required = section_id in weather_guarded_ids
             section_rss_feeds = list(section.get("rss_feeds") or [])
+            # a standalone section keeps the bare token, so the feeds attach only when the prompt
+            # actually references <rss_feed>
+            rss_feeds_by_token = (
+                {RSS_FEED_PLACEHOLDER: section_rss_feeds}
+                if section_rss_feeds and RSS_FEED_PLACEHOLDER in prompt
+                else {}
+            )
             max_chars = int((section.get("constraints") or {}).get("max_chars", 0) or 0)
             if max_chars > 0:
                 prompt += (
@@ -710,7 +719,7 @@ class AIRadioRuntimeMixin:
                     max_chars=max_chars,
                     web_search_mode=self._resolve_web_search_mode(section, section_id),
                     weather_required=weather_required,
-                    rss_feeds=section_rss_feeds,
+                    rss_feeds_by_token=rss_feeds_by_token,
                     history_events=[(section_id, slot_event(slot))],
                 )
             )
@@ -769,15 +778,24 @@ class AIRadioRuntimeMixin:
         total_max_chars = 0
         max_web_mode = "disabled"
         merged_names: list[str] = []
-        merged_rss_feeds: list[dict[str, Any]] = []
+        # each section that carries feeds gets its own indexed token so a merged script keeps every
+        # source's articles attached to the section that requested them, instead of every
+        # <rss_feed> collapsing to the same aggregate
+        merged_rss_feeds_by_token: dict[str, list[dict[str, Any]]] = {}
         # a weather+news merge must still air the news half, so only all-guarded merges require it
         all_weather_required = all(section_id in weather_guarded_ids for section_id in section_ids)
         for index, section_id in enumerate(section_ids, start=1):
             section = section_by_id.get(section_id, {})
             section_name = self._resolve_section_name(section, section_id)
             merged_names.append(section_name)
-            merged_rss_feeds.extend(section.get("rss_feeds") or [])
             prompt_base = self._apply_placeholders(str(section.get("prompt", "")), placeholders)
+            section_feeds = list(section.get("rss_feeds") or [])
+            if section_feeds and RSS_FEED_PLACEHOLDER in prompt_base:
+                # give this section its own token and rewrite its placeholder so the render step
+                # resolves it against this section's feeds only
+                token = f"<rss_feed_{index}>"
+                prompt_base = prompt_base.replace(RSS_FEED_PLACEHOLDER, token)
+                merged_rss_feeds_by_token[token] = section_feeds[:RSS_MAX_FEEDS_PER_SECTION]
             max_chars = int((section.get("constraints") or {}).get("max_chars", 0) or 0)
             total_max_chars += max_chars
             prompt_lines.append(f"{index}. [{section_id}] {prompt_base}")
@@ -813,7 +831,7 @@ class AIRadioRuntimeMixin:
             max_chars=total_max_chars,
             web_search_mode=max_web_mode,
             weather_required=all_weather_required,
-            rss_feeds=merged_rss_feeds,
+            rss_feeds_by_token=merged_rss_feeds_by_token,
             history_events=history_events,
         )
 
@@ -893,9 +911,9 @@ class AIRadioRuntimeMixin:
                 ATTR_WEATHER_REQUIRED: section.weather_required,
             }
         )
-        # extra_attributes holds scalars only, so the feed list travels as a JSON string
-        if section.rss_feeds:
-            queue_item.extra_attributes[ATTR_RSS_FEEDS] = json.dumps(section.rss_feeds)
+        # extra_attributes holds scalars only, so the per-token feed map travels as a JSON string
+        if section.rss_feeds_by_token:
+            queue_item.extra_attributes[ATTR_RSS_FEEDS] = json.dumps(section.rss_feeds_by_token)
         return queue_item
 
     @staticmethod

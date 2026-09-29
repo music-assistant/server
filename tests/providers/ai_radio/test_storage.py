@@ -12,6 +12,12 @@ import pytest
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.providers.ai_radio import storage as storage_module
+from music_assistant.providers.ai_radio.constants import (
+    RSS_DEFAULT_MAX_ARTICLES,
+    RSS_MAX_FEEDS_PER_SECTION,
+    RSS_MAX_MAX_ARTICLES,
+    RSS_MIN_MAX_ARTICLES,
+)
 from music_assistant.providers.ai_radio.storage import AIRadioStorageMixin
 
 
@@ -342,3 +348,119 @@ def test_normalize_station_v3_returns_slim_schema() -> None:
     assert normalized["host_id"] == "rick"
     for legacy_key in ("general", "sections", "section_ids", "section_order", "merge_section_id"):
         assert legacy_key not in normalized
+
+
+def test_normalize_section_defaults_rss_max_articles_when_missing() -> None:
+    """A feed without max_articles inherits the server-owned default."""
+    storage = DummyStorage()
+
+    normalized = storage._normalize_section(
+        {
+            "id": "News",
+            "name": "News",
+            "type": "ai_text",
+            "prompt": "News <rss_feed>",
+            "rss_feeds": [{"url": "https://example.com/feed.xml"}],
+        }
+    )
+
+    assert normalized["rss_feeds"] == [
+        {"url": "https://example.com/feed.xml", "max_articles": RSS_DEFAULT_MAX_ARTICLES}
+    ]
+
+
+def test_normalize_section_clamps_rss_max_articles_into_range() -> None:
+    """Out-of-range max_articles values are clamped to the supported bounds."""
+    storage = DummyStorage()
+
+    normalized = storage._normalize_section(
+        {
+            "id": "News",
+            "name": "News",
+            "type": "ai_text",
+            "prompt": "News <rss_feed>",
+            "rss_feeds": [
+                {"url": "https://a.example/feed", "max_articles": 999},
+                {"url": "https://b.example/feed", "max_articles": 0},
+            ],
+        }
+    )
+
+    assert normalized["rss_feeds"][0]["max_articles"] == RSS_MAX_MAX_ARTICLES
+    assert normalized["rss_feeds"][1]["max_articles"] == RSS_MIN_MAX_ARTICLES
+
+
+def test_normalize_section_rejects_non_numeric_rss_max_articles() -> None:
+    """A non-numeric max_articles surfaces as an InvalidDataError instead of silent mutation."""
+    storage = DummyStorage()
+
+    with pytest.raises(InvalidDataError, match="non-numeric rss_feeds max_articles"):
+        storage._normalize_section(
+            {
+                "id": "News",
+                "name": "News",
+                "type": "ai_text",
+                "prompt": "News <rss_feed>",
+                "rss_feeds": [{"url": "https://a.example/feed", "max_articles": "lots"}],
+            }
+        )
+
+
+def test_normalize_section_caps_rss_feed_count() -> None:
+    """A section can never carry more than the server-owned feed cap."""
+    storage = DummyStorage()
+
+    normalized = storage._normalize_section(
+        {
+            "id": "News",
+            "name": "News",
+            "type": "ai_text",
+            "prompt": "News <rss_feed>",
+            "rss_feeds": [
+                {"url": f"https://example.com/feed{i}.xml"}
+                for i in range(RSS_MAX_FEEDS_PER_SECTION + 5)
+            ],
+        }
+    )
+
+    assert len(normalized["rss_feeds"]) == RSS_MAX_FEEDS_PER_SECTION
+
+
+def test_normalize_section_skips_feeds_without_url() -> None:
+    """Feed entries without a usable url (or wrong shape) are dropped."""
+    storage = DummyStorage()
+
+    normalized = storage._normalize_section(
+        {
+            "id": "News",
+            "name": "News",
+            "type": "ai_text",
+            "prompt": "News <rss_feed>",
+            "rss_feeds": [
+                {"url": "  "},
+                "not-a-dict",
+                {"url": "https://ok.example/feed"},
+            ],
+        }
+    )
+
+    assert normalized["rss_feeds"] == [
+        {"url": "https://ok.example/feed", "max_articles": RSS_DEFAULT_MAX_ARTICLES}
+    ]
+
+
+def test_normalize_section_omits_rss_key_when_no_valid_feeds() -> None:
+    """A section with only invalid feeds carries no rss_feeds key at all."""
+    storage = DummyStorage()
+
+    normalized = storage._normalize_section(
+        {
+            "id": "News",
+            "name": "News",
+            "type": "ai_text",
+            "prompt": "News",
+            "rss_feeds": [{"url": ""}],
+        }
+    )
+
+    assert "rss_feeds" not in normalized

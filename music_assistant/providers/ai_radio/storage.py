@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 from copy import deepcopy
@@ -17,7 +16,15 @@ from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.helpers.json import async_json_dumps, async_json_loads
 
-from .constants import EMPTY_SECTION_ID, MERGE_SECTION_PROMPT, VALID_WEB_SEARCH_MODES
+from .constants import (
+    EMPTY_SECTION_ID,
+    MERGE_SECTION_PROMPT,
+    RSS_DEFAULT_MAX_ARTICLES,
+    RSS_MAX_FEEDS_PER_SECTION,
+    RSS_MAX_MAX_ARTICLES,
+    RSS_MIN_MAX_ARTICLES,
+    VALID_WEB_SEARCH_MODES,
+)
 from .helpers import slugify
 
 _slugify = slugify
@@ -206,18 +213,38 @@ class AIRadioStorageMixin:
                     url = str(feed_entry.get("url", "")).strip()
                     if not url:
                         continue
-                    max_articles = 3
-                    raw_max = feed_entry.get("max_articles")
-                    if raw_max is not None:
-                        with contextlib.suppress(TypeError, ValueError):
-                            max_articles = max(1, int(raw_max))
+                    max_articles = self._normalize_rss_max_articles(
+                        feed_entry.get("max_articles"), section_id
+                    )
                     rss_feeds.append({"url": url, "max_articles": max_articles})
+                    # a single section may never fan out into an unbounded number of feeds
+                    if len(rss_feeds) >= RSS_MAX_FEEDS_PER_SECTION:
+                        break
             if rss_feeds:
                 normalized["rss_feeds"] = rss_feeds
         for passthrough_key in ("cover_image",):
             if passthrough_key in section:
                 normalized[passthrough_key] = section[passthrough_key]
         return normalized
+
+    @staticmethod
+    def _normalize_rss_max_articles(raw_value: Any, section_id: str) -> int:
+        """
+        Clamp a feed's max_articles to the server-owned default and range.
+
+        A missing value falls back to the server default; a non-numeric value is rejected so a
+        broken config surfaces instead of silently mutating, and any number is clamped into the
+        supported range so behaviour never depends on which client wrote the config.
+        """
+        if raw_value is None:
+            return RSS_DEFAULT_MAX_ARTICLES
+        try:
+            count = int(raw_value)
+        except (TypeError, ValueError) as err:
+            raise InvalidDataError(
+                f"Section '{section_id}' has non-numeric rss_feeds max_articles: {raw_value!r}"
+            ) from err
+        return max(RSS_MIN_MAX_ARTICLES, min(RSS_MAX_MAX_ARTICLES, count))
 
     def _normalize_station(self, station: dict[str, Any]) -> dict[str, Any]:
         """Validate and normalize a station profile."""

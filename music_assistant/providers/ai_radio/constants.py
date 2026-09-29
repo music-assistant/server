@@ -148,6 +148,34 @@ RSS_PLACEHOLDER_TOKENS = ("<rss_feed>",)
 # how long to wait for a single RSS feed to respond, in seconds, before giving up
 RSS_REQUEST_TIMEOUT = 10
 
+# per-feed article count: server-owned default and bounds, kept in sync with the frontend so the
+# behaviour is identical no matter which client wrote the config (companion frontend PR #2859)
+RSS_DEFAULT_MAX_ARTICLES = 5
+RSS_MIN_MAX_ARTICLES = 1
+RSS_MAX_MAX_ARTICLES = 20
+
+# a section may only carry so many feeds; extra entries are dropped during normalization so a
+# single section can never fan out into an unbounded number of outbound requests
+RSS_MAX_FEEDS_PER_SECTION = 5
+
+# never run more than this many feed downloads at once, so one clip cannot drain the shared pool
+RSS_MAX_CONCURRENT_FETCHES = 4
+
+# hard cap on how many bytes we read from a single feed response, to bound memory use on a
+# hostile or runaway feed (roughly 2 MiB is plenty for any real RSS/Atom document)
+RSS_MAX_FEED_BYTES = 2 * 1024 * 1024
+
+# per-article text is trimmed to this many characters before it enters the LLM prompt, so a
+# verbose feed cannot blow up the prompt size
+RSS_MAX_ARTICLE_CHARS = 500
+
+# feed downloads are cached for this many seconds so back-to-back clips reuse one fetch instead
+# of hammering the feed server, while still refreshing often enough to stay timely
+RSS_CACHE_TTL = 300
+
+# cache namespace for RSS feed downloads (scoped per provider instance at call time)
+RSS_CACHE_CATEGORY = 0
+
 # substituted for an unresolved RSS token in clips that still air
 NO_RSS_DATA_INSTRUCTION = (
     "(no RSS news data available - do not invent or mention news items; "
