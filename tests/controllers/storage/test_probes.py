@@ -400,3 +400,63 @@ def test_probe_asks_the_filesystem_for_its_space_first(
 
     assert _probe_path(str(tmp_path)) is None
     assert asked == [str(tmp_path)]
+
+
+async def test_waiter_of_a_replaced_probe_changes_nothing(
+    storage: StorageController,
+    mount_table: MountTable,
+    probes: FakeProbes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The caller of a probe that a fresh one replaced does not mark the path as not answering.
+
+    The old probe hangs, a fresh one answers, then the old caller gives up: the location stays
+    available, is probed again once its answer is outdated, and the late answer of the old
+    probe is dropped.
+    """
+    monkeypatch.setattr(controller_module, "PROBE_TIMEOUT", 0.3)
+    mount_table.set(mount_line(NAS, "cifs"))
+    await storage.refresh()
+    probes.block(NAS)
+    old_waiter = storage.mass.create_task(storage._wait_for_probes([NAS]))
+    await wait_until(lambda: NAS in probes.calls)
+    old_probe = storage._probes[NAS].probe
+    assert old_probe is not None
+    gate = probes.blocked.pop(NAS)
+
+    try:
+        assert await storage._wait_for_probes([NAS], fresh=True) == {NAS: FOLDER}
+        assert await old_waiter == {NAS: None}
+    finally:
+        # the old probe fails in the end, about what was mounted before
+        probes.results[NAS] = None
+        gate.set()
+
+    await wait_until(old_probe.done)
+    await storage.refresh()
+    assert not storage._probes[NAS].overdue
+    assert _location(storage, NAS).available
+    assert _location(storage, NAS).free_space_gb == FOLDER.free_space_gb
+    storage._probes[NAS].answered_at = time.monotonic() - PROBE_MAX_AGE - 1
+    probes.calls.clear()
+    probes.results.pop(NAS)
+    await storage.get_info()
+    assert NAS in probes.calls
+    assert _location(storage, NAS).available
+
+
+@pytest.mark.usefixtures("short_probe_timeout")
+async def test_fresh_probe_that_hangs_is_overdue(
+    storage: StorageController, mount_table: MountTable, probes: FakeProbes
+) -> None:
+    """The caller of the current probe still marks a path that does not answer."""
+    mount_table.set(mount_line(NAS, "cifs"))
+    await storage.refresh()
+    probes.block(NAS)
+
+    assert await storage._wait_for_probes([NAS], fresh=True) == {NAS: None}
+
+    assert storage._probes[NAS].overdue
+    await storage.refresh()
+    assert not _location(storage, NAS).available

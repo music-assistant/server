@@ -290,3 +290,74 @@ def test_can_hold_music_source_follows_visibility(
     assert (
         storage.can_hold_music_source(str(media_root / "Albums"), manages_all_sources) is expected
     )
+
+
+@pytest.fixture
+def nested_private_location(storage: StorageController, tmp_path: Path) -> Path:
+    """
+    Provide a registered folder with a discovered mount inside it, on a host without a container.
+
+    Members see the registered folder, only admins see the mount inside it.
+
+    :param storage: The storage controller.
+    :param tmp_path: Temporary directory for the tree.
+    """
+    music = tmp_path / "music"
+    for folder in ("private/Albums", "public", "privateer"):
+        (music / folder).mkdir(parents=True)
+    (music / "shortcut").symlink_to(music / "private", target_is_directory=True)
+    set_locations(
+        storage,
+        make_location(music, kind=StorageKind.MANUAL),
+        make_location(music / "private", kind=StorageKind.LOCAL_DISK),
+    )
+    return music
+
+
+@pytest.mark.parametrize(
+    ("folder", "for_admin", "for_member"),
+    [
+        ("", True, True),
+        ("public", True, True),
+        # a look-alike of the nested location is no part of it
+        ("privateer", True, True),
+        ("private", True, False),
+        ("private/Albums", True, False),
+    ],
+)
+def test_nested_location_goes_by_its_own_visibility(
+    storage: StorageController,
+    nested_private_location: Path,
+    folder: str,
+    for_admin: bool,
+    for_member: bool,
+) -> None:
+    """The most specific location decides where a music source may go."""
+    path = str(nested_private_location / folder)
+
+    assert storage.can_hold_music_source(path, manages_all_sources=True) is for_admin
+    assert storage.can_hold_music_source(path, manages_all_sources=False) is for_member
+
+
+async def test_nested_location_is_left_out_of_a_members_listing(
+    storage: StorageController, nested_private_location: Path
+) -> None:
+    """A member does not see, browse or reach through a link the location only admins see."""
+    music = nested_private_location
+
+    assert await storage.list_folders(str(music), manages_all_sources=True) == [
+        "private",
+        "privateer",
+        "public",
+    ]
+    assert await storage.list_folders(str(music), manages_all_sources=False) == [
+        "privateer",
+        "public",
+    ]
+    assert await storage.list_folders(str(music / "private"), manages_all_sources=True) == [
+        "Albums"
+    ]
+    for folder in ("private", "private/Albums", "shortcut", "shortcut/Albums"):
+        with pytest.raises(InvalidDataError) as exc_info:
+            await storage.list_folders(str(music / folder), manages_all_sources=False)
+        assert exc_info.value.translation_key == "path_not_allowed"
