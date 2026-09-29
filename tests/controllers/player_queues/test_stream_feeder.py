@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -19,6 +19,9 @@ from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 from music_assistant.controllers.streams.constants import STREAM_SLOT_WAIT_TIMEOUT
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
+
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
 
 
 @pytest.mark.parametrize(
@@ -142,7 +145,12 @@ def _controller_with_next_item() -> tuple[PlayerQueuesController, SimpleNamespac
     controller._queue_data = {
         "queue-1": cast(
             "Any",
-            SimpleNamespace(queue=queue, items=[current_item, next_item], session_id="session-1"),
+            SimpleNamespace(
+                queue=queue,
+                items=[current_item, next_item],
+                session_id="session-1",
+                next_item_id_preparing=None,
+            ),
         )
     }
 
@@ -507,3 +515,69 @@ async def test_a_fully_arrived_track_without_a_player_position_prepares_nothing(
     controller.track_fully_buffered("queue-1", "current")
 
     prepare.assert_not_called()
+
+
+async def test_a_repeated_prepare_for_the_same_item_joins_the_running_one() -> None:
+    """Asking again for the audio of the same next item does not restart its preparation."""
+    controller, _next_item, mass = _controller_with_next_item()
+
+    controller.prepare_next_audio_buffer("queue-1", "current")
+    controller.prepare_next_audio_buffer("queue-1", "current")
+
+    assert [call.kwargs["abort_existing"] for call in mass.create_task.call_args_list] == [
+        True,
+        False,
+    ]
+    for call in mass.create_task.call_args_list:
+        call.args[0].close()
+
+
+async def test_a_prepare_for_another_item_replaces_the_running_one() -> None:
+    """A queue that changed under a preparation gets the new next item prepared instead."""
+    controller, _next_item, mass = _controller_with_next_item()
+    other_item = SimpleNamespace(
+        queue_item_id="other",
+        media_type=MediaType.TRACK,
+        streamdetails=None,
+        name="Other",
+        available=True,
+    )
+
+    controller.prepare_next_audio_buffer("queue-1", "current")
+    # the item following the streamed one changes before the second call
+    controller._queue_data["queue-1"].items.insert(1, cast("Any", other_item))
+    controller.prepare_next_audio_buffer("queue-1", "current")
+
+    assert [call.kwargs["abort_existing"] for call in mass.create_task.call_args_list] == [
+        True,
+        True,
+    ]
+    for call in mass.create_task.call_args_list:
+        call.args[0].close()
+
+
+async def test_a_repeated_prepare_hands_back_the_preparation_already_running(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """The second call for the same item returns the running preparation, uncancelled."""
+    controller, _next_item, _mass = _controller_with_next_item()
+    controller.mass = mass_minimal
+    resolving = asyncio.Event()
+
+    async def _hang(*_args: object) -> None:
+        resolving.set()
+        await asyncio.Event().wait()
+
+    controller.load_next_queue_item = _hang  # type: ignore[method-assign, assignment]
+
+    first = controller.prepare_next_audio_buffer("queue-1", "current")
+    await resolving.wait()
+    second = controller.prepare_next_audio_buffer("queue-1", "current")
+
+    assert first is not None
+    assert second is first
+    assert not first.cancelled()
+    assert not first.done()
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first

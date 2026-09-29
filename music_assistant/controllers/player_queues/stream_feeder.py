@@ -48,7 +48,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
 
         :param queue_id: The queue the item belongs to.
         :param queue_item_id: The item whose audio is being streamed or has fully arrived.
-        :return: The preparation that was started, or None when nothing needs preparing.
+        :return: The preparation of the next item's audio, or None when nothing needs preparing.
         """
         next_item = self.get_next_item(queue_id, queue_item_id)
         if next_item is None or next_item.queue_item_id == queue_item_id:
@@ -125,10 +125,14 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     await asyncio.shield(buf.clear())
                 raise
 
+        # a call for the same item joins the preparation that is already running,
+        # one for another item replaces it
+        target_changed = queue_data.next_item_id_preparing != next_item.queue_item_id
+        queue_data.next_item_id_preparing = next_item.queue_item_id
         return self.mass.create_task(
             _do_prepare(),
             task_id=f"prepare_next_audio_buffer_{queue_id}",
-            abort_existing=True,
+            abort_existing=target_changed,
         )
 
     def track_fully_buffered(self, queue_id: str, item_id: str) -> None:
