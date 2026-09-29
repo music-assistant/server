@@ -655,24 +655,13 @@ class ArtistsController(MediaControllerBase[Artist]):
         ref_item = await self.get_library_item(item_id)
         allowed = self._ensure_provider_filter(provider_filter)
         # fetch each provider's ranked top tracks in parallel
-        fetches = []
         # streaming providers attached to the artist (results resolved to library items)
-        for provider_mapping in ref_item.provider_mappings:
-            if allowed is not None and provider_mapping.provider_instance not in allowed:
-                continue
-            music_prov = self.mass.get_provider(
-                provider_mapping.provider_instance, provider_type=MusicProvider
+        fetches = [
+            self.get_provider_artist_toptracks(mapping.item_id, mapping.provider_instance)
+            for mapping in self._provider_mappings_for_feature(
+                ref_item, ProviderFeature.ARTIST_TOPTRACKS, allowed
             )
-            if (
-                music_prov is None
-                or ProviderFeature.ARTIST_TOPTRACKS not in music_prov.supported_features
-            ):
-                continue
-            fetches.append(
-                self.get_provider_artist_toptracks(
-                    provider_mapping.item_id, provider_mapping.provider_instance
-                )
-            )
+        ]
         # metadata/plugin providers implementing the feature
         for prov in self.mass.get_providers_supporting_feature(
             ProviderFeature.ARTIST_TOPTRACKS,
@@ -756,24 +745,13 @@ class ArtistsController(MediaControllerBase[Artist]):
         ref_item = await self.get_library_item(item_id)
         allowed = self._ensure_provider_filter(provider_filter)
         # fetch each provider's ranked top albums in parallel
-        fetches = []
         # streaming providers attached to the artist (results resolved to library items)
-        for provider_mapping in ref_item.provider_mappings:
-            if allowed is not None and provider_mapping.provider_instance not in allowed:
-                continue
-            music_prov = self.mass.get_provider(
-                provider_mapping.provider_instance, provider_type=MusicProvider
+        fetches = [
+            self.get_provider_artist_topalbums(mapping.item_id, mapping.provider_instance)
+            for mapping in self._provider_mappings_for_feature(
+                ref_item, ProviderFeature.ARTIST_TOPALBUMS, allowed
             )
-            if (
-                music_prov is None
-                or ProviderFeature.ARTIST_TOPALBUMS not in music_prov.supported_features
-            ):
-                continue
-            fetches.append(
-                self.get_provider_artist_topalbums(
-                    provider_mapping.item_id, provider_mapping.provider_instance
-                )
-            )
+        ]
         # metadata/plugin providers implementing the feature
         for prov in self.mass.get_providers_supporting_feature(
             ProviderFeature.ARTIST_TOPALBUMS,
@@ -992,24 +970,15 @@ class ArtistsController(MediaControllerBase[Artist]):
         ref_item = await self.get_library_item(item_id)
         allowed = self._ensure_provider_filter(provider_filter)
         # fetch each provider's similar artists in parallel
-        fetches = []
         # streaming providers attached to the artist (results resolved to library items)
-        for provider_mapping in ref_item.provider_mappings:
-            if allowed is not None and provider_mapping.provider_instance not in allowed:
-                continue
-            music_prov = self.mass.get_provider(
-                provider_mapping.provider_instance, provider_type=MusicProvider
+        fetches = [
+            self.get_provider_artist_similar_artists(
+                mapping.item_id, mapping.provider_instance, limit=limit
             )
-            if (
-                music_prov is None
-                or ProviderFeature.SIMILAR_ARTISTS not in music_prov.supported_features
-            ):
-                continue
-            fetches.append(
-                self.get_provider_artist_similar_artists(
-                    provider_mapping.item_id, provider_mapping.provider_instance, limit=limit
-                )
+            for mapping in self._provider_mappings_for_feature(
+                ref_item, ProviderFeature.SIMILAR_ARTISTS, allowed
             )
+        ]
         # metadata/plugin providers implementing the feature
         for prov in self.mass.get_providers_supporting_feature(
             ProviderFeature.SIMILAR_ARTISTS,
@@ -1196,6 +1165,28 @@ class ArtistsController(MediaControllerBase[Artist]):
                 f"provider_filter '{provider_filter}' does not match the requested "
                 f"provider '{provider_instance_id_or_domain}'"
             )
+
+    def _provider_mappings_for_feature(
+        self, ref_item: Artist, feature: ProviderFeature, allowed: list[str] | None
+    ) -> list[ProviderMapping]:
+        """Return the artist's provider mappings that can be queried for the given feature."""
+        mappings: list[ProviderMapping] = []
+        queried_streaming_domains: set[str] = set()
+        for provider_mapping in ref_item.provider_mappings:
+            if allowed is not None and provider_mapping.provider_instance not in allowed:
+                continue
+            music_prov = self.mass.get_provider(
+                provider_mapping.provider_instance, provider_type=MusicProvider
+            )
+            if music_prov is None or feature not in music_prov.supported_features:
+                continue
+            # instances of the same streaming provider return the same catalog result
+            if music_prov.is_streaming_provider:
+                if music_prov.domain in queried_streaming_domains:
+                    continue
+                queried_streaming_domains.add(music_prov.domain)
+            mappings.append(provider_mapping)
+        return mappings
 
     async def _confirm_artist_match(
         self, db_artist: Artist, candidate: Artist | ItemMapping, strict: bool
