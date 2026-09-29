@@ -8,7 +8,8 @@ location of its share and becomes a Local files source on the same folder. It ke
 instance id, and with that its library, its access record, its options and a name of its own.
 Without a name of its own it shows the default name of a Local files source. The playlists of
 the builtin provider name the domain of an entry's provider, so their entries of a converted
-source get the domain of Local files.
+source get the domain of Local files. The media items a converted source cached name that
+domain too, so they are removed.
 
 It runs at every start, as such a source can come back with a downgrade or a restored backup,
 and does something only when one is there. Unlike the `settings.json` migrations in
@@ -54,6 +55,10 @@ from music_assistant.helpers.playlists import (
     parse_m3u_playlist_name,
 )
 from music_assistant.helpers.security import is_safe_path
+from music_assistant.providers.filesystem_local.constants import (
+    CACHE_CATEGORY_PODCAST_EPISODES,
+    CACHE_CATEGORY_SOUND_EFFECTS,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -115,10 +120,11 @@ async def consolidate_filesystem_sources(mass: MusicAssistant) -> None:
         )
         return
     instance_ids = [conversion.instance_id for conversion in conversions]
-    # the playlists and the library go before the settings: both updates can be repeated as
-    # they are, and only a start that still finds the sources converts, so the next start
-    # finishes an update that was cut short
+    # the playlists, the cache and the library go before the settings: their updates can be
+    # repeated as they are, and only a start that still finds the sources converts, so the
+    # next start finishes an update that was cut short
     await _update_playlists(mass, raw_configs, set(instance_ids))
+    await _clear_cached_items(mass, instance_ids)
     try:
         await _update_library(mass, instance_ids)
         for conversion in conversions:
@@ -529,6 +535,30 @@ async def _update_library(mass: MusicAssistant, instance_ids: list[str]) -> None
         f"WHERE provider_instance IN ({placeholders})",
         {"domain": LOCAL_FILES_DOMAIN, **params},
     )
+
+
+async def _clear_cached_items(mass: MusicAssistant, instance_ids: list[str]) -> None:
+    """
+    Remove the media items that converted sources cached, which name their old domain.
+
+    Never raises: an item that is not removed stays cached and is found by instance id as before.
+
+    :param mass: The MusicAssistant instance.
+    :param instance_ids: The instance ids of the sources this start converts.
+    """
+    # the tracks of a playlist file are cached without a category. What else these sources
+    # cache holds no domain, expires within minutes, or lists the items of the last sync,
+    # which the next sync needs to find what was deleted.
+    try:
+        for instance_id in instance_ids:
+            for category in (0, CACHE_CATEGORY_SOUND_EFFECTS, CACHE_CATEGORY_PODCAST_EPISODES):
+                await mass.cache.delete(None, category=category, provider=instance_id)
+    except Exception as err:
+        LOGGER.warning(
+            "Unable to remove the cached items of music sources %s (%s)",
+            ", ".join(instance_ids),
+            type(err).__name__,
+        )
 
 
 async def _update_playlists(

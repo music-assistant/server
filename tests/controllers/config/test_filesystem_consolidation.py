@@ -49,6 +49,7 @@ from music_assistant.controllers.config import filesystem_consolidation as conso
 from music_assistant.controllers.config.filesystem_consolidation import (
     consolidate_filesystem_sources,
 )
+from music_assistant.controllers.metadata.constants import CACHE_CATEGORY_IMAGE_IDS
 from music_assistant.controllers.music.constants import CONF_DELETED_PROVIDERS
 from music_assistant.controllers.storage import StorageKind, StorageLocation, StorageUsage
 from music_assistant.controllers.storage import controller as storage_controller_module
@@ -68,8 +69,15 @@ from music_assistant.helpers.playlists import (
     parse_m3u,
 )
 from music_assistant.helpers.provider_access import visible_music_sources
+from music_assistant.models.music_provider import CACHE_CATEGORY_PREV_LIBRARY_IDS
 from music_assistant.providers.builtin import BuiltinProvider
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
+from music_assistant.providers.filesystem_local.constants import (
+    CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
+    CACHE_CATEGORY_METADATA_FILE,
+    CACHE_CATEGORY_PODCAST_EPISODES,
+    CACHE_CATEGORY_SOUND_EFFECTS,
+)
 from tests.conftest import full_mass_context
 from tests.controllers.storage.conftest import (
     SUPERVISOR_TOKEN,
@@ -1663,6 +1671,50 @@ async def test_playlists_cut_short_are_finished_by_the_next_start(
     assert _config(mass, SMB_ID)["domain"] == "filesystem_local"
     assert first.read_text(encoding="utf-8") == first_converted
     assert "filesystem_local://track/Artist/Album/02.flac" in second.read_text(encoding="utf-8")
+
+
+@pytest.mark.usefixtures("reconcile")
+async def test_the_cached_items_of_a_converted_source_are_removed(mass: MusicAssistant) -> None:
+    """
+    The media items a converted source cached are removed, as they name its old domain.
+
+    The rest of what it cached stays: the items of its last sync, which the next sync needs,
+    and what holds no domain. So does everything other sources cached, and the image ids.
+    """
+    _store_source(mass, SMB_ID, SMB_SETUP)
+    _store_source(mass, SMB_ID_2, {**SMB_SETUP, "share": "music/albums"})
+    items = [_track(SMB_ID, "Artist/Album/01.flac").to_dict()]
+    removed = [
+        ("get_playlist_tracks.Mix.m3u", 0),
+        ("sound_effect.Effects/ding.mp3", CACHE_CATEGORY_SOUND_EFFECTS),
+        ("podcast_episodes.Podcasts/Show", CACHE_CATEGORY_PODCAST_EPISODES),
+    ]
+    kept = [
+        ("track", CACHE_CATEGORY_PREV_LIBRARY_IDS),
+        ("Books/Book.m4b", CACHE_CATEGORY_AUDIOBOOK_CHAPTERS),
+        ("Artist/artist.nfo", CACHE_CATEGORY_METADATA_FILE),
+    ]
+    for instance_id in (SMB_ID, SMB_ID_2):
+        for key, category in (*removed, *kept):
+            await mass.cache.set(key, items, provider=instance_id, category=category)
+    image_id = {"provider": SMB_ID, "path": "Artist/Album/cover.jpg"}
+    await mass.cache.set(
+        "image-1", image_id, provider="metadata", category=CACHE_CATEGORY_IMAGE_IDS
+    )
+
+    await consolidate_filesystem_sources(mass)
+
+    assert _config(mass, SMB_ID)["domain"] == "filesystem_local"
+    for key, category in removed:
+        assert await mass.cache.get(key, provider=SMB_ID, category=category) is None
+    for key, category in kept:
+        assert await mass.cache.get(key, provider=SMB_ID, category=category) == items
+    for key, category in (*removed, *kept):
+        assert await mass.cache.get(key, provider=SMB_ID_2, category=category) == items
+    assert (
+        await mass.cache.get("image-1", provider="metadata", category=CACHE_CATEGORY_IMAGE_IDS)
+        == image_id
+    )
 
 
 @pytest.mark.usefixtures("reconcile")
