@@ -7,7 +7,12 @@ from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.errors import InsufficientPermissions
-from music_assistant_models.media_items import ProviderMapping, SearchResults, Track
+from music_assistant_models.media_items import (
+    BrowseFolder,
+    ProviderMapping,
+    SearchResults,
+    Track,
+)
 
 from music_assistant.providers.fastmcp_server.target_filters import (
     TargetKind,
@@ -374,3 +379,26 @@ def test_library_single_item_result_requires_an_allowed_mapping() -> None:
 
     assert filter_collection_result(_user(), "music/item_by_uri", blocked) is None
     assert filter_collection_result(_user(), "music/item_by_uri", allowed) is allowed
+
+
+def test_browse_roots_are_matched_by_the_instance_in_their_uri() -> None:
+    """Browse roots carry the domain in ``provider`` and the instance id in ``uri``/``path``."""
+
+    def root(instance: str, domain: str) -> BrowseFolder:
+        return BrowseFolder(
+            item_id="root",
+            provider=domain,
+            path=f"{instance}://",
+            name=instance,
+            uri=f"{instance}://",
+        )
+
+    allowed = root("spotify--user", "spotify")
+    library = root("library", "library")
+    result = filter_collection_result(
+        _user(),
+        "music/browse",
+        [allowed, root("qobuz--other", "qobuz"), library],
+    )
+
+    assert result == [allowed, library]

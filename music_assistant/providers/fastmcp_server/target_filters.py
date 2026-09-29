@@ -297,7 +297,13 @@ def _filter_rows(result: Any, allowed: set[str], attributes: tuple[str, ...]) ->
     """Drop sequence rows whose declared identity is outside the allowlist."""
     if not isinstance(result, list | tuple):
         return result
-    filtered = tuple(item for item in result if _row_ids(item, attributes) & allowed)
+    internal = _INTERNAL_MUSIC_TARGETS if attributes == _MUSIC_PROVIDER_ATTRIBUTES else frozenset()
+    filtered = tuple(
+        item
+        for item in result
+        if (row_ids := _row_ids(item, attributes)) & allowed
+        or (internal and row_ids and row_ids <= internal)
+    )
     return filtered if isinstance(result, tuple) else list(filtered)
 
 
@@ -311,6 +317,13 @@ def _row_ids(item: Any, attributes: tuple[str, ...]) -> set[str]:
     ) or ()
     for mapping in mappings:
         ids.update(_attribute_ids(mapping, attributes))
+    if attributes == _MUSIC_PROVIDER_ATTRIBUTES:
+        # Browse folders name the provider domain in ``provider`` and carry the
+        # instance id only in their ``uri``/``path``.
+        for name in ("uri", "path"):
+            value = item.get(name) if isinstance(item, Mapping) else getattr(item, name, None)
+            if isinstance(value, str) and "://" in value:
+                ids.update(_reference_provider_ids(value))
     return ids
 
 

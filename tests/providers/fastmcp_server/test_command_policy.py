@@ -18,8 +18,10 @@ import music_assistant
 from music_assistant.providers.fastmcp_server.capabilities import Capability
 from music_assistant.providers.fastmcp_server.command_policy import (
     CommandDecision,
+    CommandPreflight,
     preflight_command,
     resolve_command_policy,
+    revalidate_preflight_command_sync,
 )
 from music_assistant.providers.fastmcp_server.command_profiles import (
     COMMAND_PROFILES,
@@ -633,3 +635,35 @@ def test_own_provider_scope_and_scope_tuples_are_classified(
 
     assert not decision.hard_denied
     assert decision.required_capabilities == frozenset({str(capability)})
+
+
+@pytest.mark.parametrize("command", ["storage/network_shares/add", "storage/network_shares/update"])
+async def test_network_share_password_requires_the_secret_write_capability(command: str) -> None:
+    """A plaintext share password cannot be written with provider-config permission alone."""
+    decision = resolve_command_policy(command, Scope.CONFIG_PROVIDERS_WRITE, None)
+    arguments = {"name": "nas", "server": "nas.local", "share": "music", "password": "hunter2"}
+
+    preflight = await preflight_command(SimpleNamespace(), decision, arguments)
+    revalidated = revalidate_preflight_command_sync(
+        SimpleNamespace(), decision, arguments, CommandPreflight()
+    )
+
+    assert decision.secret_capability == str(Capability.CONFIG_WRITE_SECRET)
+    assert preflight.additional_required == frozenset({str(Capability.CONFIG_WRITE_SECRET)})
+    assert revalidated.additional_required == frozenset({str(Capability.CONFIG_WRITE_SECRET)})
+
+
+async def test_network_share_without_password_needs_no_secret_capability() -> None:
+    """Share edits that carry no password stay under provider-config permission."""
+    decision = resolve_command_policy(
+        "storage/network_shares/update", Scope.CONFIG_PROVIDERS_WRITE, None
+    )
+    arguments = {"name": "nas", "server": "nas.local", "password": None}
+
+    preflight = await preflight_command(SimpleNamespace(), decision, arguments)
+    revalidated = revalidate_preflight_command_sync(
+        SimpleNamespace(), decision, arguments, CommandPreflight()
+    )
+
+    assert preflight.additional_required == frozenset()
+    assert revalidated.additional_required == frozenset()

@@ -99,6 +99,9 @@ _HARD_DENIED_COMMANDS = frozenset(
     {"dashboard/register", "dashboard/unregister", "music/tracks/preview"}
 )
 _HARD_DENIED_PREFIXES = ("auth/",)
+_STORAGE_SECRET_COMMANDS = frozenset(
+    {"storage/network_shares/add", "storage/network_shares/update"}
+)
 _OPERATION_ORDER = ("read", "control", "write", "system")
 
 _PLAYBACK_COMMANDS = frozenset(
@@ -398,6 +401,8 @@ def resolve_command_policy(
             "config/core/save",
             "config/players/save",
         }
+        else "storage_secret_write"
+        if command in _STORAGE_SECRET_COMMANDS
         else None
     )
     return CommandDecision(
@@ -405,7 +410,9 @@ def resolve_command_policy(
         required_capabilities,
         preflight,
         secret_capability=(
-            str(Capability.CONFIG_WRITE_SECRET) if preflight == "config_secret_write" else None
+            str(Capability.CONFIG_WRITE_SECRET)
+            if preflight in {"config_secret_write", "storage_secret_write"}
+            else None
         ),
     )
 
@@ -441,6 +448,8 @@ async def preflight_command(
             return CommandPreflight(
                 additional_required=frozenset({str(Capability.CONFIG_WRITE_SECRET)})
             )
+    elif decision.preflight == "storage_secret_write":
+        return _storage_secret_preflight(arguments)
     elif decision.preflight == "config_flow_submit":
         return await _preflight_setup_flow_submit(mass, arguments)
     elif decision.preflight == "config_flow_abort":
@@ -476,6 +485,8 @@ def revalidate_preflight_command_sync(
                 frozenset({str(Capability.CONFIG_WRITE_SECRET)}) if requires_secret else frozenset()
             )
         )
+    if decision.preflight == "storage_secret_write":
+        return _storage_secret_preflight(arguments)
     if decision.preflight == "config_flow_submit":
         return _revalidate_setup_flow_submit_sync(mass, arguments)
     if decision.preflight == "config_flow_abort":
@@ -574,6 +585,13 @@ def _required_capabilities(family: FamilyPolicy, operation: str) -> frozenset[st
     if capability is None and operation == "delete":
         capability = family.capabilities.get("write")
     return frozenset({str(capability)}) if capability is not None else frozenset()
+
+
+def _storage_secret_preflight(arguments: Mapping[str, Any]) -> CommandPreflight:
+    """Require the secret capability when a network-share password is supplied."""
+    if arguments.get("password") is None:
+        return CommandPreflight()
+    return CommandPreflight(additional_required=frozenset({str(Capability.CONFIG_WRITE_SECRET)}))
 
 
 def _config_entries_target(arguments: Mapping[str, Any]) -> tuple[str, str]:
