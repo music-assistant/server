@@ -1036,6 +1036,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             attempts = 0
             refilled = False
             loaded_item: QueueItem | None = None
+            # a next/previous whose debounced call this supersedes (this play_index cancels
+            # that timer above) may have pre-advanced current_item and stashed a predecessor
+            # for a different target than this one; re-stash for this target so the retry loop
+            # below (and _load_item's own resolution) carries the real predecessor forward
+            # instead of reading that pre-advanced, never-actually-played current_item
+            if (initial_target := self.get_item(queue_id, index)) is not None:
+                self._stash_transition_anchor(
+                    queue_id, initial_target.queue_item_id, queue.current_item
+                )
             while attempts < _MAX_LOAD_ATTEMPTS:
                 queue_item = self.get_item(queue_id, index)
                 if not queue_item:

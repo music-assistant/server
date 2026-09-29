@@ -3627,6 +3627,14 @@ class StreamsAudio:
         :param queue_data: The queue's server-side record.
         :param queue_item: Queue item streamdetails are being resolved for.
         """
+        # an exact-target stash wins even when current_item also looks plausible: a failed
+        # retry candidate can pick up its own streamdetails before failing later in the
+        # pipeline, which would otherwise outrank the predecessor the retry already carried
+        # forward for this exact target
+        if (pending := queue_data.pending_transition_anchor) and pending[
+            0
+        ] == queue_item.queue_item_id:
+            return (pending[1], pending[2])
         current_item = queue_data.queue.current_item
         if (
             current_item
@@ -3634,10 +3642,6 @@ class StreamsAudio:
             and (current_streamdetails := current_item.streamdetails)
         ):
             return (current_streamdetails.provider, current_streamdetails.item_id)
-        if (pending := queue_data.pending_transition_anchor) and pending[
-            0
-        ] == queue_item.queue_item_id:
-            return (pending[1], pending[2])
         return None
 
     @staticmethod

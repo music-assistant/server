@@ -431,3 +431,23 @@ def test_resolve_transition_anchor_uses_a_stash_scoped_to_this_target() -> None:
     anchor = StreamsAudio._resolve_transition_anchor(queue_data, queue_item)
 
     assert anchor == (INSTANCE, ITEM_ID)
+
+
+def test_resolve_transition_anchor_prefers_a_matching_stash_over_current_items_own_details() -> (
+    None
+):
+    """A retry candidate can pick up its own (later-failed) details before current_item's check."""
+    queue_item = _queue_item(_mapping(INSTANCE))
+    queue_data = MagicMock()
+    # current_item differs from queue_item and has its own streamdetails - e.g. a failed
+    # retry candidate that resolved streamdetails before failing later in the pipeline
+    queue_data.queue.current_item.queue_item_id = "some-other-id"
+    queue_data.queue.current_item.streamdetails = _streamdetails(
+        "Poisoned Artist/Never Played Album/01 Track.flac", MediaType.SOUND_EFFECT, INSTANCE
+    )
+    # but a stash exactly for this target already carries the real predecessor forward
+    queue_data.pending_transition_anchor = (queue_item.queue_item_id, INSTANCE, ITEM_ID)
+
+    anchor = StreamsAudio._resolve_transition_anchor(queue_data, queue_item)
+
+    assert anchor == (INSTANCE, ITEM_ID)

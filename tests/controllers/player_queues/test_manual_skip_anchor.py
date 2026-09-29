@@ -315,3 +315,32 @@ async def test_play_index_carries_the_real_predecessor_through_two_consecutive_f
         # the second retry must still carry the real predecessor, not t2's stale streamdetails
         (queue_data.items[3].queue_item_id, *real_predecessor),
     ]
+
+
+async def test_play_index_carries_the_predecessor_when_it_supersedes_a_pending_skip() -> None:
+    """A direct play_index that cancels a still-pending next() must not lose the real predecessor."""
+    ctrl = _controller()  # current_index=1 (t2): pre-advanced by an abandoned next() call
+    queue_data = cast("PlayerQueueData", ctrl._queue_data["q1"])
+    real_predecessor = (INSTANCE, "Various Artists/Compilation Album/01 Track.flac")
+    # next() pre-advanced current_item to t2 and stashed the real predecessor (t1) for it, but
+    # its debounced play_index(t2) never ran - this direct call to t4 cancels that timer and
+    # supersedes it
+    queue_data.pending_transition_anchor = (queue_data.items[1].queue_item_id, *real_predecessor)
+    seen_anchors: list[tuple[str, str, str] | None] = []
+
+    async def _load_item(queue_item: QueueItem, **_kwargs: object) -> None:
+        seen_anchors.append(queue_data.pending_transition_anchor)
+        queue_item.streamdetails = StreamDetails(
+            provider=INSTANCE,
+            item_id="doesnt-matter",
+            audio_format=AudioFormat(content_type=ContentType.MP3),
+            media_type=MediaType.TRACK,
+        )
+
+    ctrl._load_item = _load_item
+    ctrl.player_media_from_queue_item = AsyncMock()
+    ctrl.mass.players.play_media = AsyncMock()
+
+    await ctrl.play_index("q1", 3)  # t4, a track next()/previous() never touched
+
+    assert seen_anchors[0] == (queue_data.items[3].queue_item_id, *real_predecessor)
