@@ -599,20 +599,25 @@ async def test_ffmpeg_stream_surfaces_stdin_feeder_error(source_error: Exception
     assert err.value.__cause__ is source_error
 
 
+def _limit_error() -> ProviderStreamLimitError:
+    """Build a provider capacity error for a provider with a single stream slot."""
+    provider = Mock(max_concurrent_streams=1, instance_id="spotify--test")
+    provider.name = "Spotify"
+    return ProviderStreamLimitError(provider, 5.0)
+
+
 async def test_ffmpeg_stream_logs_provider_stream_limit_at_debug(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A provider capacity error from the input generator is not logged as a warning."""
-    provider = Mock(max_concurrent_streams=1, instance_id="spotify--test")
-    provider.name = "Spotify"
-    limit_error = ProviderStreamLimitError(provider, 5.0)
+    limit_error = _limit_error()
 
     async def busy_input() -> AsyncGenerator[bytes]:
         yield b"\x00" * _BYTES_PER_SECOND
         raise limit_error
 
     caplog.set_level(logging.DEBUG)
-    with pytest.raises(AudioError) as err:
+    with pytest.raises(ProviderStreamLimitError) as err:
         await _collect_chunks(
             get_ffmpeg_stream(
                 audio_input=busy_input(),
@@ -627,12 +632,56 @@ async def test_ffmpeg_stream_logs_provider_stream_limit_at_debug(
         )
 
     # the typed error still surfaces to the caller
-    assert err.value.__cause__ is limit_error
+    assert err.value is limit_error
     feeder_records = [
         record for record in caplog.records if "stdin feeder task ended" in record.getMessage()
     ]
     assert feeder_records
     assert all(record.levelno == logging.DEBUG for record in feeder_records)
+
+
+async def _busy_input(limit_error: ProviderStreamLimitError) -> AsyncGenerator[bytes]:
+    """Fail with the given capacity error before any audio is produced."""
+    raise limit_error
+    yield b""  # type: ignore[unreachable]  # pragma: no cover
+
+
+async def test_ffmpeg_stream_keeps_provider_stream_limit_through_nested_stages() -> None:
+    """A capacity error that crosses two FFmpeg stages still surfaces as itself."""
+    limit_error = _limit_error()
+    item_stream = get_ffmpeg_stream(
+        audio_input=_busy_input(limit_error),
+        input_format=_PCM_FORMAT,
+        output_format=_PCM_FORMAT,
+        filter_params=["volume=-3dB"],
+    )
+
+    with pytest.raises(ProviderStreamLimitError) as err:
+        await _collect_chunks(
+            get_ffmpeg_stream(
+                audio_input=item_stream,
+                input_format=_PCM_FORMAT,
+                output_format=AudioFormat(content_type=ContentType.FLAC),
+            )
+        )
+
+    assert err.value is limit_error
+
+
+async def test_overlay_stream_keeps_provider_stream_limit(overlay_file: Path) -> None:
+    """A capacity error in the main input surfaces as itself from the overlay mixer."""
+    limit_error = _limit_error()
+
+    with pytest.raises(ProviderStreamLimitError) as err:
+        await _collect_chunks(
+            get_ffmpeg_overlay_stream(
+                audio_input=_busy_input(limit_error),
+                overlay_input=str(overlay_file),
+                pcm_format=_PCM_FORMAT,
+            )
+        )
+
+    assert err.value is limit_error
 
 
 async def test_ffmpeg_stream_ignores_cancelled_stdin_feeder() -> None:
