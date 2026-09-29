@@ -698,11 +698,14 @@ class StorageController(CoreController):
         """
         Mount the managed network shares that are not mounted, each through its own backend.
 
-        That includes a mount the backend has but reports as not working. A share that can not
-        be mounted stays a location that is not available and says why, until a reload or the
-        next start of the server mounts it. Never raises.
+        That includes a mount the backend has but reports as not working. The backends are
+        looked for again first when the backend of a share is not known. A share that can not
+        be mounted stays a location that is not available and says why, until a reload, the
+        next start of the server or a need for it (see is_available) mounts it. Never raises.
         """
         try:
+            if any(spec.backend not in self._mounters for spec in self._get_shares().values()):
+                await self._probe_backends()
             async with self._shares_lock:
                 shares = list(self._get_shares().values())
                 for backend in MountBackend:
@@ -1007,9 +1010,14 @@ class StorageController(CoreController):
         await self._probe_backends()
         await self.reconcile()
 
-    async def _probe_backends(self) -> None:
-        """Find the mount backends this server can use."""
+    async def _probe_backends(self) -> set[MountBackend]:
+        """
+        Find the mount backends this server can use, after the probe that is running.
+
+        Returns the backends this probe found that were not available before.
+        """
         async with self._backends_lock:
+            available = set(self._mounters)
             mounters: dict[MountBackend, ShareMounter] = {}
             problems: dict[MountBackend, str] = {}
             candidates: list[tuple[MountBackend, Callable[[], Awaitable[ShareMounter]]]] = [
@@ -1034,6 +1042,7 @@ class StorageController(CoreController):
             ", ".join(mounters) or "nothing",
             ", ".join(f"{backend} ({problem})" for backend, problem in problems.items()),
         )
+        return set(mounters) - available
 
     async def _get_mounter(self, backend: MountBackend | None = None) -> ShareMounter | None:
         """
@@ -1043,9 +1052,7 @@ class StorageController(CoreController):
         """
         if (mounter := self._find_mounter(backend)) is not None:
             return mounter
-        available = set(self._mounters)
-        await self._probe_backends()
-        if set(self._mounters) - available:
+        if await self._probe_backends():
             # the shares of a backend that became available can be mounted now
             self.mass.create_task(self.reconcile(), task_id=RECONCILE_TASK_ID)
         return self._find_mounter(backend)
@@ -1145,12 +1152,14 @@ class StorageController(CoreController):
         """
         Mount a managed share again when its backend has it missing or failed; never raises.
 
+        The backends are looked for again first when the backend of the share is not known.
+
         :param name: The name of the share.
         """
         try:
             async with self._shares_lock:
                 if (spec := self._get_shares().get(name)) is None or (
-                    mounter := self._mounters.get(spec.backend)
+                    mounter := await self._get_mounter(spec.backend)
                 ) is None:
                     return
                 state = (await mounter.get_states([spec]))[name]

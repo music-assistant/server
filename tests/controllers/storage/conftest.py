@@ -667,6 +667,8 @@ async def supervisor(
     await server.start_server()
     session = ClientSession()
     storage.mass._http_session_no_ssl = session
+    # the server creates its http session only once its discovery controller is set up
+    storage.mass.discovery.initialized.set()
     storage.mass.running_as_hass_addon = True
     monkeypatch.setattr(hassio, "SUPERVISOR_URL", str(server.make_url("")).rstrip("/"))
     monkeypatch.setenv("SUPERVISOR_TOKEN", SUPERVISOR_TOKEN)
