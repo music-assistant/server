@@ -19,6 +19,7 @@ from music_assistant.providers.filesystem_local.setup_flow import run_setup
 from tests.controllers.storage.conftest import make_location, set_locations
 
 if TYPE_CHECKING:
+    from mashumaro import DataClassDictMixin
     from music_assistant_models.config_entries import ConfigValueType
     from music_assistant_models.setup_flow import SetupFlowStep
 
@@ -520,3 +521,37 @@ async def test_the_folder_defaults_to_media_only_where_it_may_be_used(
     path_entry = next(entry for entry in form.entries if entry.key == "path")
     assert path_entry.type == ConfigEntryType.FOLDER
     assert path_entry.default_value == default
+
+
+async def test_the_content_type_is_a_question_with_a_button_per_type(
+    start_flow: Callable[..., Awaitable[_Flow]],
+    localize: Callable[[DataClassDictMixin], dict[str, Any]],
+) -> None:
+    """The setup asks what to add, one button per type, starting on music without a default."""
+    form = await (await start_flow()).form()
+
+    shown = localize(next(entry for entry in form.entries if entry.key == CONF_CONTENT_TYPE))
+
+    assert shown["label"] == "What do you want to add?"
+    assert shown["expanded_options"] is True
+    assert shown["default_value"] is None
+    assert shown["value"] == "music"
+    assert [option["title"] for option in shown["options"]] == [
+        "Music",
+        "Audiobooks",
+        "Podcasts",
+        "Sound Effects",
+    ]
+
+
+async def test_a_content_type_left_out_is_a_missing_value(
+    start_flow: Callable[..., Awaitable[_Flow]], tree: Path
+) -> None:
+    """A submitted content type of null is refused rather than stored without a type."""
+    flow = await start_flow()
+
+    step = flow.session.handle_submit({CONF_CONTENT_TYPE: None, "path": str(tree / "media")})
+
+    assert step is not None
+    assert step.errors == {CONF_CONTENT_TYPE: "required"}
+    assert flow.finished_with is None

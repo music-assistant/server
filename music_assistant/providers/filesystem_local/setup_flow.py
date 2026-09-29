@@ -17,6 +17,17 @@ from music_assistant.providers.filesystem_local.constants import (
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
 
+# the setup asks for the content type as a question with a button per type, and starts on
+# music without marking it as the default; the options page keeps the shared entry
+_CONTENT_TYPE_ENTRY = replace(
+    CONF_ENTRY_CONTENT_TYPE,
+    translation_key="setup_content_type",
+    required=True,
+    default_value=None,
+    value=CONF_ENTRY_CONTENT_TYPE.default_value,
+    expanded_options=True,
+)
+
 
 async def run_setup(session: SetupSession) -> None:
     """
@@ -33,7 +44,7 @@ async def run_setup(session: SetupSession) -> None:
         if session.mass.storage.can_hold_music_source(DEFAULT_MEDIA_FOLDER, manages_all_sources)
         else None
     )
-    entries = (CONF_ENTRY_CONTENT_TYPE, replace(CONF_ENTRY_PATH, default_value=default_folder))
+    entries = (_CONTENT_TYPE_ENTRY, replace(CONF_ENTRY_PATH, default_value=default_folder))
     errors: dict[str, str | SetupFlowError] | None = None
     setup_data = dict(session.context.setup_data)
     while True:

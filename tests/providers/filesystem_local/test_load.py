@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.errors import SetupFailedError
@@ -11,29 +10,13 @@ from music_assistant_models.errors import SetupFailedError
 from music_assistant.controllers.storage import StorageController, StorageKind
 from music_assistant.controllers.storage import controller as controller_module
 from music_assistant.mass import MusicAssistant
-from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from tests.controllers.storage.conftest import (
     MountTable,
     make_location,
     mount_line,
     set_locations,
 )
-
-
-def _create_provider(mass: MusicAssistant, base_path: Path) -> LocalFileSystemProvider:
-    """
-    Build a provider that reads its files from a folder.
-
-    :param mass: The server the provider belongs to.
-    :param base_path: The folder of the source.
-    """
-    config = MagicMock()
-    config.instance_id = "filesystem_local--test"
-    config.values = {}
-    config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
-    manifest = MagicMock()
-    manifest.domain = "filesystem_local"
-    return LocalFileSystemProvider(mass, manifest, config, base_path=str(base_path))
+from tests.providers.filesystem_local.conftest import make_provider
 
 
 async def _load_error(mass: MusicAssistant, base_path: Path) -> SetupFailedError:
@@ -44,7 +27,7 @@ async def _load_error(mass: MusicAssistant, base_path: Path) -> SetupFailedError
     :param base_path: The folder of the source.
     """
     with pytest.raises(SetupFailedError) as exc_info:
-        await _create_provider(mass, base_path).handle_async_init()
+        await make_provider(mass, base_path).handle_async_init()
     return exc_info.value
 
 
@@ -126,7 +109,7 @@ async def test_an_existing_folder_loads(
         storage,
         *(make_location(path.format(tmp=tmp_path), kind=StorageKind.MANUAL) for path in locations),
     )
-    provider = _create_provider(mass_minimal, tmp_path / "Music")
+    provider = make_provider(mass_minimal, tmp_path / "Music")
 
     await provider.handle_async_init()
 

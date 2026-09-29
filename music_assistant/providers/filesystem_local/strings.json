@@ -3,6 +3,18 @@
     "path": {
       "label": "Folder"
     },
+    "folder": {
+      "label": "Folder: {0}"
+    },
+    "setup_content_type": {
+      "label": "What do you want to add?",
+      "options": {
+        "music": "Music",
+        "audiobooks": "Audiobooks",
+        "podcasts": "Podcasts",
+        "sound_effects": "Sound Effects"
+      }
+    },
     "content_type": {
       "label": "Content type in media folder(s)",
       "description": "The type of content to expect in the media folder(s)",
