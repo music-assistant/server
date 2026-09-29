@@ -29,7 +29,7 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 
-TRACK_IDS = ["t1", "t2", "t3"]
+TRACK_IDS = ["t1", "t2", "t3", "t4"]
 INSTANCE = "filesystem_local--main"
 
 
@@ -52,7 +52,7 @@ def _track(item_id: str) -> Track:
 
 
 def _controller() -> Any:
-    """Build a bare controller whose queue "q1" is playing three tracks."""
+    """Build a bare controller whose queue "q1" is playing four tracks."""
     ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
     ctrl.logger = Mock()
     ctrl.mass = MagicMock()
@@ -240,7 +240,7 @@ async def test_play_index_clears_the_pending_transition_anchor_once_it_finishes(
 
 async def test_play_index_retry_carries_the_real_predecessor_to_the_next_candidate() -> None:
     """A failed target's own stale streamdetails must not leak into the retry's anchor."""
-    ctrl = _controller()  # 3 items, current_index=1 (t2): the pre-advanced, about-to-fail target
+    ctrl = _controller()  # current_index=1 (t2): the pre-advanced, about-to-fail target
     queue_data = cast("PlayerQueueData", ctrl._queue_data["q1"])
     real_predecessor = (INSTANCE, "Various Artists/Compilation Album/01 Track.flac")
     queue_data.pending_transition_anchor = (queue_data.items[1].queue_item_id, *real_predecessor)
@@ -273,3 +273,45 @@ async def test_play_index_retry_carries_the_real_predecessor_to_the_next_candida
     assert seen_anchors[0] == (queue_data.items[1].queue_item_id, *real_predecessor)
     # the retry's own stash carries the real predecessor forward, not t2's stale streamdetails
     assert seen_anchors[1] == (queue_data.items[2].queue_item_id, *real_predecessor)
+
+
+async def test_play_index_carries_the_real_predecessor_through_two_consecutive_failures() -> None:
+    """current_item stays pinned to the first failed attempt through every retry, not just one."""
+    ctrl = _controller()  # current_index=1 (t2): the pre-advanced, about-to-fail target
+    queue_data = cast("PlayerQueueData", ctrl._queue_data["q1"])
+    real_predecessor = (INSTANCE, "Various Artists/Compilation Album/01 Track.flac")
+    queue_data.pending_transition_anchor = (queue_data.items[1].queue_item_id, *real_predecessor)
+    # both failing candidates carry stale streamdetails from some earlier, unrelated play
+    for stale_index in (1, 2):
+        queue_data.items[stale_index].streamdetails = StreamDetails(
+            provider=INSTANCE,
+            item_id=f"Various Artists/Compilation Album/{stale_index} Old Play.flac",
+            audio_format=AudioFormat(content_type=ContentType.MP3),
+            media_type=MediaType.TRACK,
+        )
+    seen_anchors: list[tuple[str, str, str] | None] = []
+    failing_ids = {queue_data.items[1].queue_item_id, queue_data.items[2].queue_item_id}
+
+    async def _load_item(queue_item: QueueItem, **_kwargs: object) -> None:
+        seen_anchors.append(queue_data.pending_transition_anchor)
+        if queue_item.queue_item_id in failing_ids:
+            raise MediaNotFoundError(f"{queue_item.queue_item_id} unavailable")
+        queue_item.streamdetails = StreamDetails(
+            provider=INSTANCE,
+            item_id="doesnt-matter",
+            audio_format=AudioFormat(content_type=ContentType.MP3),
+            media_type=MediaType.TRACK,
+        )
+
+    ctrl._load_item = _load_item
+    ctrl.player_media_from_queue_item = AsyncMock()
+    ctrl.mass.players.play_media = AsyncMock()
+
+    await ctrl.play_index("q1", 1)
+
+    assert seen_anchors == [
+        (queue_data.items[1].queue_item_id, *real_predecessor),
+        (queue_data.items[2].queue_item_id, *real_predecessor),
+        # the second retry must still carry the real predecessor, not t2's stale streamdetails
+        (queue_data.items[3].queue_item_id, *real_predecessor),
+    ]

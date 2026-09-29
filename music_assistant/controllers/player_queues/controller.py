@@ -794,7 +794,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         target_item = self.get_item(queue_id, next_index)
         if target_item is not None:
-            self._stash_transition_anchor(queue_id, target_item.queue_item_id)
+            self._stash_transition_anchor(queue_id, target_item.queue_item_id, queue.current_item)
         # immediately update current item so UI shows the new track right away
         queue.current_index = next_index
         queue.current_item = target_item
@@ -836,7 +836,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         target_item = self.get_item(queue_id, prev_index)
         if target_item is not None:
-            self._stash_transition_anchor(queue_id, target_item.queue_item_id)
+            self._stash_transition_anchor(queue_id, target_item.queue_item_id, queue.current_item)
         # immediately update current item so UI shows the new track right away
         queue.current_index = prev_index
         queue.current_item = target_item
@@ -1096,12 +1096,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     queue_item.name,
                     err or "marked unavailable",
                 )
-                # current_item may already be pinned to this failed attempt (a manual
-                # next/previous pre-advances it before this retry loop ever runs), so its
-                # streamdetails would be stale for the next candidate - re-stash for it same
-                # as next/previous would, carrying the real predecessor forward if there is one
+                # re-stash for the new candidate, scoped to the item that just failed rather
+                # than current_item (which stays pinned to the first attempt throughout every
+                # retry) - so a chain of failures keeps carrying the real predecessor forward
+                # instead of losing it to a failed item's own stale streamdetails
                 if (retry_target := self.get_item(queue_id, next_index)) is not None:
-                    self._stash_transition_anchor(queue_id, retry_target.queue_item_id)
+                    self._stash_transition_anchor(queue_id, retry_target.queue_item_id, queue_item)
                 index = next_index
             if loaded_item is None:
                 await self.stop(queue_id)
@@ -1953,23 +1953,26 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if (queue_data := self._queue_data.get(queue_id)) is not None:
             queue_data.transitioning = value
 
-    def _stash_transition_anchor(self, queue_id: str, target_queue_item_id: str) -> None:
+    def _stash_transition_anchor(
+        self, queue_id: str, target_queue_item_id: str, predecessor: QueueItem | None
+    ) -> None:
         """
-        Capture the outgoing track's streamdetails for get_stream_details' folder tiebreak.
+        Capture the predecessor's streamdetails for get_stream_details' folder tiebreak.
 
         :param queue_id: The queue transitioning to a new current item.
         :param target_queue_item_id: queue_item_id of the track being transitioned to.
+        :param predecessor: The item this transition is moving away from.
         """
         queue_data = self._queue_data[queue_id]
-        outgoing = queue_data.queue.current_item
         pending = queue_data.pending_transition_anchor
-        if pending and outgoing and pending[0] == outgoing.queue_item_id:
-            # a rapid second press: outgoing is itself mid-transition, its own streamdetails
-            # (if any) are a stale leftover rather than what's really still playing - carry the
-            # real predecessor forward onto the new target instead
+        if pending and predecessor and pending[0] == predecessor.queue_item_id:
+            # predecessor is itself mid-transition (a rapid second press, or a retry advancing
+            # past another failed candidate), so its own streamdetails - if any - are a stale
+            # leftover rather than what's really still playing; carry the real predecessor
+            # forward onto the new target instead
             queue_data.pending_transition_anchor = (target_queue_item_id, pending[1], pending[2])
             return
-        streamdetails = outgoing.streamdetails if outgoing else None
+        streamdetails = predecessor.streamdetails if predecessor else None
         queue_data.pending_transition_anchor = (
             (target_queue_item_id, streamdetails.provider, streamdetails.item_id)
             if streamdetails
