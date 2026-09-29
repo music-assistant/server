@@ -2362,7 +2362,13 @@ class LocalFileSystemProvider(MusicProvider):
             if parse_cue_track_id(file_path) is not None and self.media_content_type == "music":
                 controller = self.mass.music.get_controller(MediaType.TRACK)
             elif "." not in file_path:
-                continue
+                # a folder path that an older scan stored as the id of the files below it
+                controller = self.mass.music.get_controller(
+                    {
+                        "audiobooks": MediaType.AUDIOBOOK,
+                        "podcasts": MediaType.PODCAST_EPISODE,
+                    }.get(self.media_content_type, MediaType.TRACK)
+                )
             else:
                 ext = file_path.rsplit(".", 1)[1].lower()
                 if ext in PODCAST_EPISODE_EXTENSIONS and self.media_content_type == "podcasts":
