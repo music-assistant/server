@@ -25,6 +25,7 @@ from music_assistant.controllers.cache.constants import (
 )
 from music_assistant.helpers.api import parse_value
 from music_assistant.helpers.json import SerializableType
+from music_assistant.helpers.throttle_retry import Priority, set_request_priority
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
@@ -139,6 +140,7 @@ def use_cache(
                 # serve stale data and refresh in the background;
                 # task_id deduplicates concurrent refreshes for the same entry
                 async def _background_refresh() -> None:
+                    set_request_priority(Priority.LOW)
                     try:
                         result = await func(self, *args, **kwargs)
                         if cache_none or result is not None:

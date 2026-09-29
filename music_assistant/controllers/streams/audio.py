@@ -154,7 +154,7 @@ from music_assistant.helpers.playlists import (
     read_playlist_body,
 )
 from music_assistant.helpers.provider_access import playback_sources
-from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
+from music_assistant.helpers.throttle_retry import Priority, request_priority
 from music_assistant.helpers.util import (
     clean_stream_title,
     detect_charset,
@@ -3169,7 +3169,9 @@ class StreamsAudio:
         if provider is None or provider.type != ProviderType.MUSIC:
             return
         music_prov = cast("MusicProvider", provider)
-        self.mass.create_task(music_prov.on_streamed(streamdetails))
+        # a listening report is background work, whoever streamed
+        with request_priority(Priority.LOW):
+            self.mass.create_task(music_prov.on_streamed(streamdetails))
 
     def _get_volume_normalization_preference(
         self, streamdetails: StreamDetails
@@ -3850,18 +3852,16 @@ class StreamsAudio:
         last_audio_error: AudioError | None = None
         for mapping, provider in candidates:
             # music and plugin providers share this signature, so either type can own the item
-            token = BYPASS_THROTTLER.set(True)
             try:
                 stream_prov = cast("MusicProvider | PluginProvider", provider)
-                return await stream_prov.get_stream_details(mapping.item_id, media_type)
+                with request_priority(Priority.HIGH):
+                    return await stream_prov.get_stream_details(mapping.item_id, media_type)
             except AudioError as err:
                 # remember the last one so its (actionable) message can be re-raised
                 last_audio_error = err
                 self.logger.warning("%s", err)
             except MusicAssistantError as err:
                 self.logger.warning("%s", err)
-            finally:
-                BYPASS_THROTTLER.reset(token)
         if last_audio_error is not None:
             raise last_audio_error
         return None
@@ -5012,9 +5012,10 @@ class StreamsAudio:
             if provider is None:
                 raise MediaNotFoundError(f"Provider {mapping.provider} is not available")
             stream_prov = cast("MusicProvider | PluginProvider", provider)
-            streamdetails = await stream_prov.get_stream_details(
-                mapping.item_id, MediaType.SOUND_EFFECT
-            )
+            with request_priority(Priority.HIGH):
+                streamdetails = await stream_prov.get_stream_details(
+                    mapping.item_id, MediaType.SOUND_EFFECT
+                )
         except Exception as err:
             self.logger.warning(
                 "Audio overlay source %s is unavailable (%s) - continuing without overlay",

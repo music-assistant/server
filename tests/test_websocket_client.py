@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Generator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -30,6 +31,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from music_assistant.helpers.api import APICommandHandler
+from music_assistant.helpers.throttle_retry import Priority, current_priority, request_priority
 
 
 async def _noop_command() -> None:
@@ -352,6 +354,34 @@ async def test_command_sets_client_id_in_context(authenticated: bool) -> None:
 
     assert _sent_error_code(client) is None
     assert get_current_client_id() == "test_client"
+
+
+@pytest.mark.asyncio
+async def test_command_runs_with_normal_priority() -> None:
+    """A command of a client makes its requests as a user action."""
+    seen: list[Priority] = []
+
+    async def _record_priority() -> None:
+        seen.append(current_priority())
+
+    client = _create_client(
+        UserRole.USER,
+        APICommandHandler.parse("test/protected", _record_priority, authenticated=True),
+    )
+    scheduled: list[asyncio.Task[None]] = []
+    client.mass.create_task = MagicMock(
+        side_effect=lambda coro, *_: scheduled.append(asyncio.create_task(coro))
+    )
+
+    # handled in a task of its own, like a connection does, started from a background context
+    with request_priority(Priority.LOW):
+        await asyncio.create_task(
+            client._handle_command(CommandMessage(message_id="1", command="test/protected"))
+        )
+    async with asyncio.timeout(5):
+        await asyncio.gather(*scheduled)
+
+    assert seen == [Priority.NORMAL]
 
 
 @pytest.mark.asyncio

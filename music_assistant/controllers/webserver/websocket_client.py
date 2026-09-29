@@ -38,6 +38,7 @@ from music_assistant_models.translations import TRANSLATION_RESOLVER
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
 from music_assistant.helpers.provider_access import access_allows, with_derived_provider_filter
+from music_assistant.helpers.throttle_retry import Priority, set_request_priority
 
 from .helpers.auth_middleware import (
     has_scope,
@@ -268,6 +269,7 @@ class WebsocketClientHandler:
         set_current_user(self._authenticated_user)
         set_current_token(self._current_token)
         set_sendspin_player_id(self._sendspin_player_id)
+        set_request_priority(Priority.NORMAL)
 
         # Check authentication if required
         if handler.authenticated or handler.required_scope:

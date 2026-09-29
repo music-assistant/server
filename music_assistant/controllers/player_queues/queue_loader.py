@@ -70,7 +70,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 from music_assistant.helpers.audio import get_probed_duration, store_probed_duration
 from music_assistant.helpers.compare import compare_item_ids
 from music_assistant.helpers.provider_access import playback_sources, resolve_playback_user
-from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
+from music_assistant.helpers.throttle_retry import Priority, with_request_priority
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -295,6 +295,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         queue.next_item = self.get_next_item(queue_id, first_added_index)
         self.signal_update(queue_id)
 
+    # playback has priority over other requests that may be happening in the background
+    @with_request_priority(Priority.HIGH)
     async def _load_item(
         self,
         queue_item: QueueItem,
@@ -312,11 +314,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         """
         queue_id = queue_item.queue_id
         queue = self._queue_data[queue_id].queue
-
-        # we use a contextvar to bypass the throttler for this asyncio task/context
-        # this makes sure that playback has priority over other requests that may be
-        # happening in the background
-        BYPASS_THROTTLER.set(True)
 
         self.logger.debug(
             "(pre)loading (next) item for queue %s...",
@@ -724,6 +721,8 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         )
 
     @handle_play_action
+    # playback has priority over other requests that may be happening in the background
+    @with_request_priority(Priority.HIGH)
     async def _handle_play_media(
         self,
         queue_id: str,
@@ -739,10 +738,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{queue_id}")
         self._set_transitioning(queue_id, False)
-        # we use a contextvar to bypass the throttler for this asyncio task/context
-        # this makes sure that playback has priority over other requests that may be
-        # happening in the background
-        BYPASS_THROTTLER.set(True)
         if not (queue := self.get(queue_id)):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         queue_data = self._queue_data[queue_id]

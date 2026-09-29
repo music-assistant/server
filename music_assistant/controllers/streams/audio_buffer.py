@@ -40,6 +40,7 @@ from music_assistant.controllers.streams.constants import (
 )
 from music_assistant.helpers.audio import decoded_pcm_format, is_dsd_stream
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
+from music_assistant.helpers.throttle_retry import Priority, set_request_priority
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -331,6 +332,8 @@ class AudioBuffer:
         self._source_name = source_name
 
         async def _fill_task() -> None:
+            # the producer reads the source for playback
+            set_request_priority(Priority.HIGH)
             chunk_count = 0
             status = "running"
             try:

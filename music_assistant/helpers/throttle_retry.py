@@ -2,14 +2,18 @@
 
 import asyncio
 import functools
+import itertools
 import logging
 import random
 import time
+from bisect import insort
 from collections import deque
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Generator
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
+from enum import IntEnum
 from types import TracebackType
 from typing import Any, Concatenate, Protocol
 
@@ -24,7 +28,28 @@ from music_assistant.helpers.datetime import utc
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.throttle_retry")
 
+
+class Priority(IntEnum):
+    """Priority of a request that asks a throttler for a slot."""
+
+    LOW = 0  # background work: library sync, metadata scans, cache refreshes
+    NORMAL = 1  # a user action: browsing, searching, opening an item
+    HIGH = 2  # playback
+
+
+# a request made without a priority set counts as a user action
+REQUEST_PRIORITY: ContextVar[Priority] = ContextVar("REQUEST_PRIORITY", default=Priority.NORMAL)
+
+# playback flag some providers read or set themselves, raised only around a playback
+# lookup (request_priority), never for a whole task
 BYPASS_THROTTLER: ContextVar[bool] = ContextVar("BYPASS_THROTTLER", default=False)
+
+# share of the rate limit low priority requests may use,
+# the rest is headroom for user actions and playback
+LOW_PRIORITY_SHARE = 0.5
+
+# a wait at or below this many seconds counts as no wait, guards against float rounding
+_WAIT_EPSILON = 1e-9
 
 # Cap exponential backoff to prevent absurd wait times
 MAX_BACKOFF = 120
@@ -34,6 +59,61 @@ MAX_RETRY_AFTER = 86400
 
 # Longest single wait a server can ask of a call, a call asked to wait longer fails instead
 MAX_WAIT_TIME = 60
+
+
+def current_priority() -> Priority:
+    """Return the throttler priority of the current context."""
+    if BYPASS_THROTTLER.get():
+        return Priority.HIGH
+    return REQUEST_PRIORITY.get()
+
+
+def set_request_priority(priority: Priority) -> None:
+    """
+    Set the throttler priority for the rest of the current context.
+
+    Meant for the entry point of a task, use request_priority for a block of code.
+
+    :param priority: The priority of the requests made from this context.
+    """
+    REQUEST_PRIORITY.set(priority)
+    BYPASS_THROTTLER.set(False)
+
+
+@contextmanager
+def request_priority(priority: Priority) -> Generator[None]:
+    """
+    Set the throttler priority for the duration of the block.
+
+    :param priority: The priority of the requests made within the block.
+    """
+    token = REQUEST_PRIORITY.set(priority)
+    bypass_token = BYPASS_THROTTLER.set(priority is Priority.HIGH)
+    try:
+        yield
+    finally:
+        BYPASS_THROTTLER.reset(bypass_token)
+        REQUEST_PRIORITY.reset(token)
+
+
+def with_request_priority[**P, R](
+    priority: Priority,
+) -> Callable[[Callable[P, Awaitable[R]]], Callable[P, Coroutine[Any, Any, R]]]:
+    """
+    Run each call of the decorated async function with the given throttler priority.
+
+    :param priority: The priority of the requests made during the call.
+    """
+
+    def decorator(func: Callable[P, Awaitable[R]]) -> Callable[P, Coroutine[Any, Any, R]]:
+        @functools.wraps(func)
+        async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            with request_priority(priority):
+                return await func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
 
 
 def parse_retry_after(value: str | None) -> int:
@@ -63,11 +143,11 @@ def parse_retry_after(value: str | None) -> int:
 
 class Throttler:
     """
-    asyncio_throttle (https://github.com/hallazzang/asyncio-throttle).
+    Rate limiter that grants at most rate_limit slots within any period.
 
-    With improvements:
-    - Accurate sleep without "busy waiting" (PR #4)
-    - Return the delay caused by acquire()
+    Requests are served by priority and, within the same priority, in order of arrival.
+    Low priority requests may use only LOW_PRIORITY_SHARE of the rate limit and are
+    spread evenly over the period, so user actions and playback always find headroom.
     """
 
     def __init__(self, rate_limit: int, period: float = 1.0) -> None:
@@ -75,22 +155,42 @@ class Throttler:
         self.rate_limit = rate_limit
         self.period = period
         self._task_logs: deque[float] = deque()
+        self._last_low_grant: float | None = None
+        self._waiters: list[_Waiter] = []
+        self._sequence = itertools.count()
 
-    async def acquire(self) -> float:
-        """Acquire a free slot from the Throttler, returns the throttled time."""
-        cur_time = time.monotonic()
-        start_time = cur_time
-        while True:
-            self._flush()
-            if len(self._task_logs) < self.rate_limit:
-                break
-            # sleep the exact amount of time until the oldest task can be flushed
-            time_to_release = self._task_logs[0] + self.period - cur_time
-            await asyncio.sleep(time_to_release)
-            cur_time = time.monotonic()
+    async def acquire(self, priority: Priority | None = None) -> float:
+        """
+        Acquire a free slot from the Throttler, returns the throttled time.
 
-        self._task_logs.append(cur_time)
-        return cur_time - start_time  # exactly 0 if not throttled
+        :param priority: Priority of the request, None for the priority of the current context.
+        """
+        if priority is None:
+            priority = current_priority()
+        waiter = _Waiter(priority, next(self._sequence))
+        insort(self._waiters, waiter, key=_Waiter.sort_key)
+        start_time = now = time.monotonic()
+        try:
+            while True:
+                # only the first waiter in line may take a slot, the others wait their turn
+                if self._waiters[0] is not waiter:
+                    waiter.turn.clear()
+                    await waiter.turn.wait()
+                    now = time.monotonic()
+                    continue
+                delay = self._time_until_free(priority, now)
+                if delay <= _WAIT_EPSILON:
+                    break
+                await asyncio.sleep(delay)
+                now = time.monotonic()
+        finally:
+            self._waiters.remove(waiter)
+            if self._waiters:
+                self._waiters[0].turn.set()
+        self._task_logs.append(now)
+        if priority is Priority.LOW:
+            self._last_low_grant = now
+        return now - start_time  # exactly 0 if not throttled
 
     async def __aenter__(self) -> float:
         """Wait until the lock is acquired, return the time delay."""
@@ -104,13 +204,20 @@ class Throttler:
     ) -> bool | None:
         """Nothing to do on exit."""
 
-    def _flush(self) -> None:
-        now = time.monotonic()
-        while self._task_logs:
-            if now - self._task_logs[0] > self.period:
-                self._task_logs.popleft()
-            else:
-                break
+    def _time_until_free(self, priority: Priority, now: float) -> float:
+        """Return the seconds until a request of the given priority may take a slot."""
+        # a slot stops counting once a full period has passed since it was granted
+        while self._task_logs and self._task_logs[0] + self.period - now <= _WAIT_EPSILON:
+            self._task_logs.popleft()
+        low_share = self.rate_limit * LOW_PRIORITY_SHARE
+        limit = max(1, int(low_share)) if priority is Priority.LOW else self.rate_limit
+        delay = 0.0
+        if (excess := len(self._task_logs) - limit) >= 0:
+            delay = self._task_logs[excess] + self.period - now
+        if priority is Priority.LOW and self._last_low_grant is not None:
+            # the pacer spreads the low priority share evenly over the period
+            delay = max(delay, self._last_low_grant + self.period / low_share - now)
+        return delay
 
 
 class ThrottlerManager:
@@ -139,8 +246,10 @@ class ThrottlerManager:
             cooldown no later than it does not hold the caller back a second time.
         :raises RateLimited: When a server-imposed cooldown holds for longer than MAX_WAIT_TIME.
         """
-        if BYPASS_THROTTLER.get():
-            yield 0
+        priority = current_priority()
+        if priority is Priority.HIGH:
+            # playback neither sits out nor fails on a cooldown
+            yield await self.throttler.acquire(priority)
             return
         delay = 0.0
         honored = honored_until
@@ -152,7 +261,7 @@ class ThrottlerManager:
                     raise RateLimited(msg, backoff_time=round(remaining))
                 delay += await self._wait_until(target)
                 honored = target
-            delay += await self.throttler.acquire()
+            delay += await self.throttler.acquire(priority)
             # a cooldown can be armed while we wait for a free slot, so only leave
             # the gate once it is still clear with the slot in hand
             if self._cooldown_until <= honored:
@@ -161,12 +270,9 @@ class ThrottlerManager:
 
     @asynccontextmanager
     async def bypass(self) -> AsyncGenerator[None]:
-        """Bypass the throttler."""
-        try:
-            token = BYPASS_THROTTLER.set(True)
+        """Give the requests made within the block playback priority."""
+        with request_priority(Priority.HIGH):
             yield None
-        finally:
-            BYPASS_THROTTLER.reset(token)
 
     def set_cooldown(self, seconds: float) -> None:
         """
@@ -292,3 +398,16 @@ def _give_up(err: ResourceTemporarilyUnavailable, wait: float) -> RetriesExhaust
         translation_args=err.translation_args,
         translation_owner=err.translation_owner,
     )
+
+
+@dataclass
+class _Waiter:
+    """A request waiting in line for a slot of a Throttler."""
+
+    priority: Priority
+    sequence: int
+    turn: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def sort_key(self) -> tuple[int, int]:
+        """Return the key that orders the line: highest priority first, then by arrival."""
+        return (-self.priority, self.sequence)
