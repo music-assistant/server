@@ -327,7 +327,7 @@ class TestSharedCooldown:
 
 
 class TestLongWaits:
-    """A call never sits out a wait longer than MAX_WAIT_TIME, it fails instead."""
+    """A call asked by the server to wait longer than MAX_WAIT_TIME fails instead."""
 
     async def test_long_retry_after_fails_right_away(
         self, provider: FakeProvider, fake_clock: FakeClock

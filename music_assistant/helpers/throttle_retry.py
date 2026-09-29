@@ -32,7 +32,7 @@ MAX_BACKOFF = 120
 # Cap a server-provided Retry-After, in case it is absurd or hostile
 MAX_RETRY_AFTER = 86400
 
-# Longest wait a call sits out for the server, a call asked to wait longer fails instead
+# Longest single wait a server can ask of a call, a call asked to wait longer fails instead
 MAX_WAIT_TIME = 60
 
 
