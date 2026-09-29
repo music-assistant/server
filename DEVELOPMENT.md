@@ -93,7 +93,7 @@ The Music Assistant server is fully built in Python. The Python language has no 
 
 
 ## Building a new Music Provider
-A Music Provider is the provider type that adds support for a 'source of music' to Music Assistant. Spotify and Youtube Music are examples of a Music Provider, but also Filesystem and SMB can be put in the Music Provider category. All Providers (of all types) can be found in the `music_assistant/providers` folder.
+A Music Provider is the provider type that adds support for a 'source of music' to Music Assistant. Spotify and Youtube Music are examples of a Music Provider, but also Local files can be put in the Music Provider category. All Providers (of all types) can be found in the `music_assistant/providers` folder.
 
 TIP: We have created a template/stub provider in `music_assistant/providers/_demo_music_provider` to get you started fast!
 
