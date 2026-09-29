@@ -606,7 +606,8 @@ class AIRadioRenderMixin:
             return False
         if not infos:
             return False
-        return all(_is_public_ip(info[4][0]) for info in infos)
+        # sockaddr[0] is the address; typed as str | int, but always a str for AF_INET/AF_INET6
+        return all(_is_public_ip(str(info[4][0])) for info in infos)
 
     async def _mint_clip_media(
         self, queue_item: QueueItem, text: str, clip_id: str
@@ -783,17 +784,25 @@ def _is_public_ip(ip_str: str) -> bool:
 
 
 def _clip_to_budget(text: str, budget: int) -> str:
-    """Trim text to at most budget characters, preferring to cut on an article (newline) boundary."""
+    """
+    Trim text to at most budget characters, cutting only on an article (newline) boundary.
+
+    Articles are newline-separated, so the text is cut back to the last whole article that fits. When
+    not even one article fits (no newline within the budget) an empty string is returned rather than
+    a mid-article fragment, so a nearly-exhausted budget injects nothing instead of a meaningless
+    snippet. In practice a single article is far smaller than the total budget, so this only bites
+    once a clip's earlier sections have already consumed almost all of it.
+    """
     if budget <= 0:
         return ""
     if len(text) <= budget:
         return text
     truncated = text[:budget]
-    # prefer to end on a whole article rather than mid-line, but only if that keeps something useful
     newline = truncated.rfind("\n")
     if newline > 0:
         return truncated[:newline].rstrip()
-    return truncated.rstrip()
+    # no whole article fits in the remaining budget -> add nothing rather than a partial line
+    return ""
 
 
 def _rss_tokens_in(prompt: str) -> list[str]:

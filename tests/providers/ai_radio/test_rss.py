@@ -535,7 +535,7 @@ def test_resolve_rss_tokens_enforces_total_budget() -> None:
     async def _fake_fetch(_feeds: list[dict[str, Any]], _semaphore: Any = None) -> str:
         return big_text
 
-    renderer._fetch_rss_content = _fake_fetch  # type: ignore[method-assign]
+    renderer._fetch_rss_content = _fake_fetch  # type: ignore[method-assign, assignment]
 
     feeds_by_token = {
         "<rss_feed_0>": [{"url": "https://a.example/0"}],
@@ -567,7 +567,7 @@ def test_resolve_rss_tokens_shares_one_semaphore_across_tokens() -> None:
         seen_semaphores.append(semaphore)
         return "- headline"
 
-    renderer._fetch_rss_content = _capturing_fetch  # type: ignore[method-assign]
+    renderer._fetch_rss_content = _capturing_fetch  # type: ignore[method-assign, assignment]
     feeds_by_token = {
         "<rss_feed_0>": [{"url": "https://a.example/0"}],
         "<rss_feed_1>": [{"url": "https://a.example/1"}],
