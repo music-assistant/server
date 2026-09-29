@@ -11,7 +11,7 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
 from copy import copy
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, NoReturn
 
 from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import AudioError
@@ -438,7 +438,7 @@ async def get_ffmpeg_stream(
         log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[log_lines:])
         raise AudioError(log_tail)
     if feeder_exception := ffmpeg_proc.stdin_feeder_exception:
-        raise AudioError("Error while feeding audio to FFmpeg") from feeder_exception
+        _raise_feeder_error(feeder_exception)
 
 
 async def get_ffmpeg_overlay_stream(
@@ -485,7 +485,7 @@ async def get_ffmpeg_overlay_stream(
         log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[-5:])
         raise AudioError(log_tail)
     if feeder_exception := ffmpeg_proc.stdin_feeder_exception:
-        raise AudioError("Error while feeding audio to FFmpeg") from feeder_exception
+        _raise_feeder_error(feeder_exception)
 
 
 def get_ffmpeg_resample_filter(
@@ -940,3 +940,20 @@ def _build_filtergraph_args(
     flush_pending()
 
     return input_args, ["-filter_complex", ";".join(parts), "-map", f"[{current}]"]
+
+
+def _raise_feeder_error(feeder_exception: Exception) -> NoReturn:
+    """
+    Raise the error that made feeding audio to FFmpeg fail.
+
+    :param feeder_exception: The exception raised by the FFmpeg stdin feeder.
+    :raises ProviderStreamLimitError: When the source had no free stream slot.
+    :raises AudioError: For any other feeder failure, caused by the feeder exception.
+    """
+    # deferred import: the provider models pull the controller graph in at import time
+    from music_assistant.models.music_provider import ProviderStreamLimitError  # noqa: PLC0415
+
+    # keep the capacity error's type so callers can tell a busy source apart
+    if isinstance(feeder_exception, ProviderStreamLimitError):
+        raise feeder_exception
+    raise AudioError("Error while feeding audio to FFmpeg") from feeder_exception
