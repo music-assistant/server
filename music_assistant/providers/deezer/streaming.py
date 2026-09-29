@@ -27,6 +27,7 @@ from music_assistant.helpers.datetime import utc_timestamp
 from .constants import DECRYPT_KEY_ERROR, DECRYPT_KEY_LENGTH
 from .gw_client import DeezerGWError
 from .helpers import fetch_all_audiobook_chapter_edges, fetch_all_bookmarks
+from .parsers import parse_date
 
 if TYPE_CHECKING:
     from .provider import DeezerProvider
@@ -59,8 +60,8 @@ class DeezerStreamingManager:
             return (False, 0, None)
         bookmarks = await fetch_all_bookmarks(self.provider.gql_client)
         if item_id in bookmarks:
-            is_played, position_ms = bookmarks[item_id]
-            return (is_played, position_ms, None)
+            is_played, position_ms, bookmarked_at = bookmarks[item_id]
+            return (is_played, position_ms, parse_date(bookmarked_at))
         return (False, 0, None)
 
     # -- Playback callbacks --
