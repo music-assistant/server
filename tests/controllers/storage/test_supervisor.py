@@ -17,7 +17,7 @@ from music_assistant.controllers.storage import StorageController, StorageKind
 from music_assistant.controllers.storage import controller as controller_module
 from music_assistant.controllers.storage.backends.base import BackendUnavailable
 from music_assistant.controllers.storage.backends.supervisor import create_supervisor_mounter
-from music_assistant.controllers.storage.constants import SHARES_SETUP_TASK_ID
+from music_assistant.controllers.storage.constants import RECONCILE_TASK_ID, SHARES_SETUP_TASK_ID
 from music_assistant.controllers.storage.models import MountBackend, NetworkShareSpec, ShareType
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from tests.common import capture_log_records
@@ -616,7 +616,46 @@ async def test_reconcile_while_the_start_looks_for_the_supervisor(
     assert location is not None
     assert (location.available, location.error) == (True, None)
     await wait_until(lambda: SHARES_SETUP_TASK_ID not in storage.mass._tracked_tasks)
-    assert _mutations(supervisor) == [("POST", "/mounts")]
+    # both probed and looked at the mounts, only the start added the share
+    assert sorted(request[:2] for request in supervisor.requests) == [
+        *[("GET", "/mounts")] * 4,
+        ("POST", "/mounts"),
+    ]
+
+
+async def test_info_while_the_start_looks_for_the_supervisor(
+    storage: StorageController, supervisor: FakeSupervisor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The info asked for while the start still looks for the Supervisor probes once more.
+
+    It starts no reconcile of its own: the start mounts the shares.
+    """
+    _store(storage, supervisor, "music")
+    set_up_discovery = _before_discovery(storage)
+    await storage.setup(await storage.mass.config.get_core_config(storage.domain))
+    probe_backends = storage._probe_backends
+    asked = 0
+
+    async def _probe_backends() -> set[MountBackend]:
+        nonlocal asked
+        asked += 1
+        return await probe_backends()
+
+    monkeypatch.setattr(storage, "_probe_backends", _probe_backends)
+    info_task = asyncio.create_task(storage.get_info())
+    await wait_until(lambda: asked == 1)
+    set_up_discovery()
+    info = await info_task
+    await wait_until(lambda: SHARES_SETUP_TASK_ID not in storage.mass._tracked_tasks)
+    await wait_until(lambda: RECONCILE_TASK_ID not in storage.mass._tracked_tasks)
+
+    assert (info.can_mount_shares, info.mount_backend) == (True, MountBackend.SUPERVISOR)
+    # the probe of the start and of the info, and the one reconcile, of the start
+    assert sorted(request[:2] for request in supervisor.requests) == [
+        *[("GET", "/mounts")] * 3,
+        ("POST", "/mounts"),
+    ]
 
 
 async def test_stop_before_discovery_is_set_up(

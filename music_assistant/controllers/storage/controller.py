@@ -700,8 +700,8 @@ class StorageController(CoreController):
 
         That includes a mount the backend has but reports as not working. The backends are
         looked for again first when the backend of a share is not known. A share that can not
-        be mounted stays a location that is not available and says why, until a reload or the
-        next start of the server mounts it. Never raises.
+        be mounted stays a location that is not available and says why, until a reload, the
+        next start of the server or a need for it (see is_available) mounts it. Never raises.
         """
         try:
             if any(spec.backend not in self._mounters for spec in self._get_shares().values()):
@@ -1012,15 +1012,10 @@ class StorageController(CoreController):
 
     async def _probe_backends(self) -> set[MountBackend]:
         """
-        Find the mount backends this server can use, or wait for the probe that is running.
+        Find the mount backends this server can use, after the probe that is running.
 
-        Returns the backends this probe found that were not available before; none when the
-        caller only waited for the probe of another caller.
+        Returns the backends this probe found that were not available before.
         """
-        if self._backends_lock.locked():
-            # the answer of the probe that is running is as fresh as a new one
-            async with self._backends_lock:
-                return set()
         async with self._backends_lock:
             available = set(self._mounters)
             mounters: dict[MountBackend, ShareMounter] = {}
