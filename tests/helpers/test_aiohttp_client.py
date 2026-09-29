@@ -17,7 +17,7 @@ async def proxy_server() -> AsyncGenerator[tuple[str, list[str]]]:
     requested: list[str] = []
 
     async def _handler(request: web.Request) -> web.Response:
-        requested.append(str(request.url))
+        requested.append(request.raw_path)
         return web.Response(text="via proxy")
 
     app = web.Application()
@@ -26,7 +26,7 @@ async def proxy_server() -> AsyncGenerator[tuple[str, list[str]]]:
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
-    port = site._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
+    port = runner.addresses[0][1]
     yield f"http://127.0.0.1:{port}", requested
     await runner.cleanup()
 
