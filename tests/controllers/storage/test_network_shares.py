@@ -814,6 +814,30 @@ async def test_backend_that_becomes_available_mounts_the_shares(
     assert sorted(mounter.mounted) == ["movies", "music"]
 
 
+async def test_reconcile_looks_for_the_backend_again(
+    storage: StorageController, mount_table: MountTable, backends: FakeBackends
+) -> None:
+    """A backend that was not found before is looked for again, and the share loses its error."""
+    mount_table.set(mount_line("/", "ext4"))
+    _store(storage, "music")
+    await storage.reconcile()
+    location = storage.get_location_for_path(MUSIC_PATH)
+    assert location is not None
+    assert location.error_key == "mount_backend_unavailable"
+    mounter = FakeMounter(mount_table)
+    backends.available[mounter.backend] = mounter
+
+    await storage.reconcile()
+
+    assert [call[:2] for call in mounter.calls] == [("add", "music")]
+    location = storage.get_location_for_path(MUSIC_PATH)
+    assert location is not None
+    assert (location.available, location.error) == (True, None)
+    assert "music" not in storage._share_errors
+    # the reconcile mounted the shares of the backend itself, it asks for no other one
+    assert RECONCILE_TASK_ID not in storage.mass._tracked_tasks
+
+
 @pytest.mark.usefixtures("backends")
 async def test_managed_share_locations(storage: StorageController, mount_table: MountTable) -> None:
     """
@@ -1250,3 +1274,71 @@ async def test_need_does_not_wait_for_the_mount(
         await _wait_for_remount(storage)
 
     assert await storage.is_available(str(lost_share / "Albums"))
+
+
+@pytest.fixture
+def share_without_backend(
+    storage: StorageController, mount_table: MountTable, tmp_path: Path
+) -> Path:
+    """
+    Provide a stored share on a real folder, whose backend is not available.
+
+    :param storage: The storage controller.
+    :param mount_table: The mount table the mounts land in.
+    :param tmp_path: Temporary directory for the mountpoint.
+    """
+    mount_table.set(mount_line("/", "ext4"))
+    share = tmp_path / "music"
+    (share / "Albums").mkdir(parents=True)
+    _store_at(storage, share)
+    return share
+
+
+async def test_share_is_mounted_when_needed_once_its_backend_is_back(
+    storage: StorageController,
+    mount_table: MountTable,
+    backends: FakeBackends,
+    share_without_backend: Path,
+) -> None:
+    """A share whose backend was not found at start mounts once it is needed, and loses its error."""
+    albums = str(share_without_backend / "Albums")
+    await storage.reconcile()
+    assert storage._share_errors["music"].translation_key == "mount_backend_unavailable"
+    mounter = FakeMounter(mount_table)
+    backends.available[mounter.backend] = mounter
+
+    assert not await storage.is_available(albums)
+    await _wait_for_remount(storage)
+    await wait_until(lambda: RECONCILE_TASK_ID not in storage.mass._tracked_tasks)
+
+    assert await storage.is_available(albums)
+    assert [call[:2] for call in mounter.calls] == [("add", "music")]
+    assert "music" not in storage._share_errors
+    location = storage.get_location_for_path(albums)
+    assert location is not None
+    assert (location.available, location.error) == (True, None)
+
+
+async def test_missing_backend_is_looked_for_at_most_once_a_minute(
+    storage: StorageController, backends: FakeBackends, share_without_backend: Path
+) -> None:
+    """Music sources that keep needing a share whose backend is gone look for it once a minute."""
+    albums = str(share_without_backend / "Albums")
+    await storage.reconcile()
+    backends.probes = 0
+
+    for _ in range(3):
+        assert not any(
+            await asyncio.gather(storage.is_available(albums), storage.is_available(albums))
+        )
+        await _wait_for_remount(storage)
+    # one probe asks both backends
+    assert backends.probes == 2
+    storage._remount_attempts["music"] -= REMOUNT_INTERVAL
+    assert not await storage.is_available(albums)
+    await _wait_for_remount(storage)
+
+    assert backends.probes == 4
+    location = storage.get_location_for_path(albums)
+    assert location is not None
+    assert (location.available, location.error_key) == (False, "mount_backend_unavailable")

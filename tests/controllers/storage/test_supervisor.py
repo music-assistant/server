@@ -593,6 +593,32 @@ async def test_info_before_discovery_is_set_up(
     assert _problems(records) == []
 
 
+async def test_reconcile_while_the_start_looks_for_the_supervisor(
+    storage: StorageController, supervisor: FakeSupervisor
+) -> None:
+    """
+    A reconcile asked for while the start still looks for the Supervisor waits for the answer.
+
+    Its share is mounted once, although the start mounts the shares as well.
+    """
+    set_up_discovery = _before_discovery(storage)
+    await storage.setup(await storage.mass.config.get_core_config(storage.domain))
+    # a share stored at start, e.g. by a conversion of a music source
+    _store(storage, supervisor, "music")
+    await storage.refresh()
+
+    reconcile = asyncio.create_task(storage.reconcile())
+    await asyncio.sleep(0.1)
+    set_up_discovery()
+    await reconcile
+
+    location = storage.get_location_for_path(supervisor.path("music"))
+    assert location is not None
+    assert (location.available, location.error) == (True, None)
+    await wait_until(lambda: SHARES_SETUP_TASK_ID not in storage.mass._tracked_tasks)
+    assert _mutations(supervisor) == [("POST", "/mounts")]
+
+
 async def test_stop_before_discovery_is_set_up(
     storage: StorageController, supervisor: FakeSupervisor
 ) -> None:
