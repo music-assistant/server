@@ -180,7 +180,11 @@ def _profile_operation(command: str) -> str:
 def _build_profiles() -> dict[str, CommandProfile]:
     aliases = aliases_by_command()
     profiles: dict[str, CommandProfile] = {}
-    for command in sorted(set(CURATED_PROFILE_MAPPINGS.values())):
+    profiled_commands = set(CURATED_PROFILE_MAPPINGS.values()) | {
+        "music/in_progress_items",
+        "music/mark_unplayed",
+    }
+    for command in sorted(profiled_commands):
         profiles[command] = CommandProfile(
             command=command,
             search_aliases=aliases.get(command, ()),
@@ -222,6 +226,18 @@ def _build_profiles() -> dict[str, CommandProfile]:
         },
         "music/playlists/create_playlist": {
             "argument_aliases": {"provider_instance_id": "provider_instance_or_domain"},
+        },
+        "music/recently_played_items": {
+            "excluded_arguments": frozenset({"userid"}),
+        },
+        "music/mark_played": {
+            "excluded_arguments": frozenset({"userid"}),
+        },
+        "music/mark_unplayed": {
+            "excluded_arguments": frozenset({"userid"}),
+        },
+        "music/in_progress_items": {
+            "excluded_arguments": frozenset({"all_users"}),
         },
     }
     for command, changes in overrides.items():

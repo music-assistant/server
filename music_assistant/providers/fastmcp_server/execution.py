@@ -18,6 +18,7 @@ from fastmcp.exceptions import ToolError
 from mcp.shared.exceptions import McpError
 from mcp.types import INVALID_REQUEST, METHOD_NOT_FOUND
 from music_assistant_models.auth import AuthProviderType, Scope
+from music_assistant_models.errors import InsufficientPermissions
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from .audit import (
@@ -294,6 +295,11 @@ class DynamicAPIAdapter:
             )
         except ToolError as exc:
             raise _public_tool_error(exc) from exc
+        except InsufficientPermissions as exc:
+            raise tool_failure(
+                ToolFailureCode.NOT_FOUND_OR_FORBIDDEN,
+                "Tool was not found or is not permitted",
+            ) from exc
         finally:
             self.record_performance((time.perf_counter() - started) * 1000)
 
@@ -935,7 +941,7 @@ class DynamicAPIAdapter:
                 arguments,
                 impersonated=impersonated,
             )
-        except ToolError as exc:
+        except (ToolError, InsufficientPermissions) as exc:
             if isinstance(exc, _InvocationAuthorizationError):
                 invocation = exc.invocation
                 self._audit_invocation(
@@ -1005,7 +1011,7 @@ class DynamicAPIAdapter:
                 denied = self._denied_capability(decision, preflight, policy)
                 suffix = f" (requires {denied})" if denied is not None else ""
                 raise ToolError(f"Tool {entry.name!r} not found or not permitted{suffix}")
-        except ToolError as exc:
+        except (ToolError, InsufficientPermissions) as exc:
             raise _InvocationAuthorizationError(str(exc), actual_invocation) from exc
         return actual_invocation
 
@@ -1085,7 +1091,7 @@ class DynamicAPIAdapter:
                 denied = self._denied_capability(decision, preflight, policy)
                 suffix = f" (requires {denied})" if denied is not None else ""
                 raise ToolError(f"Tool {entry.name!r} not found or not permitted{suffix}")
-        except ToolError as exc:
+        except (ToolError, InsufficientPermissions) as exc:
             raise _InvocationAuthorizationError(str(exc), final_invocation) from exc
         return final_invocation
 
