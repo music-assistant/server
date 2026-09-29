@@ -299,6 +299,26 @@ async def test_flow_reports_the_crossfade_that_actually_happens(
     ]
 
 
+async def test_flow_prepares_the_incoming_audio_relative_to_the_outgoing_track(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fade point asks for the audio of the track after the one that is fading out."""
+    first_item = _queue_item("item-1", "First")
+    second_item = _queue_item("item-2", "Second")
+    audio, queue, mass = _flow_audio(
+        monkeypatch, next_item=second_item, load_next=[second_item, QueueEmpty]
+    )
+    mass.player_queues.prepare_next_audio_buffer.return_value = None
+    _install_item_streams(monkeypatch, audio, {"item-1": 40, "item-2": 20})
+
+    stream = audio.get_queue_flow_stream(
+        cast("Any", queue), cast("Any", first_item), TEST_PCM_FORMAT, session_id="session-1"
+    )
+    await _drain(stream)
+
+    mass.player_queues.prepare_next_audio_buffer.assert_called_once_with("queue-1", "item-1")
+
+
 async def test_flow_reports_no_crossfade_when_the_transition_is_denied(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

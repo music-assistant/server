@@ -37,7 +37,9 @@ if TYPE_CHECKING:
 class StreamFeederMixin(_PlayerQueuesBase):
     """Feed the player's stream: enqueue the next item, preload/prepare its audio, clean up."""
 
-    def prepare_next_audio_buffer(self, queue_id: str, queue_item_id: str) -> None:
+    def prepare_next_audio_buffer(
+        self, queue_id: str, queue_item_id: str
+    ) -> asyncio.Task[None] | None:
         """
         Prepare the AudioBuffer of the item that follows the given item in the queue.
 
@@ -46,14 +48,15 @@ class StreamFeederMixin(_PlayerQueuesBase):
 
         :param queue_id: The queue the item belongs to.
         :param queue_item_id: The item whose audio is being streamed or has fully arrived.
+        :return: The preparation that was started, or None when nothing needs preparing.
         """
         next_item = self.get_next_item(queue_id, queue_item_id)
         if next_item is None or next_item.queue_item_id == queue_item_id:
-            return
+            return None
         queue_data = self._queue_data[queue_id]
         # AudioSource items are realtime/live and bypass the AudioBuffer
         if next_item.media_type == MediaType.AUDIO_SOURCE:
-            return
+            return None
         # check if buffer already exists and is valid
         if (
             next_item.streamdetails
@@ -63,7 +66,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
             # reusing audio an earlier session left behind claims it for this one, so its
             # stop releases it and the earlier session's stop no longer can
             next_item.streamdetails.queue_session_id = queue_data.session_id
-            return
+            return None
 
         async def _do_prepare() -> None:
             prepared_item: QueueItem | None = None
@@ -122,7 +125,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     await asyncio.shield(buf.clear())
                 raise
 
-        self.mass.create_task(
+        return self.mass.create_task(
             _do_prepare(),
             task_id=f"prepare_next_audio_buffer_{queue_id}",
             abort_existing=True,

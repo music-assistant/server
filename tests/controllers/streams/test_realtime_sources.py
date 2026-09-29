@@ -500,8 +500,24 @@ def test_a_fade_skipped_for_missing_audio_says_why(caplog: pytest.LogCaptureFixt
 # -- StreamsAudio._await_fade_source --
 
 
-async def test_the_fade_waits_for_incoming_audio_that_shows_up_late() -> None:
-    """A source that fills ahead of playback but is prepared late still gets its fade."""
+def _incoming_item(streamdetails: StreamDetails) -> SimpleNamespace:
+    """Build the incoming queue item of a fade boundary."""
+    return SimpleNamespace(queue_id="queue-1", queue_item_id="item-2", streamdetails=streamdetails)
+
+
+async def _finished_preparation() -> asyncio.Task[None]:
+    """Return a preparation that is already over."""
+
+    async def _nothing() -> None:
+        return None
+
+    preparation = asyncio.create_task(_nothing())
+    await preparation
+    return preparation
+
+
+async def test_the_fade_waits_for_a_running_preparation_to_attach_its_audio() -> None:
+    """A preparation that is still running and attaches its buffer late is waited for."""
     audio = StreamsAudio(MagicMock())
     streamdetails = _streamdetails_for_crossfade(None)
     late_buffer = _buffer(20, ready=False)
@@ -512,21 +528,53 @@ async def test_the_fade_waits_for_incoming_audio_that_shows_up_late() -> None:
         await asyncio.sleep(0.1)
         late_buffer.ready.set()
 
-    preparing = asyncio.create_task(_prepare_late())
-    await asyncio.wait_for(audio._await_fade_source(streamdetails), FADE_SOURCE_WAIT)
+    preparation = asyncio.create_task(_prepare_late())
+    await asyncio.wait_for(
+        audio._await_fade_source(cast("Any", _incoming_item(streamdetails)), preparation),
+        FADE_SOURCE_WAIT,
+    )
 
     assert streamdetails.buffer is late_buffer
     assert late_buffer.ready.is_set()
-    await preparing
+    await preparation
+
+
+async def test_the_fade_finds_audio_attached_to_replaced_details() -> None:
+    """A preparation that swaps in new stream details still has its buffer found."""
+    audio = StreamsAudio(MagicMock())
+    incoming = _incoming_item(_streamdetails_for_crossfade(None))
+    late_buffer = _buffer(20, ready=True)
+
+    async def _reselect_late() -> None:
+        await asyncio.sleep(0.2)
+        # a capacity reselection hands the item a new details object
+        incoming.streamdetails = _streamdetails_for_crossfade(late_buffer)
+
+    preparation = asyncio.create_task(_reselect_late())
+    await asyncio.wait_for(
+        audio._await_fade_source(cast("Any", incoming), preparation), FADE_SOURCE_WAIT
+    )
+
+    assert incoming.streamdetails.buffer is late_buffer
+    await preparation
+
+
+async def test_the_fade_stops_waiting_once_the_preparation_gave_up() -> None:
+    """A preparation that ended without attaching audio costs the boundary no wait."""
+    audio = StreamsAudio(MagicMock())
+    incoming = _incoming_item(_streamdetails_for_crossfade(None))
+
+    await asyncio.wait_for(
+        audio._await_fade_source(cast("Any", incoming), await _finished_preparation()), 0.05
+    )
 
 
 async def test_the_fade_does_not_wait_for_audio_that_is_ready() -> None:
     """Incoming audio that is already in hand costs the boundary nothing."""
     audio = StreamsAudio(MagicMock())
+    incoming = _incoming_item(_streamdetails_for_crossfade(_buffer(20, ready=True)))
 
-    await asyncio.wait_for(
-        audio._await_fade_source(_streamdetails_for_crossfade(_buffer(20, ready=True))), 0.05
-    )
+    await asyncio.wait_for(audio._await_fade_source(cast("Any", incoming), None), 0.05)
 
 
 # -- Path level: get_queue_item_stream_with_smartfade --
@@ -896,7 +944,7 @@ async def test_the_handoff_is_claimed_before_the_fade_is_even_sized(
     audio.setup()
     claimed_during_sizing = asyncio.Event()
 
-    async def _slow_sizing(_streamdetails: object) -> None:
+    async def _slow_sizing(_queue_item: object, _preparation: object) -> None:
         # stands in for the wait on the incoming source
         if "queue-1" in audio._crossfade_pending:
             claimed_during_sizing.set()

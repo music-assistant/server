@@ -2029,10 +2029,10 @@ class StreamsAudio:
                 if crossfade_allowed:
                     # the incoming track's audio may still be on its way; make sure it is
                     # being prepared and give it a bounded chance to show up
-                    self.mass.player_queues.prepare_next_audio_buffer(
+                    preparation = self.mass.player_queues.prepare_next_audio_buffer(
                         queue.queue_id, queue_item.queue_item_id
                     )
-                    await self._await_fade_source(next_queue_item.streamdetails)
+                    await self._await_fade_source(next_queue_item, preparation)
                     transition_mode, fade_in_buffer_duration = self._select_buffered_crossfade(
                         next_queue_item.streamdetails,
                         crossfade_mode,
@@ -2472,11 +2472,14 @@ class StreamsAudio:
                     if crossfade_buffer_size > 0 and item_crossfade_mode != CrossfadeMode.DISABLED:
                         # the incoming track's audio may still be on its way; make sure it
                         # is being prepared and give it a bounded chance to show up
-                        if last_queue_track is not None:
+                        preparation = (
                             self.mass.player_queues.prepare_next_audio_buffer(
                                 queue.queue_id, last_queue_track.queue_item_id
                             )
-                        await self._await_fade_source(queue_track.streamdetails)
+                            if last_queue_track is not None
+                            else None
+                        )
+                        await self._await_fade_source(queue_track, preparation)
                         transition_mode, incoming_duration = self._select_buffered_crossfade(
                             queue_track.streamdetails,
                             item_crossfade_mode,
@@ -4185,25 +4188,34 @@ class StreamsAudio:
         )
         return handover
 
-    async def _await_fade_source(self, streamdetails: StreamDetails) -> None:
+    async def _await_fade_source(
+        self, queue_item: QueueItem, preparation: asyncio.Task[None] | None
+    ) -> None:
         """
         Give the incoming track a bounded chance to start delivering.
 
-        :param streamdetails: Stream details of the incoming (fade-in) track.
+        Returns at once when its audio is ready or when no preparation is still running.
+
+        :param queue_item: The incoming (fade-in) queue item.
+        :param preparation: The preparation of its audio, if one was started.
         """
         loop = asyncio.get_event_loop()
         deadline = loop.time() + FADE_SOURCE_WAIT
         while True:
-            audio_buffer = cast("AudioBuffer | None", streamdetails.buffer)
+            # read the details on every pass: a capacity reselection replaces them
+            streamdetails = queue_item.streamdetails
+            audio_buffer = cast(
+                "AudioBuffer | None", streamdetails.buffer if streamdetails else None
+            )
             if audio_buffer is not None:
                 if audio_buffer.has_error:
                     return
                 with suppress(TimeoutError):
                     await asyncio.wait_for(audio_buffer.ready.wait(), deadline - loop.time())
                 return
-            if loop.time() >= deadline:
+            if preparation is None or preparation.done() or loop.time() >= deadline:
                 return
-            # the buffer appears when the source's session starts producing
+            # the buffer appears once the preparation starts producing
             await asyncio.sleep(0.1)
 
     def _select_buffered_crossfade(

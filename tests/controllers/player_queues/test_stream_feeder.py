@@ -495,3 +495,15 @@ async def test_a_fully_arrived_track_beyond_the_player_prepares_nothing() -> Non
     controller.track_fully_buffered("queue-1", "current")
 
     prepare.assert_not_called()
+
+
+async def test_a_fully_arrived_track_without_a_player_position_prepares_nothing() -> None:
+    """A queue whose player owns no item yet gives the fills nothing to chain on."""
+    controller, prepare = _fully_buffered_controller(is_realtime=True, committed=0)
+    queue = cast("Any", controller._queue_data["queue-1"].queue)
+    queue.current_index = None
+    queue.index_in_buffer = None
+
+    controller.track_fully_buffered("queue-1", "current")
+
+    prepare.assert_not_called()
