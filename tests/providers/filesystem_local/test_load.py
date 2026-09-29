@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -19,21 +18,6 @@ from tests.controllers.storage.conftest import (
     mount_line,
     set_locations,
 )
-
-
-@pytest.fixture
-async def storage(mass_minimal: MusicAssistant) -> AsyncGenerator[StorageController]:
-    """
-    Provide a storage controller on a minimal server, not set up (no background refresh).
-
-    :param mass_minimal: The minimal server to attach the controller to.
-    """
-    controller = StorageController(mass_minimal)
-    mass_minimal.storage = controller
-    try:
-        yield controller
-    finally:
-        await controller.close()
 
 
 def _create_provider(mass: MusicAssistant, base_path: Path) -> LocalFileSystemProvider:

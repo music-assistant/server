@@ -22,8 +22,8 @@ async def run_setup(session: SetupSession) -> None:
     """
     Run the setup flow: collect the content type and folder, then create the provider.
 
-    A new folder must be an existing folder in a storage location the caller may use; on
-    reconfigure the folder the source already reads from is kept as it is.
+    A new folder must be an existing folder in an available storage location the caller may
+    use; on reconfigure an unchanged folder is accepted without these checks.
 
     :param session: The setup session driving the flow.
     """
@@ -43,6 +43,10 @@ async def run_setup(session: SetupSession) -> None:
         submitted = await session.form(form_entries, step_id="user", errors=errors, last_step=True)
         setup_data.update(submitted)
         path = str(setup_data[CONF_ENTRY_PATH.key])
+        if not path.strip():
+            # the same error the engine gives a required field that was left out
+            errors = {CONF_ENTRY_PATH.key: "required"}
+            continue
         # a source keeps the folder it already reads from, also one outside every location
         if path != session.context.setup_data.get(CONF_ENTRY_PATH.key):
             try:
@@ -68,12 +72,22 @@ async def _check_folder(session: SetupSession, path: str) -> None:
     manages_all_sources = session.context.manages_all_sources
     if not storage.can_hold_music_source(path, manages_all_sources):
         raise _folder_not_allowed(path)
+    # the storage controller answers first, so a share whose server is gone is never touched
+    available = await storage.is_available(path)
+    location = storage.get_location_for_path(path)
+    if not available and location is not None and not location.available:
+        raise SetupFlowError(
+            f"Storage location {location.path} is not available",
+            translation_key="storage_location_unavailable",
+            translation_args=[location.path],
+        )
     # a symlink must not lead out of the locations the caller may use, nor into the server's
-    # own folders
+    # own folders; checked before a missing folder is reported, so a link does not tell what
+    # exists outside those locations
     real_path = await asyncio.to_thread(os.path.realpath, path)
     if not storage.can_hold_music_source(real_path, manages_all_sources):
         raise _folder_not_allowed(path)
-    if not await asyncio.to_thread(os.path.isdir, real_path):
+    if not available:
         raise SetupFlowError(
             f"Music directory {path} does not exist",
             translation_key="music_directory_not_found",

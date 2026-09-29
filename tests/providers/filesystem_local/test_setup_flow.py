@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -82,21 +83,6 @@ class _Flow:
 
 
 @pytest.fixture
-async def storage(mass_minimal: MusicAssistant) -> AsyncGenerator[StorageController]:
-    """
-    Provide a storage controller on a minimal server, not set up (no background refresh).
-
-    :param mass_minimal: The minimal server to attach the controller to.
-    """
-    controller = StorageController(mass_minimal)
-    mass_minimal.storage = controller
-    try:
-        yield controller
-    finally:
-        await controller.close()
-
-
-@pytest.fixture
 async def start_flow(
     storage: StorageController,
 ) -> AsyncGenerator[Callable[..., Awaitable[_Flow]]]:
@@ -147,6 +133,9 @@ def tree(tmp_path: Path, storage: StorageController) -> Path:
     (media / "escape").symlink_to(tmp_path / "outside", target_is_directory=True)
     (media / "to_data").symlink_to(tmp_path / "data", target_is_directory=True)
     (media / "shortcut").symlink_to(media / "Music", target_is_directory=True)
+    (media / "to_admin_disk").symlink_to(
+        tmp_path / "admin_disk" / "Music", target_is_directory=True
+    )
     (tmp_path / "outside" / "into_media").symlink_to(media / "Music", target_is_directory=True)
     set_locations(
         storage,
@@ -161,6 +150,24 @@ def _error_key(step: SetupFlowStep) -> str:
     """Return the translation key of the error on the folder of a re-rendered form."""
     assert step.type == FlowStepType.FORM
     return step.error_translations["path"].key
+
+
+def _record_calls(monkeypatch: pytest.MonkeyPatch, name: str) -> list[str]:
+    """
+    Record the paths a function of os.path is called with, and return that record.
+
+    :param monkeypatch: Pytest monkeypatch fixture.
+    :param name: The name of the function in os.path.
+    """
+    calls: list[str] = []
+    original = getattr(os.path, name)
+
+    def _record(path: str, *args: Any, **kwargs: Any) -> Any:
+        calls.append(os.fspath(path))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(os.path, name, _record)
+    return calls
 
 
 @MEMBER_AND_ADMIN
@@ -196,10 +203,9 @@ async def test_a_folder_in_a_location_finishes(
         "{tmp}",
         "/",
         "media/Music",
-        "",
         "{tmp}/media/Music\0",
     ],
-    ids=["outside", "look_alike", "traversal", "parent", "root", "relative", "empty", "nul"],
+    ids=["outside", "look_alike", "traversal", "parent", "root", "relative", "nul"],
 )
 async def test_a_folder_outside_every_location_is_refused(
     start_flow: Callable[..., Awaitable[_Flow]],
@@ -221,6 +227,24 @@ async def test_a_folder_outside_every_location_is_refused(
     assert flow.finished_with is None
 
 
+@pytest.mark.parametrize("path", ["", "  "], ids=["empty", "blank"])
+async def test_an_empty_folder_is_a_missing_value(
+    start_flow: Callable[..., Awaitable[_Flow]], path: str
+) -> None:
+    """
+    A folder left empty reads as a required value that is missing, like any required field.
+
+    :param path: The submitted folder.
+    """
+    flow = await start_flow()
+
+    step = await flow.submit(path)
+
+    assert step.type == FlowStepType.FORM
+    assert step.errors == {"path": "required"}
+    assert flow.finished_with is None
+
+
 async def test_a_refused_folder_can_be_corrected(
     start_flow: Callable[..., Awaitable[_Flow]], tree: Path
 ) -> None:
@@ -238,22 +262,34 @@ async def test_a_refused_folder_can_be_corrected(
     assert flow.finished_with == {CONF_CONTENT_TYPE: "music", "path": str(tree / "media" / "Music")}
 
 
-@pytest.mark.parametrize(("manages_all_sources", "allowed"), [(False, False), (True, True)])
+@pytest.mark.parametrize(
+    ("manages_all_sources", "allowed"), [(False, False), (True, True)], ids=["member", "admin"]
+)
+@pytest.mark.parametrize(
+    "folder",
+    ["admin_disk/Music", "media/to_admin_disk"],
+    ids=["folder", "link_from_a_shared_location"],
+)
 async def test_a_location_only_admins_see_is_refused_to_a_member(
     start_flow: Callable[..., Awaitable[_Flow]],
     tree: Path,
     manages_all_sources: bool,
     allowed: bool,
+    folder: str,
 ) -> None:
     """
     A member may not put a source on a location that was not made available to it.
 
+    Neither through a symlink in a location it may use: the member's rule also holds for the
+    folder the link leads to.
+
     :param manages_all_sources: Whether the caller manages every music source.
     :param allowed: Whether the caller may use the location.
+    :param folder: The picked folder, relative to the tree.
     """
     flow = await start_flow(manages_all_sources)
 
-    step = await flow.submit(tree / "admin_disk" / "Music")
+    step = await flow.submit(tree / folder)
 
     if allowed:
         assert step.type == FlowStepType.FINISH
@@ -265,8 +301,20 @@ async def test_a_location_only_admins_see_is_refused_to_a_member(
 @MEMBER_AND_ADMIN
 @pytest.mark.parametrize(
     "folder",
-    ["media/escape", "media/escape/Music", "media/to_data", "outside/into_media"],
-    ids=["out_of_the_location", "below_the_link", "into_the_data_folder", "link_from_outside"],
+    [
+        "media/escape",
+        "media/escape/Music",
+        "media/escape/missing",
+        "media/to_data",
+        "outside/into_media",
+    ],
+    ids=[
+        "out_of_the_location",
+        "below_the_link",
+        "missing_below_the_link",
+        "into_the_data_folder",
+        "link_from_outside",
+    ],
 )
 async def test_a_symlink_across_the_location_boundary_is_refused(
     start_flow: Callable[..., Awaitable[_Flow]],
@@ -278,6 +326,8 @@ async def test_a_symlink_across_the_location_boundary_is_refused(
     A symlink is refused when it leads out of the locations or into the server's own folders.
 
     So is a symlink outside every location that leads into one: the folder is taken as given.
+    A missing folder behind such a link is refused the same way, so the answer does not tell
+    what exists outside the locations.
 
     :param manages_all_sources: Whether the caller manages every music source.
     :param folder: The picked folder, relative to the tree.
@@ -333,6 +383,39 @@ async def test_what_is_no_folder_is_reported_as_missing(
 
     assert _error_key(step) == "music_directory_not_found"
     assert step.error_translations["path"].args == [str(tree / folder)]
+    assert flow.finished_with is None
+
+
+@MEMBER_AND_ADMIN
+async def test_a_folder_on_an_unavailable_location_is_not_touched(
+    start_flow: Callable[..., Awaitable[_Flow]],
+    tmp_path: Path,
+    storage: StorageController,
+    monkeypatch: pytest.MonkeyPatch,
+    manages_all_sources: bool,
+) -> None:
+    """
+    A folder on a location that is away is refused as such, without touching the folder.
+
+    A share whose server is gone could hold up whatever touches it for as long as its mount
+    waits for an answer.
+
+    :param manages_all_sources: Whether the caller manages every music source.
+    """
+    nas = tmp_path / "nas"
+    (nas / "Music").mkdir(parents=True)
+    set_locations(
+        storage,
+        make_location(nas, kind=StorageKind.NETWORK_SHARE, managed=True, available=False),
+    )
+    touched = [_record_calls(monkeypatch, "realpath"), _record_calls(monkeypatch, "isdir")]
+    flow = await start_flow(manages_all_sources)
+
+    step = await flow.submit(nas / "Music")
+
+    assert _error_key(step) == "storage_location_unavailable"
+    assert step.error_translations["path"].args == [str(nas)]
+    assert not [path for calls in touched for path in calls if path.startswith(str(nas))]
     assert flow.finished_with is None
 
 

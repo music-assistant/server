@@ -36,6 +36,7 @@
   },
   "setup_flow": {
     "user": {
+      "title": "Choose a folder",
       "description": "Choose what you want to add, then pick the folder it is stored in."
     }
   },

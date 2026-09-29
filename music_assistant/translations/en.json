@@ -1410,6 +1410,7 @@
   "provider.filesystem_local.manifest.description": "Play music, audiobooks and podcasts from folders on this server, connected drives and network shares.",
   "provider.filesystem_local.manifest.name": "Local files",
   "provider.filesystem_local.setup_flow.user.description": "Choose what you want to add, then pick the folder it is stored in.",
+  "provider.filesystem_local.setup_flow.user.title": "Choose a folder",
   "provider.filesystem_nfs.config_entries.export_path.description": "The NFS export path on the remote server. For example /volume1/music or /exports/media.",
   "provider.filesystem_nfs.config_entries.export_path.label": "Export path",
   "provider.filesystem_nfs.config_entries.host.description": "The hostname or IP address of the NFS server to connect to. For example mynas.local or 192.168.1.100.",
