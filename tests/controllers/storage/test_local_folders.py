@@ -836,6 +836,129 @@ async def test_member_does_not_see_the_sources(storage: StorageController, tmp_p
     assert _location(storage.get_locations(), tmp_path).used_by == ["My music"]
 
 
+@pytest.mark.parametrize("base_path", ["{parent}", "{parent}/", "/"])
+async def test_read_by_a_source_around_the_location(
+    storage: StorageController, tmp_path: Path, base_path: str
+) -> None:
+    """A source whose folder contains a location reads it, and does not keep it from removal."""
+    folder = tmp_path / "music"
+    folder.mkdir()
+    await storage.add_local_folder(str(folder))
+    store_source(storage, base_path.format(parent=tmp_path))
+
+    location = _location((await storage.get_info()).locations, folder)
+    await storage.remove_local_folder(str(folder))
+
+    assert (location.used_by, location.read_by) == ([], ["My music"])
+    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == []
+
+
+@pytest.mark.parametrize("base_path", ["{folder}", "{folder}/", "{folder}/Albums"])
+async def test_source_in_the_location_is_no_reader(
+    storage: StorageController, tmp_path: Path, base_path: str
+) -> None:
+    """A source whose folder is a location or lies inside it uses the location, nothing more."""
+    folder = tmp_path / "music"
+    folder.mkdir()
+    await storage.add_local_folder(str(folder))
+    store_source(storage, base_path.format(folder=folder))
+
+    location = _location((await storage.get_info()).locations, folder)
+    with pytest.raises(ActionUnavailable) as exc_info:
+        await storage.remove_local_folder(str(folder))
+
+    assert (location.used_by, location.read_by) == (["My music"], [])
+    assert exc_info.value.translation_key == "location_in_use"
+    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == [str(folder)]
+
+
+@pytest.mark.parametrize(
+    ("location_name", "source_name"), [("mediafiles", "media"), ("media", "mediafiles")]
+)
+async def test_look_alike_source_neither_uses_nor_reads(
+    storage: StorageController, tmp_path: Path, location_name: str, source_name: str
+) -> None:
+    """A source on a folder whose name only starts like that of a location is not listed."""
+    folder = tmp_path / location_name
+    folder.mkdir()
+    await storage.add_local_folder(str(folder))
+    store_source(storage, tmp_path / source_name)
+
+    location = _location((await storage.get_info()).locations, folder)
+
+    assert (location.used_by, location.read_by) == ([], [])
+
+
+@pytest.mark.parametrize("base_path", ["{parent}", "{folder}"])
+async def test_disabled_source_reads_no_location(
+    storage: StorageController, tmp_path: Path, base_path: str
+) -> None:
+    """A disabled source is listed on no location, around it or in it."""
+    folder = tmp_path / "music"
+    folder.mkdir()
+    await storage.add_local_folder(str(folder))
+    store_source(storage, base_path.format(parent=tmp_path, folder=folder), enabled=False)
+
+    location = _location((await storage.get_info()).locations, folder)
+
+    assert (location.used_by, location.read_by) == ([], [])
+
+
+async def test_location_used_and_read_by_other_sources(
+    storage: StorageController, tmp_path: Path
+) -> None:
+    """
+    A location lists the sources in it apart from the sources around it, each sorted.
+
+    Only a source in it keeps the location from removal.
+    """
+    folder = tmp_path / "music" / "extra"
+    (folder / "Albums").mkdir(parents=True)
+    await storage.add_local_folder(str(folder))
+    store_source(storage, folder / "Albums", "filesystem_local--a", "Inside")
+    store_source(storage, tmp_path / "music", "filesystem_local--b", "zeta")
+    store_source(storage, "/", "filesystem_local--c", "Alpha")
+
+    location = _location((await storage.get_info()).locations, folder)
+    with pytest.raises(ActionUnavailable) as exc_info:
+        await storage.remove_local_folder(str(folder))
+
+    assert (location.used_by, location.read_by) == (["Inside"], ["Alpha", "zeta"])
+    assert exc_info.value.translation_args == ["Inside"]
+    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == [str(folder)]
+
+
+async def test_server_folders_are_read_by_no_source(
+    storage: StorageController, tmp_path: Path
+) -> None:
+    """The data and cache rows list no source, also when a source's folder contains them."""
+    folder = tmp_path / "music"
+    folder.mkdir()
+    await storage.add_local_folder(str(folder))
+    store_source(storage, tmp_path)
+
+    info = await storage.get_info()
+
+    server_rows = [loc for loc in info.locations if loc.usage != StorageUsage.MEDIA]
+    assert [loc.usage for loc in server_rows] == [StorageUsage.DATA, StorageUsage.CACHE]
+    assert all((loc.used_by, loc.read_by) == ([], []) for loc in server_rows)
+    assert _location(info.locations, folder).read_by == ["My music"]
+
+
+async def test_member_does_not_see_the_readers(storage: StorageController, tmp_path: Path) -> None:
+    """A caller that does not manage every source never learns which sources read a location."""
+    folder = tmp_path / "music"
+    folder.mkdir()
+    await storage.add_local_folder(str(folder))
+    store_source(storage, tmp_path)
+    set_current_user(MEMBER)
+
+    info = await storage.get_info()
+
+    assert _location(info.locations, folder).read_by == []
+    assert _location(storage.get_locations(), folder).read_by == ["My music"]
+
+
 async def test_removed_folder_says_so(storage: StorageController, tmp_path: Path) -> None:
     """
     A registered folder removed from disk says it does not exist, until it is back.

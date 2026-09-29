@@ -57,6 +57,7 @@ LOCATION_FIELDS = [
     "used_space_gb",
     "error",
     "used_by",
+    "read_by",
 ]
 
 
@@ -173,6 +174,7 @@ def test_info_serializes_to_the_contract() -> None:
     assert data["locations"][0]["usage"] == "media"
     assert data["locations"][0]["backend"] is None
     assert data["locations"][0]["used_by"] == []
+    assert data["locations"][0]["read_by"] == []
 
 
 def test_location_for_path_is_the_most_specific(storage: StorageController) -> None:

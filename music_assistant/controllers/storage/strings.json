@@ -15,7 +15,7 @@
     "folder_not_mounted": "The drive or share of this folder is not mounted.",
     "storage_not_responding": "The storage of this location does not respond. Check that the drive is connected, or that the server of the network share is online.",
     "folder_not_registered": "This folder was not added as a storage location.",
-    "location_in_use": "The music source {0} uses this folder. Remove that music source first.",
+    "location_in_use": "The music source {0} uses this folder. Disable or remove that music source first.",
     "path_not_allowed": "This folder is not inside a storage location you can use.",
     "no_mount_backend": "This installation of Music Assistant can not mount network shares. Mount the share on the host and make it available to Music Assistant instead, see {0}",
     "mount_not_permitted": "This installation of Music Assistant is not allowed to mount network shares. Mount the share on the host and make it available to Music Assistant instead, see {0}",
