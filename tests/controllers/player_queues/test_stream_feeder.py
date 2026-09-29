@@ -410,7 +410,7 @@ async def test_prepare_next_creates_no_buffer_once_the_session_ended() -> None:
     mass.streams.audio.get_audio_buffer = AsyncMock()
 
     controller.prepare_next_audio_buffer("queue-1", "current")
-    await mass.create_task.call_args.args[0]
+    await mass.create_task.call_args.args[0]()
 
     mass.streams.audio.get_audio_buffer.assert_not_awaited()
 
@@ -437,7 +437,7 @@ async def test_prepare_next_releases_a_buffer_that_filled_after_the_session_ende
     mass.streams.audio.get_audio_buffer = _stop_meanwhile
 
     controller.prepare_next_audio_buffer("queue-1", "current")
-    await mass.create_task.call_args.args[0]
+    await mass.create_task.call_args.args[0]()
 
     buffer.clear.assert_awaited_once()
     assert next_item.streamdetails.buffer is None
@@ -458,7 +458,7 @@ async def test_prepare_next_keeps_the_buffer_when_the_session_rotated_mid_fill()
     mass.streams.audio.get_audio_buffer = _skip_meanwhile
 
     controller.prepare_next_audio_buffer("queue-1", "current")
-    await mass.create_task.call_args.args[0]
+    await mass.create_task.call_args.args[0]()
 
     buffer.clear.assert_not_awaited()
     assert next_item.streamdetails.buffer is buffer
