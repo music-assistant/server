@@ -26,6 +26,7 @@ from .constants import (
     CONF_ALLOWED_MEMBERS,
     CONF_ENTRY_SGP_NOTE,
     EXTRA_FEATURES_FROM_MEMBERS,
+    FEATURES_FROM_LEADER,
     IDLE_GRACE_SECONDS,
     PLAYBACK_START_TIMEOUT,
     PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH,
@@ -35,6 +36,7 @@ from .constants import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Collection
 
+    from music_assistant_models.enums import RepeatMode
     from music_assistant_models.player import PlayerSource
 
     from .provider import SyncGroupProvider
@@ -147,9 +149,10 @@ class SyncGroupPlayer(Player):
             base_features.add(PlayerFeature.SET_MEMBERS)
         if self.sync_leader:
             # add features supported by the sync leader
-            for feature in EXTRA_FEATURES_FROM_MEMBERS:
-                if feature in self.sync_leader.state.supported_features:
-                    base_features.add(feature)
+            base_features.update(
+                (EXTRA_FEATURES_FROM_MEMBERS | FEATURES_FROM_LEADER)
+                & self.sync_leader.state.supported_features
+            )
         else:
             # derive features from all (configured) group members
             # so that features like volume control are always advertised
@@ -406,6 +409,12 @@ class SyncGroupPlayer(Player):
 
     async def play(self) -> None:
         """Send PLAY (unpause) command to given player."""
+        # a source the leader plays itself is resumed on the leader, not streamed by us
+        if (leader := self.sync_leader) and any(
+            source.id == self.active_source for source in self.source_list
+        ):
+            await self.mass.players._handle_cmd_play(leader.player_id)
+            return
         # The controller has already powered us on, but the group may not be
         # formed (e.g. after _dissolve_and_reform left us powered with no leader).
         # _form_syncgroup is idempotent so calling it here is cheap when already formed.
@@ -455,6 +464,42 @@ class SyncGroupPlayer(Player):
                 return
             # Use internal handler to bypass group redirect logic and avoid infinite loop
             await self.mass.players._handle_enqueue_next_media(sync_leader.player_id, media)
+
+    async def pause(self) -> None:
+        """Send PAUSE command to given player."""
+        await self.mass.players._handle_cmd_pause(self._require_sync_leader().player_id)
+
+    async def seek(self, position: int) -> None:
+        """
+        Send SEEK command to given player.
+
+        :param position: The position to seek to, in seconds.
+        """
+        await self._require_sync_leader().seek(position)
+
+    async def next_track(self) -> None:
+        """Send NEXT_TRACK command to given player."""
+        await self._require_sync_leader().next_track()
+
+    async def previous_track(self) -> None:
+        """Send PREVIOUS_TRACK command to given player."""
+        await self._require_sync_leader().previous_track()
+
+    async def set_shuffle(self, shuffle_enabled: bool) -> None:
+        """
+        Send SET SHUFFLE command to given player.
+
+        :param shuffle_enabled: Whether the source should play its content shuffled.
+        """
+        await self._require_sync_leader().set_shuffle(shuffle_enabled)
+
+    async def set_repeat(self, repeat_mode: RepeatMode) -> None:
+        """
+        Send SET REPEAT command to given player.
+
+        :param repeat_mode: The repeat mode the source should apply.
+        """
+        await self._require_sync_leader().set_repeat(repeat_mode)
 
     async def set_members(  # noqa: PLR0915
         self,
@@ -684,6 +729,12 @@ class SyncGroupPlayer(Player):
         if domain != native_domain and self._all_members_can_play_on_domain(native_domain):
             return native_domain
         return domain
+
+    def _require_sync_leader(self) -> Player:
+        """Return the sync leader, or raise when the group is not formed."""
+        if not (leader := self.sync_leader):
+            raise PlayerCommandFailed(f"{self.display_name} has no active sync leader")
+        return leader
 
     def _is_member_allowed(self, player_id: str) -> bool:
         """Return whether a player is allowed to join this group given the configured filter."""
