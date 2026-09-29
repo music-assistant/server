@@ -217,9 +217,14 @@ class AIRadioStorageMixin:
                         feed_entry.get("max_articles"), section_id
                     )
                     rss_feeds.append({"url": url, "max_articles": max_articles})
-                    # a single section may never fan out into an unbounded number of feeds
-                    if len(rss_feeds) >= RSS_MAX_FEEDS_PER_SECTION:
-                        break
+                # a single section may never fan out into an unbounded number of feeds; reject an
+                # over-limit config outright rather than silently dropping the extra feeds, so an
+                # operator never loses configured feeds without being told
+                if len(rss_feeds) > RSS_MAX_FEEDS_PER_SECTION:
+                    raise InvalidDataError(
+                        f"Section '{section_id}' has {len(rss_feeds)} RSS feeds, exceeding the "
+                        f"maximum of {RSS_MAX_FEEDS_PER_SECTION}"
+                    )
             if rss_feeds:
                 normalized["rss_feeds"] = rss_feeds
         for passthrough_key in ("cover_image",):

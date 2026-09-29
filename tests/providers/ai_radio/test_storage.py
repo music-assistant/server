@@ -406,8 +406,27 @@ def test_normalize_section_rejects_non_numeric_rss_max_articles() -> None:
         )
 
 
-def test_normalize_section_caps_rss_feed_count() -> None:
-    """A section can never carry more than the server-owned feed cap."""
+def test_normalize_section_rejects_too_many_rss_feeds() -> None:
+    """A section carrying more than the feed cap is rejected instead of silently truncated."""
+    storage = DummyStorage()
+
+    with pytest.raises(InvalidDataError, match="exceeding the maximum"):
+        storage._normalize_section(
+            {
+                "id": "News",
+                "name": "News",
+                "type": "ai_text",
+                "prompt": "News <rss_feed>",
+                "rss_feeds": [
+                    {"url": f"https://example.com/feed{i}.xml"}
+                    for i in range(RSS_MAX_FEEDS_PER_SECTION + 5)
+                ],
+            }
+        )
+
+
+def test_normalize_section_allows_rss_feeds_at_cap() -> None:
+    """Exactly the maximum number of feeds is accepted unchanged."""
     storage = DummyStorage()
 
     normalized = storage._normalize_section(
@@ -418,7 +437,7 @@ def test_normalize_section_caps_rss_feed_count() -> None:
             "prompt": "News <rss_feed>",
             "rss_feeds": [
                 {"url": f"https://example.com/feed{i}.xml"}
-                for i in range(RSS_MAX_FEEDS_PER_SECTION + 5)
+                for i in range(RSS_MAX_FEEDS_PER_SECTION)
             ],
         }
     )

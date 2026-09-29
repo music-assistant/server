@@ -169,6 +169,15 @@ RSS_MAX_FEED_BYTES = 2 * 1024 * 1024
 # verbose feed cannot blow up the prompt size
 RSS_MAX_ARTICLE_CHARS = 500
 
+# hard cap on the total RSS text injected into a single clip prompt, summed across every feed and
+# every merged section, so a station wiring up many feeds cannot balloon the prompt (and its token
+# cost) without bound. Article- and feed-level caps only bound one feed/section at a time
+RSS_MAX_TOTAL_CHARS = 12000
+
+# how many HTTP redirects a feed download may follow. Redirects are followed manually so each hop
+# can be re-validated against the SSRF host allow-list before it is fetched
+RSS_MAX_REDIRECTS = 5
+
 # feed downloads are cached for this many seconds so back-to-back clips reuse one fetch instead
 # of hammering the feed server, while still refreshing often enough to stay timely
 RSS_CACHE_TTL = 300

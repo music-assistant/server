@@ -4,15 +4,19 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import re
+import socket
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 import defusedxml.ElementTree as DefusedET
+from defusedxml.common import DefusedXmlException
 from music_assistant_models.enums import ContentType, StreamType, VolumeNormalizationMode
 from music_assistant_models.errors import (
     InvalidDataError,
@@ -64,6 +68,10 @@ from .constants import (
     RSS_MAX_CONCURRENT_FETCHES,
     RSS_MAX_FEED_BYTES,
     RSS_MAX_FEEDS_PER_SECTION,
+    RSS_MAX_MAX_ARTICLES,
+    RSS_MAX_REDIRECTS,
+    RSS_MAX_TOTAL_CHARS,
+    RSS_MIN_MAX_ARTICLES,
     RSS_REQUEST_TIMEOUT,
     TTS_CLIP_PCM_FORMAT,
     TTS_PEAK_CEILING_DB,
@@ -385,11 +393,39 @@ class AIRadioRenderMixin:
                 if queue_item is not None
                 else {}
             )
-            for token in rss_tokens:
-                feeds = feeds_by_token.get(token) or []
-                rss_text = await self._fetch_rss_content(feeds) if feeds else ""
-                values[token] = rss_text or NO_RSS_DATA_INSTRUCTION
+            values.update(await self._resolve_rss_tokens(rss_tokens, feeds_by_token))
         return values
+
+    async def _resolve_rss_tokens(
+        self, rss_tokens: list[str], feeds_by_token: dict[str, list[dict[str, Any]]]
+    ) -> dict[str, str]:
+        """
+        Resolve every RSS token in a clip concurrently under one shared budget.
+
+        A merged clip can reference several sections (``<rss_feed_0>``, ``<rss_feed_1>``, ...), each
+        with its own feeds. Resolving them sequentially meant one slow section's feed timeout stacked
+        onto the next, so every token is now fetched concurrently. All feeds across all tokens share
+        one concurrency limit, so a clip still cannot open more than RSS_MAX_CONCURRENT_FETCHES
+        connections no matter how many sections it merges. The combined article text is capped at
+        RSS_MAX_TOTAL_CHARS so a station wiring up many feeds cannot balloon the prompt (the per-feed
+        and per-article caps only bound one feed at a time).
+        """
+        # one semaphore shared across the whole clip, so N merged sections cannot each open their
+        # own RSS_MAX_CONCURRENT_FETCHES connections
+        semaphore = asyncio.Semaphore(RSS_MAX_CONCURRENT_FETCHES)
+        tokens = [(token, feeds_by_token.get(token) or []) for token in rss_tokens]
+
+        async def resolve_one(feeds: list[dict[str, Any]]) -> str:
+            return await self._fetch_rss_content(feeds, semaphore) if feeds else ""
+
+        texts = await asyncio.gather(*(resolve_one(feeds) for _token, feeds in tokens))
+        resolved: dict[str, str] = {}
+        remaining = RSS_MAX_TOTAL_CHARS
+        for (token, _feeds), text in zip(tokens, texts, strict=True):
+            clipped = _clip_to_budget(text, remaining) if text else ""
+            remaining -= len(clipped)
+            resolved[token] = clipped or NO_RSS_DATA_INSTRUCTION
+        return resolved
 
     def _decode_rss_feed_map(self, raw: Any) -> dict[str, list[dict[str, Any]]]:
         """
@@ -416,27 +452,38 @@ class AIRadioRenderMixin:
                 result[str(token)] = [feed for feed in feeds if isinstance(feed, dict)]
         return result
 
-    async def _fetch_rss_content(self, feeds: list[dict[str, Any]]) -> str:
+    async def _fetch_rss_content(
+        self, feeds: list[dict[str, Any]], semaphore: asyncio.Semaphore | None = None
+    ) -> str:
         """Fetch RSS/Atom feeds and return formatted article text for LLM context."""
         # never fan out beyond the section cap, even if a stale or hand-edited config slips through
         feeds = feeds[:RSS_MAX_FEEDS_PER_SECTION]
-        # bound concurrency so a single clip cannot drain the shared HTTP pool
-        semaphore = asyncio.Semaphore(RSS_MAX_CONCURRENT_FETCHES)
+        # bound concurrency so a single clip cannot drain the shared HTTP pool; when several sections
+        # are resolved together they pass a shared semaphore so the limit spans the whole clip
+        if semaphore is None:
+            semaphore = asyncio.Semaphore(RSS_MAX_CONCURRENT_FETCHES)
 
         async def fetch_one(feed: dict[str, Any]) -> str:
             url = str(feed.get("url", "")).strip()
             if not url:
                 return ""
-            max_articles = coerce_int(feed.get("max_articles"), RSS_DEFAULT_MAX_ARTICLES)
+            # re-clamp at render time too: storage normalizes on write, but a legacy or hand-edited
+            # config can still carry an out-of-range value, and a negative count would slice from
+            # the tail and silently include the wrong articles
+            max_articles = max(
+                RSS_MIN_MAX_ARTICLES,
+                min(
+                    RSS_MAX_MAX_ARTICLES,
+                    coerce_int(feed.get("max_articles"), RSS_DEFAULT_MAX_ARTICLES),
+                ),
+            )
             async with semaphore:
                 xml_text = await self._fetch_feed_document(url)
             if not xml_text:
                 return ""
-            try:
-                return _parse_rss_articles(xml_text, max_articles)
-            except Exception as err:
-                self.logger.warning("Could not parse RSS feed %s: %s", url, err)
-                return ""
+            # _parse_rss_articles swallows malformed-XML errors itself; anything else is a genuine
+            # defect and is left to surface rather than being masked as "no articles"
+            return _parse_rss_articles(xml_text, max_articles)
 
         results = await asyncio.gather(*(fetch_one(feed) for feed in feeds))
         parts = [result.strip() for result in results if isinstance(result, str) and result.strip()]
@@ -455,37 +502,8 @@ class AIRadioRenderMixin:
         )
         if isinstance(cached, str):
             return cached
-        try:
-            async with self.mass.http_session.get(
-                url,
-                timeout=aiohttp.ClientTimeout(total=RSS_REQUEST_TIMEOUT),
-                headers={"User-Agent": "MusicAssistant/AIRadio RSS Reader"},
-            ) as resp:
-                if resp.status != 200:
-                    self.logger.warning("RSS feed %s returned HTTP %s", url, resp.status)
-                    return ""
-                # read in chunks and stop once the cap is exceeded, so memory stays bounded even
-                # when the server sends no Content-Length or lies about it
-                chunks: list[bytes] = []
-                total = 0
-                async for chunk in resp.content.iter_chunked(65536):
-                    chunks.append(chunk)
-                    total += len(chunk)
-                    if total > RSS_MAX_FEED_BYTES:
-                        self.logger.warning(
-                            "RSS feed %s exceeded the %d byte limit; truncating",
-                            url,
-                            RSS_MAX_FEED_BYTES,
-                        )
-                        break
-                raw = b"".join(chunks)[:RSS_MAX_FEED_BYTES]
-                encoding = resp.charset or "utf-8"
-                try:
-                    xml_text = raw.decode(encoding, errors="replace")
-                except LookupError:
-                    xml_text = raw.decode("utf-8", errors="replace")
-        except (aiohttp.ClientError, TimeoutError) as err:
-            self.logger.warning("Could not fetch RSS feed %s: %s", url, err)
+        xml_text = await self._download_feed(url)
+        if not xml_text:
             return ""
         await self.mass.cache.set(
             url,
@@ -495,6 +513,100 @@ class AIRadioRenderMixin:
             category=RSS_CACHE_CATEGORY,
         )
         return xml_text
+
+    async def _download_feed(self, url: str) -> str:
+        """
+        Download a feed document, following redirects manually so every hop is SSRF-validated.
+
+        Feed URLs are operator-supplied, but a malicious or compromised feed server can still answer
+        with a redirect pointing at a private, loopback or link-local address (cloud metadata at
+        169.254.169.254, internal admin panels, ...). aiohttp would follow those blindly, so redirect
+        handling is disabled and done by hand: the target host of every hop is resolved and checked
+        against the public-address allow-list before it is fetched.
+
+        Known limitation: this closes the redirect-based SSRF vector, but a TOCTOU / DNS-rebinding
+        gap remains -- aiohttp re-resolves the host when it opens the socket, so a name that resolves
+        to a public address during validation could resolve to a private one an instant later.
+        Fully closing that needs a connector pinned to the validated IP, which is out of scope for
+        this change and inconsistent with how the rest of the codebase fetches user-supplied URLs.
+        """
+        current = url
+        for _hop in range(RSS_MAX_REDIRECTS + 1):
+            if not await self._is_public_http_url(current):
+                self.logger.warning(
+                    "Refusing to fetch RSS feed at non-public or unsupported address: %s", current
+                )
+                return ""
+            try:
+                async with self.mass.http_session.get(
+                    current,
+                    timeout=aiohttp.ClientTimeout(total=RSS_REQUEST_TIMEOUT),
+                    headers={"User-Agent": "MusicAssistant/AIRadio RSS Reader"},
+                    allow_redirects=False,
+                ) as resp:
+                    if resp.status in (301, 302, 303, 307, 308):
+                        location = resp.headers.get("Location")
+                        if not location:
+                            self.logger.warning(
+                                "RSS feed %s returned a redirect without a Location header", current
+                            )
+                            return ""
+                        # resolve relative redirects against the current URL and re-validate the hop
+                        current = urljoin(current, location)
+                        continue
+                    if resp.status != 200:
+                        self.logger.warning("RSS feed %s returned HTTP %s", current, resp.status)
+                        return ""
+                    # read in chunks and stop once the cap is exceeded, so memory stays bounded even
+                    # when the server sends no Content-Length or lies about it
+                    chunks: list[bytes] = []
+                    total = 0
+                    async for chunk in resp.content.iter_chunked(65536):
+                        chunks.append(chunk)
+                        total += len(chunk)
+                        if total > RSS_MAX_FEED_BYTES:
+                            self.logger.warning(
+                                "RSS feed %s exceeded the %d byte limit; truncating",
+                                current,
+                                RSS_MAX_FEED_BYTES,
+                            )
+                            break
+                    raw = b"".join(chunks)[:RSS_MAX_FEED_BYTES]
+                    return _decode_feed_bytes(raw, resp.charset)
+            except (aiohttp.ClientError, TimeoutError) as err:
+                self.logger.warning("Could not fetch RSS feed %s: %s", current, err)
+                return ""
+        self.logger.warning("RSS feed %s exceeded the redirect limit", url)
+        return ""
+
+    async def _is_public_http_url(self, url: str) -> bool:
+        """
+        Return True only when url is an http(s) URL whose host resolves to public addresses.
+
+        The scheme is restricted to http/https (so file://, ftp://, gopher://, ... are rejected) and
+        the host is resolved up front; if any resolved address is private, loopback, link-local,
+        multicast, reserved or unspecified the URL is refused, which blocks SSRF via a hostname that
+        maps to an internal address.
+        """
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https"):
+            return False
+        host = parts.hostname
+        if not host:
+            return False
+        try:
+            port = parts.port or (443 if parts.scheme == "https" else 80)
+        except ValueError:
+            return False
+        try:
+            infos = await asyncio.get_running_loop().getaddrinfo(
+                host, port, type=socket.SOCK_STREAM
+            )
+        except socket.gaierror, UnicodeError, OSError:
+            return False
+        if not infos:
+            return False
+        return all(_is_public_ip(info[4][0]) for info in infos)
 
     async def _mint_clip_media(
         self, queue_item: QueueItem, text: str, clip_id: str
@@ -617,6 +729,73 @@ class AIRadioRenderMixin:
         session.last_render_error = error
 
 
+# matches the encoding attribute in an XML prolog, e.g. <?xml version="1.0" encoding="ISO-8859-1"?>
+_XML_ENCODING_RE = re.compile(rb"""<\?xml[^>]*?encoding=["']([\w.\-]+)["']""", re.IGNORECASE)
+
+
+def _decode_feed_bytes(raw: bytes, http_charset: str | None) -> str:
+    """
+    Decode raw feed bytes to text, honoring the feed's declared encoding.
+
+    Forcing utf-8 corrupts feeds that legitimately declare another charset (a feed that is ISO-8859-1
+    would render ``café`` as ``caf<0xef>``), so the encoding is resolved in priority order: a
+    byte-order mark first, then the HTTP ``Content-Type`` charset, then the ``encoding=...`` attribute
+    in the XML prolog, and finally utf-8. ``errors="replace"`` guarantees a string is always returned.
+    """
+    # a BOM is authoritative and wins over any declared charset
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return raw.decode("utf-8-sig", errors="replace")
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16", errors="replace")
+    candidates: list[str] = []
+    if http_charset:
+        candidates.append(http_charset)
+    if (match := _XML_ENCODING_RE.search(raw[:1024])) is not None:
+        candidates.append(match.group(1).decode("ascii", errors="replace"))
+    candidates.append("utf-8")
+    for candidate in candidates:
+        try:
+            # errors="replace" never raises, so the first codec that actually exists is used
+            return raw.decode(candidate, errors="replace")
+        except LookupError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def _is_public_ip(ip_str: str) -> bool:
+    """Return True only when ip_str is a routable, public IP address."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    # an IPv4 address mapped into IPv6 (::ffff:127.0.0.1) must be judged by its embedded IPv4 form,
+    # otherwise a loopback/private address tunnelled through IPv6 would look public
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return not (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local  # also covers the 169.254.169.254 cloud metadata endpoint
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
+def _clip_to_budget(text: str, budget: int) -> str:
+    """Trim text to at most budget characters, preferring to cut on an article (newline) boundary."""
+    if budget <= 0:
+        return ""
+    if len(text) <= budget:
+        return text
+    truncated = text[:budget]
+    # prefer to end on a whole article rather than mid-line, but only if that keeps something useful
+    newline = truncated.rfind("\n")
+    if newline > 0:
+        return truncated[:newline].rstrip()
+    return truncated.rstrip()
+
+
 def _rss_tokens_in(prompt: str) -> list[str]:
     """
     Return the RSS placeholder tokens present in a prompt, de-duplicated in first-seen order.
@@ -662,7 +841,9 @@ def _parse_rss_articles(xml_text: str, max_articles: int) -> str:
 
     try:
         root = DefusedET.fromstring(xml_text)
-    except ET.ParseError:
+    except ET.ParseError, DefusedXmlException:
+        # ET.ParseError covers malformed XML; DefusedXmlException covers a document defused for an
+        # XML attack (entity expansion, external entities, ...). Both mean "unusable feed", not a bug
         return ""
 
     articles: list[str] = []
