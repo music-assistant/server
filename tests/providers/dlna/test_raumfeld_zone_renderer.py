@@ -59,14 +59,18 @@ async def test_setup_ignores_a_zone_renderer() -> None:
     """Setup skips a zone renderer instead of registering it as a player."""
     player = _player(TEUFEL, AV_TRANSPORT)
     register = AsyncMock()
+    disconnect = AsyncMock()
     delete_config = MagicMock()
     with (
         patch.object(player, "_device_connect", AsyncMock()),
+        patch.object(player, "_device_disconnect", disconnect),
         patch.object(player.mass.players, "register_or_update", register),
         patch.object(player.mass.players, "delete_player_config", delete_config),
     ):
         assert await player.setup() is False
     register.assert_not_called()
+    # it is never registered, so never unloaded: its event subscriptions end here
+    disconnect.assert_awaited_once()
     # its stored config goes too, so an existing install stops restoring it as a player
     delete_config.assert_called_once_with("uuid:dlna-player")
 
@@ -76,6 +80,7 @@ async def test_setup_survives_a_failing_config_removal() -> None:
     player = _player(TEUFEL, AV_TRANSPORT)
     with (
         patch.object(player, "_device_connect", AsyncMock()),
+        patch.object(player, "_device_disconnect", AsyncMock()),
         patch.object(
             player.mass.players, "delete_player_config", MagicMock(side_effect=KeyError("x"))
         ),
@@ -87,11 +92,14 @@ async def test_setup_keeps_a_speaker_renderer_config() -> None:
     """A speaker's own renderer is set up as usual and its config is left alone."""
     player = _player(TEUFEL, AV_TRANSPORT, RAUMFELD_GENERATOR)
     delete_config = MagicMock()
+    disconnect = AsyncMock()
     with (
         patch.object(player, "_device_connect", AsyncMock()),
+        patch.object(player, "_device_disconnect", disconnect),
         patch.object(player, "set_static_attributes", MagicMock()),
         patch.object(player.mass.players, "register_or_update", AsyncMock()),
         patch.object(player.mass.players, "delete_player_config", delete_config),
     ):
         assert await player.setup() is True
     delete_config.assert_not_called()
+    disconnect.assert_not_awaited()

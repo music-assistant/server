@@ -126,6 +126,10 @@ class DLNAPlayer(Player):
 
         if self.device and self._is_raumfeld_zone_renderer():
             self.logger.debug("Ignoring %s - Raumfeld zone renderer", self.device.name)
+            # Connecting subscribed to its events with auto-renewal, and a player that is
+            # never registered is never unloaded; the host creates a new zone renderer on
+            # every regrouping, so each one would leave a subscription behind.
+            await self._device_disconnect()
             # Creating this player already stored a config for it, and an install from
             # before zone renderers were ignored may still link it to a player that keeps
             # being restored. Deleting the config drops those links as well.
