@@ -1958,11 +1958,22 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         resolution; play_index also clears it once that target is reached (or the attempt
         ends), and _clear drops it on a queue reset.
 
+        A rapid second press cancels the first press's still-pending play_index (same debounce
+        task_id) before it ever runs, so current_item is itself mid-transition and its
+        streamdetails - if it has any at all - are a stale leftover from some earlier,
+        unrelated play, not the track actually still playing. When that is the case, this
+        re-targets the existing stash's (provider, item_id) - the real predecessor - onto the
+        new target instead of reading current_item's streamdetails.
+
         :param queue_id: The queue transitioning to a new current item.
         :param target_queue_item_id: queue_item_id of the track being transitioned to.
         """
         queue_data = self._queue_data[queue_id]
         outgoing = queue_data.queue.current_item
+        pending = queue_data.pending_transition_anchor
+        if pending and outgoing and pending[0] == outgoing.queue_item_id:
+            queue_data.pending_transition_anchor = (target_queue_item_id, pending[1], pending[2])
+            return
         streamdetails = outgoing.streamdetails if outgoing else None
         queue_data.pending_transition_anchor = (
             (target_queue_item_id, streamdetails.provider, streamdetails.item_id)

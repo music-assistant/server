@@ -105,6 +105,71 @@ async def test_next_stashes_the_outgoing_tracks_streamdetails_before_advancing()
     assert queue_data.queue.current_item.queue_item_id == queue_data.items[2].queue_item_id
 
 
+async def test_rapid_second_skip_carries_the_true_predecessor_forward() -> None:
+    """A second next() before play_index runs must not lose the real predecessor's details."""
+    ctrl = _controller()
+    queue_data = cast("PlayerQueueData", ctrl._queue_data["q1"])
+    # start from the first track so both presses land on real queue items
+    queue_data.queue.current_index = 0
+    queue_data.queue.current_item = queue_data.items[0]
+    real_predecessor_details = StreamDetails(
+        provider=INSTANCE,
+        item_id="Various Artists/Compilation Album/01 Track.flac",
+        audio_format=AudioFormat(content_type=ContentType.MP3),
+        media_type=MediaType.TRACK,
+    )
+    queue_data.queue.current_item.streamdetails = real_predecessor_details
+
+    await ctrl.next("q1")  # t1 (really playing) -> t2 (target); t2 never actually starts
+    intermediate_item = queue_data.queue.current_item
+    assert intermediate_item is not None
+    assert intermediate_item.queue_item_id == queue_data.items[1].queue_item_id
+    assert intermediate_item.streamdetails is None
+
+    await ctrl.next("q1")  # rapid second press cancels play_index(t2) before it ever ran
+
+    assert queue_data.pending_transition_anchor == (
+        queue_data.items[2].queue_item_id,
+        INSTANCE,
+        real_predecessor_details.item_id,
+    )
+
+
+async def test_rapid_second_skip_ignores_the_intermediate_items_stale_streamdetails() -> None:
+    """A leftover streamdetails on the skipped-over item must not replace the real predecessor's."""
+    ctrl = _controller()
+    queue_data = cast("PlayerQueueData", ctrl._queue_data["q1"])
+    queue_data.queue.current_index = 0
+    queue_data.queue.current_item = queue_data.items[0]
+    real_predecessor_details = StreamDetails(
+        provider=INSTANCE,
+        item_id="Various Artists/Compilation Album/01 Track.flac",
+        audio_format=AudioFormat(content_type=ContentType.MP3),
+        media_type=MediaType.TRACK,
+    )
+    queue_data.queue.current_item.streamdetails = real_predecessor_details
+
+    await ctrl.next("q1")  # t1 -> t2 (target)
+    intermediate_item = queue_data.queue.current_item
+    assert intermediate_item is not None
+    # t2 carries a stale streamdetails from some earlier, unrelated play - never re-fetched,
+    # since this attempt's play_index gets cancelled by the second press below
+    intermediate_item.streamdetails = StreamDetails(
+        provider=INSTANCE,
+        item_id="Various Artists/Compilation Album/99 Old Play.flac",
+        audio_format=AudioFormat(content_type=ContentType.MP3),
+        media_type=MediaType.TRACK,
+    )
+
+    await ctrl.next("q1")  # rapid second press, before play_index(t2) ever consumes that stash
+
+    assert queue_data.pending_transition_anchor == (
+        queue_data.items[2].queue_item_id,
+        INSTANCE,
+        real_predecessor_details.item_id,
+    )
+
+
 async def test_previous_stashes_the_outgoing_tracks_streamdetails_before_advancing() -> None:
     """A manual skip back preserves the predecessor's streamdetails for the folder tiebreak."""
     ctrl = _controller()
