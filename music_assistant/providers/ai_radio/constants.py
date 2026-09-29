@@ -156,7 +156,7 @@ RSS_MAX_MAX_ARTICLES = 20
 
 # a section may only carry so many feeds; extra entries are dropped during normalization so a
 # single section can never fan out into an unbounded number of outbound requests
-RSS_MAX_FEEDS_PER_SECTION = 5
+RSS_MAX_FEEDS_PER_SECTION = 20
 
 # never run more than this many feed downloads at once, so one clip cannot drain the shared pool
 RSS_MAX_CONCURRENT_FETCHES = 4

@@ -210,8 +210,8 @@ class AIRadioStorageMixin:
                 for feed_entry in raw_rss_feeds:
                     if not isinstance(feed_entry, dict):
                         continue
-                    url = str(feed_entry.get("url", "")).strip()
-                    if not url:
+                    raw_url = feed_entry.get("url")
+                    if not isinstance(raw_url, str) or not (url := raw_url.strip()):
                         continue
                     max_articles = self._normalize_rss_max_articles(
                         feed_entry.get("max_articles"), section_id

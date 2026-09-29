@@ -438,7 +438,7 @@ class AIRadioRenderMixin:
                 self.logger.warning("Could not parse RSS feed %s: %s", url, err)
                 return ""
 
-        results = await asyncio.gather(*[fetch_one(feed) for feed in feeds], return_exceptions=True)
+        results = await asyncio.gather(*(fetch_one(feed) for feed in feeds))
         parts = [result.strip() for result in results if isinstance(result, str) and result.strip()]
         return "\n\n".join(parts)
 
@@ -484,7 +484,7 @@ class AIRadioRenderMixin:
                     xml_text = raw.decode(encoding, errors="replace")
                 except LookupError:
                     xml_text = raw.decode("utf-8", errors="replace")
-        except Exception as err:
+        except (aiohttp.ClientError, TimeoutError) as err:
             self.logger.warning("Could not fetch RSS feed %s: %s", url, err)
             return ""
         await self.mass.cache.set(
