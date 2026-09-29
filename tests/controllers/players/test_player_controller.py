@@ -3322,6 +3322,23 @@ class TestEmulatedPause:
         mock_mass.player_queues.resume.assert_awaited_once_with("player_1")
         player.play.assert_not_called()
 
+    async def test_play_pause_before_the_device_confirms_its_stop_plays(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A second tap on play/pause while the stopped device still reports playing plays."""
+        controller, player, _published = self._player_on_own_queue(
+            mock_mass, device_reports_stop=False
+        )
+        await controller._handle_cmd_pause("player_1", emulate_pause=True)
+        assert _playback_state(player) == PlaybackState.PLAYING
+        controller.cmd_pause = AsyncMock()  # type: ignore[method-assign]
+        controller.cmd_play = AsyncMock()  # type: ignore[method-assign]
+
+        await controller.cmd_play_pause("player_1")
+
+        controller.cmd_play.assert_awaited_once_with("player_1")
+        controller.cmd_pause.assert_not_awaited()
+
     async def test_new_playback_ends_an_emulated_pause_that_does_not_show_yet(
         self, mock_mass: MagicMock
     ) -> None:

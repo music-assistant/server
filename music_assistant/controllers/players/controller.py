@@ -718,7 +718,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         - player_id: player_id of the player to handle the command.
         """
         player = self._get_player_with_redirect(player_id)
-        if player.state.playback_state == PlaybackState.PLAYING:
+        # an emulated pause may still show playing until the device confirms its stop
+        if player.state.playback_state == PlaybackState.PLAYING and not player.emulated_pause:
             await self.cmd_pause(player.player_id)
         else:
             await self.cmd_play(player.player_id)

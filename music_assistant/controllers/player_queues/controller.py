@@ -735,11 +735,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             and queue_player
             and not queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
         )
+        # a restart (resume, seek, skip) starts a new session, which is not ours to stop
+        session_id = self._queue_data[queue_id].session_id
         # Use internal handler to avoid circular redirect
         # (cmd_pause redirects to queue.pause, which calls cmd_pause again)
         await self.mass.players._handle_cmd_pause(queue_id, emulate_pause=watch_pause)
-        # a restart (resume, seek, skip) starts a new session, which is not ours to stop
-        session_id = self._queue_data[queue_id].session_id
 
         async def _watch_pause(player: Player) -> None:
             count = 0
@@ -771,7 +771,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         - queue_id: queue_id of the queue to handle the command.
         """
-        if (queue := self.get(queue_id)) and queue.state == PlaybackState.PLAYING:
+        # an emulated pause may still show playing until the device confirms its stop
+        if (
+            (queue := self.get(queue_id))
+            and queue.state == PlaybackState.PLAYING
+            and not (
+                (queue_player := self.mass.players.get_player(queue_id))
+                and queue_player.emulated_pause
+            )
+        ):
             await self.pause(queue_id)
             return
         await self.play(queue_id)

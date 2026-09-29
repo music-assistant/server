@@ -162,6 +162,44 @@ async def test_pause_watcher_leaves_a_restart_in_flight_alone() -> None:
     cast("AsyncMock", player.stop).assert_awaited_once()
 
 
+async def test_pause_watcher_leaves_a_restart_during_the_device_stop_alone() -> None:
+    """A resume that starts while the pause still waits for the device keeps its session."""
+    ctrl, player, queue_data = _setup()
+    mass = cast("MagicMock", ctrl.mass)
+    device_stop = cast("AsyncMock", player.stop).side_effect
+
+    async def _resume_during_the_stop() -> None:
+        # the pause does not hold the playback lock, so a resume can start meanwhile
+        queue_data.session_id = "sess-2"
+        await device_stop()
+
+    player.stop = AsyncMock(side_effect=_resume_during_the_stop)  # type: ignore[method-assign]
+    await ctrl.pause(QUEUE_ID)
+
+    await _run_pause_watcher(ctrl)
+
+    assert queue_data.session_id == "sess-2"
+    mass.streams.audio_processing.clear.assert_not_called()
+    player.stop.assert_awaited_once()
+
+
+async def test_play_pause_before_the_device_confirms_its_stop_plays() -> None:
+    """A second tap while the stopped device still reports playing resumes the queue."""
+    ctrl, player, _queue_data = _setup()
+    player.stop = AsyncMock()  # type: ignore[method-assign]
+    await ctrl.pause(QUEUE_ID)
+    _take_pause_watcher(ctrl).close()
+    assert player.emulated_pause
+    assert _playback_state(player) == PlaybackState.PLAYING
+    ctrl.pause = AsyncMock()  # type: ignore[method-assign]
+    ctrl.play = AsyncMock()  # type: ignore[method-assign]
+
+    await ctrl.play_pause(QUEUE_ID)
+
+    ctrl.play.assert_awaited_once_with(QUEUE_ID)
+    ctrl.pause.assert_not_awaited()
+
+
 async def test_pause_during_an_announcement_is_a_plain_stop() -> None:
     """Without a pause watcher to end it, a pause is not emulated."""
     ctrl, player, _queue_data = _setup()
