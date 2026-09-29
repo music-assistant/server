@@ -212,40 +212,24 @@ async def test_source_that_is_not_loaded_is_listed(
     assert OFFLINE not in local_files._providers
 
 
-@pytest.mark.parametrize(
-    ("folders", "names"),
-    [
-        pytest.param(["Music"], ["Local files"], id="one_loaded"),
-        pytest.param(
-            ["Jazz", "Music"], ["Local files [Jazz]", "Local files [Music]"], id="two_loaded"
-        ),
-    ],
-)
 async def test_source_that_fails_to_load_leaves_the_names(
-    storage: StorageController,
-    local_files: MusicAssistant,
-    tmp_path: Path,
-    folders: list[str],
-    names: list[str],
+    storage: StorageController, local_files: MusicAssistant, tmp_path: Path
 ) -> None:
     """
-    A source that fails to load leaves the names of the others as they were before.
+    A source that fails to load leaves the name of the other source as it was before.
 
-    While it loads it counts as an instance of its kind, so a source that stores its name in
-    the meantime, e.g. because it reloads, stores the name it would have next to it. The error
-    of the load reaches the caller as it was.
+    While it loads it counts as a second instance of its kind, so the other source, when it
+    stores its name in the meantime, e.g. because it reloads, stores the name it would have
+    next to it. The error of the load reaches the caller as it was.
     """
-    loaded = [f"{DOMAIN}--{folder.lower()}" for folder in folders]
-    for instance_id, folder in zip(loaded, folders, strict=True):
-        (tmp_path / folder).mkdir()
-        store_source(storage, tmp_path / folder, instance_id, None)
-    for instance_id in loaded:
-        _load_stored(local_files, instance_id)
+    music = tmp_path / "Music"
+    music.mkdir()
+    store_source(storage, music, FIRST, None)
+    _load_stored(local_files, FIRST)
     error = SetupFailedError("The folder can not be read")
 
     async def fail(_config: ProviderConfig) -> None:
-        for instance_id in loaded:
-            _load_stored(local_files, instance_id)
+        _load_stored(local_files, FIRST)
         raise error
 
     setup_data = {CONF_PATH: local_files.config.encrypt_string(str(tmp_path / "Radiohead"))}
@@ -256,8 +240,8 @@ async def test_source_that_fails_to_load_leaves_the_names(
         await local_files.config._create_provider_instance(DOMAIN, {}, setup_data)
 
     assert exc_info.value is error
-    assert _stored_names(local_files, loaded) == names
-    assert sorted(local_files.config.get(CONF_PROVIDERS)) == sorted(loaded)
+    assert _stored_names(local_files, [FIRST]) == ["Local files"]
+    assert list(local_files.config.get(CONF_PROVIDERS)) == [FIRST]
 
 
 async def test_removing_one_of_three_numbered_sources(

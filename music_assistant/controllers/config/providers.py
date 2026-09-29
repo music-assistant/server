@@ -528,10 +528,13 @@ class ProviderConfigMixin:
         """
         Set (or update) the default name for a provider.
 
-        Does nothing when its config no longer exists, so a removed provider does not come
-        back as a config without a domain.
+        Does nothing when the config of the provider no longer exists.
+
+        :param instance_id: The instance id of the provider.
+        :param default_name: The default name to store.
         """
         conf_key = f"{CONF_PROVIDERS}/{instance_id}"
+        # a write to a removed config would bring it back as a config without a domain
         if not self.get(conf_key):
             return
         self.set(f"{conf_key}/default_name", default_name)
