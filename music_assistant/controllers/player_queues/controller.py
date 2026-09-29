@@ -789,6 +789,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             self._set_transitioning(queue_id, False)
             return
 
+        self._stash_transition_anchor(queue_id)
         # immediately update current item so UI shows the new track right away
         queue.current_index = next_index
         queue.current_item = self.get_item(queue_id, next_index)
@@ -828,6 +829,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if self._queue_data[queue_id].queue.elapsed_time < 5:
             prev_index = max(current_index - 1, 0)
 
+        self._stash_transition_anchor(queue_id)
         # immediately update current item so UI shows the new track right away
         queue.current_index = prev_index
         queue.current_item = self.get_item(queue_id, prev_index)
@@ -1930,6 +1932,20 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         """Mark (or clear) whether a queue is mid-transition (no-op if it is not registered)."""
         if (queue_data := self._queue_data.get(queue_id)) is not None:
             queue_data.transitioning = value
+
+    def _stash_transition_anchor(self, queue_id: str) -> None:
+        """
+        Capture the outgoing track's streamdetails before next/previous advance current_item.
+
+        next/previous overwrite current_item with the target ahead of their debounced
+        play_index resolving its streamdetails, so by then current_item no longer holds the
+        predecessor get_stream_details needs for its same-quality folder tiebreak.
+        """
+        queue_data = self._queue_data[queue_id]
+        if (outgoing := queue_data.queue.current_item) and (
+            streamdetails := outgoing.streamdetails
+        ):
+            queue_data.pending_transition_anchor = (streamdetails.provider, streamdetails.item_id)
 
     def _clear(self, queue_id: str, skip_stop: bool = False) -> None:
         """Drop the queue's items and playback position, leaving user settings untouched."""

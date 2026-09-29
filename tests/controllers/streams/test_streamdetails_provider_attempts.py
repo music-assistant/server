@@ -1,14 +1,15 @@
 """
-Tests that resolving streamdetails asks each provider mapping at most once.
+Tests for how ``get_stream_details`` orders and retries provider mapping candidates.
 
-``get_stream_details`` builds its candidates once: mappings in quality order, the instances
-that can serve each mapping within it, and the music sources the playback user owns ahead of
-the rest. Every (instance, item id) pair appears at most once, so a mapping that failed is not
-asked again -- which for a just-in-time renderer like AI Radio would mean a second full
-text-to-speech render.
+Candidates are built once, in steering, quality, and instance-fallback order, and every
+(instance, item id) pair is asked at most once -- so a mapping that failed is not retried,
+which for a just-in-time renderer like AI Radio would mean a second full text-to-speech render.
 
-The mappings below are given distinct qualities wherever order matters, so the order the
-candidates are reached in is fixed rather than left to the iteration order of a set.
+Same-quality mappings used to fall back to the iteration order of a `set`. They now break
+toward the mapping in the currently playing track's folder, so a consolidated track (one also
+present on another album) does not silently switch its audio source mid-album. The mappings
+below are given distinct qualities wherever that order matters, so the tests are not
+themselves at the mercy of set iteration order.
 """
 
 from __future__ import annotations
@@ -357,9 +358,9 @@ async def test_same_quality_mapping_prefers_currently_playing_tracks_folder() ->
     anchor_item.streamdetails = _streamdetails(
         "Various Artists/Compilation Album/01 Track.flac", MediaType.SOUND_EFFECT, fs_instance
     )
-    cast("MagicMock", audio.mass).player_queues.get.return_value = MagicMock(
-        current_item=anchor_item
-    )
+    queue_data = MagicMock()
+    queue_data.queue.current_item = anchor_item
+    cast("MagicMock", audio.mass).player_queues.queue_data_or_none.return_value = queue_data
 
     streamdetails = await audio.get_stream_details(
         # both mappings tie on quality, so only the folder tiebreak decides between them
@@ -368,5 +369,36 @@ async def test_same_quality_mapping_prefers_currently_playing_tracks_folder() ->
             _mapping(fs_instance, item_id=same_folder_item_id),
         )
     )
+
+    assert streamdetails.item_id == same_folder_item_id
+
+
+async def test_same_quality_mapping_falls_back_to_the_stashed_anchor_after_a_manual_skip() -> None:
+    """A manual next/previous already advanced current_item; the stashed predecessor still applies."""
+    fs_instance = "filesystem_local--main"
+    same_folder_item_id = "Various Artists/Compilation Album/07 Other Track.flac"
+    other_folder_item_id = "Original Artist/Original Album/01 Track.flac"
+
+    async def _by_item_id(item_id: str, media_type: MediaType) -> StreamDetails:
+        return _streamdetails(item_id, media_type, fs_instance)
+
+    provider = MagicMock()
+    provider.get_stream_details = _by_item_id
+    audio = _audio({fs_instance: provider})
+    queue_item = _queue_item(
+        _mapping(fs_instance, item_id=other_folder_item_id),
+        _mapping(fs_instance, item_id=same_folder_item_id),
+    )
+    # next()/previous() already advanced current_item to this same queue item before
+    # get_stream_details runs, so the true predecessor only survives on the stashed anchor
+    queue_data = MagicMock()
+    queue_data.queue.current_item.queue_item_id = queue_item.queue_item_id
+    queue_data.pending_transition_anchor = (
+        fs_instance,
+        "Various Artists/Compilation Album/01 Track.flac",
+    )
+    cast("MagicMock", audio.mass).player_queues.queue_data_or_none.return_value = queue_data
+
+    streamdetails = await audio.get_stream_details(queue_item=queue_item)
 
     assert streamdetails.item_id == same_folder_item_id

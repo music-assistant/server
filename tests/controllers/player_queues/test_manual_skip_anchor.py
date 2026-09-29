@@ -1,0 +1,131 @@
+"""
+Tests that a manual next/previous stashes the outgoing track for the folder tiebreak.
+
+next()/previous() advance queue.current_item to the target immediately, ahead of their
+debounced play_index resolving its streamdetails - so by the time get_stream_details runs,
+current_item is the target itself rather than the predecessor it needs to break same-quality
+mapping ties toward the currently playing folder. _stash_transition_anchor captures the
+outgoing item's streamdetails onto PlayerQueueData.pending_transition_anchor before that
+overwrite, for get_stream_details to fall back to.
+"""
+
+from __future__ import annotations
+
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock, Mock
+
+from music_assistant_models.enums import ContentType, MediaType, PlaybackState
+from music_assistant_models.media_items import AudioFormat, ItemMapping, ProviderMapping, Track
+from music_assistant_models.player_queue import PlayerQueue
+from music_assistant_models.queue_item import QueueItem
+from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.unique_list import UniqueList
+
+from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.state import PlayerQueueData
+
+TRACK_IDS = ["t1", "t2", "t3"]
+INSTANCE = "filesystem_local--main"
+
+
+def _track(item_id: str) -> Track:
+    """Build a playable Track on the 'filesystem_local' provider."""
+    return Track(
+        item_id=item_id,
+        provider=INSTANCE,
+        name=f"Track {item_id}",
+        duration=60,
+        artists=UniqueList(
+            [ItemMapping(item_id="a", provider=INSTANCE, name="A", media_type=MediaType.ARTIST)]
+        ),
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id, provider_domain="filesystem_local", provider_instance=INSTANCE
+            )
+        },
+    )
+
+
+def _controller() -> Any:
+    """Build a bare controller whose queue "q1" is playing three tracks."""
+    ctrl = PlayerQueuesController.__new__(PlayerQueuesController)
+    ctrl.logger = Mock()
+    ctrl.mass = MagicMock()
+    ctrl.mass.players.get_player = Mock(return_value=Mock(extra_data={}))
+    lock_cm = MagicMock()
+    lock_cm.__aenter__ = AsyncMock(return_value=None)
+    lock_cm.__aexit__ = AsyncMock(return_value=None)
+    ctrl.mass.players.get_player_lock = Mock(return_value=lock_cm)
+    ctrl.mass.call_later = Mock()
+    ctrl.signal_update = Mock()  # type: ignore[method-assign]
+    ctrl.on_player_update = Mock()  # type: ignore[method-assign]
+
+    items = [QueueItem.from_media_item("q1", _track(item_id)) for item_id in TRACK_IDS]
+    queue = PlayerQueue(
+        queue_id="q1",
+        active=True,
+        display_name="Q1",
+        available=True,
+        items=len(items),
+        state=PlaybackState.PLAYING,
+        current_index=1,
+        current_item=items[1],
+    )
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue, items=items)}
+    return ctrl
+
+
+async def test_next_stashes_the_outgoing_tracks_streamdetails_before_advancing() -> None:
+    """A manual skip preserves the predecessor's streamdetails for the folder tiebreak."""
+    ctrl = _controller()
+    queue_data = cast("PlayerQueueData", ctrl._queue_data["q1"])
+    assert queue_data.queue.current_item is not None
+    outgoing_details = StreamDetails(
+        provider=INSTANCE,
+        item_id="Various Artists/Compilation Album/02 Track.flac",
+        audio_format=AudioFormat(content_type=ContentType.MP3),
+        media_type=MediaType.TRACK,
+    )
+    queue_data.queue.current_item.streamdetails = outgoing_details
+
+    await ctrl.next("q1")
+
+    assert queue_data.pending_transition_anchor == (INSTANCE, outgoing_details.item_id)
+    # the target advanced too, ahead of play_index resolving its own streamdetails
+    assert queue_data.queue.current_index == 2
+    assert queue_data.queue.current_item is not None
+    assert queue_data.queue.current_item.queue_item_id == queue_data.items[2].queue_item_id
+
+
+async def test_previous_stashes_the_outgoing_tracks_streamdetails_before_advancing() -> None:
+    """A manual skip back preserves the predecessor's streamdetails for the folder tiebreak."""
+    ctrl = _controller()
+    queue_data = cast("PlayerQueueData", ctrl._queue_data["q1"])
+    assert queue_data.queue.current_item is not None
+    queue_data.queue.elapsed_time = 2  # <5s in, so previous() moves back rather than restarting
+    outgoing_details = StreamDetails(
+        provider=INSTANCE,
+        item_id="Various Artists/Compilation Album/02 Track.flac",
+        audio_format=AudioFormat(content_type=ContentType.MP3),
+        media_type=MediaType.TRACK,
+    )
+    queue_data.queue.current_item.streamdetails = outgoing_details
+
+    await ctrl.previous("q1")
+
+    assert queue_data.pending_transition_anchor == (INSTANCE, outgoing_details.item_id)
+    assert queue_data.queue.current_index == 0
+    assert queue_data.queue.current_item is not None
+    assert queue_data.queue.current_item.queue_item_id == queue_data.items[0].queue_item_id
+
+
+async def test_next_leaves_the_anchor_unset_when_the_outgoing_track_has_no_streamdetails() -> None:
+    """No streamdetails to anchor on yet (e.g. the queue just started) stashes nothing."""
+    ctrl = _controller()
+    queue_data = cast("PlayerQueueData", ctrl._queue_data["q1"])
+    assert queue_data.queue.current_item is not None
+    assert queue_data.queue.current_item.streamdetails is None
+
+    await ctrl.next("q1")
+
+    assert queue_data.pending_transition_anchor is None

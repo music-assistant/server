@@ -651,15 +651,21 @@ class StreamsAudio:
             assert media_item is not None  # for type checking
             # the item still playing when this call was made (get_stream_details is called
             # ahead of the switch, so current_item is the predecessor, not queue_item itself):
-            # used to break same-quality ties toward the mapping in its folder
+            # used to break same-quality ties toward the mapping in its folder. A manual
+            # next/previous instead advances current_item to queue_item itself before this
+            # runs, so that case falls back to the predecessor the queue controller stashed
+            # for exactly this purpose.
             anchor: tuple[str, str] | None = None
-            if (
-                (current_queue := mass.player_queues.get(queue_item.queue_id))
-                and (current_item := current_queue.current_item)
-                and current_item.queue_item_id != queue_item.queue_item_id
-                and (current_streamdetails := current_item.streamdetails)
-            ):
-                anchor = (current_streamdetails.provider, current_streamdetails.item_id)
+            if queue_data := mass.player_queues.queue_data_or_none(queue_item.queue_id):
+                current_item = queue_data.queue.current_item
+                if (
+                    current_item
+                    and current_item.queue_item_id != queue_item.queue_item_id
+                    and (current_streamdetails := current_item.streamdetails)
+                ):
+                    anchor = (current_streamdetails.provider, current_streamdetails.item_id)
+                else:
+                    anchor = queue_data.pending_transition_anchor
             candidates = self._get_streamdetail_candidates(
                 media_item.provider_mappings,
                 preferred_providers,

@@ -83,6 +83,12 @@ class PlayerQueueData:
     # which the crossfade preload raises to a track the player was never given, this only
     # moves when audio actually goes out
     last_served_item_id: str | None = None
+    # (provider_instance, item_id) of the track that was playing right before a manual
+    # next/previous overwrote queue.current_item with the target ahead of its (debounced)
+    # play_index resolving streamdetails - at that point current_item no longer holds the
+    # predecessor, so get_stream_details falls back to this to anchor its same-quality
+    # folder tiebreak
+    pending_transition_anchor: tuple[str, str] | None = None
     # set when the queue items changed since the last cache write; the debounced saver writes the
     # (heavier) items payload only when this is set
     items_cache_dirty: bool = False
