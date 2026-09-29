@@ -1949,21 +1949,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
     def _stash_transition_anchor(self, queue_id: str, target_queue_item_id: str) -> None:
         """
-        Capture the outgoing track's streamdetails before next/previous advance current_item.
-
-        next/previous overwrite current_item with the target ahead of their debounced
-        play_index resolving its streamdetails, so by then current_item no longer holds the
-        predecessor get_stream_details needs for its same-quality folder tiebreak. Scoped to
-        the target this transition is headed to, so it cannot bias a later, unrelated
-        resolution; play_index also clears it once that target is reached (or the attempt
-        ends), and _clear drops it on a queue reset.
-
-        A rapid second press cancels the first press's still-pending play_index (same debounce
-        task_id) before it ever runs, so current_item is itself mid-transition and its
-        streamdetails - if it has any at all - are a stale leftover from some earlier,
-        unrelated play, not the track actually still playing. When that is the case, this
-        re-targets the existing stash's (provider, item_id) - the real predecessor - onto the
-        new target instead of reading current_item's streamdetails.
+        Capture the outgoing track's streamdetails for get_stream_details' folder tiebreak.
 
         :param queue_id: The queue transitioning to a new current item.
         :param target_queue_item_id: queue_item_id of the track being transitioned to.
@@ -1972,6 +1958,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         outgoing = queue_data.queue.current_item
         pending = queue_data.pending_transition_anchor
         if pending and outgoing and pending[0] == outgoing.queue_item_id:
+            # a rapid second press: outgoing is itself mid-transition, its own streamdetails
+            # (if any) are a stale leftover rather than what's really still playing - carry the
+            # real predecessor forward onto the new target instead
             queue_data.pending_transition_anchor = (target_queue_item_id, pending[1], pending[2])
             return
         streamdetails = outgoing.streamdetails if outgoing else None
