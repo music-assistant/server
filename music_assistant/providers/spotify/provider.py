@@ -546,7 +546,7 @@ class SpotifyProvider(MusicProvider):
             return parse_playlist(playlist_obj, self)
 
         # Try with dev token first (if available), fallback to global on 400 error
-        # Some playlists like Spotify-owned (Daily Mix) or Liked Songs only work with global token
+        # Some playlists like Spotify-owned (Daily Mix) only work with global token
         try:
             playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
             return parse_playlist(playlist_obj, self)
@@ -756,11 +756,12 @@ class SpotifyProvider(MusicProvider):
         is_liked_songs = prov_playlist_id == self._get_liked_songs_playlist_id()
         uri = "me/tracks" if is_liked_songs else f"playlists/{prov_playlist_id}/items"
 
-        # Liked songs always require global session
+        # Liked songs are read with the same session as the library sync,
+        # so both share their cached pages
         # For other playlists, call get_playlist first to trigger the fallback logic
         # and populate the cache for which token to use
         if is_liked_songs:
-            use_global = True
+            use_global = False
         else:
             # This call is cached and will determine/cache if global token is needed
             await self.get_playlist(prov_playlist_id)
@@ -1619,6 +1620,9 @@ class SpotifyProvider(MusicProvider):
         """Get data from api with caching."""
         cache_key_parts = [endpoint]
         for key in sorted(kwargs.keys()):
+            # use_global_session=False is the same request as omitting it, so it stays out of the key
+            if key == "use_global_session" and not kwargs[key]:
+                continue
             cache_key_parts.append(f"{key}{kwargs[key]}")
         cache_key = ".".join(map(str, cache_key_parts))
         if cached := await self.mass.cache.get(

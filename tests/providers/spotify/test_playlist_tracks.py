@@ -299,6 +299,26 @@ async def test_cold_nonzero_page_fetches_pagination_metadata() -> None:
     assert tracks[0].position == 101
 
 
+async def test_liked_songs_use_default_session() -> None:
+    """Liked Songs reads me/tracks with the same session as the library track sync."""
+    harness = _make_provider()
+    harness.get_metadata.return_value = {"etag": "liked-etag", "total": 1}
+    harness.get_page.return_value = _playlist_page(1, "liked-track")
+
+    tracks = await harness.provider.get_playlist_tracks(
+        harness.provider._get_liked_songs_playlist_id()
+    )
+
+    harness.get_metadata.assert_awaited_once_with(
+        "me/tracks", limit=1, offset=0, use_global_session=False
+    )
+    harness.get_page.assert_awaited_once_with(
+        "me/tracks", "liked-etag", limit=50, offset=0, use_global_session=False
+    )
+    harness.get_playlist.assert_not_awaited()
+    assert tracks[0].item_id == "liked-track"
+
+
 async def test_playlist_identities_do_not_share_pagination_metadata() -> None:
     """Private playlists and liked songs each use their own pagination snapshot."""
     harness = _make_provider()
@@ -331,7 +351,7 @@ async def test_playlist_identities_do_not_share_pagination_metadata() -> None:
             offset=0,
             use_global_session=False,
         ),
-        call("me/tracks", limit=1, offset=0, use_global_session=True),
+        call("me/tracks", limit=1, offset=0, use_global_session=False),
     ]
     assert [args.args[1] for args in harness.get_page.await_args_list] == [
         "private-a-etag",
