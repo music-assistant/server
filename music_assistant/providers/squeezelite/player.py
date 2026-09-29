@@ -229,6 +229,13 @@ class SqueezelitePlayer(Player):
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
+        if self.group_members:
+            # resuming a paused group: align the members on a common instant via the
+            # LMS resume (coordinated startAt + check holdoff)
+            queue = self.mass.player_queues.get_active_queue(self.player_id)
+            paused_at = float(queue.resume_pos or queue.elapsed_time or 0) if queue else 0.0
+            await self._sync_group.resume(self._get_sync_clients(), paused_at)
+            return
         async with TaskManager(self.mass) as tg:
             for client in self._get_sync_clients():
                 tg.create_task(client.play())
