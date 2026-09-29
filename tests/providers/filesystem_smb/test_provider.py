@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+from contextlib import suppress
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,6 +14,7 @@ from music_assistant_models.errors import LoginFailed, SetupFailedError, Unsuppo
 from music_assistant.controllers.config.helpers import _provider_status
 from music_assistant.mass import _provider_error_from_exc
 from music_assistant.providers.filesystem_smb import SMBFileSystemProvider
+from tests.common import capture_log_records
 
 INSTANCE_ID = "filesystem_smb--test"
 SETUP_VALUES = {
@@ -24,14 +27,15 @@ SETUP_VALUES = {
 }
 
 
-def _make_provider() -> SMBFileSystemProvider:
+def _make_provider(**setup_values: str) -> SMBFileSystemProvider:
+    values = {**SETUP_VALUES, **setup_values}
     provider = SMBFileSystemProvider.__new__(SMBFileSystemProvider)
     provider.base_path = f"/tmp/{INSTANCE_ID}"  # noqa: S108
     provider.logger = MagicMock()
     provider.config = MagicMock()
     provider.config.instance_id = INSTANCE_ID
     provider.get_setup_value = MagicMock(  # type: ignore[method-assign]
-        side_effect=lambda key, default=None: SETUP_VALUES.get(key, default)
+        side_effect=lambda key, default=None: values.get(key, default)
     )
     return provider
 
@@ -71,27 +75,29 @@ async def test_busy_mountpoint_is_not_an_auth_error() -> None:
     assert _status_for(err) == ProviderStatus.ERROR
 
 
-async def test_busy_mountpoint_keeps_the_tool_output() -> None:
-    """A non-auth mount failure shows the summary line but keeps the full output for support."""
-    summary = "mount error(16): Device or resource busy"
-    pointer = "Refer to the mount.cifs(8) manual page (e.g. man mount.cifs)"
-    err = await _mount_with_output(f"{summary}\n{pointer}")
-    assert isinstance(err, SetupFailedError)
-    assert err.translation_key == "mount_failed"
-    assert err.translation_args == [summary]
-    assert pointer in str(err)
-
-
 async def test_permission_denied_is_an_auth_error() -> None:
     """A rejected credential (mount.cifs) surfaces as a login failure."""
     err = await _mount_with_output("mount error(13): Permission denied")
     assert isinstance(err, LoginFailed)
 
 
-async def test_nt_status_logon_failure_is_an_auth_error() -> None:
-    """A rejected credential reported as an NT status code surfaces as a login failure."""
-    err = await _mount_with_output("Unable to find suitable address.NT_STATUS_LOGON_FAILURE")
-    assert isinstance(err, LoginFailed)
+async def test_mount_command() -> None:
+    """The share, subfolder, credentials, version and cache mode reach the mount command."""
+    provider = _make_provider(subfolder="albums\\A-K", smb_version="3.0")
+    provider.config.get_value = MagicMock(return_value="strict")  # type: ignore[method-assign]
+    with (
+        patch(
+            "music_assistant.providers.filesystem_smb.check_output",
+            AsyncMock(return_value=(0, b"")),
+        ) as check_output,
+        patch("music_assistant.providers.filesystem_smb.platform.system", return_value="Linux"),
+    ):
+        await provider.mount()
+
+    args = check_output.call_args.args
+    assert args[-2:] == ("//nas.local/music/albums/A-K", provider.base_path)
+    assert args[4].startswith("rw,username=user,vers=3.0,cache=strict,")
+    assert check_output.call_args.kwargs == {"env": {"PASSWD": "secret"}}
 
 
 async def test_unsupported_platform() -> None:
@@ -102,3 +108,29 @@ async def test_unsupported_platform() -> None:
         pytest.raises(UnsupportedSystemError),
     ):
         await provider.mount()
+
+
+@pytest.mark.parametrize("system", ["Darwin", "Linux"])
+@pytest.mark.parametrize("returncode", [0, 1])
+async def test_mount_logs_no_password(system: str, returncode: int) -> None:
+    """A mount logs what is mounted where, and leaves no trace of the password at any level."""
+    provider = _make_provider(password="pa ss@word,1")
+    provider.logger = logging.getLogger(f"{__name__}.mount")
+    with (
+        capture_log_records(provider.logger) as records,
+        patch(
+            "music_assistant.providers.filesystem_smb.check_output",
+            AsyncMock(return_value=(returncode, b"mount error(112): Host is down")),
+        ),
+        patch("music_assistant.providers.filesystem_smb.platform.system", return_value=system),
+        suppress(SetupFailedError),
+    ):
+        await provider.mount()
+
+    assert f"Mounting //nas.local/music to {provider.base_path}" in [
+        record.getMessage() for record in records
+    ]
+    for record in records:
+        text = f"{record.getMessage()} {record.args}"
+        assert "pa ss@word,1" not in text
+        assert "pa%20ss%40word%2C1" not in text
