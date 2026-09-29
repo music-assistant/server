@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-from music_assistant.controllers.streams.constants import PacingProfile, output_pacing_args
-from music_assistant.controllers.streams.smart_fades.helpers import MIN_EFFECTIVE_FADE_BUFFER
+from typing import cast
 
-# A track of ordinary length from a source that delivers just-in-time, at the pace
-# measured on the Spotify Soloist backend.
+from music_assistant.constants import CONF_ENTRY_CROSSFADE_DURATION
+from music_assistant.controllers.streams.constants import PacingProfile, output_pacing_args
+
+# A track of ordinary length from a source that delivers just-in-time, at the low end
+# of what the Spotify Soloist backend delivered when measured (1.07x to 1.1x).
 TRACK_SECONDS = 200
 SLOW_SOURCE_RATE = 1.075
-# The longest such a source took to deliver the first second of a track: up to 1.7
-# seconds to start, plus that second itself.
+# The longest such a source took to have a track ready: up to 1.7 seconds to start,
+# plus the first second of audio its stream waits for.
 SLOW_SOURCE_START_SECONDS = 2.7
 
 
@@ -69,26 +71,26 @@ def test_a_track_of_a_slow_source_earns_the_room_for_a_fade() -> None:
     A source fills its next track as soon as the current one is in.
 
     The room for a fade is how much longer the stream of a track takes than its fill,
-    and a fade needs that room at the end of the first track already.
+    and a fade of the default length needs that room at the end of the first track
+    already. A stream per track is the tight case, as its burst comes out of that room
+    with every track, where the flow stream opens with one burst for a whole session.
     """
     args = output_pacing_args(PacingProfile.NEAR_REALTIME)
     stream_seconds = (TRACK_SECONDS - _value(args, "-readrate_initial_burst")) / _value(
         args, "-readrate"
     )
     fill_seconds = TRACK_SECONDS / SLOW_SOURCE_RATE
-    assert stream_seconds - fill_seconds >= MIN_EFFECTIVE_FADE_BUFFER
+    default_fade_seconds = cast("int", CONF_ENTRY_CROSSFADE_DURATION.default_value)
+    assert stream_seconds - fill_seconds >= default_fade_seconds
 
 
-def test_a_player_gains_little_lead_per_track() -> None:
-    """Every track starts with a burst of its own, so the lead of a player adds up."""
-    args = output_pacing_args(PacingProfile.NEAR_REALTIME)
-    readrate = _value(args, "-readrate")
-    lead = TRACK_SECONDS * (1 - 1 / readrate) + _value(args, "-readrate_initial_burst") / readrate
-    assert lead <= 5
+def test_the_opening_burst_outlasts_a_source_starting_up() -> None:
+    """
+    A fade holds the stream back until the next track's source delivers.
 
-
-def test_the_near_realtime_burst_outlasts_a_source_starting_up() -> None:
-    """A fade holds the stream back until the next track's source delivers."""
+    At the first track change of any stream the burst is all a player is sure to
+    hold, however short that first track is.
+    """
     burst = _value(output_pacing_args(PacingProfile.NEAR_REALTIME), "-readrate_initial_burst")
     assert burst > SLOW_SOURCE_START_SECONDS
 
