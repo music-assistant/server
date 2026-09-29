@@ -67,6 +67,8 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_TRACKS_EDIT,
     ProviderFeature.LIBRARY_ARTISTS_EDIT,
     ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+    ProviderFeature.FAVORITE_TRACKS_EDIT,
+    ProviderFeature.FAVORITE_ARTISTS_EDIT,
     ProviderFeature.ALBUM_METADATA,
     ProviderFeature.TRACK_METADATA,
     ProviderFeature.ARTIST_METADATA,
@@ -294,6 +296,12 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove an item from the provider's library/favorites."""
         return await self.media_manager.library_remove(prov_item_id, media_type)
+
+    async def set_favorite(
+        self, prov_item_id: str, media_type: MediaType, favorite: bool | None
+    ) -> None:
+        """Ban or unban a track or artist from the user's Deezer recommendations."""
+        await self.media_manager.set_favorite(prov_item_id, media_type, favorite)
 
     # -- Playlist CRUD --
 

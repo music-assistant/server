@@ -21,11 +21,16 @@ from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
     EXTERNAL_PAUSE_IDLE_TIMEOUT,
-    HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES,
     create_output_codec_config_entry,
 )
 from music_assistant.helpers.datetime import from_iso_string
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
+from music_assistant.models.player import (
+    AnnouncementFeature,
+    DeviceInfo,
+    Player,
+    PlayerMedia,
+    PlayerSource,
+)
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.hass.constants import (
     OFF_STATES,
@@ -144,6 +149,13 @@ class HomeAssistantPlayer(Player):
         # hass media players are a hot mess so play it safe and always use flow mode
         return True
 
+    @property
+    def announcement_features(self) -> set[AnnouncementFeature]:
+        """Drop SUPPORTS_VOLUME for native announcements: the HA pipeline ignores the level."""
+        if PlayerFeature.PLAY_ANNOUNCEMENT in self._attr_supported_features:
+            return set()
+        return {AnnouncementFeature.SUPPORTS_VOLUME}
+
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         base_entries = [*DEFAULT_PLAYER_CONFIG_ENTRIES]
@@ -172,14 +184,7 @@ class HomeAssistantPlayer(Player):
             if codec is not None:
                 config_entries.append(create_output_codec_config_entry(True, codec))
 
-            config_entries.extend(
-                [
-                    CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
-                    # although the Voice PE supports announcements,
-                    # it does not support volume for announcements
-                    *HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES,
-                ]
-            )
+            config_entries.append(CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN)
 
             return config_entries
 

@@ -48,7 +48,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 77
+API_SCHEMA_VERSION: Final[int] = 83
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -101,6 +101,8 @@ CONF_ENCRYPTION_KEY_MIGRATED: Final[str] = "encryption_key_migrated"
 CONF_NFS_SUBFOLDER_MIGRATED: Final[str] = "nfs_subfolder_migrated"
 CONF_RETIRED_LOCAL_AUDIO_CLEANED: Final[str] = "retired_local_audio_cleaned"
 CONF_PROVIDER_ACCESS_MIGRATED: Final[str] = "provider_access_migrated"
+CONF_STORAGE_FOLDERS: Final[str] = "storage_folders"
+CONF_STORAGE_SHARES: Final[str] = "storage_shares"
 CONF_IP_ADDRESS: Final[str] = "ip_address"
 CONF_PORT: Final[str] = "port"
 CONF_PROVIDERS: Final[str] = "providers"
@@ -246,6 +248,7 @@ DB_TABLE_AUDIO_ANALYSIS_FAILURES: Final[str] = "audio_analysis_failures"
 DB_TABLE_GENRES: Final[str] = "genres"
 DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
 DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION: Final[str] = "genre_media_item_exclusion"
+DB_TABLE_FAVORITES: Final[str] = "favorites"
 
 # all media item tables, each of which has a search_name column
 # backed by a {table}_fts FTS5 index table
@@ -315,6 +318,9 @@ DEFAULT_AUDIOBOOK_GENRE_MAPPING: Final[list[dict[str, Any]]] = load_genre_mappin
 )
 DEFAULT_GENRES: Final[tuple[str, ...]] = tuple(entry["genre"] for entry in DEFAULT_GENRE_MAPPING)
 
+# fallback genre for a podcast or audiobook whose provider has no categories of its own
+DEFAULT_AUDIOBOOK_PODCAST_GENRE: Final[str] = "Spoken Word"
+
 
 # all other
 MASS_LOGO_ONLINE: Final[str] = (
@@ -334,6 +340,14 @@ CONFIGURABLE_CORE_CONTROLLERS = (
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
 PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music", "deezer")
+# The music sources that read the user's own files. Background audio analysis is deliberately
+# limited to these: pulling a streaming service's catalogue for audio nobody asked to hear is
+# not something we do. Keep it that way.
+FILESYSTEM_PROVIDER_DOMAINS: Final[tuple[str, ...]] = (
+    "filesystem_local",
+    "filesystem_smb",
+    "filesystem_nfs",
+)
 
 
 ####### REUSABLE CONFIG ENTRIES #######
@@ -569,18 +583,11 @@ CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY = ConfigEntry(
     category="announcements",
 )
 
-CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY_HIDDEN = ConfigEntry.from_dict(
-    {**CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY.to_dict(), "hidden": True}
-)
-
 CONF_ENTRY_ANNOUNCE_VOLUME = ConfigEntry(
     key=CONF_ANNOUNCE_VOLUME,
     type=ConfigEntryType.INTEGER,
     default_value=85,
     category="announcements",
-)
-CONF_ENTRY_ANNOUNCE_VOLUME_HIDDEN = ConfigEntry.from_dict(
-    {**CONF_ENTRY_ANNOUNCE_VOLUME.to_dict(), "hidden": True}
 )
 
 CONF_ENTRY_ANNOUNCE_VOLUME_MIN = ConfigEntry(
@@ -589,26 +596,12 @@ CONF_ENTRY_ANNOUNCE_VOLUME_MIN = ConfigEntry(
     default_value=15,
     category="announcements",
 )
-CONF_ENTRY_ANNOUNCE_VOLUME_MIN_HIDDEN = ConfigEntry.from_dict(
-    {**CONF_ENTRY_ANNOUNCE_VOLUME_MIN.to_dict(), "hidden": True}
-)
 
 CONF_ENTRY_ANNOUNCE_VOLUME_MAX = ConfigEntry(
     key=CONF_ANNOUNCE_VOLUME_MAX,
     type=ConfigEntryType.INTEGER,
     default_value=75,
     category="announcements",
-)
-CONF_ENTRY_ANNOUNCE_VOLUME_MAX_HIDDEN = ConfigEntry.from_dict(
-    {**CONF_ENTRY_ANNOUNCE_VOLUME_MAX.to_dict(), "hidden": True}
-)
-
-
-HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES = (
-    CONF_ENTRY_ANNOUNCE_VOLUME_HIDDEN,
-    CONF_ENTRY_ANNOUNCE_VOLUME_MIN_HIDDEN,
-    CONF_ENTRY_ANNOUNCE_VOLUME_MAX_HIDDEN,
-    CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY_HIDDEN,
 )
 
 
@@ -942,7 +935,11 @@ INTERNAL_PCM_FORMAT = AudioFormat(
 )
 
 # Seconds without a new chunk before the source is treated as stalled (above ffmpeg's ~15s reconnect window).
+# Sources we read ourselves need a shorter socket timeout, see RADIO_STREAM_READ_TIMEOUT.
 STREAM_STALL_TIMEOUT: Final[int] = 20
+# Seconds a radio stream socket may stay silent before we reconnect.
+# Must stay well below STREAM_STALL_TIMEOUT so the reconnect can deliver audio in time.
+RADIO_STREAM_READ_TIMEOUT: Final[int] = 10
 # Longer budget for the first chunk to allow for connect + probe.
 STREAM_START_TIMEOUT: Final[int] = 30
 
@@ -966,6 +963,7 @@ ATTR_MUTE_CONTROL: Final[str] = "mute_control"
 ATTR_VOLUME_CONTROL: Final[str] = "volume_control"
 ATTR_POWER_CONTROL: Final[str] = "power_control"
 ATTR_PLAY_ACTION_IN_PROGRESS: Final[str] = "play_action_in_progress"
+ATTR_POWER_OFF_IN_PROGRESS: Final[str] = "power_off_in_progress"
 
 # Album type detection patterns
 LIVE_INDICATORS = [

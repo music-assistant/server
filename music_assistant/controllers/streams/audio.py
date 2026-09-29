@@ -16,7 +16,7 @@ import time
 from collections import deque
 from collections.abc import AsyncGenerator, Callable, Iterable
 from contextlib import aclosing, asynccontextmanager, nullcontext, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urljoin, urlparse
@@ -86,6 +86,7 @@ from music_assistant.constants import (
     FLOW_MODE_SAMPLE_RATE_SMART,
     INTERNAL_PCM_FORMAT,
     MASS_LOGGER_NAME,
+    RADIO_STREAM_READ_TIMEOUT,
     STREAM_STALL_TIMEOUT,
     STREAM_START_TIMEOUT,
     VERBOSE_LOG_LEVEL,
@@ -164,7 +165,7 @@ from music_assistant.helpers.util import (
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import ProviderMapping
+    from music_assistant_models.media_items import MediaItemType, ProviderMapping
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamDetails
@@ -691,6 +692,8 @@ class StreamsAudio:
             if not streamdetails:
                 msg = f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
                 raise MediaNotFoundError(msg)
+            if media_item.provider == "library":
+                self._fill_in_mapping_audio_format(media_item, streamdetails)
 
             # work out how to handle radio stream
             if (
@@ -962,7 +965,7 @@ class StreamsAudio:
         :param streamdetails: StreamDetails to update with metadata
         """
         self.logger.debug("Start streaming radio with ICY metadata from url %s", url)
-        timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
+        timeout = ClientTimeout(total=0, connect=30, sock_read=RADIO_STREAM_READ_TIMEOUT)
         # Budget for *consecutive* reconnects that delivered no audio. A connection
         # that actually streamed data resets it, so a healthy long-running stream can
         # reconnect indefinitely while a dead/looping one bails out instead of spinning.
@@ -1095,16 +1098,17 @@ class StreamsAudio:
 
         :param url: URL of the radio stream.
         """
-        timeout = ClientTimeout(total=None, connect=30, sock_read=5 * 60)
+        timeout = ClientTimeout(total=None, connect=30, sock_read=RADIO_STREAM_READ_TIMEOUT)
+        # Consecutive reconnects that delivered no audio; any audio resets it.
         reconnect_count = 0
-        max_reconnects = 1000  # Allow many reconnects for long-running radio
+        max_reconnects = 1000
 
         while reconnect_count <= max_reconnects:
+            chunk_count = 0
             try:
                 async with self._connect_radio_stream(
                     url, allow_redirects=True, headers=HTTP_HEADERS, timeout=timeout
                 ) as resp:
-                    chunk_count = 0
                     async for chunk in resp.content.iter_any():
                         chunk_count += 1
                         yield chunk
@@ -1116,7 +1120,7 @@ class StreamsAudio:
                         chunk_count,
                         reconnect_count,
                     )
-                    reconnect_count += 1
+                    reconnect_count = 0 if chunk_count else reconnect_count + 1
                     await asyncio.sleep(0.1)  # Brief delay before reconnect
 
             except asyncio.CancelledError:
@@ -1129,7 +1133,7 @@ class StreamsAudio:
             ) as err:
                 # Transient network errors - retry
                 self.logger.warning("Radio stream error (reconnect #%d): %s", reconnect_count, err)
-                reconnect_count += 1
+                reconnect_count = 0 if chunk_count else reconnect_count + 1
                 if reconnect_count > max_reconnects:
                     raise RetriesExhausted(
                         f"Radio stream failed after {max_reconnects} reconnects: {err}"
@@ -3853,6 +3857,63 @@ class StreamsAudio:
         if last_audio_error is not None:
             raise last_audio_error
         return None
+
+    def _fill_in_mapping_audio_format(
+        self, media_item: MediaItemType, streamdetails: StreamDetails
+    ) -> None:
+        """
+        Store the audio format a stream revealed on the library mapping that served it.
+
+        A mapping added without fetching the provider item (e.g. from a MusicBrainz link)
+        ranks last among the item's sources until its format is known; the streamdetails
+        supply it at no extra provider request. A mapping that already has a format keeps
+        it, unless its provider declares that the stream's format supersedes the catalog's.
+        Only the mapping of the instance that served the stream is written: another account
+        of the same service may be on a different tier.
+
+        :param media_item: The library item being played.
+        :param streamdetails: The streamdetails a provider resolved for it.
+        """
+        mapping = next(
+            (
+                mapping
+                for mapping in media_item.provider_mappings
+                if mapping.provider_instance == streamdetails.provider
+                and mapping.item_id == streamdetails.item_id
+            ),
+            None,
+        )
+        if mapping is None or streamdetails.audio_format.content_type == ContentType.UNKNOWN:
+            return
+        if mapping.audio_format.content_type != ContentType.UNKNOWN:
+            provider = self.mass.get_provider(streamdetails.provider)
+            if (
+                not isinstance(provider, MusicProvider)
+                or not provider.stream_format_supersedes_catalog
+                or mapping.audio_format == streamdetails.audio_format
+            ):
+                return
+        # ffmpeg fills in more of the streamdetails' format once the stream runs, so the
+        # mapping gets its own copy of what the provider declared
+        audio_format = replace(streamdetails.audio_format)
+        # the queue keeps this media item, so its next selection ranks on the format
+        # right away instead of writing it again
+        mapping.audio_format = audio_format
+        self.mass.create_task(self._update_mapping_audio_format(media_item, mapping, audio_format))
+
+    async def _update_mapping_audio_format(
+        self, media_item: MediaItemType, mapping: ProviderMapping, audio_format: AudioFormat
+    ) -> None:
+        """Persist the audio format on a library item's provider mapping."""
+        # the item or its mapping may be gone by now, e.g. removed while the queue held it
+        with suppress(MediaNotFoundError):
+            await self.mass.music.update_provider_mapping(
+                media_item.media_type,
+                media_item.item_id,
+                mapping.provider_instance,
+                mapping.item_id,
+                audio_format=audio_format,
+            )
 
     async def _get_media_stream(
         self,

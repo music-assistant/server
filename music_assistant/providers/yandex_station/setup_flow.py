@@ -77,7 +77,7 @@ async def run_setup(session: SetupSession) -> None:
     if default_source != BORROW_SOURCE_OWN and default_source not in valid_sources:
         default_source = BORROW_SOURCE_OWN
 
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         values = await session.form(
             [_source_entry(default_source, ym_instances)],
@@ -91,7 +91,7 @@ async def run_setup(session: SetupSession) -> None:
                 await session.finish({CONF_YM_INSTANCE: source})
                 return
             except SetupFlowError as err:
-                errors = {"base": err.translation_key or str(err)}
+                errors = {"base": err}
                 default_source = source
                 continue
         # own credentials: collect a login method and sign in
@@ -101,7 +101,7 @@ async def run_setup(session: SetupSession) -> None:
 
 async def _run_own(session: SetupSession) -> None:
     """Collect a login method for the provider's own credentials and sign in."""
-    errors: dict[str, str] | None = None
+    errors: dict[str, str | SetupFlowError] | None = None
     while True:
         values = await session.form(
             [
@@ -157,7 +157,7 @@ async def _run_own(session: SetupSession) -> None:
             await session.finish(collected)
             return
         except SetupFlowError as err:
-            errors = {"base": err.translation_key or str(err)}
+            errors = {"base": err}
 
 
 async def _cookie_login(session: SetupSession) -> tuple[str | None, str, str | None]:

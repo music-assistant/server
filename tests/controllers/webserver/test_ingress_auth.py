@@ -164,6 +164,39 @@ async def test_ingress_keeps_the_role_of_an_already_linked_user(
     hass_provider.hass.send_command.assert_not_called()
 
 
+@pytest.mark.parametrize("custom", [False, True], ids=["builtin_role", "custom_role"])
+async def test_ingress_links_a_username_match_keeping_its_role(
+    auth_manager: AuthenticationManager, custom: bool
+) -> None:
+    """
+    An existing user matched by username is linked to Home Assistant, keeping its stored role.
+
+    :param custom: Whether the matched user holds a custom role rather than a builtin one.
+    """
+    mass = auth_manager.mass
+    role = (
+        (await auth_manager.create_role("Kids", [Scope.LIBRARY_WRITE])).role_id
+        if custom
+        else UserRole.USER
+    )
+    existing = await auth_manager.create_user(username="bob", role=role)
+    # the Home Assistant account is an admin, yet a username match must not re-derive the role
+    hass_provider = _ready_hass_provider(mass, "ha_bob", admin=True)
+    headers = {"X-Remote-User-ID": "ha_bob", "X-Remote-User-Name": "bob"}
+
+    with _ingress_request(mass, headers, hass_provider=hass_provider) as request:
+        user = await get_authenticated_user(request)
+
+    assert user is not None
+    assert user.user_id == existing.user_id
+    assert user.role == role
+    linked = await auth_manager.get_user_by_provider_link(AuthProviderType.HOME_ASSISTANT, "ha_bob")
+    assert linked is not None
+    assert linked.user_id == existing.user_id
+    # the Home Assistant admin status is never consulted for a username match
+    hass_provider.hass.send_command.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "headers",
     [

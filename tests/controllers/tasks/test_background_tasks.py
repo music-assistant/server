@@ -29,7 +29,8 @@ from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.metadata.constants import (
     ALBUM_RECONCILIATION_TASK_ID,
-    MISSING_ARTIST_METADATA_SCAN_TASK_ID,
+    MISSING_METADATA_SCAN_TASK_ID,
+    MUSICBRAINZ_LINK_TASK_ID,
     PLAYLIST_METADATA_SCAN_TASK_ID,
     THUMB_CACHE_CLEANUP_TASK_ID,
 )
@@ -824,7 +825,7 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     metadata._register_maintenance_tasks()
 
     cache_task = tasks_controller.get_task("cache_database_cleanup")
-    artist_scan_task = tasks_controller.get_task(MISSING_ARTIST_METADATA_SCAN_TASK_ID)
+    artist_scan_task = tasks_controller.get_task(MISSING_METADATA_SCAN_TASK_ID)
     playlist_scan_task = tasks_controller.get_task(PLAYLIST_METADATA_SCAN_TASK_ID)
     thumb_cleanup_task = tasks_controller.get_task(THUMB_CACHE_CLEANUP_TASK_ID)
     album_reconciliation_task = tasks_controller.get_task(ALBUM_RECONCILIATION_TASK_ID)
@@ -845,7 +846,7 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     assert provider_mapping_task.metadata == {"task_domain": "music_provider_mapping_correction"}
     assert genre_scan_task.schedule == maintenance_schedule
 
-    assert artist_scan_task.translation_key == "background_task.scan_missing_artist_metadata"
+    assert artist_scan_task.translation_key == "background_task.scan_missing_metadata"
     assert artist_scan_task.translation_owner == "core.metadata"
     assert artist_scan_task.metadata == {"task_domain": "metadata_missing_artist_metadata_scan"}
 
@@ -870,6 +871,24 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     assert album_reconciliation_task.translation_owner == "core.metadata"
     assert album_reconciliation_task.metadata == {"task_domain": "metadata_album_reconciliation"}
     assert album_reconciliation_task.schedule == TaskSchedule.hourly()
+
+
+async def test_musicbrainz_link_task_registers_hourly(
+    mass_minimal: MusicAssistant,
+    tasks_controller: TasksController,
+) -> None:
+    """The MusicBrainz link run is bounded and paced, so it runs hourly like album reconciliation."""
+    metadata = MetaDataController(mass_minimal)
+    mass_minimal.metadata = metadata
+    metadata._register_maintenance_tasks()
+
+    musicbrainz_link_task = tasks_controller.get_task(MUSICBRAINZ_LINK_TASK_ID)
+
+    assert musicbrainz_link_task.translation_key == "background_task.link_library_to_musicbrainz"
+    assert musicbrainz_link_task.translation_owner == "core.metadata"
+    assert musicbrainz_link_task.metadata == {"task_domain": "metadata_musicbrainz_link"}
+    assert musicbrainz_link_task.schedule == TaskSchedule.hourly()
+    assert musicbrainz_link_task.allow_retry
 
 
 async def test_music_sync_completion_queues_database_cleanup_background_task(

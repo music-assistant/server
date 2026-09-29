@@ -5,10 +5,12 @@ import codecs
 import contextlib
 import gc
 import logging
+import os
 import socket
 import threading
 import time
 from collections.abc import Iterator
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import ifaddr
@@ -20,6 +22,7 @@ from music_assistant_models.media_items import Album, ItemMapping, ProviderMappi
 from music_assistant.helpers import util
 from music_assistant.helpers.util import (
     detect_charset,
+    get_folder_size,
     get_source_ip_for_target,
     guard_single_request,
     import_module_in_thread,
@@ -28,6 +31,7 @@ from music_assistant.helpers.util import (
     load_provider_module,
     sanitize_http_header_value,
     select_free_port,
+    try_parse_duration,
 )
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
@@ -646,6 +650,48 @@ class TestJoinTask:
         assert await task == "done"
 
 
+class TestGetFolderSize:
+    """get_folder_size adds up the files in a folder tree."""
+
+    async def test_symlinks_are_not_followed(self, tmp_path: Path) -> None:
+        """A symlink counts as itself, not as the (possibly huge) file it points to."""
+        folder = tmp_path / "folder"
+        (folder / "nested").mkdir(parents=True)
+        (folder / "nested" / "file.bin").write_bytes(b"x" * 4096)
+        (tmp_path / "outside.bin").write_bytes(b"x" * 1024 * 1024)
+        (folder / "link.bin").symlink_to(tmp_path / "outside.bin")
+        (folder / "broken.bin").symlink_to(tmp_path / "gone.bin")
+        links = (folder / "link.bin").lstat().st_size + (folder / "broken.bin").lstat().st_size
+
+        assert await get_folder_size(str(folder)) * (1 << 30) == 4096 + links
+
+    async def test_excluded_folder_is_left_out(self, tmp_path: Path) -> None:
+        """A folder inside the measured one can be left out, e.g. a cache inside the data."""
+        (tmp_path / ".cache" / "images").mkdir(parents=True)
+        (tmp_path / "data.db").write_bytes(b"x" * 4096)
+        (tmp_path / ".cache" / "images" / "cover.jpg").write_bytes(b"x" * 1024)
+        (tmp_path / ".cache-old").mkdir()
+        (tmp_path / ".cache-old" / "kept.bin").write_bytes(b"x" * 512)
+
+        size = await get_folder_size(str(tmp_path), exclude=(f"{tmp_path}/.cache/",))
+
+        assert size * (1 << 30) == 4096 + 512
+
+    async def test_vanished_file_is_skipped(self, tmp_path: Path) -> None:
+        """A file removed while the folder is walked does not fail the measurement."""
+        (tmp_path / "kept.bin").write_bytes(b"x" * 2048)
+        (tmp_path / "journal.bin").write_bytes(b"x" * 100)
+        real_lstat = os.lstat
+
+        def _lstat(path: str) -> object:
+            if path.endswith("journal.bin"):
+                raise FileNotFoundError(path)
+            return real_lstat(path)
+
+        with patch.object(os, "lstat", _lstat):
+            assert await get_folder_size(str(tmp_path)) * (1 << 30) == 2048
+
+
 class TestSanitizeHttpHeaderValue:
     """sanitize_http_header_value strips characters aiohttp forbids in response headers."""
 
@@ -677,6 +723,30 @@ class TestSanitizeHttpHeaderValue:
     def test_leading_trailing_whitespace_stripped(self) -> None:
         """Control chars at the edges don't leave dangling whitespace."""
         assert sanitize_http_header_value("\x00Artist - Track\x1f") == "Artist - Track"
+
+
+class TestTryParseDuration:
+    """try_parse_duration reads a duration string as a number of seconds."""
+
+    def test_hours_minutes_seconds(self) -> None:
+        """A full HH:MM:SS duration counts the hours."""
+        assert try_parse_duration("12:34:56") == 45296.0
+
+    def test_fractional_seconds(self) -> None:
+        """The fraction after the seconds is kept."""
+        assert try_parse_duration("00:01:02.500") == 62.5
+
+    def test_comma_as_decimal_separator(self) -> None:
+        """SubRip transcripts write the fraction after a comma."""
+        assert try_parse_duration("00:01:02,500") == 62.5
+
+    def test_hours_are_optional(self) -> None:
+        """A WebVTT cue may leave out the hour part."""
+        assert try_parse_duration("01:02.500") == 62.5
+
+    def test_bare_seconds(self) -> None:
+        """A duration without any colon is read as seconds."""
+        assert try_parse_duration("62") == 62.0
 
 
 class TestGuardSingleRequest:
@@ -721,6 +791,16 @@ class TestGuardSingleRequest:
             for record in caplog.records
             if record.levelno >= logging.WARNING and "Exception in task" in record.getMessage()
         ]
+
+    @pytest.mark.asyncio
+    async def test_argument_named_after_a_task_option_reaches_the_wrapped_method(
+        self, mass_minimal: MusicAssistant
+    ) -> None:
+        """A parameter sharing its name with a create_task option is still passed through."""
+        caller = _GuardedCaller(mass_minimal)
+        caller.release.set()
+
+        assert await caller.fetch_named(task_name="abc", task_id="123") == "abc-123"
 
     @pytest.mark.asyncio
     async def test_instances_get_their_own_request(self, mass_minimal: MusicAssistant) -> None:
@@ -907,6 +987,13 @@ class _GuardedCaller:
         if self.error is not None:
             raise self.error
         return f"result-{item_id}"
+
+    @guard_single_request
+    async def fetch_named(self, task_name: str, task_id: str) -> str:
+        """Return the arguments, which are named after options of mass.create_task."""
+        self.calls += 1
+        await self.release.wait()
+        return f"{task_name}-{task_id}"
 
     @guard_single_request
     async def fetch_item(

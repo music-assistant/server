@@ -6,7 +6,6 @@ import base64
 import hashlib
 import json
 from contextlib import suppress
-from sqlite3 import OperationalError
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -31,6 +30,16 @@ _DASH_ROUTE_IDLE_BUFFER: int = 300
 # manifestMimeType values Tidal's playbackinfopostpaywall endpoint returns.
 _MANIFEST_DASH = "application/dash+xml"
 _MANIFEST_BTS = "application/vnd.tidal.bts"
+
+# ReplayGain 2.0 reference level; Tidal's replay gain values are relative to it.
+_REPLAYGAIN_REFERENCE_LUFS = -18.0
+
+
+def _loudness_from_gain(value: float | None) -> float | None:
+    """Convert a ReplayGain value to absolute loudness in LUFS."""
+    if value is None:
+        return None
+    return _REPLAYGAIN_REFERENCE_LUFS - value
 
 
 class TidalStreamingManager:
@@ -140,20 +149,25 @@ class TidalStreamingManager:
             channels=2,
         )
 
-        # Never block or fail playback on DB issues.
-        self.mass.create_task(
-            self._async_update_provider_mapping_audio_format(
-                provider_track_id=track.item_id,
-                resolved_audio_format=resolved_audio_format,
-            )
-        )
-
         self.provider.play_reporting.register_stream(
             item_id=track.item_id,
             quality=stream_data.get("audioQuality", "LOSSLESS"),
             asset_presentation=stream_data.get("assetPresentation", "FULL"),
             audio_mode=stream_data.get("audioMode", "STEREO"),
         )
+
+        loudness = _loudness_from_gain(stream_data.get("trackReplayGain"))
+        loudness_album = _loudness_from_gain(stream_data.get("albumReplayGain"))
+
+        if loudness is not None:
+            self.mass.create_task(
+                self.mass.streams.audio_analysis.set_track_loudness(
+                    item_id=track.item_id,
+                    provider_instance_id_or_domain=self.provider.instance_id,
+                    loudness=loudness,
+                    loudness_album=loudness_album,
+                )
+            )
 
         return StreamDetails(
             item_id=track.item_id,
@@ -164,6 +178,8 @@ class TidalStreamingManager:
             path=url,
             can_seek=True,
             allow_seek=True,
+            loudness=loudness,
+            loudness_album=loudness_album,
         )
 
     async def _fetch_playback_info(self, track_id: str, quality: Any) -> dict[str, Any]:
@@ -187,53 +203,6 @@ class TidalStreamingManager:
             stream_data.get("manifestMimeType"),
         )
         return stream_data
-
-    async def _async_update_provider_mapping_audio_format(
-        self,
-        provider_track_id: str,
-        resolved_audio_format: AudioFormat,
-    ) -> None:
-        """Persist resolved audio format on the provider mapping (best-effort)."""
-        try:
-            lib_track = await self.mass.music.tracks.get_library_item_by_prov_id(
-                provider_track_id, self.provider.instance_id
-            )
-            if not lib_track:
-                return
-
-            cur_mapping = next(
-                (
-                    m
-                    for m in lib_track.provider_mappings
-                    if m.provider_instance == self.provider.instance_id
-                    and m.item_id == provider_track_id
-                ),
-                None,
-            )
-            if not cur_mapping or cur_mapping.audio_format == resolved_audio_format:
-                return
-
-            await self.mass.music.tracks.update_provider_mapping(
-                item_id=lib_track.item_id,
-                provider_instance_id=self.provider.instance_id,
-                provider_item_id=provider_track_id,
-                audio_format=resolved_audio_format,
-            )
-        except (MediaNotFoundError, OperationalError, AssertionError) as err:
-            self.provider.logger.debug(
-                "Failed to persist audio_format on provider mapping for Tidal track %s "
-                "(provider_instance=%s): %s",
-                provider_track_id,
-                self.provider.instance_id,
-                err,
-            )
-        except Exception:
-            self.provider.logger.exception(
-                "Unexpected error while persisting audio_format on provider mapping for "
-                "Tidal track %s (provider_instance=%s)",
-                provider_track_id,
-                self.provider.instance_id,
-            )
 
     def _remove_dash_route(self, route_path: str) -> None:
         """Remove a DASH manifest route from the stream server."""
