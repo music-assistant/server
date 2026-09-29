@@ -512,7 +512,9 @@ class DLNAPlayer(Player):
         """Check if this is a virtual zone renderer published by a Teufel Raumfeld host."""
         if not self.device:
             return False
-        if "teufel" not in (self.device.manufacturer or "").lower():
+        manufacturer = (self.device.manufacturer or "").lower()
+        # current firmware reports "Lautsprecher Teufel GmbH", older firmware "Raumfeld GmbH"
+        if "teufel" not in manufacturer and "raumfeld" not in manufacturer:
             return False
         # A Raumfeld host publishes a renderer for every zone next to the speakers' own
         # renderers, all under the host's IP and with the host's model, so MA would link

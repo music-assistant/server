@@ -39,6 +39,11 @@ def test_zone_renderer_is_recognised() -> None:
     assert _player(TEUFEL, AV_TRANSPORT)._is_raumfeld_zone_renderer() is True
 
 
+def test_zone_renderer_with_legacy_manufacturer_is_recognised() -> None:
+    """Older Raumfeld firmware reports "Raumfeld GmbH" as the manufacturer."""
+    assert _player("Raumfeld GmbH", AV_TRANSPORT)._is_raumfeld_zone_renderer() is True
+
+
 def test_speaker_renderer_is_kept() -> None:
     """A Raumfeld speaker's own renderer carries the RaumfeldGenerator service."""
     player = _player(TEUFEL, AV_TRANSPORT, RAUMFELD_GENERATOR)
