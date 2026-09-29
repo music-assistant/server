@@ -70,6 +70,8 @@ from music_assistant.controllers.storage.constants import (
     RECONCILE_TASK_ID,
     REFRESH_INTERVAL,
     REFRESH_TASK_ID,
+    REMOUNT_INTERVAL,
+    REMOUNT_TASK_ID,
     SHARE_STATES_TIMEOUT,
     SHARES_DOCS_URL,
     SHARES_SETUP_TASK_ID,
@@ -143,6 +145,8 @@ class StorageController(CoreController):
         self._share_errors: dict[str, MusicAssistantError] = {}
         # shares whose mount was changed into another share outside Music Assistant
         self._changed_shares: set[str] = set()
+        # when each share was last tried to be mounted again because someone needed it
+        self._remount_attempts: dict[str, float] = {}
 
     @property
     def can_add_local_folder(self) -> bool:
@@ -171,6 +175,8 @@ class StorageController(CoreController):
         # this server mounted is mounted again on the next start
         self.mass.cancel_task(SHARES_SETUP_TASK_ID)
         self.mass.cancel_task(RECONCILE_TASK_ID)
+        for name in self._remount_attempts:
+            self.mass.cancel_task(f"{REMOUNT_TASK_ID}_{name}")
 
     @api_command("storage/info", required_scope=READ_SCOPES)
     async def get_info(self) -> StorageInfo:
@@ -516,6 +522,10 @@ class StorageController(CoreController):
         longer listed. Probes the location first when its state is outdated, which takes at
         most about 10 seconds.
 
+        A network share Music Assistant manages that is not mounted is mounted again in the
+        background, at most once a minute; the answer does not wait for it, a later call finds
+        the share mounted.
+
         :param path: An absolute path.
         """
         if (location := self.get_location_for_path(path)) is not None:
@@ -523,6 +533,7 @@ class StorageController(CoreController):
             location = self.get_location_for_path(path)
         if location is not None and not location.available:
             # nothing more to look at: it may be a share whose server is gone
+            self._request_remount(location)
             return False
         mountpoints = set(self._seen_mountpoints)
         if location is not None and location.mountpoint is not None:
@@ -533,7 +544,16 @@ class StorageController(CoreController):
             key=len,
             default=None,
         )
-        return await asyncio.to_thread(_is_available, path, mountpoint)
+        if await asyncio.to_thread(_is_available, path, mountpoint):
+            return True
+        # the mount of a share may have gone since the list was built
+        if (
+            location is not None
+            and location.share_name is not None
+            and not await asyncio.to_thread(_is_mountpoint, location.path)
+        ):
+            self._request_remount(location)
+        return False
 
     async def list_folders(self, path: str, manages_all_sources: bool = True) -> list[str]:
         """
@@ -988,22 +1008,74 @@ class StorageController(CoreController):
                 self._share_errors[spec.name] = _as_share_error(err)
             return
         for spec in specs:
-            state = states.get(spec.name, ShareState.MISSING)
-            if state == ShareState.CHANGED:
-                self._changed_shares.add(spec.name)
-                continue
-            self._changed_shares.discard(spec.name)
-            if state == ShareState.PRESENT:
-                self._share_errors.pop(spec.name, None)
-                continue
-            operation = mounter.reload if state == ShareState.FAILED else mounter.add
-            try:
-                await operation(spec, self._get_password(spec))
-            except Exception as err:
-                self.logger.warning("Unable to mount network share %s: %s", spec.name, err)
-                self._share_errors[spec.name] = _as_share_error(err)
-            else:
-                self._share_errors.pop(spec.name, None)
+            await self._mount_by_state(mounter, spec, states.get(spec.name, ShareState.MISSING))
+
+    async def _mount_by_state(
+        self, mounter: ShareMounter, spec: NetworkShareSpec, state: ShareState
+    ) -> bool:
+        """
+        Mount a managed network share that its backend has missing or failed.
+
+        Records or clears the error of the share, and never raises. Returns whether it mounted.
+
+        :param mounter: The mounter of the backend of the share.
+        :param spec: The share.
+        :param state: What the backend has for the share.
+        """
+        if state == ShareState.CHANGED:
+            self._changed_shares.add(spec.name)
+            return False
+        self._changed_shares.discard(spec.name)
+        if state == ShareState.PRESENT:
+            self._share_errors.pop(spec.name, None)
+            return False
+        operation = mounter.reload if state == ShareState.FAILED else mounter.add
+        try:
+            await operation(spec, self._get_password(spec))
+        except Exception as err:
+            self.logger.warning("Unable to mount network share %s: %s", spec.name, err)
+            self._share_errors[spec.name] = _as_share_error(err)
+            return False
+        self._share_errors.pop(spec.name, None)
+        return True
+
+    def _request_remount(self, location: StorageLocation) -> None:
+        """
+        Start an attempt in the background to mount a managed share again, when one is due.
+
+        :param location: The location of the share, which is not available.
+        """
+        if (name := location.share_name) is None or name in self._changed_shares:
+            return
+        now = time.monotonic()
+        tried = self._remount_attempts.get(name)
+        if tried is not None and now - tried < REMOUNT_INTERVAL:
+            return
+        self._remount_attempts[name] = now
+        self.mass.create_task(
+            self._remount(name), task_id=f"{REMOUNT_TASK_ID}_{name}", eager_start=False
+        )
+
+    async def _remount(self, name: str) -> None:
+        """
+        Mount a managed share again when its backend has it missing or failed; never raises.
+
+        :param name: The name of the share.
+        """
+        try:
+            async with self._shares_lock:
+                if (spec := self._get_shares().get(name)) is None or (
+                    mounter := self._mounters.get(spec.backend)
+                ) is None:
+                    return
+                state = (await mounter.get_states([spec]))[name]
+                if await self._mount_by_state(mounter, spec, state) and not (
+                    await self._is_share_mounted(spec)
+                ):
+                    self._share_errors[name] = self._share_not_mounted(spec)
+            await self.refresh()
+        except Exception:
+            self.logger.exception("Failed to mount network share %s again", name)
 
     async def _refresh_share_states(self) -> None:
         """Note which managed shares had their mount changed into another share, changing nothing."""

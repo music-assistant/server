@@ -19,7 +19,12 @@ from music_assistant.controllers.storage.backends.supervisor import create_super
 from music_assistant.controllers.storage.models import MountBackend, NetworkShareSpec, ShareType
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
 from tests.common import capture_log_records
-from tests.controllers.storage.conftest import FakeBackends, FakeMounter, FakeSupervisor
+from tests.controllers.storage.conftest import (
+    FakeBackends,
+    FakeMounter,
+    FakeSupervisor,
+    wait_until,
+)
 
 pytestmark = pytest.mark.usefixtures("probes")
 
@@ -858,3 +863,22 @@ async def test_mount_that_works_is_not_reloaded(
 
     assert _mutations(ready) == []
     assert "music" not in storage._share_errors
+
+
+async def test_failed_mount_is_reloaded_when_needed(
+    storage: StorageController, ready: FakeSupervisor
+) -> None:
+    """A mount that did not work at start is reloaded once a music source needs the share."""
+    _store(storage, ready, "music")
+    ready.add_mount("music", state="inactive", type="cifs", server="nas.local", share="music")
+    ready.unreachable.add("nas.local")
+    await storage.reconcile()
+    ready.unreachable.clear()
+    ready.requests.clear()
+    folder = ready.path("music")
+
+    assert not await storage.is_available(folder)
+    await wait_until(lambda: "storage_share_remount_music" not in storage.mass._tracked_tasks)
+
+    assert _mutations(ready) == [("POST", "/mounts/music/reload")]
+    assert await storage.is_available(folder)

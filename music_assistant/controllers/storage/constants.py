@@ -18,6 +18,9 @@ DIR_SIZES_TASK_ID: Final[str] = "storage_dir_sizes"
 MAX_LISTED_FOLDERS: Final[int] = 500
 SHARES_SETUP_TASK_ID: Final[str] = "storage_shares_setup"
 RECONCILE_TASK_ID: Final[str] = "storage_shares_reconcile"
+REMOUNT_TASK_ID: Final[str] = "storage_share_remount"
+# how often a managed share that is not mounted is tried again when someone needs it (seconds)
+REMOUNT_INTERVAL: Final[float] = 60
 # how long the storage info waits for a mount backend to say which shares it still has
 SHARE_STATES_TIMEOUT: Final[float] = 3
 # the namespace the translated strings of the storage controller resolve under

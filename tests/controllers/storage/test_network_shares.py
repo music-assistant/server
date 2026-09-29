@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -29,6 +30,8 @@ from music_assistant.controllers.storage.backends.local_mount import MOUNT_ROOT
 from music_assistant.controllers.storage.constants import (
     PROBE_MAX_AGE,
     RECONCILE_TASK_ID,
+    REMOUNT_INTERVAL,
+    REMOUNT_TASK_ID,
     SHARES_DOCS_URL,
     SHARES_SETUP_TASK_ID,
     TRANSLATION_OWNER,
@@ -1052,3 +1055,161 @@ async def test_member_gets_no_detail_of_a_mount_error(
         [],
     )
     assert "nas.local" not in json_dumps(member)
+
+
+def _remount_running(storage: StorageController, name: str = "music") -> bool:
+    """Return whether an attempt to mount a share again is in flight."""
+    return f"{REMOUNT_TASK_ID}_{name}" in storage.mass._tracked_tasks
+
+
+async def _wait_for_remount(storage: StorageController, name: str = "music") -> None:
+    """Wait until the attempt to mount a share again is done."""
+    await wait_until(lambda: not _remount_running(storage, name))
+
+
+@pytest.fixture
+def lost_share(storage: StorageController, mounter: FakeMounter, tmp_path: Path) -> Path:
+    """
+    Provide a stored share on a real folder whose server did not answer when it was mounted.
+
+    :param storage: The storage controller.
+    :param mounter: The mount backend of the share.
+    :param tmp_path: Temporary directory for the mountpoint.
+    """
+    share = tmp_path / "music"
+    (share / "Albums").mkdir(parents=True)
+    _store_at(storage, share)
+    mounter.failing["nas.local"] = SetupFailedError(
+        "SMB mount failed with error: mount error(112): Host is down",
+        translation_key="mount_failed",
+        translation_args=["mount error(112): Host is down"],
+    )
+    return share
+
+
+async def test_share_is_mounted_again_when_needed(
+    storage: StorageController, mounter: FakeMounter, probes: FakeProbes, lost_share: Path
+) -> None:
+    """A share whose server was gone at start mounts once a music source needs it again."""
+    albums = str(lost_share / "Albums")
+    await storage.reconcile()
+    assert "music" in storage._share_errors
+    # the server is back, after a probe found nothing there
+    probes.results[str(lost_share)] = None
+    assert not await storage.is_available(albums)
+    await _wait_for_remount(storage)
+    storage._remount_attempts["music"] -= REMOUNT_INTERVAL
+    probes.results.pop(str(lost_share))
+    del mounter.failing["nas.local"]
+    mounter.calls.clear()
+
+    # answered from what is known, the mount goes on in the background
+    assert not await storage.is_available(albums)
+    await _wait_for_remount(storage)
+
+    # the fresh probe after the mount counts, not the answer of before
+    assert await storage.is_available(albums)
+    assert [call[:2] for call in mounter.calls] == [("add", "music")]
+    assert "music" not in storage._share_errors
+    location = storage.get_location_for_path(albums)
+    assert location is not None
+    assert (location.available, location.error) == (True, None)
+
+
+async def test_attempts_are_limited(
+    storage: StorageController, mounter: FakeMounter, lost_share: Path
+) -> None:
+    """
+    One attempt at a time and at most one a minute; a failed one says why and raises nothing.
+
+    Callers at the same time share one attempt, and so do callers within the minute after it.
+    """
+    albums = str(lost_share / "Albums")
+    await storage.reconcile()
+    mounter.calls.clear()
+
+    assert not any(await asyncio.gather(storage.is_available(albums), storage.is_available(albums)))
+    await _wait_for_remount(storage)
+    assert not await storage.is_available(albums)
+    assert not _remount_running(storage)
+    await _wait_for_remount(storage)
+
+    assert [call[:2] for call in mounter.calls] == [("add", "music")]
+    location = storage.get_location_for_path(albums)
+    assert location is not None
+    assert (location.available, location.error_key) == (False, "mount_failed")
+    # a minute later it is tried again
+    storage._remount_attempts["music"] -= REMOUNT_INTERVAL
+    assert not await storage.is_available(albums)
+    await _wait_for_remount(storage)
+    assert [call[:2] for call in mounter.calls] == [("add", "music"), ("add", "music")]
+
+
+async def test_share_changed_in_home_assistant_is_not_mounted_again(
+    storage: StorageController, mounter: FakeMounter, lost_share: Path
+) -> None:
+    """A share whose mount is someone else's now is never touched."""
+    await storage.reconcile()
+    mounter.calls.clear()
+    del mounter.failing["nas.local"]
+    storage._changed_shares.add("music")
+
+    assert not await storage.is_available(str(lost_share / "Albums"))
+
+    assert not _remount_running(storage)
+    assert mounter.calls == []
+
+
+async def test_only_a_need_starts_an_attempt(
+    storage: StorageController, mounter: FakeMounter, lost_share: Path
+) -> None:
+    """Looking at the storage page or browsing the share mounts nothing."""
+    await storage.reconcile()
+    mounter.calls.clear()
+    del mounter.failing["nas.local"]
+
+    await storage.get_info()
+    with pytest.raises(ActionUnavailable):
+        await storage.list_folders(str(lost_share))
+
+    assert not _remount_running(storage)
+    assert "music" not in storage._remount_attempts
+    assert mounter.calls == []
+
+
+async def test_mounted_share_starts_no_attempt(
+    storage: StorageController, mounter: FakeMounter, lost_share: Path
+) -> None:
+    """A share that is mounted is left alone, also when a folder inside it does not exist."""
+    del mounter.failing["nas.local"]
+    await storage.reconcile()
+    mounter.calls.clear()
+
+    assert await storage.is_available(str(lost_share / "Albums"))
+    assert not await storage.is_available(str(lost_share / "Missing"))
+
+    assert not _remount_running(storage)
+    assert mounter.calls == []
+
+
+async def test_need_does_not_wait_for_the_mount(
+    storage: StorageController, mounter: FakeMounter, lost_share: Path
+) -> None:
+    """The caller gets its answer while the share is still being mounted."""
+    await storage.reconcile()
+    del mounter.failing["nas.local"]
+    server_answers = asyncio.Event()
+    mount = mounter.add
+
+    async def _slow_mount(spec: NetworkShareSpec, password: str | None) -> None:
+        await server_answers.wait()
+        await mount(spec, password)
+
+    with patch.object(mounter, "add", _slow_mount):
+        async with asyncio.timeout(1):
+            assert not await storage.is_available(str(lost_share / "Albums"))
+        assert _remount_running(storage)
+        server_answers.set()
+        await _wait_for_remount(storage)
+
+    assert await storage.is_available(str(lost_share / "Albums"))
