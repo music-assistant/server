@@ -5,17 +5,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
-import itertools
 import logging
 import os
-import random
 import re
 import tempfile
 import time
 import urllib.parse
 from base64 import b64decode
 from collections import OrderedDict
-from collections.abc import Iterable
 from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -24,11 +21,7 @@ import aiofiles
 import aiofiles.os
 from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import ProviderIconVariant
-from music_assistant_models.errors import (
-    MediaNotFoundError,
-    MusicAssistantError,
-    ProviderUnavailableError,
-)
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from PIL import Image, UnidentifiedImageError
 
 from music_assistant.constants import APPLICATION_NAME
@@ -41,7 +34,6 @@ from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import MediaItemImage
     from PIL.Image import Image as ImageClass
 
     from music_assistant.mass import MusicAssistant
@@ -801,70 +793,6 @@ async def invalidate_cached_image(mass: MusicAssistant, provider: str, path_or_u
                     Path(entry.path).unlink()
 
     await asyncio.to_thread(_remove_disk_entries)
-
-
-async def create_collage(
-    mass: MusicAssistant,
-    images: Iterable[MediaItemImage],
-    dimensions: tuple[int, int] = (1500, 1500),
-) -> bytes:
-    """Create a basic collage image from multiple image urls."""
-    image_size = 250
-
-    def _new_collage() -> ImageClass:
-        return Image.new("RGB", (dimensions[0], dimensions[1]), color=(255, 255, 255, 255))
-
-    collage = await asyncio.to_thread(_new_collage)
-
-    def _add_to_collage(img_data: bytes, coord_x: int, coord_y: int) -> None:
-        data = BytesIO(img_data)
-        photo = Image.open(data).convert("RGB")
-        photo = photo.resize((image_size, image_size))
-        collage.paste(photo, (coord_x, coord_y))
-        del data
-
-    # prevent duplicates with a set
-    images = list(set(images))
-    # warm the source cache with bounded concurrency and drop images that can't
-    # be fetched, so the (serial) tile loop below is served from cache
-    fetch_limiter = asyncio.Semaphore(8)
-
-    async def _warm_source_cache(img: MediaItemImage) -> MediaItemImage | None:
-        async with fetch_limiter:
-            try:
-                await get_image_data(mass, img.path, img.provider)
-            except FileNotFoundError, MusicAssistantError:
-                return None
-            return img
-
-    usable_images = [
-        img for img in await asyncio.gather(*map(_warm_source_cache, images)) if img is not None
-    ]
-    if not usable_images:
-        msg = "None of the collage images could be fetched"
-        raise FileNotFoundError(msg)
-    random.shuffle(usable_images)
-    iter_images = itertools.cycle(usable_images)
-
-    for x_co in range(0, dimensions[0], image_size):
-        for y_co in range(0, dimensions[1], image_size):
-            # try a few candidates per tile: a fetched image can still fail to decode
-            for _ in range(5):
-                img = next(iter_images)
-                try:
-                    img_data = await get_image_data(mass, img.path, img.provider)
-                    await asyncio.to_thread(_add_to_collage, img_data, x_co, y_co)
-                except FileNotFoundError, MusicAssistantError, UnidentifiedImageError:
-                    continue
-                del img_data
-                break
-
-    def _save_collage() -> bytes:
-        final_data = BytesIO()
-        collage.convert("RGB").save(final_data, "JPEG", optimize=True)
-        return final_data.getvalue()
-
-    return await asyncio.to_thread(_save_collage)
 
 
 async def load_provider_icon(icon_path: str) -> tuple[str, bytes]:
