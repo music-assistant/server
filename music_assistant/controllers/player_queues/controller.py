@@ -1096,6 +1096,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     queue_item.name,
                     err or "marked unavailable",
                 )
+                # current_item may already be pinned to this failed attempt (a manual
+                # next/previous pre-advances it before this retry loop ever runs), so its
+                # streamdetails would be stale for the next candidate - re-stash for it same
+                # as next/previous would, carrying the real predecessor forward if there is one
+                if (retry_target := self.get_item(queue_id, next_index)) is not None:
+                    self._stash_transition_anchor(queue_id, retry_target.queue_item_id)
                 index = next_index
             if loaded_item is None:
                 await self.stop(queue_id)

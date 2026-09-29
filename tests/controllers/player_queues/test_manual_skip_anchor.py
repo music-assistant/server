@@ -19,6 +19,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 from music_assistant_models.enums import ContentType, MediaType, PlaybackState
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat, ItemMapping, ProviderMapping, Track
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -235,3 +236,40 @@ async def test_play_index_clears_the_pending_transition_anchor_once_it_finishes(
     await ctrl.play_index("q1", 2)
 
     assert queue_data.pending_transition_anchor is None
+
+
+async def test_play_index_retry_carries_the_real_predecessor_to_the_next_candidate() -> None:
+    """A failed target's own stale streamdetails must not leak into the retry's anchor."""
+    ctrl = _controller()  # 3 items, current_index=1 (t2): the pre-advanced, about-to-fail target
+    queue_data = cast("PlayerQueueData", ctrl._queue_data["q1"])
+    real_predecessor = (INSTANCE, "Various Artists/Compilation Album/01 Track.flac")
+    queue_data.pending_transition_anchor = (queue_data.items[1].queue_item_id, *real_predecessor)
+    # t2 (about to fail) carries stale streamdetails from some earlier, unrelated play
+    queue_data.items[1].streamdetails = StreamDetails(
+        provider=INSTANCE,
+        item_id="Various Artists/Compilation Album/99 Old Play.flac",
+        audio_format=AudioFormat(content_type=ContentType.MP3),
+        media_type=MediaType.TRACK,
+    )
+    seen_anchors: list[tuple[str, str, str] | None] = []
+
+    async def _load_item(queue_item: QueueItem, **_kwargs: object) -> None:
+        seen_anchors.append(queue_data.pending_transition_anchor)
+        if queue_item.queue_item_id == queue_data.items[1].queue_item_id:
+            raise MediaNotFoundError("t2 unavailable")
+        queue_item.streamdetails = StreamDetails(
+            provider=INSTANCE,
+            item_id="doesnt-matter",
+            audio_format=AudioFormat(content_type=ContentType.MP3),
+            media_type=MediaType.TRACK,
+        )
+
+    ctrl._load_item = _load_item
+    ctrl.player_media_from_queue_item = AsyncMock()
+    ctrl.mass.players.play_media = AsyncMock()
+
+    await ctrl.play_index("q1", 1)
+
+    assert seen_anchors[0] == (queue_data.items[1].queue_item_id, *real_predecessor)
+    # the retry's own stash carries the real predecessor forward, not t2's stale streamdetails
+    assert seen_anchors[1] == (queue_data.items[2].queue_item_id, *real_predecessor)
