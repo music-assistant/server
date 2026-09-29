@@ -149,3 +149,89 @@ async def test_enqueue_goes_to_the_app_in_front() -> None:
 
     player.roku_input.assert_awaited_once()  # type: ignore[attr-defined]
     assert player.queued is not None
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("782875,dev", ["782875", "dev"]),
+        (" 782875 , , dev ", ["782875", "dev"]),
+        ("", []),
+    ],
+)
+def test_parse_app_ids_splits_a_list(value: str, expected: list[str]) -> None:
+    """A comma-separated setting gives its IDs in order; blanks and spaces are ignored."""
+    assert parse_app_ids(value) == expected
+
+
+async def test_play_goes_to_any_listed_app_in_front() -> None:
+    """A listed app in front gets the stream, even if it is not the first listed."""
+    player = _make_player(f"{MEDIA_ASSISTANT},dev", in_front="dev")
+    await player.play_media(_media())
+
+    player.roku_input.assert_awaited_once()  # type: ignore[attr-defined]
+    player.roku.launch.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+async def test_play_launches_first_installed_listed_app() -> None:
+    """With no listed app in front, the first listed one installed is launched."""
+    player = _make_player(f"{MEDIA_ASSISTANT},{OTHER_APP},dev", installed=("12", "dev", OTHER_APP))
+    await player.play_media(_media())
+
+    player.roku.update.assert_awaited_once_with()  # type: ignore[attr-defined]
+    player.roku._get_apps.assert_awaited_once()  # type: ignore[attr-defined]
+    player.roku.launch.assert_awaited_once()  # type: ignore[attr-defined]
+    assert player.roku.launch.await_args.args[0] == OTHER_APP  # type: ignore[attr-defined]
+    player.roku_input.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+async def test_play_launches_nothing_when_no_listed_app_is_installed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A Roku ignores /launch of an app it lacks, so nothing is sent; the log says why."""
+    player = _make_player(f"{MEDIA_ASSISTANT},dev", installed=("12",))
+    with caplog.at_level(logging.ERROR):
+        await player.play_media(_media())
+
+    player.roku.launch.assert_not_awaited()  # type: ignore[attr-defined]
+    assert "None of the Roku apps 782875, dev is installed" in caplog.text
+
+
+async def test_play_with_a_cleared_setting_says_so(caplog: pytest.LogCaptureFixture) -> None:
+    """A cleared setting launches nothing, and the log names the setting, not an app."""
+    player = _make_player("")
+    with caplog.at_level(logging.ERROR):
+        await player.play_media(_media())
+
+    player.roku.launch.assert_not_awaited()  # type: ignore[attr-defined]
+    assert "No Roku app ID is configured" in caplog.text
+
+
+async def test_play_under_screensaver_launches_the_listed_app_again() -> None:
+    """A listed app under the screensaver is launched, if installed, rather than sent /input."""
+    player = _make_player(f"{MEDIA_ASSISTANT},dev", in_front="dev", installed=("dev",))
+    player.roku.update.return_value.app.screensaver = True  # type: ignore[attr-defined]
+    await player.play_media(_media())
+
+    player.roku.launch.assert_awaited_once()  # type: ignore[attr-defined]
+    assert player.roku.launch.await_args.args[0] == "dev"  # type: ignore[attr-defined]
+
+
+async def test_poll_counts_any_listed_app_in_front_as_powered() -> None:
+    """The player is on while any listed app is in front, and off otherwise."""
+    player = _make_player(f"{MEDIA_ASSISTANT},dev", in_front="dev")
+    await player.poll()
+    assert player._attr_powered is True
+
+    player.roku.update.return_value.app = _app(OTHER_APP)  # type: ignore[attr-defined]
+    await player.poll()
+    assert player._attr_powered is False
+
+
+async def test_enqueue_goes_to_any_listed_app_in_front() -> None:
+    """The next item is enqueued in whichever listed app is in front."""
+    player = _make_player(f"{MEDIA_ASSISTANT},dev", in_front="dev")
+    await player.enqueue_next_media(_media())
+
+    player.roku_input.assert_awaited_once()  # type: ignore[attr-defined]
+    assert player.queued is not None

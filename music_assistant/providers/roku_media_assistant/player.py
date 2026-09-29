@@ -22,13 +22,13 @@ if TYPE_CHECKING:
 
 
 def parse_app_ids(value: object) -> list[str]:
-    """Return the app ID of a roku_app_id setting."""
+    """Return the app IDs of a comma-separated roku_app_id setting, in order."""
     if isinstance(value, int) and not isinstance(value, bool):
         # a number set through the API, which a string entry keeps as is
         value = str(value)
     if not isinstance(value, str):
         return []
-    return [value]
+    return [app_id.strip() for app_id in value.split(",") if app_id.strip()]
 
 
 class MediaAssistantPlayer(Player):
@@ -207,7 +207,17 @@ class MediaAssistantPlayer(Player):
                 if not self.app_ids:
                     self.logger.error("No Roku app ID is configured for %s", self.name)
                     return
-                await self.roku.launch(self.app_ids[0], f_media)
+                app_id = await self._app_to_launch()
+                if app_id is None:
+                    # A Roku answers /launch of an app it doesn't have with a 404
+                    # and does nothing, so say which apps it lacks instead.
+                    self.logger.error(
+                        "None of the Roku apps %s is installed on %s",
+                        ", ".join(self.app_ids),
+                        self.name,
+                    )
+                    return
+                await self.roku.launch(app_id, f_media)
 
             logger = self.provider.logger.getChild(self.player_id)
             logger.info(
@@ -345,3 +355,16 @@ class MediaAssistantPlayer(Player):
         if app.screensaver and not screensaver_counts:
             return False
         return app.app_id in self.app_ids
+
+    async def _app_to_launch(self) -> str | None:
+        """
+        Return the first listed app that is installed on the Roku, or None.
+
+        A single listed app is returned as is, without asking the Roku for its apps.
+        """
+        app_ids = self.app_ids
+        if len(app_ids) <= 1:
+            return app_ids[0] if app_ids else None
+        # only the app list: a full update would fetch the device state again too
+        installed = {app.get("@id") for app in await self.roku._get_apps()}
+        return next((app_id for app_id in app_ids if app_id in installed), None)
