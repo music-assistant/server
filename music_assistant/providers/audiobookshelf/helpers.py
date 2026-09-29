@@ -59,7 +59,7 @@ class SessionHelper:
 class _ProgressHelper:
     id_: str  # audiobook or podcast id
     episode_id: str | None = None
-    last_update_ms: int  # last update in ms epoch (same as last_update in abs)
+    last_update_ms: int  # ms epoch of when mass last touched the item, not abs' last_update
 
 
 class ProgressGuard:
@@ -100,7 +100,7 @@ class ProgressGuard:
             self._progresses.remove(progress)
 
     def add_progress(self, item_id: str, episode_id: str | None = None) -> None:
-        """Store a timestamp for the last update of an audiobook or podcast episode, mass ids."""
+        """Record now as the moment mass last touched an audiobook or podcast episode, mass ids."""
         if len(self._progresses) > self._max_progresses:
             self._remove_oldest()
         self.remove_progress(item_id=item_id, episode_id=episode_id)
@@ -113,9 +113,8 @@ class ProgressGuard:
         """
         Check, if we may update against an abs media progress.
 
-        The abs media progress has a property last_update_ms, which also reflects non
-        mass external updates. Here, we compare this property against a potential
-        stored one.
+        Only the ids are taken from the progress. Abs' own last_update is not read: a client
+        may overwrite it when syncing offline playback, so it does not order updates reliably.
         """
         return self.guard_ok_mass(abs_progress.library_item_id, abs_progress.episode_id)
 
@@ -123,7 +122,7 @@ class ProgressGuard:
         """
         Check, if we may update against a mass internal item.
 
-        Here, we use the current time and compare it against the stored time.
+        True if mass never touched the item, or if the wait window has passed since it did.
         """
         stored_progress = self._get_progress(item_id=item_id, episode_id=episode_id)
         if stored_progress is None:
