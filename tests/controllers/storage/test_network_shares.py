@@ -54,6 +54,7 @@ from tests.controllers.storage.conftest import (
     FakeProbes,
     MountTable,
     mount_line,
+    store_source,
     wait_until,
 )
 
@@ -101,19 +102,6 @@ def _logged(records: list[logging.LogRecord], level: int, text: str) -> bool:
     :param text: The text the message of the record holds.
     """
     return any(record.levelno == level and text in record.getMessage() for record in records)
-
-
-def _source(base_path: str) -> MagicMock:
-    """
-    Return a stand-in for a loaded music source reading its files from a path.
-
-    :param base_path: The folder the source reads its files from.
-    """
-    source = MagicMock()
-    source.domain = "filesystem_local"
-    source.base_path = base_path
-    source.name = "My music"
-    return source
 
 
 async def test_add(storage: StorageController, mounter: FakeMounter) -> None:
@@ -640,7 +628,7 @@ async def test_remove(storage: StorageController, mounter: FakeMounter) -> None:
     """A removed share is unmounted, forgotten and no longer listed."""
     await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
     # a source on a look-alike path does not use the share
-    storage.mass._providers["filesystem_local--abc"] = _source(f"{MUSIC_PATH}2")
+    store_source(storage, f"{MUSIC_PATH}2")
 
     await storage.remove_network_share("music")
 
@@ -651,11 +639,12 @@ async def test_remove(storage: StorageController, mounter: FakeMounter) -> None:
 
 @pytest.mark.parametrize("base_path", [MUSIC_PATH, f"{MUSIC_PATH}/Albums"])
 async def test_remove_refused_while_in_use(
-    storage: StorageController, mounter: FakeMounter, base_path: str
+    storage: StorageController, mounter: FakeMounter, probes: FakeProbes, base_path: str
 ) -> None:
     """A share a loaded music source reads from can not be removed."""
     await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
-    storage.mass._providers["filesystem_local--abc"] = _source(base_path)
+    store_source(storage, base_path)
+    probes.calls.clear()
 
     with pytest.raises(ActionUnavailable) as exc_info:
         await storage.remove_network_share("music")
@@ -664,6 +653,54 @@ async def test_remove_refused_while_in_use(
     assert exc_info.value.translation_args == ["My music"]
     assert mounter.calls[-1][0] == "add"
     assert "music" in storage.mass.config.get(CONF_STORAGE_SHARES)
+    # refusing touches no location
+    assert probes.calls == []
+
+
+@pytest.mark.usefixtures("mounter")
+async def test_member_does_not_see_the_sources_of_a_share(storage: StorageController) -> None:
+    """A caller that does not manage every source never learns which sources use a share."""
+    await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
+    store_source(storage, f"{MUSIC_PATH}/Albums")
+    set_current_user(User(user_id="member", username="member", role=UserRole.USER))
+
+    info = await storage.get_info()
+
+    location = next(loc for loc in info.locations if loc.path == MUSIC_PATH)
+    assert (location.share_name, location.used_by) == (None, [])
+    stored = storage.get_location_for_path(MUSIC_PATH)
+    assert stored is not None
+    assert stored.used_by == ["My music"]
+
+
+@pytest.mark.usefixtures("mounter")
+async def test_mounted_share_that_does_not_respond(
+    storage: StorageController, probes: FakeProbes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A mounted share whose probe does not answer in time says so, to an admin only.
+
+    A share that is not mounted, and has no error of its backend, is not available right now.
+    """
+    monkeypatch.setattr(controller_module, "PROBE_TIMEOUT", 0.2)
+    await storage.add_network_share(ShareType.CIFS, "nas.local", "music")
+    _store(storage, "movies")
+    storage._probes[MUSIC_PATH].answered_at = time.monotonic() - PROBE_MAX_AGE - 1
+    probes.block(MUSIC_PATH)
+
+    admin = {loc.path: loc for loc in (await storage.get_info()).locations}
+    set_current_user(User(user_id="member", username="member", role=UserRole.USER))
+    member = next(loc for loc in (await storage.get_info()).locations if loc.path == MUSIC_PATH)
+
+    music = admin[MUSIC_PATH]
+    assert (music.available, music.fstype, music.error_key) == (
+        False,
+        "cifs",
+        "storage_not_responding",
+    )
+    assert (member.available, member.error_key) == (False, "share_unavailable")
+    assert admin[f"{MOUNT_ROOT}/movies"].error_key == "share_unavailable"
+    assert "music" not in storage._share_errors
 
 
 @pytest.mark.usefixtures("mount_table", "backends")

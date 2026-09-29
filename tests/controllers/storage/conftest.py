@@ -13,6 +13,7 @@ import pytest
 from aiohttp import ClientSession, web
 from aiohttp.test_utils import TestServer
 
+from music_assistant.constants import CONF_PATH, CONF_PROVIDERS
 from music_assistant.controllers.storage import (
     StorageController,
     StorageKind,
@@ -74,6 +75,39 @@ def make_location(
         available=available,
         managed=kind == StorageKind.MANUAL if managed is None else managed,
         mountpoint=mountpoint,
+    )
+
+
+def store_source(
+    storage: StorageController,
+    folder: Path | str,
+    instance_id: str = "filesystem_local--abc",
+    name: str | None = "My music",
+    domain: str = "filesystem_local",
+    enabled: bool = True,
+) -> None:
+    """
+    Store a music source reading its files from a folder, as its setup did; it is not loaded.
+
+    :param storage: The storage controller.
+    :param folder: The folder the source reads its files from.
+    :param instance_id: The instance id of the source.
+    :param name: The name the user gave the source, None for its default name.
+    :param domain: The provider domain of the source.
+    :param enabled: Whether the source is enabled.
+    """
+    storage.mass.config.set(
+        f"{CONF_PROVIDERS}/{instance_id}",
+        {
+            "type": "music",
+            "domain": domain,
+            "instance_id": instance_id,
+            "enabled": enabled,
+            "name": name,
+            "default_name": "Local files",
+            "values": {},
+            "setup_data": {CONF_PATH: storage.mass.config.encrypt_string(str(folder))},
+        },
     )
 
 
