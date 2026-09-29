@@ -178,6 +178,24 @@ async def test_pause_watcher_steps_aside_once_the_session_changed() -> None:
     cast("AsyncMock", player.stop).assert_awaited_once()
 
 
+async def test_pause_watcher_ends_quietly_when_the_queue_is_removed() -> None:
+    """A player removed while paused takes its queue along, there is nothing left to stop."""
+    ctrl, player, _queue_data = _setup()
+    mass = cast("MagicMock", ctrl.mass)
+    await ctrl.pause(QUEUE_ID)
+
+    async def _remove_the_player(_seconds: float) -> None:
+        if sleep.await_count == 3:
+            ctrl._queue_data.pop(QUEUE_ID)
+
+    sleep = AsyncMock(side_effect=_remove_the_player)
+    await _run_pause_watcher(ctrl, sleep)
+
+    assert sleep.await_count == 3
+    mass.streams.audio_processing.clear.assert_not_called()
+    cast("AsyncMock", player.stop).assert_awaited_once()
+
+
 async def test_pause_watcher_leaves_a_restart_during_the_device_stop_alone() -> None:
     """A resume that starts while the pause still waits for the device keeps its session."""
     ctrl, player, queue_data = _setup()

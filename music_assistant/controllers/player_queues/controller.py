@@ -737,9 +737,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         async def _watch_pause(player: Player) -> None:
             def _still_paused() -> bool:
+                # the queue is gone when its player was removed meanwhile
                 return (
                     player.state.playback_state == PlaybackState.PAUSED
-                    and self._queue_data[queue_id].session_id == session_id
+                    and (queue_data := self._queue_data.get(queue_id)) is not None
+                    and queue_data.session_id == session_id
                 )
 
             count = 0
