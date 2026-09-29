@@ -393,6 +393,77 @@ async def test_prepare_next_leaves_the_buffer_of_an_item_still_on_the_queue() ->
     assert next_item.streamdetails.buffer is buffer
 
 
+async def test_prepare_next_creates_no_buffer_once_the_session_ended() -> None:
+    """
+    A stop that lands while the next item is resolved ends the prewarm.
+
+    The stop already released its session's audio, so a buffer warmed now would stay attached
+    to a stopped queue that nothing cleans up any more.
+    """
+    controller, next_item, mass = _controller_with_next_item()
+
+    async def _stop_meanwhile(*_args: object) -> SimpleNamespace:
+        controller._queue_data["queue-1"].session_id = None
+        return next_item
+
+    controller.load_next_queue_item = _stop_meanwhile  # type: ignore[method-assign, assignment]
+    mass.streams.audio.get_audio_buffer = AsyncMock()
+
+    controller.prepare_next_audio_buffer("queue-1", "current")
+    await mass.create_task.call_args.args[0]
+
+    mass.streams.audio.get_audio_buffer.assert_not_awaited()
+
+
+async def test_prepare_next_releases_a_buffer_that_filled_after_the_session_ended() -> None:
+    """
+    A stop that lands while the buffer fills still releases the warmed audio.
+
+    The stop's cleanup has already run by the time the fill finishes, so the buffer is
+    detached and released here instead of holding its source on a stopped queue.
+    """
+    controller, next_item, mass = _controller_with_next_item()
+    buffer = MagicMock()
+    detached_on_clear: list[bool] = []
+    buffer.clear = AsyncMock(
+        side_effect=lambda: detached_on_clear.append(next_item.streamdetails.buffer is None)
+    )
+
+    async def _stop_meanwhile(*_args: object, **_kwargs: object) -> MagicMock:
+        controller._queue_data["queue-1"].session_id = None
+        next_item.streamdetails.buffer = buffer
+        return buffer
+
+    mass.streams.audio.get_audio_buffer = _stop_meanwhile
+
+    controller.prepare_next_audio_buffer("queue-1", "current")
+    await mass.create_task.call_args.args[0]
+
+    buffer.clear.assert_awaited_once()
+    assert next_item.streamdetails.buffer is None
+    assert detached_on_clear == [True]
+
+
+async def test_prepare_next_keeps_the_buffer_when_the_session_rotated_mid_fill() -> None:
+    """A skip that starts a new session while the buffer fills keeps the audio for that session."""
+    controller, next_item, mass = _controller_with_next_item()
+    buffer = MagicMock()
+    buffer.clear = AsyncMock()
+
+    async def _skip_meanwhile(*_args: object, **_kwargs: object) -> MagicMock:
+        controller._queue_data["queue-1"].session_id = "session-2"
+        next_item.streamdetails.buffer = buffer
+        return buffer
+
+    mass.streams.audio.get_audio_buffer = _skip_meanwhile
+
+    controller.prepare_next_audio_buffer("queue-1", "current")
+    await mass.create_task.call_args.args[0]
+
+    buffer.clear.assert_not_awaited()
+    assert next_item.streamdetails.buffer is buffer
+
+
 async def test_prepare_next_follows_the_streamed_item_not_the_audible_one() -> None:
     """
     The item after the streamed one is prepared while the player still plays an earlier one.
