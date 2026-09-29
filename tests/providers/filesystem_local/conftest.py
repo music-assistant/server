@@ -11,7 +11,9 @@ from unittest.mock import MagicMock
 import pytest
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
+from music_assistant.constants import CONF_STORAGE_FOLDER_MOUNTS, CONF_STORAGE_FOLDERS
 from music_assistant.controllers.storage import StorageController
+from music_assistant.controllers.storage import controller as controller_module
 from music_assistant.controllers.translations import TranslationController
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 
@@ -36,6 +38,32 @@ async def storage(mass_minimal: MusicAssistant) -> AsyncGenerator[StorageControl
         yield controller
     finally:
         await controller.close()
+
+
+@pytest.fixture
+async def unmounted_folder(
+    storage: StorageController, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """
+    Provide a registered folder whose drive is not mounted, as the only storage location.
+
+    The folder and a subfolder ``Music`` are there on disk, as a mountpoint left behind can be.
+
+    :param storage: The storage controller that holds the location.
+    :param tmp_path: Temporary directory for the folder.
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    folder = tmp_path / "usb"
+    (folder / "Music").mkdir(parents=True)
+    # the drive was a mount when the folder was registered, and the mount table is empty now
+    monkeypatch.setattr(controller_module, "read_mountinfo", lambda: "")
+    storage.mass.config.set(CONF_STORAGE_FOLDERS, [str(folder)])
+    storage.mass.config.set(CONF_STORAGE_FOLDER_MOUNTS, [str(folder)])
+    await storage.refresh()
+    location = storage.get_location_for_path(str(folder))
+    assert location is not None
+    assert location.error_key == "folder_not_mounted"
+    return folder
 
 
 @pytest.fixture

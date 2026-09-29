@@ -424,6 +424,26 @@ async def test_a_folder_on_an_unavailable_location_is_not_touched(
 
 
 @MEMBER_AND_ADMIN
+async def test_a_folder_in_a_registered_folder_whose_drive_is_not_mounted_is_refused(
+    start_flow: Callable[..., Awaitable[_Flow]],
+    unmounted_folder: Path,
+    manages_all_sources: bool,
+) -> None:
+    """
+    A folder left on disk below a drive that is not mounted is refused as a location away.
+
+    :param manages_all_sources: Whether the caller manages every music source.
+    """
+    flow = await start_flow(manages_all_sources)
+
+    step = await flow.submit(unmounted_folder / "Music")
+
+    assert _error_key(step) == "storage_location_unavailable"
+    assert step.error_translations["path"].args == [str(unmounted_folder)]
+    assert flow.finished_with is None
+
+
+@MEMBER_AND_ADMIN
 async def test_reconfigure_keeps_the_stored_folder(
     start_flow: Callable[..., Awaitable[_Flow]], tree: Path, manages_all_sources: bool
 ) -> None:

@@ -49,6 +49,16 @@ async def test_an_unavailable_location_is_named(
     assert error.translation_args == [str(tmp_path / "nas")]
 
 
+async def test_a_registered_folder_whose_drive_is_not_mounted_is_unavailable(
+    mass_minimal: MusicAssistant, unmounted_folder: Path
+) -> None:
+    """A source in a registered folder whose drive is gone says the location is away."""
+    error = await _load_error(mass_minimal, unmounted_folder / "Music")
+
+    assert error.translation_key == "storage_location_unavailable"
+    assert error.translation_args == [str(unmounted_folder)]
+
+
 @pytest.mark.parametrize(
     "locations", [["{tmp}"], []], ids=["in_an_available_location", "outside_every_location"]
 )

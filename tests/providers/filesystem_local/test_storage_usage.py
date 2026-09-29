@@ -26,12 +26,17 @@ async def test_a_source_set_up_through_the_flow_uses_its_location(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The storage finds a source the flow created as a user of its location, loaded or not."""
+    """
+    The storage finds a source the flow created as a user of its location, loaded or not.
+
+    A location inside the source's folder is only read by the source, and can be removed.
+    """
     media = tmp_path / "media"
-    (media / "Music").mkdir(parents=True)
-    # a registered folder as the only location, with no mount table to discover others from
+    live = media / "Music" / "Live"
+    live.mkdir(parents=True)
+    # registered folders as the only locations, with no mount table to discover others from
     monkeypatch.setattr(controller_module, "read_mountinfo", lambda: "")
-    mass_minimal.config.set(CONF_STORAGE_FOLDERS, [str(media)])
+    mass_minimal.config.set(CONF_STORAGE_FOLDERS, [str(media), str(live)])
     set_locations(storage, make_location(media, kind=StorageKind.MANUAL))
     mass_minimal._provider_manifests["filesystem_local"] = await ProviderManifest.parse(
         str(Path(filesystem_local.__file__).parent / "manifest.json")
@@ -52,8 +57,13 @@ async def test_a_source_set_up_through_the_flow_uses_its_location(
 
     await storage.refresh()
 
-    location = next(loc for loc in storage.get_locations() if loc.path == str(media))
-    assert location.used_by == ["Local files"]
+    locations = {loc.path: loc for loc in storage.get_locations()}
+    assert locations[str(media)].used_by == ["Local files"]
+    assert locations[str(media)].read_by == []
+    assert locations[str(live)].used_by == []
+    assert locations[str(live)].read_by == ["Local files"]
     with pytest.raises(ActionUnavailable) as exc_info:
         await storage.remove_local_folder(str(media))
     assert exc_info.value.translation_key == "location_in_use"
+    await storage.remove_local_folder(str(live))
+    assert mass_minimal.config.get(CONF_STORAGE_FOLDERS) == [str(media)]
