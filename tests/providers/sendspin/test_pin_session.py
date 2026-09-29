@@ -227,6 +227,7 @@ def _make_provider(
     provider.mass = cast("MusicAssistant", _FakeMass(asyncio.get_running_loop()))
     provider.server_api = cast("SendspinServer", server_api)
     provider._pin_sessions = {}
+    provider._client_roles_listeners = []
     provider._management_sessions = {}
     provider._pairing_config_snapshots = {}
     provider.logger = logging.getLogger("test.sendspin.pin")

@@ -80,6 +80,10 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
+# PROVIDER_EVENT sub scope telling clients to re-fetch the sources (see README.md).
+SOURCES_EVENT_SUB_SCOPE = "sources"
+SOURCES_UPDATED_EVENT = "sources_updated"
+
 OUTPUT_FORMAT = AudioFormat(
     content_type=ContentType.PCM_S16LE,
     sample_rate=OUTPUT_SAMPLE_RATE,
@@ -138,6 +142,8 @@ class SendspinSourceProvider(PluginProvider):
         super().__init__(mass, manifest, config, supported_features)
         self._clients: dict[str, _SourceClientState] = {}
         self._server_unsubscribe: Callable[[], None] | None = None
+        self._roles_unsubscribe: Callable[[], None] | None = None
+        self._announced_source_ids: frozenset[str] = frozenset()
         self._unloading = False
 
     async def loaded_in_mass(self) -> None:
@@ -147,8 +153,11 @@ class SendspinSourceProvider(PluginProvider):
         if (sendspin := self._sendspin_provider) is None:
             return
         self._server_unsubscribe = sendspin.server_api.add_event_listener(self._on_server_event)
+        self._roles_unsubscribe = sendspin.add_client_roles_listener(self._on_client_roles_changed)
         for client in sendspin.server_api.connected_clients:
             self._watch_client(client)
+        # Clients learn about a (re)loaded provider from PROVIDERS_UPDATED, so seed silently.
+        self._announced_source_ids = self._current_source_ids()
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
@@ -156,6 +165,12 @@ class SendspinSourceProvider(PluginProvider):
         if self._server_unsubscribe is not None:
             self._server_unsubscribe()
             self._server_unsubscribe = None
+        if self._roles_unsubscribe is not None:
+            self._roles_unsubscribe()
+            self._roles_unsubscribe = None
+        if self._announced_source_ids:
+            self._announced_source_ids = frozenset()
+            self._signal_sources_updated()
         for client_id, state in list(self._clients.items()):
             self._cancel_pending_autostart(client_id)
             self._cancel_pending_autostop(client_id)
@@ -170,9 +185,7 @@ class SendspinSourceProvider(PluginProvider):
         if (sendspin := self._sendspin_provider) is None:
             return []
         sources: list[AudioSource] = []
-        for client in sendspin.server_api.connected_clients:
-            if self._get_source_role(client) is None:
-                continue
+        for client in self._source_clients(sendspin):
             info = client.info_or_none
             name = info.name if info else client.client_id
             sources.append(
@@ -380,6 +393,41 @@ class SendspinSourceProvider(PluginProvider):
         roles = client.roles_by_family("source")
         return cast("SourceV1Role", roles[0]) if roles else None
 
+    def _source_clients(self, sendspin: SendspinProvider) -> list[SendspinClient]:
+        """Return the connected clients with an active source role."""
+        return [
+            client
+            for client in sendspin.server_api.connected_clients
+            if self._get_source_role(client) is not None
+        ]
+
+    def _current_source_ids(self) -> frozenset[str]:
+        """Return the ids get_audio_sources currently lists."""
+        if (sendspin := self._sendspin_provider) is None:
+            return frozenset()
+        return frozenset(client.client_id for client in self._source_clients(sendspin))
+
+    def _announce_sources_if_changed(self) -> None:
+        """Tell clients to re-fetch the sources when the listed set has changed."""
+        if self._unloading:
+            return
+        current = self._current_source_ids()
+        if current == self._announced_source_ids:
+            return
+        self._announced_source_ids = current
+        self._signal_sources_updated()
+
+    def _signal_sources_updated(self) -> None:
+        # Broadcast to every client, so carry no source details: a user's player filter
+        # is only applied when the sources are browsed.
+        self.signal_provider_event(
+            {"event": SOURCES_UPDATED_EVENT}, sub_scope=SOURCES_EVENT_SUB_SCOPE
+        )
+
+    def _on_client_roles_changed(self, client_id: str) -> None:
+        """Re-check the sources after pairing or trust (de)activated a client's roles."""
+        self._announce_sources_if_changed()
+
     async def _await_first_audio(self, session: _SourceSession) -> None:
         """
         Block until the source actually streams, so a failed acquisition raises.
@@ -410,6 +458,7 @@ class SendspinSourceProvider(PluginProvider):
                 # Roles attach after this event, so defer until the next loop turn.
                 self.mass.create_task(self._on_client_connected(client_id), eager_start=False)
             case ClientRemovedEvent(client_id) | ClientDisconnectedEvent(client_id):
+                self._announce_sources_if_changed()
                 self._cancel_pending_autostart(client_id)
                 self._cancel_pending_autostop(client_id)
                 if (state := self._clients.get(client_id)) is not None:
@@ -431,6 +480,7 @@ class SendspinSourceProvider(PluginProvider):
         if client is None:
             return
         self._watch_client(client)
+        self._announce_sources_if_changed()
         # A reconnect clears the client's start request, so ask again.
         if self._get_session(client_id) is None:
             return
