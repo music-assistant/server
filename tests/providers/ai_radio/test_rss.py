@@ -583,6 +583,7 @@ def test_resolve_rss_tokens_shares_one_semaphore_across_tokens() -> None:
 def test_fetch_feed_document_decodes_declared_encoding() -> None:
     """An ISO-8859-1 feed round-trips through the download path without corruption."""
     body = '<?xml version="1.0" encoding="ISO-8859-1"?><rss version="2.0"><channel>'
+    # codespell:ignore caf
     body += "<item><title>Caf\u00e9 news</title><description>Se\u00f1or</description></item>"
     body += "</channel></rss>"
     raw = body.encode("iso-8859-1")

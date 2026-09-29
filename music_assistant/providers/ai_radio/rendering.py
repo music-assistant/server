@@ -735,6 +735,8 @@ _XML_ENCODING_RE = re.compile(rb"""<\?xml[^>]*?encoding=["']([\w.\-]+)["']""", r
 
 
 def _decode_feed_bytes(raw: bytes, http_charset: str | None) -> str:
+    # Ignore codespell warnings for common non-English characters in feeds
+    # codespell:ignore caf
     """
     Decode raw feed bytes to text, honoring the feed's declared encoding.
 
