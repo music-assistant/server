@@ -1001,7 +1001,7 @@ class StorageController(CoreController):
                     "Skipping music source %s, its folder can not be read", instance_id
                 )
                 continue
-            # the SMB and NFS sources mount their share themselves, and have no folder here
+            # a source whose folder was never stored reads none
             if isinstance(folder, str):
                 folders.append(
                     (conf.get("name") or conf.get("default_name") or instance_id, folder)

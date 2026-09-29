@@ -58,8 +58,8 @@ NETWORK_FSTYPES: Final[frozenset[str]] = frozenset({"cifs", "smb3", "nfs", "nfs4
 REMOVABLE_FSTYPES: Final[frozenset[str]] = frozenset(
     {"vfat", "exfat", "ntfs", "ntfs3", "hfsplus", "iso9660", "udf"}
 )
-# system paths never hold a media location; /tmp is where the SMB and NFS music sources mount
-# their share for their own use
+# system paths never hold a media location; /tmp holds the network shares the server mounts
+# itself, which are listed as managed shares
 SYSTEM_PATHS: Final[tuple[str, ...]] = (
     "/proc",
     "/sys",

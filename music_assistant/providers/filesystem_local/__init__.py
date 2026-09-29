@@ -164,11 +164,8 @@ if TYPE_CHECKING:
     from music_assistant.providers.musicbrainz import MusicbrainzProvider
 
 
-isdir = wrap(os.path.isdir)
 isfile = wrap(os.path.isfile)
-ismount = wrap(os.path.ismount)
 exists = wrap(os.path.exists)
-makedirs = wrap(os.makedirs)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
@@ -237,8 +234,8 @@ class LocalFileSystemProvider(MusicProvider):
     ) -> None:
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
-        # subclasses (NFS/SMB/...) mount elsewhere and pass their own base_path;
-        # the plain local provider reads its scan directory from the setup data
+        # subclasses (cloud, WebDAV) pass their own base_path; the plain local provider
+        # reads its scan directory from the setup data
         self.base_path: str = (
             base_path if base_path is not None else cast("str", self.get_setup_value(CONF_PATH))
         )
