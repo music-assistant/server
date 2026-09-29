@@ -230,7 +230,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         List the children of a cloud folder, following pagination if needed.
 
         :param folder_id: The cloud provider's opaque folder ID.
-        :return: One (id, name, is_dir, checksum, size) tuple per child.
+        :return: One (id, name, is_dir, checksum, size, metadata_token) tuple per child.
         """
         raise NotImplementedError
 
