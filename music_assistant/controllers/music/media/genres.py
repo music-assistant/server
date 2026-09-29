@@ -11,7 +11,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import BackgroundTask, TaskSchedule
-from music_assistant_models.enums import EventType, ImageType, MediaType, TaskStatus
+from music_assistant_models.enums import (
+    EventType,
+    ImageType,
+    MediaType,
+    SortDirection,
+    SortField,
+    TaskStatus,
+)
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
@@ -314,12 +321,15 @@ class GenreController(MediaControllerBase[Genre]):
         media_type: MediaType | None = None,
         content_type: str | None = None,
         *,
+        sort_field: SortField | None = None,
+        sort_direction: SortDirection | None = None,
         summary: bool = True,
         **kwargs: Any,
     ) -> list[Genre]:
         """
         Get genres in the library.
 
+        :param order_by: DEPRECATED - use sort_field and sort_direction instead.
         :param genre: NOT SUPPORTED - Filtering genres by genres doesn't make sense.
         :param hide_empty: Only applies when media_type is not set.
             True: only return genres that have at least one media mapping.
@@ -331,9 +341,15 @@ class GenreController(MediaControllerBase[Genre]):
             general/music taxonomy, stored as NULL), "podcast" or "audiobook". Composes with
             hide_empty, so e.g. content_type="podcast" + hide_empty=None returns only the
             default podcast genres.
+        :param sort_field: Sort field to use.
+        :param sort_direction: Sort direction (ASC/DESC). Only applies if sort_field is set.
         :param summary: When True (default), return slim summary items containing only the
             fields needed for a list view. Set to False to get fully hydrated items.
         """
+        final_order_by = self._resolve_sort_parameters(
+            sort_field, sort_direction, order_by, default="sort_name"
+        )
+
         if genre is not None:
             msg = "genre parameter is not supported for Genre.library_items()"
             raise ValueError(msg)
@@ -374,7 +390,7 @@ class GenreController(MediaControllerBase[Genre]):
             search=search,
             limit=limit,
             offset=offset,
-            order_by=order_by,
+            order_by=final_order_by,
             extra_query_params=extra_params,
             extra_query_parts=extra_parts,
             played_only=played_only,
@@ -388,7 +404,7 @@ class GenreController(MediaControllerBase[Genre]):
                 limit=limit,
                 offset=offset,
                 favorite=favorite,
-                order_by=order_by,
+                order_by=final_order_by,
                 played_only=played_only,
                 hide_empty=hide_empty,
                 media_type=media_type,
