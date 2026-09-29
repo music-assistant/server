@@ -40,6 +40,8 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.constants import (
+    CONF_PATH,
+    CONF_PROVIDERS,
     CONF_STORAGE_FOLDERS,
     CONF_STORAGE_SHARES,
     FILESYSTEM_PROVIDER_DOMAINS,
@@ -272,7 +274,7 @@ class StorageController(CoreController):
         if path not in folders:
             msg = f"Not a registered folder: {path}"
             raise self._error(InvalidDataError, msg, "folder_not_registered")
-        await self._check_not_in_use(path)
+        self._check_not_in_use(path)
         self.mass.config.set(
             CONF_STORAGE_FOLDERS, [folder for folder in folders if folder != path], immediate=True
         )
@@ -422,7 +424,7 @@ class StorageController(CoreController):
         """
         async with self._shares_lock:
             spec = self._get_share(name)
-            await self._check_not_in_use(spec.path)
+            self._check_not_in_use(spec.path)
             if (mounter := await self._get_mounter(spec.backend)) is None:
                 if spec.backend == MountBackend.SUPERVISOR and self.mass.running_as_hass_addon:
                     # the Supervisor may only be busy: its mount stays until it can be removed
@@ -600,7 +602,11 @@ class StorageController(CoreController):
         return [name for name in names if os.path.join(real_path, name) not in hidden]
 
     async def refresh(self) -> None:
-        """Rebuild the list of storage locations from the mount table, touching no location."""
+        """
+        Rebuild the list of storage locations from the mount table, touching no location.
+
+        Also records which music sources use each location.
+        """
         table = await asyncio.to_thread(read_mountinfo)
         self._seen_mountpoints.update(parse_mountpoints(table))
         data_path, cache_path = self._server_folders
@@ -614,7 +620,13 @@ class StorageController(CoreController):
                 continue
             name = "Media folder" if mount.kind == StorageKind.BUILTIN_MEDIA else None
             media[mount.mountpoint] = _build_location(
-                mount.mountpoint, name, StorageUsage.MEDIA, mount.kind, answer, mount=mount
+                mount.mountpoint,
+                name,
+                StorageUsage.MEDIA,
+                mount.kind,
+                answer,
+                mount=mount,
+                probed=self._has_answer(mount.mountpoint),
             )
         # a registered folder replaces a discovered location on the same path, mount included
         for folder in self._get_registered_folders():
@@ -628,6 +640,7 @@ class StorageController(CoreController):
                 self._get_answer(folder, _UNPROBED_FOLDER if folder_mount is not None else None),
                 mount=folder_mount,
                 managed=True,
+                probed=self._has_answer(folder),
             )
         # a managed network share replaces the location discovered on its path the same way
         for spec in self._get_shares().values():
@@ -644,6 +657,7 @@ class StorageController(CoreController):
                     # the server runs from these
                     self._get_answer(path, _UNPROBED_FOLDER),
                     used_space_gb=self._dir_sizes.get(usage),
+                    probed=self._has_answer(path),
                 )
                 for path, name, usage in (
                     (data_path, "Data", StorageUsage.DATA),
@@ -651,9 +665,9 @@ class StorageController(CoreController):
                 )
             ),
         ]
-        sources = self._get_sources_by_location()
+        sources = self._get_source_folders()
         for location in self._locations:
-            location.used_by = sources.get(location.path, [])
+            location.used_by = _sources_using(location.path, sources)
 
     async def reconcile(self) -> None:
         """
@@ -732,15 +746,13 @@ class StorageController(CoreController):
             msg = f"{path} already is a storage location"
             raise self._error(InvalidDataError, msg, "folder_already_location")
 
-    async def _check_not_in_use(self, path: str) -> None:
+    def _check_not_in_use(self, path: str) -> None:
         """
         Raise when a music source reads its files from a location.
 
         :param path: The path of the location.
         """
-        # the sources are matched against the listed locations, which may not hold this one yet
-        await self.refresh()
-        if used_by := self._get_sources_by_location().get(path):
+        if used_by := _sources_using(path, self._get_source_folders()):
             msg = f"{used_by[0]} uses {path}"
             raise self._error(ActionUnavailable, msg, "location_in_use", used_by[0])
 
@@ -887,6 +899,16 @@ class StorageController(CoreController):
             return None
         return state.answer if state.answered_at is not None else unprobed
 
+    def _has_answer(self, path: str) -> bool:
+        """
+        Return whether a probe of a path answered, or did not answer in time.
+
+        :param path: The probed path.
+        """
+        return (state := self._probes.get(path)) is not None and (
+            state.answered_at is not None or state.overdue
+        )
+
     def _request_dir_sizes(self) -> None:
         """Measure the data and cache directories when the last measurement is outdated."""
         now = time.monotonic()
@@ -914,23 +936,33 @@ class StorageController(CoreController):
         """Return the folders registered as a media location."""
         return list(self.mass.config.get(CONF_STORAGE_FOLDERS, []))
 
-    def _get_sources_by_location(self) -> dict[str, list[str]]:
+    def _get_source_folders(self) -> list[tuple[str, str]]:
         """
-        Return the sorted names of the loaded music sources, by the locations they read from.
+        Return the name and folder of every enabled music source reading a folder of this server.
 
-        A source counts for every location that contains its folder, nested locations included.
+        Loaded or not: a source that failed to load, e.g. because its share is down, still
+        reads from its folder.
         """
-        sources: dict[str, list[str]] = {}
-        for provider in self.mass.providers:
-            if provider.domain not in FILESYSTEM_PROVIDER_DOMAINS:
+        folders: list[tuple[str, str]] = []
+        for instance_id, conf in self.mass.config.get(CONF_PROVIDERS, {}).items():
+            if (
+                not conf.get("enabled", True)
+                or conf.get("domain") not in FILESYSTEM_PROVIDER_DOMAINS
+            ):
                 continue
-            base_path = getattr(provider, "base_path", None)
-            if not isinstance(base_path, str):
+            try:
+                folder = self.mass.config.get_provider_setup_value(instance_id, CONF_PATH)
+            except InvalidDataError:
+                self.logger.debug(
+                    "Skipping music source %s, its folder can not be read", instance_id
+                )
                 continue
-            for location in self._locations:
-                if is_within(base_path, location.path):
-                    sources.setdefault(location.path, []).append(provider.name)
-        return {path: sorted(names, key=str.casefold) for path, names in sources.items()}
+            # the SMB and NFS sources mount their share themselves, and have no folder here
+            if isinstance(folder, str):
+                folders.append(
+                    (conf.get("name") or conf.get("default_name") or instance_id, folder)
+                )
+        return folders
 
     async def _setup_network_shares(self) -> None:
         """Find the mount backends this server can use and mount the managed network shares."""
@@ -1303,29 +1335,30 @@ class StorageController(CoreController):
         changed = spec.name in self._changed_shares
         # the folder an unmounted share leaves behind is not the share, and a mount changed into
         # another share is not this one; without a mount table (macOS) the probe decides
-        answer = (
-            None
-            if changed or (share_mount is None and table)
-            else self._get_answer(spec.path, _UNPROBED_FOLDER)
-        )
+        by_probe = not changed and (share_mount is not None or not table)
         location = _build_location(
             spec.path,
             None,
             StorageUsage.MEDIA,
             StorageKind.NETWORK_SHARE,
-            answer,
+            self._get_answer(spec.path, _UNPROBED_FOLDER) if by_probe else None,
             mount=share_mount,
             managed=True,
+            probed=by_probe and self._has_answer(spec.path),
         )
         error: MusicAssistantError | None = None
         if changed:
             error = self._share_changed(spec)
         elif not location.available:
-            error = self._share_errors.get(spec.name) or self._error(
-                ActionUnavailable,
-                f"Network share {spec.name} is not available",
-                "share_unavailable",
-            )
+            # what the backend said, else what the probe found, else that it is not mounted
+            error = self._share_errors.get(spec.name)
+            if error is None and location.error is None:
+                msg = f"Network share {spec.name} is not available"
+                error = self._error(ActionUnavailable, msg, "share_unavailable")
+        if error is not None:
+            location.error = str(error)
+            location.error_key = error.translation_key
+            location.error_args = [str(arg) for arg in error.translation_args]
         return replace(
             location,
             read_only=spec.read_only or location.read_only,
@@ -1337,9 +1370,6 @@ class StorageController(CoreController):
             share=spec.share,
             username=spec.username,
             version=spec.version,
-            error=str(error) if error is not None else None,
-            error_key=error.translation_key if error is not None else None,
-            error_args=[str(arg) for arg in error.translation_args] if error is not None else [],
         )
 
     def _share_not_mounted(self, spec: NetworkShareSpec) -> SetupFailedError:
@@ -1504,19 +1534,26 @@ def _build_location(
     mount: MediaMount | None = None,
     managed: bool = False,
     used_space_gb: float | None = None,
+    probed: bool = False,
 ) -> StorageLocation:
-    """Build a storage location from the latest probe of its path and the mount on it."""
+    """
+    Build a storage location from the latest probe of its path and the mount on it.
+
+    A location that is not available says why only once a probe of its path answered or did
+    not answer in time (probed).
+    """
     # a share still behind its automount trigger did not mount
     available = (
         result is not None and result.is_dir and (mount is None or mount.fstype != AUTOMOUNT_FSTYPE)
     )
     error: str | None = None
     error_key: str | None = None
-    if result is not None and not result.is_dir:
-        error, error_key = "The folder does not exist", "folder_missing"
-    elif not available:
-        # the probe did not answer, or did not wake the share behind an automount trigger
-        error, error_key = "The storage does not respond", "storage_not_responding"
+    if probed and not available:
+        if result is not None and not result.is_dir:
+            error, error_key = "The folder does not exist", "folder_missing"
+        else:
+            # the probe did not answer, or did not wake the share behind an automount trigger
+            error, error_key = "The storage does not respond", "storage_not_responding"
     return StorageLocation(
         path=path,
         name=name or Path(path).name or path,
@@ -1533,6 +1570,16 @@ def _build_location(
         error=error,
         error_key=error_key,
     )
+
+
+def _sources_using(path: str, sources: list[tuple[str, str]]) -> list[str]:
+    """
+    Return the sorted names of the music sources that read from a path or a folder inside it.
+
+    :param path: The path of a location.
+    :param sources: The name and folder of each music source.
+    """
+    return sorted((name for name, folder in sources if is_within(folder, path)), key=str.casefold)
 
 
 def _is_available(path: str, mountpoint: str | None) -> bool:

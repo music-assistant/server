@@ -99,6 +99,8 @@ async def test_never_probed_locations(
         storage.mass.cache_path: True,
     }
     assert all(loc.free_space_gb is None for loc in storage.get_locations())
+    # an error says what a probe found
+    assert all(loc.error is None and loc.error_key is None for loc in storage.get_locations())
     assert probes.calls == []
 
 

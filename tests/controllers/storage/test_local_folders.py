@@ -25,7 +25,7 @@ from music_assistant.controllers.storage import controller as controller_module
 from music_assistant.controllers.storage.constants import PROBE_MAX_AGE
 from music_assistant.controllers.translations import TranslationController
 from music_assistant.controllers.webserver.helpers.auth_middleware import set_current_user
-from tests.controllers.storage.conftest import mount_line
+from tests.controllers.storage.conftest import FakeProbes, mount_line, store_source
 
 MEMBER = User(user_id="member", username="member", role=UserRole.USER)
 
@@ -35,21 +35,6 @@ def empty_mount_table() -> Iterator[None]:
     """Keep the mount table of the machine running the tests out of the locations."""
     with patch.object(controller_module, "read_mountinfo", return_value=""):
         yield
-
-
-def _source(domain: str, base_path: str, name: str = "My music") -> MagicMock:
-    """
-    Return a stand-in for a loaded music source reading its files from a path.
-
-    :param domain: The provider domain of the source.
-    :param base_path: The folder the source reads its files from.
-    :param name: The name of the source.
-    """
-    source = MagicMock()
-    source.domain = domain
-    source.base_path = base_path
-    source.name = name
-    return source
 
 
 def _location(locations: list[StorageLocation], path: Path) -> StorageLocation:
@@ -298,9 +283,7 @@ async def test_remove_refused_while_in_use(
 ) -> None:
     """A folder a music source reads from, directly or below it, stays registered."""
     await storage.add_local_folder(str(tmp_path))
-    storage.mass._providers["filesystem_local--abc"] = _source(
-        "filesystem_local", f"{tmp_path}{subfolder}"
-    )
+    store_source(storage, f"{tmp_path}{subfolder}")
 
     with pytest.raises(ActionUnavailable) as exc_info:
         await storage.remove_local_folder(str(tmp_path))
@@ -327,8 +310,11 @@ async def test_remove_allowed_when_no_source_reads_from_it(
     folder = tmp_path / "music"
     folder.mkdir()
     await storage.add_local_folder(str(folder))
-    storage.mass._providers["other--abc"] = _source(
-        domain, base_path.format(folder=folder, parent=tmp_path)
+    store_source(
+        storage,
+        base_path.format(folder=folder, parent=tmp_path),
+        instance_id=f"{domain}--abc",
+        domain=domain,
     )
 
     await storage.remove_local_folder(str(folder))
@@ -352,25 +338,22 @@ async def test_used_by(storage: StorageController, tmp_path: Path) -> None:
     """
     A location names the sources that read from it or from a folder inside it, sorted.
 
-    A source on a sibling folder whose name only starts the same way, or one that reads no local
-    folder, is no user of it.
+    A source without a name of its own shows its default name. A source on a sibling folder
+    whose name only starts the same way, or one that reads no local folder, is no user of it.
     """
     music = tmp_path / "music"
     (music / "Albums").mkdir(parents=True)
     (tmp_path / "music-old").mkdir()
     await storage.add_local_folder(str(music))
-    storage.mass._providers.update(
-        {
-            "filesystem_local--a": _source("filesystem_local", str(music), "Music"),
-            "filesystem_local--b": _source("filesystem_local", f"{music}/Albums/", "albums"),
-            "filesystem_local--c": _source("filesystem_local", f"{music}-old", "Old music"),
-            "webdav--d": _source("webdav", str(music), "Cloud"),
-        }
-    )
+    store_source(storage, music, "filesystem_local--a", "Music")
+    store_source(storage, f"{music}/Albums/", "filesystem_local--b", "albums")
+    store_source(storage, music, "filesystem_local--c", None)
+    store_source(storage, f"{music}-old", "filesystem_local--d", "Old music")
+    store_source(storage, music, "webdav--e", "Cloud", domain="webdav")
 
     info = await storage.get_info()
 
-    assert _location(info.locations, music).used_by == ["albums", "Music"]
+    assert _location(info.locations, music).used_by == ["albums", "Local files", "Music"]
     assert all(loc.used_by == [] for loc in info.locations if loc.path != str(music))
 
 
@@ -383,9 +366,7 @@ async def test_used_by_every_location_around_the_source(
     (classical / "Bach").mkdir(parents=True)
     await storage.add_local_folder(str(music))
     await storage.add_local_folder(str(classical))
-    storage.mass._providers["filesystem_local--abc"] = _source(
-        "filesystem_local", str(classical / "Bach")
-    )
+    store_source(storage, classical / "Bach")
 
     info = await storage.get_info()
 
@@ -398,23 +379,65 @@ async def test_used_by_every_location_around_the_source(
     assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == [str(music), str(classical)]
 
 
-async def test_used_by_loaded_sources_only(storage: StorageController, tmp_path: Path) -> None:
-    """A source that is not loaded uses no location, so it does not keep one from removal."""
+async def test_source_that_failed_to_load_uses_its_location(
+    storage: StorageController, tmp_path: Path
+) -> None:
+    """A source that did not load, e.g. because its share is down, still keeps its location."""
     await storage.add_local_folder(str(tmp_path))
-    storage.mass._providers["filesystem_local--abc"] = _source("filesystem_local", str(tmp_path))
-    assert _location((await storage.get_info()).locations, tmp_path).used_by == ["My music"]
+    store_source(storage, tmp_path)
 
-    del storage.mass._providers["filesystem_local--abc"]
+    info = await storage.get_info()
 
-    assert _location((await storage.get_info()).locations, tmp_path).used_by == []
+    assert _location(info.locations, tmp_path).used_by == ["My music"]
+    with pytest.raises(ActionUnavailable) as exc_info:
+        await storage.remove_local_folder(str(tmp_path))
+    assert exc_info.value.translation_key == "location_in_use"
+    assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == [str(tmp_path)]
+
+
+async def test_disabled_source_uses_no_location(storage: StorageController, tmp_path: Path) -> None:
+    """A disabled source does not keep its location from removal."""
+    await storage.add_local_folder(str(tmp_path))
+    store_source(storage, tmp_path, enabled=False)
+
+    info = await storage.get_info()
+
+    assert _location(info.locations, tmp_path).used_by == []
     await storage.remove_local_folder(str(tmp_path))
     assert storage.mass.config.get(CONF_STORAGE_FOLDERS) == []
+
+
+async def test_loaded_source_is_listed_once(storage: StorageController, tmp_path: Path) -> None:
+    """A loaded source and its stored config are one source."""
+    await storage.add_local_folder(str(tmp_path))
+    store_source(storage, tmp_path)
+    loaded = MagicMock(domain="filesystem_local", base_path=str(tmp_path))
+    loaded.name = "My music"
+    storage.mass._providers["filesystem_local--abc"] = loaded
+
+    info = await storage.get_info()
+
+    assert _location(info.locations, tmp_path).used_by == ["My music"]
+
+
+async def test_refused_removal_probes_nothing(
+    storage: StorageController, tmp_path: Path, probes: FakeProbes
+) -> None:
+    """Refusing to remove a folder in use touches no location."""
+    await storage.add_local_folder(str(tmp_path))
+    store_source(storage, tmp_path)
+    probes.calls.clear()
+
+    with pytest.raises(ActionUnavailable):
+        await storage.remove_local_folder(str(tmp_path))
+
+    assert probes.calls == []
 
 
 async def test_member_does_not_see_the_sources(storage: StorageController, tmp_path: Path) -> None:
     """A caller that does not manage every source never learns which sources use a location."""
     await storage.add_local_folder(str(tmp_path))
-    storage.mass._providers["filesystem_local--abc"] = _source("filesystem_local", str(tmp_path))
+    store_source(storage, tmp_path)
     set_current_user(MEMBER)
 
     info = await storage.get_info()
