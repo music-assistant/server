@@ -677,8 +677,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         """
         player = self._get_player_with_redirect(player_id)
         async with self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK):
-            # an emulated pause may still show playing until the device confirms its stop
-            if player.state.playback_state == PlaybackState.PLAYING and not player.emulated_pause:
+            if player.state.playback_state == PlaybackState.PLAYING:
                 self.logger.info(
                     "Ignore PLAY request to player %s: player is already playing",
                     player.state.name,
@@ -718,8 +717,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         - player_id: player_id of the player to handle the command.
         """
         player = self._get_player_with_redirect(player_id)
-        # an emulated pause may still show playing until the device confirms its stop
-        if player.state.playback_state == PlaybackState.PLAYING and not player.emulated_pause:
+        if player.state.playback_state == PlaybackState.PLAYING:
             await self.cmd_pause(player.player_id)
         else:
             await self.cmd_play(player.player_id)
@@ -4359,10 +4357,6 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # set active source if media has a source_id (e.g. plugin source or mass queue source)
         if media.source_id:
             player.set_active_mass_source(media.source_id)
-        # an emulated pause that shows already ends when the device reports playing, ending
-        # it here would publish idle in between; one that does not show yet ends right away
-        if player.emulated_pause and player.state.playback_state != PlaybackState.PAUSED:
-            player.end_emulated_pause()
 
         # Determine output protocol to use:
         # While a session is active (playing/paused), keep using the already active
@@ -4410,6 +4404,8 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # power on the player if needed (skip auto-play since we're about to start playback)
         if not player.state.powered and player.state.power_control != PLAYER_CONTROL_NONE:
             await self._handle_cmd_power(player.player_id, True, skip_auto_play=True)
+        # new playback ends an emulated pause, the device reports its playing state next
+        player.end_emulated_pause()
         await target_player.play_media(media)
         if target_player.player_id != player.player_id:
             # notify the native player that protocol playback started
@@ -4892,17 +4888,13 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # fallback: just send play command - which will fail if nothing can be played
         await player.play()
 
-    async def _handle_cmd_pause(self, player_id: str, *, emulate_pause: bool = False) -> None:
+    async def _handle_cmd_pause(self, player_id: str) -> None:
         """
         Handle pause command without any redirects.
 
         Skips permission checks, locking, and all redirect logic (internal use only).
 
         :param player_id: player_id of the player to handle the command.
-        :param emulate_pause: For a player that can not pause and plays its own queue:
-            stop its device but keep reporting paused, instead of a plain stop. A group
-            player ends its queue instead. Only for a caller that ends the emulated pause
-            itself when it lasts too long.
         """
         player = self.get_player(player_id, raise_unavailable=True)
         assert player is not None
@@ -4947,7 +4939,12 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
             "Player/protocol %s does not support pause, using STOP instead",
             player.state.name,
         )
-        if not emulate_pause:
+        active_queue = self.get_active_queue(player)
+        if (
+            player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
+            or active_queue is None
+            or active_queue.queue_id != player.player_id
+        ):
             await self._handle_cmd_stop(player.player_id)
             return
         if player.type == PlayerType.GROUP:
@@ -4958,6 +4955,7 @@ class PlayerController(AnnouncementsMixin, AudioSourceMixin, ProtocolLinkingMixi
         # the player reports paused while its device is stopped: its queue keeps the
         # session to resume from, until the pause watcher ends it like a real pause
         player.start_emulated_pause()
+        player.refresh_state()
         try:
             await self._stop_player_device(player, keep_output_protocol=True)
         except BaseException:

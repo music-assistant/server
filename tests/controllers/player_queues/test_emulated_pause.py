@@ -124,14 +124,16 @@ def _take_pause_watcher(ctrl: PlayerQueuesController) -> Coroutine[Any, Any, Non
     return watchers[0]
 
 
-async def _run_pause_watcher(ctrl: PlayerQueuesController) -> None:
+async def _run_pause_watcher(ctrl: PlayerQueuesController, sleep: AsyncMock | None = None) -> None:
     """
     Run the pause watcher to its end, without waiting out its sleeps.
 
     :param ctrl: The controller the pause ran on.
+    :param sleep: The stand-in for the watcher's sleeps, to count or act on them.
     """
     with patch(
-        "music_assistant.controllers.player_queues.controller.asyncio.sleep", new=AsyncMock()
+        "music_assistant.controllers.player_queues.controller.asyncio.sleep",
+        new=sleep or AsyncMock(),
     ):
         await _take_pause_watcher(ctrl)
 
@@ -156,16 +158,21 @@ async def test_pause_watcher_ends_the_queue_and_releases_its_session() -> None:
     cast("AsyncMock", player.stop).assert_awaited_once()
 
 
-async def test_pause_watcher_leaves_a_restart_in_flight_alone() -> None:
-    """A resume that is still starting when the pause runs out keeps its new session."""
+async def test_pause_watcher_steps_aside_once_the_session_changed() -> None:
+    """A resume that is still starting keeps its new session, the watcher leaves at once."""
     ctrl, player, queue_data = _setup()
     mass = cast("MagicMock", ctrl.mass)
     await ctrl.pause(QUEUE_ID)
-    # the resume started a new session, the device does not report playing yet
-    queue_data.session_id = "sess-2"
 
-    await _run_pause_watcher(ctrl)
+    async def _resume_after_three_seconds(_seconds: float) -> None:
+        if sleep.await_count == 3:
+            # the resume started a new session, the device does not report playing yet
+            queue_data.session_id = "sess-2"
 
+    sleep = AsyncMock(side_effect=_resume_after_three_seconds)
+    await _run_pause_watcher(ctrl, sleep)
+
+    assert sleep.await_count == 3
     assert queue_data.session_id == "sess-2"
     mass.streams.audio_processing.clear.assert_not_called()
     cast("AsyncMock", player.stop).assert_awaited_once()
@@ -198,8 +205,8 @@ async def test_play_pause_before_the_device_confirms_its_stop_plays() -> None:
     player.stop = AsyncMock()  # type: ignore[method-assign]
     await ctrl.pause(QUEUE_ID)
     _take_pause_watcher(ctrl).close()
-    assert player.emulated_pause
-    assert _playback_state(player) == PlaybackState.PLAYING
+    # the queue follows the player it plays on
+    PlayerQueuesController.on_player_update(ctrl, player, {})
     ctrl.pause = AsyncMock()  # type: ignore[method-assign]
     ctrl.play = AsyncMock()  # type: ignore[method-assign]
 
@@ -223,6 +230,18 @@ async def test_pause_on_a_group_ends_its_queue_at_once() -> None:
     await _run_pause_watcher(ctrl)
     cast("AsyncMock", player.stop).assert_awaited_once()
     mass.streams.audio_processing.clear.assert_called_once()
+
+
+async def test_every_emulated_pause_gets_a_pause_watcher() -> None:
+    """The watcher is what ends an emulated pause, so one is started for each of them."""
+    ctrl, player, queue_data = _setup()
+    # the queue's own flag lags behind the player it plays on
+    queue_data.queue.active = False
+
+    await ctrl.pause(QUEUE_ID)
+
+    assert player.emulated_pause
+    _take_pause_watcher(ctrl).close()
 
 
 async def test_pause_during_an_announcement_is_a_plain_stop() -> None:

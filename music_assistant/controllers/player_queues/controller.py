@@ -726,22 +726,22 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._set_transitioning(queue_id, False)
         if not (queue := self.get(queue_id)):
             return
+        queue_active = queue.active
         if queue.active and queue.state == PlaybackState.PLAYING:
             queue.resume_pos = int(queue.corrected_elapsed_time)
-        # we auto stop a player from paused when its paused for 30 seconds
-        queue_player = self.mass.players.get_player(queue_id)
-        watch_pause = bool(
-            queue.active
-            and queue_player
-            and not queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
-        )
         # a restart (resume, seek, skip) starts a new session, which is not ours to stop
         session_id = self._queue_data[queue_id].session_id
         # Use internal handler to avoid circular redirect
         # (cmd_pause redirects to queue.pause, which calls cmd_pause again)
-        await self.mass.players._handle_cmd_pause(queue_id, emulate_pause=watch_pause)
+        await self.mass.players._handle_cmd_pause(queue_id)
 
         async def _watch_pause(player: Player) -> None:
+            def _still_paused() -> bool:
+                return (
+                    player.state.playback_state == PlaybackState.PAUSED
+                    and self._queue_data[queue_id].session_id == session_id
+                )
+
             count = 0
             # wait for pause
             while count < 5 and player.state.playback_state == PlaybackState.PLAYING:
@@ -751,17 +751,19 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             if player.state.playback_state != PlaybackState.PAUSED:
                 return
             count = 0
-            while count < 30 and player.state.playback_state == PlaybackState.PAUSED:
+            while count < 30 and _still_paused():
                 count += 1
                 await asyncio.sleep(1)
             # if player is still paused when the limit is reached, send stop
-            if (
-                player.state.playback_state == PlaybackState.PAUSED
-                and self._queue_data[queue_id].session_id == session_id
-            ):
+            if _still_paused():
                 await self.stop(queue_id)
 
-        if watch_pause and queue_player:
+        # we auto stop a player from paused when its paused for 30 seconds,
+        # which is also what ends an emulated pause
+        if (queue_player := self.mass.players.get_player(queue_id)) and (
+            queue_player.emulated_pause
+            or (queue_active and not queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS))
+        ):
             self.mass.create_task(_watch_pause(queue_player))
 
     @api_command("player_queues/play_pause", required_scope=Scope.QUEUES_CONTROL)
@@ -771,15 +773,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
         - queue_id: queue_id of the queue to handle the command.
         """
-        # an emulated pause may still show playing until the device confirms its stop
-        if (
-            (queue := self.get(queue_id))
-            and queue.state == PlaybackState.PLAYING
-            and not (
-                (queue_player := self.mass.players.get_player(queue_id))
-                and queue_player.emulated_pause
-            )
-        ):
+        if (queue := self.get(queue_id)) and queue.state == PlaybackState.PLAYING:
             await self.pause(queue_id)
             return
         await self.play(queue_id)
