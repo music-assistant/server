@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import shutil
 import sqlite3
 from contextlib import closing, contextmanager
@@ -44,6 +45,7 @@ from music_assistant.constants import (
     DB_TABLE_TRACKS,
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
     ENCRYPT_SUFFIX,
+    MASS_LOGGER_NAME,
 )
 from music_assistant.controllers.config import filesystem_consolidation as consolidation_module
 from music_assistant.controllers.config.filesystem_consolidation import (
@@ -78,6 +80,7 @@ from music_assistant.providers.filesystem_local.constants import (
     CACHE_CATEGORY_PODCAST_EPISODES,
     CACHE_CATEGORY_SOUND_EFFECTS,
 )
+from tests.common import capture_log_records
 from tests.conftest import full_mass_context
 from tests.controllers.storage.conftest import (
     SUPERVISOR_TOKEN,
@@ -1781,6 +1784,94 @@ async def test_a_source_converts_on_the_first_start_before_the_providers_load(
             assert mass.config.get(CONF_PROVIDER_ACCESS_MIGRATED) is True
             assert raw_conf["access"] == ProviderAccess(sharing=ProviderSharing.EVERYONE).to_dict()
             assert raw_conf["last_error"]["translation_key"] == "storage_location_unavailable"
+
+
+async def test_a_source_converts_and_mounts_in_a_start_under_a_supervisor(
+    tmp_path: Path,
+) -> None:
+    """
+    Under a Supervisor a start converts a source and mounts its share through the Supervisor.
+
+    The conversion asks the Supervisor for its mounts through the http session of the server,
+    which the server can create only once its discovery controller is set up.
+    """
+    storage_path = tmp_path / "data"
+    storage_path.mkdir(parents=True)
+    (storage_path / "settings.json").write_text(
+        json.dumps(
+            {
+                CONF_PROVIDERS: {
+                    SMB_ID: {
+                        "type": "music",
+                        "domain": "filesystem_smb",
+                        "instance_id": SMB_ID,
+                        "enabled": True,
+                        "values": {},
+                        "setup_data": {"host": "nas.local", "share": "music"},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    media = tmp_path / "media"
+    media.mkdir()
+    fake = FakeSupervisor(MountTable(), media)
+    fake.mount_table.set(mount_line("/", "ext4"))
+    server = TestServer(fake.app)
+    await server.start_server()
+
+    with (
+        patch("music_assistant.mass.is_hass_supervisor", AsyncMock(return_value=True)),
+        patch.object(hassio, "SUPERVISOR_URL", str(server.make_url("")).rstrip("/")),
+        patch.dict(
+            "os.environ", {"SUPERVISOR_TOKEN": SUPERVISOR_TOKEN, "HOSTNAME": "music-assistant"}
+        ),
+        patch.object(supervisor_module, "SUPERVISOR_MEDIA_PATH", str(media)),
+        patch.object(storage_controller_module, "read_mountinfo", lambda: fake.mount_table.text),
+        # the site for the ingress proxy of Home Assistant, kept on loopback
+        patch(
+            "music_assistant.controllers.webserver.controller.get_ip_addresses",
+            AsyncMock(return_value=("127.0.0.1",)),
+        ),
+        patch("music_assistant.controllers.webserver.controller.INGRESS_SERVER_PORT", 0),
+        capture_log_records(logging.getLogger(MASS_LOGGER_NAME)) as records,
+    ):
+        try:
+            async with full_mass_context(tmp_path) as mass:
+                assert mass.running_as_hass_addon
+                assert _config(mass, SMB_ID)["domain"] == "filesystem_local"
+                share = _records(mass)["music"]
+                assert (share.backend, share.path) == (MountBackend.SUPERVISOR, fake.path("music"))
+                assert _path(mass, SMB_ID) == fake.path("music")
+
+                def _mounted() -> bool:
+                    location = mass.storage.get_location_for_path(fake.path("music"))
+                    return location is not None and location.available
+
+                await wait_until(_mounted)
+                assert (fake.mounts["music"]["server"], fake.mounts["music"]["share"]) == (
+                    "nas.local",
+                    "music",
+                )
+                # the test handed in no http session: the server created its own
+                assert mass._http_session_no_ssl is not None
+                assert not mass._http_session_no_ssl.closed
+        finally:
+            await server.close()
+
+    watched = [
+        record
+        for record in records
+        if record.name == consolidation_module.LOGGER.name
+        or record.name.startswith(
+            (f"{MASS_LOGGER_NAME}.storage", storage_controller_module.__package__)
+        )
+    ]
+    assert f"Converted music source {SMB_ID} into a Local files source" in [
+        record.getMessage() for record in watched
+    ]
+    assert [record.getMessage() for record in watched if record.levelno >= logging.WARNING] == []
 
 
 async def test_a_converted_source_that_can_not_load_shows_the_default_name_of_local_files(
