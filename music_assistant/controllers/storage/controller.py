@@ -75,6 +75,7 @@ from music_assistant.controllers.storage.constants import (
     SHARE_STATES_TIMEOUT,
     SHARES_DOCS_URL,
     SHARES_SETUP_TASK_ID,
+    SIZE_DECIMALS,
 )
 from music_assistant.controllers.storage.helpers import is_within, share_key
 from music_assistant.controllers.storage.models import (
@@ -102,7 +103,6 @@ if TYPE_CHECKING:
 
     from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
-    from music_assistant.models import ProviderInstanceType
 
 READ_SCOPES = (Scope.CONFIG_PROVIDERS_OWN, Scope.CONFIG_PROVIDERS_READ)
 BYTES_PER_GB = float(1 << 30)
@@ -199,8 +199,8 @@ class StorageController(CoreController):
         share_versions = mounter.supported_versions if mounter is not None else {}
         locations = self.get_locations(manages_all_sources)
         if not manages_all_sources:
-            # a folder picker needs no connection details
-            locations = [_without_share_details(location) for location in locations]
+            # a folder picker needs no connection details, nor the sources that use a location
+            locations = [_without_private_details(location) for location in locations]
         return StorageInfo(
             locations=locations,
             can_mount_shares=mounter is not None,
@@ -272,9 +272,7 @@ class StorageController(CoreController):
         if path not in folders:
             msg = f"Not a registered folder: {path}"
             raise self._error(InvalidDataError, msg, "folder_not_registered")
-        if (source := self._get_source_using(path)) is not None:
-            msg = f"{source.name} uses {path}"
-            raise self._error(ActionUnavailable, msg, "location_in_use", source.name)
+        await self._check_not_in_use(path)
         self.mass.config.set(
             CONF_STORAGE_FOLDERS, [folder for folder in folders if folder != path], immediate=True
         )
@@ -424,9 +422,7 @@ class StorageController(CoreController):
         """
         async with self._shares_lock:
             spec = self._get_share(name)
-            if (source := self._get_source_using(spec.path)) is not None:
-                msg = f"{source.name} uses {spec.path}"
-                raise self._error(ActionUnavailable, msg, "location_in_use", source.name)
+            await self._check_not_in_use(spec.path)
             if (mounter := await self._get_mounter(spec.backend)) is None:
                 if spec.backend == MountBackend.SUPERVISOR and self.mass.running_as_hass_addon:
                     # the Supervisor may only be busy: its mount stays until it can be removed
@@ -655,6 +651,9 @@ class StorageController(CoreController):
                 )
             ),
         ]
+        sources = self._get_sources_by_location()
+        for location in self._locations:
+            location.used_by = sources.get(location.path, [])
 
     async def reconcile(self) -> None:
         """
@@ -732,6 +731,18 @@ class StorageController(CoreController):
         if any(loc.path == path for loc in self._locations):
             msg = f"{path} already is a storage location"
             raise self._error(InvalidDataError, msg, "folder_already_location")
+
+    async def _check_not_in_use(self, path: str) -> None:
+        """
+        Raise when a music source reads its files from a location.
+
+        :param path: The path of the location.
+        """
+        # which location a source reads from depends on every location there is right now
+        await self.refresh()
+        if used_by := self._get_sources_by_location().get(path):
+            msg = f"{used_by[0]} uses {path}"
+            raise self._error(ActionUnavailable, msg, "location_in_use", used_by[0])
 
     def _visible_roots(self, path: str, manages_all_sources: bool) -> list[str]:
         """
@@ -892,8 +903,8 @@ class StorageController(CoreController):
         # the default cache directory lies inside the data directory, and has a row of its own
         exclude = (cache_path,) if is_within(cache_path, data_path) else ()
         self._dir_sizes = {
-            StorageUsage.DATA: round(await get_folder_size(data_path, exclude), 2),
-            StorageUsage.CACHE: round(await get_folder_size(cache_path), 2),
+            StorageUsage.DATA: round(await get_folder_size(data_path, exclude), SIZE_DECIMALS),
+            StorageUsage.CACHE: round(await get_folder_size(cache_path), SIZE_DECIMALS),
         }
         for location in self._locations:
             if location.usage != StorageUsage.MEDIA:
@@ -903,19 +914,23 @@ class StorageController(CoreController):
         """Return the folders registered as a media location."""
         return list(self.mass.config.get(CONF_STORAGE_FOLDERS, []))
 
-    def _get_source_using(self, path: str) -> ProviderInstanceType | None:
+    def _get_sources_by_location(self) -> dict[str, list[str]]:
         """
-        Return a loaded music source that reads its files from a path or a folder inside it.
+        Return the sorted names of the loaded music sources, by the location they read from.
 
-        :param path: An absolute path.
+        A source counts for the most specific location that contains its folder only.
         """
+        sources: dict[str, list[str]] = {}
         for provider in self.mass.providers:
             if provider.domain not in FILESYSTEM_PROVIDER_DOMAINS:
                 continue
             base_path = getattr(provider, "base_path", None)
-            if isinstance(base_path, str) and is_within(base_path, path):
-                return provider
-        return None
+            if (
+                isinstance(base_path, str)
+                and (location := self.get_location_for_path(base_path)) is not None
+            ):
+                sources.setdefault(location.path, []).append(provider.name)
+        return {path: sorted(names, key=str.casefold) for path, names in sources.items()}
 
     async def _setup_network_shares(self) -> None:
         """Find the mount backends this server can use and mount the managed network shares."""
@@ -1467,8 +1482,8 @@ def _probe_path(path: str) -> _ProbeResult | None:
         return None
     return _ProbeResult(
         is_dir=is_dir,
-        free_space_gb=round(fs_stats.f_bavail * fs_stats.f_frsize / BYTES_PER_GB, 2),
-        total_space_gb=round(fs_stats.f_blocks * fs_stats.f_frsize / BYTES_PER_GB, 2),
+        free_space_gb=round(fs_stats.f_bavail * fs_stats.f_frsize / BYTES_PER_GB, SIZE_DECIMALS),
+        total_space_gb=round(fs_stats.f_blocks * fs_stats.f_frsize / BYTES_PER_GB, SIZE_DECIMALS),
         real_path=os.path.realpath(path),
     )
 
@@ -1495,6 +1510,13 @@ def _build_location(
     available = (
         result is not None and result.is_dir and (mount is None or mount.fstype != AUTOMOUNT_FSTYPE)
     )
+    error: str | None = None
+    error_key: str | None = None
+    if result is not None and not result.is_dir:
+        error, error_key = "The folder does not exist", "folder_missing"
+    elif not available:
+        # the probe did not answer, or did not wake the share behind an automount trigger
+        error, error_key = "The storage does not respond", "storage_not_responding"
     return StorageLocation(
         path=path,
         name=name or Path(path).name or path,
@@ -1508,6 +1530,8 @@ def _build_location(
         free_space_gb=result.free_space_gb if available and result is not None else None,
         total_space_gb=result.total_space_gb if available and result is not None else None,
         used_space_gb=used_space_gb,
+        error=error,
+        error_key=error_key,
     )
 
 
@@ -1523,8 +1547,14 @@ def _is_mountpoint(path: str) -> bool:
     return is_mounted(path, read_mountinfo())
 
 
-def _without_share_details(location: StorageLocation) -> StorageLocation:
-    """Return a location without the connection details of a managed network share."""
+def _without_private_details(location: StorageLocation) -> StorageLocation:
+    """
+    Return a location as a caller that does not manage every music source may see it.
+
+    Without the music sources that use it, and without the connection details of a managed
+    network share.
+    """
+    location = replace(location, used_by=[])
     if location.share_name is None:
         return location
     # the error of a mount can name the server and the export

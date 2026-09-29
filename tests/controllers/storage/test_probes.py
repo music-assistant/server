@@ -262,6 +262,35 @@ async def test_overdue_probe_is_not_waited_for_again(
 
 
 @pytest.mark.usefixtures("short_probe_timeout")
+async def test_location_that_does_not_respond_says_so(
+    storage: StorageController, mount_table: MountTable, probes: FakeProbes
+) -> None:
+    """A mount or registered folder whose probe does not answer in time says so, until it does."""
+    mount_table.set(mount_line(DEAD_SHARE, "nfs4"), mount_line("/mnt/music", "ext4"))
+    storage.mass.config.set(CONF_STORAGE_FOLDERS, ["/srv/dead"])
+    probes.block(DEAD_SHARE)
+    probes.block("/srv/dead")
+
+    await storage.get_info()
+
+    for path in (DEAD_SHARE, "/srv/dead"):
+        location = _location(storage, path)
+        assert (location.available, location.error_key) == (False, "storage_not_responding")
+        assert location.error is not None
+    assert _location(storage, "/mnt/music").error is None
+
+    probes.release()
+
+    await wait_until(
+        lambda: (
+            _location(storage, DEAD_SHARE).available and _location(storage, "/srv/dead").available
+        )
+    )
+    for path in (DEAD_SHARE, "/srv/dead"):
+        assert (_location(storage, path).error, _location(storage, path).error_key) == (None, None)
+
+
+@pytest.mark.usefixtures("short_probe_timeout")
 async def test_late_answer_is_applied(
     storage: StorageController, mount_table: MountTable, probes: FakeProbes
 ) -> None:
@@ -363,6 +392,7 @@ async def test_trigger_that_does_not_mount_is_unavailable(
 
     location = _location(storage, "/media/archive")
     assert (location.fstype, location.available, location.free_space_gb) == ("autofs", False, None)
+    assert location.error_key == "storage_not_responding"
 
 
 def test_probe_of_a_folder(tmp_path: Path) -> None:
