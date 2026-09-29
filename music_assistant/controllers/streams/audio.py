@@ -3323,6 +3323,35 @@ class StreamsAudio:
         # may not use at all are dropped
         allowed, preferred_providers = await playback_sources(mass, queue_item.queue_id)
 
+        media_item = queue_item.media_item
+        anchor: tuple[str, str] | None = None
+        candidates: list[tuple[ProviderMapping, Provider]] = []
+        if media_item is not None:
+            if queue_data := mass.player_queues.queue_data_or_none(queue_item.queue_id):
+                anchor = self._resolve_transition_anchor(queue_data, queue_item)
+            candidates = self._get_streamdetail_candidates(
+                media_item.provider_mappings,
+                preferred_providers,
+                excluded_provider_instances,
+                allowed,
+                anchor,
+            )
+        # a cached mapping the anchor no longer prefers must not be reused just because it
+        # has not expired yet (e.g. previous() back onto a track whose currently-playing
+        # neighbor has since changed folder). Gated on an anchor actually being present, so
+        # same-quality mappings that only ever tied arbitrarily are not churned for no reason.
+        # The live-buffer fast-seek path is exempt: tearing down an already-open buffer for a
+        # folder preference would cost far more than it is worth.
+        cache_outranked = bool(
+            anchor is not None
+            and candidates
+            and queue_item.streamdetails
+            and (
+                candidates[0][1].instance_id != queue_item.streamdetails.provider
+                or candidates[0][0].item_id != queue_item.streamdetails.item_id
+            )
+        )
+
         if (
             queue_item.streamdetails
             # cached details of an excluded instance are exactly what we select away from
@@ -3335,28 +3364,19 @@ class StreamsAudio:
                     queue_item.streamdetails.buffer
                     and queue_item.streamdetails.buffer.is_valid(int(seek_position * 1000))
                 )
-                # or reuse if streamdetails hasn't expired yet (new buffer will be created)
-                or (queue_item.streamdetails.created_at + queue_item.streamdetails.expiration)
-                > time.time()
+                # or reuse if streamdetails hasn't expired yet and the tiebreak still agrees
+                or (
+                    not cache_outranked
+                    and (queue_item.streamdetails.created_at + queue_item.streamdetails.expiration)
+                    > time.time()
+                )
             )
         ):
             streamdetails = queue_item.streamdetails
         else:
             # need to (re)create streamdetails
             # retrieve streamdetails from provider
-
-            media_item = queue_item.media_item
             assert media_item is not None  # for type checking
-            anchor: tuple[str, str] | None = None
-            if queue_data := mass.player_queues.queue_data_or_none(queue_item.queue_id):
-                anchor = self._resolve_transition_anchor(queue_data, queue_item)
-            candidates = self._get_streamdetail_candidates(
-                media_item.provider_mappings,
-                preferred_providers,
-                excluded_provider_instances,
-                allowed,
-                anchor,
-            )
             if not candidates and allowed is not None:
                 # tell an item blocked by the user's music sources apart from one whose
                 # sources are merely unreachable, by rebuilding without the restriction

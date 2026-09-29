@@ -1922,6 +1922,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.mass.cancel_task(f"prepare_next_audio_buffer_{queue_id}")
         self._set_transitioning(queue_id, False)
         queue_data = self._queue_data[queue_id]
+        # a next/previous whose debounced play_index the cancel_timer above just cancelled
+        # never got to consume/clear its own stash, so it must not carry over into whatever
+        # plays next after this stop
+        queue_data.pending_transition_anchor = None
         session_id = queue_data.session_id
         if (queue := self.get(queue_id)) and queue.active:
             if queue.state == PlaybackState.PLAYING:

@@ -381,3 +381,39 @@ async def test_play_index_carries_the_predecessor_when_it_supersedes_a_pending_s
     await ctrl.play_index("q1", 3)  # t4, a track next()/previous() never touched
 
     assert seen_anchors[0] == (queue_data.items[3].queue_item_id, *real_predecessor)
+
+
+async def test_stop_during_a_pending_skips_debounce_drops_its_stash() -> None:
+    """A stop before next()'s debounced play_index runs must not leak its stash forward."""
+    ctrl = _controller()  # current_index=1 (t2): pre-advanced by next(), about to be stopped
+    queue_data = cast("PlayerQueueData", ctrl._queue_data["q1"])
+    real_predecessor = (INSTANCE, "Various Artists/Compilation Album/01 Track.flac")
+    # next() pre-advanced current_item to t2 and stashed the real predecessor (t1) for it, but
+    # a stop right after cancels that debounced play_index before it ever runs (and clears it)
+    queue_data.pending_transition_anchor = (queue_data.items[1].queue_item_id, *real_predecessor)
+    ctrl.mass.players._handle_cmd_stop = AsyncMock()
+
+    await ctrl._handle_stop("q1")
+
+    anchor_after_stop = cast("tuple[str, str, str] | None", queue_data.pending_transition_anchor)
+    assert anchor_after_stop is None
+
+    # an unrelated direct selection afterward must not see a leftover anchor either
+    seen_anchors: list[tuple[str, str, str] | None] = []
+
+    async def _load_item(queue_item: QueueItem, **_kwargs: object) -> None:
+        seen_anchors.append(queue_data.pending_transition_anchor)
+        queue_item.streamdetails = StreamDetails(
+            provider=INSTANCE,
+            item_id="doesnt-matter",
+            audio_format=AudioFormat(content_type=ContentType.MP3),
+            media_type=MediaType.TRACK,
+        )
+
+    ctrl._load_item = _load_item
+    ctrl.player_media_from_queue_item = AsyncMock()
+    ctrl.mass.players.play_media = AsyncMock()
+
+    await ctrl.play_index("q1", 3)
+
+    assert seen_anchors[0] is None

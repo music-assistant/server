@@ -406,6 +406,42 @@ async def test_same_quality_mapping_falls_back_to_the_stashed_anchor_after_a_man
     assert streamdetails.item_id == same_folder_item_id
 
 
+async def test_cached_streamdetails_are_reselected_when_the_anchor_no_longer_prefers_them() -> None:
+    """A previous() back onto an already-played item must not keep its stale cached mapping."""
+    fs_instance = "filesystem_local--main"
+    same_folder_item_id = "Various Artists/Compilation Album/07 Other Track.flac"
+    other_folder_item_id = "Original Artist/Original Album/01 Track.flac"
+
+    async def _by_item_id(item_id: str, media_type: MediaType) -> StreamDetails:
+        return _streamdetails(item_id, media_type, fs_instance)
+
+    provider = MagicMock()
+    provider.get_stream_details = _by_item_id
+    audio = _audio({fs_instance: provider})
+    queue_item = _queue_item(
+        _mapping(fs_instance, item_id=other_folder_item_id),
+        _mapping(fs_instance, item_id=same_folder_item_id),
+    )
+    # queue_item still holds valid, unexpired streamdetails from an earlier, differently
+    # anchored (or anchor-less) resolution - no active buffer, just cached metadata
+    queue_item.streamdetails = _streamdetails(
+        other_folder_item_id, MediaType.SOUND_EFFECT, fs_instance
+    )
+    anchor_item = QueueItem(
+        queue_id="q1", queue_item_id="qi0", name="Anchor", duration=None, media_item=None
+    )
+    anchor_item.streamdetails = _streamdetails(
+        "Various Artists/Compilation Album/01 Track.flac", MediaType.SOUND_EFFECT, fs_instance
+    )
+    queue_data = MagicMock()
+    queue_data.queue.current_item = anchor_item
+    cast("MagicMock", audio.mass).player_queues.queue_data_or_none.return_value = queue_data
+
+    streamdetails = await audio.get_stream_details(queue_item=queue_item)
+
+    assert streamdetails.item_id == same_folder_item_id
+
+
 def test_resolve_transition_anchor_ignores_a_stash_for_a_different_target() -> None:
     """A stash left over from an unrelated transition must not be reused as an anchor."""
     queue_item = _queue_item(_mapping(INSTANCE))
