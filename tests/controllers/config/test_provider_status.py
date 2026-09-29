@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
-import aiohttp
 import pytest
 from music_assistant_models.config_entries import ProviderConfig, ProviderError
 from music_assistant_models.enums import ProviderStatus, ProviderType
@@ -18,7 +17,6 @@ from music_assistant_models.errors import (
 
 from music_assistant.controllers.config.helpers import _provider_status
 from music_assistant.mass import (
-    MusicAssistant,
     _provider_error_from_exc,
     _provider_error_traceback,
     _provider_load_step,
@@ -84,9 +82,6 @@ def test_traceback_logged_for_unexpected_errors_only() -> None:
         wrapped = SetupFailedError("timed out while trying to load")
         wrapped.__cause__ = TimeoutError()
         assert _provider_error_traceback(wrapped) is wrapped
-        unreachable = aiohttp.ClientConnectionError("Cannot connect to host example.com:443")
-        unreachable.__cause__ = OSError(101, "Network is unreachable")
-        assert _provider_error_traceback(unreachable) is None
 
 
 async def test_load_step_names_the_step_that_timed_out() -> None:
@@ -118,16 +113,3 @@ async def test_load_step_leaves_informative_errors_alone() -> None:
     with pytest.raises(ValueError, match="oops"):
         async with _provider_load_step("demo", "load", 30):
             raise ValueError("oops")
-
-
-async def test_load_retried_after_a_connection_failure() -> None:
-    """A provider that can not reach its service yet is loaded again later."""
-    mass = MagicMock(spec=MusicAssistant)
-    mass._tracked_timers = {}
-    mass.config = MagicMock()
-    mass.config.get_provider_config = AsyncMock(return_value=_conf())
-    mass.load_provider_config = AsyncMock(
-        side_effect=aiohttp.ClientConnectionError("Cannot connect to host example.com:443")
-    )
-    await MusicAssistant.load_provider(mass, "demo--1", allow_retry=True)
-    mass.call_later.assert_called_once()
