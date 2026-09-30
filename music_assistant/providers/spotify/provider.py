@@ -1368,11 +1368,16 @@ class SpotifyProvider(MusicProvider):
     def _get_liked_songs_playlist_id(self) -> str:
         return f"{LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX}-{self.instance_id}"
 
-    @use_cache(86400, allow_expired_cache=True)  # 24h; serve stale + refresh in background
+    @use_cache(
+        86400,  # 24h; serve stale + refresh in background
+        cache_checksum="global_session_v1",
+        allow_expired_cache=True,
+    )
     async def _get_new_releases(self) -> list[Album]:
         """Get Spotify's curated 'new releases' albums."""
         try:
-            result = await self._get_data("browse/new-releases", limit=50)
+            # new releases are not available to developer apps
+            result = await self._get_data("browse/new-releases", limit=50, use_global_session=True)
         except MediaNotFoundError:
             return []
         return [
@@ -1381,11 +1386,18 @@ class SpotifyProvider(MusicProvider):
             if item and item.get("id")
         ]
 
-    @use_cache(86400 * 7, allow_expired_cache=True)  # 7d; serve stale + refresh in background
+    @use_cache(
+        86400 * 7,  # 7d; serve stale + refresh in background
+        cache_checksum="global_session_v1",
+        allow_expired_cache=True,
+    )
     async def _get_categories(self, locale: str) -> list[BrowseFolder]:
         """Get Spotify's curated browse categories (genres & moods) as browse folders."""
         try:
-            result = await self._get_data("browse/categories", locale=locale, limit=50)
+            # browse categories are not available to developer apps
+            result = await self._get_data(
+                "browse/categories", locale=locale, limit=50, use_global_session=True
+            )
         except MediaNotFoundError:
             return []
         return [
