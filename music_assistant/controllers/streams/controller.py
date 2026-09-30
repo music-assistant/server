@@ -1413,7 +1413,16 @@ class StreamsController(CoreController):
         if queue_data is None or queue_data.session_id != session_id:
             raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
         command = request.match_info["command"]
-        if command == "next":
+        if queue_data.last_served_item_id is None:
+            # the session rotates when a new item starts loading, so a command fetched before
+            # any of its audio went out follows the superseded stream and would skip a track
+            self.logger.debug(
+                "Ignoring %s command for queue %s: session %s has not streamed yet",
+                command,
+                queue_id,
+                session_id,
+            )
+        elif command == "next":
             self.mass.create_task(self.mass.player_queues.next(queue_id))
         return web.FileResponse(SILENCE_FILE, headers={"icy-name": "Music Assistant"})
 
