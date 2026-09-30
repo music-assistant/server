@@ -148,7 +148,8 @@ async def test_changed_client_id_starts_without_the_old_cooldown() -> None:
     assert new_global_throttler is global_throttler
     assert new_dev_throttler is not old_dev_throttler
     assert new_dev_throttler.cooldown_remaining == 0
-    assert (INSTANCE_ID, "dev", "client-a") not in provider_module._THROTTLERS
+    # the previous app keeps its limit, a rollback of the reconfiguration lands on it again
+    assert provider_module._THROTTLERS[(INSTANCE_ID, "dev", "client-a")] is old_dev_throttler
 
 
 async def test_removed_instance_drops_its_throttlers() -> None:

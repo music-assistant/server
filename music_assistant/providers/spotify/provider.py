@@ -1762,12 +1762,11 @@ class SpotifyProvider(MusicProvider):
         :param fallback_for_playback: Whether another session serves playback while this one
             is rate limited.
         """
-        key = (self.instance_id, name, client_id)
-        # a throttler of another app the session spoke for before is of no use anymore
-        for stale in [k for k in _THROTTLERS if k[:2] == key[:2] and k != key]:
-            del _THROTTLERS[stale]
+        # entries of apps this instance spoke for before stay until the instance is removed:
+        # a failed reconfiguration rolls the setup back to the previous app, limit included
         throttler = _THROTTLERS.setdefault(
-            key, ThrottlerManager(rate_limit=rate_limit, period=period)
+            (self.instance_id, name, client_id),
+            ThrottlerManager(rate_limit=rate_limit, period=period),
         )
         throttler.set_rate_limit(rate_limit=rate_limit, period=period)
         return SpotifySession(
