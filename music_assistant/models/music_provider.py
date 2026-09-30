@@ -2038,23 +2038,31 @@ class MusicProvider(Provider):
         :param library_item: The library playlist, which is updated in place.
         :param prov_item: The same playlist as listed by this provider.
         """
+        # rows stored before the lookup-key phase-out tag images with the domain, which for
+        # a single-instance provider is its instance id as well
         own_providers = (self.instance_id, self.domain)
         library_images: list[MediaItemImage] = library_item.metadata.images or []
         prov_images: list[MediaItemImage] = prov_item.metadata.images or []
-        own_images = {img for img in library_images if img.provider in own_providers}
-        # an empty image list from the provider is not taken as a removed cover
-        images_changed = bool(prov_images) and own_images != set(prov_images)
+        prov_types = {img.type for img in prov_images}
+        # an image type the provider does not supply is kept, so an empty image list from
+        # the provider is not taken as a removed cover
+        own_images = {
+            img
+            for img in library_images
+            if img.provider in own_providers and img.type in prov_types
+        }
+        images_changed = own_images != set(prov_images)
         if prov_item.name == library_item.name and not images_changed:
             return None
         library_item.name = prov_item.name
         library_item.sort_name = prov_item.sort_name
+        if prov_item.translation_key is not None:
+            library_item.translation_key = prov_item.translation_key
+            library_item.translation_params = prov_item.translation_params
         if images_changed:
             # the provider's images go first so its cover is the one shown
             library_item.metadata.images = UniqueList(
-                [
-                    *prov_images,
-                    *(img for img in library_images if img.provider not in own_providers),
-                ]
+                [*prov_images, *(img for img in library_images if img not in own_images)]
             )
         return library_item
 

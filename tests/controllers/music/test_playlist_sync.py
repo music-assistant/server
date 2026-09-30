@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, Mock, patch
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 import pytest
@@ -16,6 +17,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.controllers.music.media.base import SUPPRESS_MEDIA_ITEM_UPDATES
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -32,12 +34,8 @@ COLLAGE = MediaItemImage(type=ImageType.THUMB, path="collage.jpg", provider="pla
 
 
 @pytest.fixture
-def playlists(
-    music_mass_module: MusicAssistant, monkeypatch: pytest.MonkeyPatch
-) -> PlaylistController:
+def playlists(music_mass_module: MusicAssistant) -> PlaylistController:
     """Return the playlist controller of a database-only server."""
-    # the database-only server runs no cache database
-    monkeypatch.setattr(music_mass_module.cache, "delete", AsyncMock())
     return music_mass_module.music.playlists
 
 
@@ -46,9 +44,7 @@ def _thumb(path: str, provider: str = INSTANCE_ID) -> MediaItemImage:
     return MediaItemImage(type=ImageType.THUMB, path=path, provider=provider)
 
 
-def _playlist(
-    item_id: str, name: str, *images: str, is_editable: bool = False, is_dynamic: bool = False
-) -> Playlist:
+def _playlist(item_id: str, name: str, *images: str, **details: Any) -> Playlist:
     """Build the playlist as the provider lists it, with a thumb for each given image path."""
     return Playlist(
         item_id=item_id,
@@ -59,9 +55,8 @@ def _playlist(
                 item_id=item_id, provider_domain="spotify", provider_instance=INSTANCE_ID
             )
         },
-        is_editable=is_editable,
-        is_dynamic=is_dynamic,
         metadata=MediaItemMetadata(images=UniqueList([_thumb(path) for path in images])),
+        **details,
     )
 
 
@@ -81,13 +76,18 @@ async def _sync(playlists: PlaylistController, prov_item: Playlist) -> Playlist:
     async def get_library_playlists() -> AsyncGenerator[Playlist]:
         yield prov_item
 
-    with patch.multiple(
-        provider,
-        get_library_playlists=get_library_playlists,
-        _update_sync_task_item_status=Mock(),
-        _handle_sync_item_failure=Mock(side_effect=_raise),
-    ):
-        await provider._sync_library_playlists()
+    # the library sync runs without per-item events and provider write-backs
+    token = SUPPRESS_MEDIA_ITEM_UPDATES.set(True)
+    try:
+        with patch.multiple(
+            provider,
+            get_library_playlists=get_library_playlists,
+            _update_sync_task_item_status=Mock(),
+            _handle_sync_item_failure=Mock(side_effect=_raise),
+        ):
+            await provider._sync_library_playlists()
+    finally:
+        SUPPRESS_MEDIA_ITEM_UPDATES.reset(token)
     library_item = await playlists.get_library_item_by_prov_mappings(prov_item.provider_mappings)
     assert library_item is not None
     return library_item
@@ -136,6 +136,35 @@ async def test_locally_added_data_is_kept(playlists: PlaylistController) -> None
     assert library_item.metadata.genres == {"rock"}
 
 
+async def test_provider_update_and_rename_in_one_pass(playlists: PlaylistController) -> None:
+    """A changed date_added and a rename in the same sync both reach the library."""
+    item_id = uuid4().hex
+    await _sync(playlists, _playlist(item_id, "Old name", "cover.jpg"))
+    date_added = datetime(2026, 1, 2, tzinfo=UTC)
+
+    library_item = await _sync(
+        playlists, _playlist(item_id, "New name", "cover.jpg", date_added=date_added)
+    )
+
+    assert (library_item.name, library_item.date_added) == ("New name", date_added)
+
+
+async def test_localized_name_follows_the_provider(playlists: PlaylistController) -> None:
+    """A playlist with a localized name takes the provider's new name parameters."""
+    item_id = uuid4().hex
+
+    def liked_songs(user: str) -> Playlist:
+        return _playlist(
+            item_id, f"Liked Songs {user}", translation_key="liked_songs", translation_params=[user]
+        )
+
+    await _sync(playlists, liked_songs("Old"))
+
+    library_item = await _sync(playlists, liked_songs("New"))
+
+    assert (library_item.name, library_item.translation_params) == ("Liked Songs New", ["New"])
+
+
 async def test_image_tagged_with_the_domain_is_replaced(playlists: PlaylistController) -> None:
     """An image stored under the provider domain is dropped when the provider's images change."""
     item_id = uuid4().hex
@@ -146,6 +175,21 @@ async def test_image_tagged_with_the_domain_is_replaced(playlists: PlaylistContr
     library_item = await _sync(playlists, _playlist(item_id, "Name", "new.jpg"))
 
     assert library_item.metadata.images == [_thumb("new.jpg")]
+
+
+async def test_image_type_the_provider_does_not_supply_is_kept(
+    playlists: PlaylistController,
+) -> None:
+    """A stored fanart of the provider is kept when the provider only supplies a new thumb."""
+    item_id = uuid4().hex
+    library_item = await _sync(playlists, _playlist(item_id, "Name", "old.jpg"))
+    fanart = MediaItemImage(type=ImageType.FANART, path="/collage/fanart.jpg", provider=INSTANCE_ID)
+    library_item.metadata.images = UniqueList([*(library_item.metadata.images or []), fanart])
+    await _store(playlists, library_item)
+
+    library_item = await _sync(playlists, _playlist(item_id, "Name", "new.jpg"))
+
+    assert library_item.metadata.images == [_thumb("new.jpg"), fanart]
 
 
 async def test_stored_images_are_kept_without_provider_images(
@@ -164,7 +208,12 @@ async def test_stored_images_are_kept_without_provider_images(
 async def test_unchanged_playlist_is_not_written(playlists: PlaylistController) -> None:
     """A playlist whose name and images already match the provider is not written again."""
     item_id = uuid4().hex
-    await _sync(playlists, _playlist(item_id, "Name", "cover.jpg"))
+    library_item = await _sync(playlists, _playlist(item_id, "Name", "cover.jpg"))
+    other_instance_image = _thumb("other.jpg", provider="spotify--other")
+    library_item.metadata.images = UniqueList(
+        [*(library_item.metadata.images or []), COLLAGE, other_instance_image]
+    )
+    await _store(playlists, library_item)
 
     with patch.object(
         playlists, "update_item_in_library", wraps=playlists.update_item_in_library
