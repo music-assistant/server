@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.errors import (
+    InvalidDataError,
     LoginFailed,
     RateLimited,
     ResourceTemporarilyUnavailable,
@@ -28,14 +29,6 @@ if TYPE_CHECKING:
 JsonLike = dict[str, Any]
 
 
-class InvalidDataError(Exception):
-    """24-7 (247e) GraphQL error."""
-
-    def __init__(self, data: JsonLike) -> None:
-        """Initialize InvalidDataError."""
-        super().__init__(json_dumps(data))
-
-
 class Music247eAPIClient:
     """Client for interacting with a 24-7 (247e) GraphQL API."""
 
@@ -43,7 +36,9 @@ class Music247eAPIClient:
     GRAPHQL_ENDPOINT: str
     SERVICE_NAME: str
 
-    # Unsure if the backend enforces rate limiting, this is just a sane precaution
+    # Unsure if the backend enforces rate limiting, this is just a sane precaution.
+    # Each concrete provider should declare its own throttler instance
+    # so that rate limits are not shared across providers.
     throttler = ThrottlerManager(rate_limit=4, period=1)
 
     def __init__(self, provider: Music247eProvider):
@@ -85,7 +80,7 @@ class Music247eAPIClient:
 
             result = await resp.json()
             if len(result.get("errors", [])) > 0:
-                raise InvalidDataError(result)
+                raise InvalidDataError(json_dumps(result))
 
             return dict(result)
 

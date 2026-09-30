@@ -158,7 +158,7 @@ class Music247eProvider(RecommendationPayloadMixin, MusicProvider):
         """Get a list of most popular tracks for the given artist."""
         return await self.media.get_artist_toptracks(prov_artist_id)
 
-    @use_cache(3600 * 24 * 30)  # Cache for 30 days
+    @use_cache(3600 * 24 * 180)  # Cache for 180 days
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         return await self.media.get_album(prov_album_id)
