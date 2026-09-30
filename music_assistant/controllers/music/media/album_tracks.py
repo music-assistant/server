@@ -36,7 +36,7 @@ def select_album_tracks(library: list[Track], providers: list[Track]) -> list[Tr
     slots: list[Track] = []
     slot_sources: list[set[str]] = []
     slot_by_isrc: dict[str, int] = {}
-    slot_by_position: dict[tuple[int, int], int] = {}
+    slots_by_position: dict[tuple[int, int], list[int]] = defaultdict(list)
     unknown: list[Track] = []
     for track in providers:
         if library_ids.intersection(_ids(track)):
@@ -53,13 +53,18 @@ def select_album_tracks(library: list[Track], providers: list[Track]) -> list[Tr
         if slot is None:
             if position in occupied:
                 continue
-            slot = slot_by_position.get(position)
-            if slot is not None and _different_recording(
-                slots[slot], track, usable_isrcs, title_of
-            ):
-                # two editions disagree about this position: list both rather than
-                # let one hide the other
-                slot = None
+            # join the edition already listed at this position that this entry does not
+            # contradict; editions that disagree about a position are all listed rather
+            # than let one hide another, whichever of them was listed first
+            slot = next(
+                (
+                    candidate
+                    for candidate in slots_by_position[position]
+                    if track.provider not in slot_sources[candidate]
+                    and not _different_recording(slots[candidate], track, usable_isrcs, title_of)
+                ),
+                None,
+            )
         if slot is not None and track.provider in slot_sources[slot]:
             # a source's own listing is authoritative: two of its entries stay two
             slot = None
@@ -70,7 +75,8 @@ def select_album_tracks(library: list[Track], providers: list[Track]) -> list[Tr
         elif _preference(track) < _preference(slots[slot]):
             slots[slot] = track
         slot_sources[slot].add(track.provider)
-        slot_by_position.setdefault(position, slot)
+        if slot not in slots_by_position[position]:
+            slots_by_position[position].append(slot)
         for isrc in isrcs:
             slot_by_isrc.setdefault(isrc, slot)
 
