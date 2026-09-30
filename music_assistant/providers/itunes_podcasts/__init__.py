@@ -9,6 +9,7 @@ import math
 import time
 from collections import Counter, defaultdict
 from collections.abc import AsyncGenerator
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
@@ -138,6 +139,7 @@ class ITunesPodcastsProvider(MusicProvider):
     """ITunesPodcastsProvider."""
 
     throttler: ThrottlerManager
+    _resolve_task: asyncio.Task[None] | None = None
 
     @property
     def max_concurrent_streams(self) -> None:
@@ -188,6 +190,13 @@ class ITunesPodcastsProvider(MusicProvider):
         self.max_episodes = int(str(self.config.get_value(CONF_NUM_EPISODES)))
         # 20 requests per minute, be a bit below
         self.throttler = ThrottlerManager(rate_limit=18, period=60)
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        if self._resolve_task and not self._resolve_task.done():
+            self._resolve_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._resolve_task
 
     @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def search(
@@ -709,7 +718,7 @@ class ITunesPodcastsProvider(MusicProvider):
             if seed is not None:
                 seeds.append(seed)
         if len(unresolved) > MAX_INLINE_RESOLVES:
-            self.mass.create_task(
+            self._resolve_task = self.mass.create_task(
                 self._resolve_library_podcasts(unresolved),
                 task_id=f"itunes_podcasts_resolve_library_{self.instance_id}",
                 task_name="itunes_podcasts_resolve_library",

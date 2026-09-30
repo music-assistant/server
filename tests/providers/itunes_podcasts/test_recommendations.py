@@ -1,5 +1,6 @@
 """Test the iTunes Podcasts recommendations."""
 
+import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
@@ -388,6 +389,23 @@ async def test_library_recommendations_resolve_in_background(
     assert len(inline) == MAX_INLINE_RESOLVES
     mass_mock.create_task.assert_called_once()
     mass_mock.create_task.call_args.args[0].close()  # the mocked task never runs it
+    assert provider._resolve_task is mass_mock.create_task.return_value
+
+
+async def test_unload_cancels_resolve_task(provider: ITunesPodcastsProvider) -> None:
+    """Unloading the provider cancels a running background resolve."""
+    started = asyncio.Event()
+
+    async def _resolve() -> None:
+        started.set()
+        await asyncio.sleep(3600)
+
+    provider._resolve_task = asyncio.create_task(_resolve())
+    await started.wait()
+
+    await provider.unload()
+
+    assert provider._resolve_task.cancelled()
 
 
 async def test_library_recommendations_empty_library(
