@@ -196,8 +196,9 @@ so a claim that is no longer current marks audio nobody will come back for. A cl
 drops the items themselves, so all of their audio goes with them.
 
 A paused queue keeps its session and its buffers until the pause watcher stops it after 30 seconds.
-When another queue needs a provider stream slot one of those buffers holds, the paused queue is
-stopped right away. It resumes later from where it was paused, with a new source stream.
+When playback on another queue finds no free provider stream slot and one of those buffers holds
+one, the paused queue is stopped right away. It resumes later from where it was paused, with a new
+source stream. Preparing the next track ahead of time never stops a paused queue.
 
 Data flow: current index → next-item computation → stream-detail resolution → player enqueue-next.
 (Next-track audio-buffer warming is driven separately by the streams pipeline, relative to the

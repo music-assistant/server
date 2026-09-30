@@ -228,7 +228,8 @@ async def test_only_another_queue_paused_on_its_player_gives_up_its_slot(
     player.state.playback_state = player_state
     player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = announcing
 
-    assert not rig.queues.release_paused_stream_slot(INSTANCE, asking_queue)
+    assert not rig.queues.has_paused_stream_slot_holder(INSTANCE, asking_queue)
+    assert not await rig.queues.release_paused_stream_slot(INSTANCE, asking_queue)
 
     await asyncio.gather(*rig.tasks)
     rig.stop_device.assert_not_awaited()
@@ -249,12 +250,32 @@ async def test_a_queue_that_resumes_before_it_is_stopped_keeps_playing(rig: _Rig
 
     rig.mass.players.get_group_and_player_lock = _held_by_a_resume
 
-    assert rig.queues.release_paused_stream_slot(INSTANCE, STARTING_QUEUE)
+    release = asyncio.ensure_future(rig.queues.release_paused_stream_slot(INSTANCE, STARTING_QUEUE))
+    await asyncio.sleep(0)
     rig.players[PAUSED_QUEUE].state.playback_state = PlaybackState.PLAYING
     rig.queues._queue_data[PAUSED_QUEUE].queue.state = PlaybackState.PLAYING
     lock_free.set()
 
-    await asyncio.gather(*rig.tasks)
+    assert not await release
+    rig.stop_device.assert_not_awaited()
+    assert paused_buffer.is_buffering
+    await paused_buffer.clear()
+
+
+async def test_preparing_the_next_track_leaves_a_paused_queue_alone(rig: _Rig) -> None:
+    """A prewarm of the next track is speculative, so the paused queue keeps its slot."""
+    paused_item = rig.add_queue(PAUSED_QUEUE, PlaybackState.PAUSED)
+    paused_buffer = await rig.fill(paused_item)
+    next_item = rig.add_queue(STARTING_QUEUE, PlaybackState.PLAYING)
+
+    with pytest.raises(ProviderStreamLimitError):
+        await rig.audio.get_audio_buffer(
+            next_item,
+            reason="prepare_next",
+            capacity_wait_timeout=0.2,
+            stop_paused_queues=False,
+        )
+
     rig.stop_device.assert_not_awaited()
     assert paused_buffer.is_buffering
     await paused_buffer.clear()

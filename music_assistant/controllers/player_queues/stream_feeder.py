@@ -105,9 +105,11 @@ class StreamFeederMixin(_PlayerQueuesBase):
                     prepared_item,
                     reason="prepare_next",
                     capacity_wait_timeout=STREAM_SLOT_WAIT_TIMEOUT,
-                    # speculative preparation gives up softly, so it must stay cheap:
-                    # leave the cross-provider search to the actual playback start
+                    # speculative preparation gives up softly, so it must stay cheap and
+                    # harmless: leave the cross-provider search and stopping a paused
+                    # queue to the actual playback start
                     allow_provider_match=False,
+                    stop_paused_queues=False,
                 )
                 # removal paths that do not cancel this task (replace_next, delete) can take
                 # the item off the queue while the buffer fills; the stale-buffer sweep walks
@@ -167,41 +169,38 @@ class StreamFeederMixin(_PlayerQueuesBase):
             return
         self.prepare_next_audio_buffer(queue_id, item_id)
 
-    def release_paused_stream_slot(self, provider_instance: str, queue_id: str) -> bool:
+    def has_paused_stream_slot_holder(self, provider_instance: str, queue_id: str) -> bool:
         """
-        Stop a paused queue that holds a slot of the given provider, if it has none left.
+        Return whether another queue that is paused holds a slot the given provider has none of.
+
+        :param provider_instance: The provider instance a slot is needed on.
+        :param queue_id: The queue that needs the slot.
+        """
+        return self._paused_stream_slot_holder(provider_instance, queue_id) is not None
+
+    async def release_paused_stream_slot(self, provider_instance: str, queue_id: str) -> bool:
+        """
+        Stop another queue that is paused while it holds a slot the given provider has none of.
 
         The stopped queue resumes from where it was paused, with a new source stream.
 
         :param provider_instance: The provider instance a slot is needed on.
         :param queue_id: The queue that needs the slot, which is never stopped itself.
-        :return: Whether a paused queue is being stopped, which frees its slot shortly.
+        :return: Whether a paused queue was stopped, which frees its slot shortly.
         """
-        provider = self.mass.get_provider(provider_instance, return_unavailable=True)
-        if not isinstance(provider, MusicProvider) or provider.has_available_stream_slot:
+        if (holder_id := self._paused_stream_slot_holder(provider_instance, queue_id)) is None:
             return False
-        for holder_id, queue_data in self._queue_data.items():
-            if holder_id == queue_id or not self._is_paused(holder_id):
-                continue
-            # a buffer holds its provider's slot for as long as its source is producing
-            if not any(
-                (details := item.streamdetails) is not None
-                and details.provider == provider_instance
-                and details.buffer is not None
-                and details.buffer.is_buffering
-                for item in queue_data.items
-            ):
-                continue
+        async with self.mass.players.get_group_and_player_lock(holder_id):
+            # the lock can have been held by the very action that resumed the queue
+            if not self._is_paused(holder_id):
+                return False
             self.logger.info(
                 "Stopping paused queue %s, another queue needs its %s stream slot",
-                queue_data.queue.display_name,
-                provider.name,
+                self._queue_data[holder_id].queue.display_name,
+                provider_instance,
             )
-            self.mass.create_task(
-                self._stop_paused_queue(holder_id), task_id=f"stop_paused_queue_{holder_id}"
-            )
-            return True
-        return False
+            await self._handle_stop(holder_id)
+        return True
 
     def update_next_item_on_player(self, queue_id: str, force: bool = False) -> None:
         """
@@ -467,6 +466,30 @@ class StreamFeederMixin(_PlayerQueuesBase):
             return provider
         return None
 
+    def _paused_stream_slot_holder(self, provider_instance: str, queue_id: str) -> str | None:
+        """
+        Return another queue that is paused while it holds a slot the given provider has none of.
+
+        :param provider_instance: The provider instance a slot is needed on.
+        :param queue_id: The queue that needs the slot.
+        """
+        provider = self.mass.get_provider(provider_instance, return_unavailable=True)
+        if not isinstance(provider, MusicProvider) or provider.has_available_stream_slot:
+            return None
+        for holder_id, queue_data in self._queue_data.items():
+            if holder_id == queue_id or not self._is_paused(holder_id):
+                continue
+            # a buffer holds its provider's slot for as long as its source is producing
+            if any(
+                (details := item.streamdetails) is not None
+                and details.provider == provider_instance
+                and details.buffer is not None
+                and details.buffer.is_buffering
+                for item in queue_data.items
+            ):
+                return holder_id
+        return None
+
     def _is_paused(self, queue_id: str) -> bool:
         """Return whether the queue is paused and its player confirms it."""
         queue_data = self._queue_data.get(queue_id)
@@ -478,9 +501,3 @@ class StreamFeederMixin(_PlayerQueuesBase):
             and player.state.playback_state == PlaybackState.PAUSED
             and not player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS)
         )
-
-    async def _stop_paused_queue(self, queue_id: str) -> None:
-        """Stop the queue, unless it left its pause before its playback lock came free."""
-        async with self.mass.players.get_group_and_player_lock(queue_id):
-            if self._is_paused(queue_id):
-                await self._handle_stop(queue_id)

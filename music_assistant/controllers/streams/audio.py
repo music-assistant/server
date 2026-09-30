@@ -637,6 +637,7 @@ class StreamsAudio:
         reason: str = "",
         capacity_wait_timeout: float = STREAM_SLOT_PLAYBACK_WAIT_TIMEOUT,
         allow_provider_match: bool = True,
+        stop_paused_queues: bool = True,
     ) -> AudioBuffer:
         """
         Return a ready AudioBuffer for the given queue item.
@@ -651,6 +652,8 @@ class StreamsAudio:
         :param capacity_wait_timeout: Total seconds to spend waiting for source capacity.
         :param allow_provider_match: Whether an on-demand cross-provider match may widen
             the candidates when all are saturated.
+        :param stop_paused_queues: Whether another queue that is paused may be stopped to
+            hand over the slot it holds.
         :raises ProviderStreamLimitError: If no source slot becomes available within the budget.
         """
         lock_key = (queue_item.queue_id, queue_item.queue_item_id)
@@ -659,7 +662,12 @@ class StreamsAudio:
             self._audio_buffer_locks[lock_key] = buffer_lock
         async with buffer_lock:
             return await self._get_audio_buffer(
-                queue_item, seek_position_ms, reason, capacity_wait_timeout, allow_provider_match
+                queue_item,
+                seek_position_ms,
+                reason,
+                capacity_wait_timeout,
+                allow_provider_match,
+                stop_paused_queues,
             )
 
     async def get_media_stream(
@@ -3464,6 +3472,7 @@ class StreamsAudio:
         reason: str,
         capacity_wait_timeout: float,
         allow_provider_match: bool,
+        stop_paused_queues: bool,
     ) -> AudioBuffer:
         """
         Create or reuse a ready AudioBuffer within one queue-item preparation lock.
@@ -3474,6 +3483,8 @@ class StreamsAudio:
         :param capacity_wait_timeout: Total seconds to spend waiting for source capacity.
         :param allow_provider_match: Whether an on-demand cross-provider match may widen
             the candidates when all are saturated.
+        :param stop_paused_queues: Whether another queue that is paused may be stopped to
+            hand over the slot it holds.
         """
         loop = asyncio.get_running_loop()
         # the playback intent lives on the details we start from; keep it across a reselection
@@ -3540,22 +3551,28 @@ class StreamsAudio:
                         queue_item.streamdetails = last_failed_streamdetails
             streamdetails = queue_item.streamdetails
             assert streamdetails is not None  # for type checking
-            if not final_pass and self.mass.player_queues.release_paused_stream_slot(
-                streamdetails.provider, queue_item.queue_id
-            ):
-                # a paused queue is being stopped to free its slot: spend the budget waiting
-                # for that one rather than probing for another source
-                final_pass = True
             remaining = max(deadline - loop.time(), 0)
             alternatives_left = bool(
                 all_candidate_instances - busy_instances - {streamdetails.provider}
+            )
+            # a paused queue hands over its slot once an attempt finds none free, so that
+            # attempt has to be a probe rather than a wait behind the paused queue
+            paused_holder = (
+                stop_paused_queues
+                and not final_pass
+                and self.mass.player_queues.has_paused_stream_slot_holder(
+                    streamdetails.provider, queue_item.queue_id
+                )
             )
             # probe (0s) whenever a reselection can still follow: a free slot is still
             # acquired instantly, while a busy one fails fast instead of spending the
             # whole budget on this candidate. Block only on the last resort.
             source_wait = (
                 0.0
-                if (not final_pass and (alternatives_left or busy_instances or match_pending))
+                if (
+                    not final_pass
+                    and (alternatives_left or busy_instances or match_pending or paused_holder)
+                )
                 else remaining
             )
             # record whose audio this is before it exists: a queue stop releases only the
@@ -3586,6 +3603,12 @@ class StreamsAudio:
             except ProviderStreamLimitError as err:
                 last_capacity_error = err
                 last_failed_streamdetails = streamdetails
+                if paused_holder and await self.mass.player_queues.release_paused_stream_slot(
+                    err.provider_instance, queue_item.queue_id
+                ):
+                    # the paused queue stopped and its slot comes free: wait for it here
+                    final_pass = True
+                    continue
                 busy_instances.add(err.provider_instance)
                 if final_pass or loop.time() >= deadline:
                     raise
